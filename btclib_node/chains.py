@@ -79,9 +79,7 @@ class Main(Chain):
             "dnsseed.emzy.de",
             "seed.bitcoin.wiz.biz",
         ]
-        self.genesis = create_genesis(
-            1231006505, 2083236893, 0x1D00FFFF, 1, 50 * 10**8
-        )
+        self.genesis = create_genesis(1231006505, 2083236893, 0x1D00FFFF, 1, 50 * 10**8)
         self.flags = [
             (170061, "P2SH"),
             (363725, "DERSIG"),
@@ -105,9 +103,7 @@ class TestNet(Chain):
             "seed.testnet.bitcoin.sprovoost.nl",
             "testnet-seed.bluematt.me",
         ]
-        self.genesis = create_genesis(
-            1296688602, 414098458, 0x1D00FFFF, 1, 50 * 10**8
-        )
+        self.genesis = create_genesis(1296688602, 414098458, 0x1D00FFFF, 1, 50 * 10**8)
         self.flags = [
             (395, "P2SH"),
             (330776, "DERSIG"),

@@ -44,7 +44,7 @@ def test_cmpctblock():
         previous_block_hash="00" * 32,
         merkle_root_="00" * 32,
         time=datetime.fromtimestamp(1231006506, timezone.utc),
-        bits=b"\x20\xFF\xFF\xFF",
+        bits=b"\x20\xff\xff\xff",
         nonce=1,
         check_validity=False,
     )

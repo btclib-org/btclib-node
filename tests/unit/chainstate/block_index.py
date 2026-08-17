@@ -15,7 +15,7 @@ def test_calculate_work():
         "00" * 32,
         "00" * 32,
         datetime.fromtimestamp(1231006506, timezone.utc),
-        b"\x20\xFF\xFF\xFF",
+        b"\x20\xff\xff\xff",
         1,
     )
     brute_force_nonce(header)
@@ -103,7 +103,7 @@ def test_block_info_serialization():
         "00" * 32,
         "00" * 32,
         datetime.fromtimestamp(1231006506, timezone.utc),
-        b"\x20\xFF\xFF\xFF",
+        b"\x20\xff\xff\xff",
         1,
         check_validity=False,
     )

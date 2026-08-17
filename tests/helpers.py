@@ -27,7 +27,7 @@ def generate_random_header_chain(length, start):
             previous_block_hash=previous_block_hash,
             merkle_root_=secrets.token_bytes(32),
             time=datetime.fromtimestamp(1231006505 + x + 1, timezone.utc),
-            bits=b"\x20\xFF\xFF\xFF",
+            bits=b"\x20\xff\xff\xff",
             nonce=1,
             check_validity=False,
         )
@@ -87,7 +87,7 @@ def generate_random_chain(length, start):
                 [tx.serialize(True, False) for tx in transactions], hash256
             )[::-1],
             time=datetime.fromtimestamp(1231006505 + x + 1, timezone.utc),
-            bits=b"\x20\xFF\xFF\xFF",
+            bits=b"\x20\xff\xff\xff",
             nonce=1,
             check_validity=False,
         )

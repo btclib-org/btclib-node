@@ -50,9 +50,9 @@ class UtxoIndex:
 
             for i, tx_out in enumerate(tx.vout):
                 out_point = OutPoint(tx_id, i, check_validity=False)
-                self.updated_utxo_set[
-                    out_point.serialize(check_validity=False)
-                ] = tx_out
+                self.updated_utxo_set[out_point.serialize(check_validity=False)] = (
+                    tx_out
+                )
                 added.append(out_point)
 
             complete_transactions.append([prev_outputs, tx])
