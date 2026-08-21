@@ -1,5 +1,8 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 from dataclasses import dataclass
-from typing import List, Tuple
 
 import plyvel
 from btclib import var_int
@@ -12,8 +15,8 @@ from btclib.utils import bytesio_from_binarydata
 @dataclass
 class RevBlock:
     hash: bytes
-    to_add: List[Tuple[OutPoint, TxOut]]
-    to_remove: List[OutPoint]
+    to_add: list[tuple[OutPoint, TxOut]]
+    to_remove: list[OutPoint]
 
     @classmethod
     def deserialize(cls, data, check_validity=False):

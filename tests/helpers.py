@@ -1,3 +1,7 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 import random
 import secrets
 import socket
@@ -27,7 +31,7 @@ def generate_random_header_chain(length, start):
             previous_block_hash=previous_block_hash,
             merkle_root_=secrets.token_bytes(32),
             time=datetime.fromtimestamp(1231006505 + x + 1, timezone.utc),
-            bits=b"\x20\xFF\xFF\xFF",
+            bits=b"\x20\xff\xff\xff",
             nonce=1,
             check_validity=False,
         )
@@ -37,7 +41,7 @@ def generate_random_header_chain(length, start):
 
 
 def generate_random_transaction(prevouthash=None):
-    prevouthash = prevouthash if prevouthash else secrets.token_bytes(32)
+    prevouthash = prevouthash or secrets.token_bytes(32)
     tx_in = TxIn(
         prev_out=OutPoint(prevouthash, 0),
         script_sig=script.serialize([secrets.token_bytes(32)]),
@@ -87,7 +91,7 @@ def generate_random_chain(length, start):
                 [tx.serialize(True, False) for tx in transactions], hash256
             )[::-1],
             time=datetime.fromtimestamp(1231006505 + x + 1, timezone.utc),
-            bits=b"\x20\xFF\xFF\xFF",
+            bits=b"\x20\xff\xff\xff",
             nonce=1,
             check_validity=False,
         )
@@ -129,4 +133,7 @@ def brute_force_nonce(header):
 
 
 def local_addr(port: int, time: int = 0, services: int = 0):
-    return NetworkAddress.from_ip_and_port("0.0.0.0", port, time, services)
+    # A test helper building an unroutable placeholder address, not a
+    # socket bind.
+    addr = "0.0.0.0"  # noqa: S104
+    return NetworkAddress.from_ip_and_port(addr, port, time, services)

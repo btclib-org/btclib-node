@@ -1,3 +1,7 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 from btclib_node.block_db import BlockDB
 from btclib_node.chains import RegTest
 from btclib_node.log import Logger

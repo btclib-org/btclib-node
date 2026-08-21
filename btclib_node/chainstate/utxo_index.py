@@ -1,3 +1,7 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 from btclib.tx.tx_in import OutPoint
 from btclib.tx.tx_out import TxOut
 
@@ -50,9 +54,9 @@ class UtxoIndex:
 
             for i, tx_out in enumerate(tx.vout):
                 out_point = OutPoint(tx_id, i, check_validity=False)
-                self.updated_utxo_set[
-                    out_point.serialize(check_validity=False)
-                ] = tx_out
+                self.updated_utxo_set[out_point.serialize(check_validity=False)] = (
+                    tx_out
+                )
                 added.append(out_point)
 
             complete_transactions.append([prev_outputs, tx])
@@ -69,17 +73,16 @@ class UtxoIndex:
                 raise Exception
             if out_point_bytes in self.updated_utxo_set:
                 self.updated_utxo_set.pop(out_point_bytes)
+            elif self.db.get(b"utxo-" + out_point_bytes):
+                self.removed_utxos.add(out_point_bytes)
             else:
-                if self.db.get(b"utxo-" + out_point_bytes):
-                    self.removed_utxos.add(out_point_bytes)
-                else:
-                    raise Exception
+                raise Exception
 
         for out_point, tx_out in rev_block.to_add:
             self.updated_utxo_set[out_point.serialize(check_validity=False)] = tx_out
 
     def finalize(self, wb=None):
-        db = wb if wb else self.db
+        db = wb or self.db
         for x in self.removed_utxos:
             db.delete(b"utxo-" + x)
         for out_point_bytes, tx_out in self.updated_utxo_set.items():

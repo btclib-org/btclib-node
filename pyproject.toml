@@ -2,7 +2,7 @@
 name = "btclib-node"
 version = "0.1.0"
 description = "Bitcoin node in python"
-authors = [{name = "Giacomo Caironi", email = "giacomo.caironi@gmail.com"}]
+authors = [{ name = "Giacomo Caironi", email = "giacomo.caironi@gmail.com" }]
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -14,40 +14,41 @@ license-files = ["LICENSE"]
 # http-parser pin is tracked alongside the rest of this era's pins.
 requires-python = ">=3.10"
 dependencies = [
-  "plyvel==1.3.0",
-  # Held at the exact pin already in place rather than following the
-  # standard's "no upper bound on a sibling dependency": btclib jumped
-  # from this release straight to a >=3.10-only API three years later
-  # (btclib-org/btclib_node#4 has the detail — renamed BlockHeader
-  # constructor keywords among other breaks), so an unbounded floor
-  # would let `uv lock` silently pick a btclib this code cannot run
-  # against. Revisit the bound, not just the version, once #4 lands.
-  "btclib==2023.7.12",
-  "http-parser>=0.9.0,<0.10.0",
+    "plyvel==1.3.0",
+    # Held at the exact pin already in place rather than following the
+    # standard's "no upper bound on a sibling dependency": btclib jumped
+    # from this release straight to a >=3.10-only API three years later
+    # (btclib-org/btclib_node#4 has the detail — renamed BlockHeader
+    # constructor keywords among other breaks), so an unbounded floor
+    # would let `uv lock` silently pick a btclib this code cannot run
+    # against. Revisit the bound, not just the version, once #4 lands.
+    "btclib==2023.7.12",
+    "http-parser>=0.9.0,<0.10.0",
 ]
 
 [dependency-groups]
 # The test runner and its plugins, nothing else.
 harness = [
-  "pytest>=7.0,<8.0",
-  "pytest-xdist>=3.3.0,<4.0.0",
-  "pytest-remotedata>=0.4,<0.5",
-  "pytest-ordering>=0.6,<0.7",
+    "pytest>=7.0,<8.0",
+    "pytest-xdist>=3.3.0,<4.0.0",
+    "pytest-remotedata>=0.4,<0.5",
+    "pytest-ordering>=0.6,<0.7",
 ]
 # harness, plus what the suite delegates to.
 test = [
-  {include-group = "harness"},
-  # No "toml" extra: pytest-cov absorbed it and warns on the name now.
-  "pytest-cov>=4.0.0,<5.0.0",
-  "pydeps>=1.9.13,<2.0.0",
-  "requests>=2.25.1,<3.0.0",
+    { include-group = "harness" },
+    # No "toml" extra: pytest-cov absorbed it and warns on the name now.
+    "pytest-cov>=4.0.0,<5.0.0",
+    "pydeps>=1.9.13,<2.0.0",
+    "requests>=2.25.1,<3.0.0",
 ]
-# Only what running the existing lint gate needs locally; isort and black
-# are pre-commit-managed hook environments, not project dependencies, and
-# are dropped here rather than carried forward to be deleted again once
-# btclib-org/.github#9's lint-gate step replaces them with ruff.
-lint = ["pre-commit>=3.4.0,<4.0.0"]
-dev = [{include-group = "test"}, {include-group = "lint"}]
+# mypy is not here: the mypy hook below is still the hosted mirrors-mypy
+# one, bare, unaffected by this pass -- going strict and moving it to a
+# local, uv-run hook is its own step (btclib-org/.github#9's checklist
+# keeps the two apart), so it stays out of this project's own dependency
+# groups until then.
+lint = ["pre-commit>=3.4.0,<4.0.0", "ruff>=0.16.0,<0.17.0"]
+dev = [{ include-group = "test" }, { include-group = "lint" }]
 
 [build-system]
 requires = ["setuptools>=77"]
@@ -71,13 +72,90 @@ show_missing = true
 skip_empty = true
 precision = 2
 
-[tool.isort]
-profile = "black"
-src_paths = ["btclib_node", "tests"]
+[tool.ruff]
+# target-version is inferred from project.requires-python
 
-[tool.pylint.format]
-max-line-length = 100
+[tool.ruff.lint]
+# The pair only makes sense together: naming a rule in `ignore` below
+# instead of coding it is itself a preview feature, so `preview` is what
+# buys `explicit-preview-rules`, which then takes back everything preview
+# does *not* name below -- the stable set, plus `unspecified-encoding`
+# alone, rather than every rule ruff is still designing.
+preview = true
+explicit-preview-rules = true
+# Deliberately narrower than the standard's own reference selection
+# (btclib's), and closer to what black/isort/flake8/autoflake/yesqa/
+# pyupgrade/bandit actually checked before this PR: pycodestyle (E/W),
+# pyflakes (F, replacing autoflake and most of yesqa), isort (I),
+# pyupgrade (UP), bandit (S), plus CPY, new below. Measured with the
+# standard's full reference `select` (btclib's own, plus CPY): 245
+# findings, 59 fixed by `ruff check --fix` automatically and the other
+# 186 spread across ~40 rule families -- flake8-bugbear, pylint,
+# tryceratops, eradicate and the rest -- each needing a per-site
+# decision (a refactor, a suppression, or a behaviour change) on
+# consensus- and network-facing code this PR is not otherwise touching.
+# That is a second, larger PR's worth of triage, the same shape as the
+# mypy-strict and coverage climbs btclib-org/.github#9 already defers;
+# tracked as its own issue rather than rushed through here.
+# "D" (pydocstyle) is not selected either, and for the same reason at a
+# larger scale: measured, 33 of btclib_node/'s 34 modules carry no
+# docstring at all, so turning it on is a documentation pass across the
+# whole package. Tracked in the same follow-up.
+select = [
+    "CPY", # flake8-copyright, replacing the copyright-notice hook below
+    "E",   # pycodestyle errors, replacing flake8
+    "F",   # pyflakes, replacing autoflake and most of yesqa
+    "I",   # isort
+    "S",   # flake8-bandit, replacing the two bandit hooks below
+    "UP",  # pyupgrade, replacing the pyupgrade hook below
+    "W",   # pycodestyle warnings, replacing flake8
+]
+extend-select = ["unspecified-encoding"]
+ignore = [
+    # code length is enforced by the formatter, which reflows to its 88
+    # columns everything it is allowed to rewrite; max-doc-length below
+    # measures the prose the formatter never touches.
+    "line-too-long",
+]
 
-[tool.flake8]
-max-line-length = 130
-ignore = ["E203", "E501", "W503"]
+[tool.ruff.lint.per-file-ignores]
+"**/__init__.py" = ["F401"] # re-exported imports
+"tests/**" = [
+    "S101", # assert
+    "S311", # non-cryptographic random: fine in tests
+]
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 80
+
+[tool.ruff.lint.flake8-copyright]
+# COPYRIGHT is the one place the notice text is written down; this is all
+# three of its lines as one regex rather than only the holder line, so a
+# file keeping the first and dropping the license lines below it does not
+# pass. Anchored with ^: unanchored, CPY001 is a search over the first
+# 4096 bytes and not a check that the notice opens the file.
+notice-rgx = "^# Copyright \\(c\\) The btclib developers\\n# Distributed under the MIT software license, see the accompanying\\n# LICENSE file or https://opensource\\.org/license/mit for the full text\\."
+
+[tool.codespell]
+# "clear" alone, where codespell's default is "clear,rare": measured
+# over this tree, "clear" alone already found and fixed every genuine
+# typo this repository had, in README.md, a docstring, a comment and a
+# handful of identifiers -- so the other three builtins were not tried,
+# there being nothing left here for them to add.
+builtin = "clear"
+# "weigth" in btclib_node/rpc/callbacks.py is a JSON-RPC response key,
+# not prose: it is meant to read "weight", matching Bitcoin Core's own
+# RPC output, but fixing it changes what an RPC client receives. A
+# lint-gate PR is not the place for that change; tracked as its own
+# issue, and ignored here rather than silently rewritten by
+# --write-changes on some later hook.
+ignore-words-list = ["weigth"]
+
+[tool.typos.default.extend-words]
+# see [tool.codespell]'s ignore-words-list above: an RPC response key,
+# not prose, and fixing it is an API change out of a lint-gate PR's
+# scope. typos' --write-changes would otherwise rewrite it silently.
+weigth = "weigth"
+# ruff's copyright rule, not the misspelling of COPY or CPU that typos'
+# dictionary offers -- .pre-commit-config.yaml names it in a comment.
+CPY = "CPY"

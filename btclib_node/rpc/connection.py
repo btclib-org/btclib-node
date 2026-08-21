@@ -1,3 +1,7 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 import asyncio
 
 try:
@@ -60,7 +64,7 @@ class Connection:
         output_str = json.dumps(response, separators=(",", ":"), cls=JSONEncoder)
         response = "HTTP/1.1 200 OK\n"
         response += "Content-Type: application/json\n"
-        response += f"Content-Length: {len(output_str)+1}\n"
+        response += f"Content-Length: {len(output_str) + 1}\n"
         response += "\n"  # Important!
         response += output_str
         response += "\n"
@@ -80,7 +84,8 @@ class Connection:
 
     def __repr__(self):
         try:
-            out = f"Connection to {self.client.getpeername()[0]}:{self.client.getpeername()[1]}"
+            peer = self.client.getpeername()
+            out = f"Connection to {peer[0]}:{peer[1]}"
         except OSError:
             out = "Broken connection"
         return out

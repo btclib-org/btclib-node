@@ -1,3 +1,7 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 from btclib.tx import TxOut
 
 from btclib_node.chainstate.block_index import BlockStatus
@@ -28,7 +32,7 @@ def finish_sync(node):
 # TODO: support for failed updates
 def update_chain(node):
     if node.status < NodeStatus.HeaderSynced:
-        return
+        return None
 
     block_index = node.chainstate.block_index
     utxo_index = node.chainstate.utxo_index
@@ -43,9 +47,12 @@ def update_chain(node):
 
     for hash in to_add_hash:
         if not block_index.get_block_info(hash).downloaded:
-            # FIXME: naive way to prevent node from blocking due to missing stale block
-            # block_index.block_candidates.insert(100, block_index.block_candidates.popleft())
-            return
+            # FIXME: naive way to prevent node from blocking due to
+            # missing stale block
+            # block_index.block_candidates.insert(
+            #     100, block_index.block_candidates.popleft()
+            # )
+            return None
 
     node.logger.info("Start block validation")
 
@@ -63,8 +70,8 @@ def update_chain(node):
             utxo_index.apply_rev_block(rev_block)
         for block_hash, block in zip(to_add_hash, to_add):
             transactions, rev_patch = utxo_index.add_block(block)
-            indx = block_index.get_block_info(block_hash).index
-            check_transactions(transactions, indx, node)
+            index = block_index.get_block_info(block_hash).index
+            check_transactions(transactions, index, node)
             update_block_status(block_index, block_hash, BlockStatus.valid, None)
 
             node.block_db.add_rev_block(rev_patch)

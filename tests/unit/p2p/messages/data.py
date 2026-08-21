@@ -1,3 +1,7 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 from datetime import datetime, timezone
 
 from btclib.block import Block as BlockData
@@ -58,7 +62,7 @@ def test_block():
         previous_block_hash="00" * 32,
         merkle_root_="00" * 32,
         time=datetime.fromtimestamp(1231006506, timezone.utc),
-        bits=b"\x20\xFF\xFF\xFF",
+        bits=b"\x20\xff\xff\xff",
         nonce=1,
         check_validity=False,
     )
@@ -85,7 +89,7 @@ def test_headers():
             previous_block_hash=f"{x}{x}" * 32,
             merkle_root_="00" * 32,
             time=datetime.fromtimestamp(1231006506, timezone.utc),
-            bits=b"\x20\xFF\xFF\xFF",
+            bits=b"\x20\xff\xff\xff",
             nonce=1,
             check_validity=False,
         )

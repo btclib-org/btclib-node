@@ -1,5 +1,8 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 from dataclasses import dataclass
-from typing import List, Tuple
 
 from btclib import var_int
 from btclib.block import Block as BlockData
@@ -42,7 +45,7 @@ class Block:
 
 @dataclass
 class Headers:
-    headers: List[BlockHeader]
+    headers: list[BlockHeader]
 
     @classmethod
     def deserialize(cls, data):
@@ -66,7 +69,7 @@ class Headers:
 @dataclass
 class Blocktxn:
     blockhash: bytes
-    transactions: List[TxData]
+    transactions: list[TxData]
     include_witness: bool = True
 
     @classmethod
@@ -89,7 +92,7 @@ class Blocktxn:
 
 @dataclass
 class Inv:
-    inventory: List[Tuple[int, bytes]]
+    inventory: list[tuple[int, bytes]]
 
     @classmethod
     def deserialize(cls, data):

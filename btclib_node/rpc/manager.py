@@ -1,3 +1,7 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 import asyncio
 import socket
 import threading
@@ -33,7 +37,11 @@ class RpcManager(threading.Thread):
     async def server(self, loop):
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server_socket.bind(("0.0.0.0", self.port))
+        # All interfaces, unconditionally -- there is no host
+        # config option to bind the RPC control plane to
+        # localhost instead. Pre-existing; not this lint-gate
+        # PR to change, tracked as its own issue.
+        server_socket.bind(("0.0.0.0", self.port))  # noqa: S104
         server_socket.listen()
         server_socket.settimeout(0.0)
         with server_socket:

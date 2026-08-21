@@ -1,3 +1,7 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 import asyncio
 import enum
 import secrets
@@ -91,7 +95,10 @@ class NetworkAddress:
             payload += var_bytes.serialize(self.addr)
         else:
             if not self.netid.can_addrv1:
-                err_msg = "This type of address cannot be serialized for addr version 1 message"
+                err_msg = (
+                    "This type of address cannot be serialized for "
+                    "addr version 1 message"
+                )
                 raise ValueError(err_msg)
             payload += self.services.to_bytes(8, "little")
             payload += (
@@ -129,10 +136,9 @@ class NetworkAddress:
     def __repr__(self):
         if self.netid == NetworkID.ipv4:
             return f"{socket.inet_ntop(socket.AF_INET, self.addr)}:{self.port}"
-        elif self.netid == NetworkID.ipv6:
+        if self.netid == NetworkID.ipv6:
             return f"{socket.inet_ntop(socket.AF_INET6, self.addr)}:{self.port}"
-        else:
-            return f"{self.addr.hex()}:{self.port}"
+        return f"{self.addr.hex()}:{self.port}"
 
 
 class PeerDB:

@@ -1,0 +1,60 @@
+{
+  // rules https://github.com/DavidAnson/markdownlint
+
+  // See https://github.com/DavidAnson/markdownlint-cli2 and
+  // https://github.com/DavidAnson/markdownlint/blob/main/schema/.markdownlint.jsonc
+
+  // To locally disable a single error, e.g. MD013:
+  // <!-- markdownlint-disable MD013 -->
+  // and after the offending block
+  // <!-- markdownlint-enable MD013 -->
+
+  // This file is the same in btclib, btclib-libsecp256k1 and
+  // bitcoin-core-rpc, deliberately: prose moves between the three, and a
+  // paragraph that lints in one has to lint in the others. No rule is
+  // disabled here -- what follows only names a style where markdownlint's
+  // default is "consistent", which asks each file to agree with itself and
+  // therefore lets two files disagree. That is what let an indented block
+  // pass in one repository and fail in another.
+  //
+  // A rule that only one file needs is not here: bitcoin-core-rpc's
+  // CHANGELOG.md repeats "### Added" under every release, which is what
+  // MD024 exists to catch and what its own `siblings_only` setting is for
+  // -- but the other files, in every repository, have no such repeat, and
+  // a per-file exception belongs in that file's own
+  // `markdownlint-configure-file` comment rather than in a shared config
+  // read by files that never trip the rule it relaxes.
+
+  // MD003/heading-style - ATX, the "## Heading" spelling, everywhere
+  "MD003": { "style": "atx" },
+
+  // MD004/ul-style - a dash, which is what every list here already uses
+  "MD004": { "style": "dash" },
+
+  // MD007/ul-indent - Unordered list indentation
+  "MD007": {
+    // Spaces for indent
+    "indent": 4,
+  },
+
+  // MD029/ol-prefix - every item numbered "1.", the renderer numbering
+  // them: inserting a step into a release procedure then touches one line
+  // rather than renumbering every line below it
+  "MD029": { "style": "one" },
+
+  // MD035/hr-style - one spelling of the thematic break
+  "MD035": { "style": "---" },
+
+  // MD046/code-block-style - fenced, so a block can say which language it
+  // is in and the renderer can highlight it; an indented block cannot
+  "MD046": { "style": "fenced" },
+
+  // MD048/code-fence-style - backticks, tildes being for fencing a block
+  // that itself contains backticks, which nothing here does
+  "MD048": { "style": "backtick" },
+
+  // MD049/MD050 - asterisks for both, so that *emphasis* and **strong**
+  // are told apart by how many rather than by which character
+  "MD049": { "style": "asterisk" },
+  "MD050": { "style": "asterisk" },
+}

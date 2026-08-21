@@ -1,4 +1,7 @@
-from typing import Dict
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 
 from btclib.tx.tx import Tx
 
@@ -7,8 +10,8 @@ class Mempool:
     def __init__(self, logger):
         self.logger = logger
 
-        self.transactions: Dict[bytes, Tx] = {}
-        self.txid_index: Dict[bytes, bytes] = {}
+        self.transactions: dict[bytes, Tx] = {}
+        self.txid_index: dict[bytes, bytes] = {}
         self.size: int = 0
         self.bytesize: int = 0
         self.bytesize_limit: int = 500 * 1000**2  # 500vMB

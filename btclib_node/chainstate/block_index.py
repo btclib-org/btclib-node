@@ -1,3 +1,7 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 import enum
 from collections import deque
 from dataclasses import dataclass
@@ -63,7 +67,8 @@ class BlockIndex:
         # blocks that are waiting to be connected to the active chain
         self.block_candidates = deque()
 
-        # list all header hashes, even if not already checked, needed for the block locators
+        # list all header hashes, even if not already checked, needed for
+        # the block locators
         self.header_index = []
 
         self.init_from_db()
@@ -147,14 +152,14 @@ class BlockIndex:
         self.header_dict[block_info.header.hash] = new_block_info
         key = b"blkinfo-" + new_block_info.header.hash
         value = new_block_info.serialize()
-        db = wb if wb else self.db
+        db = wb or self.db
         db.put(key, value)
 
     # TODO: should use copy to preserve immutability
     def get_block_info(self, hash):
         return self.header_dict[hash]
 
-    # returns the active chain and the forked chain from the common anchestor
+    # returns the active chain and the forked chain from the common ancestor
     def get_fork_details(self, header_hash, chain=None):
         if not chain:
             chain = self.active_chain
@@ -166,11 +171,10 @@ class BlockIndex:
                 block_info.index <= len(chain)
                 and header_hash == chain[block_info.index - 1]
             ):
-                anchestor_index = block_info.index - 1
+                ancestor_index = block_info.index - 1
                 break
-            else:
-                fork.append(header_hash)
-        main = chain[anchestor_index + 1 :]
+            fork.append(header_hash)
+        main = chain[ancestor_index + 1 :]
         return fork[::-1], main
 
     # unsafe: doesn't perform any check
@@ -224,7 +228,7 @@ class BlockIndex:
         while self.block_candidates and self.block_candidates[0][1] < chainwork:
             self.block_candidates.popleft()
         if not self.block_candidates:
-            return
+            return None
         best_candidate = None
         for i in range(min(100, len(self.block_candidates))):
             hash, work = self.block_candidates[i]

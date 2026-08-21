@@ -1,3 +1,7 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 import time
 
 from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion, Services
@@ -194,9 +198,8 @@ def headers(node, msg, conn):
     if len(headers) == 2000 and added:  # we have to require more headers
         block_locators = node.chainstate.block_index.get_block_locator_hashes()
         conn.send(Getheaders(ProtocolVersion, block_locators, b"\x00" * 32))
-    else:
-        if node.status == NodeStatus.SyncingHeaders:
-            node.status = NodeStatus.HeaderSynced
+    elif node.status == NodeStatus.SyncingHeaders:
+        node.status = NodeStatus.HeaderSynced
 
 
 def getheaders(node, msg, conn):

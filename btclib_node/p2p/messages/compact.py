@@ -1,5 +1,8 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 from dataclasses import dataclass
-from typing import List, Tuple
 
 from btclib import var_int
 from btclib.block import BlockHeader
@@ -31,8 +34,8 @@ class Sendcmpct:
 class Cmpctblock:
     header: BlockHeader
     nonce: int
-    short_ids: List[bytes]
-    prefilled_tx_list: List[Tuple[int, Tx]]
+    short_ids: list[bytes]
+    prefilled_tx_list: list[tuple[int, Tx]]
     include_witness: bool = True
 
     @classmethod

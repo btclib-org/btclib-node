@@ -1,6 +1,9 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 import enum
 from dataclasses import dataclass
-from typing import List, Tuple
 
 from btclib import var_int
 from btclib.utils import bytesio_from_binarydata
@@ -10,7 +13,7 @@ from btclib_node.p2p.messages import add_headers
 
 @dataclass
 class Getdata:
-    inventory: List[Tuple[int, bytes]]
+    inventory: list[tuple[int, bytes]]
 
     @classmethod
     def deserialize(cls, data):
@@ -34,7 +37,7 @@ class Getdata:
 @dataclass
 class Getblocks:
     version: int
-    block_hashes: List[bytes]
+    block_hashes: list[bytes]
     hash_stop: bytes
 
     @classmethod
@@ -60,7 +63,7 @@ class Getblocks:
 @dataclass
 class Getheaders:
     version: int
-    block_hashes: List[bytes]
+    block_hashes: list[bytes]
     hash_stop: bytes
 
     @classmethod
@@ -86,7 +89,7 @@ class Getheaders:
 @dataclass
 class Getblocktxn:
     blockhash: bytes
-    indexes: List[int]
+    indexes: list[int]
 
     @classmethod
     def deserialize(cls, data):

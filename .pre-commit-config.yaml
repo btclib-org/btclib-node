@@ -1,104 +1,218 @@
+---
 # Skip execution of one or more hooks using the SKIP environment variable:
-# $ SKIP=pylint git commit -m "foo"
-# $ SKIP=mypy,pylint pre-commit run --all-files
+# $ SKIP=mypy git commit -m "foo"
+# $ SKIP=mypy,ruff-check pre-commit run --all-files
 #
 # If want to disable all hooks while committing, use the --no-verify/-n option:
 # $ git commit -n -m "foo"
 
+# these hooks are the lint gate: the lint workflow will run this very
+# file once btclib-org/.github#9's workflow step lands, so what CI
+# enforces will be exactly what a commit enforces, with no second list
+# of tools and versions to keep in step. What pre-commit.ci provides in
+# the meantime is the periodic pull request bumping the revisions
+# pinned below
+ci:
+  # a bot committing to a branch is at odds with a setup where a
+  # failing hook is fixed by its author
+  autofix_prs: false
+  # no autoupdate_branch, as dependabot declares no target-branch: the
+  # default is the default branch, which is the only branch a change
+  # lands on
+  autoupdate_commit_msg: "Update the pinned pre-commit hook revisions"
+  autoupdate_schedule: weekly
+
 repos:
+  # this file checking itself, and the only two hooks here with no
+  # environment to install. A `files` or `exclude` pattern that stops
+  # matching anything is a hook that has quietly stopped running: the
+  # rule is still written down and no longer enforced, which is the one
+  # defect a green run cannot report on itself
+  - repo: meta
+    hooks:
+      - id: check-hooks-apply
+      - id: check-useless-excludes
+  # this file checking itself further, on the two moves `autoupdate`
+  # makes that it must not take. A rev naming only a major version
+  # follows every future release of that major, which is the one thing
+  # a rev is here to prevent -- and a prerelease is not a release.
+  # A commit SHA stays acceptable, should a hook ever want one: the
+  # pattern requires the prerelease marker and its digits to end the
+  # value, which forty hex characters do not
+  - repo: local
+    hooks:
+      - id: pinned-rev
+        name: every pre-commit rev names a released version
+        language: pygrep
+        entry: '^ *rev: "?v?([0-9]+|[0-9][0-9.]*(a|b|rc|dev)[0-9]+)"?$'
+        files: ^\.pre-commit-config\.yaml$
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.4.0
+    rev: v6.0.0
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: mixed-line-ending
+        # not the default --fix=auto, which normalizes a file to its own
+        # most frequent ending: a file entirely in CRLF is consistent by
+        # that measure, so it stays, and the LF lines added to it are
+        # converted the wrong way. This repository is LF throughout
+        args: [--fix=lf]
       - id: check-case-conflict
+      # scripts/ has no shebang or executable bit today, and this hook
+      # is the pair that keeps it that way: it matches every text file,
+      # so the day one of them gains a shebang without chmod +x, or the
+      # reverse, one of the two catches it
+      - id: check-shebang-scripts-are-executable
+      - id: fix-byte-order-marker
       - id: check-yaml
+      - id: check-json
+      - id: pretty-format-json
+        name: pretty-format-json (in place fixes)
+        args: [--autofix]
       - id: check-merge-conflict
       - id: check-vcs-permalinks
       - id: detect-private-key
       - id: debug-statements
       - id: check-docstring-first
       - id: check-toml
-  - repo: https://github.com/DavidAnson/markdownlint-cli2
-    rev: v0.8.1
-    hooks:
-      - id: markdownlint-cli2-fix
-        name: markdownlint-cli2-fix (in place fixes)
-  - repo: https://github.com/leoll2/copyright_notice_precommit
-    rev: 0.1.1
-    hooks:
-      - id: copyright-notice
-        args: [--notice=COPYRIGHT]
-        files: python
-  - repo: https://github.com/asottile/pyupgrade
-    rev: v3.10.1
-    hooks:
-      - id: pyupgrade
-        args: [--py38-plus]
-        # exclude: *fixtures
-  - repo: https://github.com/PyCQA/autoflake
-    rev: v2.2.1
-    hooks:
-      - id: autoflake
-        args:
-          - --in-place
-          - --expand-star-imports
-          - --remove-all-unused-imports
-          - --ignore-init-module-imports
-          - --remove-duplicate-keys
-          - --remove-unused-variables
-          - --remove-rhs-for-unused-variables
-  - repo: https://github.com/PyCQA/isort
-    rev: 5.12.0
-    hooks:
-      - id: isort
-        name: isort (black profile, in place fixes)
-        args: ["--profile", "black", "--filter-files"]
-  - repo: https://github.com/DanielNoord/pydocstringformatter
-    rev: v0.7.3
-    hooks:
-      - id: pydocstringformatter
-  - repo: https://github.com/asottile/yesqa
+      # only files being *added* are measured, the hook intersecting its
+      # arguments with git's added set
+      - id: check-added-large-files
+      # there are none, and a submodule is the one dependency that would
+      # not be in uv.lock, not be pinned by dependabot, and not be
+      # visible in an sdist
+      - id: forbid-submodules
+  # the credentials of other systems, which is the half of secret
+  # scanning GitHub's free plan does not cover. detect-private-key above
+  # covers the PEM case.
+  # Not gitleaks: all of its hook ids invoke it with --staged, so under
+  # "pre-commit run --all-files" it scans an empty staged set and passes
+  - repo: https://github.com/Yelp/detect-secrets
     rev: v1.5.0
     hooks:
-      - id: yesqa
-  - repo: https://github.com/psf/black
-    rev: 23.9.1
+      - id: detect-secrets
+        name: detect-secrets (credentials of other systems)
+        # findings are recorded in .secrets.baseline as already reviewed
+        # rather than excluded from the scan: an exclusion makes a file
+        # blind for good, where a baseline entry is a finding somebody
+        # has read.
+        # The baseline was generated with the two entropy plugins off
+        # (--disable-plugin Base64HighEntropyString --disable-plugin
+        # HexHighEntropyString): with them on, the scan's only findings
+        # are the four hex genesis-block constants in chains.py and its
+        # test, and a new protocol constant is exactly what a legitimate
+        # addition looks like here -- the plugins would flag every one
+        # of them and nothing else, forever
+        args: [--baseline, .secrets.baseline]
+  # a typo in a comment is cosmetic; the same typo in the README is the
+  # shop window, and in an exception message it is an interface.
+  # Configured in pyproject.toml ([tool.codespell]) rather than in args
+  # here: the skip list needs a paragraph of justification, and a hook
+  # invocation is the wrong place for one
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.3
     hooks:
-      - id: black
-        name: black (in place fixes)
-        # args: [--diff, --check]
-        # It is recommended to specify the latest version of Python
-        # supported by your project here, or alternatively use
-        # pre-commit's default_language_version, see
-        # https://pre-commit.com/#top_level-default_language_version
-        # language_version: python3.11
-  - repo: https://github.com/PyCQA/flake8
-    rev: 6.1.0
+      - id: codespell
+        name: codespell (prose and comments)
+        # codespell only reads [tool.codespell] when told where to look;
+        # without this it neither applies `builtin = "clear"` nor
+        # `ignore-words-list`, and reports on its own unconfigured
+        # default instead
+        args: [--toml, pyproject.toml]
+        # codespell's own hook environment is younger than tomllib
+        # (3.11): reading --toml on this project's 3.10 floor needs the
+        # backport
+        additional_dependencies: [tomli]
+  # the second spell checker, and not a replacement for the one above:
+  # codespell matches whole words and keeps the hyphen inside the token,
+  # where typos splits hyphens, snake_case and camelCase
+  - repo: https://github.com/crate-ci/typos
+    rev: v1.49.0
     hooks:
-      - id: flake8
-        additional_dependencies: [Flake8-pyproject]
-  - repo: https://github.com/PyCQA/bandit
-    rev: 1.7.5
+      - id: typos
+        name: typos (identifiers and hyphenated words, in place fixes)
+        args: [--write-changes, --force-exclude]
+  - repo: https://github.com/DavidAnson/markdownlint-cli2
+    rev: v0.23.2
     hooks:
-      - id: bandit
-        name: bandit (checksig)
-        exclude: ".*test.*"
-        language: python
-        types: [python]
-  - repo: https://github.com/PyCQA/bandit
-    rev: 1.7.5
+      - id: markdownlint-cli2
+        name: markdownlint-cli2 (in place fixes)
+        args: [--fix]
+  # what ruff-format is for Python, on the structured files ruff does
+  # not read: yaml and the jsonc that carries a comment. Before
+  # yamllint below, so the linter judges the formatted file
+  - repo: https://github.com/rbubley/mirrors-prettier
+    rev: v3.9.6
     hooks:
-      - id: bandit
-        name: bandit (tests)
-        # for the test folder disable
-        # B101, Test for use of assert
-        args: ["--skip", "B101,B311"]
-        exclude: checksig
-        language: python
-        types: [python]
+      - id: prettier
+        name: prettier (yaml and jsonc, in place fixes)
+        files: ^(.*\.ya?ml|\.markdownlint\.jsonc)$
+  # the same for toml, which here is pyproject.toml: .taplo.toml holds
+  # the formatting choices and the reasoning for them. uv.lock is toml
+  # to identify and therefore matched by the hook's own types, and it
+  # is uv's file to write
+  - repo: https://github.com/ComPWA/taplo-pre-commit
+    rev: v0.9.3
+    hooks:
+      - id: taplo-format
+        name: taplo (toml, in place fixes)
+        exclude: ^uv\.lock$
+  # the width of a yaml line, which nothing else here measures.
+  # Configured in .yamllint.yaml rather than in args here
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+        name: yamllint (line width and document start)
+  # the width of a toml comment, the one prose left with no limit:
+  # taplo formats values and leaves comments alone by design.
+  # `.{80}\S*[ \t]` reports a line only when whitespace is left past
+  # column 80, the amnesty MD013 and ruff give a comment ending in a
+  # link that cannot be broken
+  - repo: local
+    hooks:
+      - id: toml-comment-width
+        name: toml comment width (80 columns, unbreakable links exempt)
+        language: pygrep
+        entry: '^(?=[ \t]*#).{80}\S*[ \t]'
+        files: \.toml$
+  # ruff replaces autoflake, bandit, black, copyright_notice_precommit,
+  # flake8, isort, and pyupgrade -- and fixes the copyright hook's own
+  # defect along the way: CPY001 checks whatever files it is given the
+  # same way regardless of who asked, where copyright-notice-precommit
+  # checked only staged files unless given --enforce-all, so under
+  # "pre-commit run --all-files" it checked nothing
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.3
+    hooks:
+      - id: ruff-check
+        name: ruff check (in place fixes)
+        args: [--fix]
+      - id: ruff-format
+        name: ruff format (in place fixes)
+  # the other half of pyproject.toml's unspecified-encoding, which reads
+  # `open` and the pathlib spellings and stops there. A child process
+  # decoded through `text=True` takes the locale's encoding by the same
+  # rule, and no linter here has an opinion on that keyword.
+  # `encoding=` is what the call wanted anyway, so the fix is one
+  # keyword in place of another and never a mode change
+  - repo: local
+    hooks:
+      - id: decoded-subprocess-encoding
+        name: a decoded subprocess names its encoding, not text=True
+        language: pygrep
+        entry: '\b(text|universal_newlines)=True'
+        files: \.py$
+  # unchanged by btclib-org/.github#9's lint-gate step: this is still
+  # the hosted mirrors-mypy hook, bare, not strict. Going strict and
+  # moving it to a local, uv-run hook against the project's own locked
+  # environment is its own later step
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: v1.5.1
     hooks:
       - id: mypy
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.12.5
+    hooks:
+      # keep uv.lock in sync with pyproject.toml
+      - id: uv-lock

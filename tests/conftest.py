@@ -1,3 +1,7 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 from contextlib import contextmanager
 
 import pytest
@@ -27,7 +31,7 @@ def node_context(tmp_path, allow_p2p: bool = True, allow_rpc: bool = True):
         node.stop()
 
 
-@pytest.fixture()
+@pytest.fixture
 def rpc_node(tmp_path):
     with node_context(tmp_path, allow_p2p=False) as node:
         yield node
