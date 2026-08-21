@@ -212,6 +212,12 @@ repos:
     rev: v1.5.1
     hooks:
       - id: mypy
+        # the hook's environment holds only mypy, so a third-party
+        # library's types have to be named here or every import of it is
+        # an error. requests is the one this tree imports and does not
+        # ship types for -- it is a test dependency, and typeshed is
+        # where its stubs live
+        additional_dependencies: [types-requests]
   - repo: https://github.com/astral-sh/uv-pre-commit
     rev: 0.12.5
     hooks:
