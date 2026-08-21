@@ -1,5 +1,8 @@
-# 3.10 is both floor and ceiling here: http-parser's C extension (see
-# the requires-python comment in pyproject.toml) does not build past
-# it. A trailing comment on the version line below would make uv
-# ignore this file, so the explanation stays up here instead.
-3.10
+# The newest interpreter every dependency supports, and the version
+# requires-python names. Not 3.14t: plyvel's Cython-generated source
+# does not compile against the free-threaded build (undeclared
+# CYTHON_METH_FASTCALL), and a C extension that does not declare
+# Py_mod_gil re-enables the GIL at import anyway.
+# A trailing comment on the version line below would make uv ignore this
+# file, so the explanation stays up here instead.
+3.14

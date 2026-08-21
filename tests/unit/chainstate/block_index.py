@@ -2,9 +2,10 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from btclib.block import BlockHeader
+from btclib.block.proof_of_work import REGTEST_POW_LIMIT_BITS
 
 from btclib_node.chains import Main, RegTest
 from btclib_node.chainstate import Chainstate
@@ -18,12 +19,14 @@ def test_calculate_work():
         1,
         "00" * 32,
         "00" * 32,
-        datetime.fromtimestamp(1231006506, timezone.utc),
-        b"\x20\xff\xff\xff",
+        datetime.fromtimestamp(1231006506, UTC),
+        REGTEST_POW_LIMIT_BITS,
         1,
     )
     brute_force_nonce(header)
-    assert calculate_work(header) == 1
+    # Bitcoin Core's chainwork for the regtest genesis block, whose
+    # target this is: 2^256 / (target + 1), rounded down.
+    assert calculate_work(header) == 2
 
 
 def test_simple_init(tmp_path):
@@ -106,8 +109,8 @@ def test_block_info_serialization():
         1,
         "00" * 32,
         "00" * 32,
-        datetime.fromtimestamp(1231006506, timezone.utc),
-        b"\x20\xff\xff\xff",
+        datetime.fromtimestamp(1231006506, UTC),
+        REGTEST_POW_LIMIT_BITS,
         1,
         check_validity=False,
     )

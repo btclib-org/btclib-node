@@ -2,7 +2,20 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-from btclib_node.chains import Main, SigNet, TestNet
+from btclib_node.chains import Main, RegTest, SigNet, TestNet
+
+
+def test_pow_limit_bits():
+    # Each network's easiest target, as Bitcoin Core's chainparams.cpp
+    # states it in `consensus.powLimit`. Chain.pow_limit_bits reads it
+    # off the genesis header, which holds only because a genesis is
+    # mined at exactly that target -- an invariant of the four chains
+    # below, not of the property, so a fifth chain has to be checked
+    # here before it can be trusted to validate blocks correctly.
+    assert Main().pow_limit_bits.hex() == "1d00ffff"
+    assert TestNet().pow_limit_bits.hex() == "1d00ffff"
+    assert SigNet().pow_limit_bits.hex() == "1e0377ae"
+    assert RegTest().pow_limit_bits.hex() == "207fffff"
 
 
 def test_genesis():
