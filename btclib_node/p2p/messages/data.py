@@ -7,14 +7,15 @@ from dataclasses import dataclass
 from btclib import var_int
 from btclib.block import Block as BlockData
 from btclib.block import BlockHeader
+from btclib.p2p.payload import Payload
 from btclib.tx.tx import Tx as TxData
 from btclib.utils import bytesio_from_binarydata
 
-from btclib_node.p2p.messages import add_headers
-
 
 @dataclass
-class Tx:
+class Tx(Payload):
+    command = "tx"
+
     tx: TxData
     include_witness: bool = True
 
@@ -23,13 +24,14 @@ class Tx:
         tx = TxData.parse(data)
         return cls(tx)
 
-    def serialize(self):
-        data = self.tx.serialize(self.include_witness)
-        return add_headers("tx", data)
+    def serialize(self, *, check_validity: bool = True) -> bytes:
+        return self.tx.serialize(self.include_witness)
 
 
 @dataclass
-class Block:
+class Block(Payload):
+    command = "block"
+
     block: BlockData
     include_witness: bool = True
 
@@ -43,13 +45,14 @@ class Block:
         block = BlockData.parse(data, check_validity=False)
         return cls(block)
 
-    def serialize(self):
-        data = self.block.serialize(self.include_witness, check_validity=False)
-        return add_headers("block", data)
+    def serialize(self, *, check_validity: bool = True) -> bytes:
+        return self.block.serialize(self.include_witness, check_validity=False)
 
 
 @dataclass
-class Headers:
+class Headers(Payload):
+    command = "headers"
+
     headers: list[BlockHeader]
 
     @classmethod
@@ -63,16 +66,18 @@ class Headers:
             headers.append(header)
         return cls(headers)
 
-    def serialize(self):
+    def serialize(self, *, check_validity: bool = True) -> bytes:
         payload = var_int.serialize(len(self.headers))
         for header in self.headers:
             payload += header.serialize()
             payload += b"\x00"
-        return add_headers("headers", payload)
+        return payload
 
 
 @dataclass
-class Blocktxn:
+class Blocktxn(Payload):
+    command = "blocktxn"
+
     blockhash: bytes
     transactions: list[TxData]
     include_witness: bool = True
@@ -87,16 +92,18 @@ class Blocktxn:
             transactions.append(TxData.parse(stream))
         return cls(blockhash=blockhash, transactions=transactions)
 
-    def serialize(self):
+    def serialize(self, *, check_validity: bool = True) -> bytes:
         payload = self.blockhash[::-1]
         payload += var_int.serialize(len(self.transactions))
         for tx in self.transactions:
             payload += tx.serialize(self.include_witness)
-        return add_headers("blocktxn", payload)
+        return payload
 
 
 @dataclass
-class Inv:
+class Inv(Payload):
+    command = "inv"
+
     inventory: list[tuple[int, bytes]]
 
     @classmethod
@@ -110,9 +117,9 @@ class Inv:
             inventory.append((item_type, item_hash))
         return cls(inventory)
 
-    def serialize(self):
+    def serialize(self, *, check_validity: bool = True) -> bytes:
         payload = var_int.serialize(len(self.inventory))
         for item in self.inventory:
             payload += item[0].to_bytes(4, "little")
             payload += item[1][::-1]
-        return add_headers("inv", payload)
+        return payload

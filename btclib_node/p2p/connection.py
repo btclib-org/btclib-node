@@ -3,14 +3,16 @@
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
 import asyncio
-import re
 import secrets
 import time
+from io import BytesIO
+
+from btclib.exceptions import BTClibValueError, IncompleteMessageError
+from btclib.p2p.message import Message
 
 from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion, Services
 from btclib_node.p2p.address import NetworkAddress
 from btclib_node.p2p.callbacks import handshake_callbacks
-from btclib_node.p2p.messages import WrongChecksumError, get_payload, verify_headers
 from btclib_node.p2p.messages.handshake import Version
 from btclib_node.p2p.messages.ping import Ping
 
@@ -68,20 +70,22 @@ class Connection:
                 return self.stop(cancel_task=False)
 
     async def _send(self, data):
-        data = bytes.fromhex(self.node.chain.magic) + data
         try:
             await self.loop.sock_sendall(self.client, data)
         except OSError:  # probably connection dropped
             pass
 
-    async def async_send(self, msg):
-        self.node.logger.debug(f"Sending message: {msg.__class__.__name__}")
+    async def async_send(self, payload):
+        self.node.logger.debug(f"Sending message: {payload.command}")
 
         try:
-            serialized_message = msg.serialize()
+            # the payload names its own command, and this is the only
+            # place the magic is applied
+            data = payload.to_message(self.node.chain.magic).serialize()
         except Exception as e:
             self.node.logger.warning(f"error in serializing message: {e!s}")
-        await self._send(serialized_message)
+            return
+        await self._send(data)
         self.last_send = time.time()
 
     def send(self, msg):
@@ -113,30 +117,38 @@ class Connection:
         self.send(ping_msg)
 
     def parse_messages(self):
-        while True:
-            if not self.buffer:
-                return
-            try:
-                verify_headers(self.buffer)
+        # A stream and not the bytes: Message.parse consumes one message
+        # and leaves the position after it, so several whole messages in
+        # one read are taken one at a time, and a partial one rewinds.
+        stream = BytesIO(self.buffer)
+        try:
+            while True:
+                try:
+                    message = Message.parse(stream)
+                except IncompleteMessageError:
+                    # the only refusal more octets can answer, and the
+                    # stream is back at the start of the partial message
+                    return
+                if message.magic != self.node.chain.magic:
+                    raise BTClibValueError(
+                        f"message for another network: {message.magic.hex()}"
+                    )
                 self.last_receive = time.time()
-                message_length = int.from_bytes(self.buffer[16:20], "little")
-                message = get_payload(self.buffer)
-                self.buffer = self.buffer[24 + message_length :]
-                if message[0] in handshake_callbacks:
-                    self.manager.handshake_messages.append((*message, self.id))
-                elif message[0] in ("ping", "pong"):
-                    self.manager.messages.appendleft((*message, self.id))
+                item = (message.command, message.payload, self.id)
+                if message.command in handshake_callbacks:
+                    self.manager.handshake_messages.append(item)
+                elif message.command in ("ping", "pong"):
+                    self.manager.messages.appendleft(item)
                 else:
-                    self.manager.messages.append((*message, self.id))
-            except WrongChecksumError:
-                # https://stackoverflow.com/questions/30945784/how-to-remove-all-characters-before-a-specific-character-in-python
-                self.buffer = re.sub(
-                    f"^.*?{self.node.chain.magic}".encode(),
-                    self.node.chain.magic.encode(),
-                    self.buffer,
-                )
-            except ValueError:
-                return
+                    self.manager.messages.append(item)
+        finally:
+            # whatever the loop did not consume, partial message
+            # included. Guarded on the position because the common read
+            # off a socket completes no message at all: rewriting the
+            # buffer there would copy it once more per 1024 octets, and
+            # a block arrives in thousands of them.
+            if stream.tell():
+                self.buffer = stream.read()
 
     def __repr__(self):
         try:

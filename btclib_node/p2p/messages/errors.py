@@ -6,13 +6,14 @@ import enum
 from dataclasses import dataclass
 
 from btclib import var_int
+from btclib.p2p.payload import Payload
 from btclib.utils import bytesio_from_binarydata
-
-from btclib_node.p2p.messages import add_headers
 
 
 @dataclass
-class Notfound:
+class Notfound(Payload):
+    command = "notfound"
+
     inventory: list[tuple[int, bytes]]
 
     @classmethod
@@ -26,12 +27,12 @@ class Notfound:
             inventory.append((item_type, item_hash))
         return cls(inventory)
 
-    def serialize(self):
+    def serialize(self, *, check_validity: bool = True) -> bytes:
         payload = var_int.serialize(len(self.inventory))
         for item in self.inventory:
             payload += item[0].to_bytes(4, "little")
             payload += item[1][::-1]
-        return add_headers("notfound", payload)
+        return payload
 
 
 class RejectCode(enum.IntEnum):
@@ -46,7 +47,9 @@ class RejectCode(enum.IntEnum):
 
 
 @dataclass
-class Reject:
+class Reject(Payload):
+    command = "reject"
+
     message: str
     code: RejectCode
     reason: str
@@ -61,11 +64,11 @@ class Reject:
         data = stream.read(32)
         return cls(message, code, reason, data)
 
-    def serialize(self):
+    def serialize(self, *, check_validity: bool = True) -> bytes:
         payload = var_int.serialize(len(self.message))
         payload += self.message.encode()
         payload += self.code.to_bytes(1, "little")
         payload += var_int.serialize(len(self.reason))
         payload += self.reason.encode()
         payload += self.data[::-1]
-        return add_headers("reject", payload)
+        return payload

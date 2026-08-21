@@ -8,14 +8,17 @@ from btclib.block import Block as BlockData
 from btclib.block import BlockHeader
 from btclib.block.proof_of_work import REGTEST_POW_LIMIT_BITS
 from btclib.hashes import hash256, merkle_root
+from btclib.p2p.message import Message
 from btclib.script import script
 from btclib.tx.tx import Tx as TxData
 from btclib.tx.tx import TxIn, TxOut
 from btclib.tx.tx_in import OutPoint
 
-from btclib_node.p2p.messages import get_payload
+from btclib_node.chains import RegTest
 from btclib_node.p2p.messages.data import Block, Blocktxn, Headers, Inv, Tx
 from tests.helpers import brute_force_nonce
+
+MAGIC = RegTest().magic
 
 
 def test_tx():
@@ -35,8 +38,8 @@ def test_tx():
         vout=[tx_out],
     )
     msg = Tx(tx)
-    msg_bytes = bytes.fromhex("00" * 4) + msg.serialize()
-    assert msg == Tx.deserialize(get_payload(msg_bytes)[1])
+    msg_bytes = msg.to_message(MAGIC).serialize()
+    assert msg == Tx.deserialize(Message.parse(msg_bytes).payload)
 
 
 def test_block():
@@ -74,14 +77,14 @@ def test_block():
     # see generate_random_chain: mainnet's pow limit is Block.__init__'s
     # default, and this is a regtest header
     msg = Block(BlockData(header, transactions, check_validity=False))
-    msg_bytes = bytes.fromhex("00" * 4) + msg.serialize()
-    assert msg == Block.deserialize(get_payload(msg_bytes)[1])
+    msg_bytes = msg.to_message(MAGIC).serialize()
+    assert msg == Block.deserialize(Message.parse(msg_bytes).payload)
 
 
 def test_empty_headers():
     msg = Headers([])
-    msg_bytes = bytes.fromhex("00" * 4) + msg.serialize()
-    assert msg == Headers.deserialize(get_payload(msg_bytes)[1])
+    msg_bytes = msg.to_message(MAGIC).serialize()
+    assert msg == Headers.deserialize(Message.parse(msg_bytes).payload)
 
 
 def test_headers():
@@ -99,14 +102,14 @@ def test_headers():
         brute_force_nonce(header)
         headers.append(header)
     msg = Headers(headers)
-    msg_bytes = bytes.fromhex("00" * 4) + msg.serialize()
-    assert msg == Headers.deserialize(get_payload(msg_bytes)[1])
+    msg_bytes = msg.to_message(MAGIC).serialize()
+    assert msg == Headers.deserialize(Message.parse(msg_bytes).payload)
 
 
 def test_empty_blocktxn():
     msg = Blocktxn(b"\x00" * 32, [])
-    msg_bytes = bytes.fromhex("00" * 4) + msg.serialize()
-    assert msg == Blocktxn.deserialize(get_payload(msg_bytes)[1])
+    msg_bytes = msg.to_message(MAGIC).serialize()
+    assert msg == Blocktxn.deserialize(Message.parse(msg_bytes).payload)
 
 
 def test_blocktxn():
@@ -129,23 +132,23 @@ def test_blocktxn():
         )
         transactions.append(tx)
     msg = Blocktxn(b"\x00" * 32, transactions)
-    msg_bytes = bytes.fromhex("00" * 4) + msg.serialize()
-    assert msg == Blocktxn.deserialize(get_payload(msg_bytes)[1])
+    msg_bytes = msg.to_message(MAGIC).serialize()
+    assert msg == Blocktxn.deserialize(Message.parse(msg_bytes).payload)
 
 
 def test_empty_inv():
     msg = Inv([])
-    msg_bytes = bytes.fromhex("00" * 4) + msg.serialize()
-    assert msg == Inv.deserialize(get_payload(msg_bytes)[1])
+    msg_bytes = msg.to_message(MAGIC).serialize()
+    assert msg == Inv.deserialize(Message.parse(msg_bytes).payload)
 
 
 def test_filled_inv():
     msg = Inv([(1, b"\x00" * 32)])
-    msg_bytes = bytes.fromhex("00" * 4) + msg.serialize()
-    assert msg == Inv.deserialize(get_payload(msg_bytes)[1])
+    msg_bytes = msg.to_message(MAGIC).serialize()
+    assert msg == Inv.deserialize(Message.parse(msg_bytes).payload)
 
 
 def test_invalid_inv():
     msg = Inv([(1, b"\x00"), (1, b"\x00")])
-    msg_bytes = bytes.fromhex("00" * 4) + msg.serialize()
-    assert msg != Inv.deserialize(get_payload(msg_bytes)[1])
+    msg_bytes = msg.to_message(MAGIC).serialize()
+    assert msg != Inv.deserialize(Message.parse(msg_bytes).payload)

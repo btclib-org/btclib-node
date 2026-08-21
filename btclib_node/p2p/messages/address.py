@@ -5,14 +5,16 @@
 from dataclasses import dataclass
 
 from btclib import var_int
+from btclib.p2p.payload import Payload
 from btclib.utils import bytesio_from_binarydata
 
 from btclib_node.p2p.address import NetworkAddress
-from btclib_node.p2p.messages import add_headers
 
 
 @dataclass
-class Addr:
+class Addr(Payload):
+    command = "addr"
+
     addresses: list[NetworkAddress]
 
     @classmethod
@@ -24,15 +26,17 @@ class Addr:
             addresses.append(NetworkAddress.deserialize(stream, addrv2=False))
         return cls(addresses=addresses)
 
-    def serialize(self):
+    def serialize(self, *, check_validity: bool = True) -> bytes:
         payload = var_int.serialize(len(self.addresses))
         for address in self.addresses:
             payload += address.serialize(addrv2=False)
-        return add_headers("addr", payload)
+        return payload
 
 
 @dataclass
-class AddrV2:
+class AddrV2(Payload):
+    command = "addrv2"
+
     addresses: list[NetworkAddress]
 
     @classmethod
@@ -44,18 +48,20 @@ class AddrV2:
             addresses.append(NetworkAddress.deserialize(stream, addrv2=True))
         return cls(addresses=addresses)
 
-    def serialize(self):
+    def serialize(self, *, check_validity: bool = True) -> bytes:
         payload = var_int.serialize(len(self.addresses))
         for address in self.addresses:
             payload += address.serialize(addrv2=True)
-        return add_headers("addrv2", payload)
+        return payload
 
 
 @dataclass
-class Getaddr:
+class Getaddr(Payload):
+    command = "getaddr"
+
     @classmethod
     def deserialize(cls, data):
         return cls()
 
-    def serialize(self):
-        return add_headers("getaddr", b"")
+    def serialize(self, *, check_validity: bool = True) -> bytes:
+        return b""

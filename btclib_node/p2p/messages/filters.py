@@ -4,54 +4,64 @@
 
 from dataclasses import dataclass
 
-from btclib_node.p2p.messages import add_headers
+from btclib.p2p.payload import Payload
 
 
 @dataclass
-class Filterload:
+class Filterload(Payload):
+    command = "filterload"
+
     @classmethod
     def deserialize(cls, data):
         return cls()
 
-    def serialize(self):
-        return add_headers("filterload", b"")
+    def serialize(self, *, check_validity: bool = True) -> bytes:
+        return b""
 
 
 @dataclass
-class Filteradd:
+class Filteradd(Payload):
+    command = "filteradd"
+
     @classmethod
     def deserialize(cls, data):
         return cls()
 
-    def serialize(self):
-        return add_headers("filteradd", b"")
+    def serialize(self, *, check_validity: bool = True) -> bytes:
+        return b""
 
 
 @dataclass
-class Filterclear:
+class Filterclear(Payload):
+    command = "filterclear"
+
     @classmethod
     def deserialize(cls, data):
         return cls()
 
-    def serialize(self):
-        return add_headers("filterclear", b"")
+    def serialize(self, *, check_validity: bool = True) -> bytes:
+        return b""
 
 
 @dataclass
-class Merkleblock:
+class Merkleblock(Payload):
+    command = "merkleblock"
+
     @classmethod
     def deserialize(cls, data):
         return cls()
 
-    def serialize(self):
-        return add_headers("merkleblock", b"")
+    def serialize(self, *, check_validity: bool = True) -> bytes:
+        return b""
 
 
 @dataclass
-class Feefilter:
+class Feefilter(Payload):
+    command = "feefilter"
+
     @classmethod
     def deserialize(cls, data):
         return cls()
 
-    def serialize(self):
-        return add_headers("feefilter", b"")
+    def serialize(self, *, check_validity: bool = True) -> bytes:
+        return b""

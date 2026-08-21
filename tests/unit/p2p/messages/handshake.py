@@ -2,16 +2,20 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+from btclib.p2p.message import Message
+
+from btclib_node.chains import RegTest
 from btclib_node.constants import ProtocolVersion
-from btclib_node.p2p.messages import get_payload
 from btclib_node.p2p.messages.handshake import Verack, Version
 from tests.helpers import local_addr
+
+MAGIC = RegTest().magic
 
 
 def test_verack():
     msg = Verack()
-    msg_bytes = bytes.fromhex("00" * 4) + msg.serialize()
-    assert msg == Verack.deserialize(get_payload(msg_bytes)[1])
+    msg_bytes = msg.to_message(MAGIC).serialize()
+    assert msg == Verack.deserialize(Message.parse(msg_bytes).payload)
 
 
 def test_version():
@@ -27,8 +31,8 @@ def test_version():
         start_height=0,
         relay=True,
     )
-    msg_bytes = bytes.fromhex("00" * 4) + msg.serialize()
-    assert msg == Version.deserialize(get_payload(msg_bytes)[1])
+    msg_bytes = msg.to_message(MAGIC).serialize()
+    assert msg == Version.deserialize(Message.parse(msg_bytes).payload)
 
 
 def test_version_without_agent():
@@ -44,5 +48,5 @@ def test_version_without_agent():
         start_height=0,
         relay=True,
     )
-    msg_bytes = bytes.fromhex("00" * 4) + msg.serialize()
-    assert msg == Version.deserialize(get_payload(msg_bytes)[1])
+    msg_bytes = msg.to_message(MAGIC).serialize()
+    assert msg == Version.deserialize(Message.parse(msg_bytes).payload)
