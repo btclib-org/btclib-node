@@ -103,10 +103,10 @@ opposite of what filing them was for.
   path through the code that produces the wrong result.
 - **What kind it is**, said explicitly and never left to be inferred:
 
-    - **blocking** — wrong, misleading or unmaintainable on `main`
-    - **non-blocking** — worth doing, does not hold the ack
-    - **nit** — taste; said once and never repeated
-    - **question** — something not reproduced, asked as a question
+  - **blocking** — wrong, misleading or unmaintainable on `main`
+  - **non-blocking** — worth doing, does not hold the ack
+  - **nit** — taste; said once and never repeated
+  - **question** — something not reproduced, asked as a question
       rather than asserted as a defect
 
 Labelling every comment is
