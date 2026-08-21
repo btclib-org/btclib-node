@@ -1,40 +1,60 @@
-[tool.poetry]
+[project]
 name = "btclib-node"
 version = "0.1.0"
 description = "Bitcoin node in python"
-authors = ["Giacomo Caironi <giacomo.caironi@gmail.com>"]
+authors = [{name = "Giacomo Caironi", email = "giacomo.caironi@gmail.com"}]
+readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
+# >=3.10 is the standard's floor, not a choice made for this project's own
+# code. It also happens to be the ceiling in practice: http-parser (last
+# released 2016) builds `parser.c` against CPython's `longintrepr.h`,
+# which 3.11 removed from the public include path, so nothing newer than
+# 3.10 can build this dependency. See btclib-org/btclib_node#4, where the
+# http-parser pin is tracked alongside the rest of this era's pins.
+requires-python = ">=3.10"
+dependencies = [
+  "plyvel==1.3.0",
+  # Held at the exact pin already in place rather than following the
+  # standard's "no upper bound on a sibling dependency": btclib jumped
+  # from this release straight to a >=3.10-only API three years later
+  # (btclib-org/btclib_node#4 has the detail — renamed BlockHeader
+  # constructor keywords among other breaks), so an unbounded floor
+  # would let `uv lock` silently pick a btclib this code cannot run
+  # against. Revisit the bound, not just the version, once #4 lands.
+  "btclib==2023.7.12",
+  "http-parser>=0.9.0,<0.10.0",
+]
 
-[tool.poetry.dependencies]
-python = "^3.8"
-plyvel = "1.3.0"
-btclib = "2023.7.12"
-http-parser = "^0.9.0"
-
-[tool.poetry.group.dev]
-optional = true
-
-[tool.poetry.group.dev.dependencies]
-isort = "^5.12.0"
-black = "^23.9.1"
-nox = "^2023.4.22"
-pre-commit = "^3.4.0"
-
-[tool.poetry.group.test]
-optional = true
-
-[tool.poetry.group.test.dependencies]
-pytest = "^7.0"
-pytest-cov = {extras = ["toml"], version = "^4.0"}
-pytest-xdist = "^3.3.0"
-pytest-remotedata = "^0.4"
-pydeps = "^1.9.13"
-requests = "^2.25.1"
-pytest-ordering = "^0.6"
+[dependency-groups]
+# The test runner and its plugins, nothing else.
+harness = [
+  "pytest>=7.0,<8.0",
+  "pytest-xdist>=3.3.0,<4.0.0",
+  "pytest-remotedata>=0.4,<0.5",
+  "pytest-ordering>=0.6,<0.7",
+]
+# harness, plus what the suite delegates to.
+test = [
+  {include-group = "harness"},
+  # No "toml" extra: pytest-cov absorbed it and warns on the name now.
+  "pytest-cov>=4.0.0,<5.0.0",
+  "pydeps>=1.9.13,<2.0.0",
+  "requests>=2.25.1,<3.0.0",
+]
+# Only what running the existing lint gate needs locally; isort and black
+# are pre-commit-managed hook environments, not project dependencies, and
+# are dropped here rather than carried forward to be deleted again once
+# btclib-org/.github#9's lint-gate step replaces them with ruff.
+lint = ["pre-commit>=3.4.0,<4.0.0"]
+dev = [{include-group = "test"}, {include-group = "lint"}]
 
 [build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["btclib_node*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/unit", "tests/functional"]
