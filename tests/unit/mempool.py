@@ -1,3 +1,7 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from tests.helpers import generate_random_transaction

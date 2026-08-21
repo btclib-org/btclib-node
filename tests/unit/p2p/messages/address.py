@@ -1,3 +1,7 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 from btclib_node.p2p.address import NetworkAddress, NetworkID
 from btclib_node.p2p.messages import get_payload
 from btclib_node.p2p.messages.address import Addr, AddrV2, Getaddr

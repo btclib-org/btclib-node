@@ -1,6 +1,9 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 import enum
 from dataclasses import dataclass
-from typing import List, Tuple
 
 from btclib import var_int
 from btclib.utils import bytesio_from_binarydata
@@ -10,7 +13,7 @@ from btclib_node.p2p.messages import add_headers
 
 @dataclass
 class Notfound:
-    inventory: List[Tuple[int, bytes]]
+    inventory: list[tuple[int, bytes]]
 
     @classmethod
     def deserialize(cls, data):

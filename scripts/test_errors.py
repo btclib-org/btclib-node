@@ -1,3 +1,7 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 from pathlib import Path
 
 from btclib.script.engine import verify_transaction
@@ -8,13 +12,13 @@ from btclib.utils import bytesio_from_binarydata
 
 def get_error_data(id, i):
     err_dir = Path("errors", id, str(i))
-    with open(err_dir / "flags") as f:
+    with Path(err_dir / "flags").open(encoding="utf-8") as f:
         flags = tuple(
             f.read().replace("'", "").replace("(", "").replace(")", "").split(", ")
         )
-    with open(err_dir / "tx", "rb") as f:
+    with Path(err_dir / "tx").open("rb") as f:
         tx = Tx.parse(f.read())
-    with open(err_dir / "prevouts", "rb") as f:
+    with Path(err_dir / "prevouts").open("rb") as f:
         s = bytesio_from_binarydata(f.read())
         prevouts = []
         while True:

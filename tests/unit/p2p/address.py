@@ -1,3 +1,7 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 import asyncio
 
 import pytest
@@ -25,7 +29,7 @@ def test_serialization():
 
 
 @pytest.mark.remote_data
-def test_main_boostrap_nodes():
+def test_main_bootstrap_nodes():
     peer_db = PeerDB(Main(), None)
     peer_db.ask_dns_nodes = True
     asyncio.run(peer_db.get_addr_from_dns())
@@ -33,7 +37,7 @@ def test_main_boostrap_nodes():
 
 
 @pytest.mark.remote_data
-def test_testnet_boostrap_nodes():
+def test_testnet_bootstrap_nodes():
     peer_db = PeerDB(SigNet(), None)
     peer_db.ask_dns_nodes = True
     asyncio.run(peer_db.get_addr_from_dns())
@@ -41,7 +45,7 @@ def test_testnet_boostrap_nodes():
 
 
 @pytest.mark.remote_data
-def test_signet_boostrap_nodes():
+def test_signet_bootstrap_nodes():
     peer_db = PeerDB(TestNet(), None)
     peer_db.ask_dns_nodes = True
     asyncio.run(peer_db.get_addr_from_dns())

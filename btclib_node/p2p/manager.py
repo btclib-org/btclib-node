@@ -1,3 +1,7 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 import asyncio
 import socket
 import threading
@@ -78,7 +82,9 @@ class P2pManager(threading.Thread):
     async def server(self, loop):
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server_socket.bind(("0.0.0.0", self.port))
+        # All interfaces, by design: a P2P listener accepts
+        # inbound peers from anywhere. noqa: S104
+        server_socket.bind(("0.0.0.0", self.port))  # noqa: S104
         server_socket.listen()
         server_socket.settimeout(0.0)
         with server_socket:

@@ -1,3 +1,7 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 from btclib_node.constants import P2pConnStatus
 from btclib_node.p2p.callbacks import callbacks, handshake_callbacks
 

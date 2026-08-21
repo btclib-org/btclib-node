@@ -1,3 +1,7 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 import asyncio
 import re
 import secrets
@@ -76,7 +80,7 @@ class Connection:
         try:
             serialized_message = msg.serialize()
         except Exception as e:
-            self.node.logger.warning(f"error in serializing message: {str(e)}")
+            self.node.logger.warning(f"error in serializing message: {e!s}")
         await self._send(serialized_message)
         self.last_send = time.time()
 
@@ -136,7 +140,8 @@ class Connection:
 
     def __repr__(self):
         try:
-            out = f"Connection to {self.client.getpeername()[0]}:{self.client.getpeername()[1]}"
+            peer = self.client.getpeername()
+            out = f"Connection to {peer[0]}:{peer[1]}"
         except OSError:
             out = "Broken connection"
         return out

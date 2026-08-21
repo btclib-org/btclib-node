@@ -1,6 +1,9 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import List
 
 from btclib.block import BlockHeader
 from btclib.hashes import hash256, merkle_root
@@ -58,7 +61,7 @@ class Chain:
     name: str
     port: int
     magic: str
-    addresses: List[str]
+    addresses: list[str]
     genesis: BlockHeader
 
 
@@ -79,9 +82,7 @@ class Main(Chain):
             "dnsseed.emzy.de",
             "seed.bitcoin.wiz.biz",
         ]
-        self.genesis = create_genesis(
-            1231006505, 2083236893, 0x1D00FFFF, 1, 50 * 10**8
-        )
+        self.genesis = create_genesis(1231006505, 2083236893, 0x1D00FFFF, 1, 50 * 10**8)
         self.flags = [
             (170061, "P2SH"),
             (363725, "DERSIG"),
@@ -105,9 +106,7 @@ class TestNet(Chain):
             "seed.testnet.bitcoin.sprovoost.nl",
             "testnet-seed.bluematt.me",
         ]
-        self.genesis = create_genesis(
-            1296688602, 414098458, 0x1D00FFFF, 1, 50 * 10**8
-        )
+        self.genesis = create_genesis(1296688602, 414098458, 0x1D00FFFF, 1, 50 * 10**8)
         self.flags = [
             (395, "P2SH"),
             (330776, "DERSIG"),

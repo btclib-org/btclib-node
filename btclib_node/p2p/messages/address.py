@@ -1,5 +1,8 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 from dataclasses import dataclass
-from typing import List
 
 from btclib import var_int
 from btclib.utils import bytesio_from_binarydata
@@ -10,7 +13,7 @@ from btclib_node.p2p.messages import add_headers
 
 @dataclass
 class Addr:
-    addresses: List[NetworkAddress]
+    addresses: list[NetworkAddress]
 
     @classmethod
     def deserialize(cls, data):
@@ -30,7 +33,7 @@ class Addr:
 
 @dataclass
 class AddrV2:
-    addresses: List[NetworkAddress]
+    addresses: list[NetworkAddress]
 
     @classmethod
     def deserialize(cls, data):

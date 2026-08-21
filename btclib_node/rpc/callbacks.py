@@ -1,3 +1,7 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 from btclib.exceptions import BTClibValueError
 from btclib.tx import Tx
 
@@ -44,7 +48,12 @@ def get_peer_info(node, conn, _):
             try:
                 addr = p2p_conn.client.getpeername()
                 addrbind = p2p_conn.client.getsockname()
-            except Exception:  # nosec B112
+            # A peer disconnecting mid-lookup is not worth logging a
+            # second time; its own connection state already reports it.
+            # Carried over from the old bandit `# nosec B112` suppression
+            # here; not the moment to change error handling in a
+            # lint-gate PR.
+            except Exception:  # noqa: S112
                 continue
 
             services = p2p_conn.version_message.services
@@ -92,8 +101,7 @@ def get_raw_mempool(node, conn, params):
             }
             for tx in node.mempool.transactions.values()
         }
-    else:
-        return {"txids": [txid.hex() for txid in node.mempool.txid_index]}
+    return {"txids": [txid.hex() for txid in node.mempool.txid_index]}
 
 
 def test_mempool_accept(node, conn, params):

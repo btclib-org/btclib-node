@@ -1,13 +1,16 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
 import traceback
 from copy import deepcopy
 from itertools import chain
 from pathlib import Path
-from typing import Tuple
 
 from btclib.script.engine import verify_input, verify_transaction
 
 
-def get_flags(config, index) -> Tuple[str]:
+def get_flags(config, index) -> tuple[str]:
     return tuple(f for (i, f) in config.chain.flags if index >= i)
 
 
@@ -21,22 +24,21 @@ def f(prevouts, tx, i, flags):
     except Exception:
         err_dir = Path("errors", tx.id.hex(), str(i))
         err_dir.mkdir(parents=True, exist_ok=True)
-        with open(err_dir / "flags", "w") as f:
+        with Path(err_dir / "flags").open("w", encoding="utf-8") as f:
             f.write(str(flags))
-        with open(err_dir / "tx", "wb") as f:
+        with Path(err_dir / "tx").open("wb") as f:
             f.write(tx.serialize(True))
-        with open(err_dir / "exception", "w") as f:
+        with Path(err_dir / "exception").open("w", encoding="utf-8") as f:
             f.write(traceback.format_exc())
-        with open(err_dir / "prevouts", "wb") as f:
-            for pv in prevouts:
-                f.write(pv.serialize())
+        with Path(err_dir / "prevouts").open("wb") as f:
+            f.writelines(pv.serialize() for pv in prevouts)
 
 
 def check_transactions(transaction_data, index, node):
     if not transaction_data:
         return
     if any(len(x[0]) != len(x[1].vin) for x in transaction_data):
-        raise ValueError()
+        raise ValueError
 
     # for prev_outputs, tx in transaction_data:
     #     verify_transaction(prev_outputs, tx, FLAGS)
