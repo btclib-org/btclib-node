@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from btclib import var_int
 from btclib.block import BlockHeader
 from btclib.block.proof_of_work import block_work
+from btclib.exceptions import BTClibValueError
 from btclib.utils import bytesio_from_binarydata
 
 
@@ -53,6 +54,10 @@ class BlockIndex:
         self.logger = logger
 
         self.db = parent_db
+
+        # the network's easiest target, which every header this index
+        # accepts has to beat; btclib defaults it to mainnet's
+        self.pow_limit_bits = chain.pow_limit_bits
 
         genesis = chain.genesis
         genesis_info = BlockInfo(genesis, 0, BlockStatus.in_active_chain, True)
@@ -185,11 +190,26 @@ class BlockIndex:
         self.active_chain.pop()
 
     def add_headers(self, headers):
+        # Before anything is indexed, and all of them: chainwork below is
+        # credited from the header's own `bits`, so an unchecked header
+        # can claim any amount of work and become the best chain. The
+        # message is taken or refused whole -- a peer that sent one bad
+        # header is not one to keep the rest of the batch from.
+        #
+        # TODO: this is CheckProofOfWork, not ContextualCheckBlockHeader.
+        # The target a header is *required* to have at its height, and
+        # the median-time-past it must follow, still go unchecked; see
+        # btclib.block.proof_of_work.next_bits.
+        for header in headers:
+            try:
+                header.assert_valid_pow(self.pow_limit_bits)
+            except BTClibValueError as e:
+                self.logger.warning(f"Refused a header batch: {e}")
+                return False
+
         added = False  # flag that signals if there is a new header in this message
         current_work = self.get_block_info(self.active_chain[-1]).chainwork
         for header in headers:
-            # TODO: validate timestamp and difficulty
-
             header_hash = header.hash
 
             if header_hash in self.header_dict:

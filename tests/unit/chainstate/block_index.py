@@ -2,6 +2,7 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+import secrets
 from datetime import UTC, datetime
 
 from btclib.block import BlockHeader
@@ -12,6 +13,20 @@ from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import BlockInfo, BlockStatus, calculate_work
 from btclib_node.log import Logger
 from tests.helpers import brute_force_nonce, generate_random_header_chain
+
+
+def unmined_header(previous_block_hash, bits):
+    # Deliberately not brute_force_nonce'd: the point of each caller is a
+    # header carrying a claim its hash does not back.
+    return BlockHeader(
+        version=70015,
+        previous_block_hash=previous_block_hash,
+        merkle_root=secrets.token_bytes(32),
+        time=datetime.fromtimestamp(1231006506, UTC),
+        bits=bits,
+        nonce=1,
+        check_validity=False,
+    )
 
 
 def test_calculate_work():
@@ -27,6 +42,62 @@ def test_calculate_work():
     # Bitcoin Core's chainwork for the regtest genesis block, whose
     # target this is: 2^256 / (target + 1), rounded down.
     assert calculate_work(header) == 2
+
+
+def test_reject_header_claiming_work_it_did_not_do(tmp_path):
+    # bits 0x03000001 is a target of 1: nearly the whole hash space is
+    # above it, so block_work credits ~2^255 -- more than the real chain
+    # has ever accumulated. Nothing mined it, and the hash does not meet
+    # it, which is the only thing standing between a peer and the best
+    # chain.
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    header = unmined_header(RegTest().genesis.hash, b"\x03\x00\x00\x01")
+    assert calculate_work(header) > 2**254
+
+    assert not block_index.add_headers([header])
+    assert header.hash not in block_index.header_dict
+    assert not block_index.block_candidates
+    # genesis alone, and its chainwork untouched
+    assert len(block_index.header_dict) == 1
+
+
+def test_reject_header_above_the_pow_limit(tmp_path):
+    # Mainnet's target on a regtest index: easier than the network's
+    # easiest, so no regtest peer would ever offer it.
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    header = unmined_header(RegTest().genesis.hash, b"\x1d\x00\xff\xff")
+
+    assert not block_index.add_headers([header])
+    assert len(block_index.header_dict) == 1
+
+
+def test_reject_header_with_zero_target(tmp_path):
+    # A zero target is unsatisfiable, and block_work raises on it rather
+    # than reporting the block as free -- so an unchecked one takes the
+    # node down from the wire instead of merely being wrong.
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    header = unmined_header(RegTest().genesis.hash, b"\x01\x00\xff\xff")
+
+    assert not block_index.add_headers([header])
+    assert len(block_index.header_dict) == 1
+
+
+def test_one_bad_header_refuses_the_whole_batch(tmp_path):
+    # Core takes a headers message as a unit, and so does this: the
+    # valid prefix is not indexed either.
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    chain = generate_random_header_chain(5, RegTest().genesis.hash)
+    bad = unmined_header(chain[-1].hash, b"\x03\x00\x00\x01")
+
+    assert not block_index.add_headers([*chain, bad])
+    assert len(block_index.header_dict) == 1
+    # and the same batch without it is taken
+    assert block_index.add_headers(chain)
+    assert len(block_index.header_dict) == 5 + 1
 
 
 def test_simple_init(tmp_path):
