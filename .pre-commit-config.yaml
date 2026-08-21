@@ -119,9 +119,10 @@ repos:
         # `ignore-words-list`, and reports on its own unconfigured
         # default instead
         args: [--toml, pyproject.toml]
-        # codespell's own hook environment is younger than tomllib
-        # (3.11): reading --toml on this project's 3.10 floor needs the
-        # backport
+        # --toml is read through tomllib, which is 3.11 and later; the
+        # interpreter pre-commit builds this hook's environment with is
+        # its own choice and not this project's requires-python, so the
+        # backport is declared unconditionally rather than reasoned about
         additional_dependencies: [tomli]
   # the second spell checker, and not a replacement for the one above:
   # codespell matches whole words and keeps the hyphen inside the token,
@@ -183,7 +184,7 @@ repos:
   # checked only staged files unless given --enforce-all, so under
   # "pre-commit run --all-files" it checked nothing
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.3
+    rev: v0.16.4
     hooks:
       - id: ruff-check
         name: ruff check (in place fixes)
@@ -211,6 +212,12 @@ repos:
     rev: v1.5.1
     hooks:
       - id: mypy
+        # the hook's environment holds only mypy, so a third-party
+        # library's types have to be named here or every import of it is
+        # an error. requests is the one this tree imports and does not
+        # ship types for -- it is a test dependency, and typeshed is
+        # where its stubs live
+        additional_dependencies: [types-requests]
   - repo: https://github.com/astral-sh/uv-pre-commit
     rev: 0.12.5
     hooks:

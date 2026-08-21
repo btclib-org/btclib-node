@@ -11,7 +11,9 @@ from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet
 @dataclass
 class Config:
     chain: Chain
-    data_dir: str
+    # a Path, which is what __init__ below stores and what every reader
+    # of it does path arithmetic on
+    data_dir: Path
     p2p_port: int
     rpc_port: int
     pruned: bool

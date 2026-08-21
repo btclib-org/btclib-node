@@ -4,9 +4,13 @@
 
 from pathlib import Path
 
-from btclib_node import BlockIndex, Logger
 from btclib_node.chains import TestNet
+from btclib_node.chainstate import Chainstate
+from btclib_node.log import Logger
 
 data_dir = Path(".btclib/testnet")
 logger = Logger(data_dir / "log")
-index = BlockIndex(data_dir, TestNet(), logger)
+# BlockIndex takes the chainstate's open database, not a directory, so it
+# is reached through Chainstate rather than built beside it
+chainstate = Chainstate(data_dir, TestNet(), logger)
+index = chainstate.block_index

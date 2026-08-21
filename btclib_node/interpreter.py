@@ -10,7 +10,7 @@ from pathlib import Path
 from btclib.script.engine import verify_input, verify_transaction
 
 
-def get_flags(config, index) -> tuple[str]:
+def get_flags(config, index) -> tuple[str, ...]:
     return tuple(f for (i, f) in config.chain.flags if index >= i)
 
 
