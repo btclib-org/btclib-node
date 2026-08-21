@@ -61,48 +61,56 @@ def generate_random_transaction(prevouthash=None):
     return tx
 
 
+def generate_coinbase(value=50 * 10**8):
+    return Tx(
+        version=1,
+        lock_time=0,
+        vin=[
+            TxIn(
+                prev_out=OutPoint(),
+                script_sig=script.serialize([secrets.token_bytes(32)]),
+                sequence=0xFFFFFFFF,
+            )
+        ],
+        vout=[
+            TxOut(
+                value=value,
+                script_pub_key=script.serialize([secrets.token_bytes(32)]),
+            )
+        ],
+    )
+
+
+def build_block(previous_block_hash, transactions, height):
+    header = BlockHeader(
+        version=70015,
+        previous_block_hash=previous_block_hash,
+        merkle_root=merkle_root(
+            [tx.serialize(True, check_validity=False) for tx in transactions],
+            hash256,
+        )[::-1],
+        time=datetime.fromtimestamp(1231006505 + height + 1, UTC),
+        bits=REGTEST_POW_LIMIT_BITS,
+        nonce=1,
+        check_validity=False,
+    )
+    brute_force_nonce(header)
+    # Block.__init__ validates against mainnet's pow limit, which no
+    # regtest block meets; brute_force_nonce has already checked this
+    # header against the limit that does apply to it.
+    return Block(header, transactions, check_validity=False)
+
+
 def generate_random_chain(length, start):
     # random.seed(42)
     chain = []
     for x in range(length):
         previous_block_hash = chain[-1].header.hash if chain else start
-        coinbase_in = TxIn(
-            prev_out=OutPoint(),
-            script_sig=script.serialize([secrets.token_bytes(32)]),
-            sequence=0xFFFFFFFF,
-        )
-        coinbase_out = TxOut(
-            value=50 * 10**8,
-            script_pub_key=script.serialize([secrets.token_bytes(32)]),
-        )
-        coinbase = Tx(
-            version=1,
-            lock_time=0,
-            vin=[coinbase_in],
-            vout=[coinbase_out],
-        )
-        transactions = [coinbase]
+        transactions = [generate_coinbase()]
         if chain:
             tx = generate_random_transaction(chain[x - 1].transactions[0].id)
             transactions.append(tx)
-        header = BlockHeader(
-            version=70015,
-            previous_block_hash=previous_block_hash,
-            merkle_root=merkle_root(
-                [tx.serialize(True, check_validity=False) for tx in transactions],
-                hash256,
-            )[::-1],
-            time=datetime.fromtimestamp(1231006505 + x + 1, UTC),
-            bits=REGTEST_POW_LIMIT_BITS,
-            nonce=1,
-            check_validity=False,
-        )
-        brute_force_nonce(header)
-        # Block.__init__ validates against mainnet's pow limit, which no
-        # regtest block meets; brute_force_nonce has already checked this
-        # header against the limit that does apply to it.
-        block = Block(header, transactions, check_validity=False)
-        chain.append(block)
+        chain.append(build_block(previous_block_hash, transactions, x))
     return chain
 
 
