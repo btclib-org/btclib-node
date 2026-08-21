@@ -6,20 +6,15 @@
 
 ## Test, develop, and contribute
 
-The project uses [hatch](https://hatch.pypa.io/latest/) as a project manager.
+The project uses [uv](https://docs.astral.sh/uv/) as its only prerequisite;
+it fetches the interpreter and every dependency group itself.
 
-Some additional tools are required to develop and test btclib_node, they can be installed using poetry:
+    uv sync
 
-    poetry install
+To test, coverage included:
 
-To test:
+    uv run pytest
 
-    pytest
+To run the lint gate:
 
-To measure the code coverage provided by tests:
-
-    pytest --cov-report term-missing:skip-covered --cov=btclib_node
-
-To format the code
-
-    isort . && black .
+    uv run pre-commit run --all-files

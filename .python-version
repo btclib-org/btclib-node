@@ -1,0 +1,5 @@
+# 3.10 is both floor and ceiling here: http-parser's C extension (see
+# the requires-python comment in pyproject.toml) does not build past
+# it. A trailing comment on the version line below would make uv
+# ignore this file, so the explanation stays up here instead.
+3.10
