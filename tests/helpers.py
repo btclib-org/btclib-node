@@ -6,9 +6,10 @@ import random
 import secrets
 import socket
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from btclib.block import Block, BlockHeader
+from btclib.block.proof_of_work import REGTEST_POW_LIMIT_BITS
 from btclib.exceptions import BTClibValueError
 from btclib.hashes import hash256, merkle_root
 from btclib.script import script
@@ -29,9 +30,9 @@ def generate_random_header_chain(length, start):
         header = BlockHeader(
             version=70015,
             previous_block_hash=previous_block_hash,
-            merkle_root_=secrets.token_bytes(32),
-            time=datetime.fromtimestamp(1231006505 + x + 1, timezone.utc),
-            bits=b"\x20\xff\xff\xff",
+            merkle_root=secrets.token_bytes(32),
+            time=datetime.fromtimestamp(1231006505 + x + 1, UTC),
+            bits=REGTEST_POW_LIMIT_BITS,
             nonce=1,
             check_validity=False,
         )
@@ -87,16 +88,20 @@ def generate_random_chain(length, start):
         header = BlockHeader(
             version=70015,
             previous_block_hash=previous_block_hash,
-            merkle_root_=merkle_root(
-                [tx.serialize(True, False) for tx in transactions], hash256
+            merkle_root=merkle_root(
+                [tx.serialize(True, check_validity=False) for tx in transactions],
+                hash256,
             )[::-1],
-            time=datetime.fromtimestamp(1231006505 + x + 1, timezone.utc),
-            bits=b"\x20\xff\xff\xff",
+            time=datetime.fromtimestamp(1231006505 + x + 1, UTC),
+            bits=REGTEST_POW_LIMIT_BITS,
             nonce=1,
             check_validity=False,
         )
         brute_force_nonce(header)
-        block = Block(header, transactions)
+        # Block.__init__ validates against mainnet's pow limit, which no
+        # regtest block meets; brute_force_nonce has already checked this
+        # header against the limit that does apply to it.
+        block = Block(header, transactions, check_validity=False)
         chain.append(block)
     return chain
 
@@ -113,7 +118,12 @@ def get_random_port():
             sock.close()
 
 
-def wait_until(func, timeout=2):
+def wait_until(func, timeout=20):
+    # The timeout bounds a failure, not a success: the loop returns as
+    # soon as func() holds. It has to be generous because the suite runs
+    # under `-n auto`, where a node's background thread competes for the
+    # CPU with every other worker's proof-of-work; a couple of seconds
+    # is a timeout on the scheduler rather than on the node.
     start = time.time()
     while time.time() - start < timeout:
         if func():
@@ -125,7 +135,7 @@ def wait_until(func, timeout=2):
 def brute_force_nonce(header):
     for _ in range(100):
         try:
-            header.assert_valid_pow()
+            header.assert_valid_pow(REGTEST_POW_LIMIT_BITS)
             break
         except BTClibValueError:
             header.nonce += 1

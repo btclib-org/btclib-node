@@ -2,10 +2,11 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from btclib.block import Block as BlockData
 from btclib.block import BlockHeader
+from btclib.block.proof_of_work import REGTEST_POW_LIMIT_BITS
 from btclib.hashes import hash256, merkle_root
 from btclib.script import script
 from btclib.tx.tx import Tx as TxData
@@ -60,9 +61,9 @@ def test_block():
     header = BlockHeader(
         version=1,
         previous_block_hash="00" * 32,
-        merkle_root_="00" * 32,
-        time=datetime.fromtimestamp(1231006506, timezone.utc),
-        bits=b"\x20\xff\xff\xff",
+        merkle_root="00" * 32,
+        time=datetime.fromtimestamp(1231006506, UTC),
+        bits=REGTEST_POW_LIMIT_BITS,
         nonce=1,
         check_validity=False,
     )
@@ -70,7 +71,9 @@ def test_block():
     header.merkle_root = merkle_root(
         [tx.serialize(False) for tx in transactions], hash256
     )[::-1]
-    msg = Block(BlockData(header, transactions))
+    # see generate_random_chain: mainnet's pow limit is Block.__init__'s
+    # default, and this is a regtest header
+    msg = Block(BlockData(header, transactions, check_validity=False))
     msg_bytes = bytes.fromhex("00" * 4) + msg.serialize()
     assert msg == Block.deserialize(get_payload(msg_bytes)[1])
 
@@ -87,9 +90,9 @@ def test_headers():
         header = BlockHeader(
             version=70015,
             previous_block_hash=f"{x}{x}" * 32,
-            merkle_root_="00" * 32,
-            time=datetime.fromtimestamp(1231006506, timezone.utc),
-            bits=b"\x20\xff\xff\xff",
+            merkle_root="00" * 32,
+            time=datetime.fromtimestamp(1231006506, UTC),
+            bits=REGTEST_POW_LIMIT_BITS,
             nonce=1,
             check_validity=False,
         )

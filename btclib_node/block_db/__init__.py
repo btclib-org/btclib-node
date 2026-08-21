@@ -24,12 +24,12 @@ class RevBlock:
         hash = stream.read(32)
         to_add = []
         for x in range(var_int.parse(stream)):
-            out_point = OutPoint.parse(stream, check_validity)
-            tx_out = TxOut.parse(stream, check_validity)
+            out_point = OutPoint.parse(stream, check_validity=check_validity)
+            tx_out = TxOut.parse(stream, check_validity=check_validity)
             to_add.append([out_point, tx_out])
         to_remove = []
         for x in range(var_int.parse(stream)):
-            out_point = OutPoint.parse(stream, check_validity)
+            out_point = OutPoint.parse(stream, check_validity=check_validity)
             to_remove.append(out_point)
         return cls(hash, to_add, to_remove)
 
@@ -37,11 +37,11 @@ class RevBlock:
         out = self.hash
         out += var_int.serialize(len(self.to_add))
         for out_point, tx_out in self.to_add:
-            out += out_point.serialize(check_validity)
-            out += tx_out.serialize(check_validity)
+            out += out_point.serialize(check_validity=check_validity)
+            out += tx_out.serialize(check_validity=check_validity)
         out += var_int.serialize(len(self.to_remove))
         for out_point in self.to_remove:
-            out += out_point.serialize(check_validity)
+            out += out_point.serialize(check_validity=check_validity)
         return out
 
 

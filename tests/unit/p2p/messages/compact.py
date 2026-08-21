@@ -2,9 +2,10 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from btclib.block import BlockHeader
+from btclib.block.proof_of_work import REGTEST_POW_LIMIT_BITS
 from btclib.script import script
 from btclib.tx.tx import Tx as TxData
 from btclib.tx.tx import TxIn, TxOut
@@ -46,9 +47,9 @@ def test_cmpctblock():
     header = BlockHeader(
         version=1,
         previous_block_hash="00" * 32,
-        merkle_root_="00" * 32,
-        time=datetime.fromtimestamp(1231006506, timezone.utc),
-        bits=b"\x20\xff\xff\xff",
+        merkle_root="00" * 32,
+        time=datetime.fromtimestamp(1231006506, UTC),
+        bits=REGTEST_POW_LIMIT_BITS,
         nonce=1,
         check_validity=False,
     )

@@ -126,7 +126,7 @@ def tx(node, msg, conn):
 
 
 def block(node, msg, conn):
-    block = BlockMsg.deserialize(msg, check_validity=False).block
+    block = BlockMsg.deserialize(msg).block
     block_hash = block.header.hash
 
     if block_hash in conn.download_queue:
@@ -139,7 +139,7 @@ def block(node, msg, conn):
 
     if not block_info.downloaded:
         try:
-            block.assert_valid()
+            block.assert_valid(node.chain.pow_limit_bits)
         except Exception as e:  # should set block to invalid
             raise e
         node.block_db.add_block(block)

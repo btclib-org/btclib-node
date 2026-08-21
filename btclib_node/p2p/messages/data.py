@@ -33,13 +33,18 @@ class Block:
     block: BlockData
     include_witness: bool = True
 
+    # Neither direction validates: btclib checks a block against
+    # mainnet's pow limit unless told which one applies, and a message
+    # codec has no chain to tell it. Whoever holds the chain does that,
+    # on the way in -- p2p.callbacks.block, against
+    # node.chain.pow_limit_bits.
     @classmethod
-    def deserialize(cls, data, check_validity=True):
-        block = BlockData.parse(data, check_validity)
+    def deserialize(cls, data):
+        block = BlockData.parse(data, check_validity=False)
         return cls(block)
 
     def serialize(self):
-        data = self.block.serialize(self.include_witness)
+        data = self.block.serialize(self.include_witness, check_validity=False)
         return add_headers("block", data)
 
 

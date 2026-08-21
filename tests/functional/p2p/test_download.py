@@ -15,7 +15,7 @@ from btclib_node.main import update_chain
 from tests.helpers import generate_random_chain, get_random_port, local_addr, wait_until
 
 
-@pytest.mark.run(order=1)
+@pytest.mark.order(1)
 def test_download(tmp_path):
     length = 3000
     chain = generate_random_chain(length, RegTest().genesis.hash)

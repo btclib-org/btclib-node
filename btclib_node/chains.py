@@ -3,7 +3,7 @@
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from btclib.block import BlockHeader
 from btclib.hashes import hash256, merkle_root
@@ -45,8 +45,8 @@ def create_genesis(time, nonce, difficulty, version, reward):
     header = BlockHeader(
         version=version,
         previous_block_hash="00" * 32,
-        merkle_root_="00" * 32,
-        time=datetime.fromtimestamp(time, timezone.utc),
+        merkle_root="00" * 32,
+        time=datetime.fromtimestamp(time, UTC),
         bits=difficulty.to_bytes(4, "big"),
         nonce=nonce,
         check_validity=False,
@@ -63,6 +63,14 @@ class Chain:
     magic: str
     addresses: list[str]
     genesis: BlockHeader
+
+    @property
+    def pow_limit_bits(self):
+        # A genesis block is mined at its network's easiest target, so
+        # the limit is already stated once, in create_genesis' argument.
+        # btclib's validation defaults to mainnet's, which would reject
+        # every regtest and signet block, so it has to be passed in.
+        return self.genesis.bits
 
 
 @dataclass

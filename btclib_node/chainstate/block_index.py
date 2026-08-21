@@ -8,14 +8,12 @@ from dataclasses import dataclass
 
 from btclib import var_int
 from btclib.block import BlockHeader
+from btclib.block.proof_of_work import block_work
 from btclib.utils import bytesio_from_binarydata
 
 
-# TODO: should be implemented in btclib
 def calculate_work(header):
-    target = int.from_bytes(header.bits[-3:], "big")
-    exp = pow(256, (header.bits[0] - 3))
-    return int(256**32 / target / exp)
+    return block_work(header.bits)
 
 
 class BlockStatus(enum.IntEnum):
@@ -36,7 +34,7 @@ class BlockInfo:
     @classmethod
     def deserialize(cls, data, check_validity=True):
         stream = bytesio_from_binarydata(data)
-        header = BlockHeader.parse(stream, check_validity)
+        header = BlockHeader.parse(stream, check_validity=check_validity)
         index = var_int.parse(stream)
         status = BlockStatus.from_bytes(stream.read(1), "little")
         downloaded = bool(int.from_bytes(stream.read(1), "little"))

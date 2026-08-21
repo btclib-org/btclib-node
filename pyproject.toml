@@ -6,49 +6,59 @@ authors = [{ name = "Giacomo Caironi", email = "giacomo.caironi@gmail.com" }]
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-# >=3.10 is the standard's floor, not a choice made for this project's own
-# code. It also happens to be the ceiling in practice: http-parser (last
-# released 2016) builds `parser.c` against CPython's `longintrepr.h`,
-# which 3.11 removed from the public include path, so nothing newer than
-# 3.10 can build this dependency. See btclib-org/btclib_node#4, where the
-# http-parser pin is tracked alongside the rest of this era's pins.
-requires-python = ">=3.10"
+# Above the standard's 3.10 floor, deliberately: this is the version
+# .python-version pins, and with no CI matrix here
+# (btclib-org/btclib_node#33) it is the only version anything runs on.
+# A lower bound would be a claim of support nothing checks. Lower it to
+# whatever the matrix covers once there is one.
+requires-python = ">=3.14"
+# Floors only, here and in the dependency groups below: an upper bound
+# on a release nobody has seen break is a guess, and uv.lock is what
+# decides what any given checkout installs. Exact versions are pinned
+# when a release is cut, not while the tree is developed. Each floor is
+# the release this tree is developed against; btclib's is also the
+# release whose API this code is written to, anything older wanting
+# `merkle_root_` and taking `check_validity` positionally.
 dependencies = [
-    "plyvel==1.3.0",
-    # Held at the exact pin already in place rather than following the
-    # standard's "no upper bound on a sibling dependency": btclib jumped
-    # from this release straight to a >=3.10-only API three years later
-    # (btclib-org/btclib_node#4 has the detail — renamed BlockHeader
-    # constructor keywords among other breaks), so an unbounded floor
-    # would let `uv lock` silently pick a btclib this code cannot run
-    # against. Revisit the bound, not just the version, once #4 lands.
-    "btclib==2023.7.12",
-    "http-parser>=0.9.0,<0.10.0",
+    "btclib>=2026.8.21",
+    "plyvel>=1.5.1",
 ]
 
 [dependency-groups]
 # The test runner and its plugins, nothing else.
 harness = [
-    "pytest>=7.0,<8.0",
-    "pytest-xdist>=3.3.0,<4.0.0",
-    "pytest-remotedata>=0.4,<0.5",
-    "pytest-ordering>=0.6,<0.7",
+    "pytest>=9.1.1",
+    "pytest-xdist>=3.8.0",
+    "pytest-remotedata>=0.4.2",
+    # spells its marker `pytest.mark.order(n)`; the similarly named
+    # pytest-ordering is a different, unmaintained package that does not
+    # run under pytest 9.
+    "pytest-order>=1.5.0",
 ]
 # harness, plus what the suite delegates to.
 test = [
     { include-group = "harness" },
     # No "toml" extra: pytest-cov absorbed it and warns on the name now.
-    "pytest-cov>=4.0.0,<5.0.0",
-    "pydeps>=1.9.13,<2.0.0",
-    "requests>=2.25.1,<3.0.0",
+    "pytest-cov>=7.1.0",
+    "pydeps>=3.0.7",
+    "requests>=2.34.2",
 ]
 # mypy is not here: the mypy hook below is still the hosted mirrors-mypy
 # one, bare, unaffected by this pass -- going strict and moving it to a
 # local, uv-run hook is its own step (btclib-org/.github#9's checklist
 # keeps the two apart), so it stays out of this project's own dependency
 # groups until then.
-lint = ["pre-commit>=3.4.0,<4.0.0", "ruff>=0.16.0,<0.17.0"]
+lint = ["pre-commit>=4.6.2", "ruff>=0.16.4"]
 dev = [{ include-group = "test" }, { include-group = "lint" }]
+
+[tool.uv]
+# plyvel subclasses leveldb::Comparator, and leveldb's own CMakeLists
+# builds the library -fno-rtti, so it emits no typeinfo symbol for that
+# base class. plyvel has to be compiled the same way or it imports with
+# `symbol not found: typeinfo for leveldb::Comparator`. This applies
+# wherever plyvel is built from source, which on macOS is everywhere:
+# no plyvel release ships a macOS wheel.
+extra-build-variables = { plyvel = { CXXFLAGS = "-fno-rtti" } }
 
 [build-system]
 requires = ["setuptools>=77"]
