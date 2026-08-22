@@ -7,6 +7,7 @@ import socket
 import threading
 from collections import deque
 from contextlib import suppress
+from typing import Any
 
 from btclib_node.rpc.connection import Connection
 
@@ -18,7 +19,10 @@ class RpcManager(threading.Thread):
         self.logger = node.logger
         self.chain = node.chain
         self.connections = {}
-        self.messages = deque()
+        # what a connection parses out of one request: the JSON-RPC
+        # batch -- a list even where the client sent a lone object --
+        # and the connection id handle_rpc answers on
+        self.messages: deque[tuple[list[Any], int]] = deque()
         self.loop = asyncio.new_event_loop()
         self.port = port
         self.last_connection_id = -1

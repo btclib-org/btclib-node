@@ -9,7 +9,12 @@ class Logger(logging.Logger):
     def __init__(self, log_path=None, debug=False, **kwargs):
         level = logging.DEBUG if debug else logging.INFO
         super().__init__(name="Logger", level=level, **kwargs)
-        handler = logging.StreamHandler()
+        # `logging.Handler`, which is the type the two branches share:
+        # inferred from the first of them instead, the second is a
+        # StreamHandler assigned to a name holding a FileHandler. What
+        # stood here before the branch was a third handler, built on
+        # every path and used on none.
+        handler: logging.Handler
         if log_path:
             handler = logging.FileHandler(log_path)
         else:

@@ -31,7 +31,7 @@ class Unserializable:
 
 
 def a_connection(client=None):
-    logged = []
+    logged: list[str] = []
     node = SimpleNamespace(
         chain=RegTest(),
         logger=SimpleNamespace(
@@ -83,7 +83,7 @@ def test_a_connection_whose_socket_is_gone_says_so():
 
 
 def a_running_connection(loop, client):
-    stopped = []
+    stopped: list[NetworkAddress] = []
     node = SimpleNamespace(
         chain=RegTest(),
         status=NodeStatus.Starting,

@@ -83,6 +83,11 @@ def test_a_signal_asks_the_node_to_stop(tmp_path, signal_number):
     node = a_node(tmp_path)
     node.start()
     handler = signal.getsignal(signal_number)
+    # getsignal also answers SIG_DFL, SIG_IGN or None -- a disposition
+    # the process never installed a function for -- and calling one of
+    # those is a TypeError rather than the failure this test is about.
+    # That the node installed a handler at all is half of what it says.
+    assert callable(handler)
     handler(signal_number, None)
     node.join(timeout=10)
     assert not node.is_alive()

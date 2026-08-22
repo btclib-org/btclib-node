@@ -234,16 +234,58 @@ def test_the_seeds_that_answer_fill_the_table_and_the_rest_are_passed_over(
     }
 
 
+def test_every_seed_that_answers_is_taken_and_a_host_two_of_them_share_is_one(
+    monkeypatch,
+):
+    # the table is the union over the seeds and not the last answer:
+    # a lookup that starts over per seed leaves a node with whatever
+    # the seed at the end of the list happened to know
+    peer_db = PeerDB(a_chain(["one.example", "two.example"]), None)
+    loop = FakeLoop(
+        {
+            "one.example": ["1.2.3.4", "5.6.7.8"],
+            "two.example": ["5.6.7.8", "9.10.11.12"],
+        }
+    )
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
+    asyncio.run(peer_db.get_addr_from_dns())
+    assert {repr(address) for address in peer_db.addresses} == {
+        "1.2.3.4:18444",
+        "5.6.7.8:18444",
+        "9.10.11.12:18444",
+    }
+
+
+class FakeIpv6Loop:
+    async def getaddrinfo(self, host, port):
+        # what a AAAA record resolves to: a sockaddr of four fields
+        # rather than two, the flow info and the scope id being the two
+        # a peer table has nowhere to put
+        return [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2001:db8::1", port, 0, 8))
+        ]
+
+
+def test_a_seed_answering_with_ipv6_gives_up_its_host_and_its_port(monkeypatch):
+    peer_db = PeerDB(a_chain(["v6.example"]), None)
+    monkeypatch.setattr(asyncio, "get_running_loop", FakeIpv6Loop)
+    asyncio.run(peer_db.get_addr_from_dns())
+    assert peer_db.addresses == {NetworkAddress.from_ip_and_port("2001:db8::1", 18444)}
+
+
 def test_a_node_that_already_knows_peers_does_not_ask_the_seeds(monkeypatch):
     peer_db = PeerDB(a_chain(["up.example"]), None)
     peer_db.addresses.add(NetworkAddress.from_ip_and_port("1.2.3.4", 8333))
     peer_db.ask_dns_nodes = False
-    asked = []
+    # the seed lookup fails where it happens rather than being recorded
+    # and asserted about afterwards: `asked.append(True) or FakeLoop({})`
+    # said the same thing through the right-hand side of an `or` whose
+    # left one is `None` every time -- `list.append` returns nothing,
+    # so the fallback was the whole of it.
     monkeypatch.setattr(
-        asyncio, "get_running_loop", lambda: asked.append(True) or FakeLoop({})
+        asyncio, "get_running_loop", lambda: pytest.fail("asked the seeds")
     )
     asyncio.run(peer_db.get_addr_from_dns())
-    assert not asked
 
 
 def test_an_address_is_drawn_from_the_ones_that_can_be_dialled():

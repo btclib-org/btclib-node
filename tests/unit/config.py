@@ -2,6 +2,8 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+from pathlib import Path
+
 import pytest
 
 from btclib_node.chains import Main, RegTest, SigNet, TestNet
@@ -21,11 +23,24 @@ def test_chain_selection():
 
 def test_data_dir():
     config = Config(chain="regtest", data_dir="dir")
-    assert config.data_dir != "dir"
+    # what it is, and not `!= "dir"`: a Path is never equal to a str,
+    # so that comparison held whatever __init__ had done to it -- an
+    # assertion no change to the two things it is about could fail
+    assert config.data_dir == Path("dir").absolute() / "regtest"
 
 
 def test_port():
     assert Config(chain="regtest", p2p_port=1).p2p_port == 1
-    assert Config(chain="regtest", p2p_port=1, allow_p2p=False).p2p_port != 1
     assert Config(chain="regtest", rpc_port=1).rpc_port == 1
-    assert Config(chain="regtest", rpc_port=1, allow_rpc=False).rpc_port != 1
+
+
+def test_a_disallowed_port_is_none_rather_than_some_other_number():
+    # `is None` and not `!= 1`: None is what Node reads as "do not
+    # start this listener", and the declaration in Config says so now.
+    # Any other number would satisfy `!= 1` and be a port to bind.
+    assert Config(chain="regtest", p2p_port=1, allow_p2p=False).p2p_port is None
+    assert Config(chain="regtest", rpc_port=1, allow_rpc=False).rpc_port is None
+    # the chain's own port, which is what an allowed one falls back to,
+    # is not a value a disallowed one can take either
+    assert Config(chain="regtest", allow_p2p=False).p2p_port is None
+    assert Config(chain="regtest", allow_rpc=False).rpc_port is None

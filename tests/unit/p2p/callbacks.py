@@ -13,6 +13,7 @@ is the path where every message is welcome; these are the rest.
 
 import time
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from btclib.block import Block, BlockHeader
@@ -105,7 +106,7 @@ def make_node(addresses, *, prefer_addressv2=False):
     peer_db = PeerDB(None, None)
     for address in addresses:
         peer_db.active_addresses.append(address)
-    sent = []
+    sent: list[Any] = []
     conn = SimpleNamespace(prefer_addressv2=prefer_addressv2, send=sent.append)
     node = SimpleNamespace(p2p_manager=SimpleNamespace(peer_db=peer_db))
     return node, conn, sent
@@ -190,7 +191,7 @@ def a_version(
 
 
 def a_peer(**attributes):
-    sent = []
+    sent: list[Any] = []
     stopped = []
     peer = SimpleNamespace(
         send=sent.append,
@@ -379,7 +380,7 @@ def test_the_addresses_a_peer_sends_are_kept():
 
 
 def test_a_notfound_is_logged_rather_than_held_against_the_peer():
-    logged = []
+    logged: list[str] = []
     node = a_handshake_node()
     node.logger.warning = logged.append
     peer = a_peer()
@@ -393,7 +394,7 @@ def test_a_notfound_is_logged_rather_than_held_against_the_peer():
 
 
 def test_a_reject_names_the_transaction_it_is_about():
-    logged = []
+    logged: list[str] = []
     node = a_handshake_node()
     node.logger.warning = logged.append
     peer = a_peer()
@@ -493,7 +494,7 @@ def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded():
     block = a_block()
     info = SimpleNamespace(downloaded=False)
     index = FakeBlockIndex({block.header.hash: info})
-    added = []
+    added: list[Block] = []
     node = a_data_node(
         block_index=index, block_db=SimpleNamespace(add_block=added.append)
     )
@@ -520,7 +521,7 @@ def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded():
 def test_a_block_already_stored_is_not_stored_again():
     block = a_block()
     index = FakeBlockIndex({block.header.hash: SimpleNamespace(downloaded=True)})
-    added = []
+    added: list[Block] = []
     node = a_data_node(
         block_index=index, block_db=SimpleNamespace(add_block=added.append)
     )
@@ -551,7 +552,7 @@ def a_block_claiming_an_easier_target_than_the_chain_allows(block):
 
 
 def test_a_block_whose_proof_of_work_does_not_hold_up_is_refused():
-    added = []
+    added: list[Block] = []
     broken = a_block_claiming_an_easier_target_than_the_chain_allows(a_block())
     index = FakeBlockIndex({broken.header.hash: SimpleNamespace(downloaded=False)})
     node = a_data_node(

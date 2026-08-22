@@ -335,13 +335,20 @@ warn_unreachable = true
 
 # The six left off, each with what it costs today. Five are one job:
 # annotate the signatures and they go quiet on their own, which is why
-# none is enabled ahead of that pass (btclib-org/btclib-node#104).
+# none is enabled ahead of that pass (btclib-org/btclib-node#104). The
+# sixth is not that job: what is left of it belongs to a branch already
+# open, and its line says where to read it.
 #
-#   disallow_untyped_defs      +596   the annotation pass itself
-#   disallow_untyped_calls      +44   a typed caller of an untyped callee
-#   check_untyped_defs          +41   real errors inside unannotated
-#                                     bodies -- #105, and the one worth
-#                                     reading rather than deferring
+#   disallow_untyped_defs      +695   the annotation pass itself
+#   disallow_untyped_calls      +45   a typed caller of an untyped callee
+#   check_untyped_defs           +3   what #105 came down to once each
+#                                     was read, and what is left sits in
+#                                     files another pull request holds
+#                                     open. #105 enumerates them and
+#                                     stays open until the flag goes on
+#                                     with that branch, so this line
+#                                     does not carry a second copy to
+#                                     keep true.
 #   no_implicit_reexport        +21   names imported from where they are
 #                                     re-exported rather than defined
 #   disallow_incomplete_defs    +15   half-annotated signatures
@@ -352,7 +359,7 @@ warn_unreachable = true
 # --- the optional error codes, surveyed one at a time ------------------
 #
 # Same method: enable, measure, decide. Each reports nothing today.
-# `explicit-override` is the one left off, +12, every one of them a
+# `explicit-override` is the one left off, +14, every one of them a
 # decorator to add -- the annotation pass again, so it goes with #104.
 enable_error_code = [
     "deprecated",

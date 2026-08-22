@@ -14,6 +14,7 @@ has stopped sending blocks is let go.
 
 import time
 from types import SimpleNamespace
+from typing import Any
 
 from btclib.p2p.inventory import GetData, Inv
 
@@ -27,7 +28,7 @@ def a_hash(n):
 
 
 def a_conn(conn_id, *, queue=None, last_block=None):
-    sent = []
+    sent: list[Any] = []
     return SimpleNamespace(
         id=conn_id,
         send=sent.append,

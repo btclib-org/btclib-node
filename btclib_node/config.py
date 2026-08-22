@@ -14,8 +14,14 @@ class Config:
     # a Path, which is what __init__ below stores and what every reader
     # of it does path arithmetic on
     data_dir: Path
-    p2p_port: int
-    rpc_port: int
+    # `None` and not an int is the whole of what `allow_p2p=False` and
+    # `allow_rpc=False` do: __init__ below leaves the port unset, and
+    # Node reads it as the answer to whether that listener is started
+    # at all. Declared `int` these two said the opposite of what they
+    # hold, and every reader believing the annotation would take a
+    # disallowed port for a port to bind.
+    p2p_port: int | None
+    rpc_port: int | None
     pruned: bool
     debug: bool
 

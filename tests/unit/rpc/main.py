@@ -11,6 +11,7 @@ these are mostly about.
 
 from collections import deque
 from types import SimpleNamespace
+from typing import Any
 
 from btclib_node.rpc.callbacks import callbacks
 from btclib_node.rpc.main import (
@@ -24,8 +25,8 @@ PING = {"jsonrpc": "2.0", "id": "a", "method": "ping"}
 
 
 def make_node(batch, conn_id=0, *, callback=None):
-    sent = []
-    waited = []
+    sent: list[Any] = []
+    waited: list[Any] = []
     conn = SimpleNamespace(send=sent.append, send_and_wait=waited.append)
     stopped = []
     node = SimpleNamespace(
