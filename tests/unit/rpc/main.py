@@ -12,8 +12,6 @@ these are mostly about.
 from collections import deque
 from types import SimpleNamespace
 
-import pytest
-
 from btclib_node.rpc.callbacks import callbacks
 from btclib_node.rpc.main import (
     error_msg,
@@ -85,29 +83,25 @@ def test_a_callback_that_raises_is_answered_internal_error():
     assert sent == [[error_msg(-32603)]]
 
 
-def test_params_are_passed_when_given():
+def test_params_are_passed_when_given(monkeypatch):
     seen = []
     node, sent, _, _ = make_node(
         [{"jsonrpc": "2.0", "id": "a", "method": "withparams", "params": [1, 2]}]
     )
-    monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setitem(
         callbacks, "withparams", lambda node, conn, params: seen.append(params)
     )
     handle_rpc(node)
-    monkeypatch.undo()
     assert seen == [[1, 2]]
 
 
-def test_no_params_is_an_empty_list():
+def test_no_params_is_an_empty_list(monkeypatch):
     seen = []
     node, sent, _, _ = make_node([{"jsonrpc": "2.0", "id": "a", "method": "noparams"}])
-    monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setitem(
         callbacks, "noparams", lambda node, conn, params: seen.append(params)
     )
     handle_rpc(node)
-    monkeypatch.undo()
     assert seen == [[]]
 
 
