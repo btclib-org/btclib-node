@@ -120,12 +120,28 @@ def get_random_port():
         return sock.getsockname()[1]
 
 
-def wait_until(func, timeout=20):
+def wait_until(func, timeout=60):
     # The timeout bounds a failure, not a success: the loop returns as
-    # soon as func() holds. It has to be generous because the suite runs
-    # under `-n auto`, where a node's background thread competes for the
-    # CPU with every other worker's proof-of-work; a couple of seconds
-    # is a timeout on the scheduler rather than on the node.
+    # soon as func() holds, so a generous limit costs a passing run
+    # nothing and only delays one that was going to fail. Almost every
+    # wait returns immediately; what moves under load is the tail, and
+    # the longest single wait is always `test_download`'s wait for the
+    # active chain to reach the downloaded length -- 7.64s on an idle
+    # ten-core machine and 12.60s at twenty times its core count. The
+    # wait above it in that test is `wait_until_listening`, which is a
+    # loop of its own with a deadline of its own and is not bounded by
+    # anything here.
+    #
+    # This has to be a timeout on the node rather than on the scheduler,
+    # and under `-n auto` a node's background thread competes for the
+    # CPU with every other worker's proof-of-work. Issue #46 measures
+    # that starvation and names its cause: the node still makes
+    # progress, just slowly, so what a short deadline reports is the
+    # test's patience. Sixty is headroom over the worst tail seen here,
+    # not a measured bound on ubuntu-latest, where the suite has failed
+    # at twenty and nobody has recorded by how much it missed. What
+    # bounds a genuine hang is `timeout` in pyproject.toml, which still
+    # names the test it killed.
     start = time.time()
     while time.time() - start < timeout:
         if func():

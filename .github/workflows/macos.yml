@@ -1,0 +1,121 @@
+---
+name: macos
+
+# The platform the merge gate does not wait for. pyproject.toml claims
+# macOS in its classifiers, and until this file nothing here ran a line
+# of this package on it.
+#
+# That is the whole of the argument, and it is a small one: a classifier
+# is a claim about where this runs, and nothing here had run it there.
+#
+# What differs beneath the suite is how a worker process comes into
+# being. `btclib_node/__init__.py` builds a `multiprocessing.pool.Pool`
+# with no context, so it takes the platform's default start method:
+#
+#     uv run --locked --no-default-groups python -c \
+#         'import multiprocessing as mp; print(mp.get_start_method())'
+#     spawn
+#
+# `multiprocessing/context.py` decides that on `sys.platform` and
+# `reduction.HAVE_SEND_HANDLE`, giving macOS `spawn` and a POSIX
+# platform that is not macOS `forkserver`, so a worker here is an execv
+# of a fresh interpreter where a worker on the gate's image is a fork of
+# a preloaded template. What crosses into a worker is pickled under
+# either, so pickling is not what this cell catches and nothing here is
+# to be read as claiming it is.
+#
+# The store is no argument for this file. It is `sqlite3` from the
+# standard library since btclib-org/btclib-node#107 -- no wheel to be
+# missing, no compiler to be present -- and `btclib_node/db.py` says so
+# at length.
+#
+# What this runs is the gate's own job on the other image: the same
+# interpreter, the same lock, the same coverage floor. The variable is
+# the platform and nothing else.
+#
+# It gates no commit and no merge. A macOS regression sits on main for at
+# most a week, and that is the trade btclib-org/.github#85 makes for
+# every row that is not one of the first four: at the organization's
+# ceiling on concurrent jobs, a platform row earns a place before a
+# review only if waiting for it costs less than the review does.
+
+on:
+  schedule:
+    # section 10 of btclib-org/.github's README.md is the calendar, and
+    # this line is not the place to restate it: one grid, in one file,
+    # naming the day for the workflow and the minute for the repository.
+    # Only the default branch schedules anything, so on any other branch
+    # the dispatch below is the way in
+    - cron: "20 4 * * 6"
+  # the escape hatch: the platform on demand, for a branch that touches
+  # the store, the lock, or anything a path reaches
+  workflow_dispatch:
+  # so a change to this file is checked by the thing it configures, the
+  # same way links.yml is -- and for the same reason a schedule alone is
+  # not enough here: a mistake in it would otherwise be found by the next
+  # sweep rather than by the pull request that made it
+  pull_request:
+    # the type list every workflow here carries, for the reasons the same
+    # list carries in test.yml
+    types: [opened, reopened, synchronize, ready_for_review, closed]
+    paths:
+      - .github/workflows/macos.yml
+
+# least privilege for the GITHUB_TOKEN: everything running in a job can
+# read it, and nothing here writes
+permissions:
+  contents: read
+
+# cancel superseded runs. Named literally rather than through
+# github.workflow, and by the pull request's number where there is one,
+# for the reason test.yml's own group gives: neither the schedule nor a
+# dispatch carries pull_request context, so github.ref still groups
+# either of those, and a closed pull request cannot land in their group
+concurrency:
+  group: macos-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suite-macos:
+    name: Run the suite on macOS
+    # a draft pull request is work its author is not asking anyone to
+    # read yet, and spends no runner here either. A closed one spends
+    # none: the trigger above takes that event only so the landing
+    # supersedes a run this ref's group is still holding
+    if: ${{ !github.event.pull_request.draft && github.event.action != 'closed' }}
+    # the arm64 image, which is what `macos-latest` is and what a
+    # developer on this platform has. There is no second image here: what
+    # a macOS cell answers is the start method, which is the platform's
+    # and not the architecture's, and the Intel runner would answer it
+    # twice
+    runs-on: macos-latest
+    # the same bound test.yml sets on the same suite: what it bounds is
+    # a runner wedged before or between the tests, not the work
+    timeout-minutes: 30
+    steps:
+      # every action is pinned to a commit SHA, the tag in the comment: a
+      # tag, let alone a branch, is a name its owner can move, and these
+      # run in a job that can read the workflow token
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # for the reason test.yml's checkout gives: nothing here
+          # performs an authenticated git operation, so the token has no
+          # reason to stay in .git/config where a later step can read it
+          persist-credentials: false
+      - name: Setup uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          # the cache holds what uv.lock resolves, which is wheels and
+          # no build: what this job spends its time on is the suite
+          enable-cache: true
+          # what .python-version pins, written out for the reason
+          # test.yml writes it out: the coverage floor is a claim about
+          # one interpreter, and this job is held to the same one
+          python-version: "3.14"
+      # no pytest argument, for the reason test.yml gives: pyproject.toml
+      # carries the coverage flags and the floor, and a second copy is a
+      # copy that can disagree
+      - name: Run the suite under coverage
+        run: >
+          uv run --locked --no-default-groups --group test pytest

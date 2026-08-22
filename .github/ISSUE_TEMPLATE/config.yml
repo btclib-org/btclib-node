@@ -1,0 +1,43 @@
+---
+# the forms beside this file are the three kinds of issue this
+# repository handles, and blank issues are off because each of the three
+# asks for something a blank issue leaves out: which chain, which
+# commit, and what the node did instead. Discussions are not enabled
+# here, which is why a question has a form rather than being filed as a
+# bug.
+#
+# The security entry is a link and not a form on purpose: a form would
+# be a public issue, which is the one thing a vulnerability must not be.
+# It points at btclib's SECURITY.md because there is nothing closer to
+# point at: `private-vulnerability-reporting` answers `enabled: false`
+# here, so this repository has no advisory route of its own, and
+# btclib-org/.github carries no SECURITY.md to inherit one from.
+#
+# What the entry sends a reporter to in that policy is the address and
+# not the advisory form it opens with. That form files against btclib,
+# whose scope is the parsing, the derivation paths and the script
+# engine -- not this node's p2p, storage and consensus surface -- so a
+# reporter who followed it would file a btclib-node vulnerability in the
+# wrong repository. The link becomes this repository's own advisory form
+# the moment the setting is on and a SECURITY.md is here to be found.
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/btclib-org/btclib/blob/main/SECURITY.md
+    about: >
+      Never a public issue. Email the address that policy gives rather
+      than opening its advisory form, which files against btclib: the
+      address is what reaches a maintainer privately about a node that
+      can be made to accept, reject or leak something it should not.
+  - name: Keys, scripts, transactions, serialization
+    url: https://github.com/btclib-org/btclib/issues
+    about: >
+      What this node validates *with* is btclib. If the wrong thing is
+      parsed, signed or verified rather than the wrong thing done with
+      it, the defect is most likely there.
+  - name: What the protocol or the reference node does
+    url: https://github.com/bitcoin/bitcoin/issues
+    about: >
+      Consensus and the p2p protocol are Bitcoin Core's to define. This
+      node disagreeing with it is a bug here; the definition itself is a
+      question for upstream.

@@ -1,0 +1,97 @@
+---
+name: Bug report
+description: The node does something other than what it documents or what a node should do
+labels: [bug]
+
+body:
+  - type: markdown
+    attributes:
+      value: >
+        A node is wrong in one of two ways, and they are reported the
+        same way here: it disagrees with the network -- a block or a
+        transaction accepted where Bitcoin Core rejects it, or the
+        reverse -- or it disagrees with itself, hanging, crashing, or
+        losing what it has already validated. Both belong here. What the
+        rules *are* belongs to
+        [bitcoin/bitcoin](https://github.com/bitcoin/bitcoin/issues), and
+        what parses a transaction or verifies a signature belongs to
+        [btclib](https://github.com/btclib-org/btclib/issues).
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: >
+        What the node did, and what you expected it to do instead. If a
+        block or a transaction is involved, its id: that is what makes
+        the report reproducible for somebody with a different chain
+        directory.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce it
+      description: >
+        The shortest Python that builds the `Config` and starts the
+        `Node`, and the full traceback if there is one. `chain="regtest"`
+        with a temporary `data_dir` is the form that reproduces without
+        waiting on the network, and the one a test can be written from
+        directly.
+      render: python
+    validations:
+      required: true
+
+  - type: dropdown
+    id: chain
+    attributes:
+      label: Chain
+      description: >
+        Which chain the node was on. Consensus code is exercised
+        differently by each: regtest is what the suite runs, and mainnet
+        is the only one where the history is somebody else's.
+      options:
+        - mainnet
+        - testnet
+        - signet
+        - regtest
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Commit
+      description: >
+        `git rev-parse HEAD`. The version in pyproject.toml is not enough
+        to identify a tree: this package is not on an index, so what
+        anybody runs is a checkout.
+      placeholder: "3facec5"
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform, interpreter and SQLite
+      description: >
+        `python -VV`, the operating system with its architecture, and
+        `python -c 'import sqlite3; print(sqlite3.sqlite_version)'`. The
+        store is the standard library's `sqlite3`, which binds whatever
+        SQLite the interpreter was built against, so its version is part
+        of the environment rather than of the lock file.
+      placeholder: "CPython 3.14.6, Ubuntu 24.04 x86_64, SQLite 3.45.1"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: What the log says
+      description: >
+        The lines around the failure, from the node started with
+        `debug=True`. Redact nothing but an address you would rather not
+        publish: a peer's, a port, and what was requested from whom is
+        usually the whole of the diagnosis.
+      render: text

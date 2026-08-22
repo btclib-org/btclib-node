@@ -1,0 +1,113 @@
+---
+name: links
+
+# Whether what this tree invites a reader to follow is still there. The
+# README is the first thing anybody reads about a node they are deciding
+# to run, and half of what it points at is somebody else's: uv's
+# documentation, GitHub's own pages, the sibling repository whose library
+# this consensus code is written against.
+#
+# Not a merge gate, and that is the design rather than an omission. A
+# link rots without anybody touching the repository, so checking it per
+# commit reports the internet's weather on somebody else's branch, and a
+# host that answers 502 or throttles a runner would turn a red merge into
+# a thing to re-run rather than a thing to fix. Weekly, on demand, and
+# red in the Actions tab is where this belongs -- it is therefore not one
+# of the checks main's ruleset names, and must not become one.
+
+on:
+  schedule:
+    # section 10 of btclib-org/.github's README.md is the calendar, and
+    # this line is not the place to restate it: one grid, in one file,
+    # naming the day for the workflow and the minute for the repository.
+    # Only the default branch schedules anything, so on any other branch
+    # the dispatch below is the way in
+    - cron: "20 4 * * 1"
+  # the escape hatch, and the way to check a branch before merging a
+  # documentation change that adds links
+  workflow_dispatch:
+  # so a change to this file is checked by the thing it configures. This
+  # runs more often than the paths list suggests: the filter is evaluated
+  # against the pull request's whole diff against its base rather than
+  # against the push that triggered the run, so once a pull request
+  # touches this file every later push to that branch runs it too.
+  # Harmless -- it gates nothing -- but it does mean a host having a bad
+  # afternoon can go red on a push that changed no link at all
+  pull_request:
+    # the type list every workflow here carries, for the reasons the same
+    # list carries in test.yml
+    types: [opened, reopened, synchronize, ready_for_review, closed]
+    paths:
+      - .github/workflows/links.yml
+
+# least privilege for the GITHUB_TOKEN. lychee is handed it for
+# github.com links alone, where an unauthenticated runner is rate limited
+# hard enough to look like rot, and reading is the whole of what that
+# takes. Deliberately not issues: write -- an automatic "link rot" issue
+# is the usual next step, and it would make this the only workflow here
+# that can write anything, to save a maintainer from reading a failure
+# notification they are already sent
+permissions:
+  contents: read
+
+# cancel superseded runs. Named literally rather than through
+# github.workflow, and by the pull request's number where there is one,
+# for the reason test.yml's own group gives: neither the schedule nor a
+# dispatch carries pull_request context, so github.ref still groups
+# either of those, and a closed pull request cannot land in their group
+concurrency:
+  group: links-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  links:
+    name: Check the documentation links
+    # a draft pull request is work its author is not asking anyone to
+    # read yet, and spends no runner here either. A closed one spends
+    # none: the trigger above takes that event only so the landing
+    # supersedes a run this ref's group is still holding
+    if: ${{ !github.event.pull_request.draft && github.event.action != 'closed' }}
+    runs-on: ubuntu-latest
+    # a few dozen requests with retries behind them; a job past this is
+    # hung on one host rather than working through the rest
+    timeout-minutes: 15
+    steps:
+      # every action pinned to a commit SHA with the tag in the comment:
+      # a tag, let alone a branch, is a name its owner can move
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # see the checkout of the coverage job in test.yml
+          persist-credentials: false
+      - name: Check the links
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          # the prose, and not the code: a comment in this node cites a
+          # BIP or Bitcoin Core's own source, and a citation is a
+          # reference rather than a link a reader clicks. What is checked
+          # is what somebody is invited to follow -- the markdown at the
+          # root, and the markdown kept under tests/, which says where
+          # each vendored vector came from and is therefore the file
+          # whose links rot with an upstream reorganization.
+          # --no-progress because the log is not a terminal; the retries,
+          # the timeout and the cache are what keep a slow or throttling
+          # host from being reported as a dead one. --timeout 45 against
+          # lychee's default of 20 buys exactly that difference, the
+          # retries above otherwise making it three timeouts rather than
+          # one. A URL that times out run after run belongs in a
+          # .lycheeignore with the measurement beside it, not here
+          args: >-
+            --no-progress
+            --max-retries 3
+            --retry-wait-time 10
+            --timeout 45
+            --cache
+            --max-cache-age 1d
+            --accept 200,206,429
+            "*.md" "tests/**/*.md"
+          # fail the job rather than only summarizing: a green run that
+          # found dead links is the state this workflow exists to end
+          fail: true
+        env:
+          # for github.com links only, per the permissions comment above
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

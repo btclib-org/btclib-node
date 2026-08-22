@@ -130,10 +130,11 @@ to find.
 say so in the review rather than imply gates that are not there.** What
 that means today:
 
-- **no test or docs job runs on a pull request.** pre-commit.ci is the
-  only gate besides this review, so its green tick says the hooks
-  passed and says nothing about the suite: nothing green stands behind
-  the author's word that the tests pass;
+- **lint and test both run on a pull request, and nothing requires
+  either.** No status check is named, by the ruleset or by the classic
+  protection the aligned siblings use (btclib-org/.github#88), so a red
+  one refuses nothing: open the two runs and read them rather than
+  reading the presence of a check as a gate. No docs job runs;
 - `pre-commit run --all-files` **passes on `main`** — see
   [#45](https://github.com/btclib-org/btclib-node/pull/45). A hook that
   fails is therefore something to report — but still show it is *this

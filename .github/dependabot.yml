@@ -1,0 +1,60 @@
+---
+# Two of the three things this repository pins, and the third is
+# somebody else's job: the pre-commit hook revisions have no dependabot
+# ecosystem, and the `ci:` block of .pre-commit-config.yaml has
+# pre-commit.ci bumping them weekly instead.
+#
+# Grouped, one pull request per ecosystem: every one of them runs the
+# gate, and the gate here is the whole suite. Paying that once a week
+# beats paying it once per dependency.
+#
+# Weekly, and no target-branch on either: without one dependabot opens
+# against the default branch, which is the only branch a change lands on.
+# Nothing pre-validates these upgrades -- there is no `latest` sentinel
+# here yet -- so a dependabot pull request is the first run that tries
+# one, and what reads it is the same suite and coverage floor a human
+# pull request waits for. That is the argument for weekly rather than
+# monthly: a week of drift is a diff somebody can still read and revert,
+# where a month of it arrives as one.
+#
+# The seven-day cooldown is what the interval is really trading against.
+# A compromised release is usually yanked within days, and nothing here
+# is offered before it has been public a week; the interval decides how
+# long after that week the offer comes, not whether it waits at all.
+version: 2
+updates:
+  # every action in .github/workflows is pinned to a commit SHA, and
+  # nothing but this moves one: without it a pin is frozen for good, and
+  # a fix -- or an advisory -- upstream never reaches this repository
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      # Thursday, which is the day btclib-org/.github's README.md section
+      # 10 gives Dependabot across the organization. Actions move rarely,
+      # so a week where none did opens no pull request at all
+      day: thursday
+    groups:
+      actions:
+        patterns: ["*"]
+    cooldown:
+      default-days: 7
+
+  # uv.lock is committed and every workflow installs from it with
+  # --locked, so this is the one thing that moves it: the uv-lock
+  # pre-commit hook re-locks what pyproject.toml changed, it does not
+  # upgrade. Unlike the sibling libraries, part of what it moves is
+  # runtime rather than tooling -- btclib is the consensus code this node
+  # validates blocks with -- which is the other reason these arrive as a
+  # pull request the suite
+  # runs on rather than as a lock somebody refreshes locally
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+      day: thursday
+    groups:
+      dependencies:
+        patterns: ["*"]
+    cooldown:
+      default-days: 7
