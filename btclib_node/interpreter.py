@@ -2,7 +2,6 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-from copy import deepcopy
 from itertools import chain
 
 from btclib.script.engine import verify_amounts, verify_input, verify_transaction
@@ -44,13 +43,9 @@ def check_transactions(transaction_data, index, node):
 
 
 def check_transaction(prevouts, tx, index, node):
-    # Handed a copy because the marker this replaces said
-    # verify_transaction mutates what it validates -- said against an
-    # older btclib, and not established against the pinned one, which is
-    # what btclib-org/btclib-node#119 asks. Only mempool acceptance pays
-    # for it: a block's transactions go through check_transactions
-    # above, which decided the copy was unnecessary because it does not
-    # reuse them.
-    tx = deepcopy(tx)
+    # No copy: btclib's engine leaves the transaction alone -- sig_hash
+    # builds the blanked transaction each preimage commits to rather
+    # than editing the one it was handed. What the copy paid for was a
+    # defect that is not there, once per mempool acceptance.
     flags = get_flags(node.config, index)
     verify_transaction(prevouts, tx, flags)
