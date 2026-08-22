@@ -15,6 +15,7 @@ from collections import deque
 
 import pytest
 from btclib.block.block_filter import BasicBlockFilter, filter_header
+from btclib.p2p.address import ServiceFlags
 from btclib.p2p.block_filters import (
     BlockFilterType,
     CFCheckpt,
@@ -28,7 +29,7 @@ from btclib.p2p.block_filters import (
 from btclib_node import Node
 from btclib_node.chains import RegTest
 from btclib_node.config import Config
-from btclib_node.constants import NodeStatus, P2pConnStatus, Services
+from btclib_node.constants import NodeStatus, P2pConnStatus
 from tests.helpers import (
     generate_random_chain,
     get_random_port,
@@ -159,7 +160,7 @@ def test_a_peer_is_told_this_node_serves_compact_filters(peers, mark):
     version = server.p2p_manager.connections[0].version_message
     # the client's own advertisement, read by the server: a node
     # that answers these messages says so in its version
-    assert version.services & Services.compact_filters
+    assert version.services & ServiceFlags.NODE_COMPACT_FILTERS
 
 
 def test_the_filters_a_peer_is_sent_are_the_ones_it_asked_for(peers, mark):

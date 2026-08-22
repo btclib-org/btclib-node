@@ -16,7 +16,7 @@ from btclib.script import script
 from btclib.tx.tx import Tx, TxIn, TxOut
 from btclib.tx.tx_in import OutPoint
 
-from btclib_node.p2p.address import NetworkAddress
+from btclib_node.p2p.address import peer_address
 
 
 def generate_random_header_chain(length, start):
@@ -215,8 +215,8 @@ def brute_force_nonce(header, attempts=100):
     header.assert_valid_pow(REGTEST_POW_LIMIT_BITS)
 
 
-def local_addr(port: int, time: int = 0, services: int = 0):
+def local_addr(port: int, timestamp: int = 0, services: int = 0):
     # A test helper building an unroutable placeholder address, not a
     # socket bind.
     addr = "0.0.0.0"  # noqa: S104
-    return NetworkAddress.from_ip_and_port(addr, port, time, services)
+    return peer_address(addr, port, timestamp, services)

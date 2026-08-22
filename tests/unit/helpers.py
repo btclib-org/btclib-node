@@ -20,6 +20,7 @@ from btclib.exceptions import BTClibValueError
 from btclib.hashes import hash256, merkle_root
 
 from btclib_node.chains import RegTest
+from btclib_node.p2p.address import peer_address
 from tests.helpers import (
     brute_force_nonce,
     build_block,
@@ -189,5 +190,5 @@ def test_a_built_block_carries_the_transactions_it_was_given():
 
 def test_a_placeholder_address_is_unroutable():
     address = local_addr(18444)
-    assert repr(address) == "0.0.0.0:18444"
-    assert local_addr(18444, time=7, services=9).time == 7
+    assert address == peer_address("0.0.0.0", 18444)  # noqa: S104
+    assert local_addr(18444, timestamp=7, services=9).timestamp == 7

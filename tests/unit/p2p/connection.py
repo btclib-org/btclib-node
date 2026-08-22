@@ -16,10 +16,11 @@ from types import SimpleNamespace
 
 import pytest
 from btclib.hashes import hash256
+from btclib.p2p.addrv2 import NetworkAddressV2
 
 from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus, P2pConnStatus
-from btclib_node.p2p.address import NetworkAddress
+from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.connection import Connection
 
 
@@ -42,7 +43,7 @@ def a_connection(client=None):
     connection = Connection(
         manager,
         client if client is not None else socket.socket(),
-        NetworkAddress.from_ip_and_port("1.2.3.4", 18444),
+        peer_address("1.2.3.4", 18444),
         0,
         False,
     )
@@ -83,7 +84,7 @@ def test_a_connection_whose_socket_is_gone_says_so():
 
 
 def a_running_connection(loop, client):
-    stopped: list[NetworkAddress] = []
+    stopped: list[NetworkAddressV2] = []
     node = SimpleNamespace(
         chain=RegTest(),
         status=NodeStatus.Starting,
@@ -98,9 +99,7 @@ def a_running_connection(loop, client):
         port=18444,
         peer_db=SimpleNamespace(add_active_address=stopped.append),
     )
-    connection = Connection(
-        manager, client, NetworkAddress.from_ip_and_port("127.0.0.1", 18444), 0, False
-    )
+    connection = Connection(manager, client, peer_address("127.0.0.1", 18444), 0, False)
     return connection, stopped
 
 

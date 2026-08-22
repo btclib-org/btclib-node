@@ -12,7 +12,7 @@ from contextlib import suppress
 from btclib.p2p.data import TxPayload as Tx
 
 from btclib_node.constants import NodeStatus, P2pConnStatus
-from btclib_node.p2p.address import NetworkAddress
+from btclib_node.p2p.address import dial, peer_address
 from btclib_node.p2p.connection import Connection
 
 
@@ -57,7 +57,7 @@ class P2pManager(threading.Thread):
             self.connections.pop(id)
 
     async def async_connect(self, address):
-        client = await address.connect()
+        client = await dial(address)
         if client:
             self.create_connection(client, address, False)
 
@@ -91,7 +91,7 @@ class P2pManager(threading.Thread):
                     # nothing to do, and the sleep below is what keeps
                     # that from being a spin.
                     if address is not None and address not in already_connected:
-                        sock = await address.connect()
+                        sock = await dial(address)
                         if sock:
                             self.create_connection(sock, address, False)
                 except Exception:
@@ -110,7 +110,7 @@ class P2pManager(threading.Thread):
         with server_socket:
             while True:
                 sock, ip_and_port = await loop.sock_accept(server_socket)
-                address = NetworkAddress.from_ip_and_port(*ip_and_port)
+                address = peer_address(*ip_and_port)
                 self.create_connection(sock, address, True)
 
     def run(self):
