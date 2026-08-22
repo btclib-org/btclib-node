@@ -26,7 +26,7 @@ class RevBlock:
         for x in range(var_int.parse(stream)):
             out_point = OutPoint.parse(stream, check_validity=check_validity)
             tx_out = TxOut.parse(stream, check_validity=check_validity)
-            to_add.append([out_point, tx_out])
+            to_add.append((out_point, tx_out))
         to_remove = []
         for x in range(var_int.parse(stream)):
             out_point = OutPoint.parse(stream, check_validity=check_validity)
