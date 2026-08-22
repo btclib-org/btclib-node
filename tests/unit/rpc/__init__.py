@@ -12,6 +12,7 @@ ends, a Content-Length no client would send, a body that is not JSON.
 """
 
 import asyncio
+import contextlib
 import json
 import socket
 import time
@@ -33,8 +34,8 @@ def request(headers=b"", body=BODY):
     return b"POST / HTTP/1.1\r\nHost: x\r\n" + headers + b"\r\n" + body
 
 
-def with_length(body=BODY, extra=b""):
-    return request(b"Content-Length: %d\r\n" % len(body) + extra, body)
+def with_length(body=BODY):
+    return request(b"Content-Length: %d\r\n" % len(body), body)
 
 
 def drive(chunks, *, timeout=1.0, hang_up=False):
@@ -71,6 +72,10 @@ def drive(chunks, *, timeout=1.0, hang_up=False):
             outcome = "returned"
         except TimeoutError:
             task.cancel()
+            # awaited, so `closed` below reads a settled state rather
+            # than racing the cancellation
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
             outcome = "waiting"
         sender.cancel()
         closed = ours.fileno() == -1
