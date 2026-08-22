@@ -9,7 +9,7 @@ from btclib.p2p.keepalive import Ping
 from btclib_node import Node
 from btclib_node.config import Config
 from btclib_node.constants import P2pConnStatus
-from tests.helpers import get_random_port, local_addr, wait_until
+from tests.helpers import get_random_port, local_addr, wait_until, wait_until_listening
 
 
 def test_correct_ping(tmp_path):
@@ -32,8 +32,8 @@ def test_correct_ping(tmp_path):
     node1.start()
     node2.start()
 
-    wait_until(lambda: node1.p2p_manager.is_alive())
-    wait_until(lambda: node2.p2p_manager.is_alive())
+    wait_until_listening(node1.p2p_manager)
+    wait_until_listening(node2.p2p_manager)
 
     node2.p2p_manager.connect(local_addr(node1.p2p_port))
     wait_until(lambda: len(node1.p2p_manager.connections))
@@ -75,8 +75,8 @@ def test_wrong_ping(tmp_path):
     node1.start()
     node2.start()
 
-    wait_until(lambda: node1.p2p_manager.is_alive())
-    wait_until(lambda: node2.p2p_manager.is_alive())
+    wait_until_listening(node1.p2p_manager)
+    wait_until_listening(node2.p2p_manager)
 
     node2.p2p_manager.connect(local_addr(node1.p2p_port))
     wait_until(lambda: len(node1.p2p_manager.connections))

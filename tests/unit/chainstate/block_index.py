@@ -426,3 +426,46 @@ def test_a_header_that_does_not_outweigh_the_chain_is_not_a_candidate(tmp_path):
     assert short_fork[0].hash in block_index.header_dict
     assert not block_index.block_candidates
     chainstate.close()
+
+
+def test_a_candidate_the_chain_has_caught_up_with_is_not_downloaded_again(tmp_path):
+    # the deque is not emptied when a branch connects, so what keeps a
+    # connected block from being fetched all over again is the work it
+    # is weighed against
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    chain = generate_random_header_chain(3, RegTest().genesis.hash)
+    block_index.add_headers(chain)
+    assert block_index.get_download_candidates() == [header.hash for header in chain]
+
+    for header in chain:
+        block_index.add_to_active_chain(header.hash)
+    assert block_index.get_download_candidates() == []
+    chainstate.close()
+
+
+def test_a_block_already_held_is_left_out_of_what_is_asked_for(tmp_path):
+    # the walk back from a candidate goes through blocks this node may
+    # already have: they are what it is walking towards, and asking a
+    # peer for them again is the download running twice
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    chain = generate_random_header_chain(3, RegTest().genesis.hash)
+    block_index.add_headers(chain)
+    held = block_index.get_block_info(chain[1].hash)
+    held.downloaded = True
+    block_index.insert_block_info(held)
+
+    assert block_index.get_download_candidates() == [chain[0].hash, chain[2].hash]
+    chainstate.close()
+
+
+def test_the_locators_of_a_node_that_holds_only_the_genesis_block(tmp_path):
+    # the list ends at the oldest header this node has, and here the
+    # walk back has already named it, it being the newest as well. What
+    # keeps it off the end a second time -- and the peer from being
+    # asked the same question twice -- is the guard on that last append
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    assert block_index.get_block_locator_hashes() == [RegTest().genesis.hash]
+    chainstate.close()

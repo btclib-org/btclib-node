@@ -8,21 +8,22 @@ import requests
 
 from btclib_node import Node
 from btclib_node.config import Config
-from tests.helpers import wait_until
+from tests.helpers import get_random_port, wait_until_listening
 
 
 def test_init(tmp_path):
+    # a port of its own; see tests/functional/p2p/__init__.py
     node = Node(
         config=Config(
             chain="regtest",
             data_dir=tmp_path,
             allow_p2p=False,
-            allow_rpc=True,
+            rpc_port=get_random_port(),
         )
     )
     node.start()
 
-    wait_until(lambda: node.rpc_manager.is_alive())
+    wait_until_listening(node.rpc_manager)
 
     response = json.loads(
         requests.post(

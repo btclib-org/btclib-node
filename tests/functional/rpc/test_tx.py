@@ -8,13 +8,18 @@ import requests
 
 from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus
-from tests.helpers import generate_random_chain, generate_random_transaction, wait_until
+from tests.helpers import (
+    generate_random_chain,
+    generate_random_transaction,
+    wait_until,
+    wait_until_listening,
+)
 
 
 def test_add_tx(rpc_node):
     node = rpc_node
 
-    wait_until(lambda: node.rpc_manager.is_alive())
+    wait_until_listening(node.rpc_manager)
     chain = generate_random_chain(10, RegTest().genesis.hash)
     header_chain = [block.header for block in chain]
     block_index = node.chainstate.block_index

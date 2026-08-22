@@ -67,7 +67,15 @@ class Node(threading.Thread):
         )
         self.mempool = Mempool(self.logger)
 
-        self.worker_pool = Pool(processes=8)
+        # Built on first use, by the property below: the pool is
+        # interpreters, spawned rather than forked wherever that is the
+        # platform's default, and a node that never validates a script
+        # should not pay for them. Which is most of them -- a node
+        # serving headers, a node under test, a node that has nothing to
+        # connect -- and each one that does pay competes for the cores
+        # with the nodes that are actually validating.
+        self._worker_pool = None
+        self._worker_pool_lock = threading.Lock()
 
         self.status = NodeStatus.Starting
 
@@ -85,6 +93,16 @@ class Node(threading.Thread):
         else:
             self.rpc_port = None
         self.rpc_manager = RpcManager(self, self.rpc_port)
+
+    @property
+    def worker_pool(self):
+        # under the lock, so that two callers get one pool: the second
+        # would otherwise leave a pool with nothing holding it and
+        # nothing to terminate it
+        with self._worker_pool_lock:
+            if self._worker_pool is None:
+                self._worker_pool = Pool(processes=8)
+            return self._worker_pool
 
     def run(self):
         self.logger.info("Starting main loop")
@@ -127,7 +145,10 @@ class Node(threading.Thread):
         self.chainstate.close()
         self.block_db.close()
 
-        self.worker_pool.terminate()
+        # read, not asked for: the property would build the pool this
+        # line exists to take down
+        if self._worker_pool is not None:
+            self._worker_pool.terminate()
 
         self.logger.info("Stopping node")
         self.logger.close()

@@ -247,6 +247,22 @@ def test_a_peer_that_stopped_sending_blocks_is_marked_and_then_dropped():
     assert stopped == [True]
 
 
+def test_a_block_only_one_peer_was_asked_for_is_asked_of_a_second():
+    # nothing left in the window that nobody is fetching, and a peer
+    # sitting idle: it is given what somebody else is already carrying,
+    # which is how a block a peer never sends stops holding the chain up
+    busy = a_conn(1, queue=[a_hash(1)])
+    idle = a_conn(2)
+    manager = make_manager([busy, idle], block_index=FakeBlockIndex([a_hash(1)]))
+    manager.block_download()
+    # and the peer already carrying it keeps it rather than being asked
+    # for it a second time
+    assert not busy.sent
+    assert busy.download_queue == [a_hash(1)]
+    (getdata,) = only(idle, GetData)
+    assert hashes_of(getdata) == [a_hash(1)]
+
+
 def test_a_peer_that_is_already_pending_eviction_is_left_alone():
     quiet = a_conn(1, last_block=time.time() - 200, queue=[a_hash(1)])
     quiet.pending_eviction = True

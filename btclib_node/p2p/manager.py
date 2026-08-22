@@ -33,6 +33,14 @@ class P2pManager(threading.Thread):
         self.nonces = []
         self.last_connection_id = -1
 
+        # Set once the listening socket is bound and can hold a peer's
+        # connection in its backlog. `is_alive()` says only that this
+        # thread was started, which is true before `run` below has
+        # scheduled anything, so a peer that dials on the strength of it
+        # is refused -- and `NetworkAddress.connect` answers a refusal
+        # with None, which `async_connect` drops. Nothing retries.
+        self.listening = threading.Event()
+
         self.loop = asyncio.new_event_loop()
 
     def create_connection(self, client, address, inbound):
@@ -98,6 +106,7 @@ class P2pManager(threading.Thread):
         server_socket.bind(("0.0.0.0", self.port))  # noqa: S104
         server_socket.listen()
         server_socket.settimeout(0.0)
+        self.listening.set()
         with server_socket:
             while True:
                 sock, ip_and_port = await loop.sock_accept(server_socket)
@@ -125,6 +134,9 @@ class P2pManager(threading.Thread):
             with suppress(asyncio.CancelledError):
                 self.loop.run_until_complete(task)
         self.loop.close()
+        # so that the flag says what its name says: a socket
+        # closed here is not one anything should wait for
+        self.listening.clear()
         self.logger.info("Stopping P2P Manager")
 
     def send(self, msg, id):

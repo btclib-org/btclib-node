@@ -13,15 +13,22 @@ messages addressed to a connection that is no longer there.
 import asyncio
 import socket
 import time
-from contextlib import suppress
+from contextlib import closing, suppress
 from types import SimpleNamespace
 
 import pytest
+from btclib.p2p.keepalive import Ping
 
 from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.p2p.address import NetworkAddress, NetworkID
 from btclib_node.p2p.manager import P2pManager
+from tests.helpers import (
+    generate_random_transaction,
+    get_random_port,
+    wait_until,
+    wait_until_listening,
+)
 
 
 def a_conn(conn_id, *, status=P2pConnStatus.Connected, last_receive=None, address=None):
@@ -52,7 +59,7 @@ def a_manager():
     """Build managers, and close their event loops however the test ends."""
     made = []
 
-    def make(conns=(), *, peer_db=None, status=NodeStatus.BlockSynced):
+    def make(conns=(), *, peer_db=None, status=NodeStatus.BlockSynced, port=18444):
         node = SimpleNamespace(
             status=status,
             chain=RegTest(),
@@ -66,9 +73,14 @@ def a_manager():
         # should not reach for a peer proves it by the log staying quiet
         manager = P2pManager(
             node,
-            18444,
+            port,
             peer_db
-            or SimpleNamespace(is_empty=True, random_address=refuses_to_be_asked),
+            or SimpleNamespace(
+                is_empty=True,
+                random_address=refuses_to_be_asked,
+                get_addr_from_dns=asks_no_dns_server,
+                add_active_address=lambda address: None,
+            ),
         )
         for conn in conns:
             manager.connections[conn.id] = conn
@@ -77,7 +89,16 @@ def a_manager():
 
     yield make
     for manager in made:
-        manager.loop.close()
+        # stopped first where a test left it running: a loop cannot be
+        # closed out from under the thread inside it, and a manager
+        # thread outliving its test is non-daemon -- so a test that
+        # fails before its own stop would otherwise take the run with
+        # it rather than the test
+        if manager.is_alive():
+            manager.stop()
+            manager.join(timeout=10)
+        else:
+            manager.loop.close()
 
 
 async def one_pass(manager):
@@ -184,6 +205,10 @@ def refuses_to_be_asked():
     raise RuntimeError("no")
 
 
+async def asks_no_dns_server():
+    return None
+
+
 def test_a_peer_db_that_raises_does_not_stop_the_housekeeping(a_manager):
     logged: list[str] = []
     peer_db = SimpleNamespace(is_empty=False, random_address=refuses_to_be_asked)
@@ -285,3 +310,156 @@ def test_a_peer_that_answers_the_dial_becomes_a_connection(a_manager):
         # connection's loop on. asyncio.run would build a second one and
         # leave the manager holding a loop the fixture then never closes
         manager.loop.run_until_complete(dial())
+
+
+def test_a_message_sent_to_all_reaches_every_connection(a_manager):
+    first, second = a_conn(1), a_conn(2)
+    manager = a_manager([first, second])
+    manager.sendall("message")
+    assert first.sent == ["message"]
+    assert second.sent == ["message"]
+
+
+def test_a_transaction_is_relayed_with_its_witness(a_manager):
+    # without the witness the peer receives a transaction whose txid is
+    # the one it was told about and whose wtxid is not
+    conn = a_conn(1)
+    manager = a_manager([conn])
+    tx = generate_random_transaction()
+    manager.broadcast_raw_transaction(tx)
+    (payload,) = conn.sent
+    assert payload.tx == tx
+    assert payload.include_witness
+
+
+def a_running_manager(a_manager, port):
+    manager = a_manager(port=port)
+    manager.start()
+    return manager
+
+
+def test_a_manager_says_when_it_is_listening_and_not_before(a_manager):
+    """#46: `is_alive()` holds before `run` has bound anything.
+
+    A peer dialled on the strength of it is refused, silently and once,
+    and the test that dialled then waits out its whole timeout. What
+    this pins is the answer to that: an event the manager sets when the
+    socket is bound, after which an accept cannot be missed.
+    """
+    port = get_random_port()
+    manager = a_manager(port=port)
+    # what the event answers is the bind and not the thread: a manager
+    # that has not been started is not listening, and neither is one
+    # whose `run` has not yet reached the coroutine that binds
+    assert not manager.listening.is_set()
+    manager.start()
+    try:
+        wait_until_listening(manager)
+        with socket.create_connection(("127.0.0.1", port), timeout=20) as peer:
+            wait_until(lambda: manager.connections)
+            (conn,) = manager.connections.values()
+            assert conn.inbound
+            assert conn.address.port == peer.getsockname()[1]
+            # the version this node opens with: the socket was accepted
+            # into a connection and not merely into the backlog
+            peer.settimeout(20)
+            assert peer.recv(4096)
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
+    assert not manager.is_alive()
+
+
+def test_a_manager_that_cannot_bind_never_says_it_is_listening(a_manager):
+    # set after the bind and not before it, which is the whole of what a
+    # caller waiting on the event is told. A port already taken raises
+    # inside a coroutine nobody awaits, so a manager that announced
+    # itself first would send that caller at a socket that is not there
+    # -- and say nothing about why.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
+        taken.bind(("", 0))
+        taken.listen()
+        manager = a_manager(port=taken.getsockname()[1])
+        manager.start()
+        try:
+            with pytest.raises(Exception, match="within 0.5 seconds"):
+                wait_until_listening(manager, timeout=0.5)
+        finally:
+            manager.stop()
+            manager.join(timeout=10)
+
+
+def test_a_manager_dials_the_address_it_is_given(a_manager):
+    # `connect` is called from the node's thread and hands the dial to
+    # the manager's own loop. Dialled at itself, so what comes back is
+    # both ends of one connection: the one this node opened and the one
+    # it accepted.
+    port = get_random_port()
+    manager = a_running_manager(a_manager, port)
+    try:
+        wait_until_listening(manager)
+        manager.connect(NetworkAddress.from_ip_and_port("127.0.0.1", port))
+        wait_until(lambda: len(manager.connections) == 2)
+        inbound = [conn.inbound for conn in manager.connections.values()]
+        assert sorted(inbound) == [False, True]
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
+
+
+def test_a_message_sent_on_a_running_connection_reaches_the_peer(a_manager):
+    # `Connection.send` is called from the node's thread and hands the
+    # write to the manager's loop; nothing else in these tests crosses
+    # that line, and a message that never leaves is a peer that goes
+    # quiet for no reason
+    port = get_random_port()
+    manager = a_running_manager(a_manager, port)
+    try:
+        wait_until_listening(manager)
+        with socket.create_connection(("127.0.0.1", port), timeout=20) as peer:
+            wait_until(lambda: manager.connections)
+            (conn,) = manager.connections.values()
+            conn.send(Ping(7))
+            # bounded by the socket's own timeout, so a ping that never
+            # arrives is a failure rather than a test that never ends
+            peer.settimeout(20)
+            received = b""
+            while b"ping" not in received:
+                chunk = peer.recv(4096)
+                assert chunk
+                received += chunk
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
+
+
+def test_a_manager_left_running_is_stopped_by_whoever_built_it(a_manager):
+    # deliberately not stopped here. A manager thread outliving its test
+    # is non-daemon, so a test that fails before reaching its own stop
+    # would hold the run open instead of failing it -- the fixture is
+    # where that is caught, and this is the test that proves it does.
+    manager = a_running_manager(a_manager, get_random_port())
+    wait_until_listening(manager)
+    assert manager.is_alive()
+
+
+def test_stopping_a_running_manager_stops_the_connections_it_holds(a_manager):
+    port = get_random_port()
+    manager = a_running_manager(a_manager, port)
+    wait_until_listening(manager)
+    # held open across the stop rather than closed by a `with`: a
+    # connection this manager closed and one that ended because the far
+    # side went away are indistinguishable afterwards. A wait that times
+    # out before the stop below leaves the manager to the fixture, which
+    # stops what it finds running.
+    with closing(socket.create_connection(("127.0.0.1", port), timeout=20)):
+        wait_until(lambda: manager.connections)
+        (conn,) = manager.connections.values()
+        manager.stop()
+        manager.join(timeout=10)
+    assert conn.status == P2pConnStatus.Closed
+    assert manager.loop.is_closed()
+    # and the flag goes back to meaning what it says: waiting for a
+    # stopped manager to listen would otherwise return at once, on a
+    # socket that is closed
+    assert not manager.listening.is_set()

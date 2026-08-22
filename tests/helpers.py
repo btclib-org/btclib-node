@@ -141,6 +141,32 @@ def wait_until(func, timeout=20):
     raise Exception(err_msg)
 
 
+def wait_until_listening(manager, timeout=20):
+    """Wait for a manager's socket to be bound, not for its thread.
+
+    `wait_until(manager.is_alive)` is `threading.Thread.is_alive`, which
+    holds from `start()` -- before `run` has scheduled the coroutine
+    that binds the port. A peer dialled in that window is refused, and
+    a refusal is silent: `NetworkAddress.connect` polls for a second and
+    returns None, `async_connect` drops it, and nothing dials again. The
+    test then spends its whole timeout waiting for a connection that was
+    lost at the start, which is what #46 sees.
+    """
+    start = time.time()
+    while time.time() - start < timeout:
+        if manager.listening.is_set():
+            return
+        time.sleep(0.025)
+    # named here rather than left to `wait_until`, whose message is the
+    # line its lambda was written on -- a lambda written in this helper
+    # is the same line for every caller, and a test that waits on
+    # several managers would be told nothing about which. The manager
+    # and its port are what tell them apart.
+    err_msg = f"{type(manager).__name__} on port {manager.port} was not "
+    err_msg += f"listening within {timeout} seconds"
+    raise Exception(err_msg)
+
+
 def call_within(func, timeout=5):
     # For a call whose way of being wrong is never coming back. A test
     # that asserts on the answer hangs the whole suite when there is no

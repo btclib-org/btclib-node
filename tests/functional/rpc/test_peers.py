@@ -9,7 +9,7 @@ import requests
 from btclib_node import Node
 from btclib_node.config import Config
 from btclib_node.constants import P2pConnStatus
-from tests.helpers import get_random_port, local_addr, wait_until
+from tests.helpers import get_random_port, local_addr, wait_until, wait_until_listening
 
 
 def test_get_connection_count(tmp_path):
@@ -32,8 +32,16 @@ def test_get_connection_count(tmp_path):
     node1.start()
     node2.start()
 
-    wait_until(lambda: node1.rpc_manager.is_alive())
-    wait_until(lambda: node2.rpc_manager.is_alive())
+    # both listeners of both nodes: the RPC one because the assertion is
+    # asked over it, and the P2P one because the dial below is what the
+    # assertion is about. They are bound by two threads that do not wait
+    # for each other, so the RPC socket being up says nothing about the
+    # P2P socket -- and a dial that arrives first is refused once and
+    # silently.
+    wait_until_listening(node1.rpc_manager)
+    wait_until_listening(node2.rpc_manager)
+    wait_until_listening(node1.p2p_manager)
+    wait_until_listening(node2.p2p_manager)
 
     node2.p2p_manager.connect(local_addr(node1.p2p_port))
     wait_until(lambda: len(node1.p2p_manager.connections))
@@ -85,8 +93,12 @@ def test_get_peer_info(tmp_path):
     node1.start()
     node2.start()
 
-    wait_until(lambda: node1.rpc_manager.is_alive())
-    wait_until(lambda: node2.rpc_manager.is_alive())
+    # see test_get_connection_count above: the P2P listeners as well,
+    # because the dial is what this asserts on
+    wait_until_listening(node1.rpc_manager)
+    wait_until_listening(node2.rpc_manager)
+    wait_until_listening(node1.p2p_manager)
+    wait_until_listening(node2.p2p_manager)
 
     node2.p2p_manager.connect(local_addr(node1.p2p_port))
     wait_until(lambda: len(node1.p2p_manager.connections))
