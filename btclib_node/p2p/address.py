@@ -23,25 +23,26 @@ class NetworkID(enum.IntEnum):
 
     @property
     def addr_bytesize(self):
-        if self == NetworkID.ipv4:
-            return 4
-        if self == NetworkID.ipv6:
-            return 16
-        if self == NetworkID.torv2:
-            return 10
-        if self == NetworkID.torv3:
-            return 32
-        if self == NetworkID.i2p:
-            return 32
-        if self == NetworkID.cjdns:
-            return 16
-        raise ValueError
+        return _ADDR_BYTESIZE[self]
 
     @property
     def can_addrv1(self):
         if self in (NetworkID.ipv4, NetworkID.ipv6):
             return True
         return False
+
+
+# BIP155 fixes the length an address of each network has on the wire. A
+# member added without an entry raises here, where a chain of ifs ending
+# in a bare raise said the same thing in more lines and one of them dead.
+_ADDR_BYTESIZE = {
+    NetworkID.ipv4: 4,
+    NetworkID.ipv6: 16,
+    NetworkID.torv2: 10,
+    NetworkID.torv3: 32,
+    NetworkID.i2p: 32,
+    NetworkID.cjdns: 16,
+}
 
 
 @dataclass(frozen=True)
