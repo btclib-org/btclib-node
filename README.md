@@ -43,6 +43,11 @@ To test, coverage included:
 uv run pytest
 ```
 
+Every statement and every branch is covered, and that run fails if any
+stops being. A run of less than the whole suite — one file, `-k`, `-m`,
+`--last-failed` — cannot clear a floor meant for all of it, so it is not
+held to one; `--cov-fail-under` asked for explicitly still applies.
+
 To run the lint gate:
 
 ```shell
