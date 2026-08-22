@@ -119,6 +119,28 @@ def test_add_tx(rpc_node):
         ).text
     )
     assert response["result"] == tx1.id.hex()
+
+    # one whose prevouts are nowhere -- not in the chain, not in the
+    # mempool -- is answered with an error, not with the txid of
+    # something this node has neither kept nor sent
+    response = json.loads(
+        requests.post(
+            url=f"http://127.0.0.1:{node.rpc_port}",
+            data=json.dumps(
+                {
+                    "jsonrpc": "1.0",
+                    "id": "pytest",
+                    "method": "sendrawtransaction",
+                    "params": [invalid_tx.serialize(True).hex()],
+                }
+            ).encode(),
+            headers={"Content-Type": "text/plain"},
+            timeout=2,
+        ).text
+    )
+    assert "result" not in response
+    assert response["error"]["code"] == -32603
+
     response = json.loads(
         requests.post(
             url=f"http://127.0.0.1:{node.rpc_port}",
