@@ -133,16 +133,16 @@ jobs:
 
             One deviation from REVIEWING.md, because this is CI and not
             a session, and here it runs the other way from the sibling
-            repositories: there are no gate workflows beside you. This
-            repository has no test, lint or docs job on a pull request
+            repositories: pre-commit.ci is the only gate beside you.
+            This repository has no test or docs job on a pull request
             yet -- issue #33 tracks that -- so nothing green stands
-            behind the author's word. Do not run the gates yourself
-            either: they need a toolchain this job does not set up, the
-            suite among other things wanting LevelDB present before
-            `uv sync`. Say in the summary that no gates were run here
-            and that the author's own statement of what they ran is what
-            stands -- and if a pull request makes no such statement, say
-            that too.
+            behind the author's word that the tests pass. Do not run the
+            gates yourself either: they need a toolchain this job does
+            not set up, `uv sync` among other things building plyvel
+            from source and wanting LevelDB present first. Say in the
+            summary that no gates were run here and that the author's
+            own statement of what they ran is what stands -- and if a
+            pull request makes no such statement, say that too.
 
             Do not file issues from here: a collateral finding goes in the
             summary comment, under a line saying it is not a finding
