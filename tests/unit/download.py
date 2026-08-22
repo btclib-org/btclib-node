@@ -103,6 +103,30 @@ def test_the_peer_that_sent_a_transaction_is_not_asked_for_it_again():
     assert not only(sender, GetData)
 
 
+def test_a_single_transaction_is_announced_rather_than_held_back():
+    # one is a whole step's worth of transactions on a quiet network,
+    # and the lists are emptied at the end of the step: a batch size
+    # held against them is not a throttle but a filter on whether a
+    # transaction is ever announced at all
+    sender, other = a_conn(1), a_conn(2)
+    manager = make_manager([sender, other])
+    manager.received_txs = [(1, a_hash(1))]
+    manager.tx_download()
+    (inv,) = only(other, Inv)
+    assert hashes_of(inv) == [a_hash(1)]
+    assert not only(sender, Inv)
+
+
+def test_a_peer_that_already_has_all_of_them_is_told_nothing():
+    # and not told with an empty inv, which is a message with nothing in
+    # it for the peer to do
+    sender = a_conn(1)
+    manager = make_manager([sender])
+    manager.received_txs = [(1, a_hash(n)) for n in range(1, 4)]
+    manager.tx_download()
+    assert not sender.sent
+
+
 def test_a_transaction_is_announced_to_the_peers_that_do_not_have_it():
     sender, announcer, other = a_conn(1), a_conn(2), a_conn(3)
     manager = make_manager([sender, announcer, other])
