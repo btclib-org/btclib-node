@@ -209,17 +209,33 @@ def getdata(node, msg, conn):
         InventoryType.MSG_WTX,
         InventoryType.MSG_WITNESS_TX,
     )
-    for item in getdata.items:
-        if item.type_code not in tx_types:
-            continue
-        wtxid = item.type_code == InventoryType.MSG_WTX
-        tx = node.mempool.get_tx(item.hash, wtxid=wtxid)
-        if tx:
-            include_witness = item.type_code in (
-                InventoryType.MSG_WITNESS_TX,
-                InventoryType.MSG_WTX,
-            )
-            conn.send(TxMsg(tx, include_witness=include_witness))
+    # BIP37's fRelay is written about announcements -- "broadcast
+    # transactions will not be announced" -- and says nothing about a
+    # transaction a peer asks for by hash. Core answers nothing anyway:
+    # with fRelay false and NODE_BLOOM not offered, `ProcessGetData`
+    # skips every transaction item outright, and where NODE_BLOOM is
+    # offered, `FindTxForGetData` gates on `m_last_inv_sequence`, which
+    # never advances for a peer nothing is announced to. This node
+    # follows Core rather than the sentence, and the reason is what the
+    # sentence does not cover: serving the mempool by hash to a peer
+    # that declined announcements answers, for anyone willing to ask,
+    # whether a given transaction reached this node -- and a peer that
+    # declined is the one with no other reason to be asking.
+    #
+    # Blocks are not affected. A peer that wants no transactions is
+    # still a peer syncing the chain.
+    if conn.relay_tx:
+        for item in getdata.items:
+            if item.type_code not in tx_types:
+                continue
+            wtxid = item.type_code == InventoryType.MSG_WTX
+            tx = node.mempool.get_tx(item.hash, wtxid=wtxid)
+            if tx:
+                include_witness = item.type_code in (
+                    InventoryType.MSG_WITNESS_TX,
+                    InventoryType.MSG_WTX,
+                )
+                conn.send(TxMsg(tx, include_witness=include_witness))
 
     block_types = (InventoryType.MSG_BLOCK, InventoryType.MSG_WITNESS_BLOCK)
     for item in getdata.items:
