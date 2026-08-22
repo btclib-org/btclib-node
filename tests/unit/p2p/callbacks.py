@@ -2,21 +2,73 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""What a peer gets back when it asks this node for addresses.
+"""What this node answers a peer with, message by message.
 
-An answer at all, first of all: `main.handle_p2p` turns a callback that
-raises into a disconnect, so a `getaddr` this node cannot answer costs
-the peer that asked. Then the shape of it -- the message version the
-peer asked for, only the addresses that version can carry, and no more
-of them in one message than the protocol allows.
+`main.handle_p2p` turns a callback that raises into a disconnect, and
+`handle_p2p_handshake` does the same, so what a callback does with a
+message it dislikes is the difference between refusing the message and
+losing the peer. The functional tests drive two cooperating nodes, which
+is the path where every message is welcome; these are the rest.
 """
 
 import time
 from types import SimpleNamespace
 
+import pytest
+from btclib.block import Block, BlockHeader
+from btclib.exceptions import BTClibValueError
+from btclib.p2p.addrv2 import SendAddrV2
+from btclib.p2p.compact_blocks import SendCmpct
+from btclib.p2p.data import BlockPayload as BlockMsg
+from btclib.p2p.data import TxPayload as TxMsg
+from btclib.p2p.handshake import Verack
+from btclib.p2p.inventory import (
+    GetData,
+    GetHeaders,
+    Headers,
+    Inv,
+    Inventory,
+    InventoryType,
+    NotFound,
+)
+from btclib.p2p.keepalive import Ping, Pong
+from btclib.script.witness import Witness
+
+from btclib_node.chains import RegTest
+from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion, Services
+from btclib_node.exceptions import MissingPrevoutError
+from btclib_node.log import Logger
+from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import NetworkAddress, NetworkID, PeerDB
-from btclib_node.p2p.callbacks import getaddr
+from btclib_node.p2p.callbacks import (
+    addr,
+    addrv2,
+    getaddr,
+    getdata,
+    getheaders,
+    headers,
+    inv,
+    not_found,
+    ping,
+    pong,
+    reject,
+    sendaddrv2,
+    tx,
+    verack,
+    version,
+    wtxidrelay,
+)
+from btclib_node.p2p.callbacks import block as block_callback
 from btclib_node.p2p.messages.address import Addr, AddrV2
+from btclib_node.p2p.messages.empty import Getaddr, Sendheaders, Wtxidrelay
+from btclib_node.p2p.messages.errors import Reject, RejectCode
+from btclib_node.p2p.messages.handshake import Version
+from tests.helpers import (
+    generate_random_chain,
+    generate_random_header_chain,
+    generate_random_transaction,
+    local_addr,
+)
 
 
 def an_address(n=0, netid=NetworkID.ipv4):
@@ -97,3 +149,609 @@ def test_more_addresses_than_fit_one_message_are_split():
     assert [len(answer.addresses) for answer in sent] == [1000, 1000, 1]
     served = [address for answer in sent for address in answer.addresses]
     assert served == addresses
+
+
+def a_version(
+    *,
+    protocol=ProtocolVersion,
+    services=Services.network | Services.witness,
+    nonce=7,
+    relay=True,
+):
+    return Version(
+        version=protocol,
+        services=services,
+        timestamp=1,
+        addr_recv=local_addr(18444),
+        addr_from=local_addr(18444, services=services),
+        nonce=nonce,
+        user_agent="/Btclib/",
+        start_height=0,
+        relay=relay,
+    ).serialize()
+
+
+def a_peer(**attributes):
+    sent = []
+    stopped = []
+    peer = SimpleNamespace(
+        send=sent.append,
+        sent=sent,
+        stop=lambda: stopped.append(True),
+        stopped=stopped,
+        status=P2pConnStatus.Open,
+        version_message=None,
+        wtxidrelay_received=False,
+        prefer_addressv2=False,
+        # what Connection sets; the callback writes relay_txs, which is
+        # #76
+        relay_tx=True,
+        download_queue=[],
+        pending_eviction=False,
+        last_block_timestamp=0,
+        ping_sent=0,
+        ping_nonce=0,
+        latency=0,
+        send_ping=lambda: sent.append("ping"),
+        client=SimpleNamespace(getpeername=lambda: ("1.2.3.4", 18444)),
+    )
+    peer.__dict__.update(attributes)
+    return peer
+
+
+def a_handshake_node(*, nonces=(), status=NodeStatus.HeaderSynced, peer_db=None):
+    return SimpleNamespace(
+        status=status,
+        p2p_manager=SimpleNamespace(nonces=list(nonces), peer_db=peer_db),
+        chainstate=SimpleNamespace(
+            block_index=SimpleNamespace(get_block_locator_hashes=lambda: [b"\x00" * 32])
+        ),
+        logger=SimpleNamespace(
+            info=lambda *a: None, warning=lambda *a: None, debug=lambda *a: None
+        ),
+    )
+
+
+def commands(peer):
+    return [
+        message if isinstance(message, str) else type(message).__name__
+        for message in peer.sent
+    ]
+
+
+def test_a_version_is_answered_with_what_this_node_speaks():
+    peer = a_peer()
+    version(a_handshake_node(), a_version(), peer)
+    assert commands(peer) == ["Wtxidrelay", "SendAddrV2", "Verack"]
+    assert isinstance(peer.sent[0], Wtxidrelay)
+    assert isinstance(peer.sent[1], SendAddrV2)
+    assert isinstance(peer.sent[2], Verack)
+    assert peer.relay_txs is True  # the attribute #76 is about
+    assert not peer.stopped
+
+
+def test_a_version_carrying_our_own_nonce_is_this_node_calling_itself():
+    peer = a_peer()
+    version(a_handshake_node(nonces=[7]), a_version(nonce=7), peer)
+    assert peer.stopped == [True]
+    assert not peer.sent
+
+
+def test_a_peer_speaking_an_older_protocol_is_let_go():
+    peer = a_peer()
+    version(a_handshake_node(), a_version(protocol=ProtocolVersion - 1), peer)
+    assert peer.stopped == [True]
+
+
+def test_a_peer_without_the_witness_service_is_let_go():
+    peer = a_peer()
+    version(a_handshake_node(), a_version(services=Services.network), peer)
+    assert peer.stopped == [True]
+
+
+def test_a_pruned_peer_is_let_go_only_once_the_blocks_are_synced():
+    pruned = Services.witness
+    peer = a_peer()
+    version(
+        a_handshake_node(status=NodeStatus.HeaderSynced),
+        a_version(services=pruned),
+        peer,
+    )
+    assert not peer.stopped
+
+    peer = a_peer()
+    version(
+        a_handshake_node(status=NodeStatus.BlockSynced),
+        a_version(services=pruned),
+        peer,
+    )
+    assert peer.stopped == [True]
+
+
+def test_a_version_that_says_it_relays_nothing_is_taken_at_its_word():
+    peer = a_peer()
+    version(a_handshake_node(), a_version(relay=False), peer)
+    assert peer.relay_txs is False
+
+
+def test_a_verack_completes_the_handshake():
+    peer = a_peer(version_message=object(), wtxidrelay_received=True)
+    verack(a_handshake_node(), b"", peer)
+    assert peer.status == P2pConnStatus.Connected
+    assert commands(peer) == [
+        "Sendheaders",
+        "SendCmpct",
+        "ping",
+        "Getaddr",
+        "GetHeaders",
+    ]
+    assert isinstance(peer.sent[0], Sendheaders)
+    assert isinstance(peer.sent[1], SendCmpct)
+    assert isinstance(peer.sent[3], Getaddr)
+    assert isinstance(peer.sent[4], GetHeaders)
+    assert not peer.stopped
+
+
+def test_a_verack_before_the_version_is_let_go():
+    peer = a_peer(wtxidrelay_received=True)
+    verack(a_handshake_node(), b"", peer)
+    assert peer.stopped == [True]
+    assert peer.status == P2pConnStatus.Open
+
+
+def test_a_verack_from_a_peer_that_never_asked_for_wtxid_relay_is_let_go():
+    peer = a_peer(version_message=object())
+    verack(a_handshake_node(), b"", peer)
+    assert peer.stopped == [True]
+
+
+def test_the_two_flags_a_peer_sets_on_this_connection():
+    peer = a_peer()
+    wtxidrelay(a_handshake_node(), b"", peer)
+    sendaddrv2(a_handshake_node(), b"", peer)
+    assert peer.wtxidrelay_received
+    assert peer.prefer_addressv2
+
+
+def test_a_ping_is_answered_with_the_nonce_it_carried():
+    peer = a_peer()
+    ping(a_handshake_node(), Ping(1234).serialize(), peer)
+    (answer,) = peer.sent
+    assert isinstance(answer, Pong)
+    assert answer.nonce == 1234
+
+
+def test_a_pong_answering_our_ping_is_a_latency_measurement():
+    peer = a_peer(ping_sent=time.time() - 0.5, ping_nonce=1234)
+    pong(a_handshake_node(), Pong(1234).serialize(), peer)
+    assert peer.latency > 0
+    assert peer.ping_sent == 0
+    assert peer.ping_nonce == 0
+    assert not peer.stopped
+
+
+def test_a_pong_with_the_wrong_nonce_is_a_peer_not_speaking_the_protocol():
+    peer = a_peer(ping_sent=time.time(), ping_nonce=1234)
+    pong(a_handshake_node(), Pong(4321).serialize(), peer)
+    assert peer.stopped == [True]
+
+
+def test_a_pong_nobody_pinged_for_is_ignored():
+    peer = a_peer()
+    pong(a_handshake_node(), Pong(1234).serialize(), peer)
+    assert not peer.stopped
+    assert peer.latency == 0
+
+
+def test_the_addresses_a_peer_sends_are_kept():
+    for callback, message_cls, addrv2_wanted in (
+        (addr, Addr, False),
+        (addrv2, AddrV2, True),
+    ):
+        peer_db = PeerDB(None, None)
+        node = a_handshake_node(peer_db=peer_db)
+        given = [an_address(1), an_address(2)]
+        callback(node, message_cls(given).serialize(), a_peer())
+        assert {address.addr for address in peer_db.addresses} == {
+            address.addr for address in given
+        }
+        assert not addrv2_wanted or NetworkID.ipv4 in {
+            address.netid for address in peer_db.addresses
+        }
+
+
+def test_a_notfound_is_logged_rather_than_held_against_the_peer():
+    logged = []
+    node = a_handshake_node()
+    node.logger.warning = logged.append
+    peer = a_peer()
+    not_found(
+        node,
+        NotFound([Inventory(InventoryType.MSG_TX, b"\x11" * 32)]).serialize(),
+        peer,
+    )
+    assert logged
+    assert not peer.stopped
+
+
+def test_a_reject_names_the_transaction_it_is_about():
+    logged = []
+    node = a_handshake_node()
+    node.logger.warning = logged.append
+    peer = a_peer()
+    txid = bytes(range(32))
+    message = Reject("tx", RejectCode.insufficientfee, "min relay fee not met", txid)
+    reject(node, message.serialize(), peer)
+    (line,) = logged
+    assert "insufficientfee" in line
+    assert "min relay fee not met" in line
+    assert txid.hex() in line
+    assert not peer.stopped
+
+
+def test_a_reject_survives_the_wire():
+    # the hash is what a reject is about, and a symmetric one would not
+    # notice it coming back reversed
+    message = Reject("tx", RejectCode.insufficientfee, "no", bytes(range(32)))
+    assert Reject.parse(message.serialize()) == message
+
+
+def a_transaction():
+    # with a witness, so that a txid and a wtxid are different bytes and
+    # an answer naming the wrong one cannot pass
+    transaction = generate_random_transaction()
+    transaction.vin[0].script_witness = Witness([b"\x11" * 32])
+    return transaction
+
+
+def a_data_node(
+    *, mempool=None, block_index=None, block_db=None, status=NodeStatus.BlockSynced
+):
+    node = a_handshake_node(status=status)
+    node.mempool = mempool if mempool is not None else Mempool(Logger(debug=True))
+    node.chain = RegTest()
+    node.block_db = block_db
+    node.download_manager = SimpleNamespace(received_txs=[], inv_txs=[])
+    if block_index is not None:
+        node.chainstate.block_index = block_index
+    return node
+
+
+def test_a_transaction_that_verifies_is_kept_and_reported(monkeypatch):
+    import btclib_node.p2p.callbacks as cb
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: None)
+    transaction = a_transaction()
+    node = a_data_node()
+    peer = a_peer(id=3)
+    tx(node, TxMsg(transaction, include_witness=True).serialize(), peer)
+    assert node.mempool.contains_tx(transaction)
+    assert node.download_manager.received_txs == [(3, transaction.hash)]
+
+
+def test_a_transaction_whose_parents_are_missing_is_not_kept(monkeypatch):
+    import btclib_node.p2p.callbacks as cb
+
+    def missing(node, transaction):
+        raise MissingPrevoutError
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", missing)
+    transaction = a_transaction()
+    node = a_data_node()
+    tx(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
+    assert not node.mempool.contains_tx(transaction)
+    assert node.download_manager.received_txs == []
+
+
+def test_a_transaction_already_held_is_not_reported_twice(monkeypatch):
+    import btclib_node.p2p.callbacks as cb
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: None)
+    transaction = a_transaction()
+    node = a_data_node()
+    node.mempool.add_tx(transaction)
+    tx(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
+    assert node.download_manager.received_txs == []
+
+
+class FakeBlockIndex:
+    def __init__(self, infos):
+        self.infos = infos
+        self.inserted = []
+
+    def get_block_info(self, block_hash):
+        return self.infos[block_hash]
+
+    def insert_block_info(self, block_info):
+        self.inserted.append(block_info)
+
+
+def a_block():
+    (block,) = generate_random_chain(1, RegTest().genesis.hash)
+    return block
+
+
+def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded():
+    block = a_block()
+    info = SimpleNamespace(downloaded=False)
+    index = FakeBlockIndex({block.header.hash: info})
+    added = []
+    node = a_data_node(
+        block_index=index, block_db=SimpleNamespace(add_block=added.append)
+    )
+    peer = a_peer(
+        download_queue=[block.header.hash],
+        last_block_timestamp=0,
+        pending_eviction=True,
+    )
+    block_callback(
+        node,
+        BlockMsg(block, include_witness=True, check_validity=False).serialize(
+            check_validity=False
+        ),
+        peer,
+    )
+    assert peer.download_queue == []
+    assert peer.last_block_timestamp > 0
+    assert peer.pending_eviction is False
+    assert added == [block]
+    assert info.downloaded is True
+    assert index.inserted == [info]
+
+
+def test_a_block_already_stored_is_not_stored_again():
+    block = a_block()
+    index = FakeBlockIndex({block.header.hash: SimpleNamespace(downloaded=True)})
+    added = []
+    node = a_data_node(
+        block_index=index, block_db=SimpleNamespace(add_block=added.append)
+    )
+    block_callback(
+        node,
+        BlockMsg(block, include_witness=True, check_validity=False).serialize(
+            check_validity=False
+        ),
+        a_peer(),
+    )
+    assert added == []
+    assert index.inserted == []
+
+
+def a_block_claiming_an_easier_target_than_the_chain_allows(block):
+    # regtest's limit is 7fffff00..., and a target has 32 octets to fit
+    # in: 800000... is the next one up that still does
+    header = BlockHeader(
+        version=block.header.version,
+        previous_block_hash=block.header.previous_block_hash,
+        merkle_root=block.header.merkle_root,
+        time=block.header.time,
+        bits=b"\x21\x00\x80\x00",
+        nonce=block.header.nonce,
+        check_validity=False,
+    )
+    return Block(header, block.transactions, check_validity=False)
+
+
+def test_a_block_whose_proof_of_work_does_not_hold_up_is_refused():
+    added = []
+    broken = a_block_claiming_an_easier_target_than_the_chain_allows(a_block())
+    index = FakeBlockIndex({broken.header.hash: SimpleNamespace(downloaded=False)})
+    node = a_data_node(
+        block_index=index, block_db=SimpleNamespace(add_block=added.append)
+    )
+    payload = BlockMsg(broken, include_witness=True, check_validity=False).serialize(
+        check_validity=False
+    )
+    with pytest.raises(BTClibValueError):
+        block_callback(node, payload, a_peer())
+    assert added == []
+    assert index.inserted == []
+
+
+def test_an_inventory_is_ignored_until_the_blocks_are_synced():
+    node = a_data_node(status=NodeStatus.HeaderSynced)
+    peer = a_peer()
+    inv(node, Inv([Inventory(InventoryType.MSG_BLOCK, b"\x11" * 32)]).serialize(), peer)
+    assert not peer.sent
+
+
+def test_a_block_announced_is_answered_with_a_getheaders():
+    node = a_data_node()
+    peer = a_peer()
+    hashes = [b"\x11" * 32, b"\x22" * 32]
+    items = [Inventory(InventoryType.MSG_BLOCK, h) for h in hashes]
+    inv(node, Inv(items).serialize(), peer)
+    (answer,) = peer.sent
+    assert isinstance(answer, GetHeaders)
+    # the last one announced: the headers between are what we are after
+    assert answer.hash_stop == hashes[-1]
+
+
+def test_a_transaction_announced_that_we_lack_is_wanted():
+    transaction = a_transaction()
+    node = a_data_node()
+    peer = a_peer(id=4)
+    items = [Inventory(InventoryType.MSG_WTX, transaction.hash)]
+    inv(node, Inv(items).serialize(), peer)
+    assert node.download_manager.inv_txs == [(4, transaction.hash)]
+    assert not peer.sent
+
+
+def test_a_transaction_announced_that_we_hold_is_not_wanted():
+    transaction = a_transaction()
+    mempool = Mempool(Logger(debug=True))
+    mempool.add_tx(transaction)
+    node = a_data_node(mempool=mempool)
+    items = [Inventory(InventoryType.MSG_WTX, transaction.hash)]
+    inv(node, Inv(items).serialize(), a_peer(id=4))
+    assert node.download_manager.inv_txs == []
+
+
+def test_a_transaction_this_node_holds_is_served():
+    transaction = a_transaction()
+    mempool = Mempool(Logger(debug=True))
+    mempool.add_tx(transaction)
+    node = a_data_node(mempool=mempool)
+    # which identifier the peer asked by, and whether the answer carries
+    # the witness, are two different questions and the codes answer both
+    for type_code, identifier, with_witness in (
+        (InventoryType.MSG_TX, transaction.id, False),
+        (InventoryType.MSG_WITNESS_TX, transaction.id, True),
+        (InventoryType.MSG_WTX, transaction.hash, True),
+    ):
+        peer = a_peer()
+        getdata(node, GetData([Inventory(type_code, identifier)]).serialize(), peer)
+        (answer,) = peer.sent
+        assert isinstance(answer, TxMsg)
+        assert answer.tx == transaction
+        assert answer.include_witness is with_witness
+
+
+def test_a_transaction_is_not_found_under_the_other_identifier():
+    transaction = a_transaction()
+    mempool = Mempool(Logger(debug=True))
+    mempool.add_tx(transaction)
+    node = a_data_node(mempool=mempool)
+    for type_code, identifier in (
+        (InventoryType.MSG_TX, transaction.hash),
+        (InventoryType.MSG_WTX, transaction.id),
+    ):
+        peer = a_peer()
+        getdata(node, GetData([Inventory(type_code, identifier)]).serialize(), peer)
+        assert not peer.sent
+
+
+def test_a_transaction_this_node_does_not_hold_is_not_answered():
+    node = a_data_node()
+    peer = a_peer()
+    items = [Inventory(InventoryType.MSG_TX, b"\x11" * 32)]
+    getdata(node, GetData(items).serialize(), peer)
+    assert not peer.sent
+
+
+def test_a_block_this_node_holds_is_served():
+    block = a_block()
+    node = a_data_node(block_db=SimpleNamespace(get_block=lambda h: block))
+    for type_code, with_witness in (
+        (InventoryType.MSG_BLOCK, False),
+        (InventoryType.MSG_WITNESS_BLOCK, True),
+    ):
+        peer = a_peer()
+        items = [Inventory(type_code, block.header.hash)]
+        getdata(node, GetData(items).serialize(), peer)
+        (answer,) = peer.sent
+        assert isinstance(answer, BlockMsg)
+        assert answer.block.header.hash == block.header.hash
+        assert answer.include_witness is with_witness
+
+
+def test_a_block_this_node_does_not_hold_is_not_answered():
+    node = a_data_node(block_db=SimpleNamespace(get_block=lambda h: None))
+    peer = a_peer()
+    items = [Inventory(InventoryType.MSG_BLOCK, b"\x11" * 32)]
+    getdata(node, GetData(items).serialize(), peer)
+    assert not peer.sent
+
+
+def test_an_inventory_of_neither_kind_is_skipped():
+    node = a_data_node(block_db=SimpleNamespace(get_block=lambda h: None))
+    peer = a_peer()
+    items = [Inventory(InventoryType.MSG_FILTERED_BLOCK, b"\x11" * 32)]
+    getdata(node, GetData(items).serialize(), peer)
+    assert not peer.sent
+
+
+class FakeHeaderIndex:
+    def __init__(self, added):
+        self.added = added
+        self.given = None
+
+    def add_headers(self, headers):
+        self.given = list(headers)
+        return self.added
+
+    def get_block_locator_hashes(self):
+        return [b"\x00" * 32]
+
+
+def test_a_full_batch_of_headers_is_followed_by_a_request_for_more():
+    chain = generate_random_header_chain(2000, RegTest().genesis.hash)
+    node = a_data_node(status=NodeStatus.SyncingHeaders)
+    index = FakeHeaderIndex(added=True)
+    node.chainstate.block_index = index
+    peer = a_peer()
+    headers(node, Headers(chain).serialize(), peer)
+    assert index.given == chain
+    (answer,) = peer.sent
+    assert isinstance(answer, GetHeaders)
+    assert node.status == NodeStatus.SyncingHeaders
+
+
+def test_a_full_batch_this_node_refused_still_ends_the_sync():
+    # what the code does, not what it should: a batch refused for a bad
+    # proof of work is indistinguishable here from one carrying nothing
+    # new, and either declares the headers synced. See #75
+    chain = generate_random_header_chain(2000, RegTest().genesis.hash)
+    node = a_data_node(status=NodeStatus.SyncingHeaders)
+    node.chainstate.block_index = FakeHeaderIndex(added=False)
+    peer = a_peer()
+    headers(node, Headers(chain).serialize(), peer)
+    assert not peer.sent
+    assert node.status == NodeStatus.HeaderSynced
+
+
+def test_a_short_batch_means_the_headers_are_synced():
+    chain = generate_random_header_chain(2, RegTest().genesis.hash)
+    node = a_data_node(status=NodeStatus.SyncingHeaders)
+    node.chainstate.block_index = FakeHeaderIndex(added=True)
+    peer = a_peer()
+    headers(node, Headers(chain).serialize(), peer)
+    assert not peer.sent
+    assert node.status == NodeStatus.HeaderSynced
+
+
+def test_a_short_batch_when_the_headers_are_already_synced_changes_nothing():
+    chain = generate_random_header_chain(2, RegTest().genesis.hash)
+    node = a_data_node(status=NodeStatus.BlockSynced)
+    node.chainstate.block_index = FakeHeaderIndex(added=True)
+    peer = a_peer()
+    headers(node, Headers(chain).serialize(), peer)
+    assert not peer.sent
+    assert node.status == NodeStatus.BlockSynced
+
+
+def test_this_node_answers_a_getheaders_from_what_it_knows():
+    chain = generate_random_header_chain(2, RegTest().genesis.hash)
+    node = a_data_node()
+    asked = []
+
+    def from_locators(locator, stop):
+        asked.append((list(locator), stop))
+        return chain
+
+    node.chainstate.block_index = SimpleNamespace(
+        get_headers_from_locators=from_locators
+    )
+    peer = a_peer()
+    locator, stop = [b"\x11" * 32, b"\x22" * 32], b"\x33" * 32
+    getheaders(node, GetHeaders(ProtocolVersion, locator, stop).serialize(), peer)
+    # the peer's question reaches the index as the peer asked it, which
+    # a locator and a stop of the same value could not tell
+    assert asked == [(locator, stop)]
+    (sent,) = peer.sent
+    assert isinstance(sent, Headers)
+    assert list(sent.headers) == chain
+
+
+def test_a_getheaders_this_node_cannot_answer_is_not_answered():
+    node = a_data_node()
+    node.chainstate.block_index = SimpleNamespace(
+        get_headers_from_locators=lambda locator, stop: []
+    )
+    peer = a_peer()
+    getheaders(
+        node,
+        GetHeaders(ProtocolVersion, [b"\x11" * 32], b"\x00" * 32).serialize(),
+        peer,
+    )
+    assert not peer.sent

@@ -149,10 +149,11 @@ def block(node, msg, conn):
     block_info = node.chainstate.block_index.get_block_info(block_hash)
 
     if not block_info.downloaded:
-        try:
-            block.assert_valid(node.chain.pow_limit_bits)
-        except Exception as e:  # should set block to invalid
-            raise e
+        # a block that does not hold up is nobody's: the raise reaches
+        # main.handle_p2p, which drops the peer that sent it. Marking
+        # the block itself invalid, so the next peer is not asked for it
+        # too, is #77
+        block.assert_valid(node.chain.pow_limit_bits)
         node.block_db.add_block(block)
         node.logger.info(f"Received new block with hash:{block_hash.hex()}")
         block_info.downloaded = True
