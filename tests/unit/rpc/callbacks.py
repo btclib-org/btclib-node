@@ -227,9 +227,8 @@ def test_something_that_is_not_a_transaction_is_answered_with_nothing():
 
 
 def test_a_transaction_the_mempool_will_not_have_is_not_reported_relayed(monkeypatch):
-    # a return inside a finally used to discard whatever was propagating
-    # through it, so every refusal came back as the txid of a
-    # transaction this node had neither kept nor sent
+    # a refusal is not answered with the txid of a transaction this node
+    # has neither kept nor sent
     import btclib_node.rpc.callbacks as cb
 
     def missing(node, transaction):
@@ -265,6 +264,7 @@ def test_a_block_header_names_the_ones_either_side_of_it():
         chainstate=SimpleNamespace(block_index=a_header_index(chain))
     )
     middle = get_block_header(node, None, [chain[1].hash.hex()])
+    assert middle["hash"] == chain[1].hash
     assert middle["height"] == 1
     assert middle["confirmations"] == 2
     assert middle["previousblockhash"] == chain[0].hash
@@ -294,6 +294,7 @@ def test_the_tip_and_the_block_at_a_height_are_read_off_the_active_chain():
     )
     assert get_best_block_hash(node, None, []) == chain[-1]
     assert get_block_hash(node, None, [0]) == chain[0]
+    assert get_block_hash(node, None, [1]) == chain[1]
 
 
 def test_a_transaction_whose_scripts_do_not_verify_is_still_answered_with_its_txid(
