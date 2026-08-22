@@ -182,3 +182,65 @@ def test_add_tx(tmp_path):
     # tx1 needs to be added to the mempool
     node.mempool.add_tx(tx1)
     verify_mempool_acceptance(node, tx2)
+
+
+def hashes(chain):
+    return [block.header.hash for block in chain]
+
+
+def test_a_heavier_fork_replaces_the_chain_the_node_was_on(tmp_path):
+    # more than one block on the branch being left, because that is the
+    # shallowest branch whose blocks have to be undone in an order: an
+    # output block N created and block N+1 spent is gone from the utxo
+    # set by the time N comes to be undone
+    node = regtest_node(tmp_path)
+    first = generate_random_chain(2, RegTest().genesis.hash)
+    block_index = connect(node, first)
+    assert block_index.active_chain[1:] == hashes(first)
+
+    second = generate_random_chain(3, RegTest().genesis.hash)
+    connect(node, second)
+    assert block_index.active_chain[1:] == hashes(second)
+    for block_hash in hashes(first):
+        assert block_hash not in block_index.active_chain
+
+
+def test_a_reorg_gives_the_orphaned_transactions_back_to_the_mempool(tmp_path):
+    # only once the node is synced: while it is still catching up, a
+    # transaction from a block it steps off is not worth relaying
+    node = regtest_node(tmp_path)
+    first = generate_random_chain(2, RegTest().genesis.hash)
+    connect(node, first)
+    assert node.status == NodeStatus.BlockSynced
+
+    orphaned = first[-1].transactions[1]
+    assert not node.mempool.contains_tx(orphaned)
+
+    # held before the reorg and confirmed by it, so that taking it out
+    # of the mempool is something the reorg has to do rather than
+    # something that was never needed
+    second = generate_random_chain(3, RegTest().genesis.hash)
+    confirmed = second[-1].transactions[1]
+    node.mempool.add_tx(confirmed)
+    assert node.mempool.contains_tx(confirmed)
+
+    connect(node, second)
+
+    # #85: the orphan spends the abandoned branch's own coinbase, so it
+    # can never be valid again -- it goes back in all the same, which is
+    # what this pins and what that issue is about
+    assert node.mempool.contains_tx(orphaned)
+    assert not node.mempool.contains_tx(confirmed)
+
+
+def test_a_reorg_before_the_node_is_synced_leaves_the_mempool_alone(tmp_path):
+    node = regtest_node(tmp_path)
+    first = generate_random_chain(2, RegTest().genesis.hash)
+    connect(node, first)
+    node.status = NodeStatus.HeaderSynced
+
+    second = generate_random_chain(3, RegTest().genesis.hash)
+    block_index = connect(node, second)
+    # the reorg happened, and left the mempool out of it
+    assert block_index.active_chain[1:] == hashes(second)
+    assert node.mempool.size == 0
