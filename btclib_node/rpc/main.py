@@ -48,6 +48,13 @@ def handle_rpc(node):
     node.logger.debug(f"Received rpc message: {conn_id}")
 
     response = []
+    # JSON-RPC 2.0: an empty batch is itself an invalid request, and
+    # the specification's own example for it is this single object. The
+    # append is also what keeps `response` from staying empty, which
+    # async_send would put on the wire as a bare `[]` -- no unwrapping,
+    # since its one-element case does not match, and no valid answer.
+    if not data:
+        response.append(error_msg(-32600))
     for request in data:
         if not is_valid_rpc(request):
             response.append(error_msg(-32600))
@@ -70,7 +77,10 @@ def handle_rpc(node):
                 node.logger.exception("Exception occurred")
                 response.append(error_msg(-32603))
 
-    if request.get("method") == "stop":
+    # asked of the batch, not of whichever request came last: reading
+    # the loop variable after the loop is unbound on an empty batch and
+    # is a str, not a dict, on a batch ending in one.
+    if any(is_valid_rpc(request) and request["method"] == "stop" for request in data):
         conn.send_and_wait(response)
         node.stop()
     else:
