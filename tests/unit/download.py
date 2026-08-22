@@ -35,7 +35,6 @@ def a_conn(conn_id, *, queue=None, last_block=None):
         download_queue=queue if queue is not None else [],
         pending_eviction=False,
         last_block_timestamp=time.time() if last_block is None else last_block,
-        stopped=False,
         stop=lambda: None,
     )
 
@@ -57,7 +56,7 @@ def only(conn, kind):
     return [message for message in conn.sent if isinstance(message, kind)]
 
 
-def test_nothing_is_downloaded_before_the_headers_are_in():
+def test_a_step_asks_for_neither_kind_while_the_headers_are_syncing():
     conn = a_conn(1)
     manager = make_manager([conn], status=NodeStatus.SyncingHeaders)
     manager.inv_txs = [(1, a_hash(1))]
@@ -175,12 +174,16 @@ def test_a_block_is_asked_of_a_peer_with_an_empty_queue():
     assert conn.download_queue == wanted
 
 
-def test_a_block_already_downloaded_is_not_asked_for():
+def test_a_block_that_arrived_while_the_window_was_held_is_not_asked_for():
+    # get_download_candidates never offers a block already stored, so
+    # the filter below it is about the window this manager is holding
+    # from an earlier pass, across which a block can have arrived
     conn = a_conn(1)
     wanted = [a_hash(1), a_hash(2)]
     manager = make_manager(
         [conn], block_index=FakeBlockIndex(wanted, downloaded=[a_hash(1)])
     )
+    manager.block_window = wanted
     manager.block_download()
     (getdata,) = only(conn, GetData)
     assert hashes_of(getdata) == [a_hash(2)]
@@ -191,6 +194,7 @@ def test_nothing_left_to_download_asks_for_nothing():
     manager = make_manager(
         [conn], block_index=FakeBlockIndex([a_hash(1)], downloaded=[a_hash(1)])
     )
+    manager.block_window = [a_hash(1)]
     manager.block_download()
     assert not conn.sent
     assert manager.block_window == []
@@ -251,5 +255,7 @@ def test_a_peer_that_is_already_pending_eviction_is_left_alone():
         block_index=FakeBlockIndex([a_hash(1)]),
     )
     manager.block_download()
-    # the queue it was already given is not thrown away a second time
+    # the queue it was already given is not thrown away a second time,
+    # so it is not asked for the same block again either
     assert quiet.download_queue == [a_hash(1)]
+    assert not quiet.sent
