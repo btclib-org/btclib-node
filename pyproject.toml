@@ -34,6 +34,10 @@ harness = [
     # pytest-ordering is a different, unmaintained package that does not
     # run under pytest 9.
     "pytest-order>=1.5.0",
+    # bounds a test, so that a node that stops answering fails the run
+    # instead of hanging it (btclib-org/btclib_node#98). The limit is in
+    # [tool.pytest.ini_options] below.
+    "pytest-timeout>=2.4.0",
 ]
 # harness, plus what the suite delegates to.
 test = [
@@ -72,6 +76,20 @@ testpaths = ["tests/unit", "tests/functional"]
 python_files = "*.py"
 python_functions = "test*"
 addopts = "-n auto --remote-data=any --cov --cov-report term-missing:skip-covered --durations=10"
+# What a single test is given before the run says which test hung and
+# where, instead of sitting there. Measured rather than picked, over
+# repeated runs of the whole suite under `-n auto`: the slowest test
+# is tests/functional/p2p/test_download.py::test_download, 9.51s on an
+# idle machine, 27.85s on one shared with other work, and 42.09s on
+# one loaded past three times its core count -- that last being the
+# run where the test gave up on itself, `wait_until` allowing it 20.5s
+# of deadlines on top of a setup that had already taken twenty.
+# That is the bound that matters rather than the spread: a limit
+# anywhere near where the suite reports which condition it was waiting
+# on trades a diagnosis for a timeout. This is nearly three times the
+# worst of them, and still turns the ten-minute hangs of
+# btclib-org/btclib_node#98 into a failure that names its test.
+timeout = 120
 filterwarnings = ['ignore:cannot collect test class']
 
 [tool.coverage.run]

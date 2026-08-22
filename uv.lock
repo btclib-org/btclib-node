@@ -40,6 +40,7 @@ dev = [
     { name = "pytest-cov" },
     { name = "pytest-order" },
     { name = "pytest-remotedata" },
+    { name = "pytest-timeout" },
     { name = "pytest-xdist" },
     { name = "requests" },
     { name = "ruff" },
@@ -48,6 +49,7 @@ harness = [
     { name = "pytest" },
     { name = "pytest-order" },
     { name = "pytest-remotedata" },
+    { name = "pytest-timeout" },
     { name = "pytest-xdist" },
 ]
 lint = [
@@ -60,6 +62,7 @@ test = [
     { name = "pytest-cov" },
     { name = "pytest-order" },
     { name = "pytest-remotedata" },
+    { name = "pytest-timeout" },
     { name = "pytest-xdist" },
     { name = "requests" },
 ]
@@ -78,6 +81,7 @@ dev = [
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "pytest-order", specifier = ">=1.5.0" },
     { name = "pytest-remotedata", specifier = ">=0.4.2" },
+    { name = "pytest-timeout", specifier = ">=2.4.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "requests", specifier = ">=2.34.2" },
     { name = "ruff", specifier = ">=0.16.4" },
@@ -86,6 +90,7 @@ harness = [
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-order", specifier = ">=1.5.0" },
     { name = "pytest-remotedata", specifier = ">=0.4.2" },
+    { name = "pytest-timeout", specifier = ">=2.4.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
 ]
 lint = [
@@ -98,6 +103,7 @@ test = [
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "pytest-order", specifier = ">=1.5.0" },
     { name = "pytest-remotedata", specifier = ">=0.4.2" },
+    { name = "pytest-timeout", specifier = ">=2.4.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "requests", specifier = ">=2.34.2" },
 ]
@@ -478,6 +484,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/46/88/eb9a09b3bdd06584f313c7ebee4dd520c9dfdabeacf72a6e478c693f5d3f/pytest_remotedata-0.4.2.tar.gz", hash = "sha256:ad3eaa2691feecc2071890764d30e06211547577f965e2e4424435c5d887278d", size = 14034, upload-time = "2026-08-03T22:01:52.624Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9c/0d/40657eb7f6a8e5defd69c6922008eed77fb28e48500b8b7c515c4981aec7/pytest_remotedata-0.4.2-py3-none-any.whl", hash = "sha256:1f4186f7ab4fc43586af88fa12902a081d193ce722ecf74d1777d48e4b09f377", size = 8670, upload-time = "2026-08-03T22:01:51.767Z" },
+]
+
+[[package]]
+name = "pytest-timeout"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pytest" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ac/82/4c9ecabab13363e72d880f2fb504c5f750433b2b6f16e99f4ec21ada284c/pytest_timeout-2.4.0.tar.gz", hash = "sha256:7e68e90b01f9eff71332b25001f85c75495fc4e3a836701876183c4bcfd0540a", size = 17973, upload-time = "2025-05-05T19:44:34.99Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fa/b6/3127540ecdf1464a00e5a01ee60a1b09175f6913f0644ac748494d9c4b21/pytest_timeout-2.4.0-py3-none-any.whl", hash = "sha256:c42667e5cdadb151aeb5b26d114aff6bdf5a907f176a007a30b940d3d865b5c2", size = 14382, upload-time = "2025-05-05T19:44:33.502Z" },
 ]
 
 [[package]]

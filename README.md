@@ -50,6 +50,12 @@ meant for the whole suite, so it is not held to one — `tests/conftest.py`
 is where that is decided, and where anything else narrowing a run is
 added. `--cov-fail-under` asked for explicitly still applies.
 
+Every test is bounded, too. A node that stops answering fails the test
+that built it, named, with a stack of every thread it left running,
+instead of holding the run open until something outside it gives up.
+The limit is `timeout` in `pyproject.toml`, measured against the
+slowest test there is and reasoned about where it is set.
+
 To run the lint gate:
 
 ```shell
