@@ -118,7 +118,6 @@ def test_mempool_accept(node, conn, params):
         try:
             verify_mempool_acceptance(node, tx)
             tx_res["allowed"] = True
-            out.append(tx_res)
         except BTClibValueError:
             tx_res["reject-reason"] = "Invalid signatures or script"
         except MissingPrevoutError:
