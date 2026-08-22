@@ -6,23 +6,26 @@ from datetime import UTC, datetime
 
 from btclib.block import BlockHeader
 from btclib.block.proof_of_work import REGTEST_POW_LIMIT_BITS
+from btclib.p2p.message import Message
 from btclib.script import script
 from btclib.tx.tx import Tx as TxData
 from btclib.tx.tx import TxIn, TxOut
 from btclib.tx.tx_in import OutPoint
 
-from btclib_node.p2p.messages import get_payload
+from btclib_node.chains import RegTest
 from btclib_node.p2p.messages.compact import Cmpctblock, Sendcmpct
 from tests.helpers import brute_force_nonce
 
+MAGIC = RegTest().magic
 
-def test_sendcmpt():
+
+def test_sendcmpct():
     msg = Sendcmpct(1, 1)
-    msg_bytes = bytes.fromhex("00" * 4) + msg.serialize()
-    assert msg == Sendcmpct.deserialize(get_payload(msg_bytes)[1])
+    msg_bytes = msg.to_message(MAGIC).serialize()
+    assert msg == Sendcmpct.deserialize(Message.parse(msg_bytes).payload)
     msg = Sendcmpct(0, 1)
-    msg_bytes = bytes.fromhex("00" * 4) + msg.serialize()
-    assert msg == Sendcmpct.deserialize(get_payload(msg_bytes)[1])
+    msg_bytes = msg.to_message(MAGIC).serialize()
+    assert msg == Sendcmpct.deserialize(Message.parse(msg_bytes).payload)
 
 
 def test_cmpctblock():
@@ -60,5 +63,5 @@ def test_cmpctblock():
         [b"\x00" * 6 for x in range(10)],
         [(x, transactions[x]) for x in range(10)],
     )
-    msg_bytes = bytes.fromhex("00" * 4) + msg.serialize()
-    assert msg == Cmpctblock.deserialize(get_payload(msg_bytes)[1])
+    msg_bytes = msg.to_message(MAGIC).serialize()
+    assert msg == Cmpctblock.deserialize(Message.parse(msg_bytes).payload)

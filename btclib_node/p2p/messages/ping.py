@@ -5,13 +5,14 @@
 import secrets
 from dataclasses import dataclass
 
+from btclib.p2p.payload import Payload
 from btclib.utils import bytesio_from_binarydata
-
-from btclib_node.p2p.messages import add_headers
 
 
 @dataclass
-class Ping:
+class Ping(Payload):
+    command = "ping"
+
     nonce: int
 
     def __init__(self, nonce=None):
@@ -26,12 +27,14 @@ class Ping:
         nonce = int.from_bytes(stream.read(8), "little")
         return cls(nonce=nonce)
 
-    def serialize(self):
-        return add_headers("ping", self.nonce.to_bytes(8, "little"))
+    def serialize(self, *, check_validity: bool = True) -> bytes:
+        return self.nonce.to_bytes(8, "little")
 
 
 @dataclass
-class Pong:
+class Pong(Payload):
+    command = "pong"
+
     nonce: int
 
     @classmethod
@@ -40,5 +43,5 @@ class Pong:
         nonce = int.from_bytes(stream.read(8), "little")
         return cls(nonce=nonce)
 
-    def serialize(self):
-        return add_headers("pong", self.nonce.to_bytes(8, "little"))
+    def serialize(self, *, check_validity: bool = True) -> bytes:
+        return self.nonce.to_bytes(8, "little")

@@ -6,14 +6,15 @@ from dataclasses import dataclass
 
 from btclib import var_int
 from btclib.block import BlockHeader
+from btclib.p2p.payload import Payload
 from btclib.tx.tx import Tx
 from btclib.utils import bytesio_from_binarydata
 
-from btclib_node.p2p.messages import add_headers
-
 
 @dataclass
-class Sendcmpct:
+class Sendcmpct(Payload):
+    command = "sendcmpct"
+
     flag: bool
     version: int
 
@@ -24,14 +25,16 @@ class Sendcmpct:
         version = int.from_bytes(stream.read(8), "little")
         return cls(flag, version)
 
-    def serialize(self):
+    def serialize(self, *, check_validity: bool = True) -> bytes:
         payload = int(self.flag).to_bytes(1, "little")
         payload += self.version.to_bytes(8, "little")
-        return add_headers("sendcmpt", payload)
+        return payload
 
 
 @dataclass
-class Cmpctblock:
+class Cmpctblock(Payload):
+    command = "cmpctblock"
+
     header: BlockHeader
     nonce: int
     short_ids: list[bytes]
@@ -60,7 +63,7 @@ class Cmpctblock:
             prefilled_tx_list=prefilled_tx_list,
         )
 
-    def serialize(self):
+    def serialize(self, *, check_validity: bool = True) -> bytes:
         payload = self.header.serialize()
         payload += self.nonce.to_bytes(8, "little")
         payload += var_int.serialize(len(self.short_ids))
@@ -70,4 +73,4 @@ class Cmpctblock:
         for tx_index, tx in self.prefilled_tx_list:
             payload += var_int.serialize(tx_index)
             payload += tx.serialize(self.include_witness)
-        return add_headers("cmptblock", payload)
+        return payload

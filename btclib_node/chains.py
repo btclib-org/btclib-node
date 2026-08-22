@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 
 from btclib.block import BlockHeader
 from btclib.hashes import hash256, merkle_root
+from btclib.p2p.magic import magic_from_network
 from btclib.script import script
 from btclib.tx.tx import Tx
 from btclib.tx.tx_in import OutPoint, TxIn
@@ -60,9 +61,20 @@ def create_genesis(time, nonce, difficulty, version, reward):
 class Chain:
     name: str
     port: int
-    magic: str
     addresses: list[str]
     genesis: BlockHeader
+
+    @property
+    def magic(self):
+        # bytes, and the four octets that go on the wire: a hex string
+        # here is what made the resynchronisation in
+        # p2p.connection.Connection.parse_messages hunt for ASCII inside
+        # a binary buffer.
+        #
+        # For signet this is the default signet's, which is what
+        # magic_from_network answers; a custom signet derives its own
+        # from its challenge, via magic_from_signet_challenge.
+        return magic_from_network(self.name)
 
     @property
     def pow_limit_bits(self):
@@ -78,7 +90,6 @@ class Main(Chain):
     def __init__(self):
         self.name = "mainnet"
         self.port = 8333
-        self.magic = "f9beb4d9"
         self.addresses = [
             "seed.bitcoin.sipa.be",
             "dnsseed.bluematt.me",
@@ -107,7 +118,6 @@ class TestNet(Chain):
     def __init__(self):
         self.name = "testnet"
         self.port = 18333
-        self.magic = "0b110907"
         self.addresses = [
             "testnet-seed.bitcoin.jonasschnelli.ch",
             "seed.tbtc.petertodd.org",
@@ -131,7 +141,6 @@ class SigNet(Chain):
     def __init__(self):
         self.name = "signet"
         self.port = 38333
-        self.magic = "0a03cf40"  # default signet
         self.addresses = ["178.128.221.177"]
         self.genesis = create_genesis(1598918400, 52613770, 0x1E0377AE, 1, 50 * 10**8)
         self.flags = [
@@ -150,7 +159,6 @@ class RegTest(Chain):
     def __init__(self):
         self.name = "regtest"
         self.port = 18444
-        self.magic = "fabfb5da"
         self.addresses = []
         self.genesis = create_genesis(1296688602, 2, 0x207FFFFF, 1, 50 * 10**8)
         self.flags = [

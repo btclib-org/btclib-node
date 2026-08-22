@@ -5,14 +5,16 @@
 from dataclasses import dataclass
 
 from btclib import var_int
+from btclib.p2p.payload import Payload
 from btclib.utils import bytesio_from_binarydata
 
 from btclib_node.p2p.address import NetworkAddress
-from btclib_node.p2p.messages import add_headers
 
 
 @dataclass
-class Version:
+class Version(Payload):
+    command = "version"
+
     version: int
     services: int
     timestamp: int
@@ -48,7 +50,7 @@ class Version:
             relay=relay,
         )
 
-    def serialize(self):
+    def serialize(self, *, check_validity: bool = True) -> bytes:
         payload = self.version.to_bytes(4, "little")
         payload += self.services.to_bytes(8, "little")
         payload += self.timestamp.to_bytes(8, "little")
@@ -62,34 +64,40 @@ class Version:
             payload += var_int.serialize(0)
         payload += self.start_height.to_bytes(4, "little")
         payload += self.relay.to_bytes(1, "little")
-        return add_headers("version", payload)
+        return payload
 
 
 @dataclass
-class Verack:
+class Verack(Payload):
+    command = "verack"
+
     @classmethod
     def deserialize(cls, data):
         return cls()
 
-    def serialize(self):
-        return add_headers("verack", b"")
+    def serialize(self, *, check_validity: bool = True) -> bytes:
+        return b""
 
 
 @dataclass
-class Wtxidrelay:
+class Wtxidrelay(Payload):
+    command = "wtxidrelay"
+
     @classmethod
     def deserialize(cls, data):
         return cls()
 
-    def serialize(self):
-        return add_headers("wtxidrelay", b"")
+    def serialize(self, *, check_validity: bool = True) -> bytes:
+        return b""
 
 
 @dataclass
-class Sendaddrv2:
+class Sendaddrv2(Payload):
+    command = "sendaddrv2"
+
     @classmethod
     def deserialize(cls, data):
         return cls()
 
-    def serialize(self):
-        return add_headers("sendaddrv2", b"")
+    def serialize(self, *, check_validity: bool = True) -> bytes:
+        return b""

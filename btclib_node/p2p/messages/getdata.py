@@ -6,13 +6,14 @@ import enum
 from dataclasses import dataclass
 
 from btclib import var_int
+from btclib.p2p.payload import Payload
 from btclib.utils import bytesio_from_binarydata
-
-from btclib_node.p2p.messages import add_headers
 
 
 @dataclass
-class Getdata:
+class Getdata(Payload):
+    command = "getdata"
+
     inventory: list[tuple[int, bytes]]
 
     @classmethod
@@ -26,16 +27,18 @@ class Getdata:
             inventory.append((item_type, item_hash))
         return cls(inventory)
 
-    def serialize(self):
+    def serialize(self, *, check_validity: bool = True) -> bytes:
         payload = var_int.serialize(len(self.inventory))
         for item in self.inventory:
             payload += item[0].to_bytes(4, "little")
             payload += item[1][::-1]
-        return add_headers("getdata", payload)
+        return payload
 
 
 @dataclass
-class Getblocks:
+class Getblocks(Payload):
+    command = "getblocks"
+
     version: int
     block_hashes: list[bytes]
     hash_stop: bytes
@@ -51,17 +54,19 @@ class Getblocks:
         hash_stop = stream.read(32)[::-1]
         return cls(version=version, block_hashes=block_hashes, hash_stop=hash_stop)
 
-    def serialize(self):
+    def serialize(self, *, check_validity: bool = True) -> bytes:
         payload = self.version.to_bytes(4, "little")
         payload += var_int.serialize(len(self.block_hashes))
         for hash in self.block_hashes:
             payload += hash[::-1]
         payload += self.hash_stop[::-1]
-        return add_headers("getblocks", payload)
+        return payload
 
 
 @dataclass
-class Getheaders:
+class Getheaders(Payload):
+    command = "getheaders"
+
     version: int
     block_hashes: list[bytes]
     hash_stop: bytes
@@ -77,17 +82,19 @@ class Getheaders:
         hash_stop = stream.read(32)[::-1]
         return cls(version=version, block_hashes=block_hashes, hash_stop=hash_stop)
 
-    def serialize(self):
+    def serialize(self, *, check_validity: bool = True) -> bytes:
         payload = self.version.to_bytes(4, "little")
         payload += var_int.serialize(len(self.block_hashes))
         for hash in self.block_hashes:
             payload += hash[::-1]
         payload += self.hash_stop[::-1]
-        return add_headers("getheaders", payload)
+        return payload
 
 
 @dataclass
-class Getblocktxn:
+class Getblocktxn(Payload):
+    command = "getblocktxn"
+
     blockhash: bytes
     indexes: list[int]
 
@@ -101,32 +108,36 @@ class Getblocktxn:
             indexes.append(var_int.parse(stream))
         return cls(blockhash=blockhash, indexes=indexes)
 
-    def serialize(self):
+    def serialize(self, *, check_validity: bool = True) -> bytes:
         payload = self.blockhash[::-1]
         payload += var_int.serialize(len(self.indexes))
         for id in self.indexes:
             payload += var_int.serialize(id)
-        return add_headers("getblocktxn", payload)
+        return payload
 
 
 @dataclass
-class Mempool:
+class Mempool(Payload):
+    command = "mempool"
+
     @classmethod
     def deserialize(cls, data):
         return cls()
 
-    def serialize(self):
-        return add_headers("mempool", b"")
+    def serialize(self, *, check_validity: bool = True) -> bytes:
+        return b""
 
 
 @dataclass
-class Sendheaders:
+class Sendheaders(Payload):
+    command = "sendheaders"
+
     @classmethod
     def deserialize(cls, data):
         return cls()
 
-    def serialize(self):
-        return add_headers("sendheaders", b"")
+    def serialize(self, *, check_validity: bool = True) -> bytes:
+        return b""
 
 
 class InventoryType(enum.IntEnum):
