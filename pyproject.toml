@@ -357,6 +357,11 @@ disallow_untyped_decorators = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 strict_equality = true
+# the one flag this commit moved out of the backlog below: its single
+# finding was the local `NetworkAddress.serialize`, unannotated, and
+# that class is btclib's now. Measured at zero with the flag on before
+# turning it on.
+warn_return_any = true
 extra_checks = true
 strict_bytes = true
 # not in the bundle, and free here: a branch mypy can prove is never
@@ -383,9 +388,6 @@ warn_unreachable = true
 #   no_implicit_reexport        +21   names imported from where they are
 #                                     re-exported rather than defined
 #   disallow_incomplete_defs    +15   half-annotated signatures
-#   warn_return_any              +1   `NetworkAddress.serialize` is
-#                                     unannotated, so a caller that
-#                                     concatenates its result returns Any
 
 # --- the optional error codes, surveyed one at a time ------------------
 #

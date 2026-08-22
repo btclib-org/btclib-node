@@ -37,8 +37,8 @@ class P2pManager(threading.Thread):
         # connection in its backlog. `is_alive()` says only that this
         # thread was started, which is true before `run` below has
         # scheduled anything, so a peer that dials on the strength of it
-        # is refused -- and `NetworkAddress.connect` answers a refusal
-        # with None, which `async_connect` drops. Nothing retries.
+        # is refused -- and `dial` answers a refusal with None, which
+        # `async_connect` drops. Nothing retries.
         self.listening = threading.Event()
 
         self.loop = asyncio.new_event_loop()

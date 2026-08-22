@@ -144,8 +144,8 @@ def wait_until_listening(manager, timeout=20):
     `wait_until(manager.is_alive)` is `threading.Thread.is_alive`, which
     holds from `start()` -- before `run` has scheduled the coroutine
     that binds the port. A peer dialled in that window is refused, and
-    a refusal is silent: `NetworkAddress.connect` polls for a second and
-    returns None, `async_connect` drops it, and nothing dials again. The
+    a refusal is silent: `dial` polls for a second and returns None,
+    `async_connect` drops it, and nothing dials again. The
     test then spends its whole timeout waiting for a connection that was
     lost at the start, which is what #46 sees.
     """
