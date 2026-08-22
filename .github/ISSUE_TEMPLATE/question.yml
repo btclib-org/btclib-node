@@ -1,0 +1,37 @@
+---
+name: Question
+description: Ask how the node does something, or why it does it that way
+labels: [question]
+
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Discussions are not enabled here, so a question is an issue, and
+        this form is what keeps one from having to be filed as a bug. The
+        [README](https://github.com/btclib-org/btclib-node/blob/main/README.md)
+        comes first -- it is where the install, the test command and the
+        lint gate are written down -- and
+        [CONTRIBUTING.md](https://github.com/btclib-org/btclib-node/blob/main/CONTRIBUTING.md)
+        answers what `main` requires of a change.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: The question
+      description: >
+        What you are trying to do, and what you have already read or
+        tried. Code, if there is any: what the node did and what you
+        expected instead is a sharper question than a description of
+        either.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Commit, if it matters
+      description: >
+        `git rev-parse HEAD`. This package is not on an index, so what
+        anybody runs is a checkout rather than a release.
+      placeholder: "3facec5"

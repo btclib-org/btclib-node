@@ -196,6 +196,73 @@ repos:
     hooks:
       - id: yamllint
         name: yamllint (line width and document start)
+  # .github/dependabot.yml is validated by nothing else here: check-yaml
+  # above asks whether it is yaml, and actionlint below reads workflows
+  # and not this. A typo in a package-ecosystem, a directory or a day is
+  # not an error to GitHub -- it silently updates nothing, and the
+  # evidence is a pull request that never arrives, so "it stopped running
+  # and said nothing" is exactly the failure to guard against.
+  # check-github-workflows is not added beside it: actionlint already
+  # reads every workflow and goes further than the schema does, into
+  # expressions, contexts and runner labels.
+  # No check-readthedocs either, and for the opposite reason: this tree
+  # has no .readthedocs.yaml, and a hook matching no file is a rule that
+  # reads as enforcement while enforcing nothing
+  - repo: https://github.com/python-jsonschema/check-jsonschema
+    rev: 0.38.0
+    hooks:
+      - id: check-dependabot
+  # the workflows are yaml with expressions in it, and nothing else here
+  # validates them: an unknown key, a typo in a context reference, an
+  # action input that does not exist, a job depending on a job that is
+  # not there are all things a run would otherwise discover by failing --
+  # and these run weekly or on a merge, where a failure is read late.
+  # The Python packaging of actionlint rather than the upstream hook,
+  # whose only non-docker id is language: golang, i.e. a go toolchain on
+  # every machine that commits and on pre-commit.ci
+  - repo: https://github.com/Mateusz-Grzelinski/actionlint-py
+    rev: v1.7.12.24
+    hooks:
+      - id: actionlint
+        name: actionlint (github workflows)
+        # actionlint delegates the body of a run: step to shellcheck, and
+        # of a "shell: python" step to pyflakes, if it finds them on the
+        # PATH: without them it validates the yaml around a shell script
+        # and not the script -- and the changes job in test.yml is a
+        # shell script. Declared here rather than left to the machine, so
+        # that a commit checks what CI checks: the runner image carries
+        # shellcheck, so leaving it to chance would mean CI checking
+        # more.
+        # Pinned, unlike the revs above, because nothing bumps an
+        # additional dependency: pre-commit.ci moves rev, and dependabot
+        # has no pre-commit ecosystem. That is the point rather than the
+        # cost -- a shellcheck release adding a check would otherwise
+        # turn a pull request red for having changed nothing
+        additional_dependencies:
+          - shellcheck-py==0.11.0.1
+          - pyflakes==3.4.0
+  # actionlint asks whether a workflow is correct, zizmor whether it is
+  # safe: a token persisted where a later step can read it, a cache
+  # restored into a job that writes, an expression interpolated into a
+  # shell script, a trigger that runs a fork's code with write access.
+  # Every invariant the workflows here promise in a comment -- the SHA
+  # pins, the permissions block, persist-credentials: false -- is a
+  # comment until this hook reads it. Both this and actionlint report
+  # nothing on this tree today, which is the state they are here to keep
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: v1.29.0
+    hooks:
+      - id: zizmor
+        # offline is what it does by default, said out loud: it warns
+        # about the implicit choice on every run, and the choice is the
+        # right one. Two audits can query GitHub for the actions a
+        # workflow pins -- impostor-commit and known-vulnerable-actions
+        # -- which would make the hook want a token and report
+        # differently on a machine that has none.
+        # --no-progress is repeated rather than added: args replaces what
+        # the hook declares, and that flag is the whole of what it
+        # declares, so passing --offline alone would drop it
+        args: [--offline, --no-progress]
   # the width of a toml comment, the one prose left with no limit:
   # taplo formats values and leaves comments alone by design.
   # `.{80}\S*[ \t]` reports a line only when whitespace is left past

@@ -1,0 +1,60 @@
+---
+name: Feature request
+description: Add something to the node, or change how it works
+labels: [enhancement]
+
+body:
+  - type: markdown
+    attributes:
+      value: >
+        This is a full node written in Python, and that is the constraint
+        every request meets first: what it validates has to agree with
+        the network exactly, and what it stores has to survive being
+        stopped. An addition that trades either for a convenience is one
+        this project cannot take. What the rules are belongs to
+        [bitcoin/bitcoin](https://github.com/bitcoin/bitcoin/issues); the
+        primitives it validates with belong to
+        [btclib](https://github.com/btclib-org/btclib/issues).
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What is missing
+      description: >
+        What the node would do that it does not do today, from the
+        outside: over p2p, over the RPC interface, or in what it keeps on
+        disk.
+    validations:
+      required: true
+
+  - type: input
+    id: reference
+    attributes:
+      label: Specification
+      description: >
+        The BIP, the protocol documentation, or the Bitcoin Core source
+        that defines it. Anything a node has to agree with others about
+        is worth nothing without one: an implementation with no
+        specification has nothing to be checked against, which is the
+        harder half of adding it.
+      placeholder: "BIP157, https://github.com/bitcoin/bips/blob/master/bip-0157.mediawiki"
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it belongs here
+      description: >
+        What cannot be done today with what the node already exposes, and
+        who is waiting for it -- a wallet, a script, another node.
+    validations:
+      required: true
+
+  - type: textarea
+    id: cost
+    attributes:
+      label: What it costs
+      description: >
+        What it adds to a sync, to the data directory, or to the code
+        that has to stay correct under attack. A feature that touches
+        consensus, storage or the peer state machine is a feature with a
+        cost worth naming here rather than discovering in review.

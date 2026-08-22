@@ -82,7 +82,7 @@ def test_download(tmp_path):
         time.sleep(0.25)
 
     block_index = main_node.chainstate.block_index
-    wait_until(lambda: len(block_index.active_chain) == length + 1, timeout=20)
+    wait_until(lambda: len(block_index.active_chain) == length + 1)
     wait_until(lambda: main_node.status == NodeStatus.BlockSynced, timeout=0.5)
 
     main_node.stop()

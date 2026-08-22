@@ -74,10 +74,10 @@ keywords = [
 # against it any more: what this installs is btclib and what btclib
 # pulls in, all pure-Python wheels, over a store that is now the
 # standard library's `sqlite3`. Nothing here is known to need a POSIX
-# system. What is missing is not a reason to think it does, it is any
-# run at all that says it does not: CI runs `pre-commit` and no suite
-# (btclib-org/btclib-node#33), so no platform is tested, including the
-# one the linting happens on. `OS Independent` is a claim about every
+# system. What is missing is not a reason to think it does, it is a run
+# on the platforms this does not name: the suite runs on `ubuntu-latest`
+# before every merge and on `macos-latest` weekly, which is the two
+# classifiers below and no more. `OS Independent` is a claim about every
 # platform, and this is a claim about where the code has been run.
 classifiers = [
     "Programming Language :: Python :: 3 :: Only",
@@ -159,14 +159,21 @@ addopts = "-n auto --remote-data=any --cov --cov-report term-missing:skip-covere
 # repeated runs of the whole suite under `-n auto`: the slowest test
 # is tests/functional/p2p/test_download.py::test_download, 9.51s on an
 # idle machine, 27.85s on one shared with other work, and 42.09s on
-# one loaded past three times its core count -- that last being the
-# run where the test gave up on itself, `wait_until` allowing it 20.5s
-# of deadlines on top of a setup that had already taken twenty.
-# That is the bound that matters rather than the spread: a limit
-# anywhere near where the suite reports which condition it was waiting
-# on trades a diagnosis for a timeout. This is nearly three times the
-# worst of them, and still turns the ten-minute hangs of
-# btclib-org/btclib-node#98 into a failure that names its test.
+# one loaded past three times its core count. That is the bound that
+# matters rather than the spread: a limit anywhere near where the suite
+# reports which condition it was waiting on trades a diagnosis for a
+# timeout, and this is nearly three times the worst of them while still
+# turning the ten-minute hangs of btclib-org/btclib-node#98 into a
+# failure that names its test.
+#
+# It does not bound the deadlines beneath it and is not meant to. A test
+# that waits seven times at tests/helpers.py's default could in
+# principle ask for more than this, and the run would then be killed by
+# this limit rather than by the deadline that was actually missed --
+# which loses the condition the test was waiting on. Nothing observed
+# comes near it: the longest single wait measured anywhere is 12.60s,
+# and the run that failed on a four-core runner reported at 20.24s.
+# Issue #46 is where that starvation is tracked.
 timeout = 120
 filterwarnings = ['ignore:cannot collect test class']
 

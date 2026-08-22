@@ -1,0 +1,245 @@
+---
+name: test
+
+# The suite, gated at the coverage floor pyproject.toml declares, on the
+# one image and the one interpreter btclib-org/.github#85 asks a merge to
+# wait for. Here that is not a matrix reduced to its first cell: this
+# tree's `requires-python` is `>=3.14` and `.python-version` pins 3.14,
+# so the reference interpreter is the whole of what the package claims,
+# and the light gate is what it has by construction.
+#
+# What the design puts beside it is a platform sentinel each, and here
+# that is one workflow rather than three. `ubuntu.yml` would run this
+# file's own image over an interpreter axis with one value on it,
+# `requires-python` being `>=3.14`. `windows.yml` would check a claim
+# this package does not make: pyproject.toml classifies POSIX and MacOS,
+# and says Windows is out because nothing here runs it rather than
+# because anything is known to stop it -- a sentinel there would be the
+# claim rather than its check. `macos.yml` is the one that asks
+# something nothing here asks, and its own header says what. Issue #33
+# tracks what is still missing here.
+
+on:
+  push:
+    # main only: a branch with an open pull request would otherwise run
+    # this twice, once per event, and the pull_request run is the one to
+    # keep -- it tests the merge commit, and it is the only run a fork's
+    # pull request produces. main keeps a trigger of its own because a
+    # merge creates a commit no pull request tested
+    branches: [main]
+    # a commit that only edits prose would otherwise run the suite. The
+    # changes job below asks the same question on the pull_request side,
+    # where this list must not be repeated: "test: every job passed" is
+    # the name main's ruleset can require, and a required check that
+    # produces no run at all blocks the merge instead of passing it.
+    # What that job exempts is exempt here: the root prose, and the
+    # detect-secrets baseline, which is a lint hook's input and nothing
+    # the suite reads. The two are not the same expression and do not
+    # have to be -- this one is broader by a lowercase root `.md`, which
+    # the job's `^[A-Z][A-Z_]*\.md$` does not exempt. The containment
+    # runs one way only: every file that job exempts is exempt here too,
+    # so no pull request is skipped here that a push would have tested.
+    # What the gap costs is the other side of it -- a lowercase root
+    # `.md` landing on main gets no run afterwards, having changed
+    # nothing the suite reads
+    paths-ignore:
+      - "*.md"
+      - ".secrets.*baseline"
+  pull_request:
+    # ready_for_review, so a pull request marked ready gets the run the
+    # draft condition below withheld while it was a draft: the default
+    # types do not include it. closed joins them so that a run still held
+    # in this pull request's own concurrency group is superseded by the
+    # landing rather than left to finish on a branch nobody will look at
+    # again -- the same reasoning, and the same list, as lint.yml
+    types: [opened, reopened, synchronize, ready_for_review, closed]
+  # the escape hatch, for a branch whose pull request is not open yet
+  workflow_dispatch:
+
+# least privilege for the GITHUB_TOKEN: everything running in a job can
+# read it, and the one job here that needs more than reading the
+# repository asks for it itself
+permissions:
+  contents: read
+
+# cancel superseded runs: the subject is the commit, which a newer one
+# supersedes. Named literally rather than through github.workflow, and by
+# the pull request's own number rather than by github.ref, which for a
+# closed, merged pull request resolves to the base branch's ref and would
+# put that run in the push trigger's group
+concurrency:
+  group: test-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # the cheapest job here and the one that decides whether the expensive
+  # one runs: a pull request that edits only prose changes nothing the
+  # suite reads, and would otherwise spend the whole suite proving it.
+  # It runs on every trigger and answers `true` on all
+  # but one -- skipping itself on the pull_request path would leave the
+  # coverage job reading an empty output, which is not 'true', and the
+  # workflow would then skip on main as well
+  changes:
+    name: Decide whether the suite has anything to check
+    if: ${{ !github.event.pull_request.draft && github.event.action != 'closed' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # the file list of a pull request, which contents: read does not
+    # carry. A job's permissions replace the workflow's rather than
+    # adding to them, so contents: read is named again here instead of
+    # being inherited: without it this job holds contents: none, which
+    # costs nothing today and would cost the first checkout added
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.decide.outputs.code }}
+    steps:
+      - name: Ask which files the pull request touches
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # a push to main and a dispatch run everything: only a pull
+          # request has a base to be a diff against
+          if [ "$EVENT" != pull_request ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "$EVENT is not a pull request: the suite runs"
+            exit 0
+          fi
+          gh api "repos/$REPO/pulls/$NUMBER/files" --paginate \
+            --jq '.[].filename' > files.txt
+          echo "files changed:"
+          cat files.txt
+          # the prose at the root, matched by the shape of its name
+          # rather than by a list of the files that have it today: every
+          # markdown file this tree keeps at the root is upper case, and
+          # a list would have to be edited by whoever adds the next one.
+          # Anything under a directory is not matched at all, which is
+          # the cheap direction to be wrong in -- tests/_data/README.md
+          # documents vendored data the suite reads, and .github's own
+          # markdown is templates rather than prose the suite ignores by
+          # construction. The detect-secrets baseline is a lint hook's
+          # input and nothing else's.
+          # An empty list is not a prose change, it is a question this
+          # could not answer, so the count is checked before the pattern
+          prose='^[A-Z][A-Z_]*\.md$|^\.secrets\..*baseline$'
+          if [ ! -s files.txt ] || grep -qvE "$prose" files.txt; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "something the suite reads changed: the suite runs"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            echo "prose only: the suite has nothing to check"
+          fi
+
+  coverage:
+    name: Measure coverage, gated at 100%
+    if: >-
+      ${{ !github.event.pull_request.draft
+      && github.event.action != 'closed'
+      && needs.changes.outputs.code == 'true' }}
+    needs: changes
+    runs-on: ubuntu-latest
+    # the suite is bounded test by test in pyproject.toml, so this bounds
+    # what that cannot: a runner wedged before or between the tests, and
+    # it is well above the whole of a local run
+    timeout-minutes: 30
+    steps:
+      # every action is pinned to a commit SHA, the tag in the comment: a
+      # tag, let alone a branch, is a name its owner can move, and these
+      # run in a job that can read the workflow token
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # checkout leaves the token in .git/config by default, where
+          # anything running afterwards can read it and any step
+          # archiving the workspace would carry it out of the job.
+          # Nothing in these workflows performs an authenticated git
+          # operation, so nothing needs it to stay.
+          # This is the checkout the other workflows here cite: the one
+          # on the gate, which runs on every pull request
+          persist-credentials: false
+      - name: Setup uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          # the cache holds what uv.lock resolves, which is wheels and
+          # no build: what this job spends its time on is the suite
+          enable-cache: true
+          # what .python-version pins and what a bare `uv run` gives a
+          # maintainer locally. Written out rather than read from that
+          # file because the coupling belongs where the gate is: the
+          # number this job fails on is a ratio of statements, and a
+          # statement count moves between interpreters, so the floor in
+          # pyproject.toml is a claim about one version and this is it
+          python-version: "3.14"
+      # no pytest argument at all: addopts in pyproject.toml carries the
+      # coverage flags and the report format, [tool.coverage.report] the
+      # floor, and this file is not what anybody runs locally. A second
+      # copy of any of them is a copy that can disagree with the one a
+      # developer sees
+      - name: Run the suite under coverage
+        run: >
+          uv run --locked --no-default-groups --group test pytest
+
+  # the one name main's ruleset should have to name to require this
+  # workflow, and it exists because such a rule names its checks as
+  # literal strings, stored outside the repository: a job named there is
+  # a name no pull request can review, and one that stops being produced
+  # becomes a required check that never reports, which blocks every merge
+  # until somebody remembers where the rule lives. This job depends on
+  # the others instead, so the rule names one thing that never changes
+  # and a job added here is gated on by being added.
+  # Naming it in the rule is not part of issue #33, which is the
+  # workflow files themselves rather than the repository settings around
+  # them. Nothing requires a status check here today: main-integrity
+  # carries signatures, linear history and no force push, and the
+  # classic protection where the aligned siblings keep their required
+  # contexts is empty -- see btclib-org/.github#88, which names this
+  # repository. This name is what it can require now
+  test-passed:
+    # the name and not the id is what a ruleset matches, and it carries
+    # the workflow on purpose: a check is keyed by name alone, so two
+    # workflows with a job named "every job passed" would produce one
+    # ambiguous context. lint.yml needs no aggregate while it has one
+    # job -- the job is the check there -- and the day it grows a second
+    # one, this pattern and a change to the rule are what that costs
+    name: "test: every job passed"
+    needs: [changes, coverage]
+    # not success(): a job whose dependencies failed is skipped, and a
+    # skipped check reports "skipped", which a ruleset counts as
+    # satisfied. The gate has to run to be able to fail.
+    # not always() either: a cancellation of this run itself -- the
+    # concurrency group superseding it with a newer push -- would reach
+    # this job and fail it, turning a cancellation the newer run already
+    # speaks for into a red required check with no defect behind it.
+    # !cancelled() lets this job be skipped there instead, which
+    # satisfies the check as any other skip does, while a single needed
+    # job cancelled on its own still fails below.
+    # The draft and closed conditions are the ones every job above
+    # carries, so that a draft skips uniformly rather than tripping this
+    if: >-
+      ${{ !cancelled()
+      && !github.event.pull_request.draft
+      && github.event.action != 'closed' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # the condition reads the whole needs context rather than naming
+      # each job, so a job added to needs above is covered without
+      # touching this. "skipped" is not a failure on its own: the
+      # coverage job skips by design on a prose-only pull request, and
+      # reading that as a defect would fail the gate the changes job
+      # exists to let pass cheaply. changes itself is in needs, so its
+      # failure -- and a skip that follows from one -- still arrives here
+      # as "failure"
+      - name: Fail unless every job above succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "$RESULTS"
+          case " $RESULTS " in
+            *" failure "* | *" cancelled "*) exit 1 ;;
+          esac

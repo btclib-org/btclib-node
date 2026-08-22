@@ -1,0 +1,131 @@
+---
+name: codeql
+
+# Code scanning as a file rather than as a repository setting. GitHub's
+# default setup would analyse this tree from a workflow it generates and
+# does not show; here the languages, the query suite, the schedule and
+# the action versions are read the way the rest of CI is read, in a diff.
+#
+# The two are mutually exclusive, and the collision is at the end rather
+# than at the start: `init` succeeds, the database is built, and the
+# upload is refused with "CodeQL analyses from advanced configurations
+# cannot be processed when the default setup is enabled", so every run
+# would report a failure it did not have. The setting is off here --
+#
+#     gh api repos/btclib-org/btclib-node/code-scanning/default-setup
+#
+# answers `state: not-configured` -- which is what lets this land without
+# a setting being turned off first, and what turning it on would undo.
+#
+# What it buys on a node is the analysis nothing else here performs:
+# `lint.yml` runs ruff's flake8-bandit rules over the Python, which is a
+# pattern match on a single file, where these queries follow a value from
+# where it enters -- a peer's message, an RPC request body -- to where it
+# is used. The workflow files are the second language, and this is the
+# only thing in the tree that reads them at all.
+
+on:
+  # a merge creates a commit no analysis has seen, and an alert is
+  # attributed to a branch: the default branch is where code scanning
+  # reports what is open, so without a run here there is no baseline for
+  # anything else to be measured against
+  push:
+    branches: [main]
+  schedule:
+    # section 10 of btclib-org/.github's README.md is the calendar, and
+    # this line is not the place to restate it. A weekly run is what a
+    # push trigger cannot replace: a query pack is updated without
+    # anybody touching this repository, so the same tree is a different
+    # answer this week than last. Only the default branch schedules
+    # anything, so on any other branch the dispatch below is the way in
+    - cron: "20 4 * * 2"
+  # the escape hatch, and with no pull_request trigger it is the only way
+  # to analyse a branch before it merges: worth reaching for on one that
+  # edits a workflow, which is what the actions queries read
+  workflow_dispatch:
+
+# no pull_request trigger, deliberately. GitHub Free gives the
+# organization twenty concurrent jobs shared across every repository in
+# it, and this workflow holds two of them for minutes; the design
+# btclib-org/.github#85 sets out is that a merge waits for one cell and
+# the sweeps answer weekly. What a merge defers is the time between it
+# and the next run -- for main, the merge itself, the push above being
+# the trigger. It follows that no check this workflow produces can be
+# required of a pull request: a required check has to report on the run
+# the pull request has, and this workflow gives it none. That is also
+# why there is no aggregate job here where test.yml has one
+
+# least privilege for the GITHUB_TOKEN, which everything running in a job
+# can read. The analysis job asks for the two it needs on top of it, so
+# the write is held by a job rather than by the workflow
+permissions:
+  contents: read
+
+# cancel superseded runs. Named literally rather than through
+# github.workflow, as everywhere else here. No pull_request context to
+# read on any of the three triggers above, so github.ref is the whole of
+# what groups a run
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    # the language is in the name because it is what a failure is about:
+    # one job per language, so a red check says which analysis broke
+    # rather than a matrix cell to open. It also lets the two run at once
+    name: Analyze ${{ matrix.language }} with CodeQL
+    runs-on: ubuntu-latest
+    permissions:
+      # where the alerts are uploaded; the one write in this workflow
+      security-events: write
+      contents: read
+      # what the actions analysis reads: the workflow files are its
+      # source, and analyze queries the run's own metadata
+      actions: read
+    strategy:
+      # so one language's failure does not hide the other's result
+      fail-fast: false
+      matrix:
+        # the two CodeQL supports here. The tree is Python, workflows,
+        # markdown and toml, and there is no third language to add
+        language: [actions, python]
+    # far above what this tree's analysis takes, the way the suite is
+    # bounded in test.yml: what the limit buys is that a hung job
+    # releases the runner instead of holding it for six hours.
+    # `gh run list --workflow=codeql.yml --limit 1` is what re-measures it
+    timeout-minutes: 30
+    steps:
+      # every action pinned to a commit SHA with the tag in the comment:
+      # a tag, let alone a branch, is a name its owner can move, and
+      # these run in the one job here that can write security events
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # see the checkout of the coverage job in test.yml
+          persist-credentials: false
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          languages: ${{ matrix.language }}
+          # neither language is compiled, so the database is built from
+          # the sources and there is nothing for an autobuild step to do.
+          # Nothing is installed first either, which does cost something
+          # here and is still the right trade: this package has
+          # dependencies, so a call into btclib is a call CodeQL cannot
+          # follow into, and what it still follows is every path through
+          # this tree's own code -- for the price of not resolving and
+          # installing the whole dependency set twice a week
+          build-mode: none
+          # `queries` is left unset on purpose, which is the default
+          # query suite: the init action has no query-suite input, and
+          # its `queries` input adds to the default rather than
+          # replacing it. Said out loud because "no input" is otherwise
+          # indistinguishable from "nobody decided"
+      - name: Analyze
+        uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          # what keeps the two languages' results apart within one
+          # commit's analysis: without a distinct category the second
+          # upload replaces the first rather than adding to it
+          category: /language:${{ matrix.language }}
