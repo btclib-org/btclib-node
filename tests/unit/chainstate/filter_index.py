@@ -11,11 +11,14 @@ that the header chain a peer would check against is the one BIP157
 defines.
 """
 
+from types import SimpleNamespace
+
 import pytest
 from btclib.block import Block
 from btclib.block.block_filter import BasicBlockFilter, filter_header
 from btclib.script import script
 
+import btclib_node.chainstate.filter_index as filter_index_module
 from btclib_node.chains import RegTest, TestNet
 from btclib_node.main import update_chain
 from tests import load, vector_id
@@ -396,3 +399,109 @@ def test_the_testnet_genesis_block_this_node_builds_is_the_one_core_filtered():
     block_filter = BasicBlockFilter.from_block(genesis_block, [])
     assert block_filter.serialize().hex() == expected
     assert block_filter.header(previous).hex() == header
+
+
+def test_the_header_is_written_before_the_filter(tmp_path):
+    # both skip guards ask get_filter, so a filter on disk without its
+    # header is the state nothing repairs: the block is skipped for
+    # ever, its child cannot be indexed, and the datadir will not open.
+    # The pair goes in one atomic write, and the order is what keeps the
+    # survivable half survivable if it ever stops being one.
+    node = regtest_node(tmp_path)
+    filter_index = node.chainstate.filter_index
+    (block,) = generate_random_chain(1, GENESIS.hash)
+    filter_index.add_block(block, [])
+
+    written = []
+    filter_index._write(SimpleNamespace(put=lambda key, _: written.append(key[:-32])))
+    assert written == [b"cfheader-", b"cfilter-"]
+
+
+def test_the_pair_reaches_the_database_as_one_write(tmp_path):
+    node = regtest_node(tmp_path)
+    filter_index = node.chainstate.filter_index
+    (block,) = generate_random_chain(1, GENESIS.hash)
+    filter_index.add_block(block, [])
+
+    real = filter_index.db
+    batches = []
+
+    class CountingDb:
+        """The chainstate database, counting the batches asked of it."""
+
+        def write_batch(self, **kwargs):
+            batches.append(kwargs)
+            return real.write_batch(**kwargs)
+
+    filter_index.db = CountingDb()
+    try:
+        filter_index.finalize()
+    finally:
+        filter_index.db = real
+
+    # one batch, and one that rolls back rather than half-applying
+    assert batches == [{"transaction": True}]
+    assert filter_index.get_filter(block.header.hash) is not None
+    assert filter_index.get_header(block.header.hash) is not None
+
+
+def test_a_header_left_without_its_filter_is_simply_rebuilt(tmp_path):
+    # the survivable half of the pair, and the reason the order above is
+    # the one it is: the block is built again and answers the same
+    node = regtest_node(tmp_path)
+    (block,) = a_chain(node, 1)
+    filter_index = node.chainstate.filter_index
+    header = filter_index.get_header(block.header.hash)
+    filter_index.db.delete(b"cfilter-" + block.header.hash)
+
+    assert filter_index.catch_up(
+        node.chainstate.block_index.active_chain, node.block_db
+    )
+    assert filter_index.get_header(block.header.hash) == header
+
+
+def test_a_long_catch_up_writes_as_it_goes(tmp_path, monkeypatch):
+    # it runs inside Node.__init__, so holding the whole index in memory
+    # is what a mainnet-sized chain cannot afford, and writing nothing
+    # until the end is what makes an interrupted catch-up start over
+    node = regtest_node(tmp_path)
+    chain = a_chain(node, 4)
+    filter_index = node.chainstate.filter_index
+    active_chain = node.chainstate.block_index.active_chain
+    for block in chain:
+        filter_index.db.delete(b"cfilter-" + block.header.hash)
+        filter_index.db.delete(b"cfheader-" + block.header.hash)
+
+    monkeypatch.setattr(filter_index_module, "_CATCH_UP_BATCH", 2)
+    held = []
+    real_add = filter_index.add_connected_block
+
+    def watched(block, rev_block):
+        real_add(block, rev_block)
+        held.append(len(filter_index.pending))
+
+    filter_index.add_connected_block = watched
+    assert filter_index.catch_up(active_chain, node.block_db) == len(chain)
+
+    # never more than the batch held at once, and something on disk
+    # before the walk was over
+    assert max(held) <= 2
+    for block in chain:
+        assert filter_index.db.get(b"cfilter-" + block.header.hash) is not None
+
+
+def test_the_filters_of_a_connected_batch_go_in_the_chainstate_s_own_write(tmp_path):
+    # the filters and the chain advance are one fact, so they are one
+    # write: finalized with the batch update_chain opened rather than
+    # straight to the database beside it, where a crash between the two
+    # would leave a chain whose tip has no filter
+    node = regtest_node(tmp_path)
+    filter_index = node.chainstate.filter_index
+    given = []
+    real = filter_index.finalize
+    filter_index.finalize = lambda wb=None: given.append(wb) or real(wb)
+
+    a_chain(node, 1)
+
+    filter_index.finalize = real
+    assert given and all(wb is not None for wb in given)

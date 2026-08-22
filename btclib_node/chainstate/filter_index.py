@@ -10,16 +10,21 @@ chain -- one filter per block, and the header chaining it onto its
 parent's.
 
 A filter is keyed by block hash and so is its header, both being
-functions of the block and of nothing else: a header is
+functions of the block and of its ancestry: a header is
 `filter_header(this filter's hash, the parent's header)` and the parent
-is fixed by `previous_block_hash`, so a block stepped over in a reorg
-keeps the filter and the header it had, and coming back costs nothing.
-That is why there is no counterpart here to `UtxoIndex.apply_rev_block`.
+is fixed by `previous_block_hash`, not by which chain is active. So a
+block stepped over in a reorg keeps the filter and the header it had,
+and coming back costs nothing -- which is why there is no counterpart
+here to `UtxoIndex.apply_rev_block`.
 
 Writes are held until `finalize`, the way `UtxoIndex` holds them: a
 block connects in the same write batch as the chainstate it advances,
 and until that batch is written the parent of the block being indexed
 is not in the database yet.
+
+BIP157 asks for exactly this: "Nodes SHOULD NOT generate filters
+dynamically on request, as malicious peers may be able to perform DoS
+attacks by requesting small filters derived from large blocks."
 """
 
 from btclib.block.block_filter import BasicBlockFilter, prevout_scripts_from_utxos
@@ -27,9 +32,16 @@ from btclib.block.block_filter import BasicBlockFilter, prevout_scripts_from_utx
 _FILTER = b"cfilter-"
 _HEADER = b"cfheader-"
 
-# BIP157: "The filter header for the block at height 0 is defined as the
-# 32 zero bytes chained with the filter hash of the genesis block."
-_NO_PREVIOUS_HEADER = b"\x00" * 32
+# BIP157: "The previous filter header used to calculate that of the
+# genesis block is defined to be the 32-byte array of 0's."
+NO_PREVIOUS_FILTER_HEADER = b"\x00" * 32
+
+# how many blocks a catch-up builds before writing them. Without it the
+# whole index is held in memory before a byte reaches the disk, and a
+# basic filter costs about two and a half octets per element -- a chain
+# is gigabytes. Each flush is one atomic write, so a catch-up
+# interrupted resumes from the last of them rather than from nothing.
+_CATCH_UP_BATCH = 500
 
 
 class FilterIndex:
@@ -77,7 +89,7 @@ class FilterIndex:
         if self.get_filter(block_hash) is not None:
             return
         if block_hash == self.genesis_hash:
-            previous_header = _NO_PREVIOUS_HEADER
+            previous_header = NO_PREVIOUS_FILTER_HEADER
         else:
             previous_header = self.get_header(block.header.previous_block_hash)
             if previous_header is None:
@@ -127,16 +139,37 @@ class FilterIndex:
                 raise Exception(err_msg)
             self.add_connected_block(block, rev_block)
             built += 1
+            if len(self.pending) >= _CATCH_UP_BATCH:
+                # said as it goes, not at the end: this runs inside
+                # Node.__init__, so on a long chain it is the only thing
+                # between starting the node and the node appearing hung
+                self.logger.info(f"Building block filters: {built} so far")
+                self.finalize()
         if built:
             self.logger.info(f"Built {built} missing block filters")
         self.finalize()
         return built
 
     def finalize(self, wb=None):
-        db = wb or self.db
+        """Write what is held, into `wb` if there is one and atomically.
+
+        The header before the filter, and the pair in one write. Both
+        skip guards ask `get_filter`, so a filter written without its
+        header is the state nothing repairs: the block is skipped for
+        ever and its child cannot be indexed at all, which leaves the
+        datadir unopenable. The other half of the pair is harmless --
+        a header with no filter is simply rebuilt.
+        """
+        if wb is not None:
+            self._write(wb)
+            return
+        with self.db.write_batch(transaction=True) as batch:
+            self._write(batch)
+
+    def _write(self, db):
         for block_hash, (filter_bytes, header) in self.pending.items():
-            db.put(_FILTER + block_hash, filter_bytes)
             db.put(_HEADER + block_hash, header)
+            db.put(_FILTER + block_hash, filter_bytes)
         self.pending = {}
 
     def rollback(self):

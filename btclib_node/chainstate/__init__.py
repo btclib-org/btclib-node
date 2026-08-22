@@ -17,9 +17,10 @@ class Chainstate:
 
         self.block_index = BlockIndex(self.db, chain, logger)
         self.utxo_index = UtxoIndex(self.db, logger)
-        # after BlockIndex: its init_from_db walks the whole database
-        # until the first key that is not a `blkinfo-`, and the keys
-        # written here sort after those
+        # `BlockIndex.init_from_db` walks the database until the first
+        # key that is not a `blkinfo-`, and `cfilter-`/`cfheader-` sort
+        # after those -- which is what makes the order these three are
+        # built in not matter, rather than what makes this one right
         self.filter_index = FilterIndex(self.db, chain, logger)
 
         self.logger = logger

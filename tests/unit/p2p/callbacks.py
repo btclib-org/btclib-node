@@ -991,6 +991,20 @@ def test_the_checkpoints_are_every_thousandth_block_and_not_the_first():
     ]
 
 
+def test_the_stop_block_is_a_checkpoint_when_its_own_height_is_one():
+    # the boundary the rule is most specific about: "each block ... where
+    # the block height is a multiple of 1,000 greater than 0" includes
+    # the block the range terminates at, when that is what its height is
+    node = a_filters_node(length=CFCHECKPT_INTERVAL + 1)
+    peer = a_peer()
+    stop_hash = CFCHECKPT_INTERVAL.to_bytes(32, "big")
+    get_cfcheckpt(
+        node, GetCFCheckpt(BlockFilterType.BASIC, stop_hash).serialize(), peer
+    )
+    (msg,) = peer.sent
+    assert list(msg.filter_headers) == [hash256(stop_hash)[::-1]]
+
+
 def test_a_chain_shorter_than_the_interval_has_no_checkpoints():
     node = a_filters_node(length=8)
     peer = a_peer()

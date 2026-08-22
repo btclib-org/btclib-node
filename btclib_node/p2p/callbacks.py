@@ -33,6 +33,7 @@ from btclib.p2p.limits import (
     MAX_GETCFILTERS_SIZE,
 )
 
+from btclib_node.chainstate.filter_index import NO_PREVIOUS_FILTER_HEADER
 from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion, Services
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.main import verify_mempool_acceptance
@@ -242,6 +243,25 @@ def getheaders(node, msg, conn):
         conn.send(Headers(headers))
 
 
+def _height_on_the_active_chain(node, block_hash):
+    """Return the height of a block this node has on its chain, or None.
+
+    Two questions and not one: a hash can be known and not be the block
+    the active chain holds at that height, which is what a stop hash
+    naming an abandoned branch looks like. Answering the second from
+    `header_dict` alone would serve the filters of blocks the peer did
+    not ask about.
+    """
+    block_index = node.chainstate.block_index
+    if block_hash not in block_index.header_dict:
+        return None
+    height = block_index.get_block_info(block_hash).index
+    active_chain = block_index.active_chain
+    if height >= len(active_chain) or active_chain[height] != block_hash:
+        return None
+    return height
+
+
 def _filter_range(node, filter_type, start_height, stop_hash, limit):
     """Return the active-chain heights a BIP157 request names, or None.
 
@@ -250,28 +270,28 @@ def _filter_range(node, filter_type, start_height, stop_hash, limit):
     leaves to a caller: only a node holds the chain that says what
     height a hash is at.
 
-    Answered with nothing rather than with an error, which is what
-    BIP157 asks for -- "MUST NOT" send the response, and no message is
-    defined for saying why. A peer asking for a filter type this node
-    does not serve, for a block it does not have on its active chain,
-    or for more blocks than the limit gets silence.
+    Nothing is sent for a request this cannot answer. BIP157 asks for
+    that on the first two counts -- a filter type not supported and a
+    StopHash not known are each "SHOULD NOT respond" -- and says nothing
+    at all about the third, the range being too long, where Core
+    disconnects instead. Silence is a choice there rather than the
+    letter of the specification, and it is the same answer as the other
+    two because there is no message defined for saying why.
     """
     if filter_type != BlockFilterType.BASIC:
         return None
-    block_index = node.chainstate.block_index
-    if stop_hash not in block_index.header_dict:
+    stop_height = _height_on_the_active_chain(node, stop_hash)
+    if stop_height is None:
         return None
-    stop_height = block_index.get_block_info(stop_hash).index
-    active_chain = block_index.active_chain
-    if stop_height >= len(active_chain) or active_chain[stop_height] != stop_hash:
-        return None
-    # only the upper end: the field is unsigned on the wire and these
-    # requests are always parsed, so a negative start cannot arrive
+    # BIP157: "The height of the block with hash StopHash MUST be
+    # greater than or equal to StartHeight". Only the upper end is
+    # checked: the field is unsigned on the wire and these requests are
+    # always parsed, so a negative start cannot arrive.
     if start_height > stop_height:
         return None
-    # BIP157 states the bound as a difference and strictly: "the
-    # difference between StopHeight and StartHeight MUST be strictly
-    # less than" it, so a range of exactly the limit is one too many
+    # "and the difference MUST be strictly less than 1,000" -- 2,000 for
+    # getcfheaders. Strictly, so a range whose ends differ by exactly
+    # the bound is one block too many.
     if stop_height - start_height >= limit:
         return None
     return range(start_height, stop_height + 1)
@@ -319,10 +339,13 @@ def get_cfheaders(node, msg, conn):
     filter_index = node.chainstate.filter_index
     start = heights.start
     # the header of the block before the range, which is what the
-    # hashes below chain onto; thirty-two zeros where the range starts
-    # at the genesis block, BIP157 defining the header before the first
+    # hashes below chain onto. BIP157: "The previous filter header used
+    # to calculate that of the genesis block is defined to be the
+    # 32-byte array of 0's."
     previous = (
-        filter_index.get_header(active_chain[start - 1]) if start else b"\x00" * 32
+        filter_index.get_header(active_chain[start - 1])
+        if start
+        else NO_PREVIOUS_FILTER_HEADER
     )
     conn.send(
         CFHeaders(
@@ -336,23 +359,22 @@ def get_cfheaders(node, msg, conn):
 
 def get_cfcheckpt(node, msg, conn):
     request = GetCFCheckpt.parse(msg)
+    # not _filter_range: this request carries no start height, a
+    # checkpoint chain always beginning at the genesis block, so the two
+    # refusals it shares are asked for directly and there is no third
     if request.filter_type != BlockFilterType.BASIC:
         return
-    block_index = node.chainstate.block_index
-    if request.stop_hash not in block_index.header_dict:
+    stop_height = _height_on_the_active_chain(node, request.stop_hash)
+    if stop_height is None:
         return
-    stop_height = block_index.get_block_info(request.stop_hash).index
-    active_chain = block_index.active_chain
-    if (
-        stop_height >= len(active_chain)
-        or active_chain[stop_height] != request.stop_hash
-    ):
-        return
+    active_chain = node.chainstate.block_index.active_chain
     filter_index = node.chainstate.filter_index
-    # "one entry for each block on the chain terminating in StopHash,
-    # where the block height is a multiple of 1,000 greater than 0", so
-    # the range starts at the interval and not at zero. No bound: the
-    # chain's own length is the bound, which is BIP157's answer too.
+    # BIP157: "FilterHeaders MUST have exactly one entry for each block
+    # on the chain terminating in StopHash, where the block height is a
+    # multiple of 1,000 greater than 0" -- so the range starts at the
+    # interval and not at zero, and the stop block is an entry when its
+    # own height falls on one. No bound: the chain's length is the
+    # bound, which is BIP157's answer too.
     conn.send(
         CFCheckpt(
             BlockFilterType.BASIC,
