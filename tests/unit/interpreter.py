@@ -57,12 +57,9 @@ def test_an_input_that_does_not_verify_raises():
         f([prevout(script.serialize(["OP_RETURN"]))], spend(b""), 0, ())
 
 
-def make_node(index_flags=None):
-    chain = RegTest()
-    if index_flags is not None:
-        chain.flags = index_flags
+def make_node():
     return SimpleNamespace(
-        config=SimpleNamespace(chain=chain),
+        config=SimpleNamespace(chain=RegTest()),
         worker_pool=SimpleNamespace(starmap=lambda fn, args: [fn(*a) for a in args]),
     )
 

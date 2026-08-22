@@ -56,12 +56,13 @@ def drive(chunks, *, timeout=1.0, hang_up=False):
         conn = Connection(loop, ours, manager, 0)
 
         async def send():
-            for chunk in chunks:
-                try:
+            # the connection may close the socket under us, which is the
+            # point of some of these: what is left to send then is
+            # nothing
+            with contextlib.suppress(OSError):
+                for chunk in chunks:
                     await loop.sock_sendall(theirs, chunk)
-                except OSError:
-                    return
-                await asyncio.sleep(0.01)
+                    await asyncio.sleep(0.01)
             if hang_up:
                 theirs.close()
 
@@ -210,6 +211,8 @@ def test_close_cancels_the_task_it_was_given():
             await asyncio.sleep(60)
 
         conn.task = asyncio.ensure_future(forever())
+        # let it start, so that what is cancelled is a running task
+        await asyncio.sleep(0)
         conn.close()
         await asyncio.sleep(0)
         cancelled = conn.task.cancelled() or conn.task.cancelling()
