@@ -219,9 +219,73 @@ extend-exclude = [
 ]
 
 [tool.mypy]
-# no `strict = true` yet: see the lint group above for what that would
-# cost today. What is here is the one thing the hook cannot do without.
-files = ["btclib_node", "tests"]
+# scripts/ with them: a script that no longer imports is a script
+# nobody runs, and it is the one directory here that nothing else
+# checks.
+files = ["btclib_node", "tests", "scripts"]
+# the floor `project.requires-python` declares, and not the interpreter
+# that happens to be running: a name added to the standard library
+# later passes here and fails for whoever is on the oldest version this
+# package says it supports. btclib-org/btclib-node#30 describes the
+# floor as 3.10, which is stale -- against 3.10 mypy reports that
+# `datetime.UTC` does not exist, and it is right about 3.10.
+python_version = "3.14"
+
+# --- the strict bundle, one flag at a time -----------------------------
+#
+# `strict = true` is fifteen flags and reports 2158 errors here, 596 of
+# them one missing annotation each: turning it on wholesale writes a
+# backlog into the configuration. Every flag below was measured on its
+# own, over the three directories above, and costs nothing today -- so
+# each is a ratchet, and the first violation is the one that fails.
+warn_unused_configs = true
+disallow_any_generics = true
+disallow_subclassing_any = true
+disallow_untyped_decorators = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+strict_equality = true
+extra_checks = true
+strict_bytes = true
+# not in the bundle, and free here: a branch mypy can prove is never
+# taken is a branch no test can cover, and this tree is held to
+# covering all of them
+warn_unreachable = true
+
+# The six left off, each with what it costs today. Five are one job:
+# annotate the signatures and they go quiet on their own, which is why
+# none is enabled ahead of that pass (btclib-org/btclib-node#104).
+#
+#   disallow_untyped_defs      +596   the annotation pass itself
+#   disallow_untyped_calls      +44   a typed caller of an untyped callee
+#   check_untyped_defs          +41   real errors inside unannotated
+#                                     bodies -- #105, and the one worth
+#                                     reading rather than deferring
+#   no_implicit_reexport        +21   names imported from where they are
+#                                     re-exported rather than defined
+#   disallow_incomplete_defs    +15   half-annotated signatures
+#   warn_return_any              +1   `NetworkAddress.serialize` is
+#                                     unannotated, so a caller that
+#                                     concatenates its result returns Any
+
+# --- the optional error codes, surveyed one at a time ------------------
+#
+# Same method: enable, measure, decide. Each reports nothing today.
+# `explicit-override` is the one left off, +12, every one of them a
+# decorator to add -- the annotation pass again, so it goes with #104.
+enable_error_code = [
+    "deprecated",
+    "ignore-without-code",
+    "mutable-override",
+    "narrowed-type-not-subtype",
+    "possibly-undefined",
+    "redundant-expr",
+    "redundant-self",
+    "truthy-bool",
+    "truthy-iterable",
+    "unimported-reveal",
+    "unused-awaitable",
+]
 
 [[tool.mypy.overrides]]
 # plyvel ships no stubs and no py.typed, and typeshed carries none: it is

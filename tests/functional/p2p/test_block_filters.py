@@ -39,7 +39,12 @@ from tests.helpers import (
 CHAIN_LENGTH = 3
 
 
-class RecordingDeque(deque):
+# what Connection.parse_messages puts on the queue: the command, the
+# payload behind it, and which connection it came in on
+Message = tuple[str, bytes, int]
+
+
+class RecordingDeque(deque[Message]):
     """A message queue that also keeps what went through it.
 
     The client is a running node, so its own loop pops what arrives --
@@ -48,15 +53,15 @@ class RecordingDeque(deque):
     is recorded here is never taken away.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
-        self.seen = []
+        self.seen: list[Message] = []
 
-    def append(self, item):
+    def append(self, item: Message) -> None:
         self.seen.append(item)
         super().append(item)
 
-    def appendleft(self, item):
+    def appendleft(self, item: Message) -> None:
         self.seen.append(item)
         super().appendleft(item)
 
