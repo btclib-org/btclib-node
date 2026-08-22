@@ -8,7 +8,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 # Above the standard's 3.10 floor, deliberately: this is the version
 # .python-version pins, and with no CI matrix here
-# (btclib-org/btclib_node#33) it is the only version anything runs on.
+# (btclib-org/btclib-node#33) it is the only version anything runs on.
 # A lower bound would be a claim of support nothing checks. Lower it to
 # whatever the matrix covers once there is one.
 requires-python = ">=3.14"
@@ -63,10 +63,22 @@ keywords = [
 # on it, so declaring it before the marker exists would be read by a
 # tool rather than by a person.
 #
-# No PyPy and no `OS Independent`, and both for one reason: `plyvel`
-# is a C extension over LevelDB that publishes no macOS wheel and none
-# past CPython 3.12, so it is built from source here and LevelDB has to
-# be installed first. That is a platform claim, not a portable one.
+# No PyPy, and the reason is no longer plyvel: that dependency is gone,
+# and with it the C extension built from source against a LevelDB the
+# reader had to install first. What is left is the line at the top of
+# this file -- `requires-python = ">=3.14"`, and no PyPy release targets
+# 3.14. `Implementation :: CPython` is that bound restated where an
+# index reads it, and it needs no dependency to justify it.
+#
+# No `OS Independent` either, and nothing in the dependencies argues
+# against it any more: what this installs is btclib and what btclib
+# pulls in, all pure-Python wheels, over a store that is now the
+# standard library's `sqlite3`. Nothing here is known to need a POSIX
+# system. What is missing is not a reason to think it does, it is any
+# run at all that says it does not: CI runs `pre-commit` and no suite
+# (btclib-org/btclib-node#33), so no platform is tested, including the
+# one the linting happens on. `OS Independent` is a claim about every
+# platform, and this is a claim about where the code has been run.
 classifiers = [
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3",
@@ -78,8 +90,9 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Natural Language :: English",
-    # where LevelDB's headers and library can be had and the README says
-    # how; Windows is neither claimed nor tested
+    # where this gets developed and where it gets run; Windows is left
+    # out because nothing here runs it, not because anything is known to
+    # stop it
     "Operating System :: POSIX",
     "Operating System :: MacOS",
     "Topic :: Internet",
@@ -97,7 +110,7 @@ harness = [
     # run under pytest 9.
     "pytest-order>=1.5.0",
     # bounds a test, so that a node that stops answering fails the run
-    # instead of hanging it (btclib-org/btclib_node#98). The limit is in
+    # instead of hanging it (btclib-org/btclib-node#98). The limit is in
     # [tool.pytest.ini_options] below.
     "pytest-timeout>=2.4.0",
 ]
@@ -153,7 +166,7 @@ addopts = "-n auto --remote-data=any --cov --cov-report term-missing:skip-covere
 # anywhere near where the suite reports which condition it was waiting
 # on trades a diagnosis for a timeout. This is nearly three times the
 # worst of them, and still turns the ten-minute hangs of
-# btclib-org/btclib_node#98 into a failure that names its test.
+# btclib-org/btclib-node#98 into a failure that names its test.
 timeout = 120
 filterwarnings = ['ignore:cannot collect test class']
 
