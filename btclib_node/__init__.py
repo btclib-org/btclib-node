@@ -22,6 +22,17 @@ from btclib_node.p2p.manager import P2pManager
 from btclib_node.rpc.main import handle_rpc
 from btclib_node.rpc.manager import RpcManager
 
+# How long `stop` waits for the loop to come back before saying it did
+# not. The flag is read at the top of the loop, so the wait is however
+# long the pass already running takes: `update_chain` validates a whole
+# fork through a blocking `worker_pool.starmap` and checks nothing in
+# between, which is the term that sets the scale -- an idle stop costs
+# milliseconds. Well under the per-test limit `pyproject.toml` sets, so
+# that a node which will not stop is reported here rather than by
+# whichever bound expires first; `tests/unit/__init__.py` asserts that
+# ordering rather than leaving it to this comment.
+STOP_TIMEOUT = 30
+
 
 class Node(threading.Thread):
     def __init__(self, config=Config()):
@@ -122,7 +133,11 @@ class Node(threading.Thread):
         self.logger.close()
 
     def stop(self):
-        """Ask the main loop to stop, and wait until it has.
+        """Ask the main loop to stop, and wait up to `STOP_TIMEOUT` for it.
+
+        Raises if the loop has not come back by then, the node having
+        no way to be sure of its chainstate or its databases while a
+        thread is still inside them.
 
         Signalling alone lets the caller go on while the node is still
         there. A test that returns then is torn down around a thread
@@ -133,12 +148,29 @@ class Node(threading.Thread):
         per-test limit reaches that second one -- the test it belongs
         to has already passed -- so waiting here is what puts the wait
         inside the test, where a limit can name it
-        (btclib-org/btclib_node#98).
+        (btclib-org/btclib-node#98).
+
+        The bound is the point rather than a precaution:
+        `pytest-timeout` arms one timer per test, so a limit already
+        spent in the call phase is not there for the teardown, and an
+        unbounded wait in a teardown is a run that stops instead of
+        failing (btclib-org/btclib-node#115).
 
         The node's own thread is the one caller that cannot wait, the
         `stop` RPC being handled inside the loop it stops. It gets the
-        signal alone, and reaches the end of `run` by itself.
+        signal alone, and reaches the end of `run` by itself. A signal
+        handler is the other caller worth naming: this raising there
+        makes an operator's interrupt loud, and it does not make the
+        process able to exit, the wedged thread being non-daemon.
         """
         self.terminate_flag.set()
         if self.is_alive() and threading.current_thread() is not self:
-            self.join()
+            self.join(timeout=STOP_TIMEOUT)
+            if self.is_alive():
+                # named by its data directory, which is what tells one
+                # node from another where several are running
+                err_msg = f"the node at {self.data_dir} did not stop: its "
+                err_msg += "thread is still running after the flag was set. "
+                err_msg += "Nothing after this can trust the chainstate or "
+                err_msg += "the databases"
+                raise Exception(err_msg)
