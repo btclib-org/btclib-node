@@ -1,8 +1,12 @@
 # The newest interpreter every dependency supports, and the version
-# requires-python names. Not 3.14t: plyvel's Cython-generated source
-# does not compile against the free-threaded build (undeclared
-# CYTHON_METH_FASTCALL), and a C extension that does not declare
-# Py_mod_gil re-enables the GIL at import anyway.
+# requires-python names. Not 3.14t, and no longer for the reason this
+# comment used to give: plyvel's Cython source would not compile against
+# the free-threaded build, and plyvel is gone. What is left is that
+# `librt` arrives under btclib with compiled modules of its own, and an
+# extension that does not declare Py_mod_gil re-enables the GIL at
+# import -- so the free-threaded build would carry the risk and buy
+# nothing until somebody checks. btclib-org/btclib-node#112 is that
+# question, asked now that the answer could have changed.
 # A trailing comment on the version line below would make uv ignore this
 # file, so the explanation stays up here instead.
 3.14

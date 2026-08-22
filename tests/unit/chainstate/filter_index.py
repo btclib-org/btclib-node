@@ -429,9 +429,9 @@ def test_the_pair_reaches_the_database_as_one_write(tmp_path):
     class CountingDb:
         """The chainstate database, counting the batches asked of it."""
 
-        def write_batch(self, **kwargs):
-            batches.append(kwargs)
-            return real.write_batch(**kwargs)
+        def write_batch(self):
+            batches.append(True)
+            return real.write_batch()
 
     filter_index.db = CountingDb()
     try:
@@ -440,7 +440,7 @@ def test_the_pair_reaches_the_database_as_one_write(tmp_path):
         filter_index.db = real
 
     # one batch, and one that rolls back rather than half-applying
-    assert batches == [{"transaction": True}]
+    assert batches == [True]
     assert filter_index.get_filter(block.header.hash) is not None
     assert filter_index.get_header(block.header.hash) is not None
 

@@ -140,9 +140,9 @@ that means today:
   diff's*, by running the same hook against the base, because
   pre-commit.ci also bumps the pinned revisions on a schedule of its
   own;
-- `uv sync` builds plyvel from source, and wants LevelDB's headers and
-  library present before it runs. README.md says how. A collection
-  error on a machine without them is not a finding.
+- `uv sync` fetches everything, this tree building no extension of its
+  own: a machine with `uv` on it can run the gates, and a collection
+  error is a finding rather than a missing library.
 
 A gate that fails locally, and demonstrably fails *because of this
 diff*, is the strongest finding available. A gate that passes is not

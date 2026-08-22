@@ -94,7 +94,7 @@ def update_chain(node):
     finally:
         if success:
             node.logger.debug("Start chainstate finalize")
-            with node.chainstate.db.write_batch(transaction=True) as wb:
+            with node.chainstate.db.write_batch() as wb:
                 for rev_block in to_remove:
                     block_index.remove_from_active_chain(rev_block.hash)
                     update_block_status(

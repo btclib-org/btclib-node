@@ -21,7 +21,6 @@ requires-python = ">=3.14"
 # `merkle_root_` and taking `check_validity` positionally.
 dependencies = [
     "btclib>=2026.8.21",
-    "plyvel>=1.5.1",
 ]
 # What this repository is about, in the order a reader ranks them:
 # PyPI shows keywords as the metadata gives them, and GitHub sorts its
@@ -129,15 +128,6 @@ lint = [
     "types-requests>=2.32",
 ]
 dev = [{ include-group = "test" }, { include-group = "lint" }]
-
-[tool.uv]
-# plyvel subclasses leveldb::Comparator, and leveldb's own CMakeLists
-# builds the library -fno-rtti, so it emits no typeinfo symbol for that
-# base class. plyvel has to be compiled the same way or it imports with
-# `symbol not found: typeinfo for leveldb::Comparator`. This applies
-# wherever plyvel is built from source, which on macOS is everywhere:
-# no plyvel release ships a macOS wheel.
-extra-build-variables = { plyvel = { CXXFLAGS = "-fno-rtti" } }
 
 [build-system]
 requires = ["setuptools>=77"]
@@ -374,15 +364,6 @@ enable_error_code = [
     "unimported-reveal",
     "unused-awaitable",
 ]
-
-[[tool.mypy.overrides]]
-# plyvel ships no stubs and no py.typed, and typeshed carries none: it is
-# a C extension over LevelDB, and the alternative to this override is
-# --ignore-missing-imports, which would silence every other unresolved
-# import along with it. Declared per module so that the next one is a
-# decision rather than a default
-module = ["plyvel"]
-ignore_missing_imports = true
 
 [tool.typos.default.extend-words]
 # see [tool.codespell]'s ignore-words-list above: an RPC response key,

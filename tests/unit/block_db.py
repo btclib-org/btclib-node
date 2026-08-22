@@ -5,7 +5,8 @@
 """What survives being written to disk, and what is read back from where.
 
 The block store keeps its blocks and its rollback patches in flat files
-and their locations in leveldb, so the questions are: does what went in
+and their locations in the key-value store, so the questions are: does
+what went in
 come back out, does it still come back once the store has been closed
 and reopened, and does it come back after the file it was written to is
 no longer the file being written to.

@@ -55,16 +55,6 @@ jobs:
         with:
           persist-credentials: false
 
-      # plyvel builds from source everywhere this repository runs -- it
-      # publishes no macOS wheel and none past CPython 3.12 -- so
-      # LevelDB's headers and library have to be here before uv syncs
-      # the project. The mypy hook is what needs the project: it type
-      # checks against the environment rather than against an isolated
-      # copy, which is the whole reason it is a local hook. README.md
-      # gives this same line to a developer on Debian or Ubuntu
-      - name: Install LevelDB
-        run: sudo apt-get install -y libleveldb-dev
-
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
