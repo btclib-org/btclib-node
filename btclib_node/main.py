@@ -36,6 +36,7 @@ def update_chain(node):
 
     block_index = node.chainstate.block_index
     utxo_index = node.chainstate.utxo_index
+    filter_index = node.chainstate.filter_index
 
     first_candidate = block_index.get_first_candidate()
     if not first_candidate:
@@ -80,6 +81,12 @@ def update_chain(node):
 
             node.block_db.add_rev_block(rev_patch)
             generated_rev_patches.append(rev_patch)
+            # here and not on a pass of its own: the patch names the
+            # output every input of this block spent, which is what a
+            # BIP158 filter is built from and what a block does not
+            # carry. Read back off the disk it would be the same octets
+            # fetched twice.
+            filter_index.add_connected_block(block, rev_patch)
 
     except Exception:
         node.logger.exception("Exception occurred")
@@ -102,10 +109,12 @@ def update_chain(node):
                     )
                     node.logger.info(f"Added block {block_hash.hex()}")
                 utxo_index.finalize(wb)
+                filter_index.finalize(wb)
             node.logger.debug("End chainstate finalize")
         else:
             node.logger.debug("Start chainstate rollback")
             utxo_index.rollback()
+            filter_index.rollback()
             node.logger.debug("End chainstate rollback")
 
     node.logger.info("End block validation")

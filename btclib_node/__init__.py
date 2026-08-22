@@ -46,6 +46,14 @@ class Node(threading.Thread):
 
         self.chainstate = Chainstate(self.data_dir, self.chain, self.logger)
         self.block_db = BlockDB(self.data_dir, self.logger)
+        # the two halves of a filter live in different databases -- the
+        # block and its reverse patch in one, the index in the other --
+        # so catching up is here, where both are built, and before
+        # anything is listening: the version message this node sends
+        # says it serves filters for the whole chain
+        self.chainstate.filter_index.catch_up(
+            self.chainstate.block_index.active_chain, self.block_db
+        )
         self.mempool = Mempool(self.logger)
 
         self.worker_pool = Pool(processes=8)

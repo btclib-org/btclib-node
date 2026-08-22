@@ -5,6 +5,15 @@
 import time
 
 from btclib.p2p.addrv2 import SendAddrV2
+from btclib.p2p.block_filters import (
+    BlockFilterType,
+    CFCheckpt,
+    CFHeaders,
+    CFilter,
+    GetCFCheckpt,
+    GetCFHeaders,
+    GetCFilters,
+)
 from btclib.p2p.compact_blocks import SendCmpct
 from btclib.p2p.data import BlockPayload as BlockMsg
 from btclib.p2p.data import TxPayload as TxMsg
@@ -18,6 +27,11 @@ from btclib.p2p.inventory import (
     NotFound,
 )
 from btclib.p2p.keepalive import Ping, Pong
+from btclib.p2p.limits import (
+    CFCHECKPT_INTERVAL,
+    MAX_GETCFHEADERS_SIZE,
+    MAX_GETCFILTERS_SIZE,
+)
 
 from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion, Services
 from btclib_node.exceptions import MissingPrevoutError
@@ -228,6 +242,131 @@ def getheaders(node, msg, conn):
         conn.send(Headers(headers))
 
 
+def _filter_range(node, filter_type, start_height, stop_hash, limit):
+    """Return the active-chain heights a BIP157 request names, or None.
+
+    A range is a start height and the hash of the block it ends at, so
+    turning it into heights is the one thing `btclib.p2p.block_filters`
+    leaves to a caller: only a node holds the chain that says what
+    height a hash is at.
+
+    Answered with nothing rather than with an error, which is what
+    BIP157 asks for -- "MUST NOT" send the response, and no message is
+    defined for saying why. A peer asking for a filter type this node
+    does not serve, for a block it does not have on its active chain,
+    or for more blocks than the limit gets silence.
+    """
+    if filter_type != BlockFilterType.BASIC:
+        return None
+    block_index = node.chainstate.block_index
+    if stop_hash not in block_index.header_dict:
+        return None
+    stop_height = block_index.get_block_info(stop_hash).index
+    active_chain = block_index.active_chain
+    if stop_height >= len(active_chain) or active_chain[stop_height] != stop_hash:
+        return None
+    # only the upper end: the field is unsigned on the wire and these
+    # requests are always parsed, so a negative start cannot arrive
+    if start_height > stop_height:
+        return None
+    # BIP157 states the bound as a difference and strictly: "the
+    # difference between StopHeight and StartHeight MUST be strictly
+    # less than" it, so a range of exactly the limit is one too many
+    if stop_height - start_height >= limit:
+        return None
+    return range(start_height, stop_height + 1)
+
+
+def get_cfilters(node, msg, conn):
+    request = GetCFilters.parse(msg)
+    heights = _filter_range(
+        node,
+        request.filter_type,
+        request.start_height,
+        request.stop_hash,
+        MAX_GETCFILTERS_SIZE,
+    )
+    if heights is None:
+        return
+    active_chain = node.chainstate.block_index.active_chain
+    filter_index = node.chainstate.filter_index
+    # "sequentially in order by block height", which is BIP157's own
+    # words and the reason this is the one request answered by many
+    # messages rather than one
+    for height in heights:
+        block_hash = active_chain[height]
+        conn.send(
+            CFilter(
+                BlockFilterType.BASIC,
+                block_hash,
+                filter_index.get_filter(block_hash),
+            )
+        )
+
+
+def get_cfheaders(node, msg, conn):
+    request = GetCFHeaders.parse(msg)
+    heights = _filter_range(
+        node,
+        request.filter_type,
+        request.start_height,
+        request.stop_hash,
+        MAX_GETCFHEADERS_SIZE,
+    )
+    if heights is None:
+        return
+    active_chain = node.chainstate.block_index.active_chain
+    filter_index = node.chainstate.filter_index
+    start = heights.start
+    # the header of the block before the range, which is what the
+    # hashes below chain onto; thirty-two zeros where the range starts
+    # at the genesis block, BIP157 defining the header before the first
+    previous = (
+        filter_index.get_header(active_chain[start - 1]) if start else b"\x00" * 32
+    )
+    conn.send(
+        CFHeaders(
+            BlockFilterType.BASIC,
+            request.stop_hash,
+            previous,
+            [filter_index.get_filter_hash(active_chain[h]) for h in heights],
+        )
+    )
+
+
+def get_cfcheckpt(node, msg, conn):
+    request = GetCFCheckpt.parse(msg)
+    if request.filter_type != BlockFilterType.BASIC:
+        return
+    block_index = node.chainstate.block_index
+    if request.stop_hash not in block_index.header_dict:
+        return
+    stop_height = block_index.get_block_info(request.stop_hash).index
+    active_chain = block_index.active_chain
+    if (
+        stop_height >= len(active_chain)
+        or active_chain[stop_height] != request.stop_hash
+    ):
+        return
+    filter_index = node.chainstate.filter_index
+    # "one entry for each block on the chain terminating in StopHash,
+    # where the block height is a multiple of 1,000 greater than 0", so
+    # the range starts at the interval and not at zero. No bound: the
+    # chain's own length is the bound, which is BIP157's answer too.
+    conn.send(
+        CFCheckpt(
+            BlockFilterType.BASIC,
+            request.stop_hash,
+            [
+                filter_index.get_header(active_chain[height])
+                for height in range(
+                    CFCHECKPT_INTERVAL, stop_height + 1, CFCHECKPT_INTERVAL
+                )
+            ],
+        )
+    )
+
+
 def not_found(node, msg, conn):
     missing = NotFound.parse(msg)
     node.logger.warning(f"Missing objects:{missing}")
@@ -260,6 +399,9 @@ callbacks = {
     "addr": addr,
     "addrv2": addrv2,
     "getaddr": getaddr,
+    "getcfilters": get_cfilters,
+    "getcfheaders": get_cfheaders,
+    "getcfcheckpt": get_cfcheckpt,
     "notfound": not_found,
     "reject": reject,
 }

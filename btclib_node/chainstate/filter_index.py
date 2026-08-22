@@ -1,0 +1,143 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
+"""The BIP158 filter of every connected block, and its filter header.
+
+What a node holds that `btclib.block.block_filter` does not: the
+arithmetic over one block is btclib's, and this is the index over the
+chain -- one filter per block, and the header chaining it onto its
+parent's.
+
+A filter is keyed by block hash and so is its header, both being
+functions of the block and of nothing else: a header is
+`filter_header(this filter's hash, the parent's header)` and the parent
+is fixed by `previous_block_hash`, so a block stepped over in a reorg
+keeps the filter and the header it had, and coming back costs nothing.
+That is why there is no counterpart here to `UtxoIndex.apply_rev_block`.
+
+Writes are held until `finalize`, the way `UtxoIndex` holds them: a
+block connects in the same write batch as the chainstate it advances,
+and until that batch is written the parent of the block being indexed
+is not in the database yet.
+"""
+
+from btclib.block.block_filter import BasicBlockFilter, prevout_scripts_from_utxos
+
+_FILTER = b"cfilter-"
+_HEADER = b"cfheader-"
+
+# BIP157: "The filter header for the block at height 0 is defined as the
+# 32 zero bytes chained with the filter hash of the genesis block."
+_NO_PREVIOUS_HEADER = b"\x00" * 32
+
+
+class FilterIndex:
+    def __init__(self, parent_db, chain, logger):
+        self.db = parent_db
+        self.logger = logger
+
+        self.pending = {}
+
+        # no peer serves the genesis block and no `getdata` asks for it,
+        # so its filter is built from the chain's own copy, here, rather
+        # than by the connect path every other block goes through
+        self.genesis_hash = chain.genesis.hash
+        if self.get_filter(self.genesis_hash) is None:
+            self.add_block(chain.genesis_block, [])
+            self.finalize()
+
+    def get_filter(self, block_hash):
+        """Return the serialized filter of a block, or None."""
+        if block_hash in self.pending:
+            return self.pending[block_hash][0]
+        return self.db.get(_FILTER + block_hash)
+
+    def get_header(self, block_hash):
+        """Return the filter header of a block, or None."""
+        if block_hash in self.pending:
+            return self.pending[block_hash][1]
+        return self.db.get(_HEADER + block_hash)
+
+    def get_filter_hash(self, block_hash):
+        """Return the filter hash of a block, in display order, or None."""
+        filter_bytes = self.get_filter(block_hash)
+        if filter_bytes is None:
+            return None
+        # round-tripped through the filter rather than hashed here: the
+        # hash is btclib's definition of what a `cfheaders` carries, and
+        # a second spelling of it would be a second thing to keep right
+        return BasicBlockFilter.parse(
+            filter_bytes, block_hash, check_validity=False
+        ).hash
+
+    def add_block(self, block, prevout_scripts):
+        """Index the filter of a block whose parent is already indexed."""
+        block_hash = block.header.hash
+        if self.get_filter(block_hash) is not None:
+            return
+        if block_hash == self.genesis_hash:
+            previous_header = _NO_PREVIOUS_HEADER
+        else:
+            previous_header = self.get_header(block.header.previous_block_hash)
+            if previous_header is None:
+                err_msg = "no filter header for the parent of "
+                err_msg += block_hash.hex()
+                raise Exception(err_msg)
+        block_filter = BasicBlockFilter.from_block(
+            block, prevout_scripts, check_validity=False
+        )
+        self.pending[block_hash] = (
+            block_filter.serialize(check_validity=False),
+            block_filter.header(previous_header),
+        )
+
+    def add_connected_block(self, block, rev_block):
+        """Index a block from the reverse patch its connection produced.
+
+        `RevBlock.to_add` is the output every input of the block spent,
+        which is what a filter needs and a block does not carry.
+        """
+        self.add_block(block, prevout_scripts_from_utxos(block, dict(rev_block.to_add)))
+
+    def catch_up(self, active_chain, block_db):
+        """Index every block of the active chain that has no filter yet.
+
+        A datadir synced before this index existed has the blocks and
+        the reverse patches and none of the filters, and a node that
+        answers `getcfilters` for some of its chain is worse than one
+        that does not answer at all -- BIP157's service bit is a promise
+        about the whole of it. Walked from the bottom so that each
+        block's parent is indexed before it is.
+
+        Returns how many it built, which is zero on every start but the
+        first after the index appears.
+        """
+        built = 0
+        for block_hash in active_chain:
+            if self.get_filter(block_hash) is not None:
+                continue
+            block = block_db.get_block(block_hash)
+            rev_block = block_db.get_rev_block(block_hash)
+            if block is None or rev_block is None:
+                # nothing else can be built either: the next block's
+                # header chains onto this one's, which does not exist
+                err_msg = "cannot build the block filter index: no block "
+                err_msg += f"or reverse patch stored for {block_hash.hex()}"
+                raise Exception(err_msg)
+            self.add_connected_block(block, rev_block)
+            built += 1
+        if built:
+            self.logger.info(f"Built {built} missing block filters")
+        self.finalize()
+        return built
+
+    def finalize(self, wb=None):
+        db = wb or self.db
+        for block_hash, (filter_bytes, header) in self.pending.items():
+            db.put(_FILTER + block_hash, filter_bytes)
+            db.put(_HEADER + block_hash, header)
+        self.pending = {}
+
+    def rollback(self):
+        self.pending = {}

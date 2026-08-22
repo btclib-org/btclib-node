@@ -116,10 +116,13 @@ def test_get_peer_info(tmp_path):
     assert response["result"][0]["addrbind"] == f"127.0.0.1:{local_port}"
     assert response["result"][0]["addrlocal"] == f"127.0.0.1:{local_port}"
     assert response["result"][0]["network"] == "ipv4"
-    assert response["result"][0]["services"] == "0000000000000409"
+    # network | witness | compact_filters | network_limited, which
+    # is what send_version advertises, over the 64-bit field
+    assert response["result"][0]["services"] == "0000000000000449"
     assert response["result"][0]["servicesnames"] == [
         "NETWORK",
         "WITNESS",
+        "COMPACT_FILTERS",
         "NETWORK_LIMITED",
     ]
     assert not response["result"][0]["inbound"]
@@ -143,10 +146,13 @@ def test_get_peer_info(tmp_path):
     assert response["result"][0]["addrbind"] == f"127.0.0.1:{node1.p2p_port}"
     assert response["result"][0]["addrlocal"] == f"0.0.0.0:{node1.p2p_port}"
     assert response["result"][0]["network"] == "ipv4"
-    assert response["result"][0]["services"] == "0000000000000409"
+    # network | witness | compact_filters | network_limited, which
+    # is what send_version advertises, over the 64-bit field
+    assert response["result"][0]["services"] == "0000000000000449"
     assert response["result"][0]["servicesnames"] == [
         "NETWORK",
         "WITNESS",
+        "COMPACT_FILTERS",
         "NETWORK_LIMITED",
     ]
     assert response["result"][0]["inbound"]

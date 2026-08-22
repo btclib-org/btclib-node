@@ -62,3 +62,16 @@ def test_magic():
 def test_genesis():
     for chain in CHAINS:
         assert chain.genesis.hash.hex() == EXPECTED[chain.name]["genesis"], chain.name
+
+
+def test_the_genesis_block_carries_the_coinbase_its_header_commits_to():
+    # the header is derived from the transaction, so a block built
+    # without it hashes the same and is still wrong: it is the only
+    # copy of the genesis block this node has -- no peer serves it --
+    # and the BIP158 filter of height zero is built from its outputs
+    for chain in CHAINS:
+        (coinbase,) = chain.genesis_block.transactions
+        assert coinbase.is_coinbase, chain.name
+        # one transaction, so the merkle root is its own id
+        assert chain.genesis.merkle_root == coinbase.id, chain.name
+        assert coinbase.vout[0].script_pub_key.script, chain.name

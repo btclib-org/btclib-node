@@ -5,6 +5,7 @@
 import plyvel
 
 from .block_index import BlockIndex
+from .filter_index import FilterIndex
 from .utxo_index import UtxoIndex
 
 
@@ -16,6 +17,10 @@ class Chainstate:
 
         self.block_index = BlockIndex(self.db, chain, logger)
         self.utxo_index = UtxoIndex(self.db, logger)
+        # after BlockIndex: its init_from_db walks the whole database
+        # until the first key that is not a `blkinfo-`, and the keys
+        # written here sort after those
+        self.filter_index = FilterIndex(self.db, chain, logger)
 
         self.logger = logger
 
