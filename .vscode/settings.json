@@ -3,8 +3,8 @@
   // the editor fixes on save is what the hook would have fixed, so nothing
   // reaches `git commit` for the first time there. extensions.json beside it
   // names the tool each setting drives. What no extension wraps --
-  // codespell, yamllint, actionlint, zizmor, detect-secrets, check-manifest,
-  // pyroma, toml-comment-width -- is only ever seen by
+  // codespell, yamllint, detect-secrets, toml-comment-width, uv-lock and
+  // the pygrep hooks -- is only ever seen by
   //
   //   uv run pre-commit run --all-files
   //
@@ -13,28 +13,30 @@
   // made and an editor cannot read from pyproject.toml
 
   // there is no pyright among the hooks and mypy is the type gate, so what
-  // Pylance reports is a second opinion nothing enforces. Off rather than at
-  // its own default, and that is measured: on this tree the default reports
-  // errors mypy strict does not, over __all__ re-exports and a handful of
-  // narrowing differences in the tests. Some of them may well be worth
-  // fixing, which is a separate question from what the editor should say
-  // while typing; the survey is
+  // Pylance reports is a second opinion nothing enforces, and one this
+  // repository's mypy is not yet strict enough to have reconciled. Off
+  // rather than at its own default; the survey, for whoever wants to see
+  // what it would say, is
   //
-  //   uvx pyright --pythonpath .venv/bin/python btclib tests
+  //   uvx pyright --pythonpath .venv/bin/python btclib_node tests
   //
   // Completion, hover and go-to-definition are unaffected by this setting
   "python.analysis.typeCheckingMode": "off",
 
-  // the mypy hook is a local one, running the project environment's mypy
-  // rather than an isolated copy, and the editor has to use that same one:
-  // the mypy the extension bundles is older than the locked one, and an
-  // `enable_error_code` name it does not know is dropped with a warning no
-  // extension surfaces. The environment is the .venv uv sync creates, which
-  // is also what makes `import btclib` resolve, the install in it being
-  // editable
-  "mypy-type-checker.importStrategy": "fromEnvironment",
+  // the mypy hook here is the hosted mirrors-mypy, pinned by rev and run
+  // in an environment of its own, and mypy is deliberately in no dependency
+  // group -- pyproject.toml says so where the groups are. So there is no
+  // project mypy for the editor to point at: `fromEnvironment` would find
+  // a .venv without one and report nothing at all, silently. The bundled
+  // copy is what is left, and it is honestly not the hook's: a different
+  // version, and without the hook's `additional_dependencies`, so an
+  // import of requests reads as untyped here where the hook resolves it.
+  // What closes that gap is not a setting but the move the hook's own
+  // comment defers -- a local, uv-run mypy, as two sibling repositories
+  // already have (btclib-org/.github#9)
+  "mypy-type-checker.importStrategy": "useBundled",
   // reportingScope stays at its default: the extension checks the file in
-  // the editor, the hook checks btclib, tests and .github/scripts
+  // the editor, the hook checks every .py this repository tracks
 
   // the two ruff hooks, `ruff-check --fix` and `ruff-format`, on save.
   // "always" rather than "explicit" because an auto-save on focus change is
@@ -95,10 +97,10 @@
     "editor.formatOnSave": true
   },
   // json and jsonc are two languages to the editor, and the difference is
-  // the one the hooks draw: the json under tests is golden-file output and
-  // vendored vectors, held by pretty-format-json at indent 4 and by the
-  // pins tests/_data/README.md records, so an editor formatting one on save
-  // would break a test or void a verdict
+  // the one the hooks draw: pretty-format-json --autofix owns every .json
+  // this repository tracks, and prettier owns the .vscode jsonc beside it.
+  // Off on save for json so that the two never disagree about a file, the
+  // hook being the one that decides
   "[json]": {
     "editor.formatOnSave": false
   },

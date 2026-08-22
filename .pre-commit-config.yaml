@@ -66,9 +66,22 @@ repos:
       - id: fix-byte-order-marker
       - id: check-yaml
       - id: check-json
+        # `.vscode` is jsonc and not json: VSCode reads a comment in its
+        # own settings.json and extensions.json, and what those two files
+        # carry besides the settings is the reason for each of them. A json
+        # parser rejects the file at the first one. It is not a gap:
+        # prettier below is given that directory and fails on what it
+        # cannot parse, which is the question this hook asks
+        exclude: ^\.vscode/
       - id: pretty-format-json
         name: pretty-format-json (in place fixes)
         args: [--autofix]
+        # `.vscode`, for the reason check-json above is given the same
+        # exclude: those files are jsonc, this hook parses json, and
+        # prettier below is what formats them instead -- at its own indent,
+        # which is not this hook's and does not have to be, no other tool
+        # reading them
+        exclude: ^\.vscode/
       - id: check-merge-conflict
       - id: check-vcs-permalinks
       - id: detect-private-key
@@ -147,7 +160,7 @@ repos:
     hooks:
       - id: prettier
         name: prettier (yaml and jsonc, in place fixes)
-        files: ^(.*\.ya?ml|\.markdownlint\.jsonc)$
+        files: ^(.*\.ya?ml|\.vscode/.*\.json|\.markdownlint\.jsonc)$
   # the same for toml, which here is pyproject.toml: .taplo.toml holds
   # the formatting choices and the reasoning for them. uv.lock is toml
   # to identify and therefore matched by the hook's own types, and it

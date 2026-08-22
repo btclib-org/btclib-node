@@ -2,11 +2,16 @@
   // one entry per tool the lint gate already runs, so the editor reports
   // what .pre-commit-config.yaml would report at commit time. Nothing here
   // is a tool the gate does not have: an extension with no hook behind it
-  // is a second opinion, and a finding no workflow enforces is noise
+  // is a second opinion, and a finding no workflow enforces is noise.
+  // Derived from this repository's own hooks, which are fewer than a
+  // sibling's: there is no docs tree, no dependabot configuration and no
+  // readthedocs file here, so the extensions those would justify are not
+  // listed
   "recommendations": [
     // ruff-check and ruff-format
     "charliermarsh.ruff",
-    // the local mypy hook, which runs the project environment's mypy
+    // the mypy hook, which here is the hosted mirrors-mypy rather than a
+    // local one -- see settings.json for what that means for the editor
     "ms-python.mypy-type-checker",
     // the interpreter, the test explorer and the debugger under them
     "ms-python.python",
@@ -20,14 +25,14 @@
     // own dictionary rather than codespell's builtin, and a different
     // dictionary is a different set of findings
     "tekumara.typos-vscode",
-    // check-yaml, and the schemas check-dependabot and check-readthedocs
-    // validate against: this attaches them by filename, so a key
-    // dependabot.yml or .readthedocs.yaml does not accept is flagged where
-    // it is typed
+    // check-yaml and the yamllint hook, which reads .yamllint.yaml: this
+    // attaches both by filename, so what yamllint would report at commit
+    // time is reported where the line is typed
     "redhat.vscode-yaml",
-    // the workflows: expression and syntax checking in the editor. Not
-    // actionlint, which the gate also runs and no maintained extension
-    // wraps -- shellcheck inside a `run:` block stays a hook finding
+    // .github/workflows/claude-review.yml: expression and syntax checking
+    // in the editor. This repository runs no actionlint hook, so unlike in
+    // a sibling the extension is not a second reading of what a hook
+    // already says -- it is the only thing that reads that file at all
     "github.vscode-github-actions",
     // the prettier hook, so what formats yaml and jsonc on save is the tool
     // that formats it at commit time and not the copy the yaml extension
@@ -35,17 +40,14 @@
     "esbenp.prettier-vscode",
     // check-toml, the pyproject.toml schema over it, and the taplo hook:
     // this extension *is* taplo, and it reads .taplo.toml
-    "tamasfe.even-better-toml",
-    // docs/source is reStructuredText and the lint workflow builds it with
-    // sphinx -W. Highlighting only, deliberately: the heavier
-    // reStructuredText extensions want esbonio, doc8 or rstcheck installed
-    // to say anything, none of which is in the gate
-    "trond-snekvik.simple-rst"
+    "tamasfe.even-better-toml"
   ],
-  // the reflex installs that would each fight a hook: ruff formats, ruff
-  // sorts the imports with "I", and ruff's "PL" set is the pylint rules the
-  // gate selected. A second formatter on save reformats what ruff-format
-  // just wrote, and the commit hook writes it back
+  // the reflex installs that would each fight a hook: ruff formats, and
+  // ruff sorts the imports with "I". A second formatter on save reformats
+  // what ruff-format just wrote, and the commit hook writes it back.
+  // pylint is here for a different reason from the other three: this
+  // repository's ruff `select` does not carry "PL", so pylint would not be
+  // duplicating a hook but reporting findings nothing here enforces
   "unwantedRecommendations": [
     "ms-python.black-formatter",
     "ms-python.isort",
