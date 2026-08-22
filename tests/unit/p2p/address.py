@@ -35,7 +35,7 @@ def test_an_address_just_seen_is_active_and_can_be_sent():
     (active,) = peer_db.get_active_addresses()
     # a whole second, because the field is four octets on the wire and a
     # float has no to_bytes: this is what serving the address needs
-    assert active.time == int(active.time)
+    assert isinstance(active.time, int)
     assert NetworkAddress.deserialize(active.serialize()) == active
 
 

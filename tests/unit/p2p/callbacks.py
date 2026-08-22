@@ -4,10 +4,11 @@
 
 """What a peer gets back when it asks this node for addresses.
 
-`getaddr` is the one callback no test ever reached, and every branch of
-it was wrong: it read a property off the wrong object, then subscripted
-a function. `main.handle_p2p` turns a callback that raises into a
-disconnect, so a peer asking a perfectly ordinary question was dropped.
+An answer at all, first of all: `main.handle_p2p` turns a callback that
+raises into a disconnect, so a `getaddr` this node cannot answer costs
+the peer that asked. Then the shape of it -- the message version the
+peer asked for, only the addresses that version can carry, and no more
+of them in one message than the protocol allows.
 """
 
 import time
@@ -62,13 +63,16 @@ def test_a_peer_that_asked_for_addrv2_gets_addrv2():
 
 def test_an_address_addr_version_1_cannot_carry_is_left_out():
     # Addr.serialize raises on one of these rather than inventing an
-    # address, so sending it would drop the peer we are answering
+    # address, and Connection.async_send logs that and drops the
+    # message, so one onion address would cost the whole answer
     onion = an_address(netid=NetworkID.torv3)
     ipv4 = an_address()
-    node, conn, sent = make_node([onion, ipv4])
+    ipv6 = an_address(netid=NetworkID.ipv6)
+    node, conn, sent = make_node([onion, ipv4, ipv6])
     getaddr(node, b"", conn)
     (answer,) = sent
-    assert answer.addresses == [ipv4]
+    # ipv6 is carried by addr version 1, and only the netid knows that
+    assert answer.addresses == [ipv4, ipv6]
     answer.serialize()
 
 
