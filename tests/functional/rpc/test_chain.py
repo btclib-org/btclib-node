@@ -15,13 +15,14 @@ from tests.helpers import (
     generate_random_header_chain,
     get_random_port,
     wait_until,
+    wait_until_listening,
 )
 
 
 def test_best_block_hash(rpc_node):
     node = rpc_node
 
-    wait_until(lambda: node.rpc_manager.is_alive())
+    wait_until_listening(node.rpc_manager)
 
     chain = generate_random_chain(100, RegTest().genesis.hash)
     header_chain = [block.header for block in chain]
@@ -58,7 +59,7 @@ def test_best_block_hash(rpc_node):
 def test_block_hash(rpc_node):
     node = rpc_node
 
-    wait_until(lambda: node.rpc_manager.is_alive())
+    wait_until_listening(node.rpc_manager)
 
     chain = generate_random_chain(100, RegTest().genesis.hash)
     header_chain = [block.header for block in chain]
@@ -103,7 +104,7 @@ def test_block_header_last(tmp_path):
     )
     node.start()
 
-    wait_until(lambda: node.rpc_manager.is_alive())
+    wait_until_listening(node.rpc_manager)
 
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
     node.chainstate.block_index.add_headers(chain)
@@ -143,7 +144,7 @@ def test_block_header_middle(tmp_path):
     )
     node.start()
 
-    wait_until(lambda: node.rpc_manager.is_alive())
+    wait_until_listening(node.rpc_manager)
 
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
     node.chainstate.block_index.add_headers(chain)

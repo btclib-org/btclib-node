@@ -184,6 +184,25 @@ def test_add_tx(tmp_path):
     verify_mempool_acceptance(node, tx2)
 
 
+def test_a_candidate_whose_block_has_not_arrived_is_not_connected(tmp_path):
+    # headers run ahead of blocks for the whole of a sync, so the
+    # commonest state of a candidate is one whose block is still being
+    # fetched. It is declined before block_db is asked for anything:
+    # asking and rolling back reaches the same chain, but by way of an
+    # exception, on every pass of a loop that runs until the block
+    # arrives.
+    node = regtest_node(tmp_path)
+    chain = generate_random_chain(2, RegTest().genesis.hash)
+    block_index = node.chainstate.block_index
+    block_index.add_headers([block.header for block in chain])
+    asked = []
+    node.block_db.get_block = asked.append
+    assert update_chain(node) is None
+    assert not asked
+    assert block_index.active_chain == [RegTest().genesis.hash]
+    assert node.status == NodeStatus.HeaderSynced
+
+
 def hashes(chain):
     return [block.header.hash for block in chain]
 

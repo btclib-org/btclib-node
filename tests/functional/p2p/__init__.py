@@ -4,18 +4,26 @@
 
 from btclib_node import Node
 from btclib_node.config import Config
-from tests.helpers import wait_until
+from tests.helpers import get_random_port, wait_until_listening
 
 
 def test_init(tmp_path):
+    # a port of its own, as every other node in the suite has: left to
+    # the chain's default this binds regtest's fixed 18444, and a second
+    # suite running anywhere on the machine takes it. The bind then
+    # raises inside a coroutine nobody awaits, so the listener never
+    # comes up and nothing says why.
     node = Node(
         config=Config(
-            chain="regtest", data_dir=tmp_path, allow_p2p=True, allow_rpc=False
+            chain="regtest",
+            data_dir=tmp_path,
+            p2p_port=get_random_port(),
+            allow_rpc=False,
         )
     )
     node.start()
 
-    wait_until(lambda: node.p2p_manager.is_alive())
+    wait_until_listening(node.p2p_manager)
 
     node.stop()
 

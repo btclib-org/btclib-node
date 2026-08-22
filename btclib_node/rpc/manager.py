@@ -27,6 +27,11 @@ class RpcManager(threading.Thread):
         self.port = port
         self.last_connection_id = -1
 
+        # see P2pManager.listening: `is_alive()` is true before `run`
+        # has bound anything, and a client that posts on the strength of
+        # it is refused
+        self.listening = threading.Event()
+
     def create_connection(self, loop, client):
         client.settimeout(0.0)
         new_connection = Connection(loop, client, self, self.last_connection_id)
@@ -48,6 +53,7 @@ class RpcManager(threading.Thread):
         server_socket.bind(("0.0.0.0", self.port))  # noqa: S104
         server_socket.listen()
         server_socket.settimeout(0.0)
+        self.listening.set()
         with server_socket:
             while True:
                 client, _ = await loop.sock_accept(server_socket)
@@ -74,4 +80,7 @@ class RpcManager(threading.Thread):
         for conn in self.connections.values():
             conn.close()
         self.loop.close()
+        # so that the flag says what its name says: a socket
+        # closed here is not one anything should wait for
+        self.listening.clear()
         self.logger.info("Stopping RPC manager")

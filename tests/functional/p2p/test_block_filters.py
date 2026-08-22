@@ -34,6 +34,7 @@ from tests.helpers import (
     get_random_port,
     local_addr,
     wait_until,
+    wait_until_listening,
 )
 
 CHAIN_LENGTH = 3
@@ -68,12 +69,17 @@ class RecordingDeque(deque[Message]):
 
 @pytest.fixture(scope="module")
 def peers(tmp_path_factory):
-    """One connected pair for the whole module, not one per test.
+    """One connected pair for the module, rather than one per test.
 
     Every test here is a request and its answer over a connection that
-    nothing in them changes, and a node costs a thread and a pool of
-    eight processes to start. Twelve of those against `-n auto` is what
-    #46 is about, so the pair is built once.
+    nothing in them changes, and a node costs a thread, two managers and
+    a handshake to start. Paying that per test is what #46 is about.
+
+    Module scope is not once per run, though: `-n auto` with the default
+    `--dist load` spreads these tests over workers and each worker
+    builds its own pair, so what this saves depends on how they land.
+    Making it one is `--dist loadgroup`, which is #46's to decide rather
+    than this fixture's.
     """
     tmp_path = tmp_path_factory.mktemp("block_filters")
     nodes = [
@@ -90,7 +96,7 @@ def peers(tmp_path_factory):
     server, client = nodes
     for node in nodes:
         node.start()
-        wait_until(lambda node=node: node.p2p_manager.is_alive())
+        wait_until_listening(node.p2p_manager)
 
     chain = generate_random_chain(CHAIN_LENGTH, RegTest().genesis.hash)
     block_index = server.chainstate.block_index

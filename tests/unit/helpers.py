@@ -12,6 +12,7 @@ fails as a bare traceback in the middle of somebody else's test.
 import socket
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 from btclib.block import BlockHeader
@@ -30,6 +31,7 @@ from tests.helpers import (
     get_random_port,
     local_addr,
     wait_until,
+    wait_until_listening,
 )
 
 
@@ -59,6 +61,24 @@ def test_a_condition_that_never_holds_is_given_up_on():
     # asked repeatedly, and for as long as it said it would
     assert len(calls) > 1
     assert time.time() - start >= timeout
+
+
+def test_a_manager_that_is_listening_is_not_waited_for():
+    listening = SimpleNamespace(listening=threading.Event(), port=18444)
+    listening.listening.set()
+    start = time.time()
+    wait_until_listening(listening, timeout=10)
+    assert time.time() - start < 10
+
+
+def test_a_manager_that_never_binds_is_given_up_on():
+    # the whole point of the helper: a listener that never comes up is a
+    # bounded failure and not a test that waits on it forever -- and the
+    # failure says which manager, because a test that waits on several
+    # is told nothing by a line number inside the helper
+    never = SimpleNamespace(listening=threading.Event(), port=18444)
+    with pytest.raises(Exception, match="18444.* within 0.2 seconds"):
+        wait_until_listening(never, timeout=0.2)
 
 
 def test_a_bounded_call_hands_back_what_it_returned():

@@ -2,17 +2,31 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""What the node's own loop does with what it is handed.
+
+Nearly all of `Node.run` was reached only by the functional tests: two
+real nodes, or an HTTP client, and a race to win before the loop is
+asked anything at all. That is #97 -- a run where no test failed and
+the coverage floor went red all the same, on `run`'s own `except
+Exception`. The managers below are stand-ins, so the loop is handed its
+messages directly and what it does with them does not depend on
+scheduling.
+"""
+
 import re
 import signal
 import threading
 import time
+from collections import deque
 from contextlib import contextmanager
+from types import SimpleNamespace
 
 import pytest
 
 import btclib_node
 from btclib_node import Node
 from btclib_node.config import Config
+from tests.helpers import wait_until
 
 
 def a_node(tmp_path):
@@ -25,6 +39,55 @@ def a_node(tmp_path):
             debug=True,
         )
     )
+
+
+class AManager:
+    """What `Node.run` asks of a manager, and nothing else."""
+
+    def __init__(self):
+        self.messages = deque()
+        self.handshake_messages = deque()
+        self.connections = {}
+        self.started = False
+        self.stopped = False
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
+
+
+@pytest.fixture
+def a_networked_node(tmp_path):
+    """A node whose ports are set and whose managers are stand-ins.
+
+    The ports are what `run` reads to decide whether to start a manager;
+    nothing binds them, because the managers built from them are thrown
+    away here. Their event loops are closed rather than dropped, a
+    dropped one being a ResourceWarning somewhere else's test.
+
+    Stopped however the test ends, and a fixture rather than a call for
+    that reason: the tests below wait on the loop, and a wait that gives
+    up leaves a non-daemon thread holding the interpreter open after the
+    last test has passed, which is the half of #98 no per-test limit
+    reaches.
+    """
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            p2p_port=18444,
+            rpc_port=18445,
+            debug=True,
+        )
+    )
+    node.p2p_manager.loop.close()
+    node.rpc_manager.loop.close()
+    node.p2p_manager = AManager()
+    node.rpc_manager = AManager()
+    yield node
+    node.stop()
 
 
 def test_init(tmp_path):
@@ -192,3 +255,121 @@ def test_the_node_that_will_not_stop_is_named(tmp_path, monkeypatch):
     with a_wedged_node(tmp_path, monkeypatch) as node:
         with pytest.raises(Exception, match=re.escape(str(tmp_path))):
             node.stop()
+
+
+def test_a_port_configured_is_a_manager_started_and_stopped(tmp_path, a_networked_node):
+    # the ports decide it: a node given neither starts neither, which is
+    # every other node in this file
+    node = a_networked_node
+    assert (node.p2p_port, node.rpc_port) == (18444, 18445)
+    node.start()
+    wait_until(lambda: node.p2p_manager.started and node.rpc_manager.started)
+    node.stop()
+    assert node.p2p_manager.stopped
+    assert node.rpc_manager.stopped
+
+    quiet = a_node(tmp_path / "quiet")
+    quiet.start()
+    quiet.stop()
+    assert (quiet.p2p_port, quiet.rpc_port) == (None, None)
+    # and neither manager thread was ever started: asserting the ports
+    # alone is a fact about Config, true whether or not `run` started
+    # anything
+    assert not quiet.p2p_manager.is_alive()
+    assert not quiet.rpc_manager.is_alive()
+
+
+def test_every_message_waiting_is_taken_before_the_loop_waits(a_networked_node):
+    # all three queues, drained in one pass: what each handler does with
+    # a message it can deliver is tests/unit/p2p/main.py's and
+    # tests/unit/rpc/main.py's. These are addressed to connections that
+    # are not there, so the answer is to drop them -- and dropping them
+    # is what the loop has to do rather than sleep on them.
+    node = a_networked_node
+    node.p2p_manager.handshake_messages.append(("version", None, 99))
+    node.p2p_manager.messages.append(("ping", None, 99))
+    node.rpc_manager.messages.append(([], 99))
+
+    def every_queue_is_empty():
+        return not (
+            node.p2p_manager.handshake_messages
+            or node.p2p_manager.messages
+            or node.rpc_manager.messages
+        )
+
+    node.start()
+    wait_until(every_queue_is_empty)
+
+
+def test_a_message_the_handlers_did_not_expect_does_not_end_the_loop(a_networked_node):
+    # #97's line. A method that is not a string reaches `request
+    # ["method"] not in callbacks` and raises TypeError: unhashable,
+    # outside handle_rpc's own try -- so what catches it is `run`'s
+    # guard, and the node going on to answer the next request is what
+    # says the guard caught it rather than the thread ending.
+    node = a_networked_node
+    answered = []
+    node.rpc_manager.connections[0] = SimpleNamespace(
+        send=answered.append, send_and_wait=answered.append
+    )
+    logged = []
+    node.logger.exception = logged.append
+    node.rpc_manager.messages.append(
+        ([{"jsonrpc": "2.0", "id": "a", "method": ["not", "hashable"]}], 0)
+    )
+    node.start()
+    wait_until(lambda: logged)
+
+    node.rpc_manager.messages.append(
+        ([{"jsonrpc": "2.0", "id": "b", "method": "getbestblockhash"}], 0)
+    )
+    wait_until(lambda: answered)
+    node.stop()
+    (answer,) = answered
+    assert answer[0]["id"] == "b"
+
+
+class APool:
+    """A worker pool that costs nothing to build, and says it was."""
+
+    def __init__(self, built, processes):
+        self.built = built
+        built.append(processes)
+
+    def terminate(self):
+        self.built.append("terminated")
+
+
+@pytest.fixture
+def pools(monkeypatch):
+    import btclib_node
+
+    built = []
+    monkeypatch.setattr(btclib_node, "Pool", lambda processes: APool(built, processes))
+    return built
+
+
+def test_the_worker_pool_is_built_on_first_use_and_only_once(tmp_path, pools):
+    # a pool is interpreters, spawned rather than forked wherever that
+    # is the default, and most of the nodes this suite builds never
+    # validate a script
+    node = a_node(tmp_path)
+    assert not pools
+    pool = node.worker_pool
+    assert node.worker_pool is pool
+    assert pools == [8]
+
+
+def test_a_node_that_used_the_pool_takes_it_down_with_it(tmp_path, pools):
+    node = a_node(tmp_path)
+    assert node.worker_pool
+    node.start()
+    node.stop()
+    assert pools == [8, "terminated"]
+
+
+def test_a_node_that_never_used_the_pool_does_not_build_one_to_stop_it(tmp_path, pools):
+    node = a_node(tmp_path)
+    node.start()
+    node.stop()
+    assert not pools

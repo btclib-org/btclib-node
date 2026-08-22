@@ -9,7 +9,7 @@ import requests
 
 from btclib_node import Node
 from btclib_node.config import Config
-from tests.helpers import get_random_port, wait_until
+from tests.helpers import get_random_port, wait_until_listening
 
 
 def test_no_method(tmp_path):
@@ -23,7 +23,7 @@ def test_no_method(tmp_path):
     )
     node.start()
 
-    wait_until(lambda: node.rpc_manager.is_alive())
+    wait_until_listening(node.rpc_manager)
 
     response = json.loads(
         requests.post(
@@ -55,7 +55,7 @@ def test_no_id(tmp_path):
     )
     node.start()
 
-    wait_until(lambda: node.rpc_manager.is_alive())
+    wait_until_listening(node.rpc_manager)
 
     response = json.loads(
         requests.post(
@@ -87,7 +87,7 @@ def test_invalid_method(tmp_path):
     )
     node.start()
 
-    wait_until(lambda: node.rpc_manager.is_alive())
+    wait_until_listening(node.rpc_manager)
 
     response = json.loads(
         requests.post(
@@ -123,7 +123,7 @@ def test_an_empty_batch_does_not_end_the_node(rpc_node):
     # and skipping every close after the loop. The node answering the
     # request after it is what says the loop survived.
     node = rpc_node
-    wait_until(lambda: node.rpc_manager.is_alive())
+    wait_until_listening(node.rpc_manager)
 
     good = {"jsonrpc": "2.0", "id": "a", "method": "getbestblockhash"}
     assert json.loads(post(node, good))["result"]
@@ -142,7 +142,7 @@ def test_a_request_the_handler_cannot_read_does_not_end_the_node(rpc_node):
     # its own defect and its own issue -- what is asserted here is only
     # that the node is still there afterwards.
     node = rpc_node
-    wait_until(lambda: node.rpc_manager.is_alive())
+    wait_until_listening(node.rpc_manager)
 
     with contextlib.suppress(requests.exceptions.RequestException):
         post(node, [{"jsonrpc": "2.0", "id": "a", "method": ["not", "hashable"]}], 2)

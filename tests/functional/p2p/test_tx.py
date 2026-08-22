@@ -12,6 +12,7 @@ from tests.helpers import (
     get_random_port,
     local_addr,
     wait_until,
+    wait_until_listening,
 )
 
 
@@ -35,8 +36,8 @@ def test_send_tx(tmp_path):
     node1.start()
     node2.start()
 
-    wait_until(lambda: node1.p2p_manager.is_alive())
-    wait_until(lambda: node2.p2p_manager.is_alive())
+    wait_until_listening(node1.p2p_manager)
+    wait_until_listening(node2.p2p_manager)
 
     # Add one block
     block = generate_random_chain(1, RegTest().genesis.hash)[0]
