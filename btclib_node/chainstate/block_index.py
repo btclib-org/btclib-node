@@ -151,7 +151,8 @@ class BlockIndex:
                 self.header_index.extend(add)
                 header_index_set = set(self.header_index)
 
-    # TODO: should use copy to preserve immutability
+    # stores the caller's object rather than a copy, so a read is a
+    # handle on the index: btclib-org/btclib-node#117
     def insert_block_info(self, block_info, wb=None):
         new_block_info = block_info
         self.header_dict[block_info.header.hash] = new_block_info
@@ -160,7 +161,7 @@ class BlockIndex:
         db = wb or self.db
         db.put(key, value)
 
-    # TODO: should use copy to preserve immutability
+    # hands out the index's own object: btclib-org/btclib-node#117
     def get_block_info(self, hash):
         return self.header_dict[hash]
 
@@ -201,10 +202,10 @@ class BlockIndex:
         # message is taken or refused whole -- a peer that sent one bad
         # header is not one to keep the rest of the batch from.
         #
-        # TODO: this is CheckProofOfWork, not ContextualCheckBlockHeader.
-        # The target a header is *required* to have at its height, and
-        # the median-time-past it must follow, still go unchecked; see
-        # btclib.block.proof_of_work.next_bits.
+        # This is CheckProofOfWork, not ContextualCheckBlockHeader: the
+        # target a header is *required* to have at its height, and the
+        # median-time-past it must follow, go unchecked.
+        # btclib-org/btclib-node#118
         for header in headers:
             try:
                 header.assert_valid_pow(self.pow_limit_bits)

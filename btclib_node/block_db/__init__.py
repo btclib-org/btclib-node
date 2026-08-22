@@ -146,7 +146,9 @@ class BlockDB:
             self.open_block_file = (self.data_dir / filename).open("a+b")
         return self.open_block_file
 
-    # TODO: put rev patch in file with the same index as its block
+    # A patch goes in the .rev file indexed by the block file currently
+    # being written, which need not be the one indexed by the block the
+    # patch undoes: btclib-org/btclib-node#116
     def __find_rev_file(self):
         filename = f"{self.file_index:06d}.rev"
         if filename not in self.files:

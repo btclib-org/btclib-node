@@ -44,8 +44,13 @@ def check_transactions(transaction_data, index, node):
 
 
 def check_transaction(prevouts, tx, index, node):
-    # TODO: we need to deepcopy the transaction because
-    # verify_transaction modifies it. To fix upstream
+    # Handed a copy because the marker this replaces said
+    # verify_transaction mutates what it validates -- said against an
+    # older btclib, and not established against the pinned one, which is
+    # what btclib-org/btclib-node#119 asks. Only mempool acceptance pays
+    # for it: a block's transactions go through check_transactions
+    # above, which decided the copy was unnecessary because it does not
+    # reuse them.
     tx = deepcopy(tx)
     flags = get_flags(node.config, index)
     verify_transaction(prevouts, tx, flags)
