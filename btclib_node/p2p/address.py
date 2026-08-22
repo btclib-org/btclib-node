@@ -177,10 +177,17 @@ class PeerDB:
         return not len(self.addresses)
 
     def random_address(self):
-        while True:
-            address = secrets.choice(list(self.addresses))
-            if address.can_connect:
-                return address
+        # Drawn from the addresses that can be dialled, rather than from
+        # the whole table with a retry on the ones that cannot: a table
+        # holding none of them -- a seed answering with AAAA records
+        # alone is enough, and `add_addresses` takes whatever tor, i2p
+        # and cjdns a peer sends -- made that retry a loop with no exit,
+        # in the caller's event loop. Nothing to dial is an answer, and
+        # `None` is it.
+        dialable = [address for address in self.addresses if address.can_connect]
+        if not dialable:
+            return None
+        return secrets.choice(dialable)
 
     def add_addresses(self, addresses):
         for address in addresses:

@@ -12,6 +12,7 @@ from btclib import var_bytes, var_int
 
 from btclib_node.chains import Main, SigNet, TestNet
 from btclib_node.p2p.address import NetworkAddress, NetworkID, PeerDB
+from tests.helpers import call_within
 
 
 def test_serialization():
@@ -254,6 +255,37 @@ def test_an_address_is_drawn_from_the_ones_that_can_be_dialled():
     )
     for _ in range(20):
         assert peer_db.random_address() == dialable
+
+
+def test_a_table_holding_nothing_dialable_answers_that_there_is_nothing():
+    # the case a draw-until-one-can-be-dialled never comes back from,
+    # and a table a node reaches in ordinary operation: a seed answering
+    # with AAAA records alone fills it with exactly this
+    peer_db = PeerDB(None, None)
+    peer_db.addresses.add(NetworkAddress.from_ip_and_port("2001:db8::1", 8333))
+    peer_db.addresses.add(
+        NetworkAddress(netid=NetworkID.torv3, addr=b"\x11" * 32, port=8333)
+    )
+    assert call_within(peer_db.random_address) is None
+
+
+def test_an_empty_table_answers_that_there_is_nothing():
+    # the caller guards on `is_empty` before it draws, so this is not a
+    # path the node takes today; drawing from nothing still has to be an
+    # answer rather than an IndexError out of a housekeeping loop
+    assert call_within(PeerDB(None, None).random_address) is None
+
+
+def test_the_draw_reaches_every_address_that_can_be_dialled():
+    # over all of them, not the first one that will do: a node that only
+    # ever dials one entry of its table is a node with one peer
+    peer_db = PeerDB(None, None)
+    dialable = {
+        NetworkAddress.from_ip_and_port(f"1.2.3.{host}", 8333) for host in range(1, 4)
+    }
+    peer_db.addresses |= dialable
+    peer_db.addresses.add(NetworkAddress.from_ip_and_port("2001:db8::1", 8333))
+    assert {peer_db.random_address() for _ in range(60)} == dialable
 
 
 def test_the_table_of_known_addresses_is_bounded():

@@ -245,6 +245,20 @@ def test_an_empty_peer_db_is_not_asked_for_an_address(a_manager):
     assert not logged
 
 
+def test_a_peer_db_with_nothing_dialable_is_a_pass_that_does_nothing(a_manager):
+    # `is_empty` is false and the draw still comes back with nothing:
+    # a table of ipv6 and onion addresses. The pass has to do nothing
+    # and come round again -- dialling the nothing it was handed would
+    # raise into the loop's own handler once every tenth of a second
+    peer_db = SimpleNamespace(is_empty=False, random_address=lambda: None)
+    manager = a_manager(peer_db=peer_db)
+    logged = []
+    manager.logger.exception = logged.append
+    assert asyncio.run(one_pass(manager)) is True
+    assert not logged
+    assert not manager.connections
+
+
 def test_a_peer_that_answers_the_dial_becomes_a_connection(a_manager):
     ours, theirs = socket.socketpair()
 

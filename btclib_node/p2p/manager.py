@@ -72,7 +72,14 @@ class P2pManager(threading.Thread):
                 already_connected = [conn.address for conn in self.connections.values()]
                 try:
                     address = self.peer_db.random_address()
-                    if address not in already_connected:
+                    # `is_empty` answers whether the table holds
+                    # anything, not whether it holds anything this node
+                    # can dial, so the guard above lets a table of ipv6
+                    # and onion addresses through. The draw is what
+                    # knows, and it answers with nothing: this pass has
+                    # nothing to do, and the sleep below is what keeps
+                    # that from being a spin.
+                    if address is not None and address not in already_connected:
                         sock = await address.connect()
                         if sock:
                             self.create_connection(sock, address, False)
