@@ -4,12 +4,13 @@
 
 from dataclasses import dataclass
 
-import plyvel
 from btclib import var_int
 from btclib.block import Block
 from btclib.tx.tx_in import OutPoint
 from btclib.tx.tx_out import TxOut
 from btclib.utils import bytesio_from_binarydata
+
+from btclib_node.db import KeyValueStore
 
 
 @dataclass
@@ -90,7 +91,7 @@ class BlockDB:
 
         self.data_dir = data_dir / "blocks"
         self.data_dir.mkdir(exist_ok=True, parents=True)
-        self.db = plyvel.DB(str(self.data_dir), create_if_missing=True)
+        self.db = KeyValueStore(self.data_dir)
         self.files = {}
         self.blocks = {}
         self.rev_patches = {}

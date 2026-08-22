@@ -97,7 +97,6 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "btclib" },
-    { name = "plyvel" },
 ]
 
 [package.dev-dependencies]
@@ -140,10 +139,7 @@ test = [
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "btclib", specifier = ">=2026.8.21" },
-    { name = "plyvel", specifier = ">=1.5.1" },
-]
+requires-dist = [{ name = "btclib", specifier = ">=2026.8.21" }]
 
 [package.metadata.requires-dev]
 dev = [
@@ -593,12 +589,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe
 wheels = [
     { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538, upload-time = "2025-05-15T12:30:06.134Z" },
 ]
-
-[[package]]
-name = "plyvel"
-version = "1.5.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/4b/b0/23f0cc21c943355fc5d49f1933e97812269d7a865daef5b9758b62902d46/plyvel-1.5.1.tar.gz", hash = "sha256:3caf6009e4fc24fbf8712d3f5ef3da7e56495c26a488df2161218fc34e46019c", size = 200128, upload-time = "2024-01-15T17:33:55.681Z" }
 
 [[package]]
 name = "pre-commit"
