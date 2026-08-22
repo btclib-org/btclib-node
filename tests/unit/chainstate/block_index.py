@@ -5,6 +5,7 @@
 import secrets
 from datetime import UTC, datetime
 
+import pytest
 from btclib.block import BlockHeader
 from btclib.block.proof_of_work import REGTEST_POW_LIMIT_BITS
 
@@ -345,3 +346,83 @@ def test_block_locators_4(tmp_path):
         [chain[-1].hash, RegTest().genesis.hash], "00" * 32
     )
     assert headers == chain[:1000]
+
+
+def test_only_the_tip_can_leave_the_active_chain(tmp_path):
+    # a reorg unwinds from the tip: removing anything else would leave
+    # the chain with a hole nothing else here checks for
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    chain = generate_random_header_chain(3, RegTest().genesis.hash)
+    block_index.add_headers(chain)
+    for header in chain:
+        block_index.add_to_active_chain(header.hash)
+
+    with pytest.raises(Exception):  # noqa: B017, PT011
+        block_index.remove_from_active_chain(chain[0].hash)
+    block_index.remove_from_active_chain(chain[-1].hash)
+    assert chain[-1].hash not in block_index.active_chain
+    chainstate.close()
+
+
+def test_nothing_is_offered_when_there_are_no_candidates(tmp_path):
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    assert block_index.get_first_candidate() is None
+    chainstate.close()
+
+
+def test_no_candidate_is_offered_when_none_outweighs_the_chain(tmp_path):
+    # a header is a candidate when it arrives and stops being one once
+    # the active chain has caught up to it: equal work is not more work,
+    # or the node would keep offering the block it is already on
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    chain = generate_random_header_chain(3, RegTest().genesis.hash)
+    block_index.add_headers(chain)
+    assert block_index.get_first_candidate() is not None
+
+    for header in chain:
+        block_index.add_to_active_chain(header.hash)
+    assert block_index.get_first_candidate() is None
+    chainstate.close()
+
+
+def test_headers_from_a_locator_stop_where_asked(tmp_path):
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    chain = generate_random_header_chain(10, RegTest().genesis.hash)
+    block_index.add_headers(chain)
+
+    # from the genesis, stopping at the fifth
+    got = block_index.get_headers_from_locators([RegTest().genesis.hash], chain[4].hash)
+    assert [h.hash for h in got] == [h.hash for h in chain[:5]]
+
+    # a locator nothing knows is skipped, and the next one answers
+    got = block_index.get_headers_from_locators(
+        [b"\x11" * 32, RegTest().genesis.hash], b"\x00" * 32
+    )
+    assert [h.hash for h in got] == [h.hash for h in chain]
+
+    # no locator at all is no answer
+    assert block_index.get_headers_from_locators([b"\x11" * 32], b"\x00" * 32) == []
+    chainstate.close()
+
+
+def test_a_header_that_does_not_outweigh_the_chain_is_not_a_candidate(tmp_path):
+    # a candidate is a chain worth switching to. A fork branching low
+    # carries less accumulated work than the tip, so it is indexed --
+    # it may yet be extended -- without being offered for connection.
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    chain = generate_random_header_chain(10, RegTest().genesis.hash)
+    block_index.add_headers(chain)
+    for header in chain:
+        block_index.add_to_active_chain(header.hash)
+    block_index.block_candidates.clear()
+
+    short_fork = generate_random_header_chain(1, RegTest().genesis.hash)
+    assert block_index.add_headers(short_fork)
+    assert short_fork[0].hash in block_index.header_dict
+    assert not block_index.block_candidates
+    chainstate.close()
