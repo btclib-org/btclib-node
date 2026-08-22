@@ -18,9 +18,11 @@ btclib-org/btclib-node#107. A table of `BLOB PRIMARY KEY` declared
 `WITHOUT ROWID` *is* a B-tree on the key, so the ordered walk below is
 the table's own order and not a sort.
 
-**Key order is load-bearing**, and not only for the walk: both
-`init_from_db` methods read until the first key that is not theirs, so
-a prefix that sorts before another's is a reader that stops early.
+**Key order is load-bearing.** `BlockIndex.init_from_db` reads until
+the first key that is not a `blkinfo-`, so a prefix that sorted before
+that one would stop it early; `BlockDB.init_from_db` walks the whole
+store and dispatches on the prefix, which is slower and cannot be
+tripped that way.
 
 Bitcoin Core keeps the same data in LevelDB -- `src/leveldb/`, vendored
 into its own tree and wrapped by `CDBWrapper` -- which is the strongest
@@ -50,10 +52,18 @@ _SCHEMA += " WITHOUT ROWID"
 class KeyValueStore:
     """An ordered store of octets by octets, in one file.
 
-    A connection per thread, because the node opens the store in the
+    One connection, and a lock around every use of it. SQLite's own
+    thread checking is off because the node opens the store in the
     thread that builds it and uses it in the thread that runs it, and
-    the tests write from both. SQLite serializes writers itself, which
-    a single shared connection would not.
+    the tests write from both -- and once that check is off, serializing
+    is the caller's job. Doing it here rather than per thread is what
+    makes `close` safe: a connection per thread meant closing one that
+    another thread was inside, which CPython's sqlite3 answers with a
+    segmentation fault, not an exception. What one connection gives up
+    is two transactions at once, which nothing here asks for.
+
+    Reentrant, because a batch holds the lock for its whole block and
+    the writes inside it come back through the same door.
     """
 
     def __init__(self, path):
@@ -61,98 +71,100 @@ class KeyValueStore:
         self.path.mkdir(exist_ok=True, parents=True)
         if (self.path / _LEVELDB_MARKER).exists():
             err_msg = f"{self.path} holds a LevelDB database, which this "
-            err_msg += "version cannot read: delete the directory to sync "
-            err_msg += "again, or use a release built against plyvel"
+            err_msg += "version cannot read: delete the directory and sync "
+            err_msg += "again"
             raise Exception(err_msg)
         self.file = self.path / "index.sqlite"
 
-        self._local = threading.local()
-        self._lock = threading.Lock()
-        self._connections = []
+        self._lock = threading.RLock()
         self._closed = False
-        # eagerly, so that the file and the schema exist before another
-        # thread's first read rather than being raced into being
-        self._connection()
-
-    def _connection(self):
-        if self._closed:
-            # a thread that had one gets a closed connection and SQLite's
-            # own refusal; a thread that never asked before would
-            # otherwise be handed a working one, so `close` would have
-            # closed the connections rather than the store
-            raise Exception(f"the store at {self.path} is closed")
-        connection = getattr(self._local, "connection", None)
-        if connection is not None:
-            return connection
-        # check_same_thread is off for `close` alone: every other use is
-        # from the thread that opened it, and close is what the owning
-        # thread does not always get to do
-        connection = sqlite3.connect(
+        self._connection = sqlite3.connect(
             self.file, isolation_level=None, check_same_thread=False
         )
-        # WAL so a reader does not block the writer, and the writer does
-        # not block a reader: the node writes from its own loop while a
-        # test reads. NORMAL is what LevelDB gives by default too -- a
-        # write is not fsynced, and a crash loses the last transactions
-        # rather than corrupting the store.
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA synchronous=NORMAL")
-        # a writer waits for the other writer instead of raising
-        # `database is locked` at once
-        connection.execute("PRAGMA busy_timeout=30000")
-        connection.execute(_SCHEMA)
-        self._local.connection = connection
+        # WAL, so that the writer does not hold the file against a
+        # reader in another process. NORMAL is what LevelDB gives by
+        # default too -- a write is not fsynced, and a kill loses the
+        # last transactions rather than corrupting the store.
+        self._connection.execute("PRAGMA journal_mode=WAL")
+        self._connection.execute("PRAGMA synchronous=NORMAL")
+        self._connection.execute(_SCHEMA)
+
+    def _run(self, statement, parameters=()):
+        """Execute a statement that answers nothing."""
         with self._lock:
-            self._connections.append(connection)
-        return connection
+            if self._closed:
+                raise Exception(f"the store at {self.path} is closed")
+            self._connection.execute(statement, parameters)
+
+    def _rows(self, statement, parameters=()):
+        """Execute a statement and read its answer, both under the lock.
+
+        Both, and not the execute alone: a cursor read after the lock is
+        released is a cursor another thread can step on -- one
+        connection means one statement at a time, and `fetchone` is part
+        of the statement.
+        """
+        with self._lock:
+            if self._closed:
+                raise Exception(f"the store at {self.path} is closed")
+            return self._connection.execute(statement, parameters).fetchall()
 
     def get(self, key):
         """Return the value stored under a key, or None."""
-        row = self._connection().execute("SELECT v FROM kv WHERE k = ?", (key,))
-        found = row.fetchone()
-        return found[0] if found else None
+        rows = self._rows("SELECT v FROM kv WHERE k = ?", (key,))
+        return rows[0][0] if rows else None
 
     def put(self, key, value):
         """Store a value under a key, replacing what was there."""
-        self._connection().execute(
-            "INSERT OR REPLACE INTO kv VALUES (?, ?)", (key, value)
-        )
+        self._run("INSERT OR REPLACE INTO kv VALUES (?, ?)", (key, value))
 
     def delete(self, key):
         """Remove a key, whether or not it was there."""
-        self._connection().execute("DELETE FROM kv WHERE k = ?", (key,))
+        self._run("DELETE FROM kv WHERE k = ?", (key,))
 
     def __iter__(self):
-        """Walk every pair, in ascending key order."""
-        return iter(self._connection().execute("SELECT k, v FROM kv ORDER BY k"))
+        """Walk every pair, in ascending key order.
+
+        Read whole under the lock rather than handed out as a cursor: a
+        caller that walked lazily would hold nothing while another
+        thread wrote underneath it, and both readers of this today read
+        the store once at startup.
+        """
+        with self._lock:
+            return iter(self._rows("SELECT k, v FROM kv ORDER BY k"))
 
     @contextmanager
     def write_batch(self):
         """Write everything in the block, or nothing at all.
 
+        The lock is held for the whole batch, so nothing else reaches
+        the connection mid-transaction; the writes inside re-enter it,
+        which is what makes it an RLock.
+
         `BEGIN IMMEDIATE` and not a plain `BEGIN`: the write lock is
         taken when the batch opens rather than at its first write, so a
-        second writer waits at the start instead of failing partway
-        through with nothing done and a lock it cannot upgrade.
+        second writer in another process waits at the start instead of
+        failing partway through with nothing done.
         """
-        connection = self._connection()
-        connection.execute("BEGIN IMMEDIATE")
-        try:
-            yield self
-        except BaseException:
-            connection.execute("ROLLBACK")
-            raise
-        connection.execute("COMMIT")
+        with self._lock:
+            self._run("BEGIN IMMEDIATE")
+            try:
+                yield self
+            except BaseException:
+                # BaseException and not Exception: a KeyboardInterrupt
+                # or a cancelled task through here would otherwise leave
+                # the transaction open and the connection unusable
+                self._run("ROLLBACK")
+                raise
+            self._run("COMMIT")
 
     def close(self):
-        """Close every connection this store handed out."""
+        """Close the connection, once, and refuse every later use."""
         with self._lock:
             if self._closed:
                 return
             self._closed = True
-            connections, self._connections = self._connections, []
-        for connection in connections:
-            connection.close()
+            self._connection.close()
 
     @property
     def closed(self):

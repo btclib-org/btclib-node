@@ -152,14 +152,10 @@ def test_closing_twice_is_closing_once(tmp_path):
 
 def test_a_store_is_read_and_written_from_more_than_one_thread(tmp_path):
     # the node opens its databases in the thread that builds it and uses
-    # them in the thread that runs it, and the tests write from both. A
-    # single shared connection is what SQLite refuses; a connection per
-    # thread is what this store does instead.
+    # them in the thread that runs it, and the tests write from both
     store = a_store(tmp_path)
     store.put(b"from-main", b"v")
     seen = []
-
-    theirs = []
 
     def other_thread():
         # no try/except: an exception here leaves "done" off the list,
@@ -169,7 +165,6 @@ def test_a_store_is_read_and_written_from_more_than_one_thread(tmp_path):
         store.put(b"from-other", b"v")
         with store.write_batch() as batch:
             batch.put(b"batched-elsewhere", b"v")
-        theirs.append(store._connection())
         seen.append("done")
 
     thread = threading.Thread(target=other_thread)
@@ -179,14 +174,45 @@ def test_a_store_is_read_and_written_from_more_than_one_thread(tmp_path):
     assert seen == [b"v", "done"]
     assert store.get(b"from-other") == b"v"
     assert store.get(b"batched-elsewhere") == b"v"
-
-    # and closing takes down the connection that thread opened, not
-    # only this one's: the thread is gone, so nothing else ever will
     store.close()
-    (their_connection,) = theirs
-    for connection in (their_connection, store._local.connection):
-        with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
-            connection.execute("SELECT 1")
+
+
+def test_closing_while_another_thread_reads_does_not_take_the_process_down(tmp_path):
+    """The reason there is one connection and a lock, and not one each.
+
+    A connection per thread meant `close` reaching into a connection
+    another thread was inside, and CPython's sqlite3 answers that with a
+    segmentation fault rather than an exception -- the whole process,
+    from a fixture teardown. Whatever a reader meets here it has to be
+    something it can catch.
+    """
+    store = a_store(tmp_path)
+    store.put(b"k", b"v")
+    outcomes = set()
+
+    def read_until_closed():
+        # `while True`, because the refusal is the only way out: a loop
+        # with a second exit would leave the reader able to finish
+        # before the close it is here to race
+        while True:
+            try:
+                outcomes.add(store.get(b"k"))
+            except Exception as error:  # noqa: BLE001
+                outcomes.add(str(error).split(" at ")[0])
+                return
+
+    thread = threading.Thread(target=read_until_closed)
+    thread.start()
+    for _ in range(200):
+        store.get(b"k")
+    store.close()
+    thread.join(timeout=10)
+
+    assert not thread.is_alive()
+    # a value, or this store's own refusal, and nothing else: SQLite's
+    # own ProgrammingError would mean the connection was closed under
+    # somebody, which is the state that used to crash
+    assert outcomes <= {b"v", "the store"}
 
 
 def test_what_is_written_is_still_there_when_it_is_opened_again(tmp_path):
@@ -197,6 +223,75 @@ def test_what_is_written_is_still_there_when_it_is_opened_again(tmp_path):
     reopened = KeyValueStore(tmp_path / "store")
     assert reopened.get(b"k") == b"v"
     reopened.close()
+
+
+def test_close_waits_for_whoever_is_using_the_connection(tmp_path):
+    # the guard the segfault above is prevented by, pinned rather than
+    # raced for: with the lock held, `close` has to wait, because
+    # closing a connection out from under a statement is what CPython's
+    # sqlite3 answers with a crash
+    store = a_store(tmp_path)
+    closed = threading.Event()
+
+    with store._lock:
+        thread = threading.Thread(target=lambda: (store.close(), closed.set()))
+        thread.start()
+        assert not closed.wait(timeout=0.2)
+        assert not store.closed
+
+    thread.join(timeout=10)
+    assert closed.is_set()
+    assert store.closed
+
+
+def test_a_batch_rolls_back_on_what_is_not_an_exception_either(tmp_path):
+    # BaseException and not Exception: a KeyboardInterrupt or a
+    # cancelled task through an open batch would otherwise leave the
+    # transaction open and the connection unusable for everything after
+    store = a_store(tmp_path)
+    store.put(b"before", b"kept")
+
+    with pytest.raises(KeyboardInterrupt), store.write_batch() as batch:
+        batch.delete(b"before")
+        raise KeyboardInterrupt
+
+    assert store.get(b"before") == b"kept"
+    store.put(b"after", b"also kept")
+    assert store.get(b"after") == b"also kept"
+    store.close()
+
+
+def test_a_batch_takes_the_write_lock_when_it_opens(tmp_path):
+    # BEGIN IMMEDIATE and not a plain BEGIN. With one connection it is
+    # another process that this is about -- a second node on the same
+    # datadir -- so the second writer is a second connection here.
+    store = a_store(tmp_path)
+    other = sqlite3.connect(store.file, isolation_level=None)
+    other.execute("PRAGMA busy_timeout=0")
+    try:
+        with store.write_batch() as batch:
+            # before the batch has written anything: a plain BEGIN takes
+            # no lock until its first write, and would let this through
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                other.execute("INSERT INTO kv VALUES (?, ?)", (b"theirs", b"v"))
+            batch.put(b"mine", b"v")
+    finally:
+        other.close()
+    assert store.get(b"mine") == b"v"
+    assert store.get(b"theirs") is None
+    store.close()
+
+
+def test_a_commit_does_not_wait_for_the_disk(tmp_path):
+    # synchronous=NORMAL, which is what LevelDB gives by default too: a
+    # kill loses the last transactions rather than corrupting the store,
+    # and the alternative costs an fsync per block connected
+    store = a_store(tmp_path)
+    ((synchronous,),) = store._rows("PRAGMA synchronous")
+    ((journal,),) = store._rows("PRAGMA journal_mode")
+    assert synchronous == 1  # NORMAL
+    assert journal == "wal"
+    store.close()
 
 
 def test_the_table_is_the_key_s_own_b_tree(tmp_path):
@@ -210,4 +305,6 @@ def test_the_table_is_the_key_s_own_b_tree(tmp_path):
     ).fetchone()
     connection.close()
     assert "WITHOUT ROWID" in schema
+    # and a value is never absent, which is what `get` reads as "no key"
+    assert "v BLOB NOT NULL" in schema
     store.close()

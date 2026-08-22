@@ -20,7 +20,7 @@ Two files it leans on, worth loading with it:
 - `CLAUDE.md` for the gates and for what a review of *this* tree has to
   know: this is a node rather than a library, so what a diff touches is
   the peer-to-peer protocol under `btclib_node/p2p/`, the chain state it
-  keeps, and the LevelDB index beneath both;
+  keeps, and the key-value store beneath both;
 - `CONTRIBUTING.md` for the rules a finding cites, so that a finding
   names the line that states one.
 
