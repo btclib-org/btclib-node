@@ -58,7 +58,11 @@ def update_chain(node):
 
     node.logger.debug("Start getting blocks")
     to_add = [node.block_db.get_block(hash) for hash in to_add_hash]
-    to_remove = [node.block_db.get_rev_block(hash) for hash in to_remove_hash]
+    # tip first: an output the branch created may have been spent again
+    # further along it, and the block that spent it has to be undone
+    # before the block that made it. `remove_from_active_chain` asks for
+    # the same order, and refuses anything but the tip
+    to_remove = [node.block_db.get_rev_block(hash) for hash in reversed(to_remove_hash)]
     node.logger.debug("Got all blocks")
 
     node.logger.debug("Start chainstate test")
