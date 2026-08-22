@@ -20,7 +20,7 @@ from btclib_node.p2p.address import NetworkAddress
 
 
 def generate_random_header_chain(length, start):
-    chain = []
+    chain: list[BlockHeader] = []
     for x in range(length):
         if chain:
             previous_block_hash = chain[-1].hash
@@ -101,7 +101,7 @@ def build_block(previous_block_hash, transactions, height):
 
 
 def generate_random_chain(length, start):
-    chain = []
+    chain: list[Block] = []
     for x in range(length):
         previous_block_hash = chain[-1].header.hash if chain else start
         transactions = [generate_coinbase()]

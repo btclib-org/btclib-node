@@ -123,15 +123,13 @@ class BlockDB:
         self.logger.info("Closing Block Database")
 
     def __find_block_file(self):
-        new_file = False
-        if self.file_index == 0:
-            new_file = True
-        else:
-            filename = f"{self.file_index:06d}.blk"
-            file_metadata = self.files[filename]
-            if file_metadata.size > 128 * 1000**2:  # 128MB
-                new_file = True
-        if new_file:
+        # the name is bound before the test rather than inside one
+        # branch of it: written as a flag set in one `if` and read in
+        # the next, it was bound on some paths only and nothing but the
+        # flag said which. The `or` short-circuits, so index zero --
+        # nothing written yet -- never looks up metadata it has none of.
+        filename = f"{self.file_index:06d}.blk"
+        if self.file_index == 0 or self.files[filename].size > 128 * 1000**2:  # 128MB
             self.file_index += 1
             filename = f"{self.file_index:06d}.blk"
             file_metadata = FileMetadata(filename, 0)

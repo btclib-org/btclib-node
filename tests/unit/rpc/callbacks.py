@@ -213,7 +213,7 @@ def test_a_relayed_transaction_is_answered_with_its_txid(monkeypatch):
     monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: None)
     tx = a_tx()
     mempool = Mempool(Logger(debug=True))
-    broadcast = []
+    broadcast: list[Tx] = []
     node = a_node(mempool=mempool)
     node.p2p_manager.broadcast_raw_transaction = broadcast.append
 
@@ -237,7 +237,7 @@ def test_a_transaction_the_mempool_will_not_have_is_not_reported_relayed(monkeyp
     monkeypatch.setattr(cb, "verify_mempool_acceptance", missing)
     tx = a_tx()
     mempool = Mempool(Logger(debug=True))
-    broadcast = []
+    broadcast: list[Tx] = []
     node = a_node(mempool=mempool)
     node.p2p_manager.broadcast_raw_transaction = broadcast.append
 

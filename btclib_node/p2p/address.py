@@ -8,6 +8,7 @@ import secrets
 import socket
 import time
 from dataclasses import dataclass
+from typing import cast
 
 from btclib import var_bytes, var_int
 from btclib.utils import bytesio_from_binarydata
@@ -160,15 +161,26 @@ class PeerDB:
             return
         chain = self.chain
         loop = asyncio.get_running_loop()
-        addresses = []
+        # what a seed answers with, deduplicated: seeds overlap, and one
+        # of them answers with the same host over several records.
+        endpoints: set[tuple[str, int]] = set()
         for dns_server in chain.addresses:
             try:
-                ips = await loop.getaddrinfo(dns_server, chain.port)
+                answers = await loop.getaddrinfo(dns_server, chain.port)
             except socket.gaierror:
                 continue
-            for ip in ips:
-                addresses.append(ip[4])
-        for ip, port, *_ in set(addresses):
+            # (family, type, proto, canonname, sockaddr), and the
+            # sockaddr is the only part a peer table wants. It opens
+            # with the host and the port -- two fields for AF_INET,
+            # four for AF_INET6, whose flow info and scope id say
+            # nothing a NetworkAddress records. The stub also admits
+            # AF_PACKET's (protocol, address) pair, which resolving an
+            # internet host and a port cannot answer with, so the cast
+            # is what that fact is written as rather than a check no
+            # test could reach.
+            for *_, sockaddr in answers:
+                endpoints.add(cast("tuple[str, int]", sockaddr[:2]))
+        for ip, port in endpoints:
             address = NetworkAddress.from_ip_and_port(ip, port)
             self.addresses.add(address)
 

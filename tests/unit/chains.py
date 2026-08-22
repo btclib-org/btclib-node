@@ -37,7 +37,11 @@ EXPECTED = {
 
 def test_every_chain_is_covered():
     assert {chain.name for chain in CHAINS} == set(EXPECTED)
-    assert {cls().name for cls in Chain.__subclasses__()} == set(EXPECTED)
+    # by class and not by the name an instance carries: `Chain` itself
+    # takes its four fields, so building one out of `__subclasses__`
+    # was a call that only the subclasses' own no-argument __init__
+    # answers, and nothing said so where it was read.
+    assert set(Chain.__subclasses__()) == {type(chain) for chain in CHAINS}
 
 
 def test_pow_limit_bits():

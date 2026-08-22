@@ -160,7 +160,7 @@ def test_an_address_already_connected_to_is_not_dialled_again(a_manager):
     conn = a_conn(1, address=onion)
     peer_db = SimpleNamespace(is_empty=False, random_address=lambda: onion)
     manager = a_manager([conn], peer_db=peer_db)
-    logged = []
+    logged: list[str] = []
     manager.logger.exception = logged.append
     asyncio.run(one_pass(manager))
     assert not logged
@@ -185,7 +185,7 @@ def refuses_to_be_asked():
 
 
 def test_a_peer_db_that_raises_does_not_stop_the_housekeeping(a_manager):
-    logged = []
+    logged: list[str] = []
     peer_db = SimpleNamespace(is_empty=False, random_address=refuses_to_be_asked)
     manager = a_manager(peer_db=peer_db)
     manager.logger.exception = logged.append
@@ -202,7 +202,7 @@ def test_only_one_peer_is_wanted_until_the_headers_are_synced(a_manager):
     conn = a_conn(1)
     peer_db = SimpleNamespace(is_empty=False, random_address=refuses_to_be_asked)
     manager = a_manager([conn], peer_db=peer_db, status=NodeStatus.Starting)
-    logged = []
+    logged: list[str] = []
     manager.logger.exception = logged.append
     asyncio.run(one_pass(manager))
     assert not logged
@@ -239,7 +239,7 @@ def test_an_empty_peer_db_is_not_asked_for_an_address(a_manager):
     # nothing to draw from: asking anyway is how a node with no peers
     # spends its housekeeping raising and logging
     manager = a_manager()
-    logged = []
+    logged: list[str] = []
     manager.logger.exception = logged.append
     asyncio.run(one_pass(manager))
     assert not logged
@@ -252,7 +252,7 @@ def test_a_peer_db_with_nothing_dialable_is_a_pass_that_does_nothing(a_manager):
     # raise into the loop's own handler once every tenth of a second
     peer_db = SimpleNamespace(is_empty=False, random_address=lambda: None)
     manager = a_manager(peer_db=peer_db)
-    logged = []
+    logged: list[str] = []
     manager.logger.exception = logged.append
     assert asyncio.run(one_pass(manager)) is True
     assert not logged

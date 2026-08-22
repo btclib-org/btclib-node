@@ -499,7 +499,16 @@ def test_the_filters_of_a_connected_batch_go_in_the_chainstate_s_own_write(tmp_p
     filter_index = node.chainstate.filter_index
     given = []
     real = filter_index.finalize
-    filter_index.finalize = lambda wb=None: given.append(wb) or real(wb)
+
+    def recording_finalize(wb=None):
+        # a statement rather than `given.append(wb) or real(wb)`: the
+        # real call was reached through the right-hand side of an `or`
+        # whose left one is `None` every time, which reads as a
+        # fallback and is a sequence point
+        given.append(wb)
+        return real(wb)
+
+    filter_index.finalize = recording_finalize
 
     a_chain(node, 1)
 

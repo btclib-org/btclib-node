@@ -234,7 +234,7 @@ def test_a_drawn_ping_nonce_is_never_the_sentinel():
     # Nothing else in the suite says so -- the functional ping test
     # depends on it and would come back as an intermittent red.
     conn = make_connection()
-    sent = []
+    sent: list[Ping] = []
     conn.send = sent.append
     for _ in range(50):
         conn.send_ping()

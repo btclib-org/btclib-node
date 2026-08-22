@@ -5,6 +5,7 @@
 import enum
 from collections import deque
 from dataclasses import dataclass
+from typing import Any
 
 from btclib import var_int
 from btclib.block import BlockHeader
@@ -67,8 +68,9 @@ class BlockIndex:
         # the actual block chain; it contains only valid blocks
         self.active_chain = []
 
-        # blocks that are waiting to be connected to the active chain
-        self.block_candidates = deque()
+        # blocks that are waiting to be connected to the active chain,
+        # each a [hash, chainwork] pair
+        self.block_candidates: deque[list[Any]] = deque()
 
         # list all header hashes, even if not already checked, needed for
         # the block locators
@@ -174,11 +176,14 @@ class BlockIndex:
                 block_info.index <= len(chain)
                 and header_hash == chain[block_info.index - 1]
             ):
-                ancestor_index = block_info.index - 1
-                break
+                # the common ancestor is at block_info.index - 1, so
+                # what the fork replaces is the chain from its own
+                # index on. Returned here rather than after the loop:
+                # the break carried that index out in a name only this
+                # one path ever binds, and the read of it was three
+                # lines from anything saying so.
+                return fork[::-1], chain[block_info.index :]
             fork.append(header_hash)
-        main = chain[ancestor_index + 1 :]
-        return fork[::-1], main
 
     # unsafe: doesn't perform any check
     def add_to_active_chain(self, block_hash):
@@ -261,7 +266,7 @@ class BlockIndex:
     # return a list of blocks that have to be downloaded
     def get_download_candidates(self):
         chainwork = self.get_block_info(self.active_chain[-1]).chainwork
-        candidates = []
+        candidates: list[bytes] = []
         seen = set()
         i = -1
         while len(candidates) < 1024:

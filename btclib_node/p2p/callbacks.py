@@ -114,6 +114,10 @@ def pong(node, msg, conn):
 
 def getaddr(node, msg, conn):
     addresses = node.p2p_manager.peer_db.get_active_addresses()
+    # either message class, and not whichever the first branch names:
+    # Addr and AddrV2 are siblings under Payload rather than one a
+    # subclass of the other, so the annotation has to say both.
+    addr_cls: type[Addr] | type[AddrV2]
     if conn.prefer_addressv2:
         addr_cls = AddrV2
     else:

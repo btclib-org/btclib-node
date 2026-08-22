@@ -25,8 +25,11 @@ class P2pManager(threading.Thread):
         self.peer_db = peer_db
 
         self.connections = {}
-        self.messages = deque()
-        self.handshake_messages = deque()
+        # (command, payload, connection id), which is what a connection
+        # appends and what p2p.main pops apart; the handshake ones go
+        # in a queue of their own, drained whole before the rest.
+        self.messages: deque[tuple[str, bytes, int]] = deque()
+        self.handshake_messages: deque[tuple[str, bytes, int]] = deque()
         self.nonces = []
         self.last_connection_id = -1
 
