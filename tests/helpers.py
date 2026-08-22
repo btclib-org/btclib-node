@@ -170,7 +170,7 @@ def wait_until_listening(manager, timeout=20):
 def call_within(func, timeout=5):
     # For a call whose way of being wrong is never coming back. A test
     # that asserts on the answer hangs the whole suite when there is no
-    # answer (btclib-org/btclib_node#98); one that calls through here
+    # answer (btclib-org/btclib-node#98); one that calls through here
     # fails, and names where the call was written. As in wait_until
     # above, the timeout bounds the failure and not the success: the
     # join returns as soon as the call does.
