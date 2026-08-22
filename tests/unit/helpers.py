@@ -10,6 +10,7 @@ fails as a bare traceback in the middle of somebody else's test.
 """
 
 import socket
+import threading
 import time
 
 import pytest
@@ -21,6 +22,7 @@ from btclib_node.chains import RegTest
 from tests.helpers import (
     brute_force_nonce,
     build_block,
+    call_within,
     generate_coinbase,
     generate_random_chain,
     generate_random_header_chain,
@@ -57,6 +59,37 @@ def test_a_condition_that_never_holds_is_given_up_on():
     # asked repeatedly, and for as long as it said it would
     assert len(calls) > 1
     assert time.time() - start >= timeout
+
+
+def test_a_bounded_call_hands_back_what_it_returned():
+    assert call_within(lambda: "answer") == "answer"
+
+
+def test_a_bounded_call_that_raises_raises_where_it_was_called():
+    # and not on the thread it ran on, where the caller would see a
+    # printed traceback and an error about the answer being missing
+    def refuses():
+        err_msg = "no"
+        raise ValueError(err_msg)
+
+    with pytest.raises(ValueError, match="no"):
+        call_within(refuses)
+
+
+def test_a_bounded_call_that_does_not_return_is_given_up_on():
+    release = threading.Event()
+    timeout = 0.2
+
+    def never_returns():
+        release.wait()
+
+    start = time.time()
+    try:
+        with pytest.raises(Exception, match=f"helpers.py:.* within {timeout} seconds"):
+            call_within(never_returns, timeout=timeout)
+        assert time.time() - start >= timeout
+    finally:
+        release.set()
 
 
 def test_a_header_that_is_not_well_formed_is_refused():

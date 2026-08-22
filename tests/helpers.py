@@ -4,6 +4,7 @@
 
 import secrets
 import socket
+import threading
 import time
 from datetime import UTC, datetime
 
@@ -138,6 +139,40 @@ def wait_until(func, timeout=20):
         f"did not hold within {timeout} seconds"
     )
     raise Exception(err_msg)
+
+
+def call_within(func, timeout=5):
+    # For a call whose way of being wrong is never coming back. A test
+    # that asserts on the answer hangs the whole suite when there is no
+    # answer (btclib-org/btclib_node#98); one that calls through here
+    # fails, and names where the call was written. As in wait_until
+    # above, the timeout bounds the failure and not the success: the
+    # join returns as soon as the call does.
+    outcome = {}
+
+    def call():
+        try:
+            outcome["returned"] = func()
+        except Exception as exception:
+            outcome["raised"] = exception
+
+    # daemon, because a call that never returns must not keep the
+    # interpreter alive on the way out
+    thread = threading.Thread(target=call, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive():
+        code = func.__code__
+        err_msg = (
+            f"{code.co_filename}:{code.co_firstlineno} "
+            f"did not return within {timeout} seconds"
+        )
+        raise Exception(err_msg)
+    # re-raised here rather than left to threading's own hook, which
+    # would print a traceback and hand the caller a KeyError
+    if "raised" in outcome:
+        raise outcome["raised"]
+    return outcome["returned"]
 
 
 def brute_force_nonce(header, attempts=100):
