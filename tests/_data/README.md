@@ -30,8 +30,8 @@ locally. Whether the pinned commit is still the newest to touch that
 path:
 
 ```shell
-gh api "repos/bitcoin/bitcoin/commits?path=src/test/data/blockfilters.json&per_page=1" \
-    --jq '.[0].sha'
+path=src/test/data/blockfilters.json
+gh api "repos/bitcoin/bitcoin/commits?path=$path&per_page=1" --jq '.[0].sha'
 ```
 
 ## `tests/unit/chainstate/_data/blockfilters.json`
