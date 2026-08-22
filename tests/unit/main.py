@@ -189,10 +189,10 @@ def hashes(chain):
 
 
 def test_a_heavier_fork_replaces_the_chain_the_node_was_on(tmp_path):
-    # more than one block on the branch being left, because with one
-    # there is no order to undo them in and the undo used to run the
-    # wrong way: an output block N created and block N+1 spent is gone
-    # from the utxo set by the time N is undone
+    # more than one block on the branch being left, because that is the
+    # shallowest branch whose blocks have to be undone in an order: an
+    # output block N created and block N+1 spent is gone from the utxo
+    # set by the time N comes to be undone
     node = regtest_node(tmp_path)
     first = generate_random_chain(2, RegTest().genesis.hash)
     block_index = connect(node, first)
@@ -216,14 +216,21 @@ def test_a_reorg_gives_the_orphaned_transactions_back_to_the_mempool(tmp_path):
     orphaned = first[-1].transactions[1]
     assert not node.mempool.contains_tx(orphaned)
 
+    # held before the reorg and confirmed by it, so that taking it out
+    # of the mempool is something the reorg has to do rather than
+    # something that was never needed
     second = generate_random_chain(3, RegTest().genesis.hash)
+    confirmed = second[-1].transactions[1]
+    node.mempool.add_tx(confirmed)
+    assert node.mempool.contains_tx(confirmed)
+
     connect(node, second)
 
+    # #85: the orphan spends the abandoned branch's own coinbase, so it
+    # can never be valid again -- it goes back in all the same, which is
+    # what this pins and what that issue is about
     assert node.mempool.contains_tx(orphaned)
-    # and what the new chain confirmed is not left in it
-    for block in second:
-        for transaction in block.transactions:
-            assert not node.mempool.contains_tx(transaction)
+    assert not node.mempool.contains_tx(confirmed)
 
 
 def test_a_reorg_before_the_node_is_synced_leaves_the_mempool_alone(tmp_path):
@@ -233,5 +240,7 @@ def test_a_reorg_before_the_node_is_synced_leaves_the_mempool_alone(tmp_path):
     node.status = NodeStatus.HeaderSynced
 
     second = generate_random_chain(3, RegTest().genesis.hash)
-    connect(node, second)
+    block_index = connect(node, second)
+    # the reorg happened, and left the mempool out of it
+    assert block_index.active_chain[1:] == hashes(second)
     assert node.mempool.size == 0
