@@ -23,9 +23,19 @@ def asks_for_everything(config):
     given = [Path(path).resolve() for path in config.option.file_or_dir]
     if not given:
         return True
+    # against the rootdir and not against where pytest was run from,
+    # which is what `testpaths` means. `rootpath` is already absolute,
+    # so joining is all it takes; the paths above are the ones that need
+    # resolving, `./tests` and the absolute path being one directory.
+    wanted = [config.rootpath / p for p in config.getini("testpaths")]
+    if not wanted:
+        # `all` over nothing is true, and would make every path named
+        # here the whole suite. Nothing names the suite, so a bare run
+        # collects the rootdir and anything asked for is less than it.
+        return False
     return all(
-        any(wanted == path or path in wanted.parents for path in given)
-        for wanted in (Path(p).resolve() for p in config.getini("testpaths"))
+        any(target == path or path in target.parents for path in given)
+        for target in wanted
     )
 
 
@@ -48,6 +58,7 @@ def relax_coverage_floor(config):
         or option.markexpr
         or option.deselect
         or option.ignore
+        or option.ignore_glob
         # absent under `-p no:cacheprovider`, which is why it is asked
         # for rather than read
         or getattr(option, "lf", None)
