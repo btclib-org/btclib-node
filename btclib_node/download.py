@@ -44,6 +44,16 @@ class DownloadManager:
             self.inv_txs = still_wanted
 
             for conn in self.node.p2p_manager.connections.copy().values():
+                # what the peer's version asked for. An answer nothing
+                # consults is the same peer told the same thing whatever
+                # it said, which is what #76 is about, so every send
+                # that announces a transaction reads this --
+                # `P2pManager.broadcast_raw_transaction` is the other.
+                # BIP37 is that a peer which sent fRelay false is sent
+                # no transaction inventory at all, so it is skipped
+                # whole rather than sent a shorter list.
+                if not conn.relay_tx:
+                    continue
                 known = has_it.get(conn.id, ())
                 inv = [wtxid for wtxid in received if wtxid not in known]
                 # every accepted transaction, and not only those that

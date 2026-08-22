@@ -27,12 +27,13 @@ def a_hash(n):
     return n.to_bytes(32, "big")
 
 
-def a_conn(conn_id, *, queue=None, last_block=None):
+def a_conn(conn_id, *, queue=None, last_block=None, relay_tx=True):
     sent: list[Any] = []
     return SimpleNamespace(
         id=conn_id,
         send=sent.append,
         sent=sent,
+        relay_tx=relay_tx,
         download_queue=queue if queue is not None else [],
         pending_eviction=False,
         last_block_timestamp=time.time() if last_block is None else last_block,
@@ -125,6 +126,31 @@ def test_a_peer_that_already_has_all_of_them_is_told_nothing():
     manager.received_txs = [(1, a_hash(n)) for n in range(1, 4)]
     manager.tx_download()
     assert not sender.sent
+
+
+def test_a_peer_that_asked_for_no_transactions_is_sent_none():
+    # BIP37's fRelay, which the version callback puts on the connection:
+    # a peer that declined is not sent a shorter inv, it is not sent one
+    # at all. With a peer that did ask, so the assertion is about the
+    # flag rather than about a step that announced to nobody.
+    sender, declined, wants = a_conn(1), a_conn(2, relay_tx=False), a_conn(3)
+    manager = make_manager([sender, declined, wants])
+    manager.received_txs = [(1, a_hash(1))]
+    manager.tx_download()
+    assert not only(declined, Inv)
+    (inv,) = only(wants, Inv)
+    assert hashes_of(inv) == [a_hash(1)]
+
+
+def test_a_peer_that_declined_relay_is_still_answered_about_what_it_wants():
+    # declining transactions is about what it is sent unasked; a peer
+    # that announced one is still asked for it
+    declined = a_conn(1, relay_tx=False)
+    manager = make_manager([declined])
+    manager.inv_txs = [(1, a_hash(1))]
+    manager.tx_download()
+    (getdata,) = only(declined, GetData)
+    assert hashes_of(getdata) == [a_hash(1)]
 
 
 def test_a_transaction_is_announced_to_the_peers_that_do_not_have_it():
