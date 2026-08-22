@@ -23,6 +23,64 @@ dependencies = [
     "btclib>=2026.8.21",
     "plyvel>=1.5.1",
 ]
+# What this repository is about, in the order a reader ranks them:
+# PyPI shows keywords as the metadata gives them, and GitHub sorts its
+# own topics, so the order decides only which one goes when the twenty
+# GitHub allows are full. Lowercase throughout, a GitHub topic being
+# lowercase or not a topic, so one spelling serves both lists -- and
+# this repository has no topics set today, which is the other half of
+# this list and a dashboard action rather than a file.
+#
+# What is not here: `python`, which names no feature and is what the
+# `Programming Language ::` classifiers below already say; and
+# `bitcoin-core`, which names the node this one is not.
+keywords = [
+    "bitcoin",
+    "bitcoin-node",
+    "full-node",
+    "blockchain",
+    "consensus",
+    "p2p",
+    "script-interpreter",
+    "leveldb",
+]
+# What an index shows somebody deciding whether to install this, and
+# each line is a claim about this tree rather than a line copied from a
+# sibling's.
+#
+# One interpreter, because `requires-python` above is `>=3.14` and its
+# comment says why: with no CI matrix here, a lower bound would be a
+# claim of support nothing checks, and a classifier is that claim made
+# to an index.
+#
+# No `Typing :: Typed`: this package ships no `py.typed`, and its mypy
+# is not strict yet -- the annotation pass is btclib-org/.github#9's.
+# The classifier is machine-readable and a downstream type checker acts
+# on it, so declaring it before the marker exists would be read by a
+# tool rather than by a person.
+#
+# No PyPy and no `OS Independent`, and both for one reason: `plyvel`
+# is a C extension over LevelDB that publishes no macOS wheel and none
+# past CPython 3.12, so it is built from source here and LevelDB has to
+# be installed first. That is a platform claim, not a portable one.
+classifiers = [
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: Implementation :: CPython",
+    # 0.1.0, and the README's own claim for it: this node downloaded and
+    # validated the whole chain, which is past pre-alpha and short of
+    # what a beta would promise about its interfaces
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Natural Language :: English",
+    # where LevelDB's headers and library can be had and the README says
+    # how; Windows is neither claimed nor tested
+    "Operating System :: POSIX",
+    "Operating System :: MacOS",
+    "Topic :: Internet",
+    "Topic :: Security :: Cryptography",
+]
 
 [dependency-groups]
 # The test runner and its plugins, nothing else.
