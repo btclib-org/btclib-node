@@ -26,7 +26,7 @@ class Version(Payload):
     relay: bool
 
     @classmethod
-    def deserialize(cls, data):
+    def parse(cls, data, *, check_validity: bool = True):
         stream = bytesio_from_binarydata(data)
         version = int.from_bytes(stream.read(4), "little")
         services = int.from_bytes(stream.read(8), "little")
@@ -65,39 +65,3 @@ class Version(Payload):
         payload += self.start_height.to_bytes(4, "little")
         payload += self.relay.to_bytes(1, "little")
         return payload
-
-
-@dataclass
-class Verack(Payload):
-    command = "verack"
-
-    @classmethod
-    def deserialize(cls, data):
-        return cls()
-
-    def serialize(self, *, check_validity: bool = True) -> bytes:
-        return b""
-
-
-@dataclass
-class Wtxidrelay(Payload):
-    command = "wtxidrelay"
-
-    @classmethod
-    def deserialize(cls, data):
-        return cls()
-
-    def serialize(self, *, check_validity: bool = True) -> bytes:
-        return b""
-
-
-@dataclass
-class Sendaddrv2(Payload):
-    command = "sendaddrv2"
-
-    @classmethod
-    def deserialize(cls, data):
-        return cls()
-
-    def serialize(self, *, check_validity: bool = True) -> bytes:
-        return b""

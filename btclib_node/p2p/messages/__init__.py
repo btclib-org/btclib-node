@@ -2,14 +2,18 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""The payloads this node speaks, one class per command.
+"""The p2p payloads btclib does not define.
 
-Each subclasses `btclib.p2p.payload.Payload`: it owns the `command` its
+Most of what this node speaks is `btclib.p2p`'s, imported where it is
+used. What is here is the remainder: those that carry
+`btclib_node.p2p.address.NetworkAddress`, which is still this package's;
+BIP61's `reject`, which Bitcoin Core removed; the stubs in
+`filters.py`, BIP37's bloom messages and BIP133's `feefilter`; and the
+commands whose payload is empty.
+
+Each subclasses `btclib.p2p.payload.Payload` and owns the `command` its
 octets travel under, so the name a payload serializes under and the name
-p2p.callbacks dispatches on are one constant; `serialize` returns the
-payload *alone*; and `to_message` frames it for a network.
-
-The four header fields are `btclib.p2p.message.Message`'s, and
-p2p.connection.Connection is the single place that puts them on and
-takes them off.
+p2p.callbacks dispatches on are one constant. The four header fields are
+`btclib.p2p.message.Message`'s, and p2p.connection.Connection is the
+single place that puts them on and takes them off.
 """

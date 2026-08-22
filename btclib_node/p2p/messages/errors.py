@@ -10,31 +10,6 @@ from btclib.p2p.payload import Payload
 from btclib.utils import bytesio_from_binarydata
 
 
-@dataclass
-class Notfound(Payload):
-    command = "notfound"
-
-    inventory: list[tuple[int, bytes]]
-
-    @classmethod
-    def deserialize(cls, data):
-        stream = bytesio_from_binarydata(data)
-        inventory_length = var_int.parse(stream)
-        inventory = []
-        for x in range(inventory_length):
-            item_type = int.from_bytes(stream.read(4), "little")
-            item_hash = stream.read(32)[::-1]
-            inventory.append((item_type, item_hash))
-        return cls(inventory)
-
-    def serialize(self, *, check_validity: bool = True) -> bytes:
-        payload = var_int.serialize(len(self.inventory))
-        for item in self.inventory:
-            payload += item[0].to_bytes(4, "little")
-            payload += item[1][::-1]
-        return payload
-
-
 class RejectCode(enum.IntEnum):
     malformed = 0x01
     invalid = 0x10
@@ -56,7 +31,7 @@ class Reject(Payload):
     data: bytes
 
     @classmethod
-    def deserialize(cls, data):
+    def parse(cls, data, *, check_validity: bool = True):
         stream = bytesio_from_binarydata(data)
         message = stream.read(var_int.parse(stream)).decode()
         code = RejectCode.from_bytes(stream.read(1), "little")

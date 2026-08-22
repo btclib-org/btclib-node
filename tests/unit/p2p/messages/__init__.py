@@ -17,27 +17,31 @@ from types import SimpleNamespace
 
 import pytest
 from btclib.exceptions import BTClibValueError
+from btclib.p2p.handshake import Verack
+from btclib.p2p.keepalive import Ping
 from btclib.p2p.message import Message
 from btclib.p2p.payload import Payload
 
 from btclib_node.chains import RegTest
 from btclib_node.constants import P2pConnStatus
+from btclib_node.p2p.callbacks import callbacks, handshake_callbacks
 from btclib_node.p2p.connection import Connection
-from btclib_node.p2p.messages.getdata import Mempool
-from btclib_node.p2p.messages.handshake import Verack
-from btclib_node.p2p.messages.ping import Ping
+from btclib_node.p2p.messages.empty import Mempool
 
 MAGIC = RegTest().magic
 
-_MESSAGE_MODULES = (
-    "address",
-    "compact",
-    "data",
-    "errors",
-    "filters",
-    "getdata",
-    "handshake",
-    "ping",
+# what this package still defines: everything else the node speaks is
+# btclib.p2p's, and named there
+_MESSAGE_MODULES = ("address", "empty", "errors", "filters", "handshake")
+
+# where the rest of what the node speaks is defined
+_BTCLIB_P2P_MODULES = (
+    "btclib.p2p.addrv2",
+    "btclib.p2p.compact_blocks",
+    "btclib.p2p.data",
+    "btclib.p2p.handshake",
+    "btclib.p2p.inventory",
+    "btclib.p2p.keepalive",
 )
 
 # Bitcoin Core's NetMsgType, which is the authority: a command is what a
@@ -49,31 +53,15 @@ _MESSAGE_MODULES = (
 _COMMANDS = {
     "Addr": "addr",
     "AddrV2": "addrv2",
-    "Block": "block",
-    "Blocktxn": "blocktxn",
-    "Cmpctblock": "cmpctblock",
     "Feefilter": "feefilter",
     "Filteradd": "filteradd",
     "Filterclear": "filterclear",
     "Filterload": "filterload",
     "Getaddr": "getaddr",
-    "Getblocks": "getblocks",
-    "Getblocktxn": "getblocktxn",
-    "Getdata": "getdata",
-    "Getheaders": "getheaders",
-    "Headers": "headers",
-    "Inv": "inv",
     "Mempool": "mempool",
     "Merkleblock": "merkleblock",
-    "Notfound": "notfound",
-    "Ping": "ping",
-    "Pong": "pong",
     "Reject": "reject",
-    "Sendaddrv2": "sendaddrv2",
-    "Sendcmpct": "sendcmpct",
     "Sendheaders": "sendheaders",
-    "Tx": "tx",
-    "Verack": "verack",
     "Version": "version",
     "Wtxidrelay": "wtxidrelay",
 }
@@ -101,6 +89,33 @@ def test_every_payload_travels_under_core_s_name():
     assert set(classes) == set(_COMMANDS)
     for name, cls in sorted(classes.items()):
         assert cls.command == _COMMANDS[name], name
+
+
+def test_the_dispatch_tables_key_on_real_commands():
+    # The outbound side reads the command off the class; the inbound
+    # side is still two hand-written tables of string literals, so a
+    # misspelling there is an entry no message ever matches -- silent,
+    # exactly as "sendcmpt" was on the way out. Every key has to be a
+    # command some payload actually travels under, this package's or
+    # btclib.p2p's.
+    known = {cls.command for cls in payload_classes().values()}
+    # imported here, by full dotted name, and deliberately not bound at
+    # module scope: this file is the test package's __init__, so pytest
+    # importing a sibling module -- messages/handshake.py -- sets it as
+    # an attribute of this package and would shadow a plain
+    # `from btclib.p2p import handshake` with the test module.
+    for dotted in _BTCLIB_P2P_MODULES:
+        module = importlib.import_module(dotted)
+        known |= {
+            obj.command
+            for obj in vars(module).values()
+            if inspect.isclass(obj)
+            and issubclass(obj, Payload)
+            and obj is not Payload
+            and getattr(obj, "command", None)
+        }
+    unknown = (set(callbacks) | set(handshake_callbacks)) - known
+    assert not unknown
 
 
 def test_the_command_reaches_the_wire():
@@ -138,7 +153,7 @@ def test_one_message_is_dispatched():
     conn.parse_messages()
     assert not conn.buffer
     assert [item[0] for item in conn.manager.messages] == ["ping"]
-    assert Ping.deserialize(conn.manager.messages[0][1]).nonce == 7
+    assert Ping.parse(conn.manager.messages[0][1]).nonce == 7
 
 
 def test_several_messages_in_one_read():
@@ -214,3 +229,26 @@ def test_an_oversized_payload_is_refused_before_it_is_allocated():
     with pytest.raises(BTClibValueError):
         conn.parse_messages()
     assert not conn.manager.messages
+
+
+def test_a_drawn_ping_nonce_is_never_the_sentinel():
+    # btclib's Ping defaults its nonce to zero, and zero is what
+    # ping_nonce means "no ping outstanding": a ping carrying it makes
+    # the pong that answers it indistinguishable from no pong at all.
+    # Nothing else in the suite says so -- the functional ping test
+    # depends on it and would come back as an intermittent red.
+    conn = make_connection()
+    sent = []
+    conn.send = sent.append
+    for _ in range(50):
+        conn.send_ping()
+        # what the pong is matched against is the nonce that went out
+        assert conn.ping_nonce == sent[-1].nonce
+    for ping in sent:
+        assert 0 < ping.nonce < 2**64
+    # drawn, not a constant
+    assert len({ping.nonce for ping in sent}) > 1
+    # and drawn over the whole field, which is the other half of #11:
+    # a 48-bit draw satisfies everything above. Fifty draws all landing
+    # under 2**48 has probability about 2**-800.
+    assert max(ping.nonce for ping in sent) > 2**48

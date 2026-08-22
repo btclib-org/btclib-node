@@ -12,7 +12,7 @@ class Filterload(Payload):
     command = "filterload"
 
     @classmethod
-    def deserialize(cls, data):
+    def parse(cls, data, *, check_validity: bool = True):
         return cls()
 
     def serialize(self, *, check_validity: bool = True) -> bytes:
@@ -24,7 +24,7 @@ class Filteradd(Payload):
     command = "filteradd"
 
     @classmethod
-    def deserialize(cls, data):
+    def parse(cls, data, *, check_validity: bool = True):
         return cls()
 
     def serialize(self, *, check_validity: bool = True) -> bytes:
@@ -36,7 +36,7 @@ class Filterclear(Payload):
     command = "filterclear"
 
     @classmethod
-    def deserialize(cls, data):
+    def parse(cls, data, *, check_validity: bool = True):
         return cls()
 
     def serialize(self, *, check_validity: bool = True) -> bytes:
@@ -48,7 +48,7 @@ class Merkleblock(Payload):
     command = "merkleblock"
 
     @classmethod
-    def deserialize(cls, data):
+    def parse(cls, data, *, check_validity: bool = True):
         return cls()
 
     def serialize(self, *, check_validity: bool = True) -> bytes:
@@ -60,7 +60,7 @@ class Feefilter(Payload):
     command = "feefilter"
 
     @classmethod
-    def deserialize(cls, data):
+    def parse(cls, data, *, check_validity: bool = True):
         return cls()
 
     def serialize(self, *, check_validity: bool = True) -> bytes:

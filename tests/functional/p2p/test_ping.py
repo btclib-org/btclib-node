@@ -4,10 +4,11 @@
 
 import time
 
+from btclib.p2p.keepalive import Ping
+
 from btclib_node import Node
 from btclib_node.config import Config
 from btclib_node.constants import P2pConnStatus
-from btclib_node.p2p.messages.ping import Ping
 from tests.helpers import get_random_port, local_addr, wait_until
 
 
