@@ -28,7 +28,8 @@ def get_block_header(node, conn, params):
     out = header.to_dict()
     out["hash"] = header.hash
 
-    # TODO: fix if is not in main chain
+    # raises for a block that is known and not on the best chain,
+    # where Core answers with confirmations -1: btclib-org/btclib-node#87
     height = header_index.index(block_hash)
     out["height"] = height
     out["confirmations"] = len(header_index) - height

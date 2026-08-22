@@ -230,7 +230,12 @@ def getdata(node, msg, conn):
 def headers(node, msg, conn):
     headers = Headers.parse(msg).headers
     added = node.chainstate.block_index.add_headers(headers)
-    # TODO: now it doesn't support long reorganizations (> 2000 headers)
+    # A fork below our tip is new to us and still does not move
+    # header_index, which is what the locator is built from -- so the
+    # next ask carries the locator just sent, the peer answers with the
+    # batch just seen, and nothing in it is new that time. `added` is
+    # what keeps that from repeating forever; what it also stops is the
+    # sync, short of the fork's own tip: btclib-org/btclib-node#122
     if len(headers) == 2000 and added:  # we have to require more headers
         block_locators = node.chainstate.block_index.get_block_locator_hashes()
         conn.send(GetHeaders(ProtocolVersion, block_locators, b"\x00" * 32))

@@ -16,7 +16,8 @@ def update_block_status(index, hash, status, wb):
     index.insert_block_info(block_info, wb)
 
 
-# TODO: we have to check it there are more blocks ahead to invalidate
+# a stub: nothing invalidates the headers built on a failed block.
+# btclib-org/btclib-node#120
 def update_header_index(index):
     pass
 
@@ -29,7 +30,6 @@ def finish_sync(node):
     node.p2p_manager.stop_all()
 
 
-# TODO: support for failed updates
 def update_chain(node):
     if node.status < NodeStatus.HeaderSynced:
         return None
@@ -48,11 +48,11 @@ def update_chain(node):
 
     for hash in to_add_hash:
         if not block_index.get_block_info(hash).downloaded:
-            # FIXME: naive way to prevent node from blocking due to
-            # missing stale block
-            # block_index.block_candidates.insert(
-            #     100, block_index.block_candidates.popleft()
-            # )
+            # get_first_candidate prefers a branch whose tip has
+            # arrived, so a branch missing its tip is stepped over; a
+            # branch missing a block behind its tip is not, and until
+            # that block arrives nothing queued behind it connects,
+            # however complete: btclib-org/btclib-node#121
             return None
 
     node.logger.info("Start block validation")
