@@ -2,7 +2,6 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-import random
 import secrets
 import socket
 import time
@@ -20,7 +19,6 @@ from btclib_node.p2p.address import NetworkAddress
 
 
 def generate_random_header_chain(length, start):
-    # random.seed(42)
     chain = []
     for x in range(length):
         if chain:
@@ -102,7 +100,6 @@ def build_block(previous_block_hash, transactions, height):
 
 
 def generate_random_chain(length, start):
-    # random.seed(42)
     chain = []
     for x in range(length):
         previous_block_hash = chain[-1].header.hash if chain else start
@@ -115,15 +112,11 @@ def generate_random_chain(length, start):
 
 
 def get_random_port():
-    while True:
-        port = random.randint(1024, 65535)
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.bind(("", port))
-            sock.close()
-            return port
-        except OSError:
-            sock.close()
+    # port 0 is the operating system being asked for one that is free,
+    # which is what a caller about to bind it wants to know
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("", 0))
+        return sock.getsockname()[1]
 
 
 def wait_until(func, timeout=20):
@@ -137,17 +130,28 @@ def wait_until(func, timeout=20):
         if func():
             return
         time.sleep(0.025)
-    raise Exception
+    # where the condition is written, because a caller passes a lambda
+    # and a test often has several
+    code = func.__code__
+    err_msg = (
+        f"{code.co_filename}:{code.co_firstlineno} "
+        f"did not hold within {timeout} seconds"
+    )
+    raise Exception(err_msg)
 
 
-def brute_force_nonce(header):
-    for _ in range(100):
+def brute_force_nonce(header, attempts=100):
+    for _ in range(attempts):
         try:
             header.assert_valid_pow(REGTEST_POW_LIMIT_BITS)
             break
         except BTClibValueError:
             header.nonce += 1
     header.assert_valid()
+    # assert_valid does not look at the target, so a header the loop
+    # gave up on would otherwise be handed back unsolved and fail in
+    # whatever test went on to use it
+    header.assert_valid_pow(REGTEST_POW_LIMIT_BITS)
 
 
 def local_addr(port: int, time: int = 0, services: int = 0):
