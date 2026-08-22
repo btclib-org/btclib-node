@@ -163,7 +163,7 @@ class FilterIndex:
         if wb is not None:
             self._write(wb)
             return
-        with self.db.write_batch(transaction=True) as batch:
+        with self.db.write_batch() as batch:
             self._write(batch)
 
     def _write(self, db):

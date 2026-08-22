@@ -108,7 +108,9 @@ class KeyValueStore:
 
     def put(self, key, value):
         """Store a value under a key, replacing what was there."""
-        self._connection().execute("INSERT OR REPLACE INTO kv VALUES (?, ?)", (key, value))
+        self._connection().execute(
+            "INSERT OR REPLACE INTO kv VALUES (?, ?)", (key, value)
+        )
 
     def delete(self, key):
         """Remove a key, whether or not it was there."""
