@@ -137,10 +137,9 @@ jobs:
             This repository has no test or docs job on a pull request
             yet -- issue #33 tracks that -- so nothing green stands
             behind the author's word that the tests pass. Do not run the
-            gates yourself either: they need a toolchain this job does
-            not set up, `uv sync` among other things building plyvel
-            from source and wanting LevelDB present first. Say in the
-            summary that no gates were run here and that the author's
+            gates yourself either: this job sets up no toolchain for
+            them, and a review is not where one gets installed. Say in
+            the summary that no gates were run here and that the author's
             own statement of what they ran is what stands -- and if a
             pull request makes no such statement, say that too.
 
