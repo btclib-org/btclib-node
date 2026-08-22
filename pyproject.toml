@@ -75,12 +75,26 @@ addopts = "-n auto --remote-data=any --cov --cov-report term-missing:skip-covere
 filterwarnings = ['ignore:cannot collect test class']
 
 [tool.coverage.run]
+# Named, rather than left to `--cov` alone: without it coverage measures
+# whatever the run happened to import, so a module no test touches is
+# absent from the report instead of appearing in it at zero -- the one
+# case the number most needs to show.
+source = ["btclib_node", "tests"]
+# A guard clause whose branch is never taken reads as fully covered
+# under statement coverage: the line ran, and that is all it measures.
+# On a node whose defects are mostly in branches not taken, that is the
+# wrong thing to count.
+branch = true
 omit = ["*/site-packages/*"]
 
 [tool.coverage.report]
 show_missing = true
 skip_empty = true
 precision = 2
+# No fail_under yet. It goes in when the tree is at 100, not before:
+# a threshold set above where the tree stands turns every unrelated
+# pull request red on arrival, which is not what it is for.
+# btclib-org/btclib_node#32 is the climb.
 
 [tool.ruff]
 # target-version is inferred from project.requires-python
