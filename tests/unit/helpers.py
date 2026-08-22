@@ -36,19 +36,41 @@ def test_the_port_offered_is_one_that_can_be_bound():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("", port))
     assert 1024 <= port <= 65535
+    # and a second caller is not handed the first one: two nodes in one
+    # test would otherwise fight over it
+    assert get_random_port() != port
 
 
 def test_a_condition_that_holds_is_not_waited_for():
+    timeout = 10
     start = time.time()
-    wait_until(lambda: True, timeout=10)
-    assert time.time() - start < 1
+    wait_until(lambda: True, timeout=timeout)
+    assert time.time() - start < timeout
 
 
 def test_a_condition_that_never_holds_is_given_up_on():
     calls = []
-    with pytest.raises(Exception, match="did not hold within"):
-        wait_until(lambda: calls.append(True), timeout=0.1)
-    assert calls
+    timeout = 0.2
+    start = time.time()
+    with pytest.raises(Exception, match=f"helpers.py:.* within {timeout} seconds"):
+        wait_until(lambda: calls.append(True), timeout=timeout)
+    # asked repeatedly, and for as long as it said it would
+    assert len(calls) > 1
+    assert time.time() - start >= timeout
+
+
+def test_a_header_that_is_not_well_formed_is_refused():
+    header = BlockHeader(
+        version=0,
+        previous_block_hash=RegTest().genesis.hash,
+        merkle_root=b"\x11" * 32,
+        time=RegTest().genesis.time,
+        bits=RegTest().genesis.bits,
+        nonce=1,
+        check_validity=False,
+    )
+    with pytest.raises(BTClibValueError, match="invalid version"):
+        brute_force_nonce(header)
 
 
 def test_a_header_that_cannot_be_solved_is_not_passed_off_as_valid():
@@ -77,11 +99,16 @@ def test_a_generated_header_chain_links_and_holds_up():
 def test_a_generated_block_chain_spends_what_the_block_before_it_made():
     chain = generate_random_chain(3, RegTest().genesis.hash)
     for block in chain:
-        assert block.header.merkle_root == merkle_root(
-            [tx.serialize(True, check_validity=False) for tx in block.transactions],
-            hash256,
-        )[::-1]
+        assert (
+            block.header.merkle_root
+            == merkle_root(
+                [tx.serialize(True, check_validity=False) for tx in block.transactions],
+                hash256,
+            )[::-1]
+        )
+    assert chain[0].header.previous_block_hash == RegTest().genesis.hash
     for previous, block in zip(chain, chain[1:]):
+        assert block.header.previous_block_hash == previous.header.hash
         spend = block.transactions[1]
         assert spend.vin[0].prev_out.tx_id == previous.transactions[0].id
 

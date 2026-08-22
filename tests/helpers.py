@@ -112,8 +112,8 @@ def generate_random_chain(length, start):
 
 
 def get_random_port():
-    # port 0 asks the operating system for one that is free, which is
-    # the question drawing a number and retrying was asking the long way
+    # port 0 is the operating system being asked for one that is free,
+    # which is what a caller about to bind it wants to know
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("", 0))
         return sock.getsockname()[1]
@@ -130,7 +130,13 @@ def wait_until(func, timeout=20):
         if func():
             return
         time.sleep(0.025)
-    err_msg = f"{func} did not hold within {timeout} seconds"
+    # where the condition is written, because a caller passes a lambda
+    # and a test often has several
+    code = func.__code__
+    err_msg = (
+        f"{code.co_filename}:{code.co_firstlineno} "
+        f"did not hold within {timeout} seconds"
+    )
     raise Exception(err_msg)
 
 
