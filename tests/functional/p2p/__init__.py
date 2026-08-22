@@ -18,3 +18,7 @@ def test_init(tmp_path):
     wait_until(lambda: node.p2p_manager.is_alive())
 
     node.stop()
+
+    # a test that ends with its node still running ends with something
+    # still logging, and this is the node the p2p manager runs under
+    assert not node.is_alive()

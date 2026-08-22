@@ -122,4 +122,23 @@ class Node(threading.Thread):
         self.logger.close()
 
     def stop(self):
+        """Ask the main loop to stop, and wait until it has.
+
+        Signalling alone lets the caller go on while the node is still
+        there. A test that returns then is torn down around a thread
+        that goes on logging into a harness that has moved on, which is
+        where `ValueError: I/O operation on closed file` came from; and
+        a loop that cannot come back at all holds the interpreter open
+        after the last test, this being a non-daemon thread. No
+        per-test limit reaches that second one -- the test it belongs
+        to has already passed -- so waiting here is what puts the wait
+        inside the test, where a limit can name it
+        (btclib-org/btclib_node#98).
+
+        The node's own thread is the one caller that cannot wait, the
+        `stop` RPC being handled inside the loop it stops. It gets the
+        signal alone, and reaches the end of `run` by itself.
+        """
         self.terminate_flag.set()
+        if self.is_alive() and threading.current_thread() is not self:
+            self.join()

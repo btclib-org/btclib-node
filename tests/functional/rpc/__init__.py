@@ -42,3 +42,8 @@ def test_init(tmp_path):
     assert response["result"] == "Btclib node stopping"
 
     node.stop()
+
+    # the node was already asked to stop from inside its own loop,
+    # which is the one caller that cannot wait for it; asking again
+    # from outside is what waits
+    assert not node.is_alive()
