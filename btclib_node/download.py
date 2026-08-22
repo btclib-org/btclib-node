@@ -5,9 +5,9 @@
 import time
 from collections import Counter
 
+from btclib.p2p.inventory import GetData, Inv, Inventory, InventoryType
+
 from btclib_node.constants import NodeStatus
-from btclib_node.p2p.messages.data import Inv
-from btclib_node.p2p.messages.getdata import Getdata, InventoryType
 
 
 class DownloadManager:
@@ -49,7 +49,9 @@ class DownloadManager:
                 inv = invs.get(conn.id, [])
                 inv = [txid for _, txid in self.received_txs if txid not in inv]
                 if len(inv) > 5:
-                    conn.send(Inv([(InventoryType.wtx, wtxid) for wtxid in inv]))
+                    conn.send(
+                        Inv([Inventory(InventoryType.MSG_WTX, wtxid) for wtxid in inv])
+                    )
 
         if len(self.inv_txs):
             invs = {}
@@ -62,7 +64,11 @@ class DownloadManager:
             for conn_id, inv in invs.items():
                 conn = self.node.p2p_manager.connections.get(conn_id)
                 if conn and inv:
-                    conn.send(Getdata([(InventoryType.wtx, wtxid) for wtxid in inv]))
+                    conn.send(
+                        GetData(
+                            [Inventory(InventoryType.MSG_WTX, wtxid) for wtxid in inv]
+                        )
+                    )
 
         self.inv_txs = []
         self.received_txs = []
@@ -128,5 +134,7 @@ class DownloadManager:
                 else:
                     return
                 conn.download_queue = new
-                getdata = Getdata([(InventoryType.witness_block, hash) for hash in new])
+                getdata = GetData(
+                    [Inventory(InventoryType.MSG_WITNESS_BLOCK, hash) for hash in new]
+                )
                 conn.send(getdata)

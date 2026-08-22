@@ -8,13 +8,13 @@ import time
 from io import BytesIO
 
 from btclib.exceptions import BTClibValueError, IncompleteMessageError
+from btclib.p2p.keepalive import Ping
 from btclib.p2p.message import Message
 
 from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion, Services
 from btclib_node.p2p.address import NetworkAddress
 from btclib_node.p2p.callbacks import handshake_callbacks
 from btclib_node.p2p.messages.handshake import Version
-from btclib_node.p2p.messages.ping import Ping
 
 
 class Connection:
@@ -79,9 +79,25 @@ class Connection:
         self.node.logger.debug(f"Sending message: {payload.command}")
 
         try:
-            # the payload names its own command, and this is the only
-            # place the magic is applied
-            data = payload.to_message(self.node.chain.magic).serialize()
+            # The payload names its own command, and this is the only
+            # place the magic is applied.
+            #
+            # Its octets are not re-checked on the way out: this node
+            # built them from state it has already validated, and
+            # btclib's block payload would ask CheckBlock of them
+            # against mainnet's pow limit, which no regtest or signet
+            # block meets. The envelope still is: that check is about
+            # the octets this node emits being well formed -- a magic of
+            # four octets, a command of at most twelve printable ones, a
+            # length under the protocol's. It says nothing about whether
+            # the command is one any peer answers to; the test over every
+            # payload's `command` is what says that.
+            message = Message(
+                self.node.chain.magic,
+                payload.command,
+                payload.serialize(check_validity=False),
+            )
+            data = message.serialize()
         except Exception as e:
             self.node.logger.warning(f"error in serializing message: {e!s}")
             return
@@ -93,7 +109,10 @@ class Connection:
 
     async def send_version(self):
         services = Services.network + Services.witness + Services.network_limited
-        nonce = secrets.randbelow(0xFFFFFFFFFFFF)
+        # over the whole 64-bit field, as Core draws it: this nonce is
+        # how a node recognises a connection to itself, so a narrower
+        # draw is a narrower guarantee of that
+        nonce = secrets.randbelow(2**64)
         self.manager.nonces.append(nonce)
         self.manager.nonces = self.manager.nonces[:10]
 
@@ -111,7 +130,12 @@ class Connection:
         await self.async_send(version)
 
     def send_ping(self):
-        ping_msg = Ping()
+        # The nonce is the sender's to choose, and btclib's Ping defaults
+        # it to zero rather than drawing one. Zero is also what
+        # ping_nonce means "no ping outstanding", so it is drawn here and
+        # never zero: a ping carrying the sentinel would make the pong
+        # that answers it indistinguishable from no pong at all.
+        ping_msg = Ping(1 + secrets.randbelow(2**64 - 1))
         self.ping_sent = time.time()
         self.ping_nonce = ping_msg.nonce
         self.send(ping_msg)

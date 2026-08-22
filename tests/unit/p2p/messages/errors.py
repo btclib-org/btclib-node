@@ -5,18 +5,12 @@
 from btclib.p2p.message import Message
 
 from btclib_node.chains import RegTest
-from btclib_node.p2p.messages.errors import Notfound, Reject, RejectCode
+from btclib_node.p2p.messages.errors import Reject, RejectCode
 
 MAGIC = RegTest().magic
-
-
-def test_not_found():
-    msg = Notfound([(1, b"\x00" * 32)])
-    msg_bytes = msg.to_message(MAGIC).serialize()
-    assert msg == Notfound.deserialize(Message.parse(msg_bytes).payload)
 
 
 def test_reject():
     msg = Reject("tx", RejectCode(0x42), "", b"\x00" * 32)
     msg_bytes = msg.to_message(MAGIC).serialize()
-    assert msg == Reject.deserialize(Message.parse(msg_bytes).payload)
+    assert msg == Reject.parse(Message.parse(msg_bytes).payload)

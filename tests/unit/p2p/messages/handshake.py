@@ -6,16 +6,10 @@ from btclib.p2p.message import Message
 
 from btclib_node.chains import RegTest
 from btclib_node.constants import ProtocolVersion
-from btclib_node.p2p.messages.handshake import Verack, Version
+from btclib_node.p2p.messages.handshake import Version
 from tests.helpers import local_addr
 
 MAGIC = RegTest().magic
-
-
-def test_verack():
-    msg = Verack()
-    msg_bytes = msg.to_message(MAGIC).serialize()
-    assert msg == Verack.deserialize(Message.parse(msg_bytes).payload)
 
 
 def test_version():
@@ -32,7 +26,7 @@ def test_version():
         relay=True,
     )
     msg_bytes = msg.to_message(MAGIC).serialize()
-    assert msg == Version.deserialize(Message.parse(msg_bytes).payload)
+    assert msg == Version.parse(Message.parse(msg_bytes).payload)
 
 
 def test_version_without_agent():
@@ -49,4 +43,4 @@ def test_version_without_agent():
         relay=True,
     )
     msg_bytes = msg.to_message(MAGIC).serialize()
-    assert msg == Version.deserialize(Message.parse(msg_bytes).payload)
+    assert msg == Version.parse(Message.parse(msg_bytes).payload)

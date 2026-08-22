@@ -4,27 +4,32 @@
 
 import time
 
+from btclib.p2p.addrv2 import SendAddrV2
+from btclib.p2p.compact_blocks import SendCmpct
+from btclib.p2p.data import BlockPayload as BlockMsg
+from btclib.p2p.data import TxPayload as TxMsg
+from btclib.p2p.handshake import Verack
+from btclib.p2p.inventory import (
+    GetData,
+    GetHeaders,
+    Headers,
+    Inv,
+    InventoryType,
+    NotFound,
+)
+from btclib.p2p.keepalive import Ping, Pong
+
 from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion, Services
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.main import verify_mempool_acceptance
-from btclib_node.p2p.messages.address import Addr, AddrV2, Getaddr
-from btclib_node.p2p.messages.compact import Sendcmpct
-from btclib_node.p2p.messages.data import Block as BlockMsg
-from btclib_node.p2p.messages.data import Headers, Inv
-from btclib_node.p2p.messages.data import Tx as TxMsg
-from btclib_node.p2p.messages.errors import Notfound, Reject
-from btclib_node.p2p.messages.getdata import (
-    Getdata,
-    Getheaders,
-    InventoryType,
-    Sendheaders,
-)
-from btclib_node.p2p.messages.handshake import Sendaddrv2, Verack, Version, Wtxidrelay
-from btclib_node.p2p.messages.ping import Ping, Pong
+from btclib_node.p2p.messages.address import Addr, AddrV2
+from btclib_node.p2p.messages.empty import Getaddr, Sendheaders, Wtxidrelay
+from btclib_node.p2p.messages.errors import Reject
+from btclib_node.p2p.messages.handshake import Version
 
 
 def version(node, msg, conn):
-    version_msg = Version.deserialize(msg)
+    version_msg = Version.parse(msg)
 
     conn.version_message = version_msg
     if version_msg.nonce in node.p2p_manager.nonces:  # connection to ourselves
@@ -46,7 +51,7 @@ def version(node, msg, conn):
         return
 
     conn.send(Wtxidrelay())
-    conn.send(Sendaddrv2())
+    conn.send(SendAddrV2())
     conn.send(Verack())
 
     conn.relay_txs = version_msg.relay
@@ -58,11 +63,11 @@ def verack(node, msg, conn):
         return
     conn.status = P2pConnStatus.Connected
     conn.send(Sendheaders())
-    conn.send(Sendcmpct(0, 1))
+    conn.send(SendCmpct(False, 1))
     conn.send_ping()
     conn.send(Getaddr())
     block_locators = node.chainstate.block_index.get_block_locator_hashes()
-    conn.send(Getheaders(ProtocolVersion, block_locators, b"\x00" * 32))
+    conn.send(GetHeaders(ProtocolVersion, block_locators, b"\x00" * 32))
     node.logger.info(
         f"Connected to {conn.client.getpeername()[0]}:{conn.client.getpeername()[1]}"
     )
@@ -77,12 +82,12 @@ def sendaddrv2(node, msg, conn):
 
 
 def ping(node, msg, conn):
-    nonce = Ping.deserialize(msg).nonce
+    nonce = Ping.parse(msg).nonce
     conn.send(Pong(nonce))
 
 
 def pong(node, msg, conn):
-    nonce = Pong.deserialize(msg).nonce
+    nonce = Pong.parse(msg).nonce
     if conn.ping_sent:
         if conn.ping_nonce != nonce:
             conn.stop()
@@ -104,17 +109,17 @@ def getaddr(node, msg, conn):
 
 
 def addr(node, msg, conn):
-    addresses = Addr.deserialize(msg).addresses
+    addresses = Addr.parse(msg).addresses
     node.p2p_manager.peer_db.add_addresses(addresses)
 
 
 def addrv2(node, msg, conn):
-    addresses = AddrV2.deserialize(msg).addresses
+    addresses = AddrV2.parse(msg).addresses
     node.p2p_manager.peer_db.add_addresses(addresses)
 
 
 def tx(node, msg, conn):
-    tx = TxMsg.deserialize(msg).tx
+    tx = TxMsg.parse(msg).tx
     try:
         verify_mempool_acceptance(node, tx)
     except MissingPrevoutError:
@@ -126,7 +131,11 @@ def tx(node, msg, conn):
 
 
 def block(node, msg, conn):
-    block = BlockMsg.deserialize(msg).block
+    # btclib's BlockPayload validates against mainnet's pow limit by
+    # default, which no regtest or signet block meets. Its own docstring
+    # names the shape: build unchecked and ask afterwards, which is what
+    # block.assert_valid below does, against this chain's limit.
+    block = BlockMsg.parse(msg, check_validity=False).block
     block_hash = block.header.hash
 
     if block_hash in conn.download_queue:
@@ -151,73 +160,78 @@ def block(node, msg, conn):
 def inv(node, msg, conn):
     if node.status < NodeStatus.BlockSynced:
         return
-    inv = Inv.deserialize(msg)
+    inv = Inv.parse(msg)
 
-    blocks = [x[1] for x in inv.inventory if x[0] == InventoryType.block]
+    blocks = [x.hash for x in inv.items if x.type_code == InventoryType.MSG_BLOCK]
     if blocks:
         block_locators = node.chainstate.block_index.get_block_locator_hashes()
-        conn.send(Getheaders(ProtocolVersion, block_locators, blocks[-1]))
+        conn.send(GetHeaders(ProtocolVersion, block_locators, blocks[-1]))
 
-    wtransactions = [x[1] for x in inv.inventory if x[0] == InventoryType.wtx]
+    wtransactions = [x.hash for x in inv.items if x.type_code == InventoryType.MSG_WTX]
     missing_tx = node.mempool.get_missing(wtransactions, wtxid=True)
     if missing_tx:
         node.download_manager.inv_txs.extend([(conn.id, wtxid) for wtxid in missing_tx])
 
 
 def getdata(node, msg, conn):
-    getdata = Getdata.deserialize(msg)
+    getdata = GetData.parse(msg)
 
-    transactions = [
-        x
-        for x in getdata.inventory
-        if x[0] in (InventoryType.tx, InventoryType.wtx, InventoryType.witness_tx)
-    ]
-    for inv_type, txid in transactions:
-        wtxid = inv_type == InventoryType.wtx
-        tx = node.mempool.get_tx(txid, wtxid=wtxid)
+    tx_types = (
+        InventoryType.MSG_TX,
+        InventoryType.MSG_WTX,
+        InventoryType.MSG_WITNESS_TX,
+    )
+    for item in getdata.items:
+        if item.type_code not in tx_types:
+            continue
+        wtxid = item.type_code == InventoryType.MSG_WTX
+        tx = node.mempool.get_tx(item.hash, wtxid=wtxid)
         if tx:
-            include_witness = inv_type in (InventoryType.witness_tx, InventoryType.wtx)
+            include_witness = item.type_code in (
+                InventoryType.MSG_WITNESS_TX,
+                InventoryType.MSG_WTX,
+            )
             conn.send(TxMsg(tx, include_witness=include_witness))
 
-    blocks = [
-        x
-        for x in getdata.inventory
-        if x[0] in (InventoryType.block, InventoryType.witness_block)
-    ]
-    for inv_type, block_hash in blocks:
-        block = node.block_db.get_block(block_hash)
+    block_types = (InventoryType.MSG_BLOCK, InventoryType.MSG_WITNESS_BLOCK)
+    for item in getdata.items:
+        if item.type_code not in block_types:
+            continue
+        block = node.block_db.get_block(item.hash)
         if block:
-            include_witness = inv_type == InventoryType.witness_block
-            conn.send(BlockMsg(block, include_witness=include_witness))
+            include_witness = item.type_code == InventoryType.MSG_WITNESS_BLOCK
+            conn.send(
+                BlockMsg(block, include_witness=include_witness, check_validity=False)
+            )
 
 
 def headers(node, msg, conn):
-    headers = Headers.deserialize(msg).headers
+    headers = Headers.parse(msg).headers
     added = node.chainstate.block_index.add_headers(headers)
     # TODO: now it doesn't support long reorganizations (> 2000 headers)
     if len(headers) == 2000 and added:  # we have to require more headers
         block_locators = node.chainstate.block_index.get_block_locator_hashes()
-        conn.send(Getheaders(ProtocolVersion, block_locators, b"\x00" * 32))
+        conn.send(GetHeaders(ProtocolVersion, block_locators, b"\x00" * 32))
     elif node.status == NodeStatus.SyncingHeaders:
         node.status = NodeStatus.HeaderSynced
 
 
 def getheaders(node, msg, conn):
-    getheaders = Getheaders.deserialize(msg)
+    getheaders = GetHeaders.parse(msg)
     headers = node.chainstate.block_index.get_headers_from_locators(
-        getheaders.block_hashes, getheaders.hash_stop
+        getheaders.locator, getheaders.hash_stop
     )
     if headers:
         conn.send(Headers(headers))
 
 
 def not_found(node, msg, conn):
-    missing = Notfound.deserialize(msg)
+    missing = NotFound.parse(msg)
     node.logger.warning(f"Missing objects:{missing}")
 
 
 def reject(node, msg, conn):
-    reject = Reject.deserialize(msg)
+    reject = Reject.parse(msg)
     err_msg = (
         f"Reject received: {reject.code.name}, {reject.reason}, {reject.data.hex()}"
     )

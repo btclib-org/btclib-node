@@ -18,7 +18,7 @@ class Addr(Payload):
     addresses: list[NetworkAddress]
 
     @classmethod
-    def deserialize(cls, data):
+    def parse(cls, data, *, check_validity: bool = True):
         stream = bytesio_from_binarydata(data)
         len_addresses = var_int.parse(stream)
         addresses = []
@@ -40,7 +40,7 @@ class AddrV2(Payload):
     addresses: list[NetworkAddress]
 
     @classmethod
-    def deserialize(cls, data):
+    def parse(cls, data, *, check_validity: bool = True):
         stream = bytesio_from_binarydata(data)
         len_addresses = var_int.parse(stream)
         addresses = []
@@ -53,15 +53,3 @@ class AddrV2(Payload):
         for address in self.addresses:
             payload += address.serialize(addrv2=True)
         return payload
-
-
-@dataclass
-class Getaddr(Payload):
-    command = "getaddr"
-
-    @classmethod
-    def deserialize(cls, data):
-        return cls()
-
-    def serialize(self, *, check_validity: bool = True) -> bytes:
-        return b""

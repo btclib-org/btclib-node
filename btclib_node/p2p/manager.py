@@ -9,10 +9,11 @@ import time
 from collections import deque
 from contextlib import suppress
 
+from btclib.p2p.data import TxPayload as Tx
+
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.p2p.address import NetworkAddress
 from btclib_node.p2p.connection import Connection
-from btclib_node.p2p.messages.data import Tx
 
 
 class P2pManager(threading.Thread):
@@ -125,7 +126,7 @@ class P2pManager(threading.Thread):
             conn.send(msg)
 
     def broadcast_raw_transaction(self, tx):
-        self.sendall(Tx(tx))
+        self.sendall(Tx(tx, include_witness=True))
 
     def ping_all(self):
         for conn in self.connections.copy().values():
