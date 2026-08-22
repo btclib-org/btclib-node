@@ -15,12 +15,11 @@ import time
 from types import SimpleNamespace
 
 import pytest
-from btclib.block import BlockHeader
+from btclib.block import BlockHeader, merkle_root_and_mutated_from_transactions
 from btclib.exceptions import BTClibValueError
-from btclib.hashes import hash256, merkle_root
+from btclib.p2p.addrv2 import BIP155Network
 
 from btclib_node.chains import RegTest
-from btclib_node.p2p.address import peer_address
 from tests.helpers import (
     brute_force_nonce,
     build_block,
@@ -128,17 +127,20 @@ def test_a_header_that_is_not_well_formed_is_refused():
 
 
 def test_a_header_that_cannot_be_solved_is_not_passed_off_as_valid():
+    # a target of one: nearly the whole hash space is above it, so the
+    # bounded search comes back with nothing rather than with a nonce,
+    # and what must not happen is the header being handed back unsolved
     header = BlockHeader(
         version=70015,
         previous_block_hash=RegTest().genesis.hash,
         merkle_root=b"\x11" * 32,
         time=RegTest().genesis.time,
-        bits=RegTest().genesis.bits,
+        bits=(0x03000001).to_bytes(4, "big"),
         nonce=1,
         check_validity=False,
     )
-    with pytest.raises(BTClibValueError):
-        brute_force_nonce(header, attempts=0)
+    with pytest.raises(BTClibValueError, match="no nonce"):
+        brute_force_nonce(header)
 
 
 def test_a_generated_header_chain_links_and_holds_up():
@@ -153,13 +155,12 @@ def test_a_generated_header_chain_links_and_holds_up():
 def test_a_generated_block_chain_spends_what_the_block_before_it_made():
     chain = generate_random_chain(3, RegTest().genesis.hash)
     for block in chain:
-        assert (
-            block.header.merkle_root
-            == merkle_root(
-                [tx.serialize(True, check_validity=False) for tx in block.transactions],
-                hash256,
-            )[::-1]
-        )
+        # btclib's, not a second implementation of it written here: the
+        # one this used to carry hashed the transactions *with* their
+        # witnesses, which is not what a merkle root is over and passed
+        # only because nothing built here has a witness
+        root, _ = merkle_root_and_mutated_from_transactions(block.transactions)
+        assert block.header.merkle_root == root
     assert chain[0].header.previous_block_hash == RegTest().genesis.hash
     for previous, block in zip(chain, chain[1:]):
         assert block.header.previous_block_hash == previous.header.hash
@@ -190,5 +191,7 @@ def test_a_built_block_carries_the_transactions_it_was_given():
 
 def test_a_placeholder_address_is_unroutable():
     address = local_addr(18444)
-    assert address == peer_address("0.0.0.0", 18444)  # noqa: S104
+    assert address.address == b"\x00\x00\x00\x00"
+    assert address.network_id == BIP155Network.IPV4
+    assert address.port == 18444
     assert local_addr(18444, timestamp=7, services=9).timestamp == 7

@@ -5,8 +5,7 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from btclib.block import Block, BlockHeader
-from btclib.hashes import hash256, merkle_root
+from btclib.block import Block, BlockHeader, merkle_root_and_mutated_from_transactions
 from btclib.p2p.magic import magic_from_network
 from btclib.script import script
 from btclib.tx.tx import Tx
@@ -52,7 +51,9 @@ def create_genesis(time, nonce, difficulty, version, reward):
         nonce=nonce,
         check_validity=False,
     )
-    header.merkle_root = merkle_root([tx.serialize(False)], hash256)[::-1]
+    # btclib's own, so that the root this builds and the root
+    # Block.assert_valid compares against are one implementation
+    header.merkle_root = merkle_root_and_mutated_from_transactions([tx])[0]
     header.assert_valid()
     # the block and not the header alone: the coinbase above is the only
     # copy of the genesis block anywhere in this node -- no peer serves

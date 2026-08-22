@@ -8,10 +8,10 @@ import threading
 import time
 from datetime import UTC, datetime
 
-from btclib.block import Block, BlockHeader
+from btclib.block import Block, BlockHeader, merkle_root_and_mutated_from_transactions
+from btclib.block.mining import mine
 from btclib.block.proof_of_work import REGTEST_POW_LIMIT_BITS
 from btclib.exceptions import BTClibValueError
-from btclib.hashes import hash256, merkle_root
 from btclib.script import script
 from btclib.tx.tx import Tx, TxIn, TxOut
 from btclib.tx.tx_in import OutPoint
@@ -84,10 +84,7 @@ def build_block(previous_block_hash, transactions, height):
     header = BlockHeader(
         version=70015,
         previous_block_hash=previous_block_hash,
-        merkle_root=merkle_root(
-            [tx.serialize(True, check_validity=False) for tx in transactions],
-            hash256,
-        )[::-1],
+        merkle_root=merkle_root_and_mutated_from_transactions(transactions)[0],
         time=datetime.fromtimestamp(1231006505 + height + 1, UTC),
         bits=REGTEST_POW_LIMIT_BITS,
         nonce=1,
@@ -201,17 +198,21 @@ def call_within(func, timeout=5):
     return outcome["returned"]
 
 
-def brute_force_nonce(header, attempts=100):
-    for _ in range(attempts):
-        try:
-            header.assert_valid_pow(REGTEST_POW_LIMIT_BITS)
-            break
-        except BTClibValueError:
-            header.nonce += 1
-    header.assert_valid()
-    # assert_valid does not look at the target, so a header the loop
-    # gave up on would otherwise be handed back unsolved and fail in
-    # whatever test went on to use it
+def brute_force_nonce(header):
+    """Solve the header in place, or refuse to hand it back unsolved.
+
+    btclib's `mine` does the searching and answers with a copy, so the
+    nonce is carried back into the caller's header: every caller here
+    goes on to use the object it passed. `None` is that search's honest
+    answer to a bounded one, and a test that took it for a solved header
+    would fail somewhere else entirely.
+    """
+    # a regtest header meets its own target about half the time, so the
+    # bound below is on the failure and not on the search
+    solved = mine(header, 100)
+    if solved is None:
+        raise BTClibValueError(f"no nonce solves the header: {header.hash.hex()}")
+    header.nonce = solved.nonce
     header.assert_valid_pow(REGTEST_POW_LIMIT_BITS)
 
 
