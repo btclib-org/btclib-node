@@ -687,6 +687,44 @@ def test_a_transaction_this_node_does_not_hold_is_not_answered():
     assert not peer.sent
 
 
+def test_a_peer_that_declined_relay_is_not_served_a_transaction_it_asks_for():
+    # every code it could ask by, because gating one of the three is a
+    # peer that gets the same answer by asking a different way
+    transaction = a_transaction()
+    mempool = Mempool(Logger(debug=True))
+    mempool.add_tx(transaction)
+    node = a_data_node(mempool=mempool)
+    for type_code, identifier in (
+        (InventoryType.MSG_TX, transaction.id),
+        (InventoryType.MSG_WITNESS_TX, transaction.id),
+        (InventoryType.MSG_WTX, transaction.hash),
+    ):
+        peer = a_peer(relay_tx=False)
+        getdata(node, GetData([Inventory(type_code, identifier)]).serialize(), peer)
+        assert not peer.sent
+
+
+def test_a_peer_that_declined_relay_is_still_served_a_block():
+    # one getdata carrying both kinds, so the assertion is that the
+    # answer is the block and nothing beside it
+    block = a_block()
+    transaction = a_transaction()
+    mempool = Mempool(Logger(debug=True))
+    mempool.add_tx(transaction)
+    node = a_data_node(
+        mempool=mempool, block_db=SimpleNamespace(get_block=lambda h: block)
+    )
+    peer = a_peer(relay_tx=False)
+    items = [
+        Inventory(InventoryType.MSG_WTX, transaction.hash),
+        Inventory(InventoryType.MSG_BLOCK, block.header.hash),
+    ]
+    getdata(node, GetData(items).serialize(), peer)
+    (answer,) = peer.sent
+    assert isinstance(answer, BlockMsg)
+    assert answer.block.header.hash == block.header.hash
+
+
 def test_a_block_this_node_holds_is_served():
     block = a_block()
     node = a_data_node(block_db=SimpleNamespace(get_block=lambda h: block))
