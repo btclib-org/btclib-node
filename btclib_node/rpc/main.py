@@ -48,6 +48,10 @@ def handle_rpc(node):
     node.logger.debug(f"Received rpc message: {conn_id}")
 
     response = []
+    # JSON-RPC 2.0: an empty batch is itself an invalid request, and
+    # answering it is what keeps `data` from being empty below.
+    if not data:
+        response.append(error_msg(-32600))
     for request in data:
         if not is_valid_rpc(request):
             response.append(error_msg(-32600))
@@ -70,7 +74,10 @@ def handle_rpc(node):
                 node.logger.exception("Exception occurred")
                 response.append(error_msg(-32603))
 
-    if request.get("method") == "stop":
+    # asked of the batch, not of whichever request came last: reading
+    # the loop variable after the loop is unbound on an empty batch and
+    # is a str, not a dict, on a batch ending in one.
+    if any(is_valid_rpc(request) and request["method"] == "stop" for request in data):
         conn.send_and_wait(response)
         node.stop()
     else:

@@ -77,15 +77,23 @@ class Node(threading.Thread):
         self.status = NodeStatus.SyncingHeaders
         while not self.terminate_flag.is_set():
             wait = True
-            while len(self.p2p_manager.handshake_messages):
-                handle_p2p_handshake(self)
-                wait = False
-            for _ in range(int(ln(len(self.rpc_manager.messages) + 1, 2))):
-                handle_rpc(self)
-                wait = False
-            for _ in range(int(ln(len(self.p2p_manager.messages) + 1, 2))):
-                handle_p2p(self)
-                wait = False
+            # One message must not end the node. handle_p2p and
+            # handle_p2p_handshake already answer a bad message by
+            # dropping the peer, but what reaches here is whatever they
+            # did not expect -- and leaving the loop by exception skips
+            # every close below it, so the databases would stay open.
+            try:
+                while len(self.p2p_manager.handshake_messages):
+                    handle_p2p_handshake(self)
+                    wait = False
+                for _ in range(int(ln(len(self.rpc_manager.messages) + 1, 2))):
+                    handle_rpc(self)
+                    wait = False
+                for _ in range(int(ln(len(self.p2p_manager.messages) + 1, 2))):
+                    handle_p2p(self)
+                    wait = False
+            except Exception:
+                self.logger.exception("Exception occurred handling a message")
             if wait:
                 time.sleep(0.0001)
             try:
