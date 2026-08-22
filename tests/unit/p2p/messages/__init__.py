@@ -37,6 +37,7 @@ _MESSAGE_MODULES = ("address", "empty", "errors", "handshake")
 # where the rest of what the node speaks is defined
 _BTCLIB_P2P_MODULES = (
     "btclib.p2p.addrv2",
+    "btclib.p2p.block_filters",
     "btclib.p2p.compact_blocks",
     "btclib.p2p.data",
     "btclib.p2p.handshake",

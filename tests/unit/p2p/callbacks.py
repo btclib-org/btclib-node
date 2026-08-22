@@ -17,7 +17,17 @@ from types import SimpleNamespace
 import pytest
 from btclib.block import Block, BlockHeader
 from btclib.exceptions import BTClibValueError
+from btclib.hashes import hash256
 from btclib.p2p.addrv2 import SendAddrV2
+from btclib.p2p.block_filters import (
+    BlockFilterType,
+    CFCheckpt,
+    CFHeaders,
+    CFilter,
+    GetCFCheckpt,
+    GetCFHeaders,
+    GetCFilters,
+)
 from btclib.p2p.compact_blocks import SendCmpct
 from btclib.p2p.data import BlockPayload as BlockMsg
 from btclib.p2p.data import TxPayload as TxMsg
@@ -32,6 +42,11 @@ from btclib.p2p.inventory import (
     NotFound,
 )
 from btclib.p2p.keepalive import Ping, Pong
+from btclib.p2p.limits import (
+    CFCHECKPT_INTERVAL,
+    MAX_GETCFHEADERS_SIZE,
+    MAX_GETCFILTERS_SIZE,
+)
 from btclib.script.witness import Witness
 
 from btclib_node.chains import RegTest
@@ -43,6 +58,9 @@ from btclib_node.p2p.address import NetworkAddress, NetworkID, PeerDB
 from btclib_node.p2p.callbacks import (
     addr,
     addrv2,
+    get_cfcheckpt,
+    get_cfheaders,
+    get_cfilters,
     getaddr,
     getdata,
     getheaders,
@@ -755,3 +773,260 @@ def test_a_getheaders_this_node_cannot_answer_is_not_answered():
         peer,
     )
     assert not peer.sent
+
+
+def a_filter_hash(height):
+    return (height + 1).to_bytes(32, "big")
+
+
+def a_filters_node(length=8, *, stale=()):
+    """A node whose chain is `length` blocks, each with a canned filter.
+
+    The filters are made up: what is this node's in BIP157 is which
+    blocks a range names and what is refused, and a real filter would
+    say nothing about either. `tests/unit/chainstate/filter_index.py`
+    is where the filters themselves are.
+
+    `stale` is blocks the index knows and the active chain does not,
+    which is what a peer asking about an abandoned branch looks like.
+    """
+    active_chain = [(height).to_bytes(32, "big") for height in range(length)]
+    header_dict = {
+        block_hash: SimpleNamespace(index=height)
+        for height, block_hash in enumerate(active_chain)
+    }
+    header_dict.update(stale)
+    filter_index = SimpleNamespace(
+        get_filter=lambda h: b"\x01" + h[-1:],
+        get_header=lambda h: hash256(h)[::-1],
+        get_filter_hash=lambda h: a_filter_hash(int.from_bytes(h, "big")),
+    )
+    return SimpleNamespace(
+        chainstate=SimpleNamespace(
+            block_index=SimpleNamespace(
+                active_chain=active_chain,
+                header_dict=header_dict,
+                get_block_info=header_dict.__getitem__,
+            ),
+            filter_index=filter_index,
+        ),
+        logger=SimpleNamespace(
+            info=lambda *a: None, warning=lambda *a: None, debug=lambda *a: None
+        ),
+    )
+
+
+def a_getcfilters(node, peer, start, stop_height, filter_type=BlockFilterType.BASIC):
+    stop_hash = node.chainstate.block_index.active_chain[stop_height]
+    get_cfilters(node, GetCFilters(filter_type, start, stop_hash).serialize(), peer)
+
+
+def test_a_range_of_filters_is_answered_one_message_per_block():
+    node = a_filters_node()
+    peer = a_peer()
+    a_getcfilters(node, peer, 2, 5)
+    # "sequentially in order by block height", and the whole range
+    # including both ends
+    assert [msg.block_hash for msg in peer.sent] == [
+        h.to_bytes(32, "big") for h in range(2, 6)
+    ]
+    assert all(isinstance(msg, CFilter) for msg in peer.sent)
+    assert all(msg.filter_type == BlockFilterType.BASIC for msg in peer.sent)
+    assert [msg.filter_bytes for msg in peer.sent] == [
+        b"\x01" + h.to_bytes(32, "big")[-1:] for h in range(2, 6)
+    ]
+
+
+def test_one_block_is_a_range_of_one():
+    node = a_filters_node()
+    peer = a_peer()
+    a_getcfilters(node, peer, 3, 3)
+    (msg,) = peer.sent
+    assert msg.block_hash == (3).to_bytes(32, "big")
+
+
+def test_a_filter_type_this_node_does_not_serve_is_not_answered():
+    # BIP158 defines the basic filter and nothing else, so any other
+    # code is a type no node has; BIP157 says answer with nothing
+    node = a_filters_node()
+    peer = a_peer()
+    a_getcfilters(node, peer, 0, 1, filter_type=1)
+    assert not peer.sent
+
+
+def test_a_stop_hash_this_node_never_heard_of_is_not_answered():
+    node = a_filters_node()
+    peer = a_peer()
+    get_cfilters(
+        node, GetCFilters(BlockFilterType.BASIC, 0, b"\x11" * 32).serialize(), peer
+    )
+    assert not peer.sent
+
+
+def test_a_stop_hash_off_the_active_chain_is_not_answered():
+    # a block this node knows and did not keep: its height is a height
+    # on the branch it left, and answering would send the filters of
+    # blocks the peer did not ask about
+    stale_hash = b"\x22" * 32
+    node = a_filters_node(stale={stale_hash: SimpleNamespace(index=3)})
+    peer = a_peer()
+    get_cfilters(
+        node, GetCFilters(BlockFilterType.BASIC, 0, stale_hash).serialize(), peer
+    )
+    assert not peer.sent
+
+
+def test_a_stop_hash_at_a_height_the_chain_has_not_reached_is_not_answered():
+    node = a_filters_node(length=4, stale={b"\x33" * 32: SimpleNamespace(index=9)})
+    peer = a_peer()
+    get_cfilters(
+        node, GetCFilters(BlockFilterType.BASIC, 0, b"\x33" * 32).serialize(), peer
+    )
+    assert not peer.sent
+
+
+def test_a_range_that_runs_backwards_is_not_answered():
+    node = a_filters_node()
+    peer = a_peer()
+    a_getcfilters(node, peer, 5, 2)
+    assert not peer.sent
+
+    # and the same range asked of getcfheaders, which is the half that
+    # can tell: an empty range sends no cfilter either way, where a
+    # cfheaders of no hashes is a message the peer would have to read
+    peer = a_peer()
+    get_cfheaders(
+        node,
+        GetCFHeaders(BlockFilterType.BASIC, 5, (2).to_bytes(32, "big")).serialize(),
+        peer,
+    )
+    assert not peer.sent
+
+
+@pytest.mark.parametrize(
+    ("ask", "limit"),
+    [(get_cfilters, MAX_GETCFILTERS_SIZE), (get_cfheaders, MAX_GETCFHEADERS_SIZE)],
+    ids=["getcfilters", "getcfheaders"],
+)
+def test_a_range_is_bounded_strictly_below_the_limit(ask, limit):
+    # BIP157 bounds the difference and bounds it strictly, so a range
+    # whose ends differ by exactly the limit is one block too many
+    node = a_filters_node(length=limit + 2)
+    request = GetCFilters if ask is get_cfilters else GetCFHeaders
+
+    peer = a_peer()
+    ask(
+        node,
+        request(BlockFilterType.BASIC, 0, (limit - 1).to_bytes(32, "big")).serialize(),
+        peer,
+    )
+    assert peer.sent
+
+    peer = a_peer()
+    ask(
+        node,
+        request(BlockFilterType.BASIC, 0, (limit).to_bytes(32, "big")).serialize(),
+        peer,
+    )
+    assert not peer.sent
+
+
+def test_the_filter_hashes_of_a_range_are_answered_with_the_header_before_it():
+    node = a_filters_node()
+    peer = a_peer()
+    stop_hash = (5).to_bytes(32, "big")
+    get_cfheaders(
+        node, GetCFHeaders(BlockFilterType.BASIC, 3, stop_hash).serialize(), peer
+    )
+    (msg,) = peer.sent
+    assert isinstance(msg, CFHeaders)
+    assert msg.stop_hash == stop_hash
+    # the header of the block before the range: what the hashes below
+    # chain onto, and without it a client could check nothing
+    assert msg.previous_filter_header == hash256((2).to_bytes(32, "big"))[::-1]
+    assert list(msg.filter_hashes) == [a_filter_hash(h) for h in range(3, 6)]
+
+
+def test_a_range_that_starts_at_the_genesis_block_has_no_header_before_it():
+    node = a_filters_node()
+    peer = a_peer()
+    get_cfheaders(
+        node,
+        GetCFHeaders(BlockFilterType.BASIC, 0, (2).to_bytes(32, "big")).serialize(),
+        peer,
+    )
+    (msg,) = peer.sent
+    # BIP157 defines the header before the genesis block's filter as
+    # thirty-two zero octets, and there is no block to read one off
+    assert msg.previous_filter_header == b"\x00" * 32
+    assert list(msg.filter_hashes) == [a_filter_hash(h) for h in range(3)]
+
+
+def test_a_getcfheaders_this_node_cannot_answer_is_not_answered():
+    node = a_filters_node()
+    peer = a_peer()
+    get_cfheaders(
+        node, GetCFHeaders(BlockFilterType.BASIC, 0, b"\x11" * 32).serialize(), peer
+    )
+    assert not peer.sent
+
+
+def test_the_checkpoints_are_every_thousandth_block_and_not_the_first():
+    node = a_filters_node(length=2 * CFCHECKPT_INTERVAL + 3)
+    peer = a_peer()
+    stop_height = 2 * CFCHECKPT_INTERVAL + 1
+    stop_hash = stop_height.to_bytes(32, "big")
+    get_cfcheckpt(
+        node, GetCFCheckpt(BlockFilterType.BASIC, stop_hash).serialize(), peer
+    )
+    (msg,) = peer.sent
+    assert isinstance(msg, CFCheckpt)
+    assert msg.stop_hash == stop_hash
+    # "a multiple of 1,000 greater than 0": the genesis block is not a
+    # checkpoint, and the stop block is one only if it falls on the
+    # interval itself
+    assert list(msg.filter_headers) == [
+        hash256(height.to_bytes(32, "big"))[::-1]
+        for height in (CFCHECKPT_INTERVAL, 2 * CFCHECKPT_INTERVAL)
+    ]
+
+
+def test_the_stop_block_is_a_checkpoint_when_its_own_height_is_one():
+    # the boundary the rule is most specific about: "each block ... where
+    # the block height is a multiple of 1,000 greater than 0" includes
+    # the block the range terminates at, when that is what its height is
+    node = a_filters_node(length=CFCHECKPT_INTERVAL + 1)
+    peer = a_peer()
+    stop_hash = CFCHECKPT_INTERVAL.to_bytes(32, "big")
+    get_cfcheckpt(
+        node, GetCFCheckpt(BlockFilterType.BASIC, stop_hash).serialize(), peer
+    )
+    (msg,) = peer.sent
+    assert list(msg.filter_headers) == [hash256(stop_hash)[::-1]]
+
+
+def test_a_chain_shorter_than_the_interval_has_no_checkpoints():
+    node = a_filters_node(length=8)
+    peer = a_peer()
+    get_cfcheckpt(
+        node,
+        GetCFCheckpt(BlockFilterType.BASIC, (7).to_bytes(32, "big")).serialize(),
+        peer,
+    )
+    (msg,) = peer.sent
+    # an answer, and an empty one: a client that asked has been told
+    # there is nothing to check against, which is not the same as
+    # having been ignored
+    assert not msg.filter_headers
+
+
+def test_a_getcfcheckpt_this_node_cannot_answer_is_not_answered():
+    node = a_filters_node(length=4, stale={b"\x44" * 32: SimpleNamespace(index=2)})
+    for stop_hash, filter_type in (
+        (b"\x11" * 32, BlockFilterType.BASIC),  # never heard of
+        (b"\x44" * 32, BlockFilterType.BASIC),  # off the active chain
+        ((1).to_bytes(32, "big"), 1),  # a filter type nobody serves
+    ):
+        peer = a_peer()
+        get_cfcheckpt(node, GetCFCheckpt(filter_type, stop_hash).serialize(), peer)
+        assert not peer.sent, stop_hash.hex()

@@ -5,7 +5,7 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from btclib.block import BlockHeader
+from btclib.block import Block, BlockHeader
 from btclib.hashes import hash256, merkle_root
 from btclib.p2p.magic import magic_from_network
 from btclib.script import script
@@ -54,7 +54,11 @@ def create_genesis(time, nonce, difficulty, version, reward):
     )
     header.merkle_root = merkle_root([tx.serialize(False)], hash256)[::-1]
     header.assert_valid()
-    return header
+    # the block and not the header alone: the coinbase above is the only
+    # copy of the genesis block anywhere in this node -- no peer serves
+    # it and no `getdata` asks for it -- and the block filter of height
+    # zero is built from its output script like every other block's
+    return Block(header, [tx], check_validity=False)
 
 
 @dataclass
@@ -62,7 +66,12 @@ class Chain:
     name: str
     port: int
     addresses: list[str]
-    genesis: BlockHeader
+    genesis_block: Block
+
+    @property
+    def genesis(self):
+        """Return the genesis header, which is what most callers want."""
+        return self.genesis_block.header
 
     @property
     def magic(self):
@@ -101,7 +110,9 @@ class Main(Chain):
             "dnsseed.emzy.de",
             "seed.bitcoin.wiz.biz",
         ]
-        self.genesis = create_genesis(1231006505, 2083236893, 0x1D00FFFF, 1, 50 * 10**8)
+        self.genesis_block = create_genesis(
+            1231006505, 2083236893, 0x1D00FFFF, 1, 50 * 10**8
+        )
         self.flags = [
             (170061, "P2SH"),
             (363725, "DERSIG"),
@@ -124,7 +135,9 @@ class TestNet(Chain):
             "seed.testnet.bitcoin.sprovoost.nl",
             "testnet-seed.bluematt.me",
         ]
-        self.genesis = create_genesis(1296688602, 414098458, 0x1D00FFFF, 1, 50 * 10**8)
+        self.genesis_block = create_genesis(
+            1296688602, 414098458, 0x1D00FFFF, 1, 50 * 10**8
+        )
         self.flags = [
             (395, "P2SH"),
             (330776, "DERSIG"),
@@ -142,7 +155,9 @@ class SigNet(Chain):
         self.name = "signet"
         self.port = 38333
         self.addresses = ["178.128.221.177"]
-        self.genesis = create_genesis(1598918400, 52613770, 0x1E0377AE, 1, 50 * 10**8)
+        self.genesis_block = create_genesis(
+            1598918400, 52613770, 0x1E0377AE, 1, 50 * 10**8
+        )
         self.flags = [
             (0, "P2SH"),
             (0, "DERSIG"),
@@ -160,7 +175,7 @@ class RegTest(Chain):
         self.name = "regtest"
         self.port = 18444
         self.addresses = []
-        self.genesis = create_genesis(1296688602, 2, 0x207FFFFF, 1, 50 * 10**8)
+        self.genesis_block = create_genesis(1296688602, 2, 0x207FFFFF, 1, 50 * 10**8)
         self.flags = [
             (0, "P2SH"),
             (0, "DERSIG"),

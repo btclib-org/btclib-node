@@ -187,6 +187,36 @@ builtin = "clear"
 # issue, and ignored here rather than silently rewritten by
 # --write-changes on some later hook.
 ignore-words-list = ["weigth"]
+# the vendored vectors are skipped rather than corrected: a test vector
+# has to stay byte for byte what upstream published, so a typo inside a
+# Bitcoin Core comment is part of the vector -- `unparseable` in
+# blockfilters.json is one. tests/_data/README.md pins those files by
+# blob sha, and this line is what keeps a spell checker from unpinning
+# them. By extension rather than by directory, so that
+# tests/_data/README.md itself -- prose *about* the data, not the data
+# -- is still spell checked.
+skip = "*/_data/*.json,*/_data/*.csv,*/_data/*.txt,*/_data/*.bin"
+# a misspelling written on purpose goes in backticks, and that is a rule
+# rather than a preference: prose that configures a spell checker has to
+# be able to name what it catches, and the comment above costs this hook
+# a finding for the one word it is about without it. codespell has no
+# per-file configuration, so this holds everywhere it reads; what it
+# hides is what is written inside backticks, which is identifiers and
+# quoted strings -- typos' half of the work, not this hook's.
+ignore-regex = '`[^`]*`'
+
+[tool.typos.files]
+# the vendored data [tool.codespell] skips above, for the reason given
+# there, and written again rather than shared because the glob syntax
+# differs: `*/_data/*.json` matches at any depth for codespell and one
+# directory deep for typos. This hook runs with --write-changes, so
+# getting it wrong is a rewrite of a pinned vector and not a report.
+extend-exclude = [
+    "**/_data/*.json",
+    "**/_data/*.csv",
+    "**/_data/*.txt",
+    "**/_data/*.bin",
+]
 
 [tool.mypy]
 # no `strict = true` yet: see the lint group above for what that would

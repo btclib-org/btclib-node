@@ -53,5 +53,10 @@ added. `--cov-fail-under` asked for explicitly still applies.
 To run the lint gate:
 
 ```shell
-uv run pre-commit run --all-files
+git add -A && uv run pre-commit run --all-files
 ```
+
+`--all-files` means every file git tracks, so a file that is new and not
+yet staged is not one of them: run it unstaged and the hooks pass over
+exactly the files most likely to fail them. Staging first is what makes
+the local gate answer the same question pre-commit.ci does.

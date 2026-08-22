@@ -108,7 +108,17 @@ class Connection:
         asyncio.run_coroutine_threadsafe(self.async_send(msg), self.loop)
 
     async def send_version(self):
-        services = Services.network + Services.witness + Services.network_limited
+        # compact_filters is BIP157's NODE_COMPACT_FILTERS, and saying
+        # it promises an answer to getcfilters, getcfheaders and
+        # getcfcheckpt for every block of the chain. The filter index is
+        # caught up before the node starts listening and kept up as
+        # blocks connect, so the promise holds whenever this is sent.
+        services = (
+            Services.network
+            + Services.witness
+            + Services.compact_filters
+            + Services.network_limited
+        )
         # over the whole 64-bit field, as Core draws it: this nonce is
         # how a node recognises a connection to itself, so a narrower
         # draw is a narrower guarantee of that

@@ -85,12 +85,21 @@ repos:
       - id: pretty-format-json
         name: pretty-format-json (in place fixes)
         args: [--autofix]
+        # Two directories, for two different reasons.
         # `.vscode`, for the reason check-json above is given the same
         # exclude: those files are jsonc, this hook parses json, and
         # prettier below is what formats them instead -- at its own indent,
         # which is not this hook's and does not have to be, no other tool
-        # reading them
-        exclude: ^\.vscode/
+        # reading them.
+        # tests/**/_data/ is the vendored directory, as tests/_data/
+        # README.md declares it: what is in there is upstream's file byte
+        # for byte, pinned by a git blob sha, and a reformat voids the pin
+        # and the verdict together -- silently, this hook correcting
+        # rather than reporting. Excluded by directory rather than by name
+        # so that the next file vendored into it is safe before anyone
+        # remembers this line; check-json above still asks the question
+        # worth asking of them, which is whether they parse.
+        exclude: ^(\.vscode/|tests/(.*/)?_data/)
       - id: check-merge-conflict
       - id: check-vcs-permalinks
       - id: detect-private-key
