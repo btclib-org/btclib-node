@@ -13,6 +13,7 @@ is the path where every message is welcome; these are the rest.
 
 import socket
 import time
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -20,7 +21,13 @@ import pytest
 from btclib.block import Block, BlockHeader
 from btclib.exceptions import BTClibValueError
 from btclib.hashes import hash256
-from btclib.p2p.addrv2 import SendAddrV2
+from btclib.p2p.address import Addr, NetworkAddress, ServiceFlags
+from btclib.p2p.addrv2 import (
+    AddrV2,
+    BIP155Network,
+    NetworkAddressV2,
+    SendAddrV2,
+)
 from btclib.p2p.block_filters import (
     BlockFilterType,
     CFCheckpt,
@@ -33,7 +40,7 @@ from btclib.p2p.block_filters import (
 from btclib.p2p.compact_blocks import SendCmpct
 from btclib.p2p.data import BlockPayload as BlockMsg
 from btclib.p2p.data import TxPayload as TxMsg
-from btclib.p2p.handshake import Verack
+from btclib.p2p.handshake import Verack, Version
 from btclib.p2p.inventory import (
     GetData,
     GetHeaders,
@@ -52,11 +59,11 @@ from btclib.p2p.limits import (
 from btclib.script.witness import Witness
 
 from btclib_node.chains import RegTest
-from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion, Services
+from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
-from btclib_node.p2p.address import NetworkAddress, NetworkID, PeerDB
+from btclib_node.p2p.address import PeerDB, addr_entry, peer_address
 from btclib_node.p2p.callbacks import (
     addr,
     addrv2,
@@ -80,28 +87,38 @@ from btclib_node.p2p.callbacks import (
 )
 from btclib_node.p2p.callbacks import block as block_callback
 from btclib_node.p2p.connection import Connection
-from btclib_node.p2p.messages.address import Addr, AddrV2
 from btclib_node.p2p.messages.empty import Getaddr, Sendheaders, Wtxidrelay
 from btclib_node.p2p.messages.errors import Reject, RejectCode
-from btclib_node.p2p.messages.handshake import Version
 from tests.helpers import (
     generate_random_chain,
     generate_random_header_chain,
     generate_random_transaction,
-    local_addr,
 )
 
+# BIP155's table, for the networks these tests build an address of
+_ADDRESS_SIZE = {
+    BIP155Network.IPV4: 4,
+    BIP155Network.IPV6: 16,
+    BIP155Network.TORV3: 32,
+}
 
-def an_address(n=0, netid=NetworkID.ipv4):
+
+def an_address(n=0, network_id=BIP155Network.IPV4):
     # seen just now: an address the node would not serve is a different
     # test, in tests/unit/p2p/address.py
-    return NetworkAddress(
-        time=int(time.time()),
+    return NetworkAddressV2(
+        timestamp=int(time.time()),
         services=0,
-        netid=netid,
-        addr=n.to_bytes(netid.addr_bytesize, "big"),
+        network_id=network_id,
+        address=n.to_bytes(_ADDRESS_SIZE[network_id], "big"),
         port=18444,
     )
+
+
+def a_version_address(services=0):
+    # unroutable, and a `version` message's address, which carries no
+    # timestamp: the narrowest of btclib's address types
+    return NetworkAddress(services, "0.0.0.0", 18444)  # noqa: S104
 
 
 def make_node(addresses, *, prefer_addressv2=False):
@@ -120,9 +137,9 @@ def test_an_ipv4_address_is_answered_in_an_addr():
     getaddr(node, b"", conn)
     (answer,) = sent
     assert isinstance(answer, Addr)
-    assert answer.addresses == [address]
-    # and it survives the wire, which is what the netid filter is for
-    assert Addr.parse(answer.serialize()).addresses == [address]
+    assert answer.addresses == (addr_entry(address),)
+    # and it survives the wire, which is what the network filter is for
+    assert Addr.parse(answer.serialize()).addresses == answer.addresses
 
 
 def test_a_peer_that_asked_for_addrv2_gets_addrv2():
@@ -131,30 +148,29 @@ def test_a_peer_that_asked_for_addrv2_gets_addrv2():
     getaddr(node, b"", conn)
     (answer,) = sent
     assert isinstance(answer, AddrV2)
-    assert answer.addresses == [address]
+    assert answer.addresses == (address,)
 
 
 def test_an_address_addr_version_1_cannot_carry_is_left_out():
-    # Addr.serialize raises on one of these rather than inventing an
-    # address, and Connection.async_send logs that and drops the
-    # message, so one onion address would cost the whole answer
-    onion = an_address(netid=NetworkID.torv3)
+    # an onion address has no addr version 1 entry to be built into, so
+    # one of them among the active addresses would cost the whole answer
+    onion = an_address(network_id=BIP155Network.TORV3)
     ipv4 = an_address()
-    ipv6 = an_address(netid=NetworkID.ipv6)
+    ipv6 = an_address(network_id=BIP155Network.IPV6)
     node, conn, sent = make_node([onion, ipv4, ipv6])
     getaddr(node, b"", conn)
     (answer,) = sent
-    # ipv6 is carried by addr version 1, and only the netid knows that
-    assert answer.addresses == [ipv4, ipv6]
+    # ipv6 is carried by addr version 1, and only the network id says so
+    assert answer.addresses == (addr_entry(ipv4), addr_entry(ipv6))
     answer.serialize()
 
 
 def test_the_same_address_reaches_a_peer_that_can_take_it():
-    onion = an_address(netid=NetworkID.torv3)
+    onion = an_address(network_id=BIP155Network.TORV3)
     node, conn, sent = make_node([onion], prefer_addressv2=True)
     getaddr(node, b"", conn)
     (answer,) = sent
-    assert answer.addresses == [onion]
+    assert answer.addresses == (onion,)
 
 
 def test_nothing_active_is_answered_with_nothing():
@@ -169,13 +185,13 @@ def test_more_addresses_than_fit_one_message_are_split():
     getaddr(node, b"", conn)
     assert [len(answer.addresses) for answer in sent] == [1000, 1000, 1]
     served = [address for answer in sent for address in answer.addresses]
-    assert served == addresses
+    assert served == [addr_entry(address) for address in addresses]
 
 
 def a_version(
     *,
     protocol=ProtocolVersion,
-    services=Services.network | Services.witness,
+    services=ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS,
     nonce=7,
     relay=True,
 ):
@@ -183,10 +199,10 @@ def a_version(
         version=protocol,
         services=services,
         timestamp=1,
-        addr_recv=local_addr(18444),
-        addr_from=local_addr(18444, services=services),
+        addr_recv=a_version_address(),
+        addr_from=a_version_address(services),
         nonce=nonce,
-        user_agent="/Btclib/",
+        user_agent=b"/Btclib/",
         start_height=0,
         relay=relay,
     ).serialize()
@@ -265,12 +281,12 @@ def test_a_peer_speaking_an_older_protocol_is_let_go():
 
 def test_a_peer_without_the_witness_service_is_let_go():
     peer = a_peer()
-    version(a_handshake_node(), a_version(services=Services.network), peer)
+    version(a_handshake_node(), a_version(services=ServiceFlags.NODE_NETWORK), peer)
     assert peer.stopped == [True]
 
 
 def test_a_pruned_peer_is_let_go_only_once_the_blocks_are_synced():
-    pruned = Services.witness
+    pruned = ServiceFlags.NODE_WITNESS
     peer = a_peer()
     version(
         a_handshake_node(status=NodeStatus.HeaderSynced),
@@ -312,7 +328,8 @@ def a_real_connection():
     # one adds is that the attribute asserted on below is the one the
     # rest of the node reads.
     manager = SimpleNamespace(node=a_handshake_node(), loop=None, peer_db=None)
-    connection = Connection(manager, socket.socket(), local_addr(18444), 0, False)
+    unroutable = peer_address("0.0.0.0", 18444)  # noqa: S104
+    connection = Connection(manager, socket.socket(), unroutable, 0, False)
     # Connection.send hands the message to an event loop this test does
     # not run; what it would send is tested above
     connection.send = lambda msg: None
@@ -402,20 +419,36 @@ def test_a_pong_nobody_pinged_for_is_ignored():
 
 
 def test_the_addresses_a_peer_sends_are_kept():
-    for callback, message_cls, addrv2_wanted in (
-        (addr, Addr, False),
-        (addrv2, AddrV2, True),
+    given = [an_address(1), an_address(2)]
+    for callback, message in (
+        (addr, Addr([addr_entry(address) for address in given])),
+        (addrv2, AddrV2(given)),
     ):
         peer_db = PeerDB(None, None)
         node = a_handshake_node(peer_db=peer_db)
-        given = [an_address(1), an_address(2)]
-        callback(node, message_cls(given).serialize(), a_peer())
-        assert {address.addr for address in peer_db.addresses} == {
-            address.addr for address in given
-        }
-        assert not addrv2_wanted or NetworkID.ipv4 in {
-            address.netid for address in peer_db.addresses
-        }
+        callback(node, message.serialize(), a_peer())
+        # BIP155's record either way, the addr version 1 entry being
+        # translated back into one; and without the timestamp the peer
+        # quoted, which is PeerDB.add_addresses' doing
+        assert peer_db.addresses == {replace(address, timestamp=0) for address in given}
+
+
+def test_an_address_of_a_network_nobody_here_has_heard_of_is_kept():
+    # what this used to cost: the network id was an enumeration over the
+    # ids BIP155 had assigned, so a yggdrasil peer raised out of the
+    # parser and p2p.main turned that into a disconnect. The whole point
+    # of the format is that a new network needs no new message.
+    yggdrasil = NetworkAddressV2(0, 0, 7, b"\x02" + b"\x22" * 15, 18444)
+    unassigned = NetworkAddressV2(0, 0, 250, b"\x33" * 8, 18444)
+    peer_db = PeerDB(None, None)
+    node = a_handshake_node(peer_db=peer_db)
+    peer = a_peer()
+    addrv2(node, AddrV2([yggdrasil, unassigned]).serialize(), peer)
+    assert peer_db.addresses == {yggdrasil, unassigned}
+    assert not peer.stopped
+    # and neither is dialled or gossiped on, there being no address of
+    # either kind this node knows what to do with
+    assert peer_db.random_address() is None
 
 
 def test_a_notfound_is_logged_rather_than_held_against_the_peer():

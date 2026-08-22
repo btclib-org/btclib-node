@@ -8,49 +8,48 @@ import time
 from types import SimpleNamespace
 
 import pytest
-from btclib import var_bytes, var_int
+from btclib.p2p.address import NetworkAddress
+from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 
 from btclib_node.chains import Main, SigNet, TestNet
-from btclib_node.p2p.address import NetworkAddress, NetworkID, PeerDB
+from btclib_node.p2p.address import (
+    PeerDB,
+    addr_entry,
+    can_addrv1,
+    can_connect,
+    dial,
+    ip_and_port,
+    peer_address,
+    peer_from_addr_entry,
+)
 from tests.helpers import call_within
 
 
-def test_serialization():
-    for netid in NetworkID:
-        start = 1 if netid != NetworkID.ipv6 else 49
-        for addrv2 in (True, False):
-            if not addrv2 and not netid.can_addrv1:
-                continue
-            for x in range(start, netid.addr_bytesize * 8 + 1):
-                addr = (2**x - 1).to_bytes(netid.addr_bytesize, "big")
-                for y in range(10):
-                    services = 2**y
-                    for z in range(1, 17):
-                        port = 2**z - 1
-                        network_address = NetworkAddress(0, services, netid, addr, port)
-                        assert network_address == NetworkAddress.deserialize(
-                            network_address.serialize(addrv2=addrv2), addrv2=addrv2
-                        )
+def an_onion_address(port=8333):
+    return NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, port)
+
+
+def a_cjdns_address(port=8333):
+    # sixteen octets, which is what makes it the interesting one: an
+    # onion address is refused by its length wherever an IP address is
+    # wanted, and this is not
+    return NetworkAddressV2(0, 0, BIP155Network.CJDNS, b"\xfc" + b"\x11" * 15, port)
 
 
 def test_an_address_just_seen_is_active_and_can_be_sent():
     peer_db = PeerDB(None, None)
-    peer_db.add_active_address(NetworkAddress.from_ip_and_port("1.2.3.4", 18444))
+    peer_db.add_active_address(peer_address("1.2.3.4", 18444))
     (active,) = peer_db.get_active_addresses()
     # a whole second, because the field is four octets on the wire and a
     # float has no to_bytes: this is what serving the address needs
-    assert isinstance(active.time, int)
-    assert NetworkAddress.deserialize(active.serialize()) == active
+    assert isinstance(active.timestamp, int)
+    assert NetworkAddressV2.parse(active.serialize()) == active
 
 
 def test_an_address_not_seen_for_three_hours_stops_being_active():
     peer_db = PeerDB(None, None)
-    fresh = NetworkAddress.from_ip_and_port(
-        "1.2.3.4", 18444, time=int(time.time()) - 3600
-    )
-    stale = NetworkAddress.from_ip_and_port(
-        "5.6.7.8", 18444, time=int(time.time()) - 3600 * 4
-    )
+    fresh = peer_address("1.2.3.4", 18444, timestamp=int(time.time()) - 3600)
+    stale = peer_address("5.6.7.8", 18444, timestamp=int(time.time()) - 3600 * 4)
     peer_db.active_addresses += [fresh, stale]
     assert peer_db.get_active_addresses() == [fresh]
     # and it is dropped, not merely left out of the answer
@@ -81,67 +80,55 @@ def test_signet_bootstrap_nodes():
     assert not peer_db.is_empty
 
 
-def test_an_ipv6_address_is_recognised_from_its_text():
-    address = NetworkAddress.from_ip_and_port("2001:db8::1", 8333)
-    assert address.netid == NetworkID.ipv6
-    assert repr(address) == "2001:db8::1:8333"
+def test_the_two_ip_networks_are_told_apart_by_the_text_of_the_address():
+    assert peer_address("1.2.3.4", 8333).network_id == BIP155Network.IPV4
+    assert peer_address("2001:db8::1", 8333).network_id == BIP155Network.IPV6
+    # four octets and sixteen, which is what BIP155 gives the two ids
+    # where an addr version 1 entry maps the v4 one into sixteen
+    assert peer_address("1.2.3.4", 8333).address == b"\x01\x02\x03\x04"
+    assert len(peer_address("2001:db8::1", 8333).address) == 16
 
 
-def test_an_address_of_the_wrong_length_for_its_network_is_refused():
-    short = NetworkAddress(netid=NetworkID.ipv6, addr=b"\x00" * 4)
-    with pytest.raises(ValueError):
-        short.serialize(addrv2=True)
-
-    payload = (
-        (0).to_bytes(4, "little")
-        + var_int.serialize(0)
-        + NetworkID.ipv6.to_bytes(1, "big")
-        + var_bytes.serialize(b"\x00" * 4)
-        + (8333).to_bytes(2, "big")
-    )
-    with pytest.raises(ValueError, match="Invalid address byte length"):
-        NetworkAddress.deserialize(payload, addrv2=True)
-
-
-def test_an_onion_address_cannot_be_put_in_an_addr_version_1():
-    onion = NetworkAddress(netid=NetworkID.torv3, addr=b"\x11" * 32, port=8333)
-    with pytest.raises(ValueError, match="cannot be serialized"):
-        onion.serialize()
-    onion.serialize(addrv2=True)
-
-
-def test_an_ipv6_address_can_be():
+def test_only_an_ip_address_fits_in_an_addr_version_1():
+    assert can_addrv1(peer_address("1.2.3.4", 8333))
     # the other half of the same question, and the half that says the
     # filter is about the network rather than about being dialable
-    ipv6 = NetworkAddress.from_ip_and_port("2001:db8::1", 8333)
-    assert NetworkAddress.deserialize(ipv6.serialize()) == ipv6
+    assert can_addrv1(peer_address("2001:db8::1", 8333))
+    assert not can_addrv1(an_onion_address())
+    assert not can_addrv1(a_cjdns_address())
 
 
-def test_every_network_carries_the_address_length_bip155_gives_it():
-    # the serialization tests derive the length from this property, so
-    # they hold whatever it says: this is what says what it should say
-    assert {netid: netid.addr_bytesize for netid in NetworkID} == {
-        NetworkID.ipv4: 4,
-        NetworkID.ipv6: 16,
-        NetworkID.torv2: 10,
-        NetworkID.torv3: 32,
-        NetworkID.i2p: 32,
-        NetworkID.cjdns: 16,
-    }
+def test_an_address_of_no_ip_network_has_no_addr_version_1_form():
+    # the refusal is the network id's and not the length's: cjdns is
+    # sixteen octets, so IPv6Address would take one for an IP address
+    # and answer with a peer nobody gossiped
+    for address in (an_onion_address(), a_cjdns_address()):
+        with pytest.raises(ValueError, match="not an ip address"):
+            addr_entry(address)
+
+
+def test_a_v4_peer_survives_the_round_trip_through_an_addr_version_1_entry():
+    # the mapping is where it could not: an entry holds every address in
+    # sixteen octets, so what comes back has to be the v4 record again
+    for text in ("1.2.3.4", "2001:db8::1"):
+        address = peer_address(text, 8333, timestamp=7, services=9)
+        assert peer_from_addr_entry(addr_entry(address)) == address
+
+
+def test_an_address_is_shown_the_way_core_writes_one():
+    assert ip_and_port(NetworkAddress(0, "1.2.3.4", 8333)) == "1.2.3.4:8333"
+    assert ip_and_port(NetworkAddress(0, "2001:db8::1", 8333)) == "2001:db8::1:8333"
 
 
 def test_only_ipv4_is_dialled_for_now():
-    assert NetworkAddress.from_ip_and_port("1.2.3.4", 8333).can_connect
-    assert not NetworkAddress.from_ip_and_port("2001:db8::1", 8333).can_connect
-    onion = NetworkAddress(netid=NetworkID.torv3, addr=b"\x11" * 32, port=8333)
-    assert not onion.can_connect
-    assert repr(onion) == f"{onion.addr.hex()}:8333"
+    assert can_connect(peer_address("1.2.3.4", 8333))
+    assert not can_connect(peer_address("2001:db8::1", 8333))
+    assert not can_connect(an_onion_address())
 
 
 def test_an_address_that_cannot_be_dialled_says_so_rather_than_trying():
-    onion = NetworkAddress(netid=NetworkID.torv3, addr=b"\x11" * 32, port=8333)
     with pytest.raises(ValueError, match="not yet supported"):
-        asyncio.run(onion.connect())
+        asyncio.run(dial(an_onion_address()))
 
 
 def test_a_peer_that_is_listening_is_connected_to():
@@ -151,8 +138,8 @@ def test_a_peer_that_is_listening_is_connected_to():
     listener.listen(1)
     port = listener.getsockname()[1]
     try:
-        address = NetworkAddress.from_ip_and_port("127.0.0.1", port)
-        client = asyncio.run(address.connect())
+        address = peer_address("127.0.0.1", port)
+        client = asyncio.run(dial(address))
         assert client is not None
         with client:
             assert client.getpeername() == ("127.0.0.1", port)
@@ -175,8 +162,8 @@ def test_a_dial_that_is_given_up_on_closes_the_socket_it_opened(monkeypatch):
     port = listener.getsockname()[1]
     listener.close()
 
-    address = NetworkAddress.from_ip_and_port("127.0.0.1", port)
-    assert asyncio.run(address.connect()) is None
+    address = peer_address("127.0.0.1", port)
+    assert asyncio.run(dial(address)) is None
     # the event loop opens sockets of its own; the dial's is the ipv4
     # stream one, and it is not left behind
     dialled = [
@@ -195,8 +182,8 @@ def test_a_peer_that_is_not_listening_is_given_up_on():
     listener.bind(("127.0.0.1", 0))
     port = listener.getsockname()[1]
     listener.close()
-    address = NetworkAddress.from_ip_and_port("127.0.0.1", port)
-    assert asyncio.run(address.connect()) is None
+    address = peer_address("127.0.0.1", port)
+    assert asyncio.run(dial(address)) is None
 
 
 class FakeLoop:
@@ -228,9 +215,9 @@ def test_the_seeds_that_answer_fill_the_table_and_the_rest_are_passed_over(
     )
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
     asyncio.run(peer_db.get_addr_from_dns())
-    assert {repr(address) for address in peer_db.addresses} == {
-        "1.2.3.4:18444",
-        "5.6.7.8:18444",
+    assert peer_db.addresses == {
+        peer_address("1.2.3.4", 18444),
+        peer_address("5.6.7.8", 18444),
     }
 
 
@@ -249,10 +236,10 @@ def test_every_seed_that_answers_is_taken_and_a_host_two_of_them_share_is_one(
     )
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
     asyncio.run(peer_db.get_addr_from_dns())
-    assert {repr(address) for address in peer_db.addresses} == {
-        "1.2.3.4:18444",
-        "5.6.7.8:18444",
-        "9.10.11.12:18444",
+    assert peer_db.addresses == {
+        peer_address("1.2.3.4", 18444),
+        peer_address("5.6.7.8", 18444),
+        peer_address("9.10.11.12", 18444),
     }
 
 
@@ -270,12 +257,12 @@ def test_a_seed_answering_with_ipv6_gives_up_its_host_and_its_port(monkeypatch):
     peer_db = PeerDB(a_chain(["v6.example"]), None)
     monkeypatch.setattr(asyncio, "get_running_loop", FakeIpv6Loop)
     asyncio.run(peer_db.get_addr_from_dns())
-    assert peer_db.addresses == {NetworkAddress.from_ip_and_port("2001:db8::1", 18444)}
+    assert peer_db.addresses == {peer_address("2001:db8::1", 18444)}
 
 
 def test_a_node_that_already_knows_peers_does_not_ask_the_seeds(monkeypatch):
     peer_db = PeerDB(a_chain(["up.example"]), None)
-    peer_db.addresses.add(NetworkAddress.from_ip_and_port("1.2.3.4", 8333))
+    peer_db.addresses.add(peer_address("1.2.3.4", 8333))
     peer_db.ask_dns_nodes = False
     # the seed lookup fails where it happens rather than being recorded
     # and asserted about afterwards: `asked.append(True) or FakeLoop({})`
@@ -290,11 +277,9 @@ def test_a_node_that_already_knows_peers_does_not_ask_the_seeds(monkeypatch):
 
 def test_an_address_is_drawn_from_the_ones_that_can_be_dialled():
     peer_db = PeerDB(None, None)
-    dialable = NetworkAddress.from_ip_and_port("1.2.3.4", 8333)
+    dialable = peer_address("1.2.3.4", 8333)
     peer_db.addresses.add(dialable)
-    peer_db.addresses.add(
-        NetworkAddress(netid=NetworkID.torv3, addr=b"\x11" * 32, port=8333)
-    )
+    peer_db.addresses.add(an_onion_address())
     for _ in range(20):
         assert peer_db.random_address() == dialable
 
@@ -304,10 +289,8 @@ def test_a_table_holding_nothing_dialable_answers_that_there_is_nothing():
     # and a table a node reaches in ordinary operation: a seed answering
     # with AAAA records alone fills it with exactly this
     peer_db = PeerDB(None, None)
-    peer_db.addresses.add(NetworkAddress.from_ip_and_port("2001:db8::1", 8333))
-    peer_db.addresses.add(
-        NetworkAddress(netid=NetworkID.torv3, addr=b"\x11" * 32, port=8333)
-    )
+    peer_db.addresses.add(peer_address("2001:db8::1", 8333))
+    peer_db.addresses.add(an_onion_address())
     assert call_within(peer_db.random_address) is None
 
 
@@ -322,20 +305,16 @@ def test_the_draw_reaches_every_address_that_can_be_dialled():
     # over all of them, not the first one that will do: a node that only
     # ever dials one entry of its table is a node with one peer
     peer_db = PeerDB(None, None)
-    dialable = {
-        NetworkAddress.from_ip_and_port(f"1.2.3.{host}", 8333) for host in range(1, 4)
-    }
+    dialable = {peer_address(f"1.2.3.{host}", 8333) for host in range(1, 4)}
     peer_db.addresses |= dialable
-    peer_db.addresses.add(NetworkAddress.from_ip_and_port("2001:db8::1", 8333))
+    peer_db.addresses.add(peer_address("2001:db8::1", 8333))
     assert {peer_db.random_address() for _ in range(60)} == dialable
 
 
 def test_the_table_of_known_addresses_is_bounded():
     peer_db = PeerDB(None, None)
     limit = 10000
-    peer_db.add_addresses(
-        [NetworkAddress.from_ip_and_port("1.2.3.4", port) for port in range(limit + 10)]
-    )
+    peer_db.add_addresses([peer_address("1.2.3.4", port) for port in range(limit + 10)])
     assert len(peer_db.addresses) == limit
 
 
@@ -343,9 +322,9 @@ def test_an_address_a_peer_told_us_about_is_kept_without_its_timestamp():
     # a peer's word for when it last saw an address is not evidence, and
     # keeping it would make the same address several entries
     peer_db = PeerDB(None, None)
-    early = NetworkAddress.from_ip_and_port("1.2.3.4", 8333, time=1)
-    late = NetworkAddress.from_ip_and_port("1.2.3.4", 8333, time=2)
+    early = peer_address("1.2.3.4", 8333, timestamp=1)
+    late = peer_address("1.2.3.4", 8333, timestamp=2)
     peer_db.add_addresses([early, late, early])
     (kept,) = peer_db.addresses
-    assert kept.time == 0
-    assert kept.addr == early.addr
+    assert kept.timestamp == 0
+    assert kept.address == early.address

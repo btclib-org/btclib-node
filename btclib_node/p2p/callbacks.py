@@ -4,7 +4,8 @@
 
 import time
 
-from btclib.p2p.addrv2 import SendAddrV2
+from btclib.p2p.address import Addr, ServiceFlags
+from btclib.p2p.addrv2 import AddrV2, SendAddrV2
 from btclib.p2p.block_filters import (
     BlockFilterType,
     CFCheckpt,
@@ -17,7 +18,7 @@ from btclib.p2p.block_filters import (
 from btclib.p2p.compact_blocks import SendCmpct
 from btclib.p2p.data import BlockPayload as BlockMsg
 from btclib.p2p.data import TxPayload as TxMsg
-from btclib.p2p.handshake import Verack
+from btclib.p2p.handshake import Verack, Version
 from btclib.p2p.inventory import (
     GetData,
     GetHeaders,
@@ -29,18 +30,18 @@ from btclib.p2p.inventory import (
 from btclib.p2p.keepalive import Ping, Pong
 from btclib.p2p.limits import (
     CFCHECKPT_INTERVAL,
+    MAX_ADDR_TO_SEND,
     MAX_GETCFHEADERS_SIZE,
     MAX_GETCFILTERS_SIZE,
 )
 
 from btclib_node.chainstate.filter_index import NO_PREVIOUS_FILTER_HEADER
-from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion, Services
+from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.main import verify_mempool_acceptance
-from btclib_node.p2p.messages.address import Addr, AddrV2
+from btclib_node.p2p.address import addr_entry, can_addrv1, peer_from_addr_entry
 from btclib_node.p2p.messages.empty import Getaddr, Sendheaders, Wtxidrelay
 from btclib_node.p2p.messages.errors import Reject
-from btclib_node.p2p.messages.handshake import Version
 
 
 def version(node, msg, conn):
@@ -55,11 +56,12 @@ def version(node, msg, conn):
     if version_msg.version < ProtocolVersion:
         conn.stop()
         return
-    if not version_msg.services & Services.witness:  # we only connect to witness nodes
+    # we only connect to witness nodes
+    if not version_msg.services & ServiceFlags.NODE_WITNESS:
         conn.stop()
         return
     if (
-        not version_msg.services & Services.network
+        not version_msg.services & ServiceFlags.NODE_NETWORK
         and node.status >= NodeStatus.BlockSynced
     ):
         conn.stop()
@@ -129,15 +131,21 @@ def getaddr(node, msg, conn):
     else:
         addr_cls = Addr
         # an addr version 1 message has nowhere to put a tor, i2p or
-        # cjdns address, and Addr.serialize raises rather than invent one
-        addresses = [addr for addr in addresses if addr.netid.can_addrv1]
-    for x in range(0, len(addresses), 1000):
-        conn.send(addr_cls(addresses[x : x + 1000]))
+        # cjdns address, so those are left out rather than made up
+        addresses = [addr_entry(addr) for addr in addresses if can_addrv1(addr)]
+    # the bound btclib's Addr and AddrV2 refuse a longer message than,
+    # which is Core's own: a table above it is sent as several messages
+    for x in range(0, len(addresses), MAX_ADDR_TO_SEND):
+        conn.send(addr_cls(addresses[x : x + MAX_ADDR_TO_SEND]))
 
 
 def addr(node, msg, conn):
-    addresses = Addr.parse(msg).addresses
-    node.p2p_manager.peer_db.add_addresses(addresses)
+    entries = Addr.parse(msg).addresses
+    # BIP155's record is what the table holds, an addr version 1 entry
+    # having no room for the networks a peer may yet gossip
+    node.p2p_manager.peer_db.add_addresses(
+        peer_from_addr_entry(entry) for entry in entries
+    )
 
 
 def addrv2(node, msg, conn):

@@ -7,13 +7,11 @@ import enum
 ProtocolVersion = 70016
 
 
-class Services(enum.IntEnum):
-    network = 1
-    getuxxo = 2
-    bloom = 4
-    witness = 8
-    compact_filters = 64
-    network_limited = 1024
+# The service bits are `btclib.p2p.address.ServiceFlags`, not a table
+# here: they are a bitfield rather than an enumeration, so an unnamed
+# bit is a service nobody here has heard of and not an error, and the
+# table this used to hold named a bit Core removed while missing the
+# one BIP324 added.
 
 
 class P2pConnStatus(enum.IntEnum):

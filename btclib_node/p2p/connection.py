@@ -8,13 +8,14 @@ import time
 from io import BytesIO
 
 from btclib.exceptions import BTClibValueError, IncompleteMessageError
+from btclib.p2p.address import NetworkAddress, ServiceFlags
+from btclib.p2p.handshake import Version
 from btclib.p2p.keepalive import Ping
 from btclib.p2p.message import Message
 
-from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion, Services
-from btclib_node.p2p.address import NetworkAddress
+from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion
+from btclib_node.p2p.address import network_address
 from btclib_node.p2p.callbacks import handshake_callbacks
-from btclib_node.p2p.messages.handshake import Version
 
 
 class Connection:
@@ -116,10 +117,10 @@ class Connection:
         # caught up before the node starts listening and kept up as
         # blocks connect, so the promise holds whenever this is sent.
         services = (
-            Services.network
-            + Services.witness
-            + Services.compact_filters
-            + Services.network_limited
+            ServiceFlags.NODE_NETWORK
+            | ServiceFlags.NODE_WITNESS
+            | ServiceFlags.NODE_COMPACT_FILTERS
+            | ServiceFlags.NODE_NETWORK_LIMITED
         )
         # over the whole 64-bit field, as Core draws it: this nonce is
         # how a node recognises a connection to itself, so a narrower
@@ -132,10 +133,21 @@ class Connection:
             version=ProtocolVersion,
             services=services,
             timestamp=int(time.time()),
-            addr_recv=self.address,
+            # a `version` message's address carries no timestamp, which
+            # is what the narrowest of btclib's address types is
+            addr_recv=network_address(self.address),
+            # the default address, which btclib spells `::` where this
+            # node used to write the v4-mapped `::ffff:0.0.0.0`. Core's
+            # own `addrMe` is a default CService, which is the sixteen
+            # zero octets btclib writes, and no peer reads the field:
+            # Core has ignored it since it started learning its own
+            # address elsewhere
             addr_from=NetworkAddress(services=services, port=self.manager.port),
             nonce=nonce,
-            user_agent="/Btclib/",
+            # octets and not text: Core reads the subversion into a
+            # string it sanitizes only for the log, so btclib carries
+            # what the peer sent rather than what decodes
+            user_agent=b"/Btclib/",
             start_height=0,
             relay=self.node.status == NodeStatus.BlockSynced,
         )

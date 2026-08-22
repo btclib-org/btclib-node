@@ -18,7 +18,9 @@ requires-python = ">=3.14"
 # when a release is cut, not while the tree is developed. Each floor is
 # the release this tree is developed against; btclib's is also the
 # release whose API this code is written to, anything older wanting
-# `merkle_root_` and taking `check_validity` positionally.
+# `merkle_root_` and taking `check_validity` positionally. What this
+# tree is actually built and tested against is not that release but
+# btclib's `main`: [tool.uv.sources] below says so, and says why.
 dependencies = [
     "btclib>=2026.8.21",
 ]
@@ -141,6 +143,32 @@ lint = [
     "types-requests>=2.32",
 ]
 dev = [{ include-group = "test" }, { include-group = "lint" }]
+
+[tool.uv.sources]
+# btclib's `main`, and not its last release, because the two are
+# developed together: btclib's p2p package was written against this node
+# and cites its defects by file and function, and this node is what
+# exercises that package against a live network. What a node measures
+# itself against is therefore what btclib is now, so that a defect found
+# here is one fixable there in the same week rather than at the next
+# release -- and so that an API this tree is written to is broken by the
+# commit that breaks it and not, months later, by the release carrying
+# it.
+#
+# The cost is that a source distribution of btclib is built on every
+# resolve, that a checkout needs git to install, and -- the one this
+# repository cannot absorb on its own -- that no test job runs on a pull
+# request here (REVIEWING.md says so), so a btclib `main` that breaks
+# this tree is caught by a developer's local run after a re-lock and by
+# nothing else. uv.lock pins the commit, which is what keeps that from
+# being a break arriving unannounced: a checkout is reproducible and a
+# re-lock is what moves it, deliberately, the way any other dependency
+# moves.
+#
+# The floor in [project.dependencies] above stays, and is not made
+# redundant by this: [tool.uv.sources] is uv's and is dropped from the
+# metadata anything else reads, so the floor is what pip resolves.
+btclib = { git = "https://github.com/btclib-org/btclib", branch = "main" }
 
 [build-system]
 requires = ["setuptools>=77"]
@@ -336,6 +364,11 @@ disallow_untyped_decorators = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 strict_equality = true
+# the one flag this commit moved out of the backlog below: its single
+# finding was the local `NetworkAddress.serialize`, unannotated, and
+# that class is btclib's now. Measured at zero with the flag on before
+# turning it on.
+warn_return_any = true
 extra_checks = true
 strict_bytes = true
 # not in the bundle, and free here: a branch mypy can prove is never
@@ -362,9 +395,6 @@ warn_unreachable = true
 #   no_implicit_reexport        +21   names imported from where they are
 #                                     re-exported rather than defined
 #   disallow_incomplete_defs    +15   half-annotated signatures
-#   warn_return_any              +1   `NetworkAddress.serialize` is
-#                                     unannotated, so a caller that
-#                                     concatenates its result returns Any
 
 # --- the optional error codes, surveyed one at a time ------------------
 #

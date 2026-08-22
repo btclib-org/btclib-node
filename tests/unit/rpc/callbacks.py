@@ -14,13 +14,14 @@ from types import SimpleNamespace
 
 import pytest
 from btclib.exceptions import BTClibValueError
+from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.script import script
 from btclib.script.witness import Witness
 from btclib.tx.tx import Tx, TxIn, TxOut
 from btclib.tx.tx_in import OutPoint
 
 from btclib_node.chains import RegTest
-from btclib_node.constants import P2pConnStatus, Services
+from btclib_node.constants import P2pConnStatus
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
@@ -34,6 +35,7 @@ from btclib_node.rpc.callbacks import (
     get_raw_mempool,
     ping,
     send_raw_transaction,
+    service_names,
     stop,
 )
 
@@ -80,11 +82,11 @@ def a_peer(status=P2pConnStatus.Connected, *, gone=False):
         status=status,
         client=FakeSocket(gone=gone),
         version_message=SimpleNamespace(
-            services=Services.network | Services.witness,
-            addr_recv="addr-recv",
+            services=ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS,
+            addr_recv=NetworkAddress(0, "9.10.11.12", 8333),
             version=70015,
         ),
-        address=SimpleNamespace(netid=SimpleNamespace(name="ipv4")),
+        address=SimpleNamespace(network_id=SimpleNamespace(name="IPV4")),
         last_send=1,
         last_receive=2,
         last_block_timestamp=3,
@@ -119,8 +121,29 @@ def test_the_peer_table_names_a_connected_peer():
     assert info["addr"] == "1.2.3.4:8333"
     assert info["addrbind"] == "5.6.7.8:18444"
     assert info["network"] == "ipv4"
-    assert "NETWORK" in info["servicesnames"]
+    # unwrapped, and not the ::ffff: form the sixteen octets of the
+    # field hold a v4 peer in. Core would bracket a v6 one and this does
+    # not, which is #147 and not this table's business
+    assert info["addrlocal"] == "9.10.11.12:8333"
+    assert info["servicesnames"] == ["NETWORK", "WITNESS"]
     assert info["inbound"] is True
+
+
+def test_the_services_are_named_the_way_core_names_them():
+    # `serviceFlagsToStr`: the NODE_ prefix of btclib's own enum
+    # dropped, the bits walked from the least significant up, and a bit
+    # no member names reported rather than left out -- Core reserves a
+    # range for temporary experiments, so a peer offering one is
+    # offering a service and not making a mistake
+    assert service_names(ServiceFlags.NODE_NONE) == []
+    assert service_names(
+        ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_COMPACT_FILTERS
+    ) == ["NETWORK", "COMPACT_FILTERS"]
+    # bit 40, which no member names, in among two that do and in the
+    # place its own bit puts it
+    assert service_names(
+        ServiceFlags.NODE_WITNESS | (1 << 40) | ServiceFlags.NODE_NETWORK
+    ) == ["NETWORK", "WITNESS", "UNKNOWN[2^40]"]
 
 
 def test_a_peer_still_handshaking_is_not_in_the_table():

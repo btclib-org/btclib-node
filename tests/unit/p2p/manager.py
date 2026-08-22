@@ -17,11 +17,13 @@ from contextlib import closing, suppress
 from types import SimpleNamespace
 
 import pytest
+from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 from btclib.p2p.keepalive import Ping
 
 from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus, P2pConnStatus
-from btclib_node.p2p.address import NetworkAddress, NetworkID
+from btclib_node.p2p import manager as manager_module
+from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.manager import P2pManager
 from tests.helpers import (
     generate_random_transaction,
@@ -42,7 +44,7 @@ def a_conn(
     conn = SimpleNamespace(
         id=conn_id,
         status=status,
-        address=address or NetworkAddress.from_ip_and_port("1.2.3.4", 18444),
+        address=address or peer_address("1.2.3.4", 18444),
         last_receive=time.time() if last_receive is None else last_receive,
         ping_sent=0,
         relay_tx=relay_tx,
@@ -142,13 +144,13 @@ def test_removing_a_connection_stops_it(a_manager):
     assert conn.stopped == [True]
 
 
-def test_a_peer_that_cannot_be_dialled_is_not_kept(a_manager):
-    async def never_connects():
+def test_a_peer_that_cannot_be_dialled_is_not_kept(a_manager, monkeypatch):
+    async def never_connects(address):
         return None
 
-    address = SimpleNamespace(connect=never_connects)
+    monkeypatch.setattr(manager_module, "dial", never_connects)
     manager = a_manager()
-    asyncio.run(manager.async_connect(address))
+    asyncio.run(manager.async_connect(peer_address("1.2.3.4", 18444)))
     assert not manager.connections
 
 
@@ -185,7 +187,7 @@ def test_an_address_already_connected_to_is_not_dialled_again(a_manager):
     # an onion address, which this node cannot dial: reaching for it
     # would raise into the housekeeping loop's own handler, so a quiet
     # log is the assertion that the manager never reached
-    onion = NetworkAddress(netid=NetworkID.torv3, addr=b"\x11" * 32, port=8333)
+    onion = NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, 8333)
     conn = a_conn(1, address=onion)
     peer_db = SimpleNamespace(is_empty=False, random_address=lambda: onion)
     manager = a_manager([conn], peer_db=peer_db)
@@ -196,13 +198,14 @@ def test_an_address_already_connected_to_is_not_dialled_again(a_manager):
     assert list(manager.connections) == [1]
 
 
-def test_a_dial_that_comes_back_with_nothing_adds_no_connection(a_manager):
-    async def connects():
+def test_a_dial_that_comes_back_with_nothing_adds_no_connection(a_manager, monkeypatch):
+    async def comes_back_with_nothing(address):
         return None
 
+    monkeypatch.setattr(manager_module, "dial", comes_back_with_nothing)
     peer_db = SimpleNamespace(
         is_empty=False,
-        random_address=lambda: SimpleNamespace(connect=connects),
+        random_address=lambda: peer_address("5.6.7.8", 18444),
     )
     manager = a_manager(peer_db=peer_db)
     asyncio.run(one_pass(manager))
@@ -305,15 +308,16 @@ def test_a_peer_db_with_nothing_dialable_is_a_pass_that_does_nothing(a_manager):
     assert not manager.connections
 
 
-def test_a_peer_that_answers_the_dial_becomes_a_connection(a_manager):
+def test_a_peer_that_answers_the_dial_becomes_a_connection(a_manager, monkeypatch):
     ours, theirs = socket.socketpair()
 
-    async def connects():
+    async def answers(address):
         return ours
 
+    monkeypatch.setattr(manager_module, "dial", answers)
     peer_db = SimpleNamespace(
         is_empty=False,
-        random_address=lambda: SimpleNamespace(connect=connects),
+        random_address=lambda: peer_address("5.6.7.8", 18444),
         add_active_address=lambda addr: None,
     )
     manager = a_manager(peer_db=peer_db)
@@ -411,7 +415,7 @@ def test_a_manager_dials_the_address_it_is_given(a_manager):
     manager = a_running_manager(a_manager, port)
     try:
         wait_until_listening(manager)
-        manager.connect(NetworkAddress.from_ip_and_port("127.0.0.1", port))
+        manager.connect(peer_address("127.0.0.1", port))
         wait_until(lambda: len(manager.connections) == 2)
         inbound = [conn.inbound for conn in manager.connections.values()]
         assert sorted(inbound) == [False, True]

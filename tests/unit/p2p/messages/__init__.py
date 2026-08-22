@@ -32,10 +32,11 @@ MAGIC = RegTest().magic
 
 # what this package still defines: everything else the node speaks is
 # btclib.p2p's, and named there
-_MESSAGE_MODULES = ("address", "empty", "errors", "handshake")
+_MESSAGE_MODULES = ("empty", "errors")
 
 # where the rest of what the node speaks is defined
 _BTCLIB_P2P_MODULES = (
+    "btclib.p2p.address",
     "btclib.p2p.addrv2",
     "btclib.p2p.block_filters",
     "btclib.p2p.compact_blocks",
@@ -52,13 +53,10 @@ _BTCLIB_P2P_MODULES = (
 # real thing, which is how "sendcmpt" and "cmptblock" went to the whole
 # network unnoticed.
 _COMMANDS = {
-    "Addr": "addr",
-    "AddrV2": "addrv2",
     "Getaddr": "getaddr",
     "Mempool": "mempool",
     "Reject": "reject",
     "Sendheaders": "sendheaders",
-    "Version": "version",
     "Wtxidrelay": "wtxidrelay",
 }
 
@@ -97,9 +95,9 @@ def test_the_dispatch_tables_key_on_real_commands():
     known = {cls.command for cls in payload_classes().values()}
     # imported here, by full dotted name, and deliberately not bound at
     # module scope: this file is the test package's __init__, so pytest
-    # importing a sibling module -- messages/handshake.py -- sets it as
-    # an attribute of this package and would shadow a plain
-    # `from btclib.p2p import handshake` with the test module.
+    # importing a sibling module sets it as an attribute of this package,
+    # and a sibling named after a btclib.p2p module would shadow a plain
+    # `from btclib.p2p import <name>` with the test module.
     for dotted in _BTCLIB_P2P_MODULES:
         module = importlib.import_module(dotted)
         known |= {

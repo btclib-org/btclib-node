@@ -2,145 +2,150 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""Where a peer is, and the table of the ones this node knows of.
+
+The address itself is btclib's, and `btclib.p2p.addrv2.NetworkAddressV2`
+is the one this node holds a peer in: BIP155's record is the only
+encoding that carries every network a peer can be on, so the narrower
+`addr` entry would lose an onion peer the moment one is gossiped. What
+goes on the wire is that entry all the same wherever the peer has not
+asked for BIP155, and `addr_entry` and `peer_from_addr_entry` are the
+translation.
+
+What is left here is what btclib has no business holding: dialling a
+socket, and the table of addresses to dial. btclib is a codec -- it
+speaks to nobody -- so the question "can this be connected to" and the
+answer to it are this node's.
+"""
+
 import asyncio
-import enum
 import secrets
 import socket
 import time
-from dataclasses import dataclass
+from dataclasses import replace
+from ipaddress import IPv4Address, IPv6Address, ip_address
 from typing import cast
 
-from btclib import var_bytes, var_int
-from btclib.utils import bytesio_from_binarydata
+from btclib.p2p.address import NetworkAddress, TimestampedNetworkAddress
+from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
+
+# the two ids whose address field is an IP address, which is the whole
+# of what an addr version 1 entry can carry -- and, of those two, the
+# one this node has a dial for
+_IP_NETWORKS = (BIP155Network.IPV4, BIP155Network.IPV6)
+_DIALABLE = BIP155Network.IPV4
 
 
-class NetworkID(enum.IntEnum):
-    ipv4 = 1
-    ipv6 = 2
-    torv2 = 3
-    torv3 = 4
-    i2p = 5
-    cjdns = 6
+def peer_address(ip, port, timestamp=0, services=0):
+    """Return the BIP155 record of a peer named by the text of its IP.
 
-    @property
-    def addr_bytesize(self):
-        return _ADDR_BYTESIZE[self]
-
-    @property
-    def can_addrv1(self):
-        if self in (NetworkID.ipv4, NetworkID.ipv6):
-            return True
-        return False
+    `ipaddress.ip_address` is what tells the two IP networks apart, and
+    the octets it packs are what BIP155 asks for: four for a v4 peer and
+    sixteen for a v6 one, where an `addr` entry would carry the v4 one
+    mapped into sixteen.
+    """
+    parsed = ip_address(ip)
+    network_id = BIP155Network.IPV4 if parsed.version == 4 else BIP155Network.IPV6
+    return NetworkAddressV2(timestamp, services, network_id, parsed.packed, port)
 
 
-# BIP155 fixes the length an address of each network has on the wire. A
-# member added without an entry raises here, where a chain of ifs ending
-# in a bare raise said the same thing in more lines and one of them dead.
-_ADDR_BYTESIZE = {
-    NetworkID.ipv4: 4,
-    NetworkID.ipv6: 16,
-    NetworkID.torv2: 10,
-    NetworkID.torv3: 32,
-    NetworkID.i2p: 32,
-    NetworkID.cjdns: 16,
-}
+def can_addrv1(address):
+    """Answer whether an addr version 1 message has room for this peer."""
+    return address.network_id in _IP_NETWORKS
 
 
-@dataclass(frozen=True)
-class NetworkAddress:
-    time: int = 0
-    services: int = 0
-    netid: NetworkID = NetworkID.ipv4
-    addr: bytes = b"\x00\x00\x00\x00"
-    port: int = 0
+def can_connect(address):
+    """Answer whether this node has a dial for the peer's network."""
+    return address.network_id == _DIALABLE
 
-    @classmethod
-    def from_ip_and_port(cls, ip: str, port: int, time: int = 0, services: int = 0):
-        try:
-            addr = socket.inet_pton(socket.AF_INET, ip)
-            netid = NetworkID.ipv4
-        except OSError:
-            addr = socket.inet_pton(socket.AF_INET6, ip)
-            netid = NetworkID.ipv6
-        return cls(time=time, services=services, netid=netid, addr=addr, port=port)
 
-    @classmethod
-    def deserialize(cls, data, version_msg=False, addrv2=False):
-        stream = bytesio_from_binarydata(data)
-        time = 0 if version_msg else int.from_bytes(stream.read(4), "little")
-        if addrv2:
-            services = var_int.parse(stream)
-            netid = NetworkID.from_bytes(stream.read(1), "little")
-            addr = var_bytes.parse(stream)
-            if len(addr) != netid.addr_bytesize:
-                raise ValueError("Invalid address byte length")
-        else:
-            services = int.from_bytes(stream.read(8), "little")
-            addr = stream.read(16)
-            if addr.startswith(b"\x00" * 10 + b"\xff" * 2):
-                netid = NetworkID.ipv4
-                addr = addr[12:]
-            else:
-                netid = NetworkID.ipv6
-        port = int.from_bytes(stream.read(2), "big")
-        return cls(time=time, services=services, netid=netid, addr=addr, port=port)
+def network_address(address):
+    """Return the untimestamped form of a BIP155 record, where it has one.
 
-    def serialize(self, version_msg=False, addrv2=False):
-        if len(self.addr) != self.netid.addr_bytesize:
-            raise ValueError
-        payload = b""
-        if not version_msg:
-            payload += self.time.to_bytes(4, "little")
-        if addrv2:
-            payload += var_int.serialize(self.services)
-            payload += self.netid.to_bytes(1, "big")
-            payload += var_bytes.serialize(self.addr)
-        else:
-            if not self.netid.can_addrv1:
-                err_msg = (
-                    "This type of address cannot be serialized for "
-                    "addr version 1 message"
-                )
-                raise ValueError(err_msg)
-            payload += self.services.to_bytes(8, "little")
-            payload += (
-                b"" if self.netid == NetworkID.ipv6 else b"\x00" * 10 + b"\xff" * 2
-            )
-            payload += self.addr
-        payload += self.port.to_bytes(2, "big")
-        return payload
+    What a `version` message's two addresses are, and what an `addr`
+    entry is built on. `can_addrv1` is the question a caller asks first;
+    the refusal below is what makes the answer binding rather than
+    advisory, because the length would not catch it: BIP155 gives cjdns
+    and yggdrasil the sixteen octets an IPv6 address has, so `IPv6Address`
+    would take either for an IP address and hand back a peer that is not
+    the one that was gossiped.
+    """
+    if not can_addrv1(address):
+        err_msg = f"not an ip address: network id {int(address.network_id)}"
+        raise ValueError(err_msg)
+    ip = (
+        IPv4Address(address.address)
+        if address.network_id == BIP155Network.IPV4
+        else IPv6Address(address.address)
+    )
+    return NetworkAddress(address.services, ip, address.port)
 
-    @property
-    def can_connect(self):
-        if self.netid == NetworkID.ipv4:
-            return True
-        return False
 
-    async def connect(self):
-        if self.netid == NetworkID.ipv4:
-            family = socket.AF_INET
-            client = socket.socket(family, socket.SOCK_STREAM)
-            client.settimeout(0)
+def addr_entry(address):
+    """Return the addr version 1 entry a BIP155 record is, where it is one."""
+    return TimestampedNetworkAddress(address.timestamp, network_address(address))
+
+
+def peer_from_addr_entry(entry):
+    """Return the BIP155 record an addr version 1 entry describes.
+
+    An `addr` entry holds every address in sixteen octets, a v4 one
+    mapped into them, where BIP155 gives the two networks different ids
+    and different lengths: `ipv4_mapped` is what tells them apart, and it
+    is the reason this is not a field rename.
+    """
+    ip = entry.address.ip
+    mapped = ip.ipv4_mapped
+    network_id = BIP155Network.IPV4 if mapped else BIP155Network.IPV6
+    return NetworkAddressV2(
+        entry.timestamp,
+        entry.address.services,
+        network_id,
+        mapped.packed if mapped else ip.packed,
+        entry.address.port,
+    )
+
+
+def ip_and_port(address):
+    """Return "ip:port", which is how this node has always shown one.
+
+    A `NetworkAddress` holds every address in the sixteen octets of an
+    IPv6 one, so the mapped form is unwrapped first: a v4 peer would
+    otherwise be shown as `::ffff:1.2.3.4`, which is not what the
+    `__repr__` this replaces wrote and not what an rpc client expects.
+
+    Not Core's spelling, and deliberately not changed to it here: Core
+    brackets a v6 address -- `CService::ToStringAddrPort` writes
+    `[2001:db8::1]:8333`, without which the host and the port cannot be
+    told apart -- and this writes what it always wrote. Changing what
+    `getpeerinfo` answers is a change to an interface and its own
+    issue, btclib-org/btclib-node#147, not a rider on a deletion.
+    """
+    return f"{address.ip.ipv4_mapped or address.ip}:{address.port}"
+
+
+async def dial(address):
+    """Return a socket connected to the peer, or nothing if it never came up.
+
+    `dial` and not `connect`, which is what `P2pManager` calls the whole
+    of making a connection out of one: this is the socket alone.
+    """
+    if address.network_id != _DIALABLE:
+        raise ValueError("Address type not yet supported")
+    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    client.settimeout(0)
+    try:
+        client.connect((str(IPv4Address(address.address)), address.port))
+    except BlockingIOError:
+        for _ in range(10):
+            await asyncio.sleep(0.1)
             try:
-                client.connect((socket.inet_ntop(family, self.addr), self.port))
-            except BlockingIOError:
-                for _ in range(10):
-                    await asyncio.sleep(0.1)
-                    try:
-                        client.getpeername()
-                        return client
-                    except OSError:
-                        pass
-                client.close()
-        else:
-            raise ValueError("Address type not yet supported")
-
-    def __repr__(self):
-        if self.netid == NetworkID.ipv4:
-            return f"{socket.inet_ntop(socket.AF_INET, self.addr)}:{self.port}"
-        if self.netid == NetworkID.ipv6:
-            return f"{socket.inet_ntop(socket.AF_INET6, self.addr)}:{self.port}"
-        return f"{self.addr.hex()}:{self.port}"
+                client.getpeername()
+                return client
+            except OSError:
+                pass
+        client.close()
+    return None
 
 
 class PeerDB:
@@ -173,7 +178,7 @@ class PeerDB:
             # sockaddr is the only part a peer table wants. It opens
             # with the host and the port -- two fields for AF_INET,
             # four for AF_INET6, whose flow info and scope id say
-            # nothing a NetworkAddress records. The stub also admits
+            # nothing a BIP155 record holds. The stub also admits
             # AF_PACKET's (protocol, address) pair, which resolving an
             # internet host and a port cannot answer with, so the cast
             # is what that fact is written as rather than a check no
@@ -181,8 +186,7 @@ class PeerDB:
             for *_, sockaddr in answers:
                 endpoints.add(cast("tuple[str, int]", sockaddr[:2]))
         for ip, port in endpoints:
-            address = NetworkAddress.from_ip_and_port(ip, port)
-            self.addresses.add(address)
+            self.addresses.add(peer_address(ip, port))
 
     @property
     def is_empty(self):
@@ -196,40 +200,27 @@ class PeerDB:
         # and cjdns a peer sends -- made that retry a loop with no exit,
         # in the caller's event loop. Nothing to dial is an answer, and
         # `None` is it.
-        dialable = [address for address in self.addresses if address.can_connect]
+        dialable = [address for address in self.addresses if can_connect(address)]
         if not dialable:
             return None
         return secrets.choice(dialable)
 
     def add_addresses(self, addresses):
+        # a peer's word for when it last saw an address is not evidence,
+        # and keeping it would make the one address several entries
         for address in addresses:
             if len(self.addresses) >= 10000:
                 break
-            new_addr = NetworkAddress(
-                time=0,
-                services=address.services,
-                netid=address.netid,
-                addr=address.addr,
-                port=address.port,
-            )
-            if new_addr not in self.addresses:
-                self.addresses.add(new_addr)
+            self.addresses.add(replace(address, timestamp=0))
 
     def get_active_addresses(self):
         now = time.time()
         # active if seen within the last three hours
         self.active_addresses = [
-            addr for addr in self.active_addresses if now - addr.time < 3600 * 3
+            addr for addr in self.active_addresses if now - addr.timestamp < 3600 * 3
         ]
         return self.active_addresses
 
     def add_active_address(self, addr):
-        active_addr = NetworkAddress(
-            # a whole second: the field is four octets on the wire
-            time=int(time.time()),
-            services=addr.services,
-            netid=addr.netid,
-            addr=addr.addr,
-            port=addr.port,
-        )
-        self.active_addresses.append(active_addr)
+        # a whole second: the field is four octets on the wire
+        self.active_addresses.append(replace(addr, timestamp=int(time.time())))
