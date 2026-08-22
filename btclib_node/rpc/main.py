@@ -49,7 +49,10 @@ def handle_rpc(node):
 
     response = []
     # JSON-RPC 2.0: an empty batch is itself an invalid request, and
-    # answering it is what keeps `data` from being empty below.
+    # the specification's own example for it is this single object. The
+    # append is also what keeps `response` from staying empty, which
+    # async_send would put on the wire as a bare `[]` -- no unwrapping,
+    # since its one-element case does not match, and no valid answer.
     if not data:
         response.append(error_msg(-32600))
     for request in data:
