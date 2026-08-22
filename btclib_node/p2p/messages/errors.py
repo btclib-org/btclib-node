@@ -36,7 +36,9 @@ class Reject(Payload):
         message = stream.read(var_int.parse(stream)).decode()
         code = RejectCode.from_bytes(stream.read(1), "little")
         reason = stream.read(var_int.parse(stream)).decode()
-        data = stream.read(32)
+        # the wire carries a hash in internal order, and everything
+        # here holds one the way it is displayed, as an inventory does
+        data = stream.read(32)[::-1]
         return cls(message, code, reason, data)
 
     def serialize(self, *, check_validity: bool = True) -> bytes:
