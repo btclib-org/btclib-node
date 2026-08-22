@@ -12,13 +12,14 @@ defines.
 """
 
 import pytest
+from btclib.block import Block
 from btclib.block.block_filter import BasicBlockFilter, filter_header
-
-from btclib_node.chains import RegTest
 from btclib.script import script
 
-from tests.helpers import build_block, generate_coinbase, generate_random_chain
+from btclib_node.chains import RegTest, TestNet
 from btclib_node.main import update_chain
+from tests import load, vector_id
+from tests.helpers import build_block, generate_coinbase, generate_random_chain
 from tests.unit.main import connect, regtest_node, spend
 
 GENESIS = RegTest().genesis
@@ -101,7 +102,9 @@ def test_every_header_chains_onto_the_one_before_it(tmp_path):
     filter_index = node.chainstate.filter_index
     for block in chain:
         block_hash = block.header.hash
-        assert filter_index.get_header(block_hash) == recomputed_header(node, block_hash)
+        assert filter_index.get_header(block_hash) == recomputed_header(
+            node, block_hash
+        )
 
 
 def test_a_block_whose_parent_has_no_filter_is_refused(tmp_path):
@@ -269,7 +272,9 @@ def test_the_index_is_caught_up_before_the_node_is_built(tmp_path):
 
     reopened = regtest_node(tmp_path)
     for block in chain:
-        assert reopened.chainstate.filter_index.get_filter(block.header.hash) is not None
+        assert (
+            reopened.chainstate.filter_index.get_filter(block.header.hash) is not None
+        )
     reopened.chainstate.close()
     reopened.block_db.close()
 
@@ -326,3 +331,68 @@ def test_a_batch_that_fails_partway_leaves_nothing_of_the_blocks_before_it(tmp_p
     assert not filter_index.pending
     for block in (*branch, bad):
         assert filter_index.get_filter(block.header.hash) is None
+
+
+# Bitcoin Core's BIP158 vectors, `src/test/data/blockfilters.json`; the
+# revision is pinned in tests/_data/README.md. The header row of column
+# names is dropped, and each row after it is a height, a block hash, the
+# whole serialized block, the previous output scripts the block does not
+# carry, the previous basic filter header, the basic filter and the
+# basic header. Every hash in the file is in display order, which is the
+# order everything here holds one in.
+_CORE_VECTORS = load("unit", "chainstate", "_data", "blockfilters.json")[1:]
+_VECTOR_IDS = [
+    vector_id(index, row[0], row[7] if len(row) > 7 else "")
+    for index, row in enumerate(_CORE_VECTORS)
+]
+
+
+@pytest.mark.parametrize("vector", _CORE_VECTORS, ids=_VECTOR_IDS)
+def test_the_index_holds_the_filters_bitcoin_core_computed(tmp_path, vector):
+    """Hold the index to Core's numbers rather than to btclib's.
+
+    `btclib.block.block_filter` is tested against this same file inside
+    btclib, and what is checked here is the layer this tree adds: that
+    the octets stored for a block are the filter Core computed, that
+    they come back unchanged, and that the header chained onto the one
+    before is Core's header. A filter that goes into this index and
+    comes out a different filter is a node telling a light client
+    something it cannot catch until it fetches the block.
+    """
+    _, block_hash, block_hex, prevout_scripts, previous, expected, header = vector[:7]
+    block = Block.parse(bytes.fromhex(block_hex), check_validity=False)
+    assert block.header.hash.hex() == block_hash
+
+    node = regtest_node(tmp_path)
+    filter_index = node.chainstate.filter_index
+    # a testnet block whose parent this node has never connected, so the
+    # header before it comes from the row: what is under test here is
+    # the chaining and the storage, not where the parent came from
+    filter_index.db.put(
+        b"cfheader-" + block.header.previous_block_hash, bytes.fromhex(previous)
+    )
+    filter_index.add_block(block, [bytes.fromhex(script) for script in prevout_scripts])
+    filter_index.finalize()
+
+    assert filter_index.get_filter(block.header.hash).hex() == expected
+    assert filter_index.get_header(block.header.hash).hex() == header
+    assert (
+        filter_index.get_filter_hash(block.header.hash)
+        == BasicBlockFilter.parse(bytes.fromhex(expected), block.header.hash).hash
+    )
+
+
+def test_the_testnet_genesis_block_this_node_builds_is_the_one_core_filtered():
+    # chains.py builds the genesis block out of a coinbase it writes
+    # rather than parsing one, and row 0 of Core's file is that block:
+    # what the filter says is that the transaction this node made is the
+    # transaction the network has. It is the one block a peer never
+    # serves, so nothing else would ever catch it being wrong.
+    _, block_hash, block_hex, _, previous, expected, header = _CORE_VECTORS[0][:7]
+    genesis_block = TestNet().genesis_block
+    assert genesis_block.header.hash.hex() == block_hash
+    assert genesis_block.serialize(check_validity=False).hex() == block_hex
+
+    block_filter = BasicBlockFilter.from_block(genesis_block, [])
+    assert block_filter.serialize().hex() == expected
+    assert block_filter.header(previous).hex() == header
