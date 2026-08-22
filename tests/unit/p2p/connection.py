@@ -11,7 +11,11 @@ connection describes itself once the socket underneath it is gone.
 
 import asyncio
 import socket
+from contextlib import suppress
 from types import SimpleNamespace
+
+import pytest
+from btclib.hashes import hash256
 
 from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus, P2pConnStatus
@@ -51,11 +55,11 @@ def test_a_message_that_will_not_serialize_is_logged_and_dropped():
     connection, logged = a_connection()
     sent = []
     connection._send = lambda data: sent.append(data)
-    asyncio.run(connection.async_send(Unserializable()))
+    with connection.client:
+        asyncio.run(connection.async_send(Unserializable()))
     assert not sent
     (line,) = logged
     assert "error in serializing message" in line
-    connection.client.close()
 
 
 def test_a_connection_names_the_peer_it_is_to():
@@ -63,12 +67,11 @@ def test_a_connection_names_the_peer_it_is_to():
     listener.bind(("127.0.0.1", 0))
     listener.listen(1)
     port = listener.getsockname()[1]
-    client = socket.create_connection(("127.0.0.1", port))
     try:
-        connection, _ = a_connection(client)
-        assert repr(connection) == f"Connection to 127.0.0.1:{port}"
+        with socket.create_connection(("127.0.0.1", port)) as client:
+            connection, _ = a_connection(client)
+            assert repr(connection) == f"Connection to 127.0.0.1:{port}"
     finally:
-        client.close()
         listener.close()
 
 
@@ -101,17 +104,39 @@ def a_running_connection(loop, client):
     return connection, stopped
 
 
-def test_a_peer_sending_something_that_is_not_a_message_is_dropped():
+def a_message_for_another_network():
+    # well formed in every other way: the checksum is right, so what is
+    # left to refuse it on is the network it announces
+    payload = b""
+    return (
+        b"\x11\x22\x33\x44"
+        + b"verack".ljust(12, b"\x00")
+        + len(payload).to_bytes(4, "little")
+        + hash256(payload)[:4]
+        + payload
+    )
+
+
+@pytest.mark.parametrize(
+    "octets",
+    [
+        # a checksum that belongs to no payload: refused by the envelope
+        b"\x11\x22\x33\x44" + b"\x00" * 20,
+        a_message_for_another_network(),
+    ],
+    ids=["not a message", "a message for another network"],
+)
+def test_a_peer_sending_something_this_node_cannot_read_is_dropped(octets):
     async def drive():
         loop = asyncio.get_running_loop()
         ours, theirs = socket.socketpair()
         ours.setblocking(False)
         connection, stopped = a_running_connection(loop, ours)
-        # a magic no chain uses: Message.parse refuses the envelope, and
-        # a peer that cannot frame a message is not one to keep
-        theirs.sendall(b"\x11\x22\x33\x44" + b"\x00" * 20)
-        await connection.run()
-        theirs.close()
+        try:
+            theirs.sendall(octets)
+            await connection.run()
+        finally:
+            theirs.close()
         return connection, stopped
 
     connection, stopped = asyncio.run(drive())
@@ -127,11 +152,15 @@ def test_a_connection_closed_before_it_reads_anything_reads_nothing():
         connection, _ = a_running_connection(loop, ours)
         connection.status = P2pConnStatus.Closed
         await connection.run()
-        # what the peer got is the version, and nothing was read back
-        answer = theirs.recv(4096)
-        theirs.close()
-        ours.close()
-        return answer
+        try:
+            # bounded: a version that never arrives is a failure, not a
+            # run that never ends
+            theirs.settimeout(1)
+            # what the peer got is the version, and nothing was read back
+            return theirs.recv(4096)
+        finally:
+            theirs.close()
+            ours.close()
 
     assert asyncio.run(drive())
 
@@ -142,10 +171,21 @@ def test_a_peer_that_hangs_up_is_dropped():
         ours, theirs = socket.socketpair()
         ours.setblocking(False)
         connection, stopped = a_running_connection(loop, ours)
+        # the task the read loop is running in: cancelling it from
+        # inside would cancel the coroutine doing the cancelling, which
+        # is why stop() is asked not to
+        connection.task = asyncio.ensure_future(asyncio.sleep(60))
         theirs.close()
         await connection.run()
-        return connection, stopped
+        # asked inside the loop: shutting the loop down cancels whatever
+        # is still pending, which would answer this on its own
+        left_alone = not connection.task.cancelling()
+        connection.task.cancel()
+        with suppress(asyncio.CancelledError):
+            await connection.task
+        return connection, stopped, left_alone
 
-    connection, stopped = asyncio.run(drive())
+    connection, stopped, left_alone = asyncio.run(drive())
     assert connection.status == P2pConnStatus.Closed
     assert stopped == [connection.address]
+    assert left_alone

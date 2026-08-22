@@ -10,9 +10,7 @@ from types import SimpleNamespace
 import pytest
 from btclib import var_bytes, var_int
 
-# aliased: pytest tries to collect a class whose name starts with Test
-from btclib_node.chains import Main, SigNet
-from btclib_node.chains import TestNet as TestNetwork
+from btclib_node.chains import Main, SigNet, TestNet
 from btclib_node.p2p.address import NetworkAddress, NetworkID, PeerDB
 
 
@@ -76,7 +74,7 @@ def test_testnet_bootstrap_nodes():
 
 @pytest.mark.remote_data
 def test_signet_bootstrap_nodes():
-    peer_db = PeerDB(TestNetwork(), None)
+    peer_db = PeerDB(TestNet(), None)
     peer_db.ask_dns_nodes = True
     asyncio.run(peer_db.get_addr_from_dns())
     assert not peer_db.is_empty
@@ -111,11 +109,24 @@ def test_an_onion_address_cannot_be_put_in_an_addr_version_1():
     onion.serialize(addrv2=True)
 
 
-def test_a_network_id_nothing_knows_the_size_of_is_refused():
-    # every member is answered above it; the guard is what stops a new
-    # one being added without a size, and only a non-member reaches it
-    with pytest.raises(ValueError):
-        NetworkID.addr_bytesize.fget(object())
+def test_an_ipv6_address_can_be():
+    # the other half of the same question, and the half that says the
+    # filter is about the network rather than about being dialable
+    ipv6 = NetworkAddress.from_ip_and_port("2001:db8::1", 8333)
+    assert NetworkAddress.deserialize(ipv6.serialize()) == ipv6
+
+
+def test_every_network_carries_the_address_length_bip155_gives_it():
+    # the serialization tests derive the length from this property, so
+    # they hold whatever it says: this is what says what it should say
+    assert {netid: netid.addr_bytesize for netid in NetworkID} == {
+        NetworkID.ipv4: 4,
+        NetworkID.ipv6: 16,
+        NetworkID.torv2: 10,
+        NetworkID.torv3: 32,
+        NetworkID.i2p: 32,
+        NetworkID.cjdns: 16,
+    }
 
 
 def test_only_ipv4_is_dialled_for_now():
@@ -142,10 +153,38 @@ def test_a_peer_that_is_listening_is_connected_to():
         address = NetworkAddress.from_ip_and_port("127.0.0.1", port)
         client = asyncio.run(address.connect())
         assert client is not None
-        assert client.getpeername() == ("127.0.0.1", port)
-        client.close()
+        with client:
+            assert client.getpeername() == ("127.0.0.1", port)
     finally:
         listener.close()
+
+
+def test_a_dial_that_is_given_up_on_closes_the_socket_it_opened(monkeypatch):
+    opened = []
+    real_socket = socket.socket
+
+    def recording_socket(*args, **kwargs):
+        sock = real_socket(*args, **kwargs)
+        opened.append(sock)
+        return sock
+
+    monkeypatch.setattr(socket, "socket", recording_socket)
+    listener = real_socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    listener.close()
+
+    address = NetworkAddress.from_ip_and_port("127.0.0.1", port)
+    assert asyncio.run(address.connect()) is None
+    # the event loop opens sockets of its own; the dial's is the ipv4
+    # stream one, and it is not left behind
+    dialled = [
+        sock
+        for sock in opened
+        if sock.family == socket.AF_INET and sock.type == socket.SOCK_STREAM
+    ]
+    assert dialled
+    assert all(sock.fileno() == -1 for sock in dialled)
 
 
 def test_a_peer_that_is_not_listening_is_given_up_on():
@@ -171,7 +210,9 @@ class FakeLoop:
 
 
 def a_chain(seeds):
-    return SimpleNamespace(addresses=list(seeds), port=8333)
+    # not 8333: the port has to come from the chain, and a default would
+    # look the same
+    return SimpleNamespace(addresses=list(seeds), port=18444)
 
 
 def test_the_seeds_that_answer_fill_the_table_and_the_rest_are_passed_over(
@@ -187,8 +228,8 @@ def test_the_seeds_that_answer_fill_the_table_and_the_rest_are_passed_over(
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
     asyncio.run(peer_db.get_addr_from_dns())
     assert {repr(address) for address in peer_db.addresses} == {
-        "1.2.3.4:8333",
-        "5.6.7.8:8333",
+        "1.2.3.4:18444",
+        "5.6.7.8:18444",
     }
 
 
@@ -224,8 +265,13 @@ def test_the_table_of_known_addresses_is_bounded():
     assert len(peer_db.addresses) == limit
 
 
-def test_an_address_already_known_is_not_added_twice():
+def test_an_address_a_peer_told_us_about_is_kept_without_its_timestamp():
+    # a peer's word for when it last saw an address is not evidence, and
+    # keeping it would make the same address several entries
     peer_db = PeerDB(None, None)
-    address = NetworkAddress.from_ip_and_port("1.2.3.4", 8333)
-    peer_db.add_addresses([address, address])
-    assert len(peer_db.addresses) == 1
+    early = NetworkAddress.from_ip_and_port("1.2.3.4", 8333, time=1)
+    late = NetworkAddress.from_ip_and_port("1.2.3.4", 8333, time=2)
+    peer_db.add_addresses([early, late, early])
+    (kept,) = peer_db.addresses
+    assert kept.time == 0
+    assert kept.addr == early.addr

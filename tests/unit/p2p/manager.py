@@ -11,10 +11,14 @@ messages addressed to a connection that is no longer there.
 """
 
 import asyncio
+import socket
 import time
 from contextlib import suppress
 from types import SimpleNamespace
 
+import pytest
+
+from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.p2p.address import NetworkAddress, NetworkID
 from btclib_node.p2p.manager import P2pManager
@@ -43,60 +47,73 @@ def a_conn(conn_id, *, status=P2pConnStatus.Connected, last_receive=None, addres
     return conn
 
 
-def a_manager(conns=(), *, peer_db=None, status=NodeStatus.BlockSynced):
-    node = SimpleNamespace(
-        status=status,
-        logger=SimpleNamespace(
-            info=lambda *a: None,
-            debug=lambda *a: None,
-            exception=lambda *a: None,
-        ),
-    )
-    manager = P2pManager(node, 18444, peer_db or SimpleNamespace(is_empty=True))
-    for conn in conns:
-        manager.connections[conn.id] = conn
-    return manager
+@pytest.fixture
+def a_manager():
+    """Build managers, and close their event loops however the test ends."""
+    made = []
 
+    def make(conns=(), *, peer_db=None, status=NodeStatus.BlockSynced):
+        node = SimpleNamespace(
+            status=status,
+            chain=RegTest(),
+            logger=SimpleNamespace(
+                info=lambda *a: None,
+                debug=lambda *a: None,
+                exception=lambda *a: None,
+            ),
+        )
+        # a peer db that refuses to be asked by default: a test that
+        # should not reach for a peer proves it by the log staying quiet
+        manager = P2pManager(
+            node,
+            18444,
+            peer_db
+            or SimpleNamespace(is_empty=True, random_address=refuses_to_be_asked),
+        )
+        for conn in conns:
+            manager.connections[conn.id] = conn
+        made.append(manager)
+        return manager
 
-def close(manager):
-    manager.loop.close()
+    yield make
+    for manager in made:
+        manager.loop.close()
 
 
 async def one_pass(manager):
+    """Run the housekeeping loop's body exactly once.
+
+    `ensure_future` queues the task's first step ahead of the timer, so
+    the body runs before the cancel however slow the machine is. Two
+    passes is this twice, rather than a sleep long enough for the loop's
+    own -- which is a wait on the scheduler, and #46's shape.
+    """
     task = asyncio.ensure_future(manager.manage_connections(None))
     await asyncio.sleep(0.05)
+    still_running = not task.done()
     task.cancel()
     with suppress(asyncio.CancelledError):
         await task
+    return still_running
 
 
-async def two_passes(manager):
-    task = asyncio.ensure_future(manager.manage_connections(None))
-    await asyncio.sleep(0.25)
-    task.cancel()
-    with suppress(asyncio.CancelledError):
-        await task
-
-
-def test_removing_a_connection_that_is_not_there_changes_nothing():
+def test_removing_a_connection_that_is_not_there_changes_nothing(a_manager):
     conn = a_conn(1)
     manager = a_manager([conn])
     manager.remove_connection(99)
     assert list(manager.connections) == [1]
     assert not conn.stopped
-    close(manager)
 
 
-def test_removing_a_connection_stops_it():
+def test_removing_a_connection_stops_it(a_manager):
     conn = a_conn(1)
     manager = a_manager([conn])
     manager.remove_connection(1)
     assert not manager.connections
     assert conn.stopped == [True]
-    close(manager)
 
 
-def test_a_peer_that_cannot_be_dialled_is_not_kept():
+def test_a_peer_that_cannot_be_dialled_is_not_kept(a_manager):
     async def never_connects():
         return None
 
@@ -104,36 +121,38 @@ def test_a_peer_that_cannot_be_dialled_is_not_kept():
     manager = a_manager()
     asyncio.run(manager.async_connect(address))
     assert not manager.connections
-    close(manager)
 
 
-def test_a_connection_that_has_closed_is_let_go_of():
+def test_a_connection_that_has_closed_is_let_go_of(a_manager):
     conn = a_conn(1, status=P2pConnStatus.Closed)
     manager = a_manager([conn])
     asyncio.run(one_pass(manager))
     assert not manager.connections
-    close(manager)
 
 
-def test_a_peer_that_has_gone_quiet_is_pinged_and_then_dropped():
+def test_a_peer_that_has_gone_quiet_is_pinged_and_then_dropped(a_manager):
     conn = a_conn(1, last_receive=time.time() - 200)
     manager = a_manager([conn])
-    asyncio.run(two_passes(manager))
-    assert "ping" in conn.sent
+
+    async def pinged_then_dropped():
+        await one_pass(manager)
+        assert conn.sent == ["ping"]
+        assert list(manager.connections) == [1]
+        await one_pass(manager)
+
+    asyncio.run(pinged_then_dropped())
     assert not manager.connections
-    close(manager)
 
 
-def test_a_peer_that_answered_recently_is_left_alone():
+def test_a_peer_that_answered_recently_is_left_alone(a_manager):
     conn = a_conn(1)
     manager = a_manager([conn])
     asyncio.run(one_pass(manager))
     assert conn.sent == []
     assert list(manager.connections) == [1]
-    close(manager)
 
 
-def test_an_address_already_connected_to_is_not_dialled_again():
+def test_an_address_already_connected_to_is_not_dialled_again(a_manager):
     # an onion address, which this node cannot dial: reaching for it
     # would raise into the housekeeping loop's own handler, so a quiet
     # log is the assertion that the manager never reached
@@ -146,10 +165,9 @@ def test_an_address_already_connected_to_is_not_dialled_again():
     asyncio.run(one_pass(manager))
     assert not logged
     assert list(manager.connections) == [1]
-    close(manager)
 
 
-def test_a_dial_that_comes_back_with_nothing_adds_no_connection():
+def test_a_dial_that_comes_back_with_nothing_adds_no_connection(a_manager):
     async def connects():
         return None
 
@@ -160,24 +178,24 @@ def test_a_dial_that_comes_back_with_nothing_adds_no_connection():
     manager = a_manager(peer_db=peer_db)
     asyncio.run(one_pass(manager))
     assert not manager.connections
-    close(manager)
 
 
 def refuses_to_be_asked():
     raise RuntimeError("no")
 
 
-def test_a_peer_db_that_raises_does_not_stop_the_housekeeping():
+def test_a_peer_db_that_raises_does_not_stop_the_housekeeping(a_manager):
     logged = []
     peer_db = SimpleNamespace(is_empty=False, random_address=refuses_to_be_asked)
     manager = a_manager(peer_db=peer_db)
     manager.logger.exception = logged.append
-    asyncio.run(one_pass(manager))
+    # still running when the pass ended: catching the exception and
+    # returning would leave the node with no housekeeping at all
+    assert asyncio.run(one_pass(manager)) is True
     assert logged
-    close(manager)
 
 
-def test_only_one_peer_is_wanted_until_the_headers_are_synced():
+def test_only_one_peer_is_wanted_until_the_headers_are_synced(a_manager):
     # a peer db that refuses to be asked: reaching for a second peer
     # would raise into the housekeeping loop's own handler, so a quiet
     # log is the assertion that one peer was enough
@@ -188,34 +206,70 @@ def test_only_one_peer_is_wanted_until_the_headers_are_synced():
     manager.logger.exception = logged.append
     asyncio.run(one_pass(manager))
     assert not logged
-    close(manager)
 
 
-def test_a_message_for_a_connection_that_is_gone_is_dropped():
+def test_a_message_for_a_connection_that_is_gone_is_dropped(a_manager):
     conn = a_conn(1)
     manager = a_manager([conn])
     manager.send("message", 99)
     assert conn.sent == []
     manager.send("message", 1)
     assert conn.sent == ["message"]
-    close(manager)
 
 
-def test_every_connection_is_pinged_and_every_connection_is_stopped():
+def test_every_connection_is_pinged_and_every_connection_is_stopped(a_manager):
     first, second = a_conn(1), a_conn(2)
     manager = a_manager([first, second])
     manager.ping_all()
     assert first.sent == ["ping"] and second.sent == ["ping"]
     manager.stop_all()
     assert first.stopped == [True] and second.stopped == [True]
-    close(manager)
 
 
-def test_a_peer_that_was_pinged_recently_is_given_time_to_answer():
+def test_a_peer_that_was_pinged_recently_is_given_time_to_answer(a_manager):
     conn = a_conn(1, last_receive=time.time() - 200)
     conn.ping_sent = time.time()
     manager = a_manager([conn])
     asyncio.run(one_pass(manager))
     assert conn.sent == []
     assert list(manager.connections) == [1]
-    close(manager)
+
+
+def test_an_empty_peer_db_is_not_asked_for_an_address(a_manager):
+    # nothing to draw from: asking anyway is how a node with no peers
+    # spends its housekeeping raising and logging
+    manager = a_manager()
+    logged = []
+    manager.logger.exception = logged.append
+    asyncio.run(one_pass(manager))
+    assert not logged
+
+
+def test_a_peer_that_answers_the_dial_becomes_a_connection(a_manager):
+    ours, theirs = socket.socketpair()
+
+    async def connects():
+        return ours
+
+    address = NetworkAddress.from_ip_and_port("127.0.0.1", 18444)
+    peer_db = SimpleNamespace(
+        is_empty=False,
+        random_address=lambda: SimpleNamespace(connect=connects, _is=address),
+        add_active_address=lambda addr: None,
+    )
+    manager = a_manager(peer_db=peer_db)
+
+    async def dial():
+        # the manager schedules the connection's own loop on the loop it
+        # holds, which here is the one this test is running on
+        manager.loop = asyncio.get_running_loop()
+        await one_pass(manager)
+        (conn,) = manager.connections.values()
+        assert conn.client is ours
+        assert not conn.inbound
+        conn.task.cancel()
+        await asyncio.sleep(0)
+
+    asyncio.run(dial())
+    ours.close()
+    theirs.close()
