@@ -43,6 +43,13 @@ To test, coverage included:
 uv run pytest
 ```
 
+Every statement and every branch is covered, and that run fails if any
+stops being. A run narrowed by a path, `-k`, `-m`, `--deselect`,
+`--ignore`, `--ignore-glob` or `--last-failed` cannot clear a floor
+meant for the whole suite, so it is not held to one — `tests/conftest.py`
+is where that is decided, and where anything else narrowing a run is
+added. `--cov-fail-under` asked for explicitly still applies.
+
 To run the lint gate:
 
 ```shell
