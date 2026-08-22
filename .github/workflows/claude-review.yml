@@ -137,12 +137,12 @@ jobs:
             repository has no test, lint or docs job on a pull request
             yet -- issue #33 tracks that -- so nothing green stands
             behind the author's word. Do not run the gates yourself
-            either: they need a toolchain this job does not set up, and
-            `pre-commit run --all-files` fails on `main` today for
-            reasons no pull request caused. Say in the summary that no
-            gates were run here and that the author's own statement of
-            what they ran is what stands -- and if a pull request makes
-            no such statement, say that too.
+            either: they need a toolchain this job does not set up, the
+            suite among other things wanting LevelDB present before
+            `uv sync`. Say in the summary that no gates were run here
+            and that the author's own statement of what they ran is what
+            stands -- and if a pull request makes no such statement, say
+            that too.
 
             Do not file issues from here: a collateral finding goes in the
             summary comment, under a line saying it is not a finding

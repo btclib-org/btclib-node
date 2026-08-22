@@ -133,11 +133,14 @@ that means today:
 - there are **no CI workflows** beyond this review — no test, lint or
   docs job runs on a pull request, so nothing green is standing behind
   the author's word;
-- `pre-commit run --all-files` has **pre-existing failures on `main`**.
-  A failure a review reports must be shown to be *this diff's*, by
-  running the same hook against the base;
-- the suite does not run out of the box on every machine. A collection
-  error is not a finding until it is reproduced against the base.
+- `pre-commit run --all-files` **passes on `main`**, and has since
+  btclib-org/btclib_node#45. A hook that fails is therefore something
+  to report -- but still show it is *this diff's*, by running the same
+  hook against the base, because pre-commit.ci also bumps the pinned
+  revisions on a schedule of its own;
+- the suite needs LevelDB's headers and library present before `uv
+  sync`, plyvel being built from source here. README.md says how. A
+  collection error on a machine without them is not a finding.
 
 A gate that fails locally, and demonstrably fails *because of this
 diff*, is the strongest finding available. A gate that passes is not
