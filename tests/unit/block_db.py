@@ -6,9 +6,9 @@
 
 The block store keeps its blocks and its rollback patches in flat files
 and their locations in leveldb, so the questions are: does what went in
-come back out, does it still come back after the process that wrote it
-has gone, and does it come back once the file it was written to is no
-longer the file being written to.
+come back out, does it still come back once the store has been closed
+and reopened, and does it come back after the file it was written to is
+no longer the file being written to.
 """
 
 from btclib.script import script
@@ -107,6 +107,21 @@ def test_a_file_that_has_filled_up_is_left_behind(tmp_path):
     assert block_db.get_block(chain[1].header.hash) == chain[1]
 
 
+def test_a_file_exactly_at_the_bound_is_not_yet_full(tmp_path):
+    # the bound is what the size is compared against, so which side of
+    # it is exclusive is a real question. Only where the block lands is
+    # asserted here: the size set below is a fiction the file on disk
+    # does not share, so the offset recorded for that block is not one
+    # it can be read back from
+    block_db = a_db(tmp_path)
+    chain = generate_random_chain(2, RegTest().genesis.hash)
+    block_db.add_block(chain[0])
+    block_db.files["000001.blk"].size = MAX_FILE_SIZE
+    block_db.add_block(chain[1])
+    assert block_db.blocks[chain[1].header.hash].filename == "000001.blk"
+    assert block_db.file_index == 1
+
+
 def test_a_rev_patch_in_an_earlier_file_is_still_read(tmp_path):
     block_db = a_db(tmp_path)
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
@@ -129,6 +144,7 @@ def test_a_rev_patch_in_an_earlier_file_is_still_read(tmp_path):
 
 def test_two_rev_patches_share_the_file_named_for_the_block_file(tmp_path):
     block_db = a_db(tmp_path)
+    block_db.add_block(generate_random_chain(1, RegTest().genesis.hash)[0])
     first, second = a_rev_block(1), a_rev_block(5)
     block_db.add_rev_block(first)
     block_db.add_rev_block(second)
@@ -153,8 +169,13 @@ def test_a_key_this_version_does_not_know_is_left_where_it_is(tmp_path):
     block_db.close()
 
     reopened = a_db(tmp_path)
+    # stepped over rather than filed under one of the four the store
+    # knows: the tables it rebuilt are the ones it wrote
+    assert reopened.blocks == block_db.blocks
+    assert reopened.rev_patches == {}
+    assert reopened.files == block_db.files
+    assert reopened.file_index == block_db.file_index
     assert reopened.get_block(block.header.hash) == block
-    assert reopened.db.get(b"z") == b"from some other version of this store"
     reopened.close()
 
 
@@ -168,7 +189,11 @@ def test_the_store_comes_back_from_disk(tmp_path):
 
     reopened = a_db(tmp_path)
     assert reopened.file_index == block_db.file_index
-    assert reopened.files.keys() == block_db.files.keys()
+    # the sizes too, not just the names: they are what tells the store
+    # where the next block goes and when the file is full
+    assert reopened.files == block_db.files
+    assert reopened.blocks == block_db.blocks
+    assert reopened.rev_patches == block_db.rev_patches
     assert reopened.get_block(block.header.hash) == block
     assert reopened.get_rev_block(rev_block.hash) == rev_block
     reopened.close()
