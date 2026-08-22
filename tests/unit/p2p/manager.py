@@ -251,18 +251,14 @@ def test_a_peer_that_answers_the_dial_becomes_a_connection(a_manager):
     async def connects():
         return ours
 
-    address = NetworkAddress.from_ip_and_port("127.0.0.1", 18444)
     peer_db = SimpleNamespace(
         is_empty=False,
-        random_address=lambda: SimpleNamespace(connect=connects, _is=address),
+        random_address=lambda: SimpleNamespace(connect=connects),
         add_active_address=lambda addr: None,
     )
     manager = a_manager(peer_db=peer_db)
 
     async def dial():
-        # the manager schedules the connection's own loop on the loop it
-        # holds, which here is the one this test is running on
-        manager.loop = asyncio.get_running_loop()
         await one_pass(manager)
         (conn,) = manager.connections.values()
         assert conn.client is ours
@@ -270,6 +266,8 @@ def test_a_peer_that_answers_the_dial_becomes_a_connection(a_manager):
         conn.task.cancel()
         await asyncio.sleep(0)
 
-    asyncio.run(dial())
-    ours.close()
-    theirs.close()
+    with ours, theirs:
+        # on the manager's own loop, which is the one it schedules the
+        # connection's loop on. asyncio.run would build a second one and
+        # leave the manager holding a loop the fixture then never closes
+        manager.loop.run_until_complete(dial())
