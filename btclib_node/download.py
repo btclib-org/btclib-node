@@ -19,7 +19,6 @@ class DownloadManager:
 
         self.received_txs = []
         self.inv_txs = []
-        self.asked_txs = []
 
     def step(self):
         self.block_download()
@@ -29,44 +28,45 @@ class DownloadManager:
         if self.node.status < NodeStatus.BlockSynced:
             return
 
-        if len(self.received_txs):
-            invs = {}
-            new_inv_txs = []
-            for conn_id, txid in self.inv_txs:
-                if not invs.get(conn_id):
-                    invs[conn_id] = []
-                if txid in self.received_txs:
-                    invs[conn_id].append(txid)
+        received = list(dict.fromkeys(wtxid for _, wtxid in self.received_txs))
+        if received:
+            # a peer that announced a transaction we now hold, or sent it
+            # to us, already has it: it is the others that are told
+            has_it = {}
+            for conn_id, wtxid in self.received_txs:
+                has_it.setdefault(conn_id, set()).add(wtxid)
+            still_wanted = []
+            for conn_id, wtxid in self.inv_txs:
+                if wtxid in received:
+                    has_it.setdefault(conn_id, set()).add(wtxid)
                 else:
-                    new_inv_txs.append((conn_id, txid))
-            self.inv_txs = new_inv_txs
-
-            self.asked_txs = [
-                txid for txid in self.asked_txs if txid not in self.received_txs
-            ]
+                    still_wanted.append((conn_id, wtxid))
+            self.inv_txs = still_wanted
 
             for conn in self.node.p2p_manager.connections.copy().values():
-                inv = invs.get(conn.id, [])
-                inv = [txid for _, txid in self.received_txs if txid not in inv]
+                known = has_it.get(conn.id, ())
+                inv = [wtxid for wtxid in received if wtxid not in known]
                 if len(inv) > 5:
                     conn.send(
                         Inv([Inventory(InventoryType.MSG_WTX, wtxid) for wtxid in inv])
                     )
 
-        if len(self.inv_txs):
+        if self.inv_txs:
             invs = {}
-            for conn_id, txid in self.inv_txs:
-                if not invs.get(conn_id):
-                    invs[conn_id] = []
-                if txid not in self.asked_txs:
-                    invs[conn_id].append(txid)
+            for conn_id, wtxid in self.inv_txs:
+                invs.setdefault(conn_id, []).append(wtxid)
 
             for conn_id, inv in invs.items():
                 conn = self.node.p2p_manager.connections.get(conn_id)
-                if conn and inv:
+                if conn:
+                    # a peer that announced the same transaction twice is
+                    # asked for it once
                     conn.send(
                         GetData(
-                            [Inventory(InventoryType.MSG_WTX, wtxid) for wtxid in inv]
+                            [
+                                Inventory(InventoryType.MSG_WTX, wtxid)
+                                for wtxid in dict.fromkeys(inv)
+                            ]
                         )
                     )
 
