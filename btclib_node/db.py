@@ -4,11 +4,11 @@
 
 """The ordered key-value store every index of this node is kept in.
 
-Six operations, which is all any of them asks for: read a key, write
-one, delete one, write several as one, walk the whole store in key
-order, and close. They are behind one class so that what implements
-them is one decision in one file -- `btclib_node/db.py` -- rather than
-a library named in four modules.
+Read a key, write one, delete one, write several as one, walk the whole
+store in key order, and close: that is everything any index here asks
+of it. They are behind one class so that what implements them is one
+decision in one file -- `btclib_node/db.py` -- rather than a library
+named in as many modules as import it.
 
 The implementation is SQLite, and the reason is not speed. It is the
 standard library, so there is no wheel to be missing on a platform, no
@@ -75,6 +75,12 @@ class KeyValueStore:
         self._connection()
 
     def _connection(self):
+        if self._closed:
+            # a thread that had one gets a closed connection and SQLite's
+            # own refusal; a thread that never asked before would
+            # otherwise be handed a working one, so `close` would have
+            # closed the connections rather than the store
+            raise Exception(f"the store at {self.path} is closed")
         connection = getattr(self._local, "connection", None)
         if connection is not None:
             return connection

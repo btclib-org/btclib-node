@@ -4,7 +4,7 @@
 
 """The store every index of this node is kept in.
 
-Six operations, and the two properties the indexes rely on that a
+The operations, and the two properties the indexes rely on that a
 dictionary would not give: keys come back in order, and a batch is all
 or nothing. The rest of the suite exercises this through the indexes;
 what is here is the store on its own, including the paths no index
@@ -109,15 +109,38 @@ def test_a_datadir_from_before_this_store_is_refused(tmp_path):
         KeyValueStore(directory)
 
 
-def test_a_closed_store_has_closed_its_connections(tmp_path):
-    # the flag alone is what a close that closed nothing would also set,
-    # so what is asserted is the connection: SQLite refuses a closed one
+def test_a_closed_store_refuses_to_be_used(tmp_path):
+    # the flag alone is what a close that closed nothing would also set.
+    # The connections are asserted separately, below: here it is the
+    # store's own answer, which is what every caller meets first.
     store = a_store(tmp_path)
     store.put(b"k", b"v")
     store.close()
     assert store.closed
-    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+    with pytest.raises(Exception, match="is closed"):
         store.get(b"k")
+
+
+def test_a_thread_that_never_used_the_store_is_refused_after_it_closes(tmp_path):
+    # what `closed` has to mean for the store and not only for the
+    # connections it happened to be holding: a thread with none of its
+    # own would otherwise be handed a working one and write through a
+    # store everything else believes is shut
+    store = a_store(tmp_path)
+    store.close()
+    refused = []
+
+    def late():
+        try:
+            store.put(b"k", b"v")
+        except Exception as error:  # noqa: BLE001
+            refused.append(str(error))
+
+    thread = threading.Thread(target=late)
+    thread.start()
+    thread.join()
+
+    assert refused and "is closed" in refused[0]
 
 
 def test_closing_twice_is_closing_once(tmp_path):

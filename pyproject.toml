@@ -365,15 +365,6 @@ enable_error_code = [
     "unused-awaitable",
 ]
 
-[[tool.mypy.overrides]]
-# plyvel ships no stubs and no py.typed, and typeshed carries none: it is
-# a C extension over LevelDB, and the alternative to this override is
-# --ignore-missing-imports, which would silence every other unresolved
-# import along with it. Declared per module so that the next one is a
-# decision rather than a default
-module = ["plyvel"]
-ignore_missing_imports = true
-
 [tool.typos.default.extend-words]
 # see [tool.codespell]'s ignore-words-list above: an RPC response key,
 # not prose, and fixing it is an API change out of a lint-gate PR's
