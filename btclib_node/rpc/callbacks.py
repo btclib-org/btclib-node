@@ -24,7 +24,7 @@ def get_block_header(node, conn, params):
 
     block_hash = bytes.fromhex(params[0])
     block_info = block_index.get_block_info(block_hash)
-    header = header = block_info.header
+    header = block_info.header
     out = header.to_dict()
     out["hash"] = header.hash
 
@@ -132,16 +132,17 @@ def send_raw_transaction(node, conn, params):
     rawtx = params[0]
     try:
         tx = Tx.parse(rawtx)
-        try:
-            verify_mempool_acceptance(node, tx)
-            node.mempool.add_tx(tx)
-            node.p2p_manager.broadcast_raw_transaction(tx)
-        except BTClibValueError:
-            pass
-        finally:
-            return tx.id.hex()
     except Exception:
         return None
+    try:
+        verify_mempool_acceptance(node, tx)
+        node.mempool.add_tx(tx)
+        node.p2p_manager.broadcast_raw_transaction(tx)
+    except BTClibValueError:
+        # tolerated here alone, and only until #83 decides what a
+        # rejected transaction is answered with
+        pass
+    return tx.id.hex()
 
 
 def ping(node, conn, _):

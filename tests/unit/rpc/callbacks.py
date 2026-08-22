@@ -12,16 +12,22 @@ away mid-lookup, or a transaction the mempool refuses.
 
 from types import SimpleNamespace
 
+import pytest
+from btclib.exceptions import BTClibValueError
 from btclib.script import script
 from btclib.script.witness import Witness
 from btclib.tx.tx import Tx, TxIn, TxOut
 from btclib.tx.tx_in import OutPoint
 
+from btclib_node.chains import RegTest
 from btclib_node.constants import P2pConnStatus, Services
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from btclib_node.rpc.callbacks import (
+    get_best_block_hash,
+    get_block_hash,
+    get_block_header,
     get_connection_count,
     get_mempool_info,
     get_peer_info,
@@ -34,6 +40,7 @@ from btclib_node.rpc.callbacks import (
 # aliased: pytest collects a module-level `test*` as a test, and this
 # one is a production function that would be handed fixtures
 from btclib_node.rpc.callbacks import test_mempool_accept as mempool_accept
+from tests.helpers import generate_random_header_chain
 
 
 def a_tx(tag=b"\x11"):
@@ -217,3 +224,93 @@ def test_a_relayed_transaction_is_answered_with_its_txid(monkeypatch):
 
 def test_something_that_is_not_a_transaction_is_answered_with_nothing():
     assert send_raw_transaction(a_node(), None, ["not a transaction"]) is None
+
+
+def test_a_transaction_the_mempool_will_not_have_is_not_reported_relayed(monkeypatch):
+    # a return inside a finally used to discard whatever was propagating
+    # through it, so every refusal came back as the txid of a
+    # transaction this node had neither kept nor sent
+    import btclib_node.rpc.callbacks as cb
+
+    def missing(node, transaction):
+        raise MissingPrevoutError
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", missing)
+    tx = a_tx()
+    mempool = Mempool(Logger(debug=True))
+    broadcast = []
+    node = a_node(mempool=mempool)
+    node.p2p_manager.broadcast_raw_transaction = broadcast.append
+
+    with pytest.raises(MissingPrevoutError):
+        send_raw_transaction(node, None, [tx.serialize(True).hex()])
+    assert not mempool.contains_tx(tx)
+    assert broadcast == []
+
+
+def a_header_index(chain):
+    hashes = [header.hash for header in chain]
+    return SimpleNamespace(
+        header_index=hashes,
+        get_block_info=lambda block_hash: SimpleNamespace(
+            header=chain[hashes.index(block_hash)],
+            chainwork=hashes.index(block_hash) + 1,
+        ),
+    )
+
+
+def test_a_block_header_names_the_ones_either_side_of_it():
+    chain = generate_random_header_chain(3, RegTest().genesis.hash)
+    node = SimpleNamespace(
+        chainstate=SimpleNamespace(block_index=a_header_index(chain))
+    )
+    middle = get_block_header(node, None, [chain[1].hash.hex()])
+    assert middle["height"] == 1
+    assert middle["confirmations"] == 2
+    assert middle["previousblockhash"] == chain[0].hash
+    assert middle["nextblockhash"] == chain[2].hash
+    assert middle["chainwork"] == 2
+
+
+def test_the_first_header_has_nothing_before_it_and_the_last_nothing_after():
+    chain = generate_random_header_chain(3, RegTest().genesis.hash)
+    node = SimpleNamespace(
+        chainstate=SimpleNamespace(block_index=a_header_index(chain))
+    )
+    first = get_block_header(node, None, [chain[0].hash.hex()])
+    assert "previousblockhash" not in first
+    assert first["nextblockhash"] == chain[1].hash
+
+    last = get_block_header(node, None, [chain[-1].hash.hex()])
+    assert last["previousblockhash"] == chain[-2].hash
+    assert "nextblockhash" not in last
+    assert last["confirmations"] == 1
+
+
+def test_the_tip_and_the_block_at_a_height_are_read_off_the_active_chain():
+    chain = [b"\x11" * 32, b"\x22" * 32]
+    node = SimpleNamespace(
+        chainstate=SimpleNamespace(block_index=SimpleNamespace(active_chain=chain))
+    )
+    assert get_best_block_hash(node, None, []) == chain[-1]
+    assert get_block_hash(node, None, [0]) == chain[0]
+
+
+def test_a_transaction_whose_scripts_do_not_verify_is_still_answered_with_its_txid(
+    monkeypatch,
+):
+    # what the code does, not what it should: #83 is the verdict a
+    # rejected transaction ought to be answered with
+    import btclib_node.rpc.callbacks as cb
+
+    def invalid(node, transaction):
+        raise BTClibValueError("no")
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", invalid)
+    tx = a_tx()
+    mempool = Mempool(Logger(debug=True))
+    node = a_node(mempool=mempool)
+    node.p2p_manager.broadcast_raw_transaction = lambda tx: None
+
+    assert send_raw_transaction(node, None, [tx.serialize(True).hex()]) == tx.id.hex()
+    assert not mempool.contains_tx(tx)
