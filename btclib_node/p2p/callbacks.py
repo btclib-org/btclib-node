@@ -103,9 +103,11 @@ def getaddr(node, msg, conn):
         addr_cls = AddrV2
     else:
         addr_cls = Addr
-        addresses = [addr for addr in addresses if addr.can_addrv1]
+        # an addr version 1 message has nowhere to put a tor, i2p or
+        # cjdns address, and Addr.serialize raises rather than invent one
+        addresses = [addr for addr in addresses if addr.netid.can_addrv1]
     for x in range(0, len(addresses), 1000):
-        conn.send(addr_cls(headers[x : x + 1000]))
+        conn.send(addr_cls(addresses[x : x + 1000]))
 
 
 def addr(node, msg, conn):

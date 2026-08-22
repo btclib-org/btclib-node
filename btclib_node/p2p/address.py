@@ -196,17 +196,17 @@ class PeerDB:
                 self.addresses.add(new_addr)
 
     def get_active_addresses(self):
-        new_active = []
-        for addr in self.active_addresses:
-            # active if last message within 3 hours
-            if self.addresses.time - time.time() < 3600 * 3:
-                new_active.append(addr)
-        self.active_addresses = new_active
-        return new_active
+        now = time.time()
+        # active if seen within the last three hours
+        self.active_addresses = [
+            addr for addr in self.active_addresses if now - addr.time < 3600 * 3
+        ]
+        return self.active_addresses
 
     def add_active_address(self, addr):
         active_addr = NetworkAddress(
-            time=time.time(),
+            # a whole second: the field is four octets on the wire
+            time=int(time.time()),
             services=addr.services,
             netid=addr.netid,
             addr=addr.addr,

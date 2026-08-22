@@ -3,6 +3,7 @@
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
 import asyncio
+import time
 
 import pytest
 
@@ -26,6 +27,30 @@ def test_serialization():
                         assert network_address == NetworkAddress.deserialize(
                             network_address.serialize(addrv2=addrv2), addrv2=addrv2
                         )
+
+
+def test_an_address_just_seen_is_active_and_can_be_sent():
+    peer_db = PeerDB(None, None)
+    peer_db.add_active_address(NetworkAddress.from_ip_and_port("1.2.3.4", 18444))
+    (active,) = peer_db.get_active_addresses()
+    # a whole second, because the field is four octets on the wire and a
+    # float has no to_bytes: this is what serving the address needs
+    assert active.time == int(active.time)
+    assert NetworkAddress.deserialize(active.serialize()) == active
+
+
+def test_an_address_not_seen_for_three_hours_stops_being_active():
+    peer_db = PeerDB(None, None)
+    fresh = NetworkAddress.from_ip_and_port(
+        "1.2.3.4", 18444, time=int(time.time()) - 3600
+    )
+    stale = NetworkAddress.from_ip_and_port(
+        "5.6.7.8", 18444, time=int(time.time()) - 3600 * 4
+    )
+    peer_db.active_addresses += [fresh, stale]
+    assert peer_db.get_active_addresses() == [fresh]
+    # and it is dropped, not merely left out of the answer
+    assert peer_db.active_addresses == [fresh]
 
 
 @pytest.mark.remote_data
