@@ -42,7 +42,12 @@ keywords = [
     "consensus",
     "p2p",
     "script-interpreter",
-    "leveldb",
+    # sqlite and not leveldb, which is what this stores through today: a
+    # keyword is what somebody searches with, and the storage layer is
+    # moving. The classifiers below are the other kind of claim -- each
+    # has to be true on the day it is read -- which is why the difference
+    # is worth naming here rather than left to look like an oversight
+    "sqlite",
 ]
 # What an index shows somebody deciding whether to install this, and
 # each line is a claim about this tree rather than a line copied from a
