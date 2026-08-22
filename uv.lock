@@ -81,14 +81,10 @@ wheels = [
 
 [[package]]
 name = "btclib"
-version = "2026.8.21"
-source = { registry = "https://pypi.org/simple" }
+version = "2026.9"
+source = { git = "https://github.com/btclib-org/btclib?branch=main#58dcf1cb4efd51b28475c87edb1633850bb6cf99" }
 dependencies = [
     { name = "bitcoin-core-rpc" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/fd/53/e266ba832231b038709f678ff352860dbdb789dc56d56c3c77dc946af15e/btclib-2026.8.21.tar.gz", hash = "sha256:6bc4f99036d4ae26b484ddd1794dc4775a3da4c30d84eeb4b7e4f0601a5797f0", size = 9334850, upload-time = "2026-08-21T10:32:49.094Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ee/1a/09ec746fff7d01f81e7fccd9faef1cdba097fa7e545810db701b0f844231/btclib-2026.8.21-py3-none-any.whl", hash = "sha256:e4d370b4a2a7c7f51d9a6ad804888ef81c8a5cf99bac10c0935da9fa206fe1cc", size = 974077, upload-time = "2026-08-21T10:32:46.786Z" },
 ]
 
 [[package]]
@@ -139,7 +135,7 @@ test = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "btclib", specifier = ">=2026.8.21" }]
+requires-dist = [{ name = "btclib", git = "https://github.com/btclib-org/btclib?branch=main" }]
 
 [package.metadata.requires-dev]
 dev = [
