@@ -10,10 +10,10 @@ What they have in common is the only thing they have, so they share a
 base rather than repeating an empty `parse` and an empty `serialize`
 apiece.
 
-`filterclear` is of the same shape and stays in `filters.py` with the
-rest of that module: those stubs are dead and wrong on the wire
-(btclib-org/btclib_node#50), and giving them a base built for payloads
-that are *correctly* empty would only make them look finished.
+Every payload here is one the node sends or dispatches on. A command it
+speaks to nobody is not an empty payload for want of a body: the base is
+for messages that carry nothing, not a place to park a stub for a
+message that carries something nobody has written yet.
 """
 
 from dataclasses import dataclass

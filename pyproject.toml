@@ -85,16 +85,7 @@ source = ["btclib_node", "tests"]
 # On a node whose defects are mostly in branches not taken, that is the
 # wrong thing to count.
 branch = true
-omit = [
-    "*/site-packages/*",
-    # Stubs nothing imports, each of which would send a malformed
-    # message if anything did. btclib-org/btclib-node#50 proposes
-    # deleting the module, and this line goes with it; until someone
-    # decides, it is out of the measurement rather than the measurement
-    # being set below 100 to accommodate it -- a threshold under 100 is
-    # a place for a new gap to hide.
-    "btclib_node/p2p/messages/filters.py",
-]
+omit = ["*/site-packages/*"]
 
 [tool.coverage.report]
 show_missing = true

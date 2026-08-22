@@ -7,9 +7,8 @@
 Most of what this node speaks is `btclib.p2p`'s, imported where it is
 used. What is here is the remainder: those that carry
 `btclib_node.p2p.address.NetworkAddress`, which is still this package's;
-BIP61's `reject`, which Bitcoin Core removed; the stubs in
-`filters.py`, BIP37's bloom messages and BIP133's `feefilter`; and the
-commands whose payload is empty.
+BIP61's `reject`, which Bitcoin Core removed; and the commands whose
+payload is empty.
 
 Each subclasses `btclib.p2p.payload.Payload` and owns the `command` its
 octets travel under, so the name a payload serializes under and the name
