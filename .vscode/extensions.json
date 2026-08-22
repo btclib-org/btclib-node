@@ -10,8 +10,7 @@
   "recommendations": [
     // ruff-check and ruff-format
     "charliermarsh.ruff",
-    // the mypy hook, which here is the hosted mirrors-mypy rather than a
-    // local one -- see settings.json for what that means for the editor
+    // the local mypy hook, which runs the project environment's mypy
     "ms-python.mypy-type-checker",
     // the interpreter, the test explorer and the debugger under them
     "ms-python.python",
