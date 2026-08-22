@@ -31,13 +31,21 @@ from tests.helpers import (
 )
 
 
-def a_conn(conn_id, *, status=P2pConnStatus.Connected, last_receive=None, address=None):
+def a_conn(
+    conn_id,
+    *,
+    status=P2pConnStatus.Connected,
+    last_receive=None,
+    address=None,
+    relay_tx=True,
+):
     conn = SimpleNamespace(
         id=conn_id,
         status=status,
         address=address or NetworkAddress.from_ip_and_port("1.2.3.4", 18444),
         last_receive=time.time() if last_receive is None else last_receive,
         ping_sent=0,
+        relay_tx=relay_tx,
         sent=[],
         stopped=[],
     )
@@ -251,6 +259,19 @@ def test_every_connection_is_pinged_and_every_connection_is_stopped(a_manager):
     assert first.stopped == [True] and second.stopped == [True]
 
 
+def test_a_transaction_of_our_own_goes_only_to_the_peers_that_want_them(a_manager):
+    # the RPC's sendrawtransaction, which is the other way a transaction
+    # leaves this node: a peer that declined BIP37's relay declined
+    # transactions, not only the ones another peer handed us
+    wants, declined = a_conn(1), a_conn(2, relay_tx=False)
+    manager = a_manager([wants, declined])
+    tx = generate_random_transaction()
+    manager.broadcast_raw_transaction(tx)
+    (sent,) = wants.sent
+    assert sent.tx.id == tx.id
+    assert declined.sent == []
+
+
 def test_a_peer_that_was_pinged_recently_is_given_time_to_answer(a_manager):
     conn = a_conn(1, last_receive=time.time() - 200)
     conn.ping_sent = time.time()
@@ -310,14 +331,6 @@ def test_a_peer_that_answers_the_dial_becomes_a_connection(a_manager):
         # connection's loop on. asyncio.run would build a second one and
         # leave the manager holding a loop the fixture then never closes
         manager.loop.run_until_complete(dial())
-
-
-def test_a_message_sent_to_all_reaches_every_connection(a_manager):
-    first, second = a_conn(1), a_conn(2)
-    manager = a_manager([first, second])
-    manager.sendall("message")
-    assert first.sent == ["message"]
-    assert second.sent == ["message"]
 
 
 def test_a_transaction_is_relayed_with_its_witness(a_manager):

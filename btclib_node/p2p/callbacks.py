@@ -69,7 +69,13 @@ def version(node, msg, conn):
     conn.send(SendAddrV2())
     conn.send(Verack())
 
-    conn.relay_txs = version_msg.relay
+    # relay_tx, which is the attribute Connection defines: the name this
+    # wrote before was one letter different, so what the peer asked for
+    # landed on an attribute nothing reads and the connection's own flag
+    # stayed true for its whole life. is_relay_requested and not relay
+    # because an absent flag means true, which is BIP37's default and
+    # Core's.
+    conn.relay_tx = version_msg.is_relay_requested
 
 
 def verack(node, msg, conn):

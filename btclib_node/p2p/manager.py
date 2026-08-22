@@ -143,12 +143,19 @@ class P2pManager(threading.Thread):
         if id in self.connections:
             self.connections[id].send(msg)
 
-    def sendall(self, msg):
-        for conn in self.connections.copy().values():
-            conn.send(msg)
-
     def broadcast_raw_transaction(self, tx):
-        self.sendall(Tx(tx, include_witness=True))
+        # the peers that asked for transactions, and not all of them:
+        # a peer whose version set BIP37's fRelay false said so about
+        # transactions from anywhere, not only about the ones another
+        # peer handed this node. `DownloadManager.tx_download` reads the
+        # same flag for the same reason. What a broadcast to everyone
+        # would have been right for is a message every peer is owed, and
+        # a transaction is not one, which leaves `sendall` with nothing
+        # to do.
+        msg = Tx(tx, include_witness=True)
+        for conn in self.connections.copy().values():
+            if conn.relay_tx:
+                conn.send(msg)
 
     def ping_all(self):
         for conn in self.connections.copy().values():

@@ -11,6 +11,7 @@ losing the peer. The functional tests drive two cooperating nodes, which
 is the path where every message is welcome; these are the rest.
 """
 
+import socket
 import time
 from types import SimpleNamespace
 from typing import Any
@@ -78,6 +79,7 @@ from btclib_node.p2p.callbacks import (
     wtxidrelay,
 )
 from btclib_node.p2p.callbacks import block as block_callback
+from btclib_node.p2p.connection import Connection
 from btclib_node.p2p.messages.address import Addr, AddrV2
 from btclib_node.p2p.messages.empty import Getaddr, Sendheaders, Wtxidrelay
 from btclib_node.p2p.messages.errors import Reject, RejectCode
@@ -202,8 +204,7 @@ def a_peer(**attributes):
         version_message=None,
         wtxidrelay_received=False,
         prefer_addressv2=False,
-        # what Connection sets; the callback writes relay_txs, which is
-        # #76
+        # what Connection sets, and what the version callback overwrites
         relay_tx=True,
         download_queue=[],
         pending_eviction=False,
@@ -245,7 +246,7 @@ def test_a_version_is_answered_with_what_this_node_speaks():
     assert isinstance(peer.sent[0], Wtxidrelay)
     assert isinstance(peer.sent[1], SendAddrV2)
     assert isinstance(peer.sent[2], Verack)
-    assert peer.relay_txs is True  # the attribute #76 is about
+    assert peer.relay_tx is True
     assert not peer.stopped
 
 
@@ -290,7 +291,45 @@ def test_a_pruned_peer_is_let_go_only_once_the_blocks_are_synced():
 def test_a_version_that_says_it_relays_nothing_is_taken_at_its_word():
     peer = a_peer()
     version(a_handshake_node(), a_version(relay=False), peer)
-    assert peer.relay_txs is False
+    assert peer.relay_tx is False
+    # the flag went to the attribute Connection defines, and nowhere
+    # else: the near miss that dropped it was one letter long
+    assert not hasattr(peer, "relay_txs")
+
+
+def test_a_version_without_the_relay_flag_is_a_peer_asking_for_relay():
+    # BIP37's default, which a peer older than the flag relies on: read
+    # as a false, it would be recorded as asking for the opposite
+    peer = a_peer(relay_tx=False)
+    version(a_handshake_node(), a_version(relay=None), peer)
+    assert peer.relay_tx is True
+
+
+def a_real_connection():
+    # not a stand-in: the defect this is about was a callback writing an
+    # attribute no Connection has, which a SimpleNamespace peer takes
+    # without a word and a Connection takes just as quietly. What a real
+    # one adds is that the attribute asserted on below is the one the
+    # rest of the node reads.
+    manager = SimpleNamespace(node=a_handshake_node(), loop=None, peer_db=None)
+    connection = Connection(manager, socket.socket(), local_addr(18444), 0, False)
+    # Connection.send hands the message to an event loop this test does
+    # not run; what it would send is tested above
+    connection.send = lambda msg: None
+    return connection
+
+
+@pytest.mark.parametrize(
+    ("relay", "wanted"),
+    [(True, True), (False, False), (None, True)],
+    ids=["true", "false", "absent"],
+)
+def test_what_a_peer_said_about_relay_lands_on_the_connection(relay, wanted):
+    connection = a_real_connection()
+    with connection.client:
+        assert connection.relay_tx is True  # BIP37's default until told
+        version(a_handshake_node(), a_version(relay=relay), connection)
+        assert connection.relay_tx is wanted
 
 
 def test_a_verack_completes_the_handshake():

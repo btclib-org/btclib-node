@@ -44,9 +44,28 @@ class DownloadManager:
             self.inv_txs = still_wanted
 
             for conn in self.node.p2p_manager.connections.copy().values():
+                # what the peer's version asked for. An answer nothing
+                # consults is the same peer told the same thing whatever
+                # it said, which is what #76 is about, so every send
+                # that announces a transaction reads this --
+                # `P2pManager.broadcast_raw_transaction` is the other.
+                # BIP37 is that a peer which sent fRelay false is sent
+                # no transaction inventory at all, so it is skipped
+                # whole rather than sent a shorter list.
+                if not conn.relay_tx:
+                    continue
                 known = has_it.get(conn.id, ())
                 inv = [wtxid for wtxid in received if wtxid not in known]
-                if len(inv) > 5:
+                # every accepted transaction, and not only those that
+                # arrived in a batch of more than five: a batch size is
+                # not a throttle, it is a filter on whether a transaction
+                # is announced at all, and on a quiet network no batch
+                # ever clears it. What Core has here instead is a
+                # per-peer Poisson timer, which announces everything too
+                # and buys the timing privacy an immediate announcement
+                # does not; that privacy is what this does not have, and
+                # it is a change of its own rather than the defect.
+                if inv:
                     conn.send(
                         Inv([Inventory(InventoryType.MSG_WTX, wtxid) for wtxid in inv])
                     )

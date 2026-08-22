@@ -50,6 +50,11 @@ def test_send_tx(tmp_path):
         block_info.downloaded = True
         block_index.insert_block_info(block_info)
         wait_until(lambda: len(block_index.active_chain) == 2)
+        # and not merely the chain being connected: the version a node
+        # sends carries BIP37's relay flag set only once it is block
+        # synced, and a node handshaking in the gap between the two
+        # would tell its peer it wants no transactions
+        wait_until(lambda: node.status == NodeStatus.BlockSynced)
 
     node2.p2p_manager.connect(local_addr(node1.p2p_port))
     wait_until(lambda: len(node1.p2p_manager.connections))

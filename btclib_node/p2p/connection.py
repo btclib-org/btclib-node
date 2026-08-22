@@ -37,6 +37,8 @@ class Connection:
         self.version_message = None
         self.wtxidrelay_received = False
 
+        # BIP37's default until the peer's version says otherwise, which
+        # is what callbacks.version writes here
         self.relay_tx = True
         self.prefer_addressv2 = False
 
