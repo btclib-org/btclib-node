@@ -32,7 +32,7 @@ MAGIC = RegTest().magic
 
 # what this package still defines: everything else the node speaks is
 # btclib.p2p's, and named there
-_MESSAGE_MODULES = ("address", "empty", "errors", "filters", "handshake")
+_MESSAGE_MODULES = ("address", "empty", "errors", "handshake")
 
 # where the rest of what the node speaks is defined
 _BTCLIB_P2P_MODULES = (
@@ -53,13 +53,8 @@ _BTCLIB_P2P_MODULES = (
 _COMMANDS = {
     "Addr": "addr",
     "AddrV2": "addrv2",
-    "Feefilter": "feefilter",
-    "Filteradd": "filteradd",
-    "Filterclear": "filterclear",
-    "Filterload": "filterload",
     "Getaddr": "getaddr",
     "Mempool": "mempool",
-    "Merkleblock": "merkleblock",
     "Reject": "reject",
     "Sendheaders": "sendheaders",
     "Version": "version",
