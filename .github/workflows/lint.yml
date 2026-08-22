@@ -1,0 +1,100 @@
+---
+name: lint
+
+# the gate this repository did not have. Issue #33 records that
+# .github/workflows held one file, the review workflow, and that its
+# branch protection therefore waits on nothing; this is that issue's
+# first step and no more of it.
+#
+# What it runs is `.pre-commit-config.yaml`, which is the whole of the
+# lint gate: the same command CONTRIBUTING.md gives a developer, so
+# there is no second list of tools and versions to keep in step, and a
+# hook that passes on a machine passes here for the same reason.
+#
+# It exists now because the mypy hook stopped being one pre-commit.ci
+# can run. That hook shells out to uv, which is absent there, so it is
+# named in the `ci:` skip list -- and until this file, a skipped hook
+# was a hook nothing ran at all.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    # ready_for_review, so a pull request marked ready gets the run the
+    # draft condition below withheld while it was a draft: the default
+    # types do not include it. closed joins them so that a run still
+    # held in this pull request's own concurrency group is superseded
+    # rather than left to finish on a branch nobody will look at again
+    types: [opened, reopened, synchronize, ready_for_review, closed]
+  # the escape hatch, for a branch whose pull request is not open yet
+  workflow_dispatch:
+
+# least privilege for the GITHUB_TOKEN: everything running in a job can
+# read it, and nothing here writes
+permissions:
+  contents: read
+
+# cancel superseded runs: the subject is the commit, which a newer one
+# supersedes. Named literally rather than through github.workflow, and
+# by the pull request's own number rather than by github.ref, which for
+# a closed, merged pull request resolves to the base branch's ref and
+# would put that run in the push trigger's group
+concurrency:
+  group: lint-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint and type-check
+    if: ${{ !github.event.pull_request.draft && github.event.action != 'closed' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # plyvel builds from source everywhere this repository runs -- it
+      # publishes no macOS wheel and none past CPython 3.12 -- so
+      # LevelDB's headers and library have to be here before uv syncs
+      # the project. The mypy hook is what needs the project: it type
+      # checks against the environment rather than against an isolated
+      # copy, which is the whole reason it is a local hook. README.md
+      # gives this same line to a developer on Debian or Ubuntu
+      - name: Install LevelDB
+        run: sudo apt-get install -y libleveldb-dev
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      # ImageOS is set by the runner image rather than by this workflow,
+      # so the env context holds nothing for it and a shell is where it
+      # is read
+      - name: Identify the runner image
+        id: image
+        run: echo "os=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
+
+      # the hook environments are the slow part. The key carries the
+      # runner image as well as the config hash because what is cached
+      # is virtualenvs: on the config hash alone an image rotation is a
+      # hit rather than a graceful miss, handing the job environments
+      # built on the previous image
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pre-commit
+          key: >-
+            pre-commit-${{ runner.os }}-${{ steps.image.outputs.os }}-${{
+            hashFiles('.pre-commit-config.yaml', '.python-version') }}
+          # a prefix that still names the image, so a partial restore
+          # cannot cross an image boundary either
+          restore-keys: |
+            pre-commit-${{ runner.os }}-${{ steps.image.outputs.os }}-
+
+      # --show-diff-on-failure so that a fixing hook says what it would
+      # have written, rather than only that it wanted to write something
+      - name: Run the pre-commit hooks
+        run: >
+          uv run --locked --only-group lint
+          pre-commit run --all-files --show-diff-on-failure

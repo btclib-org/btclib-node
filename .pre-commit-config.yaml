@@ -21,6 +21,15 @@ ci:
   # lands on
   autoupdate_commit_msg: "Update the pinned pre-commit hook revisions"
   autoupdate_schedule: weekly
+  # the hook pre-commit.ci cannot run: it shells out to uv, which is not
+  # installed there. Not a gap in the gate, and only because
+  # .github/workflows/lint.yml now exists to run this very file with the
+  # same command a developer runs -- before it, a skipped hook here was a
+  # hook nothing ran at all, this repository having had no workflow but
+  # the review one (issue #33). What pre-commit.ci is kept for is the
+  # pull request above, bumping the revisions pinned below, and a local
+  # hook has no revision to bump: uv.lock moves its mypy instead
+  skip: [mypy]
 
 repos:
   # this file checking itself, and the only two hooks here with no
@@ -217,20 +226,34 @@ repos:
         language: pygrep
         entry: '\b(text|universal_newlines)=True'
         files: \.py$
-  # unchanged by btclib-org/.github#9's lint-gate step: this is still
-  # the hosted mirrors-mypy hook, bare, not strict. Going strict and
-  # moving it to a local, uv-run hook against the project's own locked
-  # environment is its own later step
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.5.1
+  # a local hook running the project environment's mypy, where this was
+  # the hosted mirrors-mypy: that one holds only what
+  # `additional_dependencies` names, so btclib and pytest resolved to
+  # nothing -- 120 unresolved imports across 44 files -- and the mirror's
+  # default --ignore-missing-imports turned every one of them into Any
+  # rather than an error. A gate that cannot see its own main dependency
+  # is not reporting on it. Run against this environment the same tree
+  # answers with two errors, both plyvel, which ships no stubs and is
+  # declared as such in pyproject.toml.
+  # Still not strict: that is an annotation pass over the whole tree and
+  # its own step, with the number beside the lint group in
+  # pyproject.toml. What this changes is what mypy can see, not how much
+  # it demands.
+  # --locked and not --frozen, for the reason the uv-lock hook below
+  # cannot cover: a dependency added without a re-lock would leave mypy
+  # checking a stale environment and saying nothing, and this hook
+  # produces its verdict before that one runs
+  - repo: local
     hooks:
       - id: mypy
-        # the hook's environment holds only mypy, so a third-party
-        # library's types have to be named here or every import of it is
-        # an error. requests is the one this tree imports and does not
-        # ship types for -- it is a test dependency, and typeshed is
-        # where its stubs live
-        additional_dependencies: [types-requests]
+        name: mypy (in the project environment)
+        entry: >
+          uv run --locked --no-default-groups --group lint --group test
+          mypy btclib_node tests
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true
   - repo: https://github.com/astral-sh/uv-pre-commit
     rev: 0.12.5
     hooks:

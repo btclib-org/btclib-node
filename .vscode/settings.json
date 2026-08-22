@@ -23,18 +23,13 @@
   // Completion, hover and go-to-definition are unaffected by this setting
   "python.analysis.typeCheckingMode": "off",
 
-  // the mypy hook here is the hosted mirrors-mypy, pinned by rev and run
-  // in an environment of its own, and mypy is deliberately in no dependency
-  // group -- pyproject.toml says so where the groups are. So there is no
-  // project mypy for the editor to point at: `fromEnvironment` would find
-  // a .venv without one and report nothing at all, silently. The bundled
-  // copy is what is left, and it is honestly not the hook's: a different
-  // version, and without the hook's `additional_dependencies`, so an
-  // import of requests reads as untyped here where the hook resolves it.
-  // What closes that gap is not a setting but the move the hook's own
-  // comment defers -- a local, uv-run mypy, as two sibling repositories
-  // already have (btclib-org/.github#9)
-  "mypy-type-checker.importStrategy": "useBundled",
+  // the mypy hook is a local one, running the project environment's mypy
+  // rather than an isolated copy, and the editor has to use that same one:
+  // the mypy the extension bundles is a different version from the locked
+  // one, and it resolves neither btclib nor pytest. The environment is the
+  // .venv uv sync creates, which is also what makes `import btclib_node`
+  // resolve, the install in it being editable
+  "mypy-type-checker.importStrategy": "fromEnvironment",
   // reportingScope stays at its default: the extension checks the file in
   // the editor, the hook checks every .py this repository tracks
 

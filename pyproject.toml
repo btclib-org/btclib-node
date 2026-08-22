@@ -43,12 +43,24 @@ test = [
     "pydeps>=3.0.7",
     "requests>=2.34.2",
 ]
-# mypy is not here: the mypy hook below is still the hosted mirrors-mypy
-# one, bare, unaffected by this pass -- going strict and moving it to a
-# local, uv-run hook is its own step (btclib-org/.github#9's checklist
-# keeps the two apart), so it stays out of this project's own dependency
-# groups until then.
-lint = ["pre-commit>=4.6.2", "ruff>=0.16.4"]
+# mypy is here so that the hook can run it from this environment rather
+# than from one of its own: the hosted mirrors-mypy hook it replaces
+# resolved neither btclib nor pytest, and the mirror's default
+# --ignore-missing-imports turned each of those imports into Any without
+# a word. types-requests is the one stub package that hook carried and
+# this environment still needs, requests being a test dependency that
+# ships none.
+# Not strict yet, which is a separate step and a large one: mypy --strict
+# over this tree reports 2134 errors in 63 of its 69 files, 595 of them
+# a definition with no annotation and 1475 calls to one. That is the
+# annotation pass btclib-org/.github#9 defers, and it is not what moving
+# the hook needs.
+lint = [
+    "pre-commit>=4.6.2",
+    "ruff>=0.16.4",
+    "mypy>=1.18.2",
+    "types-requests>=2.32",
+]
 dev = [{ include-group = "test" }, { include-group = "lint" }]
 
 [tool.uv]
@@ -175,6 +187,20 @@ builtin = "clear"
 # issue, and ignored here rather than silently rewritten by
 # --write-changes on some later hook.
 ignore-words-list = ["weigth"]
+
+[tool.mypy]
+# no `strict = true` yet: see the lint group above for what that would
+# cost today. What is here is the one thing the hook cannot do without.
+files = ["btclib_node", "tests"]
+
+[[tool.mypy.overrides]]
+# plyvel ships no stubs and no py.typed, and typeshed carries none: it is
+# a C extension over LevelDB, and the alternative to this override is
+# --ignore-missing-imports, which would silence every other unresolved
+# import along with it. Declared per module so that the next one is a
+# decision rather than a default
+module = ["plyvel"]
+ignore_missing_imports = true
 
 [tool.typos.default.extend-words]
 # see [tool.codespell]'s ignore-words-list above: an RPC response key,
