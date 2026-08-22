@@ -1,0 +1,221 @@
+# Copyright (c) The btclib developers
+# Distributed under the MIT software license, see the accompanying
+# LICENSE file or https://opensource.org/license/mit for the full text.
+
+"""Which peers the manager keeps, drops and reaches for.
+
+The functional tests connect two nodes that stay connected. What this
+is about is the housekeeping around that: a peer that has gone quiet, a
+peer that cannot be dialled, an address already connected to, and the
+messages addressed to a connection that is no longer there.
+"""
+
+import asyncio
+import time
+from contextlib import suppress
+from types import SimpleNamespace
+
+from btclib_node.constants import NodeStatus, P2pConnStatus
+from btclib_node.p2p.address import NetworkAddress, NetworkID
+from btclib_node.p2p.manager import P2pManager
+
+
+def a_conn(conn_id, *, status=P2pConnStatus.Connected, last_receive=None, address=None):
+    conn = SimpleNamespace(
+        id=conn_id,
+        status=status,
+        address=address or NetworkAddress.from_ip_and_port("1.2.3.4", 18444),
+        last_receive=time.time() if last_receive is None else last_receive,
+        ping_sent=0,
+        sent=[],
+        stopped=[],
+    )
+    conn.send = conn.sent.append
+    conn.stop = lambda: conn.stopped.append(True)
+
+    def send_ping():
+        # a ping already answered by nothing: the manager reads the time
+        # it was sent to decide the peer is gone
+        conn.ping_sent = time.time() - 200
+        conn.sent.append("ping")
+
+    conn.send_ping = send_ping
+    return conn
+
+
+def a_manager(conns=(), *, peer_db=None, status=NodeStatus.BlockSynced):
+    node = SimpleNamespace(
+        status=status,
+        logger=SimpleNamespace(
+            info=lambda *a: None,
+            debug=lambda *a: None,
+            exception=lambda *a: None,
+        ),
+    )
+    manager = P2pManager(node, 18444, peer_db or SimpleNamespace(is_empty=True))
+    for conn in conns:
+        manager.connections[conn.id] = conn
+    return manager
+
+
+def close(manager):
+    manager.loop.close()
+
+
+async def one_pass(manager):
+    task = asyncio.ensure_future(manager.manage_connections(None))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+
+async def two_passes(manager):
+    task = asyncio.ensure_future(manager.manage_connections(None))
+    await asyncio.sleep(0.25)
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+
+def test_removing_a_connection_that_is_not_there_changes_nothing():
+    conn = a_conn(1)
+    manager = a_manager([conn])
+    manager.remove_connection(99)
+    assert list(manager.connections) == [1]
+    assert not conn.stopped
+    close(manager)
+
+
+def test_removing_a_connection_stops_it():
+    conn = a_conn(1)
+    manager = a_manager([conn])
+    manager.remove_connection(1)
+    assert not manager.connections
+    assert conn.stopped == [True]
+    close(manager)
+
+
+def test_a_peer_that_cannot_be_dialled_is_not_kept():
+    async def never_connects():
+        return None
+
+    address = SimpleNamespace(connect=never_connects)
+    manager = a_manager()
+    asyncio.run(manager.async_connect(address))
+    assert not manager.connections
+    close(manager)
+
+
+def test_a_connection_that_has_closed_is_let_go_of():
+    conn = a_conn(1, status=P2pConnStatus.Closed)
+    manager = a_manager([conn])
+    asyncio.run(one_pass(manager))
+    assert not manager.connections
+    close(manager)
+
+
+def test_a_peer_that_has_gone_quiet_is_pinged_and_then_dropped():
+    conn = a_conn(1, last_receive=time.time() - 200)
+    manager = a_manager([conn])
+    asyncio.run(two_passes(manager))
+    assert "ping" in conn.sent
+    assert not manager.connections
+    close(manager)
+
+
+def test_a_peer_that_answered_recently_is_left_alone():
+    conn = a_conn(1)
+    manager = a_manager([conn])
+    asyncio.run(one_pass(manager))
+    assert conn.sent == []
+    assert list(manager.connections) == [1]
+    close(manager)
+
+
+def test_an_address_already_connected_to_is_not_dialled_again():
+    # an onion address, which this node cannot dial: reaching for it
+    # would raise into the housekeeping loop's own handler, so a quiet
+    # log is the assertion that the manager never reached
+    onion = NetworkAddress(netid=NetworkID.torv3, addr=b"\x11" * 32, port=8333)
+    conn = a_conn(1, address=onion)
+    peer_db = SimpleNamespace(is_empty=False, random_address=lambda: onion)
+    manager = a_manager([conn], peer_db=peer_db)
+    logged = []
+    manager.logger.exception = logged.append
+    asyncio.run(one_pass(manager))
+    assert not logged
+    assert list(manager.connections) == [1]
+    close(manager)
+
+
+def test_a_dial_that_comes_back_with_nothing_adds_no_connection():
+    async def connects():
+        return None
+
+    peer_db = SimpleNamespace(
+        is_empty=False,
+        random_address=lambda: SimpleNamespace(connect=connects),
+    )
+    manager = a_manager(peer_db=peer_db)
+    asyncio.run(one_pass(manager))
+    assert not manager.connections
+    close(manager)
+
+
+def refuses_to_be_asked():
+    raise RuntimeError("no")
+
+
+def test_a_peer_db_that_raises_does_not_stop_the_housekeeping():
+    logged = []
+    peer_db = SimpleNamespace(is_empty=False, random_address=refuses_to_be_asked)
+    manager = a_manager(peer_db=peer_db)
+    manager.logger.exception = logged.append
+    asyncio.run(one_pass(manager))
+    assert logged
+    close(manager)
+
+
+def test_only_one_peer_is_wanted_until_the_headers_are_synced():
+    # a peer db that refuses to be asked: reaching for a second peer
+    # would raise into the housekeeping loop's own handler, so a quiet
+    # log is the assertion that one peer was enough
+    conn = a_conn(1)
+    peer_db = SimpleNamespace(is_empty=False, random_address=refuses_to_be_asked)
+    manager = a_manager([conn], peer_db=peer_db, status=NodeStatus.Starting)
+    logged = []
+    manager.logger.exception = logged.append
+    asyncio.run(one_pass(manager))
+    assert not logged
+    close(manager)
+
+
+def test_a_message_for_a_connection_that_is_gone_is_dropped():
+    conn = a_conn(1)
+    manager = a_manager([conn])
+    manager.send("message", 99)
+    assert conn.sent == []
+    manager.send("message", 1)
+    assert conn.sent == ["message"]
+    close(manager)
+
+
+def test_every_connection_is_pinged_and_every_connection_is_stopped():
+    first, second = a_conn(1), a_conn(2)
+    manager = a_manager([first, second])
+    manager.ping_all()
+    assert first.sent == ["ping"] and second.sent == ["ping"]
+    manager.stop_all()
+    assert first.stopped == [True] and second.stopped == [True]
+    close(manager)
+
+
+def test_a_peer_that_was_pinged_recently_is_given_time_to_answer():
+    conn = a_conn(1, last_receive=time.time() - 200)
+    conn.ping_sent = time.time()
+    manager = a_manager([conn])
+    asyncio.run(one_pass(manager))
+    assert conn.sent == []
+    assert list(manager.connections) == [1]
+    close(manager)
