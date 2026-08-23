@@ -18,6 +18,30 @@ to check the guess.
 
 ## Unreleased
 
+### Header sync tells a refused batch from an empty one, and moves on
+
+- **`BlockIndex.add_headers` raises on a batch it refuses instead of
+  answering `False`, the same answer it gave a batch that carried
+  nothing new.** A header failing its own proof of work or a contextual
+  check is a peer that sent something invalid, not a peer with nothing
+  further to offer, and `callbacks.headers` no longer treats the two
+  alike: the raise reaches `handle_p2p`, which drops the connection the
+  way a bad block's raise already does (#75).
+- **`add_headers` returns the hash of the highest header in the batch
+  now indexed instead of a bool.** `header_index` only moves for a
+  header that extends it or beats its chainwork, so a fork arriving
+  below the active chain's tip left it where it was; the next
+  `getheaders` locator asked for the same batch again, and the sync
+  stopped short of the fork's own tip (#122).
+- **`callbacks.headers` names that hash in a full batch's next
+  `getheaders` locator only for a live fork below `header_index`'s own
+  tip.** An ordinary batch extending `header_index` keeps its richer,
+  multi-entry locator, which already reached that case; a batch built
+  on a header this node has already proved invalid does too, rather
+  than asking the same peer for more of a branch already proved bad,
+  with no misbehaviour scoring anywhere in this tree to ever stop that
+  otherwise (#75, #122).
+
 ### `Connection.__repr__` spells a peer's endpoint through `ip_and_port` too
 
 - **`btclib_node/p2p/connection.py` and `btclib_node/rpc/connection.py`

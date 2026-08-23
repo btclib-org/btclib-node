@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from btclib.block import BlockHeader
 from btclib.block.proof_of_work import REGTEST_POW_LIMIT_BITS
+from btclib.exceptions import BTClibValueError
 
 from btclib_node.chains import Main, RegTest
 from btclib_node.chainstate import Chainstate
@@ -57,7 +58,8 @@ def test_reject_header_claiming_work_it_did_not_do(tmp_path: Path) -> None:
     header = unmined_header(RegTest().genesis.hash, b"\x03\x00\x00\x01")
     assert calculate_work(header) > 2**254
 
-    assert not block_index.add_headers([header])
+    with pytest.raises(BTClibValueError):
+        block_index.add_headers([header])
     assert header.hash not in block_index.header_dict
     assert not block_index.block_candidates
     # genesis alone, and its chainwork untouched
@@ -71,7 +73,8 @@ def test_reject_header_above_the_pow_limit(tmp_path: Path) -> None:
     block_index = chainstate.block_index
     header = unmined_header(RegTest().genesis.hash, b"\x1d\x00\xff\xff")
 
-    assert not block_index.add_headers([header])
+    with pytest.raises(BTClibValueError):
+        block_index.add_headers([header])
     assert len(block_index.header_dict) == 1
 
 
@@ -83,7 +86,8 @@ def test_reject_header_with_zero_target(tmp_path: Path) -> None:
     block_index = chainstate.block_index
     header = unmined_header(RegTest().genesis.hash, b"\x01\x00\xff\xff")
 
-    assert not block_index.add_headers([header])
+    with pytest.raises(BTClibValueError):
+        block_index.add_headers([header])
     assert len(block_index.header_dict) == 1
 
 
@@ -95,7 +99,8 @@ def test_one_bad_header_refuses_the_whole_batch(tmp_path: Path) -> None:
     chain = generate_random_header_chain(5, RegTest().genesis.hash)
     bad = unmined_header(chain[-1].hash, b"\x03\x00\x00\x01")
 
-    assert not block_index.add_headers([*chain, bad])
+    with pytest.raises(BTClibValueError):
+        block_index.add_headers([*chain, bad])
     assert len(block_index.header_dict) == 1
     # and the same batch without it is taken
     assert block_index.add_headers(chain)
@@ -128,7 +133,8 @@ def test_a_header_with_valid_pow_but_the_wrong_required_target_is_refused(
     brute_force_nonce(header)
     assert header.bits != REGTEST_POW_LIMIT_BITS
 
-    assert not block_index.add_headers([header])
+    with pytest.raises(BTClibValueError):
+        block_index.add_headers([header])
     assert header.hash not in block_index.header_dict
     assert len(block_index.header_dict) == 1
 
@@ -153,9 +159,39 @@ def test_a_header_with_valid_pow_but_no_later_than_the_median_is_refused(
     )
     brute_force_nonce(header)
 
-    assert not block_index.add_headers([header])
+    with pytest.raises(BTClibValueError):
+        block_index.add_headers([header])
     assert header.hash not in block_index.header_dict
     assert len(block_index.header_dict) == 1
+
+
+def test_add_headers_returns_the_batch_s_own_tip(tmp_path: Path) -> None:
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    chain = generate_random_header_chain(5, RegTest().genesis.hash)
+    assert block_index.add_headers(chain) == chain[-1].hash
+    # already known in full, and still answers with its own tip
+    assert block_index.add_headers(chain) == chain[-1].hash
+
+
+def test_add_headers_resumes_from_a_fork_s_own_tip_not_the_best_chain(
+    tmp_path: Path,
+) -> None:
+    # header_index only moves for a header extending it or beating its
+    # chainwork, so a fork arriving below the active chain's tip is
+    # indexed without moving it: a caller resuming from header_index's
+    # own locator would ask for this same batch again and never reach
+    # further into the fork. btclib-org/btclib-node#122
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    active = generate_random_header_chain(5, RegTest().genesis.hash)
+    block_index.add_headers(active)
+    for header in active:
+        block_index.add_to_active_chain(header.hash)
+
+    fork = generate_random_header_chain(3, RegTest().genesis.hash)
+    assert block_index.add_headers(fork) == fork[-1].hash
+    assert fork[-1].hash not in block_index.header_index
 
 
 def test_simple_init(tmp_path: Path) -> None:
@@ -333,19 +369,26 @@ def test_add_old_header(tmp_path: Path) -> None:
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
     block_index.add_headers(chain)
-    assert not block_index.add_headers([chain[10]])
+    # already known, and still answers with its own hash: nothing new,
+    # but a real point a caller could resume from
+    assert block_index.add_headers([chain[10]]) == chain[10].hash
     assert len(block_index.header_dict) == 2000 + 1
     assert len(block_index.header_index) == 2000 + 1
     assert len(block_index.block_candidates) == 2000
 
 
-def test_add_invalid_header(tmp_path: Path) -> None:
+def test_add_headers_connecting_to_nothing_known_is_not_a_refusal(
+    tmp_path: Path,
+) -> None:
+    # every header here is validly mined; none of them fails on its own
+    # terms, so this is the "connects to nothing" branch and not the
+    # "a header failed a check" one -- it does not raise
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
     block_index.add_headers(chain)
-    invalid_chain = generate_random_header_chain(2000, Main().genesis.hash)
-    assert not block_index.add_headers(invalid_chain)
+    disconnected_chain = generate_random_header_chain(2000, Main().genesis.hash)
+    assert block_index.add_headers(disconnected_chain) is None
     assert len(block_index.header_dict) == 2000 + 1
     assert len(block_index.header_index) == 2000 + 1
     assert len(block_index.block_candidates) == 2000

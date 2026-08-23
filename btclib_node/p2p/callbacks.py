@@ -38,6 +38,7 @@ from btclib.p2p.limits import (
 )
 from btclib.p2p.negotiation import GetAddr, SendHeaders, WtxidRelay
 
+from btclib_node.chainstate.block_index import BlockStatus
 from btclib_node.chainstate.filter_index import NO_PREVIOUS_FILTER_HEADER
 from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion
 from btclib_node.exceptions import MissingPrevoutError
@@ -272,15 +273,35 @@ def getdata(node: Node, msg: bytes, conn: Connection) -> None:
 
 def headers(node: Node, msg: bytes, conn: Connection) -> None:
     headers = Headers.parse(msg).headers
-    added = node.chainstate.block_index.add_headers(headers)
-    # A fork below our tip is new to us and still does not move
-    # header_index, which is what the locator is built from -- so the
-    # next ask carries the locator just sent, the peer answers with the
-    # batch just seen, and nothing in it is new that time. `added` is
-    # what keeps that from repeating forever; what it also stops is the
-    # sync, short of the fork's own tip: btclib-org/btclib-node#122
-    if len(headers) == 2000 and added:  # we have to require more headers
-        block_locators = node.chainstate.block_index.get_block_locator_hashes()
+    # add_headers raises on a batch it refuses -- a header failing its
+    # own proof of work or context check -- and the raise is left to
+    # reach handle_p2p, which drops the connection the same way block's
+    # own does: a peer that sent it is not one telling us it has
+    # nothing left, and this is not the ordinary end of a sync.
+    # btclib-org/btclib-node#75
+    tip = node.chainstate.block_index.add_headers(headers)
+    if len(headers) == 2000:  # the peer may have more to give us
+        block_index = node.chainstate.block_index
+        # [tip] only for a live fork below header_index's own tip: that
+        # is the one case get_block_locator_hashes cannot reach on its
+        # own, since header_index only moves for a header extending it
+        # or beating its chainwork, and a locator built from it would
+        # ask for this same batch again and stall short of the fork's
+        # own tip. An ordinary batch extending header_index already gets
+        # header_index's own richer, multi-entry locator, unchanged; a
+        # batch built on a parent this node already proved invalid does
+        # too, rather than this node asking the same peer for more of a
+        # branch it has already proved bad, with no misbehaviour scoring
+        # anywhere in this tree to ever stop it otherwise.
+        # btclib-org/btclib-node#122
+        if (
+            tip is not None
+            and tip != block_index.header_index[-1]
+            and block_index.get_block_info(tip).status != BlockStatus.invalid
+        ):
+            block_locators: list[bytes] = [tip]
+        else:
+            block_locators = block_index.get_block_locator_hashes()
         conn.send(GetHeaders(ProtocolVersion, block_locators, b"\x00" * 32))
     elif node.status == NodeStatus.SyncingHeaders:
         node.status = NodeStatus.HeaderSynced

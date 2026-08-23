@@ -272,7 +272,7 @@ class BlockIndex:
             raise Exception
         self.active_chain.pop()
 
-    def add_headers(self, headers: Iterable[BlockHeader]) -> bool:
+    def add_headers(self, headers: Iterable[BlockHeader]) -> bytes | None:
         # Nothing is indexed until every header has been checked, and the
         # batch is taken or refused whole: chainwork below is credited
         # from the header's own `bits`, so a header that keeps a target
@@ -285,6 +285,12 @@ class BlockIndex:
         # above as one already indexed. A header whose parent is in
         # neither is left out of it: there is no chain to weigh it
         # against, and nothing to give it a height.
+        #
+        # A refusal raises rather than answers False: it is a peer that
+        # sent a header failing on its own terms, not the ordinary end
+        # of a sync, and the caller needs to be able to tell the two
+        # apart. btclib-org/btclib-node#75
+        headers = list(headers)
         now = datetime.now(UTC)
         pow_limit_bits = self.chain.pow_limit_bits
         pending: dict[bytes, tuple[BlockHeader, int]] = {}
@@ -313,7 +319,7 @@ class BlockIndex:
                 )
             except BTClibValueError as e:
                 self.logger.warning(f"Refused a header batch: {e}")
-                return False
+                raise
             pending[header_hash] = (header, parent_height + 1)
 
         current_work = self.get_block_info(self.active_chain[-1]).chainwork
@@ -346,8 +352,17 @@ class BlockIndex:
                 self.header_index = self.header_index[: -len(remove)]
                 self.header_index.extend(add)
 
-        # whether the batch carried a header this node did not have
-        return bool(pending)
+        # The header a caller should resume a sync from: the highest one
+        # this batch carried that is indexed now, new or already known.
+        # Not header_index[-1] -- a fork below the active chain's tip
+        # never moves header_index, so a locator built from it would ask
+        # for this same batch again and stall short of the fork's own
+        # tip. None only for a batch that connects to nothing this index
+        # knows at all. btclib-org/btclib-node#122
+        for header in reversed(headers):
+            if header.hash in self.header_dict:
+                return header.hash
+        return None
 
     # whether hash and everything back to the active chain has arrived,
     # not just hash itself -- a hole behind a downloaded tip is still a
