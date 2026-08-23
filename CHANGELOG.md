@@ -18,6 +18,17 @@ to check the guess.
 
 ## Unreleased
 
+### `Connection.__repr__` spells a peer's endpoint through `ip_and_port` too
+
+- **`btclib_node/p2p/connection.py` and `btclib_node/rpc/connection.py`
+  both format their `__repr__` through `btclib_node/p2p/address.py`'s
+  `ip_and_port` instead of `f"{peer[0]}:{peer[1]}"`** (#209). A peer at
+  `2001:db8::1` on port 8333 now reads `[2001:db8::1]:8333` in a log
+  record or a traceback carrying either connection's `repr`, where the
+  hand-written spelling gave `2001:db8::1:8333`. Every p2p socket is
+  `AF_INET` and the RPC listener binds `0.0.0.0`, so what either prints
+  for a peer this node can have today does not move.
+
 ### A lint hook, not `.gitattributes`, catches what union merges in silence
 
 - **`merge=union` stays** (#199): `btclib-org/.github#21` decided against
