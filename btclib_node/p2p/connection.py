@@ -15,6 +15,7 @@ from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.addrv2 import NetworkAddressV2
 from btclib.p2p.handshake import Version
 from btclib.p2p.keepalive import Ping
+from btclib.p2p.limits import MAX_GETCFILTERS_SIZE
 from btclib.p2p.message import Message
 from btclib.p2p.payload import Payload
 
@@ -25,6 +26,63 @@ from btclib_node.p2p.callbacks import handshake_callbacks
 if TYPE_CHECKING:
     from btclib_node import Node
     from btclib_node.p2p.manager import P2pManager
+
+
+# Core's own cap, `-maxsendbuffer` (`src/net.h`'s
+# `DEFAULT_MAXSENDBUFFER = 1 * 1000`, in the KB units
+# `src/init.cpp`'s `nSendBufferMaxSize = 1000 *
+# args.GetIntArg("-maxsendbuffer", DEFAULT_MAXSENDBUFFER)` turns into
+# bytes) is not this node's own number: at that threshold Core sets
+# `fPauseSend` (`net.cpp:4205`) and `ProcessMessages`/`ProcessGetData`
+# (`net_processing.cpp:5438`, `:2774-2776`) stop generating further
+# messages for that peer, but what is already in `vSendMsg` keeps
+# draining past the cap rather than being cut off -- Core's own queue
+# for an in-progress `getcfilters` answer routinely exceeds 1,000,000
+# bytes while paused, because BIP157's own per-request bound reaches
+# tens of megabytes on its own (`MAX_GETCFILTERS_SIZE`, `_filter_range`,
+# this module's own answer to #101). A `Connection` that refuses to
+# queue a message past a bound copied from `-maxsendbuffer` would drop
+# a peer mid-response for asking for nothing out of spec, since this
+# node has no message-processing stage separate from the handler that
+# calls `send` once and is done: there is no later "next call" to pause
+# and resume at the way `fPauseSend` is, so what queues here has to
+# accommodate an entire legitimate answer, not merely start pausing
+# where Core does.
+#
+# Bytes per filter element, measured rather than guessed: averaging
+# `btclib.block.block_filter._golomb_encode` (`BASIC_FILTER_P=19`,
+# `BASIC_FILTER_M=784931`) over synthetic element counts from 2,000 to
+# `MAX_FILTER_ELEMENT_COUNT` gives about 2.632 bytes, stable across
+# scales -- the cost is the Golomb-Rice parameter's, not the elements'.
+#
+# A real block anchors the element count instead of guessing that too:
+# height 481824 (btclib's own `tests/block/_data/block_481824.bin`,
+# 988,519 on-wire bytes) parses to 1,866 transactions, 4,124 outputs and
+# 5,192 non-coinbase inputs -- 9,316 elements before the OP_RETURN
+# exclusion and the deduplication `BasicBlockFilter.from_block` applies,
+# both of which only lower the true count -- for about 24.5 KB of
+# filter. That block is from 2017; four times its element count stands
+# in for a block nearer today's without reaching for the 111,111-element
+# theoretical ceiling (`MAX_FILTER_ELEMENT_COUNT`) itself, which no
+# chain this node could serve has ever produced 1,000 of in a row.
+_BYTES_PER_FILTER_ELEMENT = 2.632
+_ELEMENTS_PER_BUSY_MODERN_BLOCK = 4 * 9316
+
+# `MAX_GETCFILTERS_SIZE` (BIP157's own per-request bound, enforced by
+# `_filter_range`) times that estimate is one legitimate `getcfilters`
+# answer at its largest -- about 98 MB, the same order as the "tens of
+# megabytes" the issue itself measured. Twice that is room for one such
+# answer to drain in full and for a second one -- pipelined behind it,
+# per the issue's other complaint, or simply the next request a peer
+# sends without waiting for the first to finish -- to be under way as
+# well, before a connection stops being plausibly one peer served within
+# the protocol's own bounds.
+MAX_QUEUED_SEND_BYTES = int(
+    2
+    * MAX_GETCFILTERS_SIZE
+    * _ELEMENTS_PER_BUSY_MODERN_BLOCK
+    * _BYTES_PER_FILTER_ELEMENT
+)
 
 
 class Connection:
@@ -69,7 +127,27 @@ class Connection:
         self.pending_eviction: bool = False
         self.last_block_timestamp: float = time.time()
 
+        # What this connection currently owes the peer: every octet a
+        # message has been serialized into and not yet handed to
+        # `sock_sendall` in full, counted from `async_send` and not from
+        # `send`, so a message still on another thread's way to the loop
+        # is not double-counted against the one this thread is about to
+        # queue. The lock is what makes "queued" true of the number: two
+        # `async_send` calls racing `sock_sendall` on the same socket
+        # would otherwise interleave their writes on the wire.
+        self.queued_send_bytes: int = 0
+        self.send_lock = asyncio.Lock()
+
     def stop(self, cancel_task: bool = True) -> None:
+        if self.status == P2pConnStatus.Closed:
+            # Already stopped: a peer over the send-buffer bound can
+            # have several queued messages each independently discover
+            # that on the same turn of the loop, each with its own call
+            # to `stop`, before the first has had a chance to change
+            # anything a later one could check instead. Idempotent
+            # rather than counted on not to happen, since nothing
+            # elsewhere in this class serializes who gets to call it.
+            return
         self.manager.peer_db.add_active_address(self.address)
         self.status = P2pConnStatus.Closed
         if self.task and cancel_task:
@@ -120,7 +198,25 @@ class Connection:
         except Exception as e:
             self.node.logger.warning(f"error in serializing message: {e!s}")
             return
-        await self._send(data)
+
+        if self.queued_send_bytes + len(data) > MAX_QUEUED_SEND_BYTES:
+            # Not queued at all, so this message never reaches
+            # `queued_send_bytes`: a peer already over budget gets
+            # dropped rather than pushed further past it. `stop`
+            # cancels `self.task`, the recv loop, so nothing more is
+            # read from this peer either.
+            self.node.logger.warning(
+                f"send buffer bound exceeded, dropping connection: {self!r}"
+            )
+            self.stop()
+            return
+
+        self.queued_send_bytes += len(data)
+        try:
+            async with self.send_lock:
+                await self._send(data)
+        finally:
+            self.queued_send_bytes -= len(data)
         self.last_send = time.time()
 
     def send(self, msg: Payload) -> None:

@@ -88,6 +88,60 @@ to check the guess.
   Core's own `GetNodeCount`, which counts every entry of `m_nodes` and
   not only the ones that finished negotiating.
 
+### `Connection` bounds what it queues to write, and drops a peer past it
+
+- **A peer answered with more than `Connection` will queue is dropped
+  rather than left to grow the queue further** (#101). `getcfilters`,
+  bounded to 1,000 answers per request by `_filter_range`, is the
+  message the issue names: nothing stopped a peer from pipelining a
+  second request before the first's answers had gone out, so the
+  per-request bound did not bound what a peer could have outstanding at
+  once. `btclib_node/p2p/connection.py`'s `async_send` now tracks
+  `queued_send_bytes`, every serialized octet handed toward the socket
+  and not yet written, and refuses to queue a message that would push
+  the total past `MAX_QUEUED_SEND_BYTES`, calling `stop()` instead.
+- **The bound is BIP157's own traffic, not Core's `-maxsendbuffer`
+  default.** Core's cap (1,000,000 bytes) is where Core starts pausing,
+  not a size any one answer is held to -- its own send queue for an
+  in-progress `getcfilters` answer routinely exceeds it while paused,
+  because the per-request bound alone reaches tens of megabytes. This
+  node drops instead of pausing (below), so its own number has to
+  accommodate a whole legitimate answer rather than start throttling
+  where Core's does. `MAX_QUEUED_SEND_BYTES` is derived, not copied:
+  measuring `btclib`'s own Golomb-Rice filter encoder puts a filter
+  element at about 2.632 bytes regardless of scale, a real mainnet block
+  (height 481824, btclib's own test fixture) anchors what one busy block
+  costs at around 24.5 KB of filter, and four times that block's element
+  count stands in for a block nearer this node's own present -- about
+  98 KB. `MAX_GETCFILTERS_SIZE` (1,000) of those is one legitimate
+  answer at its largest, about 98 MB, the tens of megabytes the issue
+  itself measured; `MAX_QUEUED_SEND_BYTES` is twice that, room for one
+  answer to drain in full and a second one -- pipelined behind it, or
+  simply the next request -- to be under way as well.
+- **Dropping the connection instead of pausing it, unlike Core's own
+  choice for a full send buffer.** Core's `ProcessMessages` and
+  `ProcessGetData` (`net_processing.cpp`) each check `fPauseSend` before
+  generating another message for a peer over budget, leaving what is
+  already queued to drain and resuming the next call; this node has no
+  message-processing stage separate from the handler that calls `send`
+  once and is done, so there is no later call to resume at. Refusing to
+  queue further and dropping the connection is what the same
+  backpressure comes to here.
+- **The writes themselves are now serialized through a lock**,
+  `Connection.send_lock`: two `async_send` calls both past the point
+  where `loop.sock_sendall`'s own first, synchronous `sock.send` could
+  not take everything would otherwise register on the same file
+  descriptor, and `BaseSelectorEventLoop._add_writer` cancels whichever
+  of the two was already waiting rather than queuing behind it — a
+  second message's bytes reaching the peer ahead of the first's
+  remainder, on the same stream.
+- **`Connection.stop` is idempotent.** Several messages queued at once
+  can each independently discover the connection is over budget before
+  any of them has changed anything a later one could check instead, so
+  more than one can call `stop` for the same connection; a second call
+  now does nothing rather than telling `peer_db` about the same address
+  twice.
+
 ### `Connection.__repr__` spells a peer's endpoint through `ip_and_port` too
 
 - **`btclib_node/p2p/connection.py` and `btclib_node/rpc/connection.py`
