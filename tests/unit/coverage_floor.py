@@ -44,7 +44,7 @@ WHOLE_SUITE = [[], TESTPATHS, ["tests"], ["."], ["./tests"], ["tests/"]]
 
 def a_config(
     *,
-    file_or_dir: Sequence[str] = (),
+    file_or_dir: Sequence[str] | None = (),
     keyword: str = "",
     markexpr: str = "",
     deselect: list[str] | None = None,
@@ -59,7 +59,9 @@ def a_config(
     options = SimpleNamespace(cov_fail_under=FLOOR)
     return SimpleNamespace(
         option=SimpleNamespace(
-            file_or_dir=list(file_or_dir),
+            # None is what the --help path leaves it, and is not the
+            # same absence as the empty list a bare run gets
+            file_or_dir=None if file_or_dir is None else list(file_or_dir),
             keyword=keyword,
             markexpr=markexpr,
             deselect=deselect,
@@ -90,6 +92,17 @@ def test_naming_the_whole_suite_holds_the_floor(paths: list[str]) -> None:
     # is containment: read as strings, the everyday `pytest tests/`
     # would count as a subset and lose the gate
     config, options = a_config(file_or_dir=paths)
+    assert asks_for_everything(config) is True
+    assert relax_coverage_floor(config) is False
+    assert options.cov_fail_under == FLOOR
+
+
+def test_the_help_path_names_no_paths_at_all() -> None:
+    # Why --help reaches the hook with file_or_dir None is
+    # asks_for_everything's docstring. What is here is the cover: the
+    # guard it describes adds no branch for the floor to miss, so
+    # deleting this test leaves the fix untested.
+    config, options = a_config(file_or_dir=None)
     assert asks_for_everything(config) is True
     assert relax_coverage_floor(config) is False
     assert options.cov_fail_under == FLOOR

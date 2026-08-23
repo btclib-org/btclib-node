@@ -20,8 +20,18 @@ def asks_for_everything(config: pytest.Config) -> bool:
     of them -- `pytest tests/` -- collects it too, so what matters is
     containment and not equality: comparing the strings would call the
     whole suite a subset and quietly drop the floor from it.
+
+    On the `--help` path `config.option.file_or_dir` is `None` and not
+    `[]`, the parse having been abandoned rather than left unfinished:
+    `--help` is bound to pytest's `HelpAction`, which raises
+    `PrintHelp` to skip the rest of argument parsing, and
+    `Config.parse` catches it and returns before the positional is
+    consumed, so it still holds argparse's `None` default when
+    `helpconfig` calls `_do_configure()` and `pytest_configure` fires.
+    That is no path either, and folding it is what keeps `--help` from
+    ending in a traceback whose last frame is this file.
     """
-    given = [Path(path).resolve() for path in config.option.file_or_dir]
+    given = [Path(path).resolve() for path in config.option.file_or_dir or []]
     if not given:
         return True
     # against the rootdir and not against where pytest was run from,
