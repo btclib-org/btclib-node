@@ -89,21 +89,31 @@ jobs:
           # root, and the markdown kept under tests/, which says where
           # each vendored vector came from and is therefore the file
           # whose links rot with an upstream reorganization.
-          # --no-progress because the log is not a terminal; the retries,
-          # the timeout and the cache are what keep a slow or throttling
-          # host from being reported as a dead one. --timeout 45 against
-          # lychee's default of 20 buys exactly that difference, the
-          # retries above otherwise making it three timeouts rather than
-          # one. A URL that times out run after run belongs in a
-          # .lycheeignore with the measurement beside it, not here
+          # --no-progress because the log is not a terminal; the retries
+          # and the timeout are what keep a slow or throttling host from
+          # being reported as a dead one. --timeout 45 against lychee's
+          # default of 20 buys exactly that difference, the retries above
+          # otherwise making it three timeouts rather than one. A URL
+          # that times out run after run belongs in a .lycheeignore with
+          # the measurement beside it, not here.
+          # --accept is lychee's own default range with 429 added to it,
+          # rather than a list of codes: `lychee --help` gives that
+          # default as 100..=103,200..=299, and the flag replaces the
+          # range rather than adding to it, so a "200,206,429" would
+          # narrow it -- a 201 or a 204 becoming a dead link -- to add a
+          # 206 the default already covers. 429 is the one code worth
+          # adding, a rate limit being an answer from a host that is
+          # alive.
+          # No --cache: a run starts from a fresh workspace, so the cache
+          # file one run writes is read by the next only if a step
+          # restores it, and none does; within one run lychee asks each
+          # URL once whatever the flag says
           args: >-
             --no-progress
             --max-retries 3
             --retry-wait-time 10
             --timeout 45
-            --cache
-            --max-cache-age 1d
-            --accept 200,206,429
+            --accept 100..=103,200..=299,429
             "*.md" "tests/**/*.md"
           # fail the job rather than only summarizing: a green run that
           # found dead links is the state this workflow exists to end

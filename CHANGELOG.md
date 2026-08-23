@@ -46,6 +46,27 @@ to check the guess.
   Nothing changes about what `mypy` reports. What changes is that the
   list is shorter and its comment now states the condition an entry has
   to meet, which is what keeps these from being proposed again.
+### `links.yml` asks lychee a question its flags let it answer
+
+- **`--accept` is lychee's default range with `429` added, where it was
+  `200,206,429`.** The flag replaces the default rather than adding to
+  it, and `lychee --help` gives that default as `100..=103,200..=299`:
+  the list passed here turned a `201` or a `204` into a dead link to add
+  a `206` the default already covered, and a host that starts answering
+  `204` to a HEAD would have turned a live link red without anybody
+  touching the tree. The cell `tests/links_test.py` of btclib-org/.github
+  reported on this repository against btclib-org/.github#110 goes from
+  the backlog.
+
+- **`links.yml` no longer passes `--cache`.** No step restored the cache
+  file between runs, so the flag decided nothing across them, and it
+  would decide nothing with the step added: the run is weekly and the
+  cache age passed beside it was a day. Within one run lychee asks each
+  URL once whatever the flag says — `lychee --offline` over this tree's
+  globs reports the unique count beside the total, the same pair with
+  the flag and without it. The cell `tests/links_test.py` reported
+  on this repository against btclib-org/.github#111 goes from the
+  backlog.
 
 ### The root files are the organization's, and the tree says which
 
