@@ -157,13 +157,13 @@ dev = [{ include-group = "test" }, { include-group = "lint" }]
 #
 # The cost is that a source distribution of btclib is built on every
 # resolve, that a checkout needs git to install, and -- the one this
-# repository cannot absorb on its own -- that no test job runs on a pull
-# request here (REVIEWING.md says so), so a btclib `main` that breaks
-# this tree is caught by a developer's local run after a re-lock and by
-# nothing else. uv.lock pins the commit, which is what keeps that from
-# being a break arriving unannounced: a checkout is reproducible and a
-# re-lock is what moves it, deliberately, the way any other dependency
-# moves.
+# repository cannot absorb on its own -- that nothing here runs against
+# that branch as it moves: test.yml runs `uv run --locked`, so what the
+# suite exercises is the commit uv.lock pins and not btclib's tip. A
+# break therefore arrives at the re-lock that takes it, and reaches a
+# developer's local run before any job. That pin is what keeps it from
+# arriving unannounced: a checkout is reproducible and a re-lock is what
+# moves it, deliberately, the way any other dependency moves.
 #
 # The floor in [project.dependencies] above stays, and is not made
 # redundant by this: [tool.uv.sources] is uv's and is dropped from the
