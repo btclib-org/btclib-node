@@ -4,6 +4,8 @@
 
 import contextlib
 import json
+from pathlib import Path
+from typing import Any
 
 import requests
 
@@ -12,7 +14,7 @@ from btclib_node.config import Config
 from tests.helpers import get_random_port, wait_until_listening
 
 
-def test_no_method(tmp_path):
+def test_no_method(tmp_path: Path) -> None:
     node = Node(
         config=Config(
             chain="regtest",
@@ -44,7 +46,7 @@ def test_no_method(tmp_path):
     node.stop()
 
 
-def test_no_id(tmp_path):
+def test_no_id(tmp_path: Path) -> None:
     node = Node(
         config=Config(
             chain="regtest",
@@ -76,7 +78,7 @@ def test_no_id(tmp_path):
     node.stop()
 
 
-def test_invalid_method(tmp_path):
+def test_invalid_method(tmp_path: Path) -> None:
     node = Node(
         config=Config(
             chain="regtest",
@@ -109,7 +111,7 @@ def test_invalid_method(tmp_path):
     node.stop()
 
 
-def post(node, payload, timeout=5):
+def post(node: Node, payload: Any, timeout: float = 5) -> str:
     return requests.post(
         url=f"http://127.0.0.1:{node.rpc_port}",
         data=json.dumps(payload).encode(),
@@ -117,7 +119,7 @@ def post(node, payload, timeout=5):
     ).text
 
 
-def test_an_empty_batch_does_not_end_the_node(rpc_node):
+def test_an_empty_batch_does_not_end_the_node(rpc_node: Node) -> None:
     # This is the whole of #55: `[]` is legal JSON and legal JSON-RPC,
     # and it used to leave Node.run by exception -- ending the thread
     # and skipping every close after the loop. The node answering the
@@ -135,7 +137,9 @@ def test_an_empty_batch_does_not_end_the_node(rpc_node):
     assert json.loads(post(node, good))["result"]
 
 
-def test_a_request_the_handler_cannot_read_does_not_end_the_node(rpc_node):
+def test_a_request_the_handler_cannot_read_does_not_end_the_node(
+    rpc_node: Node,
+) -> None:
     # A method that is not a string reaches `request["method"] not in
     # callbacks` and raises TypeError: unhashable. Node.run's guard is
     # what keeps that to one logged line. It gets no answer, which is

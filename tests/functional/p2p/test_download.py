@@ -4,6 +4,7 @@
 
 import shutil
 import time
+from pathlib import Path
 
 import pytest
 
@@ -22,7 +23,7 @@ from tests.helpers import (
 
 
 @pytest.mark.order(1)
-def test_download(tmp_path):
+def test_download(tmp_path: Path) -> None:
     length = 3000
     chain = generate_random_chain(length, RegTest().genesis.hash)
     headers = [block.header for block in chain]
@@ -37,27 +38,27 @@ def test_download(tmp_path):
     )
     bootstrap_node.status = NodeStatus.HeaderSynced
     bootstrap_block_index = bootstrap_node.chainstate.block_index
-    for x in range(0, length, 2000):
-        bootstrap_block_index.add_headers(headers[x : x + 2000])
-    for x in bootstrap_block_index.header_dict:
-        block_info = bootstrap_block_index.get_block_info(x)
+    for start in range(0, length, 2000):
+        bootstrap_block_index.add_headers(headers[start : start + 2000])
+    for block_hash in bootstrap_block_index.header_dict:
+        block_info = bootstrap_block_index.get_block_info(block_hash)
         block_info.downloaded = True
         bootstrap_block_index.insert_block_info(block_info)
     for block in chain:
         bootstrap_node.block_db.add_block(block)
-    for x in range(len(chain)):
+    for _ in range(len(chain)):
         update_chain(bootstrap_node)
     assert bootstrap_node.status == NodeStatus.BlockSynced
     bootstrap_node.start()
     wait_until_listening(bootstrap_node.p2p_manager)
 
     download_nodes = [bootstrap_node]
-    for x in range(1, 10):
-        shutil.copytree(tmp_path / "node0", tmp_path / f"node{x}")
+    for i in range(1, 10):
+        shutil.copytree(tmp_path / "node0", tmp_path / f"node{i}")
         node = Node(
             config=Config(
                 chain="regtest",
-                data_dir=tmp_path / f"node{x}",
+                data_dir=tmp_path / f"node{i}",
                 p2p_port=get_random_port(),
                 allow_rpc=False,
             )

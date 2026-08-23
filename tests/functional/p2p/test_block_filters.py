@@ -12,8 +12,12 @@ filter to decide whether a block is worth fetching.
 """
 
 from collections import deque
+from collections.abc import Iterator
+from typing import ClassVar, Protocol, Self, cast
 
 import pytest
+from btclib.alias import BinaryData
+from btclib.block import Block
 from btclib.block.block_filter import BasicBlockFilter, filter_header
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.block_filters import (
@@ -25,6 +29,7 @@ from btclib.p2p.block_filters import (
     GetCFHeaders,
     GetCFilters,
 )
+from btclib.p2p.payload import Payload
 
 from btclib_node import Node
 from btclib_node.chains import RegTest
@@ -44,6 +49,22 @@ CHAIN_LENGTH = 3
 # what Connection.parse_messages puts on the queue: the command, the
 # payload behind it, and which connection it came in on
 Message = tuple[str, bytes, int]
+
+Peers = tuple[Node, Node, list[Block]]
+
+
+class _ParsablePayload(Protocol):
+    """The shape `received` and `answers` need: a command and a parser.
+
+    `Payload` declares `command` but not `parse` -- every subclass
+    declares that for its own return type, and this is what names the
+    shape the ones these two functions are handed all share.
+    """
+
+    command: ClassVar[str]
+
+    @classmethod
+    def parse(cls, data: BinaryData, *, check_validity: bool = True) -> Self: ...
 
 
 class RecordingDeque(deque[Message]):
@@ -69,7 +90,7 @@ class RecordingDeque(deque[Message]):
 
 
 @pytest.fixture(scope="module")
-def peers(tmp_path_factory):
+def peers(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Peers]:
     """One connected pair for the module, rather than one per test.
 
     Every test here is a request and its answer over a connection that
@@ -116,7 +137,7 @@ def peers(tmp_path_factory):
     wait_until(lambda: len(server.p2p_manager.connections))
     for node in nodes:
         connection = node.p2p_manager.connections[0]
-        wait_until(lambda c=connection: c.status == P2pConnStatus.Connected)
+        wait_until(lambda: connection.status == P2pConnStatus.Connected)
 
     try:
         yield server, client, chain
@@ -126,7 +147,7 @@ def peers(tmp_path_factory):
 
 
 @pytest.fixture
-def mark(peers):
+def mark(peers: Peers) -> int:
     """Where this test's answers begin in what the client has seen.
 
     The pair is shared, so the queue carries the messages of the tests
@@ -134,36 +155,46 @@ def mark(peers):
     somebody else's answer.
     """
     _, client, _ = peers
-    return len(client.p2p_manager.messages.seen)
+    return len(cast("RecordingDeque", client.p2p_manager.messages).seen)
 
 
-def received(client, message_type, mark=0):
+def received[M: _ParsablePayload](
+    client: Node, message_type: type[M], mark: int = 0
+) -> list[M]:
+    seen = cast("RecordingDeque", client.p2p_manager.messages).seen
     return [
         message_type.parse(payload)
-        for command, payload, _ in client.p2p_manager.messages.seen[mark:]
+        for command, payload, _ in seen[mark:]
         if command == message_type.command
     ]
 
 
-def answers(client, message_type, mark, count=1):
+def answers[M: _ParsablePayload](
+    client: Node, message_type: type[M], mark: int, count: int = 1
+) -> list[M]:
     """Wait for the peer's answers to arrive, and parse them."""
     wait_until(lambda: len(received(client, message_type, mark)) >= count)
     return received(client, message_type, mark)
 
 
-def ask(client, message):
+def ask(client: Node, message: Payload) -> None:
     client.p2p_manager.connections[0].send(message)
 
 
-def test_a_peer_is_told_this_node_serves_compact_filters(peers, mark):
+def test_a_peer_is_told_this_node_serves_compact_filters(
+    peers: Peers, mark: int
+) -> None:
     server, client, _ = peers
     version = server.p2p_manager.connections[0].version_message
+    assert version is not None
     # the client's own advertisement, read by the server: a node
     # that answers these messages says so in its version
     assert version.services & ServiceFlags.NODE_COMPACT_FILTERS
 
 
-def test_the_filters_a_peer_is_sent_are_the_ones_it_asked_for(peers, mark):
+def test_the_filters_a_peer_is_sent_are_the_ones_it_asked_for(
+    peers: Peers, mark: int
+) -> None:
     server, client, chain = peers
     ask(
         client,
@@ -181,7 +212,9 @@ def test_the_filters_a_peer_is_sent_are_the_ones_it_asked_for(peers, mark):
         assert block_filter.match(paid_to)
 
 
-def test_a_client_can_build_the_header_chain_from_what_it_is_sent(peers, mark):
+def test_a_client_can_build_the_header_chain_from_what_it_is_sent(
+    peers: Peers, mark: int
+) -> None:
     server, client, chain = peers
     ask(client, GetCFHeaders(BlockFilterType.BASIC, 1, chain[-1].header.hash))
     (headers_message,) = answers(client, CFHeaders, mark)
@@ -202,7 +235,9 @@ def test_a_client_can_build_the_header_chain_from_what_it_is_sent(peers, mark):
     )
 
 
-def test_the_checkpoints_of_a_chain_shorter_than_the_interval(peers, mark):
+def test_the_checkpoints_of_a_chain_shorter_than_the_interval(
+    peers: Peers, mark: int
+) -> None:
     server, client, chain = peers
     ask(client, GetCFCheckpt(BlockFilterType.BASIC, chain[-1].header.hash))
     (checkpoints,) = answers(client, CFCheckpt, mark)
@@ -212,7 +247,9 @@ def test_the_checkpoints_of_a_chain_shorter_than_the_interval(peers, mark):
     assert not checkpoints.filter_headers
 
 
-def test_a_filter_type_this_node_does_not_serve_gets_no_answer(peers, mark):
+def test_a_filter_type_this_node_does_not_serve_gets_no_answer(
+    peers: Peers, mark: int
+) -> None:
     server, client, chain = peers
     ask(client, GetCFilters(1, 1, chain[-1].header.hash))
     # and then something it does answer, so this waits on an event
@@ -223,16 +260,19 @@ def test_a_filter_type_this_node_does_not_serve_gets_no_answer(peers, mark):
     assert not received(client, CFilter, mark)
 
 
-def test_the_header_a_peer_derives_is_the_one_a_client_computes(peers, mark):
+def test_the_header_a_peer_derives_is_the_one_a_client_computes(
+    peers: Peers, mark: int
+) -> None:
     # the cross-check that does not go through the node at all: the
     # filters of the blocks, chained from the genesis block the way
     # BIP157 defines it, are what the server says they are
     server, client, chain = peers
     filter_index = server.chainstate.filter_index
     header = filter_index.get_header(RegTest().genesis.hash)
+    assert header is not None
     for block in chain:
-        block_filter = BasicBlockFilter.parse(
-            filter_index.get_filter(block.header.hash), block.header.hash
-        )
+        block_filter_bytes = filter_index.get_filter(block.header.hash)
+        assert block_filter_bytes is not None
+        block_filter = BasicBlockFilter.parse(block_filter_bytes, block.header.hash)
         header = filter_header(block_filter.hash, header)
         assert header == filter_index.get_header(block.header.hash)

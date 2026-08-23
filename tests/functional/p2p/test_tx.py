@@ -2,6 +2,8 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+from pathlib import Path
+
 from btclib_node import Node
 from btclib_node.chains import RegTest
 from btclib_node.config import Config
@@ -16,7 +18,7 @@ from tests.helpers import (
 )
 
 
-def test_send_tx(tmp_path):
+def test_send_tx(tmp_path: Path) -> None:
     node1 = Node(
         config=Config(
             chain="regtest",

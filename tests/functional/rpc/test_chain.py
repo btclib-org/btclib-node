@@ -3,6 +3,7 @@
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
 import json
+from pathlib import Path
 
 import requests
 
@@ -19,7 +20,7 @@ from tests.helpers import (
 )
 
 
-def test_best_block_hash(rpc_node):
+def test_best_block_hash(rpc_node: Node) -> None:
     node = rpc_node
 
     wait_until_listening(node.rpc_manager)
@@ -56,7 +57,7 @@ def test_best_block_hash(rpc_node):
     assert response["result"] == header_chain[-1].hash.hex()
 
 
-def test_block_hash(rpc_node):
+def test_block_hash(rpc_node: Node) -> None:
     node = rpc_node
 
     wait_until_listening(node.rpc_manager)
@@ -93,7 +94,7 @@ def test_block_hash(rpc_node):
     assert response["result"] == header_chain[50 - 1].hash.hex()
 
 
-def test_block_header_last(tmp_path):
+def test_block_header_last(tmp_path: Path) -> None:
     node = Node(
         config=Config(
             chain="regtest",
@@ -133,7 +134,7 @@ def test_block_header_last(tmp_path):
     node.stop()
 
 
-def test_block_header_middle(tmp_path):
+def test_block_header_middle(tmp_path: Path) -> None:
     node = Node(
         config=Config(
             chain="regtest",
