@@ -72,7 +72,7 @@ permissions:
 # dispatch carries pull_request context, so github.ref still groups
 # either of those, and a closed pull request cannot land in their group
 concurrency:
-  group: macos-${{ github.event.pull_request.number || github.ref }}
+  group: os-macos-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
