@@ -34,9 +34,13 @@ def test_simple_connection(tmp_path: Path) -> None:
     wait_until_listening(node2.p2p_manager)
 
     node2.p2p_manager.connect(local_addr(node1.p2p_port))
+    # each side's own `connections` only holds a peer past its own
+    # `verack`, and the two handshakes complete independently, so each
+    # is waited for on its own rather than assuming one implies the other
     wait_until(lambda: len(node1.p2p_manager.connections))
     connection = node1.p2p_manager.connections[0]
     wait_until(lambda: connection.status == P2pConnStatus.Connected)
+    wait_until(lambda: len(node2.p2p_manager.connections))
     connection = node2.p2p_manager.connections[0]
     wait_until(lambda: connection.status == P2pConnStatus.Connected)
 
@@ -60,6 +64,10 @@ def test_connection_to_ourselves(tmp_path: Path) -> None:
     node.p2p_manager.connect(local_addr(node.p2p_port))
 
     wait_until(lambda: len(node.p2p_manager.nonces) == 2)
-    wait_until(lambda: not len(node.p2p_manager.connections))
+    # a connection to itself is stopped inside `version`, before its own
+    # `verack` could ever promote it: it never reaches `connections`, so
+    # `pending_connections` emptying out is what proves it was let go of
+    wait_until(lambda: not len(node.p2p_manager.pending_connections))
+    assert not node.p2p_manager.connections
 
     node.stop()

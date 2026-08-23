@@ -13,8 +13,12 @@ if TYPE_CHECKING:
 
 def handle_p2p_handshake(node: Node) -> None:
     msg_type, msg, conn_id = node.p2p_manager.handshake_messages.popleft()
-    if conn_id in node.p2p_manager.connections:
-        conn = node.p2p_manager.connections[conn_id]
+    manager = node.p2p_manager
+    # a connection still finishing its handshake, which is where every
+    # one of these four commands is answered, or one already promoted
+    # that a peer sent a second version/verack/wtxidrelay/sendaddrv2 to
+    conn = manager.pending_connections.get(conn_id) or manager.connections.get(conn_id)
+    if conn is not None:
         node.logger.info(f"Received p2p message: {msg_type}, {conn_id}")
         try:
             if conn.status == P2pConnStatus.Open:
@@ -30,8 +34,13 @@ def handle_p2p_handshake(node: Node) -> None:
 
 def handle_p2p(node: Node) -> None:
     msg_type, msg, conn_id = node.p2p_manager.messages.popleft()
-    if conn_id in node.p2p_manager.connections:
-        conn = node.p2p_manager.connections[conn_id]
+    manager = node.p2p_manager
+    # a connection still pending is still found here, so that anything
+    # other than the four handshake commands it sends before `verack`
+    # reaches the same `conn.stop()` a status of `Open` already gets
+    # below, rather than being silently dropped along with the lookup
+    conn = manager.connections.get(conn_id) or manager.pending_connections.get(conn_id)
+    if conn is not None:
         node.logger.info(f"Received p2p message: {msg_type}, {conn_id}")
         try:
             if msg_type in callbacks:

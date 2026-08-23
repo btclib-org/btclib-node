@@ -32,6 +32,15 @@ class P2pManager(threading.Thread):
         self.peer_db = peer_db
 
         self.connections: dict[int, Connection] = {}
+        # A connection accepted or dialled but not yet past `verack`,
+        # kept out of `connections` so that nothing iterating it -- the
+        # two sends #114 gated, ping housekeeping, `stop_all` -- can
+        # reach a peer the handshake has not cleared to speak the rest
+        # of the protocol to: btclib-org/btclib-node#131.
+        # `promote_connection` is the only way out of this dict, and
+        # `callbacks.verack` is the only caller, right where
+        # `P2pConnStatus.Connected` is set.
+        self.pending_connections: dict[int, Connection] = {}
         # (command, payload, connection id), which is what a connection
         # appends and what p2p.main pops apart; the handshake ones go
         # in a queue of their own, drained whole before the rest.
@@ -56,14 +65,26 @@ class P2pManager(threading.Thread):
         client.settimeout(0.0)
         self.last_connection_id += 1
         conn = Connection(self, client, address, self.last_connection_id, inbound)
-        self.connections[self.last_connection_id] = conn
+        self.pending_connections[self.last_connection_id] = conn
         task = asyncio.run_coroutine_threadsafe(conn.run(), self.loop)
         conn.task = task
 
+    def promote_connection(self, id: int) -> None:
+        """Move a connection out of the handshake and into the herd.
+
+        The only caller is `callbacks.verack`, right after it sets
+        `P2pConnStatus.Connected` -- the two are one step, kept as two
+        calls only because the status belongs to the connection and the
+        dict it lives in belongs to the manager.
+        """
+        conn = self.pending_connections.pop(id, None)
+        if conn is not None:
+            self.connections[id] = conn
+
     def remove_connection(self, id: int) -> None:
-        if id in self.connections.keys():
-            self.connections[id].stop()
-            self.connections.pop(id)
+        conn = self.connections.pop(id, None) or self.pending_connections.pop(id, None)
+        if conn is not None:
+            conn.stop()
 
     async def async_connect(self, address: NetworkAddressV2) -> None:
         client = await dial(address)
@@ -84,12 +105,28 @@ class P2pManager(threading.Thread):
                         conn.send_ping()
                     elif now - conn.ping_sent > 120:
                         self.remove_connection(conn.id)
+            for conn in self.pending_connections.copy().values():
+                # The same idle bound, but no ping in between: `ping` is
+                # as much a message the handshake has to clear before it
+                # is sent as `inv` or `tx` is, so a connection stuck
+                # short of `verack` is dropped once it goes quiet rather
+                # than kept a second 120s waiting on an answer to
+                # something #131 forbids sending it.
+                if conn.status == P2pConnStatus.Closed or now - conn.last_receive > 120:
+                    self.remove_connection(conn.id)
             if self.node.status < NodeStatus.HeaderSynced:
                 connection_num = 1
             else:
                 connection_num = 10
-            if len(self.connections) < connection_num and not self.peer_db.is_empty:
-                already_connected = [conn.address for conn in self.connections.values()]
+            live = len(self.connections) + len(self.pending_connections)
+            if live < connection_num and not self.peer_db.is_empty:
+                already_connected = [
+                    conn.address
+                    for conn in (
+                        *self.connections.values(),
+                        *self.pending_connections.values(),
+                    )
+                ]
                 try:
                     address = self.peer_db.random_address()
                     # `is_empty` answers whether the table holds
@@ -162,7 +199,10 @@ class P2pManager(threading.Thread):
 
     def stop(self) -> None:
         self.loop.call_soon_threadsafe(self.loop.stop)
-        for conn in self.connections.copy().values():
+        for conn in (
+            *self.connections.copy().values(),
+            *self.pending_connections.copy().values(),
+        ):
             conn.stop()
         while self.loop.is_running():
             pass
@@ -200,5 +240,10 @@ class P2pManager(threading.Thread):
             conn.send_ping()
 
     def stop_all(self) -> None:
-        for conn in self.connections.copy().values():
+        # every socket this manager holds, handshake finished or not:
+        # a peer mid-`verack` is still a peer to close on shutdown
+        for conn in (
+            *self.connections.copy().values(),
+            *self.pending_connections.copy().values(),
+        ):
             conn.stop()

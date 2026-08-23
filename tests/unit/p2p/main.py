@@ -30,13 +30,15 @@ def make_node(
     *,
     status: P2pConnStatus,
     present: bool = True,
+    pending: bool = False,
 ) -> tuple[Any, list[bool]]:
     stopped: list[bool] = []
     conn = SimpleNamespace(status=status, stop=lambda: stopped.append(True))
     manager = SimpleNamespace(
         messages=deque(),
         handshake_messages=deque(),
-        connections={0: conn} if present else {},
+        connections={0: conn} if present and not pending else {},
+        pending_connections={0: conn} if present and pending else {},
     )
     getattr(manager, queue_name).append(item)
     node = SimpleNamespace(
@@ -108,6 +110,29 @@ def test_a_handshake_message_for_a_connection_that_is_gone_is_dropped() -> None:
     assert not stopped
 
 
+def test_a_handshake_message_reaches_a_connection_still_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # every handshake command is answered before `verack` promotes a
+    # connection out of `pending_connections`, so this is where every
+    # one of them, `verack` itself included, is actually found
+    seen: list[bytes] = []
+
+    def a_callback(node: Node, msg: bytes, conn: Connection) -> None:
+        seen.append(msg)
+
+    monkeypatch.setitem(handshake_callbacks, "verack", a_callback)
+    node, stopped = make_node(
+        "handshake_messages",
+        ("verack", b"", 0),
+        status=P2pConnStatus.Open,
+        pending=True,
+    )
+    handle_p2p_handshake(node)
+    assert seen == [b""]
+    assert not stopped
+
+
 def test_a_message_reaches_its_callback(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[bytes] = []
 
@@ -161,3 +186,14 @@ def test_a_message_for_a_connection_that_is_gone_is_dropped() -> None:
     )
     handle_p2p(node)
     assert not stopped
+
+
+def test_a_message_on_a_connection_still_pending_drops_the_peer() -> None:
+    # anything but the four handshake commands, arriving before verack
+    # promotes the connection: a protocol violation whether the sender
+    # is found in `connections` or still in `pending_connections`
+    node, stopped = make_node(
+        "messages", ("ping", b"", 0), status=P2pConnStatus.Open, pending=True
+    )
+    handle_p2p(node)
+    assert stopped == [True]

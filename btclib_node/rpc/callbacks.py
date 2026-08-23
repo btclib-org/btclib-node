@@ -210,7 +210,11 @@ def get_peer_info(node: Node, conn: Connection, _: list[Any]) -> list[dict[str, 
 
 
 def get_connection_count(node: Node, conn: Connection, _: list[Any]) -> int:
-    return len(node.p2p_manager.connections)
+    # Core's own `getconnectioncount` counts every entry of `m_nodes`
+    # (`CConnman::GetNodeCount`), which holds a socket from the moment
+    # it is accepted or dialled -- before its handshake, not only after
+    manager = node.p2p_manager
+    return len(manager.connections) + len(manager.pending_connections)
 
 
 def get_mempool_info(node: Node, conn: Connection, _: list[Any]) -> dict[str, Any]:

@@ -125,10 +125,12 @@ def a_node(
     peers: dict[int, Any] | None = None,
     mempool: Mempool | None = None,
     accept: Any = None,
+    pending: dict[int, Any] | None = None,
 ) -> Any:
     return SimpleNamespace(
         p2p_manager=SimpleNamespace(
             connections=peers if peers is not None else {},
+            pending_connections=pending if pending is not None else {},
             ping_all=lambda: None,
         ),
         mempool=mempool if mempool is not None else Mempool(Logger(debug=True)),
@@ -204,6 +206,13 @@ def test_a_peer_that_goes_away_mid_lookup_is_skipped() -> None:
 
 def test_the_connection_count_is_every_connection() -> None:
     assert get_connection_count(a_node({1: a_peer(), 2: a_peer()}), _CONN, []) == 2
+
+
+def test_the_connection_count_includes_a_peer_still_mid_handshake() -> None:
+    # Core's own `getconnectioncount` counts every entry of `m_nodes`,
+    # which holds a socket before its handshake and not only after
+    node = a_node({1: a_peer()}, pending={2: a_peer(P2pConnStatus.Open)})
+    assert get_connection_count(node, _CONN, []) == 2
 
 
 def test_the_mempool_reports_its_size_and_bytes() -> None:

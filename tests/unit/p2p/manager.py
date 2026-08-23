@@ -174,6 +174,37 @@ def test_removing_a_connection_stops_it(a_manager: AManagerFactory) -> None:
     assert conn.stopped == [True]
 
 
+def test_removing_a_connection_still_pending_stops_it_too(
+    a_manager: AManagerFactory,
+) -> None:
+    conn = a_conn(1, status=P2pConnStatus.Open)
+    manager = a_manager()
+    manager.pending_connections[conn.id] = conn
+    manager.remove_connection(1)
+    assert not manager.pending_connections
+    assert conn.stopped == [True]
+
+
+def test_promoting_a_connection_moves_it_into_connections(
+    a_manager: AManagerFactory,
+) -> None:
+    conn = a_conn(1, status=P2pConnStatus.Open)
+    manager = a_manager()
+    manager.pending_connections[conn.id] = conn
+    manager.promote_connection(1)
+    assert list(manager.connections) == [1]
+    assert not manager.pending_connections
+
+
+def test_promoting_a_connection_that_is_not_pending_changes_nothing(
+    a_manager: AManagerFactory,
+) -> None:
+    manager = a_manager()
+    manager.promote_connection(99)
+    assert not manager.connections
+    assert not manager.pending_connections
+
+
 def test_a_peer_that_cannot_be_dialled_is_not_kept(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -184,6 +215,7 @@ def test_a_peer_that_cannot_be_dialled_is_not_kept(
     manager = a_manager()
     asyncio.run(manager.async_connect(peer_address("1.2.3.4", 18444)))
     assert not manager.connections
+    assert not manager.pending_connections
 
 
 def test_a_connection_that_has_closed_is_let_go_of(a_manager: AManagerFactory) -> None:
@@ -219,6 +251,57 @@ def test_a_peer_that_answered_recently_is_left_alone(
     assert list(manager.connections) == [1]
 
 
+def test_a_pending_connection_that_has_closed_is_let_go_of(
+    a_manager: AManagerFactory,
+) -> None:
+    conn = a_conn(1, status=P2pConnStatus.Closed)
+    manager = a_manager()
+    manager.pending_connections[conn.id] = conn
+    asyncio.run(one_pass(manager))
+    assert not manager.pending_connections
+
+
+def test_a_pending_connection_gone_quiet_is_dropped_without_a_ping(
+    a_manager: AManagerFactory,
+) -> None:
+    # `ping` is as much a message the handshake has to clear before it
+    # is sent as `inv`/`tx` is, so a connection stuck short of `verack`
+    # is dropped once idle rather than pinged and given a second window
+    conn = a_conn(1, status=P2pConnStatus.Open, last_receive=time.time() - 200)
+    manager = a_manager()
+    manager.pending_connections[conn.id] = conn
+    asyncio.run(one_pass(manager))
+    assert not manager.pending_connections
+    assert conn.sent == []
+
+
+def test_a_pending_connection_still_within_the_window_is_left_alone(
+    a_manager: AManagerFactory,
+) -> None:
+    conn = a_conn(1, status=P2pConnStatus.Open)
+    manager = a_manager()
+    manager.pending_connections[conn.id] = conn
+    asyncio.run(one_pass(manager))
+    assert list(manager.pending_connections) == [1]
+    assert conn.sent == []
+
+
+def test_a_pending_connection_also_counts_toward_the_connection_target(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # one already pending fills the one-peer target before headers are
+    # synced: reaching for a second would raise into the housekeeping
+    # loop's own handler, so a quiet log is the assertion that it did not
+    conn = a_conn(1, status=P2pConnStatus.Open)
+    peer_db = SimpleNamespace(is_empty=False, random_address=refuses_to_be_asked)
+    manager = a_manager(peer_db=peer_db, status=NodeStatus.Starting)
+    manager.pending_connections[conn.id] = conn
+    logged: list[str] = []
+    monkeypatch.setattr(manager.logger, "exception", logged.append)
+    asyncio.run(one_pass(manager))
+    assert not logged
+
+
 def test_an_address_already_connected_to_is_not_dialled_again(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -236,6 +319,21 @@ def test_an_address_already_connected_to_is_not_dialled_again(
     assert list(manager.connections) == [1]
 
 
+def test_a_pending_connection_s_address_is_not_dialled_again_either(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    onion = NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, 8333)
+    conn = a_conn(1, status=P2pConnStatus.Open, address=onion)
+    peer_db = SimpleNamespace(is_empty=False, random_address=lambda: onion)
+    manager = a_manager(peer_db=peer_db)
+    manager.pending_connections[conn.id] = conn
+    logged: list[str] = []
+    monkeypatch.setattr(manager.logger, "exception", logged.append)
+    asyncio.run(one_pass(manager))
+    assert not logged
+    assert list(manager.pending_connections) == [1]
+
+
 def test_a_dial_that_comes_back_with_nothing_adds_no_connection(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -250,6 +348,7 @@ def test_a_dial_that_comes_back_with_nothing_adds_no_connection(
     manager = a_manager(peer_db=peer_db)
     asyncio.run(one_pass(manager))
     assert not manager.connections
+    assert not manager.pending_connections
 
 
 def refuses_to_be_asked() -> NoReturn:
@@ -303,11 +402,19 @@ def test_every_connection_is_pinged_and_every_connection_is_stopped(
     a_manager: AManagerFactory,
 ) -> None:
     first, second = a_conn(1), a_conn(2)
+    pending = a_conn(3, status=P2pConnStatus.Open)
     manager = a_manager([first, second])
+    manager.pending_connections[pending.id] = pending
     manager.ping_all()
     assert first.sent == ["ping"] and second.sent == ["ping"]
+    # `ping` is as much a post-handshake message as `inv`/`tx` is, so a
+    # connection still finishing its handshake is not one of "every
+    # connection" ping_all reaches: btclib-org/btclib-node#131
+    assert pending.sent == []
     manager.stop_all()
     assert first.stopped == [True] and second.stopped == [True]
+    # shutdown is different: a socket mid-handshake still gets closed
+    assert pending.stopped == [True]
 
 
 def test_a_transaction_of_our_own_goes_only_to_the_peers_that_want_them(
@@ -323,6 +430,19 @@ def test_a_transaction_of_our_own_goes_only_to_the_peers_that_want_them(
     (sent,) = wants.sent
     assert sent.tx.id == tx.id
     assert declined.sent == []
+
+
+def test_a_transaction_of_our_own_does_not_reach_a_connection_still_pending(
+    a_manager: AManagerFactory,
+) -> None:
+    # the other of the two sends #114 gated on `relay_tx`:
+    # btclib-org/btclib-node#131 is that neither reaches a connection
+    # the handshake has not cleared to be sent anything at all
+    pending = a_conn(1, status=P2pConnStatus.Open)
+    manager = a_manager()
+    manager.pending_connections[pending.id] = pending
+    manager.broadcast_raw_transaction(generate_random_transaction())
+    assert pending.sent == []
 
 
 def test_a_peer_that_was_pinged_recently_is_given_time_to_answer(
@@ -382,7 +502,9 @@ def test_a_peer_that_answers_the_dial_becomes_a_connection(
 
     async def dial() -> None:
         await one_pass(manager)
-        (conn,) = manager.connections.values()
+        # dialled, not yet handshaken: `create_connection` is what
+        # `one_pass` reaches, and it starts every connection pending
+        (conn,) = manager.pending_connections.values()
         assert conn.client is ours
         assert not conn.inbound
         assert conn.task is not None
@@ -434,8 +556,11 @@ def test_a_manager_says_when_it_is_listening_and_not_before(
     try:
         wait_until_listening(manager)
         with socket.create_connection(("127.0.0.1", port), timeout=20) as peer:
-            wait_until(lambda: manager.connections)
-            (conn,) = manager.connections.values()
+            # a raw socket, not a peer that speaks the protocol: nothing
+            # answers this node's `version`, so the handshake never
+            # reaches `verack` and the accepted connection stays pending
+            wait_until(lambda: manager.pending_connections)
+            (conn,) = manager.pending_connections.values()
             assert conn.inbound
             assert conn.address.port == peer.getsockname()[1]
             # the version this node opens with: the socket was accepted
@@ -502,8 +627,11 @@ def test_a_manager_dials_the_address_it_is_given(a_manager: AManagerFactory) -> 
     try:
         wait_until_listening(manager)
         manager.connect(peer_address("127.0.0.1", port))
-        wait_until(lambda: len(manager.connections) == 2)
-        inbound = [conn.inbound for conn in manager.connections.values()]
+        # both ends are real `Connection`s speaking the protocol to each
+        # other, but nothing here drains `handshake_messages` to answer
+        # either `version` with a `verack`, so both stay pending
+        wait_until(lambda: len(manager.pending_connections) == 2)
+        inbound = [conn.inbound for conn in manager.pending_connections.values()]
         assert sorted(inbound) == [False, True]
     finally:
         manager.stop()
@@ -522,8 +650,11 @@ def test_a_message_sent_on_a_running_connection_reaches_the_peer(
     try:
         wait_until_listening(manager)
         with socket.create_connection(("127.0.0.1", port), timeout=20) as peer:
-            wait_until(lambda: manager.connections)
-            (conn,) = manager.connections.values()
+            # `Connection.send` is not gated on the manager's own dicts,
+            # so a raw peer's connection reaching only `pending_connections`
+            # sends exactly as well as one promoted to `connections` would
+            wait_until(lambda: manager.pending_connections)
+            (conn,) = manager.pending_connections.values()
             conn.send(Ping(7))
             # bounded by the socket's own timeout, so a ping that never
             # arrives is a failure rather than a test that never ends
@@ -562,8 +693,10 @@ def test_stopping_a_running_manager_stops_the_connections_it_holds(
     # out before the stop below leaves the manager to the fixture, which
     # stops what it finds running.
     with closing(socket.create_connection(("127.0.0.1", port), timeout=20)):
-        wait_until(lambda: manager.connections)
-        (conn,) = manager.connections.values()
+        # a raw peer, never past the handshake, so `stop` has to reach
+        # it through `pending_connections` rather than `connections`
+        wait_until(lambda: manager.pending_connections)
+        (conn,) = manager.pending_connections.values()
         manager.stop()
         manager.join(timeout=10)
     assert conn.status == P2pConnStatus.Closed
