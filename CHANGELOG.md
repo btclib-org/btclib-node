@@ -28,14 +28,19 @@ to check the guess.
   alike: the raise reaches `handle_p2p`, which drops the connection the
   way a bad block's raise already does (#75).
 - **`add_headers` returns the hash of the highest header in the batch
-  now indexed instead of a bool, and a full batch's next `getheaders`
-  locator is built from it rather than from `header_index`.**
-  `header_index` only moves for a header that extends it or beats its
-  chainwork, so a fork arriving below the active chain's tip left it
-  where it was; the next locator asked for the same batch again, and
-  the sync stopped short of the fork's own tip. Resuming from the
-  batch's own tip does not depend on `header_index` moving at all
-  (#122).
+  now indexed instead of a bool.** `header_index` only moves for a
+  header that extends it or beats its chainwork, so a fork arriving
+  below the active chain's tip left it where it was; the next
+  `getheaders` locator asked for the same batch again, and the sync
+  stopped short of the fork's own tip (#122).
+- **`callbacks.headers` names that hash in a full batch's next
+  `getheaders` locator only for a live fork below `header_index`'s own
+  tip.** An ordinary batch extending `header_index` keeps its richer,
+  multi-entry locator, which already reached that case; a batch built
+  on a header this node has already proved invalid does too, rather
+  than asking the same peer for more of a branch already proved bad,
+  with no misbehaviour scoring anywhere in this tree to ever stop that
+  otherwise (#75, #122).
 
 ### `Connection.__repr__` spells a peer's endpoint through `ip_and_port` too
 

@@ -63,6 +63,8 @@ from btclib.script.witness import Witness
 from btclib.tx.tx import Tx
 
 from btclib_node.chains import RegTest
+from btclib_node.chainstate import Chainstate
+from btclib_node.chainstate.block_index import BlockStatus
 from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.log import Logger
@@ -871,9 +873,18 @@ def test_an_inventory_of_neither_kind_is_skipped() -> None:
 
 
 class FakeHeaderIndex:
-    def __init__(self, tip: bytes | None = None, *, refuse: bool = False) -> None:
+    def __init__(
+        self,
+        tip: bytes | None = None,
+        *,
+        refuse: bool = False,
+        header_index_tip: bytes = b"\xff" * 32,
+        tip_status: BlockStatus = BlockStatus.valid_header,
+    ) -> None:
         self.tip = tip
         self.refuse = refuse
+        self.header_index = [header_index_tip]
+        self.tip_status = tip_status
         self.given: list[BlockHeader] | None = None
 
     def add_headers(self, headers: Iterable[BlockHeader]) -> bytes | None:
@@ -883,22 +894,65 @@ class FakeHeaderIndex:
             raise BTClibValueError(err_msg)
         return self.tip
 
+    def get_block_info(self, block_hash: bytes) -> SimpleNamespace:
+        return SimpleNamespace(status=self.tip_status)
+
     def get_block_locator_hashes(self) -> list[bytes]:
         return [b"\x00" * 32]
 
 
-def test_a_full_batch_of_headers_is_followed_by_a_request_for_more() -> None:
+def test_a_full_batch_extending_the_best_chain_uses_the_usual_locator() -> None:
+    # header_index already reaches an ordinary batch's own tip -- #122 is
+    # about a fork below it, not this case -- so nothing here should
+    # narrow the richer, multi-entry locator to a single hash
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
     node = a_data_node(status=NodeStatus.SyncingHeaders)
-    index = FakeHeaderIndex(tip=chain[-1].hash)
+    index = FakeHeaderIndex(tip=chain[-1].hash, header_index_tip=chain[-1].hash)
     node.chainstate.block_index = index
     peer = a_peer()
     headers(node, Headers(chain).serialize(), peer)
     assert index.given == chain
     (answer,) = peer.sent
     assert isinstance(answer, GetHeaders)
-    # from the batch's own tip, not the best chain's: btclib-org/btclib-node#122
+    assert answer.locator == (b"\x00" * 32,)
+    assert node.status == NodeStatus.SyncingHeaders
+
+
+def test_a_full_batch_on_a_live_fork_asks_from_the_fork_s_own_tip() -> None:
+    # header_index does not move for a fork arriving below its own tip,
+    # so its own locator would ask for this same batch again:
+    # btclib-org/btclib-node#122
+    chain = generate_random_header_chain(2000, RegTest().genesis.hash)
+    node = a_data_node(status=NodeStatus.SyncingHeaders)
+    index = FakeHeaderIndex(tip=chain[-1].hash, header_index_tip=b"\xff" * 32)
+    node.chainstate.block_index = index
+    peer = a_peer()
+    headers(node, Headers(chain).serialize(), peer)
+    (answer,) = peer.sent
+    assert isinstance(answer, GetHeaders)
     assert answer.locator == (chain[-1].hash,)
+    assert node.status == NodeStatus.SyncingHeaders
+
+
+def test_a_full_batch_on_an_invalid_fork_uses_the_usual_locator_instead() -> None:
+    # a batch built on a parent this node already proved invalid is a
+    # fork by the header_index test above, but not one worth asking a
+    # peer for more of: nothing in this tree scores or bans a peer that
+    # keeps sending it, so the locator falls back rather than naming that
+    # fork's own tip back to it
+    chain = generate_random_header_chain(2000, RegTest().genesis.hash)
+    node = a_data_node(status=NodeStatus.SyncingHeaders)
+    index = FakeHeaderIndex(
+        tip=chain[-1].hash,
+        header_index_tip=b"\xff" * 32,
+        tip_status=BlockStatus.invalid,
+    )
+    node.chainstate.block_index = index
+    peer = a_peer()
+    headers(node, Headers(chain).serialize(), peer)
+    (answer,) = peer.sent
+    assert isinstance(answer, GetHeaders)
+    assert answer.locator == (b"\x00" * 32,)
     assert node.status == NodeStatus.SyncingHeaders
 
 
@@ -913,6 +967,43 @@ def test_a_full_batch_from_nowhere_known_asks_from_what_this_node_knows() -> Non
     assert isinstance(answer, GetHeaders)
     assert answer.locator == (b"\x00" * 32,)
     assert node.status == NodeStatus.SyncingHeaders
+
+
+def test_a_batch_on_an_already_invalid_parent_is_not_asked_for_again(
+    tmp_path: Path,
+) -> None:
+    # add_headers has no reason to refuse this batch -- every header in
+    # it still passes its own checks on its own terms, invalid parent or
+    # not -- so avoiding a request for more of a branch this node has
+    # already proved bad is callbacks.headers's own contract, proved
+    # here through the real BlockIndex and not a fake standing in for
+    # it. btclib-org/btclib-node#122
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    # heavier than the invalid fork below could ever become, so
+    # header_index never shifts onto it and the fallback below is
+    # decided by BlockStatus alone, not by tip == header_index[-1]
+    active = generate_random_header_chain(3000, RegTest().genesis.hash)
+    block_index.add_headers(active)
+    for header in active:
+        block_index.add_to_active_chain(header.hash)
+
+    victim = generate_random_header_chain(1, RegTest().genesis.hash)
+    block_index.add_headers(victim)
+    block_index.invalidate(victim[0].hash)
+
+    extension = generate_random_header_chain(2000, victim[0].hash, victim[0].time)
+    node = a_data_node(block_index=block_index, status=NodeStatus.SyncingHeaders)
+    peer = a_peer()
+    headers(node, Headers(extension).serialize(), peer)
+
+    assert block_index.header_index[-1] == active[-1].hash
+    assert block_index.get_block_info(extension[-1].hash).status == BlockStatus.invalid
+    (answer,) = peer.sent
+    assert isinstance(answer, GetHeaders)
+    assert extension[-1].hash not in answer.locator
+    assert answer.locator == tuple(block_index.get_block_locator_hashes())
+    chainstate.close()
 
 
 def test_a_refused_batch_is_not_the_end_of_a_sync() -> None:
