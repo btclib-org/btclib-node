@@ -149,6 +149,7 @@ class Node(threading.Thread):
         self.p2p_manager.stop()
         self.rpc_manager.stop()
 
+        self.p2p_manager.peer_db.close()
         self.chainstate.close()
         self.block_db.close()
 

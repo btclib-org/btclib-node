@@ -121,6 +121,34 @@ to check the guess.
   chain back as the best known one; it now reads it the same way
   `generate_block_candidates` already did.
 
+### `PeerDB` keeps what it learns, and prefers what answered
+
+- **`PeerDB` opens a `KeyValueStore` at `data_dir / "peers"` and reads it
+  back in `init_from_db`.** Before this, `init_from_db` was `pass` and
+  nothing under `btclib_node/` wrote an address anywhere, so every start
+  was a cold one and the DNS seeds were the only way back in (#123).
+  `add_addresses` and `get_addr_from_dns` write a `known-` row per
+  address they add, keyed on its network id, address and port -- not on
+  `timestamp` or `services`, so a row settles on the endpoint rather than
+  growing one per gossip. `add_active_address` writes an `answered-` row
+  the same way, carrying the moment this node itself last heard back
+  from that endpoint. `data_dir` is `Path | None` now: `None` keeps a
+  `PeerDB` in memory only, which is what every caller other than `Node`
+  already did with it.
+- **`random_address` prefers an address from `get_active_addresses` over
+  the uniform draw across the whole table**, within a single run and not
+  only across a restart: dialling used to draw uniformly from
+  `self.addresses` regardless of whether any of it had ever answered.
+- **`ask_dns_nodes` is decided by what has answered recently, not by
+  whether the table is empty.** A table `add_addresses` filled with tor,
+  i2p or an ipv6-only answer from a seed is not empty and was not one
+  before either, and dialling never had anything in it to draw on --
+  the AAAA-only table #89 describes. It is now `not any(can_connect(a)
+  for a in get_active_addresses())`, which also covers the empty case:
+  nothing has ever answered where nothing is known at all.
+- **`Node.run` closes the peer store on shutdown**, alongside the
+  chainstate and the block database.
+
 ### `get_cfilters` stops once the connection it is answering has closed
 
 - **`get_cfilters`'s loop over a `getcfilters` range now breaks once
