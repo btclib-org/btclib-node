@@ -8,25 +8,23 @@
 #
 # The security entry is a link and not a form on purpose: a form would
 # be a public issue, which is the one thing a vulnerability must not be.
-# It points at the security policy GitHub shows for this repository,
-# which is the organization's: this tree keeps no SECURITY.md of its
-# own, publishing nothing for one to travel with, and what that policy
-# cannot say for this node -- its known limitations -- README.md says.
-#
-# Not at an advisory form, because there is none:
-# `private-vulnerability-reporting` answers `enabled: false` here, which
-# is btclib-org/btclib-node#136 and a setting rather than a file. The
-# policy therefore gives an address, and this link becomes
-# `/security/advisories/new` the moment that setting is on.
+# It opens the advisory form directly:
+# `private-vulnerability-reporting` answers `enabled: true` here, so the
+# route is open. The policy behind it is the organization's -- this tree
+# keeps no SECURITY.md of its own, publishing nothing for one to travel
+# with -- and gives an email address for anyone who would rather not use
+# the form; what that policy cannot say for this node, its known
+# limitations, README.md says.
 blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/btclib-org/btclib-node/security/policy
+    url: https://github.com/btclib-org/btclib-node/security/advisories/new
     about: >
-      Never a public issue. That policy gives the address that reaches a
-      maintainer privately about a node that can be made to accept,
-      reject or leak something it should not. The two entries below are
-      where a defect that is btclib's or Bitcoin Core's goes instead.
+      Never a public issue. This opens a private advisory, visible to
+      the maintainers alone; the organization's security policy gives an
+      email address for anyone who would rather not use it. The two
+      entries below are where a defect that is btclib's or Bitcoin
+      Core's goes instead.
   - name: Keys, scripts, transactions, serialization
     url: https://github.com/btclib-org/btclib/issues
     about: >
