@@ -10,25 +10,21 @@ whole of them: nothing below is recoverable by reading the repository.
 
 ## Required checks on main
 
-There are none.
+Set through classic branch protection; no ruleset on `main` carries a
+`required_status_checks` rule.
 
 ```shell
 gh api repos/btclib-org/btclib-node/branches/main/protection \
-  --jq '.required_status_checks // "none"'
-# "none"
+  --jq '.required_status_checks.contexts'
+# ["Lint and type-check","test: every job passed"]
 gh api repos/btclib-org/btclib-node/rulesets --jq '.[].id' \
   | xargs -I{} gh api repos/btclib-org/btclib-node/rulesets/{} \
     --jq '.rules[] | select(.type=="required_status_checks")'
 # (nothing)
 ```
 
-Neither the classic protection nor a ruleset names a check, so a red run
-refuses nothing and a merge waits on the review alone. That is the
-finding btclib-org/.github#88 records against this repository, and it is
-a settings change with no diff to review.
-
-The two names a rule would bind already exist, produced by the workflows
-that would answer for them:
+A red run on either blocks the merge. Both are produced by the workflows
+that answer for them:
 
 | Check | Produced by |
 | --- | --- |

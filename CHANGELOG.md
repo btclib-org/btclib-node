@@ -18,6 +18,14 @@ to check the guess.
 
 ## Unreleased
 
+### `REPOSITORY.md`'s required-checks section names what main now enforces
+
+- **`REPOSITORY.md`'s *Required checks on main* section names `Lint and
+  type-check` and `test: every job passed`** (#223), where it said none
+  did. Classic branch protection's `required_status_checks.contexts`
+  carries both; no ruleset on `main` carries a `required_status_checks`
+  rule.
+
 ### `get_cfilters` stops once the connection it is answering has closed
 
 - **`get_cfilters`'s loop over a `getcfilters` range now breaks once
