@@ -205,6 +205,9 @@ def test_simple_init(tmp_path: Path) -> None:
     assert block_index.header_index == new_block_index.header_index
     assert block_index.active_chain == new_block_index.active_chain
     assert block_index.block_candidates == new_block_index.block_candidates
+    # not persisted, recomputed by calculate_chainwork on each start:
+    # btclib-org/btclib-node#201
+    assert block_index.chainwork == new_block_index.chainwork
 
 
 def test_init_with_fork(tmp_path: Path) -> None:
@@ -444,6 +447,9 @@ def test_long_init(tmp_path: Path) -> None:
     assert block_index.header_index == new_block_index.header_index
     assert block_index.active_chain == new_block_index.active_chain
     assert block_index.block_candidates == new_block_index.block_candidates
+    # not persisted, recomputed by calculate_chainwork on each start:
+    # btclib-org/btclib-node#201
+    assert block_index.chainwork == new_block_index.chainwork
 
 
 def test_block_candidates(tmp_path: Path) -> None:

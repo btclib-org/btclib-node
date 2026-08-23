@@ -428,7 +428,7 @@ def a_block_index(
     """
 
     def block(header: BlockHeader, height: int) -> Any:
-        return SimpleNamespace(header=header, index=height, chainwork=height + 1)
+        return SimpleNamespace(header=header, index=height)
 
     blocks = {header.hash: block(header, height) for height, header in enumerate(chain)}
     for header in off_chain or []:
@@ -436,9 +436,14 @@ def a_block_index(
             header, blocks[header.previous_block_hash].index + 1
         )
     connected = chain if validated is None else chain[:validated]
+    # BlockIndex.chainwork, not carried on BlockInfo: btclib-org/btclib-node#201
+    chainwork = {
+        header_hash: block_info.index + 1 for header_hash, block_info in blocks.items()
+    }
     return SimpleNamespace(
         active_chain=[header.hash for header in connected],
         get_block_info=blocks.__getitem__,
+        chainwork=chainwork,
     )
 
 

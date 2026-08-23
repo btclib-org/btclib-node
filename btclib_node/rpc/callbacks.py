@@ -160,7 +160,7 @@ def get_block_header(
     # other way round: nothing follows a block that chain does not hold
     if on_active_chain and height < len(active_chain) - 1:
         out["nextblockhash"] = active_chain[height + 1]
-    out["chainwork"] = block_info.chainwork
+    out["chainwork"] = block_index.chainwork[block_hash]
 
     return out
 
