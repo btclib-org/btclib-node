@@ -13,9 +13,11 @@ is the path where every message is welcome; these are the rest.
 
 import socket
 import time
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import pytest
 from btclib.block import Block, BlockHeader
@@ -57,6 +59,7 @@ from btclib.p2p.limits import (
     MAX_GETCFILTERS_SIZE,
 )
 from btclib.script.witness import Witness
+from btclib.tx.tx import Tx
 
 from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion
@@ -87,6 +90,7 @@ from btclib_node.p2p.callbacks import (
 )
 from btclib_node.p2p.callbacks import block as block_callback
 from btclib_node.p2p.connection import Connection
+from btclib_node.p2p.manager import P2pManager
 from btclib_node.p2p.messages.empty import Getaddr, Sendheaders, Wtxidrelay
 from btclib_node.p2p.messages.errors import Reject, RejectCode
 from tests.helpers import (
@@ -94,6 +98,9 @@ from tests.helpers import (
     generate_random_header_chain,
     generate_random_transaction,
 )
+
+if TYPE_CHECKING:
+    from btclib_node.chains import Chain
 
 # BIP155's table, for the networks these tests build an address of
 _ADDRESS_SIZE = {
@@ -103,7 +110,9 @@ _ADDRESS_SIZE = {
 }
 
 
-def an_address(n=0, network_id=BIP155Network.IPV4):
+def an_address(
+    n: int = 0, network_id: BIP155Network = BIP155Network.IPV4
+) -> NetworkAddressV2:
     # seen just now: an address the node would not serve is a different
     # test, in tests/unit/p2p/address.py
     return NetworkAddressV2(
@@ -115,14 +124,16 @@ def an_address(n=0, network_id=BIP155Network.IPV4):
     )
 
 
-def a_version_address(services=0):
+def a_version_address(services: int = 0) -> NetworkAddress:
     # unroutable, and a `version` message's address, which carries no
     # timestamp: the narrowest of btclib's address types
     return NetworkAddress(services, "0.0.0.0", 18444)  # noqa: S104
 
 
-def make_node(addresses, *, prefer_addressv2=False):
-    peer_db = PeerDB(None, None)
+def make_node(
+    addresses: Sequence[NetworkAddressV2], *, prefer_addressv2: bool = False
+) -> tuple[Any, Any, list[Any]]:
+    peer_db = PeerDB(cast("Chain", None), cast(Path, None))
     for address in addresses:
         peer_db.active_addresses.append(address)
     sent: list[Any] = []
@@ -131,7 +142,7 @@ def make_node(addresses, *, prefer_addressv2=False):
     return node, conn, sent
 
 
-def test_an_ipv4_address_is_answered_in_an_addr():
+def test_an_ipv4_address_is_answered_in_an_addr() -> None:
     address = an_address()
     node, conn, sent = make_node([address])
     getaddr(node, b"", conn)
@@ -142,7 +153,7 @@ def test_an_ipv4_address_is_answered_in_an_addr():
     assert Addr.parse(answer.serialize()).addresses == answer.addresses
 
 
-def test_a_peer_that_asked_for_addrv2_gets_addrv2():
+def test_a_peer_that_asked_for_addrv2_gets_addrv2() -> None:
     address = an_address()
     node, conn, sent = make_node([address], prefer_addressv2=True)
     getaddr(node, b"", conn)
@@ -151,7 +162,7 @@ def test_a_peer_that_asked_for_addrv2_gets_addrv2():
     assert answer.addresses == (address,)
 
 
-def test_an_address_addr_version_1_cannot_carry_is_left_out():
+def test_an_address_addr_version_1_cannot_carry_is_left_out() -> None:
     # an onion address has no addr version 1 entry to be built into, so
     # one of them among the active addresses would cost the whole answer
     onion = an_address(network_id=BIP155Network.TORV3)
@@ -165,7 +176,7 @@ def test_an_address_addr_version_1_cannot_carry_is_left_out():
     answer.serialize()
 
 
-def test_the_same_address_reaches_a_peer_that_can_take_it():
+def test_the_same_address_reaches_a_peer_that_can_take_it() -> None:
     onion = an_address(network_id=BIP155Network.TORV3)
     node, conn, sent = make_node([onion], prefer_addressv2=True)
     getaddr(node, b"", conn)
@@ -173,13 +184,13 @@ def test_the_same_address_reaches_a_peer_that_can_take_it():
     assert answer.addresses == (onion,)
 
 
-def test_nothing_active_is_answered_with_nothing():
+def test_nothing_active_is_answered_with_nothing() -> None:
     node, conn, sent = make_node([])
     getaddr(node, b"", conn)
     assert not sent
 
 
-def test_more_addresses_than_fit_one_message_are_split():
+def test_more_addresses_than_fit_one_message_are_split() -> None:
     addresses = [an_address(n) for n in range(2001)]
     node, conn, sent = make_node(addresses)
     getaddr(node, b"", conn)
@@ -190,11 +201,11 @@ def test_more_addresses_than_fit_one_message_are_split():
 
 def a_version(
     *,
-    protocol=ProtocolVersion,
-    services=ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS,
-    nonce=7,
-    relay=True,
-):
+    protocol: int = ProtocolVersion,
+    services: ServiceFlags = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS,
+    nonce: int = 7,
+    relay: bool | None = True,
+) -> bytes:
     return Version(
         version=protocol,
         services=services,
@@ -208,7 +219,7 @@ def a_version(
     ).serialize()
 
 
-def a_peer(**attributes):
+def a_peer(**attributes: Any) -> Any:
     sent: list[Any] = []
     stopped = []
     peer = SimpleNamespace(
@@ -235,7 +246,12 @@ def a_peer(**attributes):
     return peer
 
 
-def a_handshake_node(*, nonces=(), status=NodeStatus.HeaderSynced, peer_db=None):
+def a_handshake_node(
+    *,
+    nonces: Sequence[int] = (),
+    status: NodeStatus = NodeStatus.HeaderSynced,
+    peer_db: Any = None,
+) -> Any:
     return SimpleNamespace(
         status=status,
         p2p_manager=SimpleNamespace(nonces=list(nonces), peer_db=peer_db),
@@ -248,14 +264,14 @@ def a_handshake_node(*, nonces=(), status=NodeStatus.HeaderSynced, peer_db=None)
     )
 
 
-def commands(peer):
+def commands(peer: Any) -> list[str]:
     return [
         message if isinstance(message, str) else type(message).__name__
         for message in peer.sent
     ]
 
 
-def test_a_version_is_answered_with_what_this_node_speaks():
+def test_a_version_is_answered_with_what_this_node_speaks() -> None:
     peer = a_peer()
     version(a_handshake_node(), a_version(), peer)
     assert commands(peer) == ["Wtxidrelay", "SendAddrV2", "Verack"]
@@ -266,26 +282,26 @@ def test_a_version_is_answered_with_what_this_node_speaks():
     assert not peer.stopped
 
 
-def test_a_version_carrying_our_own_nonce_is_this_node_calling_itself():
+def test_a_version_carrying_our_own_nonce_is_this_node_calling_itself() -> None:
     peer = a_peer()
     version(a_handshake_node(nonces=[7]), a_version(nonce=7), peer)
     assert peer.stopped == [True]
     assert not peer.sent
 
 
-def test_a_peer_speaking_an_older_protocol_is_let_go():
+def test_a_peer_speaking_an_older_protocol_is_let_go() -> None:
     peer = a_peer()
     version(a_handshake_node(), a_version(protocol=ProtocolVersion - 1), peer)
     assert peer.stopped == [True]
 
 
-def test_a_peer_without_the_witness_service_is_let_go():
+def test_a_peer_without_the_witness_service_is_let_go() -> None:
     peer = a_peer()
     version(a_handshake_node(), a_version(services=ServiceFlags.NODE_NETWORK), peer)
     assert peer.stopped == [True]
 
 
-def test_a_pruned_peer_is_let_go_only_once_the_blocks_are_synced():
+def test_a_pruned_peer_is_let_go_only_once_the_blocks_are_synced() -> None:
     pruned = ServiceFlags.NODE_WITNESS
     peer = a_peer()
     version(
@@ -304,7 +320,7 @@ def test_a_pruned_peer_is_let_go_only_once_the_blocks_are_synced():
     assert peer.stopped == [True]
 
 
-def test_a_version_that_says_it_relays_nothing_is_taken_at_its_word():
+def test_a_version_that_says_it_relays_nothing_is_taken_at_its_word() -> None:
     peer = a_peer()
     version(a_handshake_node(), a_version(relay=False), peer)
     assert peer.relay_tx is False
@@ -313,7 +329,7 @@ def test_a_version_that_says_it_relays_nothing_is_taken_at_its_word():
     assert not hasattr(peer, "relay_txs")
 
 
-def test_a_version_without_the_relay_flag_is_a_peer_asking_for_relay():
+def test_a_version_without_the_relay_flag_is_a_peer_asking_for_relay() -> None:
     # BIP37's default, which a peer older than the flag relies on: read
     # as a false, it would be recorded as asking for the opposite
     peer = a_peer(relay_tx=False)
@@ -321,7 +337,7 @@ def test_a_version_without_the_relay_flag_is_a_peer_asking_for_relay():
     assert peer.relay_tx is True
 
 
-def a_real_connection():
+def a_real_connection() -> Connection:
     # not a stand-in: the defect this is about was a callback writing an
     # attribute no Connection has, which a SimpleNamespace peer takes
     # without a word and a Connection takes just as quietly. What a real
@@ -329,10 +345,12 @@ def a_real_connection():
     # rest of the node reads.
     manager = SimpleNamespace(node=a_handshake_node(), loop=None, peer_db=None)
     unroutable = peer_address("0.0.0.0", 18444)  # noqa: S104
-    connection = Connection(manager, socket.socket(), unroutable, 0, False)
+    connection = Connection(
+        cast("P2pManager", manager), socket.socket(), unroutable, 0, False
+    )
     # Connection.send hands the message to an event loop this test does
     # not run; what it would send is tested above
-    connection.send = lambda msg: None
+    connection.send = lambda msg: None  # type: ignore[method-assign]
     return connection
 
 
@@ -341,7 +359,9 @@ def a_real_connection():
     [(True, True), (False, False), (None, True)],
     ids=["true", "false", "absent"],
 )
-def test_what_a_peer_said_about_relay_lands_on_the_connection(relay, wanted):
+def test_what_a_peer_said_about_relay_lands_on_the_connection(
+    relay: bool | None, wanted: bool
+) -> None:
     connection = a_real_connection()
     with connection.client:
         assert connection.relay_tx is True  # BIP37's default until told
@@ -349,7 +369,7 @@ def test_what_a_peer_said_about_relay_lands_on_the_connection(relay, wanted):
         assert connection.relay_tx is wanted
 
 
-def test_a_verack_completes_the_handshake():
+def test_a_verack_completes_the_handshake() -> None:
     peer = a_peer(version_message=object(), wtxidrelay_received=True)
     verack(a_handshake_node(), b"", peer)
     assert peer.status == P2pConnStatus.Connected
@@ -367,20 +387,20 @@ def test_a_verack_completes_the_handshake():
     assert not peer.stopped
 
 
-def test_a_verack_before_the_version_is_let_go():
+def test_a_verack_before_the_version_is_let_go() -> None:
     peer = a_peer(wtxidrelay_received=True)
     verack(a_handshake_node(), b"", peer)
     assert peer.stopped == [True]
     assert peer.status == P2pConnStatus.Open
 
 
-def test_a_verack_from_a_peer_that_never_asked_for_wtxid_relay_is_let_go():
+def test_a_verack_from_a_peer_that_never_asked_for_wtxid_relay_is_let_go() -> None:
     peer = a_peer(version_message=object())
     verack(a_handshake_node(), b"", peer)
     assert peer.stopped == [True]
 
 
-def test_the_two_flags_a_peer_sets_on_this_connection():
+def test_the_two_flags_a_peer_sets_on_this_connection() -> None:
     peer = a_peer()
     wtxidrelay(a_handshake_node(), b"", peer)
     sendaddrv2(a_handshake_node(), b"", peer)
@@ -388,7 +408,7 @@ def test_the_two_flags_a_peer_sets_on_this_connection():
     assert peer.prefer_addressv2
 
 
-def test_a_ping_is_answered_with_the_nonce_it_carried():
+def test_a_ping_is_answered_with_the_nonce_it_carried() -> None:
     peer = a_peer()
     ping(a_handshake_node(), Ping(1234).serialize(), peer)
     (answer,) = peer.sent
@@ -396,7 +416,7 @@ def test_a_ping_is_answered_with_the_nonce_it_carried():
     assert answer.nonce == 1234
 
 
-def test_a_pong_answering_our_ping_is_a_latency_measurement():
+def test_a_pong_answering_our_ping_is_a_latency_measurement() -> None:
     peer = a_peer(ping_sent=time.time() - 0.5, ping_nonce=1234)
     pong(a_handshake_node(), Pong(1234).serialize(), peer)
     assert peer.latency > 0
@@ -405,26 +425,26 @@ def test_a_pong_answering_our_ping_is_a_latency_measurement():
     assert not peer.stopped
 
 
-def test_a_pong_with_the_wrong_nonce_is_a_peer_not_speaking_the_protocol():
+def test_a_pong_with_the_wrong_nonce_is_a_peer_not_speaking_the_protocol() -> None:
     peer = a_peer(ping_sent=time.time(), ping_nonce=1234)
     pong(a_handshake_node(), Pong(4321).serialize(), peer)
     assert peer.stopped == [True]
 
 
-def test_a_pong_nobody_pinged_for_is_ignored():
+def test_a_pong_nobody_pinged_for_is_ignored() -> None:
     peer = a_peer()
     pong(a_handshake_node(), Pong(1234).serialize(), peer)
     assert not peer.stopped
     assert peer.latency == 0
 
 
-def test_the_addresses_a_peer_sends_are_kept():
+def test_the_addresses_a_peer_sends_are_kept() -> None:
     given = [an_address(1), an_address(2)]
     for callback, message in (
         (addr, Addr([addr_entry(address) for address in given])),
         (addrv2, AddrV2(given)),
     ):
-        peer_db = PeerDB(None, None)
+        peer_db = PeerDB(cast("Chain", None), cast(Path, None))
         node = a_handshake_node(peer_db=peer_db)
         callback(node, message.serialize(), a_peer())
         # BIP155's record either way, the addr version 1 entry being
@@ -433,14 +453,14 @@ def test_the_addresses_a_peer_sends_are_kept():
         assert peer_db.addresses == {replace(address, timestamp=0) for address in given}
 
 
-def test_an_address_of_a_network_nobody_here_has_heard_of_is_kept():
+def test_an_address_of_a_network_nobody_here_has_heard_of_is_kept() -> None:
     # what this used to cost: the network id was an enumeration over the
     # ids BIP155 had assigned, so a yggdrasil peer raised out of the
     # parser and p2p.main turned that into a disconnect. The whole point
     # of the format is that a new network needs no new message.
     yggdrasil = NetworkAddressV2(0, 0, 7, b"\x02" + b"\x22" * 15, 18444)
     unassigned = NetworkAddressV2(0, 0, 250, b"\x33" * 8, 18444)
-    peer_db = PeerDB(None, None)
+    peer_db = PeerDB(cast("Chain", None), cast(Path, None))
     node = a_handshake_node(peer_db=peer_db)
     peer = a_peer()
     addrv2(node, AddrV2([yggdrasil, unassigned]).serialize(), peer)
@@ -451,7 +471,7 @@ def test_an_address_of_a_network_nobody_here_has_heard_of_is_kept():
     assert peer_db.random_address() is None
 
 
-def test_a_notfound_is_logged_rather_than_held_against_the_peer():
+def test_a_notfound_is_logged_rather_than_held_against_the_peer() -> None:
     logged: list[str] = []
     node = a_handshake_node()
     node.logger.warning = logged.append
@@ -465,7 +485,7 @@ def test_a_notfound_is_logged_rather_than_held_against_the_peer():
     assert not peer.stopped
 
 
-def test_a_reject_names_the_transaction_it_is_about():
+def test_a_reject_names_the_transaction_it_is_about() -> None:
     logged: list[str] = []
     node = a_handshake_node()
     node.logger.warning = logged.append
@@ -480,14 +500,14 @@ def test_a_reject_names_the_transaction_it_is_about():
     assert not peer.stopped
 
 
-def test_a_reject_survives_the_wire():
+def test_a_reject_survives_the_wire() -> None:
     # the hash is what a reject is about, and a symmetric one would not
     # notice it coming back reversed
     message = Reject("tx", RejectCode.insufficientfee, "no", bytes(range(32)))
     assert Reject.parse(message.serialize()) == message
 
 
-def a_transaction():
+def a_transaction() -> Tx:
     # with a witness, so that a txid and a wtxid are different bytes and
     # an answer naming the wrong one cannot pass
     transaction = generate_random_transaction()
@@ -496,8 +516,12 @@ def a_transaction():
 
 
 def a_data_node(
-    *, mempool=None, block_index=None, block_db=None, status=NodeStatus.BlockSynced
-):
+    *,
+    mempool: Mempool | None = None,
+    block_index: Any = None,
+    block_db: Any = None,
+    status: NodeStatus = NodeStatus.BlockSynced,
+) -> Any:
     node = a_handshake_node(status=status)
     node.mempool = mempool if mempool is not None else Mempool(Logger(debug=True))
     node.chain = RegTest()
@@ -508,7 +532,9 @@ def a_data_node(
     return node
 
 
-def test_a_transaction_that_verifies_is_kept_and_reported(monkeypatch):
+def test_a_transaction_that_verifies_is_kept_and_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import btclib_node.p2p.callbacks as cb
 
     monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: None)
@@ -520,10 +546,12 @@ def test_a_transaction_that_verifies_is_kept_and_reported(monkeypatch):
     assert node.download_manager.received_txs == [(3, transaction.hash)]
 
 
-def test_a_transaction_whose_parents_are_missing_is_not_kept(monkeypatch):
+def test_a_transaction_whose_parents_are_missing_is_not_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import btclib_node.p2p.callbacks as cb
 
-    def missing(node, transaction):
+    def missing(node: Any, transaction: Any) -> NoReturn:
         raise MissingPrevoutError
 
     monkeypatch.setattr(cb, "verify_mempool_acceptance", missing)
@@ -534,7 +562,9 @@ def test_a_transaction_whose_parents_are_missing_is_not_kept(monkeypatch):
     assert node.download_manager.received_txs == []
 
 
-def test_a_transaction_already_held_is_not_reported_twice(monkeypatch):
+def test_a_transaction_already_held_is_not_reported_twice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import btclib_node.p2p.callbacks as cb
 
     monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: None)
@@ -546,23 +576,23 @@ def test_a_transaction_already_held_is_not_reported_twice(monkeypatch):
 
 
 class FakeBlockIndex:
-    def __init__(self, infos):
+    def __init__(self, infos: dict[bytes, Any]) -> None:
         self.infos = infos
-        self.inserted = []
+        self.inserted: list[Any] = []
 
-    def get_block_info(self, block_hash):
+    def get_block_info(self, block_hash: bytes) -> Any:
         return self.infos[block_hash]
 
-    def insert_block_info(self, block_info):
+    def insert_block_info(self, block_info: Any) -> None:
         self.inserted.append(block_info)
 
 
-def a_block():
+def a_block() -> Block:
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     return block
 
 
-def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded():
+def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded() -> None:
     block = a_block()
     info = SimpleNamespace(downloaded=False)
     index = FakeBlockIndex({block.header.hash: info})
@@ -590,7 +620,7 @@ def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded():
     assert index.inserted == [info]
 
 
-def test_a_block_already_stored_is_not_stored_again():
+def test_a_block_already_stored_is_not_stored_again() -> None:
     block = a_block()
     index = FakeBlockIndex({block.header.hash: SimpleNamespace(downloaded=True)})
     added: list[Block] = []
@@ -608,7 +638,7 @@ def test_a_block_already_stored_is_not_stored_again():
     assert index.inserted == []
 
 
-def a_block_claiming_an_easier_target_than_the_chain_allows(block):
+def a_block_claiming_an_easier_target_than_the_chain_allows(block: Block) -> Block:
     # regtest's limit is 7fffff00..., and a target has 32 octets to fit
     # in: 800000... is the next one up that still does
     header = BlockHeader(
@@ -623,7 +653,7 @@ def a_block_claiming_an_easier_target_than_the_chain_allows(block):
     return Block(header, block.transactions, check_validity=False)
 
 
-def test_a_block_whose_proof_of_work_does_not_hold_up_is_refused():
+def test_a_block_whose_proof_of_work_does_not_hold_up_is_refused() -> None:
     added: list[Block] = []
     broken = a_block_claiming_an_easier_target_than_the_chain_allows(a_block())
     index = FakeBlockIndex({broken.header.hash: SimpleNamespace(downloaded=False)})
@@ -639,14 +669,14 @@ def test_a_block_whose_proof_of_work_does_not_hold_up_is_refused():
     assert index.inserted == []
 
 
-def test_an_inventory_is_ignored_until_the_blocks_are_synced():
+def test_an_inventory_is_ignored_until_the_blocks_are_synced() -> None:
     node = a_data_node(status=NodeStatus.HeaderSynced)
     peer = a_peer()
     inv(node, Inv([Inventory(InventoryType.MSG_BLOCK, b"\x11" * 32)]).serialize(), peer)
     assert not peer.sent
 
 
-def test_a_block_announced_is_answered_with_a_getheaders():
+def test_a_block_announced_is_answered_with_a_getheaders() -> None:
     node = a_data_node()
     peer = a_peer()
     hashes = [b"\x11" * 32, b"\x22" * 32]
@@ -658,7 +688,7 @@ def test_a_block_announced_is_answered_with_a_getheaders():
     assert answer.hash_stop == hashes[-1]
 
 
-def test_a_transaction_announced_that_we_lack_is_wanted():
+def test_a_transaction_announced_that_we_lack_is_wanted() -> None:
     transaction = a_transaction()
     node = a_data_node()
     peer = a_peer(id=4)
@@ -668,7 +698,7 @@ def test_a_transaction_announced_that_we_lack_is_wanted():
     assert not peer.sent
 
 
-def test_a_transaction_announced_that_we_hold_is_not_wanted():
+def test_a_transaction_announced_that_we_hold_is_not_wanted() -> None:
     transaction = a_transaction()
     mempool = Mempool(Logger(debug=True))
     mempool.add_tx(transaction)
@@ -678,7 +708,7 @@ def test_a_transaction_announced_that_we_hold_is_not_wanted():
     assert node.download_manager.inv_txs == []
 
 
-def test_a_transaction_this_node_holds_is_served():
+def test_a_transaction_this_node_holds_is_served() -> None:
     transaction = a_transaction()
     mempool = Mempool(Logger(debug=True))
     mempool.add_tx(transaction)
@@ -698,7 +728,7 @@ def test_a_transaction_this_node_holds_is_served():
         assert answer.include_witness is with_witness
 
 
-def test_a_transaction_is_not_found_under_the_other_identifier():
+def test_a_transaction_is_not_found_under_the_other_identifier() -> None:
     transaction = a_transaction()
     mempool = Mempool(Logger(debug=True))
     mempool.add_tx(transaction)
@@ -712,7 +742,7 @@ def test_a_transaction_is_not_found_under_the_other_identifier():
         assert not peer.sent
 
 
-def test_a_transaction_this_node_does_not_hold_is_not_answered():
+def test_a_transaction_this_node_does_not_hold_is_not_answered() -> None:
     node = a_data_node()
     peer = a_peer()
     items = [Inventory(InventoryType.MSG_TX, b"\x11" * 32)]
@@ -720,7 +750,7 @@ def test_a_transaction_this_node_does_not_hold_is_not_answered():
     assert not peer.sent
 
 
-def test_a_peer_that_declined_relay_is_not_served_a_transaction_it_asks_for():
+def test_a_peer_that_declined_relay_is_not_served_a_transaction_it_asks_for() -> None:
     # every code it could ask by, because gating one of the three is a
     # peer that gets the same answer by asking a different way
     transaction = a_transaction()
@@ -737,7 +767,7 @@ def test_a_peer_that_declined_relay_is_not_served_a_transaction_it_asks_for():
         assert not peer.sent
 
 
-def test_a_peer_that_declined_relay_is_still_served_a_block():
+def test_a_peer_that_declined_relay_is_still_served_a_block() -> None:
     # one getdata carrying both kinds, so the assertion is that the
     # answer is the block and nothing beside it
     block = a_block()
@@ -758,7 +788,7 @@ def test_a_peer_that_declined_relay_is_still_served_a_block():
     assert answer.block.header.hash == block.header.hash
 
 
-def test_a_block_this_node_holds_is_served():
+def test_a_block_this_node_holds_is_served() -> None:
     block = a_block()
     node = a_data_node(block_db=SimpleNamespace(get_block=lambda h: block))
     for type_code, with_witness in (
@@ -774,7 +804,7 @@ def test_a_block_this_node_holds_is_served():
         assert answer.include_witness is with_witness
 
 
-def test_a_block_this_node_does_not_hold_is_not_answered():
+def test_a_block_this_node_does_not_hold_is_not_answered() -> None:
     node = a_data_node(block_db=SimpleNamespace(get_block=lambda h: None))
     peer = a_peer()
     items = [Inventory(InventoryType.MSG_BLOCK, b"\x11" * 32)]
@@ -782,7 +812,7 @@ def test_a_block_this_node_does_not_hold_is_not_answered():
     assert not peer.sent
 
 
-def test_an_inventory_of_neither_kind_is_skipped():
+def test_an_inventory_of_neither_kind_is_skipped() -> None:
     node = a_data_node(block_db=SimpleNamespace(get_block=lambda h: None))
     peer = a_peer()
     items = [Inventory(InventoryType.MSG_FILTERED_BLOCK, b"\x11" * 32)]
@@ -791,19 +821,19 @@ def test_an_inventory_of_neither_kind_is_skipped():
 
 
 class FakeHeaderIndex:
-    def __init__(self, added):
+    def __init__(self, added: bool) -> None:
         self.added = added
-        self.given = None
+        self.given: list[BlockHeader] | None = None
 
-    def add_headers(self, headers):
+    def add_headers(self, headers: Iterable[BlockHeader]) -> bool:
         self.given = list(headers)
         return self.added
 
-    def get_block_locator_hashes(self):
+    def get_block_locator_hashes(self) -> list[bytes]:
         return [b"\x00" * 32]
 
 
-def test_a_full_batch_of_headers_is_followed_by_a_request_for_more():
+def test_a_full_batch_of_headers_is_followed_by_a_request_for_more() -> None:
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
     node = a_data_node(status=NodeStatus.SyncingHeaders)
     index = FakeHeaderIndex(added=True)
@@ -816,7 +846,7 @@ def test_a_full_batch_of_headers_is_followed_by_a_request_for_more():
     assert node.status == NodeStatus.SyncingHeaders
 
 
-def test_a_full_batch_this_node_refused_still_ends_the_sync():
+def test_a_full_batch_this_node_refused_still_ends_the_sync() -> None:
     # what the code does, not what it should: a batch refused for a bad
     # proof of work is indistinguishable here from one carrying nothing
     # new, and either declares the headers synced. See #75
@@ -829,7 +859,7 @@ def test_a_full_batch_this_node_refused_still_ends_the_sync():
     assert node.status == NodeStatus.HeaderSynced
 
 
-def test_a_short_batch_means_the_headers_are_synced():
+def test_a_short_batch_means_the_headers_are_synced() -> None:
     chain = generate_random_header_chain(2, RegTest().genesis.hash)
     node = a_data_node(status=NodeStatus.SyncingHeaders)
     node.chainstate.block_index = FakeHeaderIndex(added=True)
@@ -839,7 +869,7 @@ def test_a_short_batch_means_the_headers_are_synced():
     assert node.status == NodeStatus.HeaderSynced
 
 
-def test_a_short_batch_when_the_headers_are_already_synced_changes_nothing():
+def test_a_short_batch_when_the_headers_are_already_synced_changes_nothing() -> None:
     chain = generate_random_header_chain(2, RegTest().genesis.hash)
     node = a_data_node(status=NodeStatus.BlockSynced)
     node.chainstate.block_index = FakeHeaderIndex(added=True)
@@ -849,12 +879,12 @@ def test_a_short_batch_when_the_headers_are_already_synced_changes_nothing():
     assert node.status == NodeStatus.BlockSynced
 
 
-def test_this_node_answers_a_getheaders_from_what_it_knows():
+def test_this_node_answers_a_getheaders_from_what_it_knows() -> None:
     chain = generate_random_header_chain(2, RegTest().genesis.hash)
     node = a_data_node()
-    asked = []
+    asked: list[tuple[list[bytes], bytes]] = []
 
-    def from_locators(locator, stop):
+    def from_locators(locator: Sequence[bytes], stop: bytes) -> list[BlockHeader]:
         asked.append((list(locator), stop))
         return chain
 
@@ -872,7 +902,7 @@ def test_this_node_answers_a_getheaders_from_what_it_knows():
     assert list(sent.headers) == chain
 
 
-def test_a_getheaders_this_node_cannot_answer_is_not_answered():
+def test_a_getheaders_this_node_cannot_answer_is_not_answered() -> None:
     node = a_data_node()
     node.chainstate.block_index = SimpleNamespace(
         get_headers_from_locators=lambda locator, stop: []
@@ -886,11 +916,13 @@ def test_a_getheaders_this_node_cannot_answer_is_not_answered():
     assert not peer.sent
 
 
-def a_filter_hash(height):
+def a_filter_hash(height: int) -> bytes:
     return (height + 1).to_bytes(32, "big")
 
 
-def a_filters_node(length=8, *, stale=()):
+def a_filters_node(
+    length: int = 8, *, stale: Mapping[bytes, Any] | Iterable[Any] = ()
+) -> Any:
     """A node whose chain is `length` blocks, each with a canned filter.
 
     The filters are made up: what is this node's in BIP157 is which
@@ -927,12 +959,18 @@ def a_filters_node(length=8, *, stale=()):
     )
 
 
-def a_getcfilters(node, peer, start, stop_height, filter_type=BlockFilterType.BASIC):
+def a_getcfilters(
+    node: Any,
+    peer: Any,
+    start: int,
+    stop_height: int,
+    filter_type: BlockFilterType = BlockFilterType.BASIC,
+) -> None:
     stop_hash = node.chainstate.block_index.active_chain[stop_height]
     get_cfilters(node, GetCFilters(filter_type, start, stop_hash).serialize(), peer)
 
 
-def test_a_range_of_filters_is_answered_one_message_per_block():
+def test_a_range_of_filters_is_answered_one_message_per_block() -> None:
     node = a_filters_node()
     peer = a_peer()
     a_getcfilters(node, peer, 2, 5)
@@ -948,7 +986,7 @@ def test_a_range_of_filters_is_answered_one_message_per_block():
     ]
 
 
-def test_one_block_is_a_range_of_one():
+def test_one_block_is_a_range_of_one() -> None:
     node = a_filters_node()
     peer = a_peer()
     a_getcfilters(node, peer, 3, 3)
@@ -956,7 +994,7 @@ def test_one_block_is_a_range_of_one():
     assert msg.block_hash == (3).to_bytes(32, "big")
 
 
-def test_get_cfilters_refuses_a_gap_in_a_promised_index():
+def test_get_cfilters_refuses_a_gap_in_a_promised_index() -> None:
     # BIP157's service bit promises a filter for every block of the
     # active chain; a gap here is the index breaking that promise
     # rather than a request this node can decline
@@ -967,16 +1005,16 @@ def test_get_cfilters_refuses_a_gap_in_a_promised_index():
         a_getcfilters(node, peer, 2, 2)
 
 
-def test_a_filter_type_this_node_does_not_serve_is_not_answered():
+def test_a_filter_type_this_node_does_not_serve_is_not_answered() -> None:
     # BIP158 defines the basic filter and nothing else, so any other
     # code is a type no node has; BIP157 says answer with nothing
     node = a_filters_node()
     peer = a_peer()
-    a_getcfilters(node, peer, 0, 1, filter_type=1)
+    a_getcfilters(node, peer, 0, 1, filter_type=cast(BlockFilterType, 1))
     assert not peer.sent
 
 
-def test_a_stop_hash_this_node_never_heard_of_is_not_answered():
+def test_a_stop_hash_this_node_never_heard_of_is_not_answered() -> None:
     node = a_filters_node()
     peer = a_peer()
     get_cfilters(
@@ -985,7 +1023,7 @@ def test_a_stop_hash_this_node_never_heard_of_is_not_answered():
     assert not peer.sent
 
 
-def test_a_stop_hash_off_the_active_chain_is_not_answered():
+def test_a_stop_hash_off_the_active_chain_is_not_answered() -> None:
     # a block this node knows and did not keep: its height is a height
     # on the branch it left, and answering would send the filters of
     # blocks the peer did not ask about
@@ -998,7 +1036,7 @@ def test_a_stop_hash_off_the_active_chain_is_not_answered():
     assert not peer.sent
 
 
-def test_a_stop_hash_at_a_height_the_chain_has_not_reached_is_not_answered():
+def test_a_stop_hash_at_a_height_the_chain_has_not_reached_is_not_answered() -> None:
     node = a_filters_node(length=4, stale={b"\x33" * 32: SimpleNamespace(index=9)})
     peer = a_peer()
     get_cfilters(
@@ -1007,7 +1045,7 @@ def test_a_stop_hash_at_a_height_the_chain_has_not_reached_is_not_answered():
     assert not peer.sent
 
 
-def test_a_range_that_runs_backwards_is_not_answered():
+def test_a_range_that_runs_backwards_is_not_answered() -> None:
     node = a_filters_node()
     peer = a_peer()
     a_getcfilters(node, peer, 5, 2)
@@ -1030,7 +1068,7 @@ def test_a_range_that_runs_backwards_is_not_answered():
     [(get_cfilters, MAX_GETCFILTERS_SIZE), (get_cfheaders, MAX_GETCFHEADERS_SIZE)],
     ids=["getcfilters", "getcfheaders"],
 )
-def test_a_range_is_bounded_strictly_below_the_limit(ask, limit):
+def test_a_range_is_bounded_strictly_below_the_limit(ask: Any, limit: int) -> None:
     # BIP157 bounds the difference and bounds it strictly, so a range
     # whose ends differ by exactly the limit is one block too many
     node = a_filters_node(length=limit + 2)
@@ -1053,7 +1091,7 @@ def test_a_range_is_bounded_strictly_below_the_limit(ask, limit):
     assert not peer.sent
 
 
-def test_the_filter_hashes_of_a_range_are_answered_with_the_header_before_it():
+def test_the_filter_hashes_of_a_range_are_answered_with_the_header_before_it() -> None:
     node = a_filters_node()
     peer = a_peer()
     stop_hash = (5).to_bytes(32, "big")
@@ -1069,7 +1107,7 @@ def test_the_filter_hashes_of_a_range_are_answered_with_the_header_before_it():
     assert list(msg.filter_hashes) == [a_filter_hash(h) for h in range(3, 6)]
 
 
-def test_a_range_that_starts_at_the_genesis_block_has_no_header_before_it():
+def test_a_range_that_starts_at_the_genesis_block_has_no_header_before_it() -> None:
     node = a_filters_node()
     peer = a_peer()
     get_cfheaders(
@@ -1084,7 +1122,7 @@ def test_a_range_that_starts_at_the_genesis_block_has_no_header_before_it():
     assert list(msg.filter_hashes) == [a_filter_hash(h) for h in range(3)]
 
 
-def test_a_getcfheaders_this_node_cannot_answer_is_not_answered():
+def test_a_getcfheaders_this_node_cannot_answer_is_not_answered() -> None:
     node = a_filters_node()
     peer = a_peer()
     get_cfheaders(
@@ -1093,7 +1131,7 @@ def test_a_getcfheaders_this_node_cannot_answer_is_not_answered():
     assert not peer.sent
 
 
-def test_get_cfheaders_refuses_a_gap_in_the_header_before_the_range():
+def test_get_cfheaders_refuses_a_gap_in_the_header_before_the_range() -> None:
     node = a_filters_node()
     node.chainstate.filter_index.get_header = lambda h: None
     peer = a_peer()
@@ -1105,7 +1143,7 @@ def test_get_cfheaders_refuses_a_gap_in_the_header_before_the_range():
         )
 
 
-def test_get_cfheaders_refuses_a_gap_in_a_promised_index():
+def test_get_cfheaders_refuses_a_gap_in_a_promised_index() -> None:
     node = a_filters_node()
     node.chainstate.filter_index.get_filter_hash = lambda h: None
     peer = a_peer()
@@ -1117,7 +1155,7 @@ def test_get_cfheaders_refuses_a_gap_in_a_promised_index():
         )
 
 
-def test_the_checkpoints_are_every_thousandth_block_and_not_the_first():
+def test_the_checkpoints_are_every_thousandth_block_and_not_the_first() -> None:
     node = a_filters_node(length=2 * CFCHECKPT_INTERVAL + 3)
     peer = a_peer()
     stop_height = 2 * CFCHECKPT_INTERVAL + 1
@@ -1137,7 +1175,7 @@ def test_the_checkpoints_are_every_thousandth_block_and_not_the_first():
     ]
 
 
-def test_the_stop_block_is_a_checkpoint_when_its_own_height_is_one():
+def test_the_stop_block_is_a_checkpoint_when_its_own_height_is_one() -> None:
     # the boundary the rule is most specific about: "each block ... where
     # the block height is a multiple of 1,000 greater than 0" includes
     # the block the range terminates at, when that is what its height is
@@ -1151,7 +1189,7 @@ def test_the_stop_block_is_a_checkpoint_when_its_own_height_is_one():
     assert list(msg.filter_headers) == [hash256(stop_hash)[::-1]]
 
 
-def test_a_chain_shorter_than_the_interval_has_no_checkpoints():
+def test_a_chain_shorter_than_the_interval_has_no_checkpoints() -> None:
     node = a_filters_node(length=8)
     peer = a_peer()
     get_cfcheckpt(
@@ -1166,7 +1204,7 @@ def test_a_chain_shorter_than_the_interval_has_no_checkpoints():
     assert not msg.filter_headers
 
 
-def test_get_cfcheckpt_refuses_a_gap_in_a_promised_index():
+def test_get_cfcheckpt_refuses_a_gap_in_a_promised_index() -> None:
     node = a_filters_node(length=CFCHECKPT_INTERVAL + 1)
     node.chainstate.filter_index.get_header = lambda h: None
     peer = a_peer()
@@ -1177,7 +1215,7 @@ def test_get_cfcheckpt_refuses_a_gap_in_a_promised_index():
         )
 
 
-def test_a_getcfcheckpt_this_node_cannot_answer_is_not_answered():
+def test_a_getcfcheckpt_this_node_cannot_answer_is_not_answered() -> None:
     node = a_filters_node(length=4, stale={b"\x44" * 32: SimpleNamespace(index=2)})
     for stop_hash, filter_type in (
         (b"\x11" * 32, BlockFilterType.BASIC),  # never heard of
