@@ -59,11 +59,10 @@ keywords = [
 # claim of support nothing checks, and a classifier is that claim made
 # to an index.
 #
-# No `Typing :: Typed`: this package ships no `py.typed`, and its mypy
-# is not strict yet -- the annotation pass is btclib-org/.github#9's.
-# The classifier is machine-readable and a downstream type checker acts
-# on it, so declaring it before the marker exists would be read by a
-# tool rather than by a person.
+# No `Typing :: Typed`: this package ships no `py.typed`. The classifier
+# is machine-readable and a downstream type checker acts on it, so
+# declaring it before the marker exists would be read by a tool rather
+# than by a person.
 #
 # No PyPy, and the reason is no longer plyvel: that dependency is gone,
 # and with it the C extension built from source against a LevelDB the
@@ -134,8 +133,7 @@ test = [
 # reported thousands of errors, most of them a definition with no
 # annotation or a call to one. That was the annotation pass
 # btclib-org/.github#9 deferred and btclib-org/btclib-node#104 later
-# did; [tool.mypy] carries what is left of strict once it did, measured
-# the same way that block's own comments measure the rest of it.
+# did; [tool.mypy] is `strict = true` now that it is done.
 lint = [
     "pre-commit>=4.6.2",
     "ruff>=0.16.4",
@@ -500,58 +498,29 @@ files = ["btclib_node", "tests", "scripts"]
 # `datetime.UTC` does not exist, and it is right about 3.10.
 python_version = "3.14"
 
-# --- the strict bundle, one flag at a time -----------------------------
-#
-# `strict = true` is a bundle of flags -- `mypy --help` lists the ones
-# it currently holds -- and turning it on wholesale writes a backlog
-# into the configuration. Every flag below was measured on its own,
-# over the directories `files` names, and costs nothing today -- so
-# each is a ratchet, and the first violation is the one that fails.
-warn_unused_configs = true
-disallow_any_generics = true
-disallow_subclassing_any = true
-disallow_untyped_decorators = true
-warn_redundant_casts = true
-warn_unused_ignores = true
-strict_equality = true
-# the one flag this commit moved out of the backlog below: its single
-# finding was the local `NetworkAddress.serialize`, unannotated, and
-# that class is btclib's now. Measured at zero with the flag on before
-# turning it on.
-warn_return_any = true
-extra_checks = true
-strict_bytes = true
-# not in the bundle, and free here: a branch mypy can prove is never
-# taken is a branch no test can cover, and this tree is held to
-# covering all of them
-warn_unreachable = true
-# btclib-org/btclib-node#104's annotation pass: every signature in
-# `files` now carries one, each flag measured at zero on its own before
-# being turned on here.
-disallow_untyped_defs = true
-disallow_untyped_calls = true
-disallow_incomplete_defs = true
-# reports a name imported from a module that re-exports it rather than
-# defines it: every btclib.tx.tx_in import of OutPoint (defined in
-# btclib.tx.out_point) and every btclib.tx.tx import of TxIn/TxOut
-# (defined in btclib.tx.tx_in and btclib.tx.tx_out respectively) --
-# redirected to the module that actually defines each name, which is
-# what this flag asks for and costs nothing else in this tree
-no_implicit_reexport = true
-
-# The rest of the bundle is left off. What it costs is a number nothing
-# checks and any commit can move, so it is not recorded here; the flag
-# being taken on is measured over the same directories the gate runs
-# on, with
+# The organization's standard requires this outright (section 6 of
+# btclib-org/.github's README, tracked for every repository as
+# btclib-org/.github#112): not a trajectory toward it, and not the same
+# bundle of flags enumerated one at a time in its place -- that table
+# states which checks the tree passes and leaves what is annotated to
+# be read tree by tree, where `strict = true` states that every
+# function in `files` declares its types. `check_untyped_defs` was the
+# one member of the bundle this table still left off:
+# btclib-org/btclib-node#105 read what it found one at a time, and what
+# is left after #104's annotation pass measures at zero --
 #
 #   uv run --locked --no-default-groups --group lint --group test \
 #     mypy --check-untyped-defs
 #
-# `check_untyped_defs` checks the bodies of unannotated functions, and
-# #104's annotation pass leaves none in `files` for it to check --
-# measured at zero for that reason, and not because #105, where a
-# finding of it is read one at a time, has been worked. It stays open
-# until this flag goes on.
+strict = true
+# None of these three are in the bundle `mypy --help`'s `--strict` entry
+# lists, so `strict = true` above leaves each off; every one costs
+# nothing today, measured over the directories `files` names.
+warn_unused_configs = true
+strict_bytes = true
+# a branch mypy can prove is never taken is a branch no test can cover,
+# and this tree is held to covering all of them
+warn_unreachable = true
 
 # --- the optional error codes, surveyed one at a time ------------------
 #

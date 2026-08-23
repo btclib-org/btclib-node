@@ -314,8 +314,8 @@ repos:
   # Still not strict at the time this moved: that was btclib-org/
   # btclib-node#104's annotation pass, its own step and a later commit.
   # What this one changed was what mypy can see, not how much it
-  # demands -- [tool.mypy] is where the demand itself is tracked, one
-  # flag at a time, both before and after that pass.
+  # demands -- [tool.mypy] is where the demand itself is tracked, both
+  # before and after that pass.
   # --locked and not --frozen, for the reason the uv-lock hook below
   # cannot cover: a dependency added without a re-lock would leave mypy
   # checking a stale environment and saying nothing, and this hook
