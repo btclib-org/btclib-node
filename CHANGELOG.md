@@ -336,3 +336,39 @@ to check the guess.
   `[tool.typos.default.extend-words]`'s entry alike, each with the
   comment that justified it: a spell checker ignoring a word no longer
   in the tree has nothing left to ignore.
+
+### `getblockheader` describes a block off the best chain, instead of failing
+
+- **A block this node has indexed and did not follow is answered with
+  its header** (#87). `get_block_header` read the height as
+  `header_index.index(block_hash)`, and `header_index` holds the best
+  chain alone: for a block on a losing fork -- indexed, and described by
+  `block_index.header_dict` perfectly well -- that raised
+  `ValueError: list.index(x): x not in list`, which `rpc/main.py`'s
+  `handle_rpc` answers as `-32603 Internal Error`. Measured on a regtest
+  index carrying three headers and a one-header fork off the genesis, on
+  `origin/main` and here: the raise becomes `height: 1`,
+  `confirmations: -1`, the fork's parent as `previousblockhash`, and no
+  `nextblockhash`. A client can now tell a block the chain did not keep
+  from a node that has broken, `-32603` being what this node owes a
+  genuine fault.
+- **The shape is Bitcoin Core's.** `blockheaderToJSON` and
+  `ComputeNextBlockAndDepth` in its `src/rpc/blockchain.cpp` answer a
+  header off the active chain with `confirmations: -1` in place of a
+  depth and with no `nextblockhash`, and with the height the block has
+  on its own fork. What Core counts that depth against is the chain of
+  blocks it has validated, where this stays with the best header chain
+  the function already used: #178 is that difference, which predates
+  this entry and is not what #87 asked about.
+- **The height is `BlockInfo.index`**, which every indexed block carries,
+  rather than a position in a chain a fork is not on. Nothing changes for
+  a block on the best chain: the two are the same number there, which is
+  what `tests/functional/rpc/test_chain.py` asserts of a height read back
+  over a real index built with `add_headers`.
+  `previousblockhash` likewise comes from the header's own parent, which
+  for a block on the best chain is the `header_index[height - 1]` it was
+  read from before.
+- **A hash this node has never seen still raises**, and so do a non-hex
+  parameter and no parameter at all: #179 is those three, which want a
+  way for a callback to name an error code and are the same mechanism
+  #83 is waiting on.
