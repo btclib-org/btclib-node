@@ -956,6 +956,17 @@ def test_one_block_is_a_range_of_one():
     assert msg.block_hash == (3).to_bytes(32, "big")
 
 
+def test_get_cfilters_refuses_a_gap_in_a_promised_index():
+    # BIP157's service bit promises a filter for every block of the
+    # active chain; a gap here is the index breaking that promise
+    # rather than a request this node can decline
+    node = a_filters_node()
+    node.chainstate.filter_index.get_filter = lambda h: None
+    peer = a_peer()
+    with pytest.raises(Exception, match="no filter for a block"):
+        a_getcfilters(node, peer, 2, 2)
+
+
 def test_a_filter_type_this_node_does_not_serve_is_not_answered():
     # BIP158 defines the basic filter and nothing else, so any other
     # code is a type no node has; BIP157 says answer with nothing
@@ -1082,6 +1093,30 @@ def test_a_getcfheaders_this_node_cannot_answer_is_not_answered():
     assert not peer.sent
 
 
+def test_get_cfheaders_refuses_a_gap_in_the_header_before_the_range():
+    node = a_filters_node()
+    node.chainstate.filter_index.get_header = lambda h: None
+    peer = a_peer()
+    with pytest.raises(Exception, match="no filter header for the parent"):
+        get_cfheaders(
+            node,
+            GetCFHeaders(BlockFilterType.BASIC, 3, (5).to_bytes(32, "big")).serialize(),
+            peer,
+        )
+
+
+def test_get_cfheaders_refuses_a_gap_in_a_promised_index():
+    node = a_filters_node()
+    node.chainstate.filter_index.get_filter_hash = lambda h: None
+    peer = a_peer()
+    with pytest.raises(Exception, match="no filter for a block"):
+        get_cfheaders(
+            node,
+            GetCFHeaders(BlockFilterType.BASIC, 0, (2).to_bytes(32, "big")).serialize(),
+            peer,
+        )
+
+
 def test_the_checkpoints_are_every_thousandth_block_and_not_the_first():
     node = a_filters_node(length=2 * CFCHECKPT_INTERVAL + 3)
     peer = a_peer()
@@ -1129,6 +1164,17 @@ def test_a_chain_shorter_than_the_interval_has_no_checkpoints():
     # there is nothing to check against, which is not the same as
     # having been ignored
     assert not msg.filter_headers
+
+
+def test_get_cfcheckpt_refuses_a_gap_in_a_promised_index():
+    node = a_filters_node(length=CFCHECKPT_INTERVAL + 1)
+    node.chainstate.filter_index.get_header = lambda h: None
+    peer = a_peer()
+    stop_hash = CFCHECKPT_INTERVAL.to_bytes(32, "big")
+    with pytest.raises(Exception, match="no filter header for a block"):
+        get_cfcheckpt(
+            node, GetCFCheckpt(BlockFilterType.BASIC, stop_hash).serialize(), peer
+        )
 
 
 def test_a_getcfcheckpt_this_node_cannot_answer_is_not_answered():

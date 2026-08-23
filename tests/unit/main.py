@@ -203,6 +203,22 @@ def test_a_candidate_whose_block_has_not_arrived_is_not_connected(tmp_path):
     assert node.status == NodeStatus.HeaderSynced
 
 
+def test_update_chain_refuses_a_block_marked_downloaded_but_missing(tmp_path):
+    # the download manager and block_db agree by construction; this is
+    # the state they would be in if they did not
+    node = regtest_node(tmp_path)
+    chain = generate_random_chain(1, RegTest().genesis.hash)
+    block_index = node.chainstate.block_index
+    block_index.add_headers([block.header for block in chain])
+    for hash in block_index.header_dict:
+        block_info = block_index.get_block_info(hash)
+        block_info.downloaded = True
+        block_index.insert_block_info(block_info)
+    # deliberately not added to node.block_db
+    with pytest.raises(Exception, match="just checked downloaded is missing"):
+        update_chain(node)
+
+
 def hashes(chain):
     return [block.header.hash for block in chain]
 
@@ -222,6 +238,33 @@ def test_a_heavier_fork_replaces_the_chain_the_node_was_on(tmp_path):
     assert block_index.active_chain[1:] == hashes(second)
     for block_hash in hashes(first):
         assert block_hash not in block_index.active_chain
+
+
+def test_a_reorg_refuses_a_missing_reverse_patch(tmp_path):
+    # every block on the active chain has one, by construction; this is
+    # the state block_db would be in if it did not
+    node = regtest_node(tmp_path)
+    first = generate_random_chain(2, RegTest().genesis.hash)
+    connect(node, first)
+    node.block_db.rev_patches.pop(first[-1].header.hash)
+
+    second = generate_random_chain(3, RegTest().genesis.hash)
+    with pytest.raises(Exception, match="no reverse patch"):
+        connect(node, second)
+
+
+def test_a_reorg_refuses_a_missing_removed_block(tmp_path):
+    # the reverse patch of the block being undone is enough to roll the
+    # chainstate back; giving the transactions of that same block back
+    # to the mempool needs the block itself, which is the gap this pins
+    node = regtest_node(tmp_path)
+    first = generate_random_chain(2, RegTest().genesis.hash)
+    connect(node, first)
+    node.block_db.blocks.pop(first[-1].header.hash)
+
+    second = generate_random_chain(3, RegTest().genesis.hash)
+    with pytest.raises(Exception, match="block just removed is missing"):
+        connect(node, second)
 
 
 def test_a_reorg_gives_the_orphaned_transactions_back_to_the_mempool(tmp_path):

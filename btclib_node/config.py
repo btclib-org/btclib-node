@@ -27,16 +27,16 @@ class Config:
 
     def __init__(
         self,
-        chain=Main(),
-        data_dir=None,
-        p2p_port=None,
-        rpc_port=None,
-        allow_p2p=True,
-        allow_rpc=True,
-        pruned=False,
-        debug=False,
-        log_path="history.log",
-    ):
+        chain: Chain | str = Main(),
+        data_dir: str | Path | None = None,
+        p2p_port: int | None = None,
+        rpc_port: int | None = None,
+        allow_p2p: bool = True,
+        allow_rpc: bool = True,
+        pruned: bool = False,
+        debug: bool = False,
+        log_path: str = "history.log",
+    ) -> None:
         if isinstance(chain, Chain):
             self.chain = chain
         elif isinstance(chain, str):

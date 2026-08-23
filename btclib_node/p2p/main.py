@@ -2,11 +2,16 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+from typing import TYPE_CHECKING
+
 from btclib_node.constants import P2pConnStatus
 from btclib_node.p2p.callbacks import callbacks, handshake_callbacks
 
+if TYPE_CHECKING:
+    from btclib_node import Node
 
-def handle_p2p_handshake(node):
+
+def handle_p2p_handshake(node: Node) -> None:
     msg_type, msg, conn_id = node.p2p_manager.handshake_messages.popleft()
     if conn_id in node.p2p_manager.connections:
         conn = node.p2p_manager.connections[conn_id]
@@ -23,7 +28,7 @@ def handle_p2p_handshake(node):
             node.logger.exception("Exception occurred")
 
 
-def handle_p2p(node):
+def handle_p2p(node: Node) -> None:
     msg_type, msg, conn_id = node.p2p_manager.messages.popleft()
     if conn_id in node.p2p_manager.connections:
         conn = node.p2p_manager.connections[conn_id]

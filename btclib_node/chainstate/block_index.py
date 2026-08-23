@@ -4,6 +4,7 @@
 
 import enum
 from collections import deque
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -13,8 +14,12 @@ from btclib.block.proof_of_work import block_work
 from btclib.exceptions import BTClibValueError
 from btclib.utils import bytesio_from_binarydata
 
+from btclib_node.chains import Chain
+from btclib_node.db import KeyValueStore
+from btclib_node.log import Logger
 
-def calculate_work(header):
+
+def calculate_work(header: BlockHeader) -> int:
     return block_work(header.bits)
 
 
@@ -34,7 +39,7 @@ class BlockInfo:
     chainwork: int = 0
 
     @classmethod
-    def deserialize(cls, data, check_validity=True):
+    def deserialize(cls, data: bytes, check_validity: bool = True) -> BlockInfo:
         stream = bytesio_from_binarydata(data)
         header = BlockHeader.parse(stream, check_validity=check_validity)
         index = var_int.parse(stream)
@@ -42,7 +47,7 @@ class BlockInfo:
         downloaded = bool(int.from_bytes(stream.read(1), "little"))
         return cls(header, index, status, downloaded)
 
-    def serialize(self):
+    def serialize(self) -> bytes:
         out = self.header.serialize()
         out += var_int.serialize(self.index)
         out += self.status.to_bytes(1, "little")
@@ -51,7 +56,7 @@ class BlockInfo:
 
 
 class BlockIndex:
-    def __init__(self, parent_db, chain, logger):
+    def __init__(self, parent_db: KeyValueStore, chain: Chain, logger: Logger) -> None:
         self.logger = logger
 
         self.db = parent_db
@@ -63,10 +68,10 @@ class BlockIndex:
         genesis = chain.genesis
         genesis_info = BlockInfo(genesis, 0, BlockStatus.in_active_chain, True)
 
-        self.header_dict = {genesis.hash: genesis_info}
+        self.header_dict: dict[bytes, BlockInfo] = {genesis.hash: genesis_info}
 
         # the actual block chain; it contains only valid blocks
-        self.active_chain = []
+        self.active_chain: list[bytes] = []
 
         # blocks that are waiting to be connected to the active chain,
         # each a [hash, chainwork] pair
@@ -74,11 +79,11 @@ class BlockIndex:
 
         # list all header hashes, even if not already checked, needed for
         # the block locators
-        self.header_index = []
+        self.header_index: list[bytes] = []
 
         self.init_from_db()
 
-    def init_from_db(self):
+    def init_from_db(self) -> None:
         self.logger.info("Start Index initialization")
         for key, value in self.db:
             prefix, key = key[:8], key[8:]
@@ -86,7 +91,7 @@ class BlockIndex:
                 break
             self.header_dict[key] = BlockInfo.deserialize(value, check_validity=False)
 
-        self.sorted_header_dict = sorted(
+        self.sorted_header_dict: list[bytes] = sorted(
             self.header_dict, key=lambda x: self.header_dict[x].index
         )
 
@@ -102,7 +107,7 @@ class BlockIndex:
 
         self.sorted_header_dict = []
 
-    def calculate_chainwork(self):
+    def calculate_chainwork(self) -> None:
         for block_hash in self.sorted_header_dict:
             block_info = self.get_block_info(block_hash)
             if block_info.index == 0:  # genesis
@@ -112,15 +117,15 @@ class BlockIndex:
                 old_work = self.get_block_info(previousblockhash).chainwork
             block_info.chainwork = old_work + calculate_work(block_info.header)
 
-    def generate_active_chain(self):
-        chain_dict = {}
+    def generate_active_chain(self) -> None:
+        chain_dict: dict[int, bytes] = {}
         for block_hash, block_info in self.header_dict.items():
             if block_info.status == BlockStatus.in_active_chain:
                 chain_dict[block_info.index] = block_hash
         for index in sorted(chain_dict.keys()):
             self.active_chain.append(chain_dict[index])
 
-    def generate_block_candidates(self):
+    def generate_block_candidates(self) -> None:
         active_chain_set = set(self.active_chain)
         current_work = self.get_block_info(self.active_chain[-1]).chainwork
         for block_hash in self.sorted_header_dict:
@@ -133,7 +138,7 @@ class BlockIndex:
             if block_info.chainwork > current_work:
                 self.block_candidates.append([block_hash, block_info.chainwork])
 
-    def generate_header_index(self):
+    def generate_header_index(self) -> None:
         self.header_index = self.active_chain[:]
         header_index_set = set(self.header_index)
         for block_hash in self.sorted_header_dict:
@@ -153,7 +158,9 @@ class BlockIndex:
 
     # stores the caller's object rather than a copy, so a read is a
     # handle on the index: btclib-org/btclib-node#117
-    def insert_block_info(self, block_info, wb=None):
+    def insert_block_info(
+        self, block_info: BlockInfo, wb: KeyValueStore | None = None
+    ) -> None:
         new_block_info = block_info
         self.header_dict[block_info.header.hash] = new_block_info
         key = b"blkinfo-" + new_block_info.header.hash
@@ -162,14 +169,16 @@ class BlockIndex:
         db.put(key, value)
 
     # hands out the index's own object: btclib-org/btclib-node#117
-    def get_block_info(self, hash):
+    def get_block_info(self, hash: bytes) -> BlockInfo:
         return self.header_dict[hash]
 
     # returns the active chain and the forked chain from the common ancestor
-    def get_fork_details(self, header_hash, chain=None):
+    def get_fork_details(
+        self, header_hash: bytes, chain: list[bytes] | None = None
+    ) -> tuple[list[bytes], list[bytes]]:
         if not chain:
             chain = self.active_chain
-        fork = [header_hash]
+        fork: list[bytes] = [header_hash]
         while True:
             block_info = self.get_block_info(header_hash)
             header_hash = block_info.header.previous_block_hash
@@ -187,15 +196,15 @@ class BlockIndex:
             fork.append(header_hash)
 
     # unsafe: doesn't perform any check
-    def add_to_active_chain(self, block_hash):
+    def add_to_active_chain(self, block_hash: bytes) -> None:
         self.active_chain.append(block_hash)
 
-    def remove_from_active_chain(self, block_hash):
+    def remove_from_active_chain(self, block_hash: bytes) -> None:
         if block_hash != self.active_chain[-1]:
             raise Exception
         self.active_chain.pop()
 
-    def add_headers(self, headers):
+    def add_headers(self, headers: Iterable[BlockHeader]) -> bool:
         # Before anything is indexed, and all of them: chainwork below is
         # credited from the header's own `bits`, so an unchecked header
         # can claim any amount of work and become the best chain. The
@@ -247,7 +256,7 @@ class BlockIndex:
 
         return added
 
-    def get_first_candidate(self):
+    def get_first_candidate(self) -> BlockInfo | None:
         chainwork = self.get_block_info(self.active_chain[-1]).chainwork
         while self.block_candidates and self.block_candidates[0][1] < chainwork:
             self.block_candidates.popleft()
@@ -265,7 +274,7 @@ class BlockIndex:
         return best_candidate
 
     # return a list of blocks that have to be downloaded
-    def get_download_candidates(self):
+    def get_download_candidates(self) -> list[bytes]:
         chainwork = self.get_block_info(self.active_chain[-1]).chainwork
         candidates: list[bytes] = []
         seen = set()
@@ -292,10 +301,10 @@ class BlockIndex:
         return candidates[:1024]
 
     # return a list of block hashes looking at the current best chain
-    def get_block_locator_hashes(self):
+    def get_block_locator_hashes(self) -> list[bytes]:
         i = 1
         step = 1
-        block_locators = []
+        block_locators: list[bytes] = []
         while True:
             if i > len(self.header_index):
                 break
@@ -307,8 +316,10 @@ class BlockIndex:
             block_locators.append(self.header_index[0])
         return block_locators
 
-    def get_headers_from_locators(self, block_locators, stop):
-        output = []
+    def get_headers_from_locators(
+        self, block_locators: Sequence[bytes], stop: bytes
+    ) -> list[BlockHeader]:
+        output: list[bytes] = []
         for block_locator in block_locators:
             if block_locator not in self.header_index:
                 continue

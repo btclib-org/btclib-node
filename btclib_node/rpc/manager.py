@@ -6,19 +6,23 @@ import asyncio
 import socket
 import threading
 from collections import deque
+from concurrent.futures import Future
 from contextlib import suppress
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from btclib_node.rpc.connection import Connection
 
+if TYPE_CHECKING:
+    from btclib_node import Node
+
 
 class RpcManager(threading.Thread):
-    def __init__(self, node, port):
+    def __init__(self, node: Node, port: int | None) -> None:
         super().__init__()
         self.node = node
         self.logger = node.logger
         self.chain = node.chain
-        self.connections = {}
+        self.connections: dict[int, Connection] = {}
         # what a connection parses out of one request: the JSON-RPC
         # batch -- a list even where the client sent a lone object --
         # and the connection id handle_rpc answers on
@@ -32,18 +36,23 @@ class RpcManager(threading.Thread):
         # it is refused
         self.listening = threading.Event()
 
-    def create_connection(self, loop, client):
+    def create_connection(
+        self, loop: asyncio.AbstractEventLoop, client: socket.socket
+    ) -> Connection:
         client.settimeout(0.0)
         new_connection = Connection(loop, client, self, self.last_connection_id)
         self.connections[self.last_connection_id] = new_connection
         return new_connection
 
-    def remove_connection(self, id):
+    def remove_connection(self, id: int) -> None:
         if id in self.connections.keys():
-            self.connections[id].stop()
+            # Connection has no `stop`, only `close` -- this call has
+            # never had a caller, so the mismatch has never run.
+            # btclib-org/btclib-node#64 is the defect and the fix.
+            self.connections[id].stop()  # type: ignore[attr-defined]
             self.connections.pop(id)
 
-    async def server(self, loop):
+    async def server(self, loop: asyncio.AbstractEventLoop) -> None:
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         # All interfaces, unconditionally -- there is no host
@@ -59,17 +68,19 @@ class RpcManager(threading.Thread):
                 client, _ = await loop.sock_accept(server_socket)
                 self.last_connection_id += 1
                 conn = self.create_connection(self.loop, client)
-                task = asyncio.run_coroutine_threadsafe(conn.run(), self.loop)
+                task: Future[None] = asyncio.run_coroutine_threadsafe(
+                    conn.run(), self.loop
+                )
                 conn.task = task
 
-    def run(self):
+    def run(self) -> None:
         self.logger.info("Starting RPC manager")
         loop = self.loop
         asyncio.set_event_loop(loop)
         asyncio.run_coroutine_threadsafe(self.server(loop), loop)
         loop.run_forever()
 
-    def stop(self):
+    def stop(self) -> None:
         self.loop.call_soon_threadsafe(self.loop.stop)
         while self.loop.is_running():
             pass

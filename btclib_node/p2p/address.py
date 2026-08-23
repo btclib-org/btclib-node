@@ -22,12 +22,16 @@ import asyncio
 import secrets
 import socket
 import time
+from collections.abc import Iterable
 from dataclasses import replace
 from ipaddress import IPv4Address, IPv6Address, ip_address
+from pathlib import Path
 from typing import cast
 
 from btclib.p2p.address import NetworkAddress, TimestampedNetworkAddress
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
+
+from btclib_node.chains import Chain
 
 # the two ids whose address field is an IP address, which is the whole
 # of what an addr version 1 entry can carry -- and, of those two, the
@@ -36,7 +40,9 @@ _IP_NETWORKS = (BIP155Network.IPV4, BIP155Network.IPV6)
 _DIALABLE = BIP155Network.IPV4
 
 
-def peer_address(ip, port, timestamp=0, services=0):
+def peer_address(
+    ip: str, port: int, timestamp: int = 0, services: int = 0
+) -> NetworkAddressV2:
     """Return the BIP155 record of a peer named by the text of its IP.
 
     `ipaddress.ip_address` is what tells the two IP networks apart, and
@@ -49,17 +55,17 @@ def peer_address(ip, port, timestamp=0, services=0):
     return NetworkAddressV2(timestamp, services, network_id, parsed.packed, port)
 
 
-def can_addrv1(address):
+def can_addrv1(address: NetworkAddressV2) -> bool:
     """Answer whether an addr version 1 message has room for this peer."""
     return address.network_id in _IP_NETWORKS
 
 
-def can_connect(address):
+def can_connect(address: NetworkAddressV2) -> bool:
     """Answer whether this node has a dial for the peer's network."""
     return address.network_id == _DIALABLE
 
 
-def network_address(address):
+def network_address(address: NetworkAddressV2) -> NetworkAddress:
     """Return the untimestamped form of a BIP155 record, where it has one.
 
     What a `version` message's two addresses are, and what an `addr`
@@ -81,12 +87,12 @@ def network_address(address):
     return NetworkAddress(address.services, ip, address.port)
 
 
-def addr_entry(address):
+def addr_entry(address: NetworkAddressV2) -> TimestampedNetworkAddress:
     """Return the addr version 1 entry a BIP155 record is, where it is one."""
     return TimestampedNetworkAddress(address.timestamp, network_address(address))
 
 
-def peer_from_addr_entry(entry):
+def peer_from_addr_entry(entry: TimestampedNetworkAddress) -> NetworkAddressV2:
     """Return the BIP155 record an addr version 1 entry describes.
 
     An `addr` entry holds every address in sixteen octets, a v4 one
@@ -106,7 +112,7 @@ def peer_from_addr_entry(entry):
     )
 
 
-def ip_and_port(address):
+def ip_and_port(address: NetworkAddress) -> str:
     """Return "ip:port", which is how this node has always shown one.
 
     A `NetworkAddress` holds every address in the sixteen octets of an
@@ -124,7 +130,7 @@ def ip_and_port(address):
     return f"{address.ip.ipv4_mapped or address.ip}:{address.port}"
 
 
-async def dial(address):
+async def dial(address: NetworkAddressV2) -> socket.socket | None:
     """Return a socket connected to the peer, or nothing if it never came up.
 
     `dial` and not `connect`, which is what `P2pManager` calls the whole
@@ -149,19 +155,19 @@ async def dial(address):
 
 
 class PeerDB:
-    def __init__(self, chain, data_dir):
+    def __init__(self, chain: Chain, data_dir: Path) -> None:
         self.chain = chain
         self.data_dir = data_dir
-        self.addresses = set()
-        self.active_addresses = []
+        self.addresses: set[NetworkAddressV2] = set()
+        self.active_addresses: list[NetworkAddressV2] = []
 
         self.init_from_db()
         self.ask_dns_nodes = self.is_empty
 
-    def init_from_db(self):
+    def init_from_db(self) -> None:
         pass
 
-    async def get_addr_from_dns(self):
+    async def get_addr_from_dns(self) -> None:
         if not self.ask_dns_nodes:
             return
         chain = self.chain
@@ -189,10 +195,10 @@ class PeerDB:
             self.addresses.add(peer_address(ip, port))
 
     @property
-    def is_empty(self):
+    def is_empty(self) -> bool:
         return not len(self.addresses)
 
-    def random_address(self):
+    def random_address(self) -> NetworkAddressV2 | None:
         # Drawn from the addresses that can be dialled, rather than from
         # the whole table with a retry on the ones that cannot: a table
         # holding none of them -- a seed answering with AAAA records
@@ -205,7 +211,7 @@ class PeerDB:
             return None
         return secrets.choice(dialable)
 
-    def add_addresses(self, addresses):
+    def add_addresses(self, addresses: Iterable[NetworkAddressV2]) -> None:
         # a peer's word for when it last saw an address is not evidence,
         # and keeping it would make the one address several entries
         for address in addresses:
@@ -213,7 +219,7 @@ class PeerDB:
                 break
             self.addresses.add(replace(address, timestamp=0))
 
-    def get_active_addresses(self):
+    def get_active_addresses(self) -> list[NetworkAddressV2]:
         now = time.time()
         # active if seen within the last three hours
         self.active_addresses = [
@@ -221,6 +227,6 @@ class PeerDB:
         ]
         return self.active_addresses
 
-    def add_active_address(self, addr):
+    def add_active_address(self, addr: NetworkAddressV2) -> None:
         # a whole second: the field is four octets on the wire
         self.active_addresses.append(replace(addr, timestamp=int(time.time())))

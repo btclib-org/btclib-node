@@ -4,27 +4,32 @@
 
 import time
 from collections import Counter
+from typing import TYPE_CHECKING
 
 from btclib.p2p.inventory import GetData, Inv, Inventory, InventoryType
 
 from btclib_node.constants import NodeStatus
+from btclib_node.log import Logger
+
+if TYPE_CHECKING:
+    from btclib_node import Node
 
 
 class DownloadManager:
-    def __init__(self, node, logger):
+    def __init__(self, node: Node, logger: Logger) -> None:
         self.node = node
         self.logger = logger
 
-        self.block_window = []
+        self.block_window: list[bytes] = []
 
-        self.received_txs = []
-        self.inv_txs = []
+        self.received_txs: list[tuple[int, bytes]] = []
+        self.inv_txs: list[tuple[int, bytes]] = []
 
-    def step(self):
+    def step(self) -> None:
         self.block_download()
         self.tx_download()
 
-    def tx_download(self):
+    def tx_download(self) -> None:
         if self.node.status < NodeStatus.BlockSynced:
             return
 
@@ -32,10 +37,10 @@ class DownloadManager:
         if received:
             # a peer that announced a transaction we now hold, or sent it
             # to us, already has it: it is the others that are told
-            has_it = {}
+            has_it: dict[int, set[bytes]] = {}
             for conn_id, wtxid in self.received_txs:
                 has_it.setdefault(conn_id, set()).add(wtxid)
-            still_wanted = []
+            still_wanted: list[tuple[int, bytes]] = []
             for conn_id, wtxid in self.inv_txs:
                 if wtxid in received:
                     has_it.setdefault(conn_id, set()).add(wtxid)
@@ -71,16 +76,16 @@ class DownloadManager:
                     )
 
         if self.inv_txs:
-            invs = {}
+            invs: dict[int, list[bytes]] = {}
             for conn_id, wtxid in self.inv_txs:
                 invs.setdefault(conn_id, []).append(wtxid)
 
             for conn_id, inv in invs.items():
-                conn = self.node.p2p_manager.connections.get(conn_id)
-                if conn:
+                target = self.node.p2p_manager.connections.get(conn_id)
+                if target:
                     # a peer that announced the same transaction twice is
                     # asked for it once
-                    conn.send(
+                    target.send(
                         GetData(
                             [
                                 Inventory(InventoryType.MSG_WTX, wtxid)
@@ -92,7 +97,7 @@ class DownloadManager:
         self.inv_txs = []
         self.received_txs = []
 
-    def block_download(self):
+    def block_download(self) -> None:
         node = self.node
         if node.status < NodeStatus.HeaderSynced:
             return
@@ -124,11 +129,11 @@ class DownloadManager:
                 if time.time() - conn.last_block_timestamp > 300:
                     conn.stop()
 
-        pending = []
+        pending: list[bytes] = []
         skip = True
         for conn in connections:
             conn_queue = conn.download_queue
-            new_queue = []
+            new_queue: list[bytes] = []
             for header in conn_queue:
                 if not block_index.get_block_info(header).downloaded:
                     new_queue.append(header)

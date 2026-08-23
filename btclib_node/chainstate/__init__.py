@@ -2,7 +2,11 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+from pathlib import Path
+
+from btclib_node.chains import Chain
 from btclib_node.db import KeyValueStore
+from btclib_node.log import Logger
 
 from .block_index import BlockIndex
 from .filter_index import FilterIndex
@@ -10,7 +14,7 @@ from .utxo_index import UtxoIndex
 
 
 class Chainstate:
-    def __init__(self, data_dir, chain, logger):
+    def __init__(self, data_dir: Path, chain: Chain, logger: Logger) -> None:
         data_dir = data_dir / "chainstate"
         data_dir.mkdir(exist_ok=True, parents=True)
         self.db = KeyValueStore(data_dir)
@@ -25,6 +29,6 @@ class Chainstate:
 
         self.logger = logger
 
-    def close(self):
+    def close(self) -> None:
         self.logger.info("Closing Chainstate db")
         self.db.close()

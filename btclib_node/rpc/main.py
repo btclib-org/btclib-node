@@ -2,10 +2,17 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+from typing import TYPE_CHECKING, Any
+
 from btclib_node.rpc.callbacks import callbacks
 
+if TYPE_CHECKING:
+    from btclib_node import Node
+    from btclib_node.rpc.connection import Connection
+    from btclib_node.rpc.manager import RpcManager
 
-def get_connection(manager, id):
+
+def get_connection(manager: RpcManager, id: int) -> Connection | None:
     try:
         conn = manager.connections[id]
         return conn
@@ -13,7 +20,7 @@ def get_connection(manager, id):
         return None
 
 
-def is_valid_rpc(request):
+def is_valid_rpc(request: Any) -> bool:
     if not isinstance(request, dict):
         return False
     if "method" not in request:
@@ -23,7 +30,7 @@ def is_valid_rpc(request):
     return True
 
 
-def error_msg(code):
+def error_msg(code: int) -> dict[str, Any]:
     error_messages = {
         -32600: "Invalid request",
         -32601: "Method not found",
@@ -39,7 +46,7 @@ def error_msg(code):
     }
 
 
-def handle_rpc(node):
+def handle_rpc(node: Node) -> None:
     data, conn_id = node.rpc_manager.messages.popleft()
     conn = get_connection(node.rpc_manager, conn_id)
     if not conn:
@@ -47,7 +54,7 @@ def handle_rpc(node):
 
     node.logger.debug(f"Received rpc message: {conn_id}")
 
-    response = []
+    response: list[dict[str, Any]] = []
     # JSON-RPC 2.0: an empty batch is itself an invalid request, and
     # the specification's own example for it is this single object. The
     # append is also what keeps `response` from staying empty, which

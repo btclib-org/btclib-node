@@ -8,29 +8,36 @@ import threading
 import time
 from collections import deque
 from contextlib import suppress
+from typing import TYPE_CHECKING
 
+from btclib.p2p.addrv2 import NetworkAddressV2
 from btclib.p2p.data import TxPayload as Tx
+from btclib.p2p.payload import Payload
+from btclib.tx.tx import Tx as BtclibTx
 
 from btclib_node.constants import NodeStatus, P2pConnStatus
-from btclib_node.p2p.address import dial, peer_address
+from btclib_node.p2p.address import PeerDB, dial, peer_address
 from btclib_node.p2p.connection import Connection
+
+if TYPE_CHECKING:
+    from btclib_node import Node
 
 
 class P2pManager(threading.Thread):
-    def __init__(self, node, port, peer_db):
+    def __init__(self, node: Node, port: int | None, peer_db: PeerDB) -> None:
         super().__init__()
         self.node = node
         self.logger = node.logger
         self.port = port
         self.peer_db = peer_db
 
-        self.connections = {}
+        self.connections: dict[int, Connection] = {}
         # (command, payload, connection id), which is what a connection
         # appends and what p2p.main pops apart; the handshake ones go
         # in a queue of their own, drained whole before the rest.
         self.messages: deque[tuple[str, bytes, int]] = deque()
         self.handshake_messages: deque[tuple[str, bytes, int]] = deque()
-        self.nonces = []
+        self.nonces: list[int] = []
         self.last_connection_id = -1
 
         # Set once the listening socket is bound and can hold a peer's
@@ -43,7 +50,9 @@ class P2pManager(threading.Thread):
 
         self.loop = asyncio.new_event_loop()
 
-    def create_connection(self, client, address, inbound):
+    def create_connection(
+        self, client: socket.socket, address: NetworkAddressV2, inbound: bool
+    ) -> None:
         client.settimeout(0.0)
         self.last_connection_id += 1
         conn = Connection(self, client, address, self.last_connection_id, inbound)
@@ -51,20 +60,20 @@ class P2pManager(threading.Thread):
         task = asyncio.run_coroutine_threadsafe(conn.run(), self.loop)
         conn.task = task
 
-    def remove_connection(self, id):
+    def remove_connection(self, id: int) -> None:
         if id in self.connections.keys():
             self.connections[id].stop()
             self.connections.pop(id)
 
-    async def async_connect(self, address):
+    async def async_connect(self, address: NetworkAddressV2) -> None:
         client = await dial(address)
         if client:
             self.create_connection(client, address, False)
 
-    def connect(self, address):
+    def connect(self, address: NetworkAddressV2) -> None:
         asyncio.run_coroutine_threadsafe(self.async_connect(address), self.loop)
 
-    async def manage_connections(self, loop):
+    async def manage_connections(self, loop: asyncio.AbstractEventLoop) -> None:
         while True:
             now = time.time()
             for conn in self.connections.copy().values():
@@ -98,7 +107,7 @@ class P2pManager(threading.Thread):
                     self.logger.exception("Exception occurred")
             await asyncio.sleep(0.1)
 
-    async def server(self, loop):
+    async def server(self, loop: asyncio.AbstractEventLoop) -> None:
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         # All interfaces, by design: a P2P listener accepts
@@ -113,7 +122,7 @@ class P2pManager(threading.Thread):
                 address = peer_address(*ip_and_port)
                 self.create_connection(sock, address, True)
 
-    def run(self):
+    def run(self) -> None:
         self.logger.info("Starting P2P manager")
         loop = self.loop
         asyncio.set_event_loop(loop)
@@ -122,7 +131,7 @@ class P2pManager(threading.Thread):
         asyncio.run_coroutine_threadsafe(self.manage_connections(loop), loop)
         loop.run_forever()
 
-    def stop(self):
+    def stop(self) -> None:
         self.loop.call_soon_threadsafe(self.loop.stop)
         for conn in self.connections.copy().values():
             conn.stop()
@@ -139,11 +148,11 @@ class P2pManager(threading.Thread):
         self.listening.clear()
         self.logger.info("Stopping P2P Manager")
 
-    def send(self, msg, id):
+    def send(self, msg: Payload, id: int) -> None:
         if id in self.connections:
             self.connections[id].send(msg)
 
-    def broadcast_raw_transaction(self, tx):
+    def broadcast_raw_transaction(self, tx: BtclibTx) -> None:
         # the peers that asked for transactions, and not all of them:
         # a peer whose version set BIP37's fRelay false said so about
         # transactions from anywhere, not only about the ones another
@@ -157,10 +166,10 @@ class P2pManager(threading.Thread):
             if conn.relay_tx:
                 conn.send(msg)
 
-    def ping_all(self):
+    def ping_all(self) -> None:
         for conn in self.connections.copy().values():
             conn.send_ping()
 
-    def stop_all(self):
+    def stop_all(self) -> None:
         for conn in self.connections.copy().values():
             conn.stop()

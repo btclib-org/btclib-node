@@ -2,8 +2,12 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+from typing import TYPE_CHECKING, Any, cast
+
 from btclib.exceptions import BTClibValueError
 from btclib.p2p.address import ServiceFlags
+from btclib.p2p.addrv2 import BIP155Network
+from btclib.p2p.handshake import Version
 from btclib.tx import Tx
 
 from btclib_node.constants import P2pConnStatus
@@ -11,23 +15,27 @@ from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.main import verify_mempool_acceptance
 from btclib_node.p2p.address import ip_and_port
 
+if TYPE_CHECKING:
+    from btclib_node import Node
+    from btclib_node.rpc.connection import Connection
 
-def get_best_block_hash(node, conn, _):
+
+def get_best_block_hash(node: Node, conn: Connection, _: list[Any]) -> bytes:
     return node.chainstate.block_index.active_chain[-1]
 
 
-def get_block_hash(node, conn, params):
-    return node.chainstate.block_index.active_chain[params[0]]
+def get_block_hash(node: Node, conn: Connection, params: list[Any]) -> bytes:
+    return node.chainstate.block_index.active_chain[int(params[0])]
 
 
-def get_block_header(node, conn, params):
+def get_block_header(node: Node, conn: Connection, params: list[Any]) -> dict[str, Any]:
     block_index = node.chainstate.block_index
     header_index = block_index.header_index
 
     block_hash = bytes.fromhex(params[0])
     block_info = block_index.get_block_info(block_hash)
     header = block_info.header
-    out = header.to_dict()
+    out: dict[str, Any] = header.to_dict()
     out["hash"] = header.hash
 
     # raises for a block that is known and not on the best chain,
@@ -44,7 +52,7 @@ def get_block_header(node, conn, params):
     return out
 
 
-def service_names(services):
+def service_names(services: int) -> list[str]:
     """Return the service bits the way Core's getpeerinfo names them.
 
     `serviceFlagsToStr`, which is a walk over the set bits from the
@@ -57,7 +65,7 @@ def service_names(services):
     dropping it would report a peer as offering less than it said it
     does.
     """
-    names = []
+    names: list[str] = []
     for bit in range(int(services).bit_length()):
         if not services >> bit & 1:
             continue
@@ -70,8 +78,8 @@ def service_names(services):
     return names
 
 
-def get_peer_info(node, conn, _):
-    out = []
+def get_peer_info(node: Node, conn: Connection, _: list[Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
     for id, p2p_conn in node.p2p_manager.connections.items():
         if p2p_conn.status == P2pConnStatus.Connected:
             try:
@@ -85,25 +93,33 @@ def get_peer_info(node, conn, _):
             except Exception:  # noqa: S112
                 continue
 
-            services = p2p_conn.version_message.services
+            # status Connected is only reached after callbacks.verack,
+            # which refuses to advance without a version already parsed;
+            # cast rather than checked, since nothing here can repair a
+            # connection that reached Connected without one
+            version_message = cast(Version, p2p_conn.version_message)
+            services = version_message.services
 
-            conn_dict = {}
+            conn_dict: dict[str, Any] = {}
             conn_dict["id"] = id
             conn_dict["addr"] = f"{addr[0]}:{addr[1]}"
             conn_dict["addrbind"] = f"{addrbind[0]}:{addrbind[1]}"
-            conn_dict["addrlocal"] = ip_and_port(p2p_conn.version_message.addr_recv)
+            conn_dict["addrlocal"] = ip_and_port(version_message.addr_recv)
             # `.name` and not a lookup that tolerates a bare int: a
             # BIP155 id no member names reaches PeerDB but cannot reach
             # a Connection, `peer_address` building only the two IP
             # networks and `dial` refusing everything but IPv4. An
             # address of a network this node learns to speak has to
-            # come through here, which is where that is noticed.
-            conn_dict["network"] = p2p_conn.address.network_id.name.lower()
+            # come through here, which is where that is noticed. Cast
+            # rather than asserted: a test double stands in for the
+            # enum member here without being one.
+            network_id = cast(BIP155Network, p2p_conn.address.network_id)
+            conn_dict["network"] = network_id.name.lower()
             conn_dict["lastsend"] = p2p_conn.last_send
             conn_dict["lastrecv"] = p2p_conn.last_receive
             conn_dict["last_block"] = p2p_conn.last_block_timestamp
             conn_dict["pingtime"] = p2p_conn.latency
-            conn_dict["version"] = p2p_conn.version_message.version
+            conn_dict["version"] = version_message.version
             conn_dict["services"] = f"{services:016x}"
             conn_dict["servicesnames"] = service_names(services)
             conn_dict["inbound"] = p2p_conn.inbound
@@ -113,17 +129,17 @@ def get_peer_info(node, conn, _):
     return out
 
 
-def get_connection_count(node, conn, _):
+def get_connection_count(node: Node, conn: Connection, _: list[Any]) -> int:
     return len(node.p2p_manager.connections)
 
 
-def get_mempool_info(node, conn, _):
+def get_mempool_info(node: Node, conn: Connection, _: list[Any]) -> dict[str, Any]:
     mempool = node.mempool
     out = {"loaded": True, "size": mempool.size, "bytes": mempool.bytesize}
     return out
 
 
-def get_raw_mempool(node, conn, params):
+def get_raw_mempool(node: Node, conn: Connection, params: list[Any]) -> dict[str, Any]:
     verbose = params[0] if params else False
     if verbose:
         return {
@@ -138,9 +154,11 @@ def get_raw_mempool(node, conn, params):
     return {"txids": [txid.hex() for txid in node.mempool.txid_index]}
 
 
-def test_mempool_accept(node, conn, params):
+def test_mempool_accept(
+    node: Node, conn: Connection, params: list[Any]
+) -> list[dict[str, Any]]:
     rawtxs = params[0]
-    out = []
+    out: list[dict[str, Any]] = []
     for rawtx in rawtxs:
         try:
             tx = Tx.parse(rawtx)
@@ -148,7 +166,12 @@ def test_mempool_accept(node, conn, params):
             out.append({"allowed": False, "reject-reason": "Invalid serialization"})
             continue
 
-        tx_res = {"txid": tx.id, "wtxid": tx.hash, "allowed": False, "vsize": tx.vsize}
+        tx_res: dict[str, Any] = {
+            "txid": tx.id,
+            "wtxid": tx.hash,
+            "allowed": False,
+            "vsize": tx.vsize,
+        }
         try:
             verify_mempool_acceptance(node, tx)
             tx_res["allowed"] = True
@@ -162,7 +185,7 @@ def test_mempool_accept(node, conn, params):
     return out
 
 
-def send_raw_transaction(node, conn, params):
+def send_raw_transaction(node: Node, conn: Connection, params: list[Any]) -> str | None:
     rawtx = params[0]
     try:
         tx = Tx.parse(rawtx)
@@ -179,11 +202,11 @@ def send_raw_transaction(node, conn, params):
     return tx.id.hex()
 
 
-def ping(node, conn, _):
+def ping(node: Node, conn: Connection, _: list[Any]) -> None:
     node.p2p_manager.ping_all()
 
 
-def stop(node, conn, _):
+def stop(node: Node, conn: Connection, _: list[Any]) -> str:
     return "Btclib node stopping"
 
 
