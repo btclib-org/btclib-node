@@ -16,6 +16,7 @@ from typing import Any, NoReturn, cast
 import pytest
 
 from btclib_node.rpc.callbacks import callbacks
+from btclib_node.rpc.errors import RpcError, RpcErrorCode
 from btclib_node.rpc.main import (
     error_msg,
     get_connection,
@@ -56,7 +57,7 @@ def test_an_empty_batch_is_an_invalid_request() -> None:
     # that never ran used to end the node instead
     node, sent, waited, stopped = make_node([])
     handle_rpc(node)
-    assert sent == [[error_msg(-32600)]]
+    assert sent == [[error_msg(RpcErrorCode.INVALID_REQUEST, "Invalid request")]]
     assert not stopped
 
 
@@ -64,20 +65,20 @@ def test_a_batch_ending_in_something_that_is_not_an_object() -> None:
     node, sent, waited, stopped = make_node([PING, "garbage"])
     handle_rpc(node)
     answers = sent[0]
-    assert answers[1] == error_msg(-32600)
+    assert answers[1] == error_msg(RpcErrorCode.INVALID_REQUEST, "Invalid request")
     assert not stopped
 
 
 def test_an_unknown_method_is_answered_not_found() -> None:
     node, sent, _, _ = make_node([{"jsonrpc": "2.0", "id": "a", "method": "nosuch"}])
     handle_rpc(node)
-    assert sent == [[error_msg(-32601)]]
+    assert sent == [[error_msg(RpcErrorCode.METHOD_NOT_FOUND, "Method not found", "a")]]
 
 
 def test_a_request_without_an_id_is_invalid() -> None:
     node, sent, _, _ = make_node([{"jsonrpc": "2.0", "method": "ping"}])
     handle_rpc(node)
-    assert sent == [[error_msg(-32600)]]
+    assert sent == [[error_msg(RpcErrorCode.INVALID_REQUEST, "Invalid request")]]
 
 
 def test_a_callback_that_raises_is_answered_internal_error() -> None:
@@ -85,8 +86,36 @@ def test_a_callback_that_raises_is_answered_internal_error() -> None:
         raise RuntimeError("no")
 
     node, sent, _, _ = make_node([PING], callback=boom)
+    logged: list[Any] = []
+    node.logger.exception = logged.append
     handle_rpc(node)
-    assert sent == [[error_msg(-32603)]]
+    assert sent == [[error_msg(RpcErrorCode.INTERNAL_ERROR, "Internal Error", "a")]]
+    # -32603 is the node reporting itself broken, so it is the one
+    # answer that is also an event of the node's
+    assert logged == ["Exception occurred"]
+
+
+def test_a_callback_that_refuses_names_its_own_code_and_reason() -> None:
+    # the mechanism btclib-org/btclib-node#83 asks for: a callback says
+    # which of the two was wrong, the request or the node, and the
+    # answer carries what it said
+    def refuse() -> NoReturn:
+        raise RpcError(RpcErrorCode.INVALID_ADDRESS_OR_KEY, "Block not found")
+
+    node, sent, _, _ = make_node([PING], callback=refuse)
+    logged: list[Any] = []
+    node.logger.exception = logged.append
+    handle_rpc(node)
+    assert sent == [
+        [
+            {
+                "jsonrpc": "2.0",
+                "error": {"code": -5, "message": "Block not found"},
+                "id": "a",
+            }
+        ]
+    ]
+    assert not logged
 
 
 def test_params_are_passed_when_given(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -158,5 +187,14 @@ def test_is_valid_rpc_wants_an_object_with_a_method_and_an_id() -> None:
     assert not is_valid_rpc({"method": "ping"})
 
 
-def test_an_unknown_error_code_becomes_an_internal_error() -> None:
-    assert error_msg(-1)["error"]["code"] == -32603
+def test_an_error_carries_the_id_of_the_request_it_answers() -> None:
+    # JSON-RPC 2.0 section 5: the id is the request's own, and null is
+    # for a request no id could be read out of -- which is what the
+    # specification's own invalid-request example carries
+    node, sent, _, _ = make_node([{"jsonrpc": "2.0", "id": "a", "method": "nosuch"}])
+    handle_rpc(node)
+    assert sent[0][0]["id"] == "a"
+
+    node, sent, _, _ = make_node(["garbage"])
+    handle_rpc(node)
+    assert sent[0][0]["id"] is None

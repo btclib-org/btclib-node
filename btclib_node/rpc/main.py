@@ -5,6 +5,7 @@
 from typing import TYPE_CHECKING, Any
 
 from btclib_node.rpc.callbacks import callbacks
+from btclib_node.rpc.errors import RpcError, RpcErrorCode
 
 if TYPE_CHECKING:
     from btclib_node import Node
@@ -30,19 +31,20 @@ def is_valid_rpc(request: Any) -> bool:
     return True
 
 
-def error_msg(code: int) -> dict[str, Any]:
-    error_messages = {
-        -32600: "Invalid request",
-        -32601: "Method not found",
-        -32603: "Internal Error",
-    }
-    if code not in error_messages:
-        code = -32603
-    error = error_messages[code]
+def error_msg(code: RpcErrorCode, message: str, id: Any = None) -> dict[str, Any]:
+    """The error response of JSON-RPC 2.0's section 5, code and message given.
+
+    The specification requires the answer to carry the id of the request
+    it answers, and reserves null for a request whose id could not be
+    read out of it -- which is what its own example for an invalid
+    request object shows. So a caller passes the id wherever
+    `is_valid_rpc` has already found one, and leaves it out where the
+    request is what was wrong.
+    """
     return {
         "jsonrpc": "2.0",
-        "error": {"code": code, "message": error},
-        "id": None,
+        "error": {"code": code, "message": message},
+        "id": id,
     }
 
 
@@ -61,12 +63,16 @@ def handle_rpc(node: Node) -> None:
     # async_send would put on the wire as a bare `[]` -- no unwrapping,
     # since its one-element case does not match, and no valid answer.
     if not data:
-        response.append(error_msg(-32600))
+        response.append(error_msg(RpcErrorCode.INVALID_REQUEST, "Invalid request"))
     for request in data:
         if not is_valid_rpc(request):
-            response.append(error_msg(-32600))
+            response.append(error_msg(RpcErrorCode.INVALID_REQUEST, "Invalid request"))
         elif request["method"] not in callbacks:
-            response.append(error_msg(-32601))
+            response.append(
+                error_msg(
+                    RpcErrorCode.METHOD_NOT_FOUND, "Method not found", request["id"]
+                )
+            )
         else:
             try:
                 if "params" in request:
@@ -80,9 +86,19 @@ def handle_rpc(node: Node) -> None:
                         "id": request["id"],
                     }
                 )
+            # a callback naming its own refusal, which is the request
+            # being wrong and not this node: logged as nothing, since a
+            # client asking for what is not there is not an event of the
+            # node's
+            except RpcError as error:
+                response.append(error_msg(error.code, error.message, request["id"]))
             except Exception:
                 node.logger.exception("Exception occurred")
-                response.append(error_msg(-32603))
+                response.append(
+                    error_msg(
+                        RpcErrorCode.INTERNAL_ERROR, "Internal Error", request["id"]
+                    )
+                )
 
     # asked of the batch, not of whichever request came last: reading
     # the loop variable after the loop is unbound on an empty batch and

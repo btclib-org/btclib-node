@@ -4,6 +4,7 @@
 
 import json
 from pathlib import Path
+from typing import Any
 
 import requests
 
@@ -15,6 +16,7 @@ from tests.helpers import (
     generate_random_chain,
     generate_random_header_chain,
     get_random_port,
+    post,
     wait_until,
     wait_until_listening,
 )
@@ -90,7 +92,52 @@ def test_block_hash(rpc_node: Node) -> None:
     assert response["result"] == header_chain[50 - 1].hash.hex()
 
 
-def test_block_header_last(tmp_path: Path) -> None:
+def get_block_header(node: Node, block_hash: str) -> Any:
+    request = {
+        "jsonrpc": "1.0",
+        "id": "pytest",
+        "method": "getblockheader",
+        "params": [block_hash],
+    }
+    return json.loads(post(node, request))["result"]
+
+
+def test_block_header_on_the_chain_the_node_validated(rpc_node: Node) -> None:
+    node = rpc_node
+
+    wait_until_listening(node.rpc_manager)
+
+    chain = generate_random_chain(100, RegTest().genesis.hash)
+    block_index = node.chainstate.block_index
+    block_index.add_headers([block.header for block in chain])
+    node.status = NodeStatus.HeaderSynced
+
+    for block in chain:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+
+    wait_until(lambda: len(block_index.active_chain) == 100 + 1)
+
+    # a depth counts the tip itself, so the tip is one deep and the
+    # block halfway along is as deep as the chain above it is long
+    tip = get_block_header(node, chain[-1].header.hash.hex())
+    assert tip["hash"] == chain[-1].header.hash.hex()
+    assert tip["height"] == 100
+    assert tip["confirmations"] == 1
+    assert tip["previousblockhash"] == chain[-2].header.hash.hex()
+    assert "nextblockhash" not in tip
+
+    middle = get_block_header(node, chain[49].header.hash.hex())
+    assert middle["height"] == 50
+    assert middle["confirmations"] == 51
+    assert middle["previousblockhash"] == chain[48].header.hash.hex()
+    assert middle["nextblockhash"] == chain[50].header.hash.hex()
+
+
+def test_block_header_of_a_block_the_node_has_not_validated(tmp_path: Path) -> None:
+    # a node that has taken headers and downloaded nothing: its active
+    # chain is the genesis alone, so every one of these is off it and
+    # none of them is confirmed by anything
     node = Node(
         config=Config(
             chain="regtest",
@@ -105,66 +152,22 @@ def test_block_header_last(tmp_path: Path) -> None:
 
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
     node.chainstate.block_index.add_headers(chain)
+    assert node.chainstate.block_index.active_chain == [RegTest().genesis.hash]
 
-    response = json.loads(
-        requests.post(
-            url=f"http://127.0.0.1:{node.rpc_port}",
-            data=json.dumps(
-                {
-                    "jsonrpc": "1.0",
-                    "id": "pytest",
-                    "method": "getblockheader",
-                    "params": [chain[-1].hash.hex()],
-                }
-            ).encode(),
-            headers={"Content-Type": "text/plain"},
-            timeout=2,
-        ).text
-    )
+    last = get_block_header(node, chain[-1].hash.hex())
+    assert last["hash"] == chain[-1].hash.hex()
+    assert last["height"] == 2000
+    assert last["confirmations"] == -1
+    assert last["previousblockhash"] == chain[-2].hash.hex()
+    assert "nextblockhash" not in last
 
-    assert response["result"]["hash"] == chain[-1].hash.hex()
-    assert response["result"]["height"] == 2000
-    assert response["result"]["previousblockhash"] == chain[-2].hash.hex()
-    assert "nextblockhash" not in response["result"]
-
-    node.stop()
-
-
-def test_block_header_middle(tmp_path: Path) -> None:
-    node = Node(
-        config=Config(
-            chain="regtest",
-            data_dir=tmp_path,
-            allow_p2p=False,
-            rpc_port=get_random_port(),
-        )
-    )
-    node.start()
-
-    wait_until_listening(node.rpc_manager)
-
-    chain = generate_random_header_chain(2000, RegTest().genesis.hash)
-    node.chainstate.block_index.add_headers(chain)
-
-    response = json.loads(
-        requests.post(
-            url=f"http://127.0.0.1:{node.rpc_port}",
-            data=json.dumps(
-                {
-                    "jsonrpc": "1.0",
-                    "id": "pytest",
-                    "method": "getblockheader",
-                    "params": [chain[-1001].hash.hex()],
-                }
-            ).encode(),
-            headers={"Content-Type": "text/plain"},
-            timeout=2,
-        ).text
-    )
-
-    assert response["result"]["hash"] == chain[-1001].hash.hex()
-    assert response["result"]["height"] == 1000
-    assert response["result"]["previousblockhash"] == chain[-1002].hash.hex()
-    assert response["result"]["nextblockhash"] == chain[-1000].hash.hex()
+    # the header index holds the block after this one, and the answer
+    # names it only where the node has validated both
+    middle = get_block_header(node, chain[-1001].hash.hex())
+    assert middle["hash"] == chain[-1001].hash.hex()
+    assert middle["height"] == 1000
+    assert middle["confirmations"] == -1
+    assert middle["previousblockhash"] == chain[-1002].hash.hex()
+    assert "nextblockhash" not in middle
 
     node.stop()

@@ -47,6 +47,7 @@ from btclib_node.rpc.callbacks import (
 # aliased: pytest collects a module-level `test*` as a test, and this
 # one is a production function that would be handed fixtures
 from btclib_node.rpc.callbacks import test_mempool_accept as mempool_accept
+from btclib_node.rpc.errors import RpcError, RpcErrorCode
 from tests.helpers import generate_random_header_chain
 
 if TYPE_CHECKING:
@@ -319,20 +320,26 @@ def test_a_transaction_the_mempool_will_not_have_is_not_reported_relayed(
     assert broadcast == []
 
 
-def a_header_index(
-    chain: list[BlockHeader], off_chain: list[BlockHeader] | None = None
+def a_block_index(
+    chain: list[BlockHeader],
+    off_chain: list[BlockHeader] | None = None,
+    validated: int | None = None,
 ) -> Any:
     """An index whose two lookups are two collections, as the real one's are.
 
-    `header_index` is the best chain and nothing else, where
-    `get_block_info` answers for every header the node has indexed, the
-    losing side of a fork included. A fake keying both off one list
-    cannot hold a block that is known and not on the best chain, which
-    is why btclib-org/btclib-node#87 was an issue rather than a test.
+    `active_chain` is the blocks this node has validated and connected,
+    where `get_block_info` answers for every header the node has indexed
+    -- the losing side of a fork, and a header whose block was never
+    downloaded, included. A fake keying both off one list can hold
+    neither, which is why btclib-org/btclib-node#87 and #178 were issues
+    rather than tests.
 
     A height is the parent's plus one, which is how `BlockInfo.index` is
-    built, so a header off the best chain is at the height its own fork
+    built, so a header off the active chain is at the height its own fork
     puts it and not at a position in a chain it is not on.
+
+    `validated` is how far along `chain` the active chain reaches, and is
+    the whole of it by default.
     """
 
     def block(header: BlockHeader, height: int) -> Any:
@@ -343,8 +350,9 @@ def a_header_index(
         blocks[header.hash] = block(
             header, blocks[header.previous_block_hash].index + 1
         )
+    connected = chain if validated is None else chain[:validated]
     return SimpleNamespace(
-        header_index=[header.hash for header in chain],
+        active_chain=[header.hash for header in connected],
         get_block_info=blocks.__getitem__,
     )
 
@@ -353,7 +361,7 @@ def test_a_block_header_names_the_ones_either_side_of_it() -> None:
     chain = generate_random_header_chain(3, RegTest().genesis.hash)
     node = cast(
         "Node",
-        SimpleNamespace(chainstate=SimpleNamespace(block_index=a_header_index(chain))),
+        SimpleNamespace(chainstate=SimpleNamespace(block_index=a_block_index(chain))),
     )
     middle = get_block_header(node, _CONN, [chain[1].hash.hex()])
     assert middle["hash"] == chain[1].hash
@@ -368,7 +376,7 @@ def test_the_first_header_has_nothing_before_it_and_the_last_nothing_after() -> 
     chain = generate_random_header_chain(3, RegTest().genesis.hash)
     node = cast(
         "Node",
-        SimpleNamespace(chainstate=SimpleNamespace(block_index=a_header_index(chain))),
+        SimpleNamespace(chainstate=SimpleNamespace(block_index=a_block_index(chain))),
     )
     first = get_block_header(node, _CONN, [chain[0].hash.hex()])
     assert "previousblockhash" not in first
@@ -380,7 +388,7 @@ def test_the_first_header_has_nothing_before_it_and_the_last_nothing_after() -> 
     assert last["confirmations"] == 1
 
 
-def test_a_block_off_the_best_chain_is_described_and_not_refused() -> None:
+def test_a_block_off_the_active_chain_is_described_and_not_refused() -> None:
     # what Core's blockheaderToJSON answers for one: the height the
     # block has on its own fork, confirmations -1 in place of a depth,
     # the parent it names, and no nextblockhash
@@ -389,7 +397,7 @@ def test_a_block_off_the_best_chain_is_described_and_not_refused() -> None:
     node = cast(
         "Node",
         SimpleNamespace(
-            chainstate=SimpleNamespace(block_index=a_header_index(chain, fork))
+            chainstate=SimpleNamespace(block_index=a_block_index(chain, fork))
         ),
     )
     stale = get_block_header(node, _CONN, [fork[0].hash.hex()])
@@ -399,8 +407,8 @@ def test_a_block_off_the_best_chain_is_described_and_not_refused() -> None:
     assert stale["previousblockhash"] == chain[0].hash
     assert "nextblockhash" not in stale
 
-    # the block the best chain kept at that height is another block, and
-    # is answered as before
+    # the block the active chain kept at that height is another block,
+    # and is answered with a depth
     best = get_block_header(node, _CONN, [chain[1].hash.hex()])
     assert best["hash"] != stale["hash"]
     assert best["height"] == 1
@@ -409,15 +417,15 @@ def test_a_block_off_the_best_chain_is_described_and_not_refused() -> None:
 
 
 def test_a_fork_reaching_past_the_tip_is_not_read_off_the_end_of_the_chain() -> None:
-    # a fork longer than the best chain is still not it, work and not
-    # length being what decides -- and the best chain has no position to
-    # answer for a height past its own
+    # a fork longer than the active chain is still not it, work and not
+    # length being what decides -- and the active chain has no position
+    # to answer for a height past its own
     chain = generate_random_header_chain(2, RegTest().genesis.hash)
     fork = generate_random_header_chain(3, chain[0].hash)
     node = cast(
         "Node",
         SimpleNamespace(
-            chainstate=SimpleNamespace(block_index=a_header_index(chain, fork))
+            chainstate=SimpleNamespace(block_index=a_block_index(chain, fork))
         ),
     )
     past_the_tip = get_block_header(node, _CONN, [fork[-1].hash.hex()])
@@ -425,6 +433,67 @@ def test_a_fork_reaching_past_the_tip_is_not_read_off_the_end_of_the_chain() -> 
     assert past_the_tip["confirmations"] == -1
     assert past_the_tip["previousblockhash"] == fork[-2].hash
     assert "nextblockhash" not in past_the_tip
+
+
+def test_a_header_whose_block_is_not_validated_is_confirmed_by_nothing() -> None:
+    # a depth is counted from the active chain's tip, so a header this
+    # node has accepted and not connected is answered -1: during header
+    # sync the answer is that nothing is confirmed
+    chain = generate_random_header_chain(3, RegTest().genesis.hash)
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chainstate=SimpleNamespace(block_index=a_block_index(chain, validated=1))
+        ),
+    )
+    for header in chain[1:]:
+        answer = get_block_header(node, _CONN, [header.hash.hex()])
+        assert answer["confirmations"] == -1
+        assert "nextblockhash" not in answer
+
+    # the one block the active chain does hold is its tip, and the next
+    # header is indexed without being what follows it there
+    connected = get_block_header(node, _CONN, [chain[0].hash.hex()])
+    assert connected["confirmations"] == 1
+    assert "nextblockhash" not in connected
+
+
+def test_a_block_hash_nothing_indexed_is_refused_rather_than_raising() -> None:
+    # btclib-org/btclib-node#179: Core's code for it, and not the -32603
+    # this node owes a fault of its own
+    chain = generate_random_header_chain(1, RegTest().genesis.hash)
+    node = cast(
+        "Node",
+        SimpleNamespace(chainstate=SimpleNamespace(block_index=a_block_index(chain))),
+    )
+    with pytest.raises(RpcError) as raised:
+        get_block_header(node, _CONN, ["11" * 32])
+    assert raised.value.code == RpcErrorCode.INVALID_ADDRESS_OR_KEY
+    assert raised.value.message == "Block not found"
+
+
+def test_a_block_hash_that_is_not_hex_is_named_back_to_the_client() -> None:
+    chain = generate_random_header_chain(1, RegTest().genesis.hash)
+    node = cast(
+        "Node",
+        SimpleNamespace(chainstate=SimpleNamespace(block_index=a_block_index(chain))),
+    )
+    with pytest.raises(RpcError) as raised:
+        get_block_header(node, _CONN, ["zz"])
+    assert raised.value.code == RpcErrorCode.INVALID_PARAMETER
+    assert "zz" in raised.value.message
+
+
+def test_no_block_hash_at_all_is_answered_with_the_usage() -> None:
+    chain = generate_random_header_chain(1, RegTest().genesis.hash)
+    node = cast(
+        "Node",
+        SimpleNamespace(chainstate=SimpleNamespace(block_index=a_block_index(chain))),
+    )
+    with pytest.raises(RpcError) as raised:
+        get_block_header(node, _CONN, [])
+    assert raised.value.code == RpcErrorCode.MISC_ERROR
+    assert raised.value.message.startswith("getblockheader")
 
 
 def test_the_tip_and_the_block_at_a_height_are_read_off_the_active_chain() -> None:

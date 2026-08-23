@@ -650,3 +650,43 @@ to check the guess.
   and `getsockname` answer with a tuple and have no `NetworkAddress` to
   offer. A host that is not an IP address is refused rather than shown
   with brackets guessed at, `ipaddress.ip_address` being what refuses.
+
+### `getblockheader`'s confirmations, and the code a bad request is owed
+
+- **A header this node has accepted and not downloaded was reported
+  confirmed** (#178). `get_block_header` measured `confirmations`
+  against `block_index.header_index`, the best *header* chain, which
+  holds a hash as soon as its header is accepted; `active_chain` holds
+  only what the node has validated and connected. On a snapshot of
+  `origin/main` at `f53d9cb`, three regtest headers added and nothing
+  downloaded answer `height: 3 confirmations: 1 downloaded: False` for
+  the last of them. `get_block_header` now counts against
+  `active_chain`, and the same setup answers `confirmations: -1`.
+- **The rule is `ComputeNextBlockAndDepth`'s**, in Core's
+  `src/rpc/blockchain.cpp`, which counts a depth from
+  `chainman.ActiveChain().Tip()` and answers `-1` for a block that chain
+  does not hold at its own height. `height` stays `BlockInfo.index`,
+  which every indexed header carries; only what it is compared against
+  moved.
+- **A hash nothing indexed, a hash that is not hex, and no hash at all
+  each raised out of the callback and were answered `-32603 Internal
+  Error`** (#179), the code this node owes its own fault and not a
+  client's mistake. On the same snapshot: a hash nothing indexed raises
+  `KeyError`, a non-hex hash raises `ValueError`, no parameter raises
+  `IndexError`, and each reaches `rpc/main.py`'s catch-all.
+- **`btclib_node/rpc/errors.py`'s `RpcError` is the mechanism #83
+  asked for**: a callback names the code and the message its refusal is
+  owed, and `handle_rpc` answers with them rather than logging the
+  request as a fault of the node's. `get_block_header` raises it for the
+  three cases above, with the codes Core gives the same three refusals:
+  `RPC_INVALID_ADDRESS_OR_KEY` (`-5`) for a hash `LookupBlockIndex`
+  does not have, `RPC_INVALID_PARAMETER` (`-8`) for one `ParseHashV`
+  cannot read as hex, and `RPC_MISC_ERROR` (`-1`) for a call short of
+  its required argument, which is what `RPCMethod::HandleRequest`
+  throws and `ExecuteCommand`'s `catch (const std::exception&)` turns
+  into. `#83`'s other half, `sendrawtransaction`, does not raise it yet.
+- **`error_msg` takes the id of the request it answers.** A method not
+  in `callbacks` used to answer `"id": null` regardless of what
+  `is_valid_rpc` had already read from the request; JSON-RPC 2.0's
+  section 5 reserves `null` for a request whose id could not be read at
+  all, not for one `is_valid_rpc` already confirmed carried one.

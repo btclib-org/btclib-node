@@ -14,6 +14,7 @@ from btclib_node.constants import P2pConnStatus
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.main import verify_mempool_acceptance
 from btclib_node.p2p.address import ip_and_port
+from btclib_node.rpc.errors import RpcError, RpcErrorCode
 
 if TYPE_CHECKING:
     from btclib_node import Node
@@ -30,35 +31,62 @@ def get_block_hash(node: Node, conn: Connection, params: list[Any]) -> bytes:
 
 def get_block_header(node: Node, conn: Connection, params: list[Any]) -> dict[str, Any]:
     block_index = node.chainstate.block_index
-    header_index = block_index.header_index
+    # the blocks this node has validated and connected, which is what
+    # Core hands blockheaderToJSON: `ActiveChain().Tip()`, at
+    # src/rpc/blockchain.cpp:661
+    active_chain = block_index.active_chain
 
-    block_hash = bytes.fromhex(params[0])
-    block_info = block_index.get_block_info(block_hash)
+    if not params:
+        # Core answers a missing required argument with its own help
+        # text under RPC_MISC_ERROR: RPCMethod::HandleRequest throws
+        # HelpResult for a call short of its required arguments, and
+        # ExecuteCommand's `catch (const std::exception& e)` is what
+        # turns that into JSONRPCError(RPC_MISC_ERROR, e.what())
+        raise RpcError(RpcErrorCode.MISC_ERROR, 'getblockheader "blockhash"')
+    try:
+        block_hash = bytes.fromhex(params[0])
+    except ValueError as error:
+        # ParseHashV, src/rpc/util.cpp:125, down to the sentence
+        raise RpcError(
+            RpcErrorCode.INVALID_PARAMETER,
+            f"hash must be hexadecimal string (not '{params[0]}')",
+        ) from error
+    try:
+        block_info = block_index.get_block_info(block_hash)
+    except KeyError as error:
+        # a hash nothing indexed is a question about a block, not a
+        # fault of this node: src/rpc/blockchain.cpp:665
+        raise RpcError(
+            RpcErrorCode.INVALID_ADDRESS_OR_KEY, "Block not found"
+        ) from error
     header = block_info.header
     out: dict[str, Any] = header.to_dict()
     out["hash"] = header.hash
 
     # the block's own height, which is what Core answers with for a
-    # block off the best chain as much as for one on it. `BlockInfo`
+    # block off the active chain as much as for one on it. `BlockInfo`
     # carries it for every header the index holds, where a position in
-    # header_index is a number only the ones on the best chain have.
+    # active_chain is a number only the validated ones have.
     height = block_info.index
     out["height"] = height
-    on_best_chain = height < len(header_index) and header_index[height] == block_hash
+    on_active_chain = height < len(active_chain) and active_chain[height] == block_hash
 
-    # Core's ComputeNextBlockAndDepth: a block off the best chain is
-    # answered with -1 rather than a depth, and with no nextblockhash --
-    # nothing follows a block this chain did not keep. The depth itself
-    # is counted over the best header chain, where Core counts it over
-    # the blocks it has validated: btclib-org/btclib-node#178
-    out["confirmations"] = len(header_index) - height if on_best_chain else -1
+    # Core's ComputeNextBlockAndDepth, src/rpc/blockchain.cpp:126: a
+    # depth is counted from the active chain's tip, and a block that
+    # chain does not hold at its own height is answered with -1 rather
+    # than a number. A header whose block was never downloaded is one of
+    # those, so header sync reports nothing as confirmed.
+    out["confirmations"] = len(active_chain) - height if on_active_chain else -1
     if height > 0:
-        # the header's own parent, which for a block on the best chain
-        # is header_index[height - 1] and for one off it is the fork's
+        # the header's own parent, which for a block on the active chain
+        # is active_chain[height - 1] and for one off it is the fork's
         # ancestor: Core answers with pprev either way
         out["previousblockhash"] = header.previous_block_hash
-    if on_best_chain and height < len(header_index) - 1:
-        out["nextblockhash"] = header_index[height + 1]
+    # `next` is the active chain's block at height + 1 and only where
+    # this block is its parent, which is the same condition read the
+    # other way round: nothing follows a block that chain does not hold
+    if on_active_chain and height < len(active_chain) - 1:
+        out["nextblockhash"] = active_chain[height + 1]
     out["chainwork"] = block_info.chainwork
 
     return out
