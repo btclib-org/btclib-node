@@ -70,6 +70,43 @@ to check the guess.
   `simplicity`** (#203). Neither `codespell` nor `typos` reports the
   Italian spelling it replaces, so the lint gate catches no such word.
 
+### The root prose and the editor configuration describe this repository
+
+- **`README.md` opens with the name `pyproject.toml` declares** (#158).
+  `btclib_node` is the import package and `btclib-node` is the project,
+  and the heading, the opening sentence and the bold line say the second.
+  The link on that opening name is dropped rather than repointed:
+  `https://github.com/btclib-org/btclib_node` answers `301` to the
+  address the *Source* line already carries, and a redirect resolves only
+  while nobody else claims the name it redirects from.
+
+- **`REPOSITORY.md` records what its calls answer and compares this
+  repository to no sibling** (#157). Private vulnerability reporting
+  answers `{"enabled":true}`, so the advisory route the organization's
+  security policy sends a reporter to is open here, where the file said
+  it was off and that siblings had it on. The wiki and the projects board
+  are on and the standard states no rule about either, which makes them
+  this repository's own answer rather than the divergence the file called
+  them; `git ls-remote` against the wiki is what says it holds nothing.
+
+- **`.vscode/extensions.json` justifies each entry by a hook this
+  repository runs** (#161). `.pre-commit-config.yaml` carries `actionlint`
+  and `zizmor`, which read `.github/workflows/`, where the comment on
+  `github.vscode-github-actions` said no hook read a workflow at all and
+  named a single file there. The header's account of what a sibling has
+  and this tree does not is dropped: `.github/dependabot.yml` is in the
+  tree with a `check-dependabot` hook over it, and the rule the list is
+  kept to is the sentence above it.
+
+- **`.vscode/settings.json` states no hook list and no path list**
+  (#161, #163). The enumeration of what no extension wraps was wrong in
+  both directions — `yamllint` was in it while `extensions.json`
+  recommends `redhat.vscode-yaml` for that hook — and what stands in its
+  place is that a hook with no entry in `extensions.json` is seen by the
+  gate alone. The pyright survey drops `btclib_node tests`: pyright
+  excludes every hidden directory by default, so with no paths it reads
+  the directories `[tool.mypy]`'s `files` names, `scripts` among them.
+
 ### A `match` statement has to cover the type it matches on
 
 - **`exhaustive-match` joins `enable_error_code`, so a `match` leaving a

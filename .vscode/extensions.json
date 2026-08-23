@@ -2,11 +2,7 @@
   // one entry per tool the lint gate already runs, so the editor reports
   // what .pre-commit-config.yaml would report at commit time. Nothing here
   // is a tool the gate does not have: an extension with no hook behind it
-  // is a second opinion, and a finding no workflow enforces is noise.
-  // Derived from this repository's own hooks, which are fewer than a
-  // sibling's: there is no docs tree, no dependabot configuration and no
-  // readthedocs file here, so the extensions those would justify are not
-  // listed
+  // is a second opinion, and a finding no workflow enforces is noise
   "recommendations": [
     // ruff-check and ruff-format
     "charliermarsh.ruff",
@@ -28,10 +24,9 @@
     // attaches both by filename, so what yamllint would report at commit
     // time is reported where the line is typed
     "redhat.vscode-yaml",
-    // .github/workflows/claude-review.yml: expression and syntax checking
-    // in the editor. This repository runs no actionlint hook, so unlike in
-    // a sibling the extension is not a second reading of what a hook
-    // already says -- it is the only thing that reads that file at all
+    // .github/workflows/, which the actionlint and zizmor hooks read at
+    // commit time: this validates the workflow schema and the Actions
+    // expressions where the line is typed
     "github.vscode-github-actions",
     // the prettier hook, so what formats yaml and jsonc on save is the tool
     // that formats it at commit time and not the copy the yaml extension
