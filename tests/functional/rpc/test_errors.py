@@ -5,6 +5,7 @@
 import contextlib
 import json
 from pathlib import Path
+from typing import Any
 
 import requests
 
@@ -145,3 +146,32 @@ def test_a_request_the_handler_cannot_read_does_not_end_the_node(
     assert node.is_alive()
     good = {"jsonrpc": "2.0", "id": "b", "method": "getbestblockhash"}
     assert json.loads(post(node, good))["result"]
+
+
+def test_a_request_the_node_can_refuse_is_not_answered_internal_error(
+    rpc_node: Node,
+) -> None:
+    # btclib-org/btclib-node#179: a hash nothing indexed, a parameter
+    # that is not hex and no parameter at all are the client being
+    # wrong, and each carries the code Bitcoin Core gives it. -32603 is
+    # what this node owes a fault of its own, so a client can still tell
+    # a typo from a broken node.
+    node = rpc_node
+    wait_until_listening(node.rpc_manager)
+
+    def refusal(params: list[Any]) -> Any:
+        request = {
+            "jsonrpc": "2.0",
+            "id": "a",
+            "method": "getblockheader",
+            "params": params,
+        }
+        answer = json.loads(post(node, request))
+        assert answer["id"] == "a"
+        return answer["error"]
+
+    assert refusal(["11" * 32]) == {"code": -5, "message": "Block not found"}
+    assert refusal(["zz"])["code"] == -8
+    assert refusal([])["code"] == -1
+
+    assert node.is_alive()
