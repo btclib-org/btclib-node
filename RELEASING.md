@@ -35,8 +35,10 @@ which a command re-derives, rather than a promise.
   distributions are built by a workflow and signed by the run that built
   them rather than uploaded from somebody's machine with a token.
 
-Until those exist, what anybody runs is a checkout of `main`, and
-`SECURITY.md` says what that means for a fix reaching them.
+Until those exist, what anybody runs is a checkout of `main`, and a fix
+reaches them when they pull it — which is what the organization's
+security policy, the one GitHub shows here, says of a repository whose
+`RELEASING.md` releases nothing.
 
 ## Cutting one, when there is one to cut
 

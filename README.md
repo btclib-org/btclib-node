@@ -18,11 +18,33 @@ that has to be installed; it fetches the interpreter and every dependency
 group itself.
 
 [REVIEWING.md](./REVIEWING.md) is what a pull request here is answered
-against, and [SECURITY.md](./SECURITY.md) is how a vulnerability is
-reported and what is this node's to answer for.
+against. A vulnerability is reported as the
+[security policy](https://github.com/btclib-org/btclib-node/security/policy)
+says, never as an issue; that policy is the organization's, this
+repository publishing nothing for a policy of its own to travel with,
+and the section below is what it cannot say for this tree.
 
 - Source: <https://github.com/btclib-org/btclib-node>
 - [CHANGELOG.md](./CHANGELOG.md), and [RELEASE_NOTES.md](./RELEASE_NOTES.md)
   for what a release would ask a user to act on
 - [REPOSITORY.md](./REPOSITORY.md) for the settings that live outside the
   tree
+
+## Limitations, not vulnerabilities
+
+Known, recorded, and each an open issue rather than something to report
+again.
+
+- **The JSON-RPC listener binds every interface** — `0.0.0.0`, with no
+    configuration option to bind loopback instead — **and authenticates
+    nothing.** The method table it serves carries `stop` and
+    `sendrawtransaction`, so anybody who can reach the port can stop the
+    node and make it announce a transaction. Run it where nothing else
+    can reach that port. btclib-org/btclib-node#27.
+- **What a peer may ask for is not bounded by what asking costs it.** A
+    short request can commit this node to a long reply, and nothing
+    limits what one peer may have in flight. btclib-org/btclib-node#101.
+- **`Development Status :: 3 - Alpha` is the claim `pyproject.toml`
+    makes**, and it is the right one to read the two above against: this
+    node has downloaded and validated the chain, which is not the same as
+    having been run against somebody trying to make it do otherwise.
