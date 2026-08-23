@@ -15,25 +15,25 @@ from btclib_node.p2p.messages.empty import (
 MAGIC = RegTest().magic
 
 
-def test_sendheaders():
+def test_sendheaders() -> None:
     msg = Sendheaders()
     msg_bytes = msg.to_message(MAGIC).serialize()
     assert msg == Sendheaders.parse(Message.parse(msg_bytes).payload)
 
 
-def test_mempool():
+def test_mempool() -> None:
     msg = Mempool()
     msg_bytes = msg.to_message(MAGIC).serialize()
     assert msg == Mempool.parse(Message.parse(msg_bytes).payload)
 
 
-def test_getaddr():
+def test_getaddr() -> None:
     msg = Getaddr()
     msg_bytes = msg.to_message(MAGIC).serialize()
     assert msg == Getaddr.parse(Message.parse(msg_bytes).payload)
 
 
-def test_wtxidrelay():
+def test_wtxidrelay() -> None:
     msg = Wtxidrelay()
     msg_bytes = msg.to_message(MAGIC).serialize()
     assert msg == Wtxidrelay.parse(Message.parse(msg_bytes).payload)
