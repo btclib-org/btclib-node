@@ -99,9 +99,6 @@ def get_peer_info(node: Node, conn: Connection, _: list[Any]) -> list[dict[str, 
                 addrbind = p2p_conn.client.getsockname()
             # A peer disconnecting mid-lookup is not worth logging a
             # second time; its own connection state already reports it.
-            # Carried over from the old bandit `# nosec B112` suppression
-            # here; not the moment to change error handling in a
-            # lint-gate PR.
             except Exception:  # noqa: S112
                 continue
 

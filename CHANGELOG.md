@@ -41,6 +41,35 @@ to check the guess.
   for the hosted hook it replaced** (#162). Nothing here configures that
   hook, so no command in this tree re-derives the number.
 
+### A peer's endpoint is `ip_and_port`'s spelling, in the log too
+
+- **The `Connected to` line the handshake writes goes through
+  `btclib_node/p2p/address.py`'s `ip_and_port`, and asks the socket for
+  the peer once** (#189). A peer at `2001:db8::1` on port 8333 reads
+  `[2001:db8::1]:8333`, where the hand-written spelling gave
+  `2001:db8::1:8333`, the host running into the port with nothing
+  between them to say which is which. Every p2p socket is `AF_INET` and
+  `dial` refuses every network but `BIP155Network.IPV4`, so what is
+  written for a peer this node can have today does not move.
+
+- **`P2pManager.server` calls `loop.sock_accept`'s answer `sockaddr`**
+  (#185), which is what `PeerDB.get_addr_from_dns` calls the same pair.
+  The name it had was the formatter's own, and the assignment made that
+  name a local of `server` for the whole function: importing the
+  formatter and calling it there would raise `UnboundLocalError` before
+  the accept.
+
+### A comment says why the code is as it is, in words a reader can look up
+
+- **The comment on `get_peer_info`'s broad `except` gives the reason the
+  exception is swallowed and stops there** (#193). What it deferred to
+  was a bandit `# nosec B112` suppression that
+  `grep -rn nosec btclib_node tests` does not find.
+
+- **The comment on `callbacks.version`'s protocol-version check spells
+  `simplicity`** (#203). Neither `codespell` nor `typos` reports the
+  Italian spelling it replaces, so the lint gate catches no such word.
+
 ### A `match` statement has to cover the type it matches on
 
 - **`exhaustive-match` joins `enable_error_code`, so a `match` leaving a
