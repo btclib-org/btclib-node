@@ -259,12 +259,10 @@ gh api repos/btclib-org/btclib-node/dependabot/alerts --jq 'length'
 
 **Private vulnerability reporting is on**, so *Report a vulnerability* on
 this repository's Security tab opens an advisory only the maintainers
-see. That is where the organization's security policy — the one shown
-here, this tree keeping none — sends a reporter, and the policy states
-the call above rather than the answer, the route being a setting and not
-a file. btclib-org/btclib-node#136 is where
-`.github/ISSUE_TEMPLATE/config.yml`'s link to that policy, rather than to
-the advisory form, is decided.
+see. The organization's security policy — the one shown here, this tree
+keeping none — states the call above rather than the answer, the route
+being a setting and not a file. `.github/ISSUE_TEMPLATE/config.yml`'s
+Security vulnerability entry links straight to that advisory form.
 
 The second command is what the open alerts are. Every one of them today
 answers `poetry.lock` for its `dependency.manifest_path`, which is a file

@@ -747,3 +747,14 @@ to check the guess.
   Core's own `uvTypeName` does** (`src/univalue/lib/univalue.cpp`),
   which is the vocabulary `RPC_TYPE_ERROR`'s message speaks and what
   both checks above report the wrong type with.
+
+### The issue template's security link is the advisory form, not the policy
+
+- **`.github/ISSUE_TEMPLATE/config.yml`'s *Security vulnerability* entry
+  links `/security/advisories/new`, where it linked `/security/policy`**
+  (#136). Private vulnerability reporting is on for this repository, so
+  the form the link now opens exists; `REPOSITORY.md` records the
+  setting and points here rather than repeating it. This repository
+  still keeps no `SECURITY.md` of its own: the route the setting opens
+  reopens no question #167 already settled about which repositories
+  carry one.
