@@ -387,6 +387,49 @@ def test_a_verack_completes_the_handshake() -> None:
     assert not peer.stopped
 
 
+@pytest.mark.parametrize(
+    ("host", "endpoint"),
+    [
+        ("1.2.3.4", "1.2.3.4:18444"),
+        ("::ffff:1.2.3.4", "1.2.3.4:18444"),
+        ("2001:db8::1", "[2001:db8::1]:18444"),
+    ],
+    ids=["ipv4", "v4-mapped", "ipv6"],
+)
+def test_the_handshake_logs_the_endpoint_getpeerinfo_answers_with(
+    host: str, endpoint: str
+) -> None:
+    logged: list[str] = []
+    node = a_handshake_node()
+    node.logger.info = logged.append
+    peer = a_peer(
+        version_message=object(),
+        wtxidrelay_received=True,
+        client=SimpleNamespace(getpeername=lambda: (host, 18444)),
+    )
+    verack(node, b"", peer)
+    assert logged == [f"Connected to {endpoint}"]
+
+
+def test_the_handshake_asks_the_socket_for_the_peer_once() -> None:
+    # A second lookup is a second chance for the peer to have gone,
+    # raising OSError where the first answered.
+    sockaddr = ("1.2.3.4", 18444)
+    lookups: list[tuple[str, int]] = []
+
+    def getpeername() -> tuple[str, int]:
+        lookups.append(sockaddr)
+        return sockaddr
+
+    peer = a_peer(
+        version_message=object(),
+        wtxidrelay_received=True,
+        client=SimpleNamespace(getpeername=getpeername),
+    )
+    verack(a_handshake_node(), b"", peer)
+    assert lookups == [sockaddr]
+
+
 def test_a_verack_before_the_version_is_let_go() -> None:
     peer = a_peer(wtxidrelay_received=True)
     verack(a_handshake_node(), b"", peer)

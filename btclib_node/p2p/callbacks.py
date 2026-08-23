@@ -41,7 +41,12 @@ from btclib_node.chainstate.filter_index import NO_PREVIOUS_FILTER_HEADER
 from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.main import verify_mempool_acceptance
-from btclib_node.p2p.address import addr_entry, can_addrv1, peer_from_addr_entry
+from btclib_node.p2p.address import (
+    addr_entry,
+    can_addrv1,
+    ip_and_port,
+    peer_from_addr_entry,
+)
 from btclib_node.p2p.messages.errors import Reject
 
 if TYPE_CHECKING:
@@ -57,7 +62,7 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
         conn.stop()
         return
 
-    # For semplicity we only allow current protocol version
+    # For simplicity we only allow current protocol version
     if version_msg.version < ProtocolVersion:
         conn.stop()
         return
@@ -96,9 +101,8 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     conn.send(GetAddr())
     block_locators = node.chainstate.block_index.get_block_locator_hashes()
     conn.send(GetHeaders(ProtocolVersion, block_locators, b"\x00" * 32))
-    node.logger.info(
-        f"Connected to {conn.client.getpeername()[0]}:{conn.client.getpeername()[1]}"
-    )
+    sockaddr = conn.client.getpeername()
+    node.logger.info(f"Connected to {ip_and_port(sockaddr[0], sockaddr[1])}")
 
 
 def wtxidrelay(node: Node, msg: bytes, conn: Connection) -> None:

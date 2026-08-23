@@ -118,8 +118,8 @@ class P2pManager(threading.Thread):
         self.listening.set()
         with server_socket:
             while True:
-                sock, ip_and_port = await loop.sock_accept(server_socket)
-                address = peer_address(*ip_and_port)
+                sock, sockaddr = await loop.sock_accept(server_socket)
+                address = peer_address(*sockaddr)
                 self.create_connection(sock, address, True)
 
     @override
