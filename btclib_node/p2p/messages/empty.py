@@ -4,11 +4,10 @@
 
 """The messages that are a command and nothing else.
 
-btclib defines the empty payloads it has a use for -- `verack`,
-`sendaddrv2` -- and here are the ones this node speaks that it does not.
 What they have in common is the only thing they have, so they share a
 base rather than repeating an empty `parse` and an empty `serialize`
-apiece.
+apiece. `btclib.p2p.negotiation` carries a codec for each of these,
+and btclib-org/btclib-node#196 is where the duplication is decided.
 
 Every payload here is one the node sends or dispatches on. A command it
 speaks to nobody is not an empty payload for want of a body: the base is

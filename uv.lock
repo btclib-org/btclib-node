@@ -82,7 +82,7 @@ wheels = [
 [[package]]
 name = "btclib"
 version = "2026.9"
-source = { git = "https://github.com/btclib-org/btclib?branch=main#58dcf1cb4efd51b28475c87edb1633850bb6cf99" }
+source = { git = "https://github.com/btclib-org/btclib?branch=main#2a93afb3cdfaad5df25d1ec2516f9899e28c5ce2" }
 dependencies = [
     { name = "bitcoin-core-rpc" },
 ]
