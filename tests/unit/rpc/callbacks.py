@@ -749,11 +749,15 @@ def test_a_fractional_height_is_refused_the_way_core_s_own_parse_refuses_it() ->
 
 
 def test_no_height_at_all_is_answered_with_the_usage() -> None:
+    # unquoted: RPCArg::ToString(oneline=true) quotes an argument's name
+    # only for Type::STR/STR_HEX, and height is Type::NUM
+    # (src/rpc/blockchain.cpp:585, src/rpc/util.cpp:1265-1286) -- unlike
+    # blockhash's own quoted usage string, which is STR_HEX
     node = a_chain_index_node([b"\x11" * 32])
     with pytest.raises(RpcError) as raised:
         get_block_hash(node, _CONN, [])
     assert raised.value.code == RpcErrorCode.MISC_ERROR
-    assert raised.value.message.startswith("getblockhash")
+    assert raised.value.message == "getblockhash height"
 
 
 def test_a_transaction_whose_scripts_do_not_verify_is_still_answered_with_its_txid(

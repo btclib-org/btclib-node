@@ -1000,8 +1000,11 @@ to check the guess.
   any other type is now `RPC_TYPE_ERROR`, the same check
   `RPCMethod::HandleRequest` makes before its own handler runs
   (`src/rpc/util.cpp:653-661`), and an omitted height is
-  `RPC_MISC_ERROR` with the method's own usage, the same case
-  `getblockheader`'s missing `blockhash` already answers that way.
+  `RPC_MISC_ERROR` with the method's own usage — `getblockhash height`,
+  unquoted, unlike `getblockheader`'s own quoted `"blockhash"`:
+  `RPCArg::ToString(oneline=true)` quotes an argument's name only for
+  `Type::STR`/`STR_HEX`, and `height` is `Type::NUM`
+  (`src/rpc/util.cpp:1265-1286`).
 - **A height written as a JSON number with a decimal point is
   `RPC_MISC_ERROR`, not silently truncated.** `int(1.5)` truncates
   toward zero without complaint; `UniValue::getInt<int>()` fails on any

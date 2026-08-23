@@ -34,8 +34,12 @@ def get_block_hash(node: Node, conn: Connection, params: list[Any]) -> bytes:
         # for a call short of a required argument, and ExecuteCommand's
         # `catch (const std::exception& e)` turns that into
         # JSONRPCError(RPC_MISC_ERROR, e.what()), src/rpc/server.cpp
-        # :884-886
-        raise RpcError(RpcErrorCode.MISC_ERROR, 'getblockhash "height"')
+        # :884-886. Unquoted, unlike blockhash's own usage string:
+        # RPCArg::ToString(oneline=true) quotes an argument's name only
+        # for Type::STR/STR_HEX, and height is Type::NUM
+        # (src/rpc/blockchain.cpp:585), which formats bare
+        # (src/rpc/util.cpp:1265-1286)
+        raise RpcError(RpcErrorCode.MISC_ERROR, "getblockhash height")
 
     height = params[0]
     if isinstance(height, bool) or not isinstance(height, (int, float)):
