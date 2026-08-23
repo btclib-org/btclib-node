@@ -91,11 +91,11 @@ Do not use Fable unless explicitly instructed.
 - **A trailing comment on the version line of `.python-version` makes uv
   ignore the whole file.** The reasoning for the pin is therefore in the
   lines above it, which is not where a reader looks first.
-- **The suite reaches the network and binds ports.** `addopts` carries
-  `-n auto --remote-data=any`, so a run is parallel, and a functional
-  test starts a node on a port it picked. A machine loaded past its core
-  count is where the per-test `timeout` starts deciding runs; measuring
-  anything on one is measuring the machine.
+- **The suite binds ports.** `addopts` carries `-n auto`, so a run is
+  parallel, and a functional test starts a node on a port it picked. A
+  machine loaded past its core count is where the per-test `timeout`
+  starts deciding runs; measuring anything on one is measuring the
+  machine.
 - **`python_files = "*.py"`**, so every module under `tests/unit` and
   `tests/functional` is collected, suffix or no suffix, and a helper put
   there is collected too.
