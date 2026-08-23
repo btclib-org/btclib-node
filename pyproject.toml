@@ -506,14 +506,29 @@ python_version = "3.14"
 #     mypy --check-untyped-defs
 #
 strict = true
-# None of these three are in the bundle `mypy --help`'s `--strict` entry
-# lists, so `strict = true` above leaves each off; every one costs
-# nothing today, measured over the directories `files` names.
+# Take a line out of this table and mypy's own parsing of the file says
+# what it was buying: each setting from here down to the divider below
+# answers `False` with its line removed, so `strict = true` above asks
+# for none of them --
+#
+#   uv run --locked --no-default-groups --group lint --group test \
+#     python -c "from mypy.main import process_options; \
+#       print(process_options(['--config-file', 'pyproject.toml'], \
+#         require_targets=False)[1].warn_unused_configs)"
+#
+# -- where `strict_bytes` answers `True` with a line and without one,
+# so it has none here. `mypy --help` names a setting mypy has on in the
+# negative, as `--no-strict-bytes`; `--hide-error-codes` reads the same
+# way, which is why `show_error_codes` is absent here and present in
+# the sample section 6 of btclib-org/.github's README gives.
+# btclib-org/.github#170 is that divergence.
 warn_unused_configs = true
-strict_bytes = true
 # a branch mypy can prove is never taken is a branch no test can cover,
 # and this tree is held to covering all of them
 warn_unreachable = true
+# the sample names this one too, and it earns its line: an error names
+# the column it starts at and not the line alone
+show_column_numbers = true
 
 # --- the optional error codes, surveyed one at a time ------------------
 #
@@ -528,14 +543,10 @@ warn_unreachable = true
 #     python -c "import mypy.errorcodes as m; \
 #       print(m.error_codes['import-untyped'].default_enabled)"
 #
-# -- and `comparison-overlap`, `import-not-found`, `import-untyped` and
-# `narrowed-type-not-subtype` are the ones that answer `True` and so do
-# not belong here, each already deciding over `files`.
-# `comparison-overlap` twice over: what it reports is gated by
-# `strict_equality`, which `strict = true` above sets. That second
-# reason stands alone for `unused-ignore`, which answers `False` and
-# still belongs outside: `warn_unused_ignores` is the flag form of it,
-# and `strict = true` sets that too.
+# -- and a code answering `True` belongs outside this list, whatever it
+# reports. Answering `False` is not on its own enough to be in it:
+# `unused-ignore` answers `False` and stays out, `warn_unused_ignores`
+# being the flag form of it and one `strict = true` above sets.
 enable_error_code = [
     "deprecated",
     # what this answers is the first `match` written under `files`
