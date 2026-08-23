@@ -229,25 +229,40 @@ def test_generate_block_candidates_2(tmp_path: Path) -> None:
     assert len(new_block_index.block_candidates) == 2000
 
 
-def test_invalidate_marks_the_block_and_its_candidate_descendants(
+def test_invalidate_marks_every_header_indexed_on_it_not_only_candidates(
     tmp_path: Path,
 ) -> None:
+    # a header enters header_dict, at valid_header, whenever it merely
+    # arrives -- block_candidates only holds the ones whose own
+    # cumulative chainwork individually cleared the active chain's at
+    # the moment they arrived, so a real descendant that never did is
+    # only reached by walking `children`, not the deque:
+    # btclib-org/btclib-node#125
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
-    chain = generate_random_header_chain(3, RegTest().genesis.hash)
+    active = generate_random_header_chain(5, RegTest().genesis.hash)
+    block_index.add_headers(active)
+    for header in active:
+        block_index.add_to_active_chain(header.hash)
+
+    # genesis-rooted, and never its own candidate: five headers' worth
+    # of chainwork does not exceed what active's own five already hold
+    victim = generate_random_header_chain(5, RegTest().genesis.hash)
+    block_index.add_headers(victim)
+    victim_hashes = {header.hash for header in victim}
+    assert not victim_hashes & {h for h, _ in block_index.block_candidates}
+
     sibling = generate_random_header_chain(1, RegTest().genesis.hash)
-    block_index.add_headers(chain)
     block_index.add_headers(sibling)
-    assert len(block_index.block_candidates) == 4
 
-    block_index.invalidate(chain[0].hash)
+    block_index.invalidate(victim[0].hash)
 
-    for header in chain:
+    for header in victim:
         assert block_index.get_block_info(header.hash).status == BlockStatus.invalid
     assert (
         block_index.get_block_info(sibling[0].hash).status == BlockStatus.valid_header
     )
-    assert [h for h, _ in block_index.block_candidates] == [sibling[0].hash]
+    assert not victim_hashes & {h for h, _ in block_index.block_candidates}
     chainstate.close()
 
 

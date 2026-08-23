@@ -54,12 +54,14 @@ to check the guess.
 ### A branch this node has proved bad stops being offered
 
 - **`BlockIndex.invalidate` is the one place a block's invalidity is
-  recorded, and what it costs**: the block itself and every candidate
-  already known to build on it are both marked `BlockStatus.invalid`
-  and dropped from `block_candidates`, and `add_headers` refuses to
-  build a `valid_header` on a parent already carrying that status, so a
-  header arriving afterwards inherits it without a walk of its own
-  (#125).
+  recorded, and what it costs**: the block itself and every header this
+  index has already indexed on top of it, candidate or not, are marked
+  `BlockStatus.invalid` and dropped from `block_candidates` where
+  present -- a new `children` map, the reverse of `previous_block_hash`,
+  is what the walk costs the size of the bad lineage rather than the
+  whole index. `add_headers` refuses to build a `valid_header` on a
+  parent already carrying that status, so a header arriving afterwards
+  inherits it without a walk of its own (#125).
 - **A block whose `assert_valid` raises is invalidated before the peer
   that sent it is dropped**, so the next peer offering it is refused
   before being asked to send it again (#77).

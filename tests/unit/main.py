@@ -24,6 +24,7 @@ from tests.helpers import (
     build_block,
     generate_coinbase,
     generate_random_chain,
+    generate_random_header_chain,
     generate_random_transaction,
 )
 
@@ -397,3 +398,57 @@ def test_a_refused_branch_invalidates_only_the_block_that_failed(
         == BlockStatus.invalid
     )
     reopened.close()
+
+
+def test_a_refused_branch_invalidates_headers_that_were_never_candidates(
+    tmp_path: Path,
+) -> None:
+    # neither the block that fails nor a sibling built on it has to have
+    # individually outweighed the active chain to be real: only the
+    # branch's own tip does, for update_chain to try connecting it at
+    # all. Both are hidden from block_candidates and only reachable by
+    # walking BlockIndex.children -- proves the cascade through the real
+    # update_chain -> update_header_index -> invalidate call chain, not
+    # just the isolated BlockIndex-level call: btclib-org/btclib-node#125
+    node = regtest_node(tmp_path)
+    active = generate_random_chain(6, RegTest().genesis.hash)
+    block_index = connect(node, active)
+
+    below = generate_random_chain(2, RegTest().genesis.hash)
+    prints_money = build_block(
+        below[-1].header.hash,
+        [
+            generate_coinbase(),
+            spend(below[-1].transactions[0], 50 * 10**8 + 1),
+        ],
+        len(below),
+    )
+    # more, structurally fine, blocks on top of the doomed one -- their
+    # combined chainwork is what makes the branch's tip outweigh active,
+    # not prints_money on its own
+    continuation = generate_random_chain(4, prints_money.header.hash)
+    fork = [*below, prints_money, *continuation]
+    block_index.add_headers([block.header for block in fork])
+    for block in fork:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+
+    # a sibling of the continuation, off prints_money, real and indexed
+    # but never downloaded and never its own block_candidates entry
+    sibling = generate_random_header_chain(1, prints_money.header.hash)
+    block_index.add_headers(sibling)
+    # the branch's own tip is the one candidate entry: everything below
+    # it, prints_money included, never individually outweighed active
+    # on its own
+    hidden = {prints_money.header.hash, sibling[0].hash}
+    hidden.update(block.header.hash for block in continuation[:-1])
+    assert not hidden & {h for h, _ in block_index.block_candidates}
+
+    candidate = block_index.get_first_candidate()
+    assert candidate is not None
+    assert candidate.header.hash == continuation[-1].header.hash
+
+    update_chain(node)
+    assert block_index.active_chain[1:] == hashes(active)
+    for hash in {*hidden, continuation[-1].header.hash}:
+        assert block_index.get_block_info(hash).status == BlockStatus.invalid

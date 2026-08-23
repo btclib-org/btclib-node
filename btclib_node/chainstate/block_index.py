@@ -88,6 +88,11 @@ class BlockIndex:
         # the block locators
         self.header_index: list[bytes] = []
 
+        # the reverse of previous_block_hash, kept so invalidate can walk
+        # forward from a bad block to what is really built on it instead
+        # of scanning header_dict whole: btclib-org/btclib-node#125
+        self.children: dict[bytes, list[bytes]] = {}
+
         self.init_from_db()
 
     def init_from_db(self) -> None:
@@ -122,6 +127,7 @@ class BlockIndex:
             else:
                 previousblockhash = block_info.header.previous_block_hash
                 old_work = self.get_block_info(previousblockhash).chainwork
+                self.children.setdefault(previousblockhash, []).append(block_hash)
             chainwork = old_work + calculate_work(block_info.header)
             # into the dict and not through `_insert_block_info`:
             # `serialize` does not carry chainwork, so it is derived
@@ -180,8 +186,17 @@ class BlockIndex:
     def _insert_block_info(
         self, block_info: BlockInfo, wb: KeyValueStore | None = None
     ) -> None:
-        self.header_dict[block_info.header.hash] = block_info
-        key = b"blkinfo-" + block_info.header.hash
+        hash = block_info.header.hash
+        # a genuinely new hash, and not set_status/set_downloaded
+        # overwriting the record already there for it: children is the
+        # index invalidate walks, and a hash already present had its
+        # parentage recorded the one time it was new
+        if hash not in self.header_dict:
+            self.children.setdefault(block_info.header.previous_block_hash, []).append(
+                hash
+            )
+        self.header_dict[hash] = block_info
+        key = b"blkinfo-" + hash
         value = block_info.serialize()
         db = wb or self.db
         db.put(key, value)
@@ -200,34 +215,29 @@ class BlockIndex:
     def get_block_info(self, hash: bytes) -> BlockInfo:
         return self.header_dict[hash]
 
-    # a candidate that reaches here by walking previous_block_hash from
-    # `hash`, stopping at the first index at or below ancestor's own --
-    # below that, it is on another branch and not a descendant
-    def _is_descendant(self, hash: bytes, ancestor_hash: bytes) -> bool:
-        ancestor_index = self.get_block_info(ancestor_hash).index
-        while hash != ancestor_hash:
-            block_info = self.get_block_info(hash)
-            if block_info.index <= ancestor_index:
-                return False
-            hash = block_info.header.previous_block_hash
-        return True
-
     # what a block failing validation costs: itself, and every header
-    # already offered as a candidate that is built on top of it.
-    # `add_headers` refuses to build a valid_header on an invalid
-    # parent, which is what keeps a header arriving *after* this call
-    # from ever needing to be walked here -- so the only ones swept up
-    # are candidates this index already knew about.
-    # btclib-org/btclib-node#77, #120
+    # this index has ever indexed on top of it, candidate or not --
+    # `children` is walked rather than `header_dict` or
+    # `block_candidates`, so this costs the size of the bad lineage and
+    # not the size of the index. `add_headers` refuses to build a
+    # valid_header on an invalid parent, which is what keeps a header
+    # arriving *after* this call from needing to be walked here. No hash
+    # is ever pushed twice: `_insert_block_info` records a hash as a
+    # child the one time it is new, so it is a value of `children` under
+    # exactly one parent, and the walk below cannot reach it a second
+    # time.
+    # btclib-org/btclib-node#77, #120, #125
     def invalidate(self, hash: bytes) -> None:
-        self.set_status(hash, BlockStatus.invalid)
-        candidates, self.block_candidates = self.block_candidates, deque()
-        for candidate_hash, work in candidates:
-            if candidate_hash != hash and not self._is_descendant(candidate_hash, hash):
-                self.block_candidates.append([candidate_hash, work])
-                continue
-            if candidate_hash != hash:
-                self.set_status(candidate_hash, BlockStatus.invalid)
+        to_invalidate = [hash]
+        invalidated: set[bytes] = set()
+        while to_invalidate:
+            current = to_invalidate.pop()
+            invalidated.add(current)
+            self.set_status(current, BlockStatus.invalid)
+            to_invalidate.extend(self.children.get(current, ()))
+        self.block_candidates = deque(
+            [h, w] for h, w in self.block_candidates if h not in invalidated
+        )
 
     # returns the active chain and the forked chain from the common ancestor
     def get_fork_details(
