@@ -12,7 +12,9 @@ of both -- and until now only a functional test reached any of it.
 
 import json
 import socket
+from collections.abc import Iterator, Mapping
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, Protocol, cast
 
 import pytest
 
@@ -21,17 +23,25 @@ from btclib_node.log import Logger
 from btclib_node.rpc.manager import RpcManager
 from tests.helpers import get_random_port, wait_until, wait_until_listening
 
+if TYPE_CHECKING:
+    from btclib_node import Node
+
 REQUEST = {"jsonrpc": "2.0", "id": "a", "method": "getbestblockhash"}
 
 
-@pytest.fixture
-def a_manager():
-    """Build managers, and close their event loops however the test ends."""
-    made = []
+class AManagerFactory(Protocol):
+    def __call__(self, port: int | None) -> RpcManager: ...
 
-    def make(port):
+
+@pytest.fixture
+def a_manager() -> Iterator[AManagerFactory]:
+    """Build managers, and close their event loops however the test ends."""
+    made: list[RpcManager] = []
+
+    def make(port: int | None) -> RpcManager:
         manager = RpcManager(
-            SimpleNamespace(logger=Logger(debug=True), chain=RegTest()), port
+            cast("Node", SimpleNamespace(logger=Logger(debug=True), chain=RegTest())),
+            port,
         )
         made.append(manager)
         return manager
@@ -42,13 +52,15 @@ def a_manager():
         manager.loop.close()
 
 
-def as_http(payload):
+def as_http(payload: Mapping[str, object]) -> bytes:
     body = json.dumps(payload).encode()
     head = b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n" % len(body)
     return head + body
 
 
-def test_a_manager_says_when_it_is_listening_and_queues_what_arrives(a_manager):
+def test_a_manager_says_when_it_is_listening_and_queues_what_arrives(
+    a_manager: AManagerFactory,
+) -> None:
     # #46: `is_alive()` holds before `run` has bound anything, so a
     # client that posts on the strength of it is refused. The event is
     # what a caller can wait on instead.
@@ -76,7 +88,9 @@ def test_a_manager_says_when_it_is_listening_and_queues_what_arrives(a_manager):
     assert not manager.listening.is_set()
 
 
-def test_an_answer_is_written_back_to_the_client_that_asked(a_manager):
+def test_an_answer_is_written_back_to_the_client_that_asked(
+    a_manager: AManagerFactory,
+) -> None:
     # `Connection.send` is what the node's loop calls once it has an
     # answer, from its own thread: the write itself belongs to the
     # manager's loop, and this is the line that crosses over

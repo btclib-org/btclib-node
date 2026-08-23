@@ -35,7 +35,7 @@ class Config:
         allow_rpc: bool = True,
         pruned: bool = False,
         debug: bool = False,
-        log_path: str = "history.log",
+        log_path: str | None = "history.log",
     ) -> None:
         if isinstance(chain, Chain):
             self.chain = chain

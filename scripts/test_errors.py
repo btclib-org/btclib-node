@@ -10,7 +10,7 @@ from btclib.tx.tx_out import TxOut
 from btclib.utils import bytesio_from_binarydata
 
 
-def get_error_data(id, i):
+def get_error_data(id: str, i: str) -> tuple[list[TxOut], Tx, tuple[str, ...]]:
     err_dir = Path("errors", id, str(i))
     with Path(err_dir / "flags").open(encoding="utf-8") as f:
         flags = tuple(

@@ -11,7 +11,9 @@ these are mostly about.
 
 from collections import deque
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, NoReturn, cast
+
+import pytest
 
 from btclib_node.rpc.callbacks import callbacks
 from btclib_node.rpc.main import (
@@ -20,15 +22,18 @@ from btclib_node.rpc.main import (
     handle_rpc,
     is_valid_rpc,
 )
+from btclib_node.rpc.manager import RpcManager
 
 PING = {"jsonrpc": "2.0", "id": "a", "method": "ping"}
 
 
-def make_node(batch, conn_id=0, *, callback=None):
+def make_node(
+    batch: list[Any], conn_id: int = 0, *, callback: Any = None
+) -> tuple[Any, list[Any], list[Any], list[bool]]:
     sent: list[Any] = []
     waited: list[Any] = []
     conn = SimpleNamespace(send=sent.append, send_and_wait=waited.append)
-    stopped = []
+    stopped: list[bool] = []
     node = SimpleNamespace(
         rpc_manager=SimpleNamespace(
             messages=deque([(batch, conn_id)]), connections={0: conn}
@@ -40,13 +45,13 @@ def make_node(batch, conn_id=0, *, callback=None):
     return node, sent, waited, stopped
 
 
-def test_a_request_is_answered():
+def test_a_request_is_answered() -> None:
     node, sent, _, _ = make_node([PING])
     handle_rpc(node)
     assert sent == [[{"jsonrpc": "2.0", "result": None, "id": "a"}]]
 
 
-def test_an_empty_batch_is_an_invalid_request():
+def test_an_empty_batch_is_an_invalid_request() -> None:
     # JSON-RPC 2.0 says so, and reading the loop variable after a loop
     # that never ran used to end the node instead
     node, sent, waited, stopped = make_node([])
@@ -55,7 +60,7 @@ def test_an_empty_batch_is_an_invalid_request():
     assert not stopped
 
 
-def test_a_batch_ending_in_something_that_is_not_an_object():
+def test_a_batch_ending_in_something_that_is_not_an_object() -> None:
     node, sent, waited, stopped = make_node([PING, "garbage"])
     handle_rpc(node)
     answers = sent[0]
@@ -63,20 +68,20 @@ def test_a_batch_ending_in_something_that_is_not_an_object():
     assert not stopped
 
 
-def test_an_unknown_method_is_answered_not_found():
+def test_an_unknown_method_is_answered_not_found() -> None:
     node, sent, _, _ = make_node([{"jsonrpc": "2.0", "id": "a", "method": "nosuch"}])
     handle_rpc(node)
     assert sent == [[error_msg(-32601)]]
 
 
-def test_a_request_without_an_id_is_invalid():
+def test_a_request_without_an_id_is_invalid() -> None:
     node, sent, _, _ = make_node([{"jsonrpc": "2.0", "method": "ping"}])
     handle_rpc(node)
     assert sent == [[error_msg(-32600)]]
 
 
-def test_a_callback_that_raises_is_answered_internal_error():
-    def boom():
+def test_a_callback_that_raises_is_answered_internal_error() -> None:
+    def boom() -> NoReturn:
         raise RuntimeError("no")
 
     node, sent, _, _ = make_node([PING], callback=boom)
@@ -84,8 +89,8 @@ def test_a_callback_that_raises_is_answered_internal_error():
     assert sent == [[error_msg(-32603)]]
 
 
-def test_params_are_passed_when_given(monkeypatch):
-    seen = []
+def test_params_are_passed_when_given(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[Any] = []
     node, sent, _, _ = make_node(
         [{"jsonrpc": "2.0", "id": "a", "method": "withparams", "params": [1, 2]}]
     )
@@ -96,8 +101,8 @@ def test_params_are_passed_when_given(monkeypatch):
     assert seen == [[1, 2]]
 
 
-def test_no_params_is_an_empty_list(monkeypatch):
-    seen = []
+def test_no_params_is_an_empty_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[Any] = []
     node, sent, _, _ = make_node([{"jsonrpc": "2.0", "id": "a", "method": "noparams"}])
     monkeypatch.setitem(
         callbacks, "noparams", lambda node, conn, params: seen.append(params)
@@ -106,7 +111,7 @@ def test_no_params_is_an_empty_list(monkeypatch):
     assert seen == [[]]
 
 
-def test_stop_is_asked_of_the_batch_not_of_its_last_request():
+def test_stop_is_asked_of_the_batch_not_of_its_last_request() -> None:
     stop = {"jsonrpc": "2.0", "id": "a", "method": "stop"}
     node, sent, waited, stopped = make_node([stop, PING])
     handle_rpc(node)
@@ -118,22 +123,23 @@ def test_stop_is_asked_of_the_batch_not_of_its_last_request():
     assert not sent
 
 
-def test_a_message_for_a_connection_that_is_gone_is_dropped():
+def test_a_message_for_a_connection_that_is_gone_is_dropped() -> None:
     node, sent, _, _ = make_node([PING], conn_id=99)
     handle_rpc(node)
     assert not sent
 
 
-def test_get_connection_answers_none_rather_than_raising():
-    assert get_connection(SimpleNamespace(connections={}), 0) is None
+def test_get_connection_answers_none_rather_than_raising() -> None:
+    manager = cast(RpcManager, SimpleNamespace(connections={}))
+    assert get_connection(manager, 0) is None
 
 
-def test_is_valid_rpc_wants_an_object_with_a_method_and_an_id():
+def test_is_valid_rpc_wants_an_object_with_a_method_and_an_id() -> None:
     assert is_valid_rpc(PING)
     assert not is_valid_rpc("garbage")
     assert not is_valid_rpc({"id": "a"})
     assert not is_valid_rpc({"method": "ping"})
 
 
-def test_an_unknown_error_code_becomes_an_internal_error():
+def test_an_unknown_error_code_becomes_an_internal_error() -> None:
     assert error_msg(-1)["error"]["code"] == -32603
