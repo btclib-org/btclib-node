@@ -107,15 +107,38 @@ class P2pManager(threading.Thread):
                     self.logger.exception("Exception occurred")
             await asyncio.sleep(0.1)
 
-    async def server(self, loop: asyncio.AbstractEventLoop) -> None:
+    def _bind(self) -> socket.socket:
+        """Bind and listen, synchronously, before anything is scheduled.
+
+        Not the coroutine below: a coroutine handed to
+        `run_coroutine_threadsafe` runs on the loop's own thread, behind a
+        `concurrent.futures.Future` nobody reads, so a bind failure inside
+        one is an `OSError` that vanishes rather than one that reaches
+        `run`'s caller (#88). Doing it here instead, before `run_forever`
+        is ever called, means the same failure raises out of `run` --
+        this thread's target -- so the thread ends rather than staying
+        `is_alive()` over a listener that never came up.
+        """
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        # All interfaces, by design: a P2P listener accepts
-        # inbound peers from anywhere. noqa: S104
-        server_socket.bind(("0.0.0.0", self.port))  # noqa: S104
-        server_socket.listen()
-        server_socket.settimeout(0.0)
+        try:
+            server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # All interfaces, by design: a P2P listener accepts
+            # inbound peers from anywhere. noqa: S104
+            server_socket.bind(("0.0.0.0", self.port))  # noqa: S104
+            server_socket.listen()
+            server_socket.settimeout(0.0)
+        except OSError:
+            # the caller never gets this socket to close: raising it
+            # out of a coroutine nobody awaited (#88) is what let a
+            # failed bind's fd outlive the exception in the first place
+            server_socket.close()
+            raise
         self.listening.set()
+        return server_socket
+
+    async def server(
+        self, loop: asyncio.AbstractEventLoop, server_socket: socket.socket
+    ) -> None:
         with server_socket:
             while True:
                 sock, sockaddr = await loop.sock_accept(server_socket)
@@ -127,8 +150,13 @@ class P2pManager(threading.Thread):
         self.logger.info("Starting P2P manager")
         loop = self.loop
         asyncio.set_event_loop(loop)
+        try:
+            server_socket = self._bind()
+        except OSError:
+            self.logger.exception("Could not bind the P2P listener")
+            raise
         asyncio.run_coroutine_threadsafe(self.peer_db.get_addr_from_dns(), loop)
-        asyncio.run_coroutine_threadsafe(self.server(loop), loop)
+        asyncio.run_coroutine_threadsafe(self.server(loop, server_socket), loop)
         asyncio.run_coroutine_threadsafe(self.manage_connections(loop), loop)
         loop.run_forever()
 

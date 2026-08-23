@@ -112,3 +112,25 @@ def test_an_answer_is_written_back_to_the_client_that_asked(
     finally:
         manager.stop()
         manager.join(timeout=10)
+
+
+def test_a_manager_that_cannot_bind_stops_being_alive(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#88: see tests/unit/p2p/manager.py's manager of the same name.
+
+    `_bind` runs in `run` before `run_forever`, so a taken port's
+    `OSError` comes back out of `run` itself instead of sitting unread
+    in the `concurrent.futures.Future` `run_coroutine_threadsafe` used
+    to hand back.
+    """
+    logged: list[str] = []
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
+        taken.bind(("", 0))
+        taken.listen()
+        manager = a_manager(taken.getsockname()[1])
+        monkeypatch.setattr(manager.logger, "exception", logged.append)
+        manager.start()
+        wait_until(lambda: not manager.is_alive())
+    assert logged
+    assert not manager.listening.is_set()

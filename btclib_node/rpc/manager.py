@@ -44,17 +44,31 @@ class RpcManager(threading.Thread):
         self.connections[self.last_connection_id] = new_connection
         return new_connection
 
-    async def server(self, loop: asyncio.AbstractEventLoop) -> None:
+    def _bind(self) -> socket.socket:
+        """Bind and listen, synchronously, before anything is scheduled.
+
+        See `P2pManager._bind`: the same shape of bug (#88) and the same
+        fix, applied to the RPC listener instead of the P2P one.
+        """
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        # All interfaces, unconditionally -- there is no host
-        # config option to bind the RPC control plane to
-        # localhost instead. Pre-existing; not this lint-gate
-        # PR to change, tracked as its own issue.
-        server_socket.bind(("0.0.0.0", self.port))  # noqa: S104
-        server_socket.listen()
-        server_socket.settimeout(0.0)
+        try:
+            server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # All interfaces, unconditionally -- there is no host
+            # config option to bind the RPC control plane to
+            # localhost instead. Pre-existing; not this lint-gate
+            # PR to change, tracked as its own issue.
+            server_socket.bind(("0.0.0.0", self.port))  # noqa: S104
+            server_socket.listen()
+            server_socket.settimeout(0.0)
+        except OSError:
+            server_socket.close()
+            raise
         self.listening.set()
+        return server_socket
+
+    async def server(
+        self, loop: asyncio.AbstractEventLoop, server_socket: socket.socket
+    ) -> None:
         with server_socket:
             while True:
                 client, _ = await loop.sock_accept(server_socket)
@@ -70,7 +84,12 @@ class RpcManager(threading.Thread):
         self.logger.info("Starting RPC manager")
         loop = self.loop
         asyncio.set_event_loop(loop)
-        asyncio.run_coroutine_threadsafe(self.server(loop), loop)
+        try:
+            server_socket = self._bind()
+        except OSError:
+            self.logger.exception("Could not bind the RPC listener")
+            raise
+        asyncio.run_coroutine_threadsafe(self.server(loop, server_socket), loop)
         loop.run_forever()
 
     def stop(self) -> None:

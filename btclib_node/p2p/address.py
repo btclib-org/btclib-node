@@ -144,28 +144,40 @@ def ip_and_port(ip: str, port: int) -> str:
     return f"[{parsed}]:{port}"
 
 
+# The old poll loop's budget, ten passes at 0.1s each -- what a dial
+# gave up after regardless of whether the peer was refusing or merely
+# slow. `loop.sock_connect` below does not need the two magic numbers a
+# poll needs, only this one: a real timeout wrapped around a wait that
+# is otherwise event-driven.
+_DIAL_TIMEOUT = 1.0
+
+
 async def dial(address: NetworkAddressV2) -> socket.socket | None:
     """Return a socket connected to the peer, or nothing if it never came up.
 
     `dial` and not `connect`, which is what `P2pManager` calls the whole
     of making a connection out of one: this is the socket alone.
+
+    `loop.sock_connect` is the kernel's own answer rather than a guess at
+    it: a refusal is `SO_ERROR` on the socket, read the moment the OS
+    notifies the loop's writer callback, not inferred after a fixed
+    number of `getpeername` polls that cannot tell a refusal from a peer
+    that is merely slow. And where `connect` completes without ever
+    raising `BlockingIOError` -- a local peer most often -- `sock_connect`
+    returns at once instead of an `except` arm that never runs.
     """
     if address.network_id != _DIALABLE:
         raise ValueError("Address type not yet supported")
     client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     client.settimeout(0)
+    loop = asyncio.get_running_loop()
+    peer = (str(IPv4Address(address.address)), address.port)
     try:
-        client.connect((str(IPv4Address(address.address)), address.port))
-    except BlockingIOError:
-        for _ in range(10):
-            await asyncio.sleep(0.1)
-            try:
-                client.getpeername()
-                return client
-            except OSError:
-                pass
+        await asyncio.wait_for(loop.sock_connect(client, peer), _DIAL_TIMEOUT)
+    except OSError, TimeoutError:
         client.close()
-    return None
+        return None
+    return client
 
 
 class PeerDB:
