@@ -1,5 +1,5 @@
 ---
-name: macos
+name: os-macos
 
 # The platform the merge gate does not wait for. pyproject.toml claims
 # macOS in its classifiers, and until this file nothing here ran a line
@@ -59,7 +59,7 @@ on:
     # list carries in test.yml
     types: [opened, reopened, synchronize, ready_for_review, closed]
     paths:
-      - .github/workflows/macos.yml
+      - .github/workflows/os-macos.yml
 
 # least privilege for the GITHUB_TOKEN: everything running in a job can
 # read it, and nothing here writes
@@ -72,7 +72,7 @@ permissions:
 # dispatch carries pull_request context, so github.ref still groups
 # either of those, and a closed pull request cannot land in their group
 concurrency:
-  group: macos-${{ github.event.pull_request.number || github.ref }}
+  group: os-macos-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:

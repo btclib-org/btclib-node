@@ -2,8 +2,10 @@
 ## What this changes
 
 <!-- What the node does now that it did not do before, and why.
-     CONTRIBUTING.md asks every change to start from an open issue, so
-     there is normally one to link: "Closes #123". -->
+     Where this closes an issue, the title names it in parentheses and
+     the body carries the keyword GitHub reads: "Closes #123".
+     CONTRIBUTING.md's Pull requests section has the rule and what it
+     costs to get it wrong. -->
 
 ## How it was verified
 

@@ -1,45 +1,246 @@
 # Contributing
 
-Every change starts with an open issue. A pull request needs an approving
-review from somebody other than its author before it can merge — GitHub
-does not allow a self-approval. `Closes #N` in the pull request's
-description is what closes the issue once a reviewed pull request merges.
+What this repository holds in common with the others of the organization
+— the toolchain, the lint gate, the tool tables behind it, the workflow
+set and the branch rules — is stated once in the
+[btclib-org repository standard](https://github.com/btclib-org/.github),
+each rule with the alternative it was decided against. It binds this
+repository, so a change departing from it is a divergence, and one filed
+as an issue in that repository rather than here: a difference between two
+repositories belongs to neither of them.
 
-## What `main` enforces
+**This file is the same in every repository of the organization up to
+its last section.** What is true of one tree only — the commands that
+build its environment, the gates it runs, which of its workflows decide
+a merge — is under that heading, and the comparison stops there.
 
-`main` enforces four things on every commit that reaches it, not only on
-review: a verified signature, linear history, no force push, no branch
-deletion. These are a GitHub ruleset with no bypass actor, not a rule
-trusted to hold on its own — a commit that is unsigned or that rewrites
-history is rejected before it is something to review.
+## The issue tracker
 
-Commits need a verified signature (GPG, SSH or S/MIME — see
-[About commit signature
-verification](https://docs.github.com/en/authentication/managing-commit-signature-verification/about-commit-signature-verification)).
+Where an issue is filed, and what an alignment finding has to name, is
+[the standard's *What this repository is*][s-what]: an issue spanning
+repositories, or whose subject is the standard, goes to
+[btclib-org/.github](https://github.com/btclib-org/.github/issues), and
+one about this tree alone stays here.
 
-## What runs, and when
+A finding noticed while doing something else is filed, not carried.
+`REVIEWING.md`'s *Every collateral finding becomes an issue* is the whole
+of what to do with one, and it applies to an author as much as to a
+reviewer: a pull request answering two questions cannot be accepted for
+either.
 
-Two things run on a pull request that touches anything the suite reads:
-the lint gate, which is `.pre-commit-config.yaml` run as you would run it
-yourself, and the suite on one image and one interpreter, held to the
-coverage floor `pyproject.toml` declares. A pull request that edits only
-the root prose -- this file among it -- skips the suite and reports the
-skip as a pass, which is what keeps a required check from blocking on a
-run that never happened. That is the whole of the merge gate, and it is
-deliberately the cheapest answer that can still refuse a broken change.
-Whether a red one blocks the merge is a repository setting rather than a
-file, and nothing names a status check here today -- neither `main`'s
-ruleset nor the classic protection where the aligned siblings keep theirs
-(btclib-org/.github#88). Read them yourself until one does.
+## Documentation and comments
 
-Everything else answers on a schedule instead of holding a merge: the
-links in the prose, CodeQL over the Python and the workflows, and the
-same suite on macOS, the one platform pyproject.toml claims that no merge
-gate runs. Which day each of them runs is one calendar for the whole
+[Section 9 of the standard][s9] is the prose style, and it governs the
+prose this tree ships — comments, docstrings and markdown. It is not
+restated here: a second wording is the one that goes stale, which is
+that section's own *One fact in one place*.
+
+A commit message is prose this tree ships too, though section 9 does not
+say so: squash is the only merge method and the landing commit carries
+the messages, so what is written in one is read on `main` long after the
+branch is gone.
+
+## Pull requests
+
+What `main` accepts, and what it refuses to everyone, is [section 11 of
+the standard][s11]. Run the gates locally before opening anything —
+the last section of this file says which they are — because CI runs
+exactly them, so a red run there is a local run that was not done.
+
+What a pull request's title and description have to say about the issues
+it closes, and why a manual link in the Development panel is a trap
+neither of them shows, is [the standard's *What a pull request says it
+is*][s-title]. Read it before opening one; it is the rule most often
+found broken after the fact.
+
+`REVIEWING.md` is the standard a review is written against, and is this
+file's other half. Read before opening a pull request, it is what the
+pull request will be answered against.
+
+`CHANGELOG.md` gets an entry for anything a reader would notice, and the
+release notes move only for something a user has to *act* on, in the
+repositories that publish.
+
+### One subject, opened as soon as it is written
+
+A pull request answers one question. Issues that share a subject are one
+pull request, closing each of them; issues that do not are one pull
+request each, however small either of them is.
+
+It is opened the moment it is written and verified — not held for the
+previous one to be reviewed or to land, and not batched with the next. A
+batch arrives as one reviewing job with several subjects, which is the
+shape that costs the most to read; a finished pull request held back is
+review that could have started and did not.
+
+Working this way stacks branches, which is fine and costs one rule: a
+child whose base was amended is moved with the old base named,
+
+```shell
+git rebase --onto <new-base> <old-base-sha> <child>
+```
+
+because a plain rebase replays the base's old commit inside the child,
+and the forge then shows the base's old text as additions with nothing
+red anywhere. Read the child's diff afterwards rather than trusting the
+rebase, and retarget each child onto `main` as its parent lands.
+
+### The review
+
+A review is given promptly and on local evidence. It does not wait for
+CI, does not report a check as a finding, and does not discuss a run at
+all: whether CI is green is the author's business, once, at landing time.
+
+The exchange is anchored to a sha rather than to a branch, a branch being
+free to move under a review:
+
+- the author hands off by naming the sha pushed and the evidence run
+  against it, then leaves that head alone;
+- the reviewer answers with findings — where, what is wrong, how they
+  know it, and whether each is blocking;
+- the author accepts what is reasonable, declines the rest with a reason
+  in the thread, and pushes the answer without waiting for CI;
+- the reviewer resolves the threads they opened, that being what says a
+  finding is closed, and re-reviews the delta rather than the branch.
+
+**What ends the loop is the ack of record**, and the author does not
+supply their own. A reading that says what it found and delivers no
+verdict is a review too and ends nothing; [the standard's *Review*][s-rev]
+has which is which, and `REVIEWING.md` has how each is written. A
+disagreement that survives a second exchange goes to the maintainer
+instead of into a third round.
+
+### Landing it
+
+CI is read once, and this is where. Rebase onto `main`'s tip, push that
+head so the checks run on the tree that will land, and only then wait for
+them: checks read before a rebase describe a tree nobody is landing. A
+rebase that moved nothing but the base leaves the ack standing; one that
+resolved a conflict does not, that resolution being a change no reviewer
+has seen.
+
+Then squash, [the only method the rule accepts][s11].
+
+**The maintainer's bypass is not automatic — it has to be invoked, and
+`gh pr merge` cannot invoke it**, refusing client-side before it asks
+GitHub anything:
+
+```text
+Pull request is not mergeable: the base branch policy prohibits the merge
+```
+
+The merge endpoint applies it server-side, and it is the same endpoint
+the merge button asks:
+
+```shell
+gh api -X PUT repos/{owner}/{repo}/pulls/<n>/merge \
+  -f merge_method=squash
+```
+
+**Verify what landed rather than trusting the answer**, the signature
+[the standard asks for][s-sigs] being a valid one rather than a
+particular signer's:
+
+```shell
+gh api repos/{owner}/{repo}/commits/main \
+  --jq '.commit.verification | {verified, reason}'
+```
+
+The forge deletes the head branch itself, per the setting section 11
+names. What is still yours is bringing every checkout sitting on `main`
+up to date,
+that being where the next session starts from and a stale one being where
+a branch gets built on a base that has moved. `REPOSITORY.md` carries the
+settings and why they are what they are.
+
+[s-what]: https://github.com/btclib-org/.github#what-this-repository-is
+[s11]: https://github.com/btclib-org/.github#11-github-settings
+[s9]: https://github.com/btclib-org/.github#9-prose-comments-and-docstrings
+[s-title]: https://github.com/btclib-org/.github#what-a-pull-request-says-it-is
+[s-rev]: https://github.com/btclib-org/.github#review
+[s-sigs]: https://github.com/btclib-org/.github#signatures
+
+## This repository in particular
+
+Everything above is the same file in every repository of the
+organization; everything below is this one's, and the comparison stops at
+this heading.
+
+### The environment and the gates
+
+uv is the only thing that has to be installed; it fetches the interpreter
+`.python-version` pins and every dependency group itself. There is a
+project here and it is installed, so the gates run through `uv run` and
+not through the `uvx` a tree with no project needs:
+
+```shell
+uv sync                                          # the environment
+uv run pytest                                    # the suite, coverage included
+git add -A && uv run pre-commit run --all-files  # the lint gate
+uv run pre-commit validate-config .pre-commit-config.yaml
+```
+
+`--all-files` means every file git tracks, so a file that is new and not
+yet staged is not one of them: run it unstaged and the hooks pass over
+exactly the files most likely to fail them. Staging first is what makes
+the local gate answer the same question pre-commit.ci does.
+
+The last command is worth running before pushing a change to the hook
+config: it catches what a wrong `types_or` tag or a malformed entry would
+otherwise turn into a red lint job.
+
+**Check exit codes, not filtered output.** `pre-commit run ... | grep -v
+Passed` hides a failure, and `grep` finding nothing exits 1, which is not
+the gate's answer to anything.
+
+**The gate is not installed as a git hook.** `pre-commit install` writes
+into the common git directory, which every worktree of this repository
+shares: `git -C <worktree> rev-parse --git-path hooks` answers with the
+same directory in each. So one session installing it installs it for
+every other. Run the gate by hand before committing.
+
+Every statement and every branch is covered, and `uv run pytest` fails if
+any stops being. A run narrowed by a path, `-k`, `-m`, `--deselect`,
+`--ignore`, `--ignore-glob` or `--last-failed` is not the run a floor
+over the whole suite is a claim about, so it is not held to one —
+`tests/conftest.py` is where that is decided, and where anything else
+narrowing a run is added. `--cov-fail-under` asked for explicitly still
+applies.
+
+Every test is bounded, too. A node that stops answering fails the test
+that built it, named, with a stack of every thread it left running,
+instead of holding the run open until something outside it gives up. The
+limit is `timeout` in `pyproject.toml`, measured against the slowest test
+there is and reasoned about where it is set.
+
+### What gates a merge, and what only reports
+
+`lint.yml` runs the hooks `.pre-commit-config.yaml` declares, so there
+is no second list of tools and versions to keep in step; its invocation
+differs from the one above only in being `--locked` and in printing what
+a fixing hook would have written. `test.yml` runs the suite on one image
+and one interpreter, held to the coverage floor `pyproject.toml`
+declares. A pull request that touches
+only the root prose skips the suite and reports the skip as a pass, which
+is what keeps an aggregate check from blocking on a run that never
+happened.
+
+**Whether either of them can refuse a merge is a repository setting and
+not a file**, and `REPOSITORY.md` reads it back from the endpoint rather
+than restating it here. Read that file before assuming a red run stops
+anything.
+
+Everything else reports. `codeql.yml` follows a value from a peer's
+message or an RPC request body to where it is used, which no hook here
+does. `os-macos.yml` runs the suite on the one platform
+`pyproject.toml` classifies that no other workflow runs, and its header
+says what differs beneath it. `links.yml` asks whether somebody else's
+server answered. `claude-review.yml` writes the review and its own header
+says it must not become a required check.
+
+Which day each of the periodic ones runs is one calendar for the whole
 organization, in [section 10 of `btclib-org/.github`'s
 README](https://github.com/btclib-org/.github/blob/main/README.md), not
-repeated here.
-
-The trade that calendar makes is worth knowing before you rely on it: a
-defect only a sweep can see sits on `main` until that sweep runs, at
+repeated here. The trade it makes is worth knowing before relying on it:
+a defect only a sweep can see sits on `main` until that sweep runs, at
 most a week.

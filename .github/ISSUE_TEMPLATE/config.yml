@@ -8,27 +8,23 @@
 #
 # The security entry is a link and not a form on purpose: a form would
 # be a public issue, which is the one thing a vulnerability must not be.
-# It points at btclib's SECURITY.md because there is nothing closer to
-# point at: `private-vulnerability-reporting` answers `enabled: false`
-# here, so this repository has no advisory route of its own, and
-# btclib-org/.github carries no SECURITY.md to inherit one from.
+# It points at this repository's own SECURITY.md, which is where the
+# scope and the channel are stated together.
 #
-# What the entry sends a reporter to in that policy is the address and
-# not the advisory form it opens with. That form files against btclib,
-# whose scope is the parsing, the derivation paths and the script
-# engine -- not this node's p2p, storage and consensus surface -- so a
-# reporter who followed it would file a btclib-node vulnerability in the
-# wrong repository. The link becomes this repository's own advisory form
-# the moment the setting is on and a SECURITY.md is here to be found.
+# Not at an advisory form, because there is none:
+# `private-vulnerability-reporting` answers `enabled: false` here, which
+# is btclib-org/btclib-node#136 and a setting rather than a file. The
+# policy therefore gives an address, and this link becomes
+# `/security/advisories/new` the moment that setting is on.
 blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/btclib-org/btclib/blob/main/SECURITY.md
+    url: https://github.com/btclib-org/btclib-node/blob/main/SECURITY.md
     about: >
-      Never a public issue. Email the address that policy gives rather
-      than opening its advisory form, which files against btclib: the
-      address is what reaches a maintainer privately about a node that
-      can be made to accept, reject or leak something it should not.
+      Never a public issue. That policy gives the address that reaches a
+      maintainer privately about a node that can be made to accept,
+      reject or leak something it should not, and says what is this
+      node's to answer for rather than btclib's or Bitcoin Core's.
   - name: Keys, scripts, transactions, serialization
     url: https://github.com/btclib-org/btclib/issues
     about: >

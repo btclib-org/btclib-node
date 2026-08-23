@@ -28,9 +28,9 @@ dependencies = [
 # PyPI shows keywords as the metadata gives them, and GitHub sorts its
 # own topics, so the order decides only which one goes when the twenty
 # GitHub allows are full. Lowercase throughout, a GitHub topic being
-# lowercase or not a topic, so one spelling serves both lists -- and
-# this repository has no topics set today, which is the other half of
-# this list and a dashboard action rather than a file.
+# lowercase or not a topic, so one spelling serves both lists. The
+# topics set on the repository are the other half of this list and are
+# not in any file: REPOSITORY.md records the call that reads them back.
 #
 # What is not here: `python`, which names no feature and is what the
 # `Programming Language ::` classifiers below already say; and
@@ -121,7 +121,6 @@ test = [
     { include-group = "harness" },
     # No "toml" extra: pytest-cov absorbed it and warns on the name now.
     "pytest-cov>=7.1.0",
-    "pydeps>=3.0.7",
     "requests>=2.34.2",
 ]
 # mypy is here so that the hook can run it from this environment rather
@@ -157,13 +156,13 @@ dev = [{ include-group = "test" }, { include-group = "lint" }]
 #
 # The cost is that a source distribution of btclib is built on every
 # resolve, that a checkout needs git to install, and -- the one this
-# repository cannot absorb on its own -- that no test job runs on a pull
-# request here (REVIEWING.md says so), so a btclib `main` that breaks
-# this tree is caught by a developer's local run after a re-lock and by
-# nothing else. uv.lock pins the commit, which is what keeps that from
-# being a break arriving unannounced: a checkout is reproducible and a
-# re-lock is what moves it, deliberately, the way any other dependency
-# moves.
+# repository cannot absorb on its own -- that nothing here runs against
+# that branch as it moves: test.yml runs `uv run --locked`, so what the
+# suite exercises is the commit uv.lock pins and not btclib's tip. A
+# break therefore arrives at the re-lock that takes it, and reaches a
+# developer's local run before any job. That pin is what keeps it from
+# arriving unannounced: a checkout is reproducible and a re-lock is what
+# moves it, deliberately, the way any other dependency moves.
 #
 # The floor in [project.dependencies] above stays, and is not made
 # redundant by this: [tool.uv.sources] is uv's and is dropped from the

@@ -15,7 +15,7 @@ name: test
 # this package does not make: pyproject.toml classifies POSIX and MacOS,
 # and says Windows is out because nothing here runs it rather than
 # because anything is known to stop it -- a sentinel there would be the
-# claim rather than its check. `macos.yml` is the one that asks
+# claim rather than its check. `os-macos.yml` is the one that asks
 # something nothing here asks, and its own header says what. Issue #33
 # tracks what is still missing here.
 
