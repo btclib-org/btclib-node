@@ -248,6 +248,28 @@ def test_repr_names_the_peer_and_says_so_when_there_is_none() -> None:
     listener.close()
 
 
+@pytest.mark.parametrize(
+    ("host", "endpoint"),
+    [
+        ("::ffff:1.2.3.4", "1.2.3.4:8332"),
+        ("2001:db8::1", "[2001:db8::1]:8332"),
+    ],
+    ids=["v4-mapped", "ipv6"],
+)
+def test_repr_brackets_an_ipv6_peer(host: str, endpoint: str) -> None:
+    # the RPC listener's own socket is AF_INET (rpc.manager.RpcManager.server),
+    # so no live peer reaches this today -- exercised through a mocked
+    # getpeername the way ip_and_port itself is, per #209.
+    client = cast(socket.socket, SimpleNamespace(getpeername=lambda: (host, 8332)))
+    conn = Connection(
+        cast("asyncio.AbstractEventLoop", None),
+        client,
+        cast(RpcManager, SimpleNamespace(messages=[])),
+        0,
+    )
+    assert repr(conn) == f"Connection to {endpoint}"
+
+
 def test_close_without_a_task_closes_the_socket_anyway() -> None:
     ours, theirs = socket.socketpair()
     conn = Connection(

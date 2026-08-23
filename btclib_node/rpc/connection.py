@@ -11,6 +11,8 @@ from http.client import parse_headers
 from io import BytesIO
 from typing import TYPE_CHECKING, Any, override
 
+from btclib_node.p2p.address import ip_and_port
+
 if TYPE_CHECKING:
     from btclib_node.rpc.manager import RpcManager
 
@@ -124,7 +126,7 @@ class Connection:
     def __repr__(self) -> str:
         try:
             peer = self.client.getpeername()
-            out = f"Connection to {peer[0]}:{peer[1]}"
+            out = f"Connection to {ip_and_port(peer[0], peer[1])}"
         except OSError:
             out = "Broken connection"
         return out

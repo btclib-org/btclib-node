@@ -87,6 +87,20 @@ def test_a_connection_names_the_peer_it_is_to() -> None:
         listener.close()
 
 
+@pytest.mark.parametrize(
+    ("host", "endpoint"),
+    [
+        ("::ffff:1.2.3.4", "1.2.3.4:18444"),
+        ("2001:db8::1", "[2001:db8::1]:18444"),
+    ],
+    ids=["v4-mapped", "ipv6"],
+)
+def test_a_connection_brackets_an_ipv6_peer(host: str, endpoint: str) -> None:
+    client = cast(socket.socket, SimpleNamespace(getpeername=lambda: (host, 18444)))
+    connection, _ = a_connection(client)
+    assert repr(connection) == f"Connection to {endpoint}"
+
+
 def test_a_connection_whose_socket_is_gone_says_so() -> None:
     client = socket.socket()
     client.close()

@@ -19,7 +19,7 @@ from btclib.p2p.message import Message
 from btclib.p2p.payload import Payload
 
 from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion
-from btclib_node.p2p.address import network_address
+from btclib_node.p2p.address import ip_and_port, network_address
 from btclib_node.p2p.callbacks import handshake_callbacks
 
 if TYPE_CHECKING:
@@ -224,7 +224,7 @@ class Connection:
     def __repr__(self) -> str:
         try:
             peer = self.client.getpeername()
-            out = f"Connection to {peer[0]}:{peer[1]}"
+            out = f"Connection to {ip_and_port(peer[0], peer[1])}"
         except OSError:
             out = "Broken connection"
         return out
