@@ -93,4 +93,4 @@ def handle_rpc(node: Node) -> None:
     else:
         conn.send(response)
     node.logger.debug("Finished rpc\n")
-    # node.rpc_manager.connections.pop(conn_id)
+    node.rpc_manager.connections.pop(conn_id)
