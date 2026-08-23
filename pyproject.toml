@@ -121,7 +121,6 @@ test = [
     { include-group = "harness" },
     # No "toml" extra: pytest-cov absorbed it and warns on the name now.
     "pytest-cov>=7.1.0",
-    "pydeps>=3.0.7",
     "requests>=2.34.2",
 ]
 # mypy is here so that the hook can run it from this environment rather
