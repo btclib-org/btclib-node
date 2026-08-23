@@ -236,8 +236,13 @@ class P2pManager(threading.Thread):
             *self.pending_connections.copy().values(),
         ):
             conn.stop()
-        while self.loop.is_running():
-            pass
+        # `join` blocks this thread without spinning it, the way
+        # `Node.stop` already waits on itself with `self.join`. Guarded
+        # on `is_alive`, since `Node.run` calls this unconditionally --
+        # a node with `p2p_port` unset never calls `start`, and `join`
+        # on a thread that was never started raises.
+        if self.is_alive():
+            self.join()
         pending = asyncio.all_tasks(self.loop)
         for task in pending:
             task.cancel()

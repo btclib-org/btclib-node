@@ -18,6 +18,15 @@ to check the guess.
 
 ## Unreleased
 
+### `P2pManager.stop` waits on its own thread instead of spinning a core
+
+- **`P2pManager.stop` blocks on `self.join()` rather than polling
+  `self.loop.is_running()` in a tight loop** (#249). The calling thread
+  no longer spins a full CPU core for the scheduling delay of the
+  manager's own event-loop thread; the join is skipped where the
+  manager was never started, which `Node.run` reaches unconditionally
+  for a node built with `p2p_port` unset.
+
 ### `REPOSITORY.md`'s required-checks section names what main now enforces
 
 - **`REPOSITORY.md`'s *Required checks on main* section names `Lint and
