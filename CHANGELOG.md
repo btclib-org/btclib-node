@@ -78,3 +78,17 @@ to check the guess.
   renamed, its `name:` key with it; the job name is untouched, a check
   being keyed by name alone and bound outside the tree. Nothing in the
   repository refers to the old path.
+
+### `scripts/` was in the mypy gate's own configuration, and never in the gate
+
+- **The pre-commit hook passed `btclib_node tests` on its command line,
+  which overrides `[tool.mypy]`'s `files` rather than agreeing with
+  it** — mypy reads `files` only when given no paths of its own. `files`
+  named `scripts` and said so in a comment; the gate never checked it,
+  the same shape of defect `.yamllint.yaml`'s entry above records for a
+  config that extended nothing. The hook now passes no paths, so `files`
+  is the one list both a bare `mypy` and the gate read, and cannot drift
+  from each other again. The stale per-flag error counts the same
+  `[tool.mypy]` block carried are replaced with the command that
+  re-derives them: a count is a line every branch touching that block
+  has to keep true, and this one had already gone false.

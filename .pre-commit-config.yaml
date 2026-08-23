@@ -318,14 +318,16 @@ repos:
   # --locked and not --frozen, for the reason the uv-lock hook below
   # cannot cover: a dependency added without a re-lock would leave mypy
   # checking a stale environment and saying nothing, and this hook
-  # produces its verdict before that one runs
+  # produces its verdict before that one runs.
+  # No paths on the command line, either: mypy reads [tool.mypy]'s
+  # `files` only when it is given none, so an argument list here would
+  # replace that key rather than agree with it -- two lists free to
+  # drift apart, and the gate silently running on the shorter one
   - repo: local
     hooks:
       - id: mypy
         name: mypy (in the project environment)
-        entry: >
-          uv run --locked --no-default-groups --group lint --group test
-          mypy btclib_node tests
+        entry: uv run --locked --no-default-groups --group lint --group test mypy
         language: system
         types: [python]
         pass_filenames: false
