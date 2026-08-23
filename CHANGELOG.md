@@ -449,3 +449,40 @@ to check the guess.
   parameter and no parameter at all: #179 is those three, which want a
   way for a callback to name an error code and are the same mechanism
   #83 is waiting on.
+
+### `pytest --help` prints the usage message instead of a traceback
+
+- **`uv run pytest --help` exited 1 with a `TypeError` out of
+  `tests/conftest.py` and printed nothing at all** (#154). The coverage
+  floor's `asks_for_everything` read `config.option.file_or_dir` as a
+  list, and on the `--help` path it is `None`, the parse having been
+  abandoned rather than left unfinished: `--help` is bound to pytest's
+  `HelpAction`, which raises `PrintHelp` to skip the rest of argument
+  parsing, and `Config.parse` catches it and returns before the
+  positional is consumed, so it still holds argparse's `None` default
+  when `helpconfig` calls `_do_configure()` itself and the hook fires.
+  Folding it to no paths is the fix, and is what the function already
+  means by no path — the run is not selective, so the floor is left
+  where it is, which is right for a run that collects nothing. It is
+  `--help` alone and not the class of run-nothing options: on an
+  `origin/main` snapshot `--markers` and `--fixtures` each exited 0 and
+  `--co -q tests/helpers.py` exited 5, each reaching the hook with a
+  list. No gate types `--help`, which is why nothing caught it.
+- **The guard is a regression test's job, because the coverage floor
+  cannot see it.** `tests/unit/coverage_floor.py` builds the option
+  namespace by keyword, and now takes `file_or_dir=None` as well as a
+  sequence, so `a_config(file_or_dir=None)` asks exactly what `--help`
+  asks and asserts the floor is left alone rather than that nothing
+  raised. With the `or []` taken back out that one test fails with the
+  `TypeError` above, and nothing else does.
+- **An `or` short-circuit is invisible to branch coverage, whatever the
+  layout.** coverage.py records a branch as an arc between two line
+  numbers, and both outcomes of an `or` leave the same line, so no arc
+  distinguishes them. Spreading the expression over several lines does
+  not help: `coverage.parser.PythonParser.arcs()` gives that form the
+  same single exit, from the line the statement starts on. So
+  `branch = true` and `fail_under = 100` would not have demanded this
+  test: with it deleted, `uv run pytest` stays green and
+  `tests/conftest.py` drops out of the report as fully covered. A fix of
+  this shape has to be tested deliberately rather than left for the
+  floor to ask.
