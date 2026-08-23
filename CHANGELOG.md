@@ -165,6 +165,7 @@ to check the guess.
   editor and of an agent, the files git reads, and `COPYRIGHT`, which
   btclib-org/.github#135 argues is a repository file rather than a
   distributed one.
+
 ### Every signature in `btclib_node`, `tests` and `scripts` is annotated
 
 - **`disallow_untyped_defs`, `disallow_untyped_calls` and
