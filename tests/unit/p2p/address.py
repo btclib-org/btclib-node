@@ -27,8 +27,8 @@ from btclib_node.p2p.address import (
 from tests.helpers import call_within
 
 
-def a_peer_db(chain: Any = None) -> PeerDB:
-    return PeerDB(cast(Chain, chain), cast(Path, None))
+def a_peer_db(chain: Any = None, data_dir: Path | None = None) -> PeerDB:
+    return PeerDB(cast(Chain, chain), data_dir)
 
 
 def an_onion_address(port: int = 8333) -> NetworkAddressV2:
@@ -353,3 +353,118 @@ def test_an_address_a_peer_told_us_about_is_kept_without_its_timestamp() -> None
     (kept,) = peer_db.addresses
     assert kept.timestamp == 0
     assert kept.address == early.address
+
+
+def test_an_address_that_answered_is_preferred_within_the_same_run() -> None:
+    # #123: dialling should not draw uniformly over a table that already
+    # knows which of its entries actually answered, even before any of
+    # it is read back from a restart
+    peer_db = a_peer_db()
+    answered = peer_address("1.2.3.4", 8333)
+    gossiped = peer_address("5.6.7.8", 8333)
+    peer_db.addresses |= {answered, gossiped}
+    peer_db.add_active_address(answered)
+    for _ in range(20):
+        drawn = peer_db.random_address()
+        assert drawn is not None
+        assert drawn.address == answered.address
+        assert drawn.port == answered.port
+
+
+def test_a_known_address_survives_a_restart(tmp_path: Path) -> None:
+    first = a_peer_db(data_dir=tmp_path)
+    first.add_addresses([peer_address("1.2.3.4", 8333)])
+    first.close()
+
+    second = a_peer_db(data_dir=tmp_path)
+    assert second.addresses == {peer_address("1.2.3.4", 8333)}
+    second.close()
+
+
+def test_an_address_that_answered_survives_a_restart_and_is_preferred(
+    tmp_path: Path,
+) -> None:
+    first = a_peer_db(data_dir=tmp_path)
+    answered = peer_address("1.2.3.4", 8333)
+    unconfirmed = peer_address("5.6.7.8", 8333)
+    first.add_addresses([answered, unconfirmed])
+    first.add_active_address(answered)
+    first.close()
+
+    second = a_peer_db(data_dir=tmp_path)
+    assert second.addresses == {answered, unconfirmed}
+    drawn = second.random_address()
+    assert drawn is not None
+    assert drawn.address == answered.address
+    assert drawn.port == answered.port
+    second.close()
+
+
+def test_a_fresh_store_asks_the_seeds(tmp_path: Path) -> None:
+    peer_db = a_peer_db(data_dir=tmp_path)
+    assert peer_db.ask_dns_nodes
+    peer_db.close()
+
+
+def test_a_store_holding_only_unconfirmed_gossip_still_asks_the_seeds(
+    tmp_path: Path,
+) -> None:
+    # #89: a table that is not empty but is not dialable either -- a
+    # seed that answered with AAAA records alone leaves exactly this --
+    # is not a reason to skip the seeds
+    first = a_peer_db(data_dir=tmp_path)
+    first.add_addresses([peer_address("2001:db8::1", 8333)])
+    first.close()
+
+    second = a_peer_db(data_dir=tmp_path)
+    assert second.ask_dns_nodes
+    second.close()
+
+
+def test_a_store_with_a_recently_answered_address_skips_the_seeds(
+    tmp_path: Path,
+) -> None:
+    first = a_peer_db(data_dir=tmp_path)
+    answered = peer_address("1.2.3.4", 8333)
+    first.add_addresses([answered])
+    first.add_active_address(answered)
+    first.close()
+
+    second = a_peer_db(data_dir=tmp_path)
+    assert not second.ask_dns_nodes
+    second.close()
+
+
+def test_a_stale_answered_address_no_longer_holds_off_the_seeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = a_peer_db(data_dir=tmp_path)
+    stale = peer_address("1.2.3.4", 8333)
+    four_hours_ago = time.time() - 3600 * 4
+    with monkeypatch.context() as patch:
+        patch.setattr(time, "time", lambda: four_hours_ago)
+        first.add_active_address(stale)
+    first.close()
+
+    second = a_peer_db(data_dir=tmp_path)
+    assert second.ask_dns_nodes
+    second.close()
+
+
+def test_closing_a_peer_db_with_no_store_does_nothing() -> None:
+    a_peer_db().close()
+
+
+def test_a_key_this_version_does_not_know_is_left_where_it_is(tmp_path: Path) -> None:
+    first = a_peer_db(data_dir=tmp_path)
+    first.add_addresses([peer_address("1.2.3.4", 8333)])
+    assert first.db is not None
+    first.db.put(b"z", b"from some other version of this store")
+    first.close()
+
+    second = a_peer_db(data_dir=tmp_path)
+    # stepped over rather than filed under either of the two prefixes
+    # the store knows
+    assert second.addresses == {peer_address("1.2.3.4", 8333)}
+    assert second.active_addresses == []
+    second.close()
