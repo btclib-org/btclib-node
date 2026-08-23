@@ -19,6 +19,12 @@ class Mempool:
         self.size: int = 0
         self.bytesize: int = 0
         self.bytesize_limit: int = 500 * 1000**2  # 500vMB
+        # Core's own external-tracking counter, `CTxMemPool::m_sequence_number`
+        # (`src/txmempool.h:200-202`): "incremented once every time a
+        # transaction is added or removed from the mempool for any reason".
+        # `getrawmempool`'s `mempool_sequence` is a read of this value, not
+        # itself a bump.
+        self.sequence: int = 0
 
     def is_full(self) -> bool:
         return self.bytesize >= self.bytesize_limit
@@ -51,6 +57,7 @@ class Mempool:
             self.txid_index[tx.id] = wtxid
             self.size += 1
             self.bytesize += tx.vsize
+            self.sequence += 1
 
     def remove_tx(self, tx: Tx) -> None:
         txid = tx.id
@@ -59,6 +66,7 @@ class Mempool:
             tx = self.transactions.pop(wtxid)
             self.size -= 1
             self.bytesize -= tx.vsize
+            self.sequence += 1
 
     def contains_tx(self, tx: Tx) -> bool:
         return tx.hash in self.transactions

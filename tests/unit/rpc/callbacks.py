@@ -214,20 +214,89 @@ def test_the_mempool_reports_its_size_and_bytes() -> None:
     assert out == {"loaded": True, "size": 1, "bytes": tx.vsize}
 
 
-def test_the_raw_mempool_is_txids_or_a_table() -> None:
+def test_the_raw_mempool_is_a_plain_list_of_txids_by_default() -> None:
+    # btclib-org/btclib-node#219: MempoolToJSON's own default shape is a
+    # bare array (src/rpc/mempool.cpp:624-634), not the
+    # `{"txids": [...]}}` object this node used to answer regardless of
+    # what was asked for -- that shape is owed only where
+    # mempool_sequence is true, below
     mempool = Mempool(Logger(debug=True))
     tx = a_tx()
     mempool.add_tx(tx)
     node = a_node(mempool=mempool)
 
-    assert get_raw_mempool(node, _CONN, []) == {"txids": [tx.id.hex()]}
-    assert get_raw_mempool(node, _CONN, [False]) == {"txids": [tx.id.hex()]}
+    assert get_raw_mempool(node, _CONN, []) == [tx.id.hex()]
+    assert get_raw_mempool(node, _CONN, [False]) == [tx.id.hex()]
+    assert get_raw_mempool(node, _CONN, [False, False]) == [tx.id.hex()]
+
+
+def test_the_raw_mempool_verbose_table_names_each_transaction() -> None:
+    mempool = Mempool(Logger(debug=True))
+    tx = a_tx()
+    mempool.add_tx(tx)
+    node = a_node(mempool=mempool)
 
     verbose = get_raw_mempool(node, _CONN, [True])
+    assert isinstance(verbose, dict)
     assert list(verbose) == [tx.id.hex()]
     assert verbose[tx.id.hex()]["wtxid"] == tx.hash.hex()
     assert verbose[tx.id.hex()]["vsize"] == tx.vsize
     assert verbose[tx.id.hex()]["weight"] == tx.weight
+
+
+def test_mempool_sequence_attaches_the_mempool_s_own_counter() -> None:
+    # btclib-org/btclib-node#219: mempool_sequence used to be silently
+    # ignored; MempoolToJSON's own shape for it is an object carrying
+    # both the array and the count, src/rpc/mempool.cpp:635-639
+    mempool = Mempool(Logger(debug=True))
+    tx = a_tx()
+    mempool.add_tx(tx)
+    node = a_node(mempool=mempool)
+
+    answer = get_raw_mempool(node, _CONN, [False, True])
+    assert answer == {"txids": [tx.id.hex()], "mempool_sequence": 1}
+
+    # the counter is the mempool's own, not recomputed by the callback:
+    # a second addition after the first answer moves it
+    second = a_tx(b"\x22")
+    mempool.add_tx(second)
+    again = get_raw_mempool(node, _CONN, [None, True])
+    assert isinstance(again, dict)
+    assert set(again["txids"]) == {tx.id.hex(), second.id.hex()}
+    assert again["mempool_sequence"] == 2
+
+
+def test_verbose_and_mempool_sequence_together_are_refused() -> None:
+    # MempoolToJSON refuses the combination outright rather than
+    # answering one and dropping the other, src/rpc/mempool.cpp:608-611
+    node = a_node(mempool=Mempool(Logger(debug=True)))
+    with pytest.raises(RpcError) as raised:
+        get_raw_mempool(node, _CONN, [True, True])
+    assert raised.value.code == RpcErrorCode.INVALID_PARAMETER
+    assert raised.value.message == (
+        "Verbose results cannot contain mempool sequence values."
+    )
+
+
+def test_a_raw_mempool_parameter_of_the_wrong_json_type_is_named() -> None:
+    # RPCMethod::HandleRequest's own check, src/rpc/util.cpp:653-661,
+    # against both of getrawmempool's declared RPCArg::Type::BOOL
+    # parameters: src/rpc/mempool.cpp:694-695
+    node = a_node(mempool=Mempool(Logger(debug=True)))
+
+    with pytest.raises(RpcError) as raised:
+        get_raw_mempool(node, _CONN, ["true"])
+    assert raised.value.code == RpcErrorCode.TYPE_ERROR
+    assert (
+        raised.value.message == "JSON value of type string is not of expected type bool"
+    )
+
+    with pytest.raises(RpcError) as raised:
+        get_raw_mempool(node, _CONN, [False, 1])
+    assert raised.value.code == RpcErrorCode.TYPE_ERROR
+    assert (
+        raised.value.message == "JSON value of type number is not of expected type bool"
+    )
 
 
 def test_ping_and_stop_answer_without_a_connection() -> None:
