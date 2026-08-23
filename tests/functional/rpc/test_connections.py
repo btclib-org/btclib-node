@@ -3,20 +3,9 @@
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
 import json
-from typing import Any
-
-import requests
 
 from btclib_node import Node
-from tests.helpers import wait_until, wait_until_listening
-
-
-def post(node: Node, payload: Any, timeout: float = 5) -> str:
-    return requests.post(
-        url=f"http://127.0.0.1:{node.rpc_port}",
-        data=json.dumps(payload).encode(),
-        timeout=timeout,
-    ).text
+from tests.helpers import post, wait_until, wait_until_listening
 
 
 def test_connections_do_not_outlive_the_answer_they_carried(rpc_node: Node) -> None:

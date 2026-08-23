@@ -5,13 +5,12 @@
 import contextlib
 import json
 from pathlib import Path
-from typing import Any
 
 import requests
 
 from btclib_node import Node
 from btclib_node.config import Config
-from tests.helpers import get_random_port, wait_until_listening
+from tests.helpers import get_random_port, post, wait_until_listening
 
 
 def test_no_method(tmp_path: Path) -> None:
@@ -109,14 +108,6 @@ def test_invalid_method(tmp_path: Path) -> None:
     assert response["error"]["message"] == "Method not found"
 
     node.stop()
-
-
-def post(node: Node, payload: Any, timeout: float = 5) -> str:
-    return requests.post(
-        url=f"http://127.0.0.1:{node.rpc_port}",
-        data=json.dumps(payload).encode(),
-        timeout=timeout,
-    ).text
 
 
 def test_an_empty_batch_does_not_end_the_node(rpc_node: Node) -> None:
