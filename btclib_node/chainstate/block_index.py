@@ -36,13 +36,18 @@ class BlockStatus(enum.IntEnum):
 # reads is the index's own object and there is nothing it can do to it.
 # `header` is btclib's own dataclass and not frozen, so the header
 # inside the record is the one thing a caller still holds a handle on.
+#
+# `chainwork` is not a field here: it is derived from the headers this
+# index holds, not stored with any of them, and `BlockIndex.chainwork`
+# is where it lives -- a `dict[bytes, int]` written into directly,
+# beside `header_dict` rather than inside its records.
+# btclib-org/btclib-node#201
 @dataclass(frozen=True)
 class BlockInfo:
     header: BlockHeader
     index: int
     status: BlockStatus = BlockStatus(1)
     downloaded: bool = False
-    chainwork: int = 0
 
     @classmethod
     def deserialize(cls, data: bytes, check_validity: bool = True) -> BlockInfo:
@@ -76,6 +81,12 @@ class BlockIndex:
         genesis_info = BlockInfo(genesis, 0, BlockStatus.in_active_chain, True)
 
         self.header_dict: dict[bytes, BlockInfo] = {genesis.hash: genesis_info}
+
+        # each header's cumulative work, keyed by hash rather than kept
+        # on its BlockInfo: calculate_chainwork below writes into this
+        # directly, so a start-up rebuild touches one int per header and
+        # not a whole new frozen record. btclib-org/btclib-node#201
+        self.chainwork: dict[bytes, int] = {}
 
         # the actual block chain; it contains only valid blocks
         self.active_chain: list[bytes] = []
@@ -126,21 +137,13 @@ class BlockIndex:
                 old_work = 0
             else:
                 previousblockhash = block_info.header.previous_block_hash
-                old_work = self.get_block_info(previousblockhash).chainwork
+                old_work = self.chainwork[previousblockhash]
                 self.children.setdefault(previousblockhash, []).append(block_hash)
-            chainwork = old_work + calculate_work(block_info.header)
-            # into the dict and not through `_insert_block_info`:
-            # `serialize` does not carry chainwork, so it is derived
-            # from the headers rather than stored. Constructed field by
-            # field rather than with `replace`, this loop running once
-            # per header at every start
-            self.header_dict[block_hash] = BlockInfo(
-                header=block_info.header,
-                index=block_info.index,
-                status=block_info.status,
-                downloaded=block_info.downloaded,
-                chainwork=chainwork,
-            )
+            # written into self.chainwork directly, not through
+            # BlockInfo/_insert_block_info: chainwork is not part of
+            # the stored record, so this loop touches one int per
+            # header rather than replacing the record itself
+            self.chainwork[block_hash] = old_work + calculate_work(block_info.header)
 
     def generate_active_chain(self) -> None:
         chain_dict: dict[int, bytes] = {}
@@ -152,7 +155,7 @@ class BlockIndex:
 
     def generate_block_candidates(self) -> None:
         active_chain_set = set(self.active_chain)
-        current_work = self.get_block_info(self.active_chain[-1]).chainwork
+        current_work = self.chainwork[self.active_chain[-1]]
         for block_hash in self.sorted_header_dict:
             if block_hash in active_chain_set:
                 continue
@@ -160,8 +163,9 @@ class BlockIndex:
             if block_info.status != BlockStatus.valid_header:
                 continue
             # header = block_info.header
-            if block_info.chainwork > current_work:
-                self.block_candidates.append([block_hash, block_info.chainwork])
+            work = self.chainwork[block_hash]
+            if work > current_work:
+                self.block_candidates.append([block_hash, work])
 
     def generate_header_index(self) -> None:
         self.header_index = self.active_chain[:]
@@ -175,7 +179,7 @@ class BlockIndex:
             if header.previous_block_hash == self.header_index[-1]:
                 self.header_index.append(block_hash)
                 header_index_set.add(block_hash)
-            elif block_info.chainwork > self.get_block_info(best_header).chainwork:
+            elif self.chainwork[block_hash] > self.chainwork[best_header]:
                 add, remove = self.get_fork_details(block_hash, self.header_index)
                 self.header_index = self.header_index[: -len(remove)]
                 self.header_index.extend(add)
@@ -322,10 +326,12 @@ class BlockIndex:
                 raise
             pending[header_hash] = (header, parent_height + 1)
 
-        current_work = self.get_block_info(self.active_chain[-1]).chainwork
+        current_work = self.chainwork[self.active_chain[-1]]
         for header_hash, (header, height) in pending.items():
             previous_block_info = self.get_block_info(header.previous_block_hash)
-            new_work = previous_block_info.chainwork + calculate_work(header)
+            new_work = self.chainwork[header.previous_block_hash] + calculate_work(
+                header
+            )
             # a header built on an invalid one is invalid itself, without
             # a walk: previous_block_hash is already indexed by the time
             # this runs, so the parent's status is already settled.
@@ -337,9 +343,9 @@ class BlockIndex:
                 height,
                 status,
                 False,
-                new_work,
             )
             self._insert_block_info(block_info)
+            self.chainwork[header_hash] = new_work
 
             if not invalid and new_work > current_work:
                 self.block_candidates.append([header_hash, new_work])
@@ -347,7 +353,7 @@ class BlockIndex:
             best_header = self.header_index[-1]
             if header.previous_block_hash == best_header:
                 self.header_index.append(header_hash)
-            elif new_work > self.get_block_info(best_header).chainwork:
+            elif new_work > self.chainwork[best_header]:
                 add, remove = self.get_fork_details(header_hash, self.header_index)
                 self.header_index = self.header_index[: -len(remove)]
                 self.header_index.extend(add)
@@ -373,7 +379,7 @@ class BlockIndex:
         return all(self.get_block_info(h).downloaded for h in to_add)
 
     def get_first_candidate(self) -> BlockInfo | None:
-        chainwork = self.get_block_info(self.active_chain[-1]).chainwork
+        chainwork = self.chainwork[self.active_chain[-1]]
         while self.block_candidates and self.block_candidates[0][1] < chainwork:
             self.block_candidates.popleft()
         if not self.block_candidates:
@@ -391,7 +397,7 @@ class BlockIndex:
 
     # return a list of blocks that have to be downloaded
     def get_download_candidates(self) -> list[bytes]:
-        chainwork = self.get_block_info(self.active_chain[-1]).chainwork
+        chainwork = self.chainwork[self.active_chain[-1]]
         candidates: list[bytes] = []
         seen = set()
         i = -1

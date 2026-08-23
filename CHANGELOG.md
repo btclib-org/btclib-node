@@ -30,6 +30,19 @@ to check the guess.
   one answer across their own loop and call `conn.send` once at the end
   rather than per height, so neither has a doomed send mid-loop to skip.
 
+### `BlockInfo.chainwork` moves off the serialized record
+
+- **`BlockInfo.serialize` and `.deserialize` are inverses again.**
+  `chainwork` used to be a field on `BlockInfo` that `serialize` never
+  wrote and `deserialize` left at its default, so a round trip through
+  the two was not the identity for a block whose chainwork was not
+  zero (#201). It is no longer a field: chainwork lives in
+  `BlockIndex.chainwork`, a `dict[bytes, int]` keyed by hash that
+  `calculate_chainwork`'s start-up walk writes into directly, so a
+  start does not rebuild one `BlockInfo` per header just to attach a
+  derived value. `rpc/callbacks.py`'s `getblockheader` reads the same
+  value from there now.
+
 ### A reverse patch is filed with its own block, once its branch connects
 
 - **`BlockDB` resolves the `.rev` file a patch goes in from the block it
