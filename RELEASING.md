@@ -17,10 +17,16 @@ which a command re-derives, rather than a promise.
 
 ## What a release waits on
 
-- **The package-content floor.** The backend is setuptools, so the
-  sdist's inclusion list is a `MANIFEST.in`, and there is none; nor is
-  there a job that inspects what would be published. Section 12 of
-  btclib-org/.github is the floor and issue #34 is where it is owed.
+- **A job that inspects what would be published.** The backend is
+  `uv_build`, so the sdist's inclusion list is `[tool.uv.build-backend]`
+  in `pyproject.toml`, and the lint gate's `check-sdist` hook compares
+  this tree against that archive in both directions on every run —
+  btclib-org/.github#118 is where a pure-Python project was decided onto
+  that backend. What no workflow here does yet is read the distribution
+  files themselves: `twine check --strict`, `pyroma`, and a
+  `check-wheel-contents` diffing the wheel against the package tree it
+  claims to carry. Section 12 of btclib-org/.github is the floor and
+  issue #34 is where it is owed.
 - **A version scheme.** `0.1.0` was tagged in 2023 and says nothing
   about what the next number means. The siblings that publish use
   calendar versions, and picking that or another one is a decision to

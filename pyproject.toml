@@ -170,11 +170,159 @@ dev = [{ include-group = "test" }, { include-group = "lint" }]
 btclib = { git = "https://github.com/btclib-org/btclib", branch = "main" }
 
 [build-system]
-requires = ["setuptools>=77"]
-build-backend = "setuptools.build_meta"
+# What declares the contents of a distribution here is a set of glob
+# patterns in the [tool.uv.build-backend] table below, beside the rest of
+# the configuration, in place of the separate include and exclude
+# language of a MANIFEST.in.
+#
+# What the floor buys is the sdist's own pyproject.toml being a normalized
+# copy of this file with the verbatim one kept beside it as
+# pyproject.toml.orig -- and that arrives in 0.12.0, not here. Measured by
+# calling the backend's own hook at each version, `uv build` being no use
+# for the question: given a `requires` its own version does not satisfy it
+# falls back to the copy bundled in the running uv and only warns, so it
+# answers for that copy rather than for the pin.
+#
+#     uv run --no-project --with uv_build==<version> python -c \
+#       "import uv_build; print(uv_build.build_sdist('<outdir>'))"
+#
+# The floor therefore sits above that boundary rather than on it, which is
+# the deliberate half: 0.12.5 is the uv this tree is developed and gated
+# against, being the rev .pre-commit-config.yaml pins for uv-pre-commit,
+# so the backend that builds an archive here is the one whose lock format
+# that hook writes. btclib-org/btclib#1267 is where the boundary is being
+# weighed for btclib, which is the tree this pin comes from. The ceiling
+# is the next minor, which is where uv's versioning policy puts a breaking
+# change, this backend releasing with uv and versioned by it.
+# btclib-org/.github#118 is where a pure-Python project was decided onto
+# this backend
+requires = ["uv_build>=0.12.5,<0.13"]
+build-backend = "uv_build"
 
-[tool.setuptools.packages.find]
-include = ["btclib_node*"]
+[tool.uv.build-backend]
+# btclib_node/ sits at the root of the repository, where the backend looks
+# under src/ by default. `module-name` is not written beside this: it
+# defaults to `project.name` normalized, which is this name already, and a
+# second declaration is a second thing to keep in agreement
+module-root = ""
+# What the sdist carries beyond what the backend puts there by itself --
+# pyproject.toml, the module under `module-root`, and the files
+# `project.readme` and `project.license-files` name. Patterns are anchored,
+# so `*.md` is the root's own markdown and does not reach tests/_data/
+# README.md, and `/**` is what recurses.
+#
+# This is the first statement of what this sdist holds rather than a
+# translation of an older one: the backend was setuptools and no
+# MANIFEST.in was ever written, so the archive was whatever that backend
+# defaulted to and nobody had declared it. What it left out was the
+# suite, and every configuration file of the lint gate that is a file of
+# its own: pyproject.toml went, so the tools reading their settings from
+# this file were served and the hooks keeping one of their own were not.
+# What this table produces instead is read off the archive rather than
+# listed here,
+#
+#     tar tzf dist/*.tar.gz | sed 's|^[^/]*/||' | sort
+#
+# and CHANGELOG.md's entry for this change carries the pair of builds
+# that shows the difference.
+#
+# The gate is what the list is drawn from: the configuration a hook of
+# .pre-commit-config.yaml reads travels with the sources it is a rule
+# about -- that file itself and .yamllint.yaml under `*.yaml`,
+# .markdownlint.jsonc under `*.jsonc`, .taplo.toml under `*.toml`,
+# .secrets.baseline named, and the .python-version and uv.lock that the
+# local mypy hook's `uv run --locked` resolves against.
+#
+# It does not follow that the gate runs from an unpacked archive, and it
+# does not: `git init` in one, then `pre-commit run --all-files`, exits 1
+# at check-hooks-apply, which names the hooks left with no file to read.
+# Adding `.github/**` here would ship that directory and is allowed --
+# check-sdist's default ignore list suppresses a *report* about it and
+# says nothing about what the backend packs, an archive carrying it being
+# reported as matching git. It is left out as a decision rather than
+# because anything refuses it, and the reason is that it buys nothing
+# here: with `.github/**` added the same run still exits 1, on the hooks
+# whose files are the workspaces [tool.check-sdist] keeps back. What this
+# list buys is that a tool reading a file of this tree finds it, not that
+# every tool has something to read.
+#
+# COPYRIGHT is not here, having no extension for `*.md` to sweep it in
+# by. btclib-org/.github#135 is why it is not named instead: it is a
+# repository file rather than a distributed one, LICENSE carrying the
+# holder a consumer needs, and this being the source of a source-file
+# header. `license-files` above names LICENSE alone, so nothing else
+# puts COPYRIGHT in the archive either. What the CPY rule checks the sources
+# against is notice-rgx in this file, which travels regardless.
+source-include = [
+    "*.jsonc",
+    "*.md",
+    "*.toml",
+    "*.yaml",
+    ".python-version",
+    ".secrets.baseline",
+    "uv.lock",
+    "scripts/**",
+    "tests/**",
+]
+# Exclusions win over the inclusions above, and are unanchored unless a
+# pattern starts with "/": a bare name matches at any depth, and everything
+# below a match goes with it. Each line here was measured by planting the
+# file and building, and each shipped without it. __pycache__, *.pyc and
+# *.pyo are the backend's own default excludes, which is why a stray one
+# under tests/ needs no line where a cache does.
+#
+# A cache is what the tools of this gate write. At the root none of them
+# is reached by an include pattern above and no line would be needed; the
+# case these answer is the nested one, `tests/**` and `scripts/**` taking
+# whatever sits under those directories. For mypy that is not
+# hypothetical: .vscode/extensions.json recommends
+# ms-python.mypy-type-checker, and that extension writes a cache per
+# directory it type-checks rather than one at the root. The rest are
+# written where their tool is invoked, which is a directory a developer
+# chooses.
+#
+# `*.egg-info` is the line this gate needs for itself: the check-sdist
+# hook's --inject-junk drops one under tests/ for the length of the run,
+# and without this it is reported as a member of the sdist that git has
+# not got.
+#
+# check-sdist reads this list for the uv backend, so a tracked file a
+# pattern here takes out is not reported as one the sdist is missing, and
+# does not have to be named again in [tool.check-sdist] below
+source-exclude = [
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "*.egg-info",
+]
+
+[tool.check-sdist]
+# Tracked files the sdist is meant not to carry, and the first thing in
+# this repository to ask the question at all -- [tool.uv.build-backend]
+# above is where what went unasked before it is written down. What that
+# table's source-exclude names is not repeated here, check-sdist reading
+# it for the uv backend, so this holds only what no include pattern adds
+# in the first place: the workspaces of an editor and of an agent, the
+# files git reads, and COPYRIGHT. Patterns are gitignore's, so a
+# directory covers what is under it at any depth.
+#
+# CLAUDE.md travels with the archive under `*.md` and .claude/ does not,
+# where section 13 of btclib-org/.github puts the two in one class. The
+# split is the one .vscode/ sits on the far side of as well: root prose is
+# what a reader of the archive reads, and a workspace configures working
+# *in* the repository, which an unpacked archive is not.
+#
+# .github/ is not here because check-sdist's default ignore list already
+# suppresses a report about it. That is not why the archive lacks it --
+# that list has no say over what the backend packs, and
+# [tool.uv.build-backend] above is where the omission is decided
+git-only = [
+    ".claude/",
+    ".gitattributes",
+    ".gitignore",
+    ".vscode/",
+    "COPYRIGHT",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/unit", "tests/functional"]
