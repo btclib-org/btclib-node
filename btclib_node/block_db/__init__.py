@@ -98,6 +98,13 @@ class BlockDB:
         self.files: dict[str, FileMetadata] = {}
         self.blocks: dict[bytes, BlockLocation] = {}
         self.rev_patches: dict[bytes, BlockLocation] = {}
+        # held here between add_rev_block and finalize/rollback, the way
+        # UtxoIndex.updated_utxo_set and FilterIndex.pending hold theirs:
+        # a branch update_chain refuses never reaches disk, where writing
+        # each patch as it was generated left it there regardless of
+        # whether the branch it belonged to connected:
+        # btclib-org/btclib-node#200
+        self.pending_rev_blocks: dict[bytes, RevBlock] = {}
 
         self.open_block_file: BinaryIO | None = None
         self.open_rev_file: BinaryIO | None = None
@@ -150,16 +157,17 @@ class BlockDB:
             self.open_block_file = (self.data_dir / filename).open("a+b")
         return self.open_block_file
 
-    # A patch goes in the .rev file indexed by the block file currently
-    # being written, which need not be the one indexed by the block the
-    # patch undoes: btclib-org/btclib-node#116
-    def __find_rev_file(self) -> BinaryIO:
-        filename = f"{self.file_index:06d}.rev"
+    # A patch goes in the .rev file named for its own block's .blk file
+    # (file_index below, resolved by finalize from self.blocks), not
+    # whichever block file happens to be open when it is written:
+    # btclib-org/btclib-node#116
+    def __find_rev_file(self, file_index: int) -> BinaryIO:
+        filename = f"{file_index:06d}.rev"
         if filename not in self.files:
             file_metadata = FileMetadata(filename, 0)
             self.files[filename] = file_metadata
             self.db.put(b"f" + filename.encode(), file_metadata.serialize())
-        return self.__get_rev_file(filename=f"{self.file_index:06d}.rev")
+        return self.__get_rev_file(filename=filename)
 
     def __get_rev_file(self, filename: str) -> BinaryIO:
         if not self.open_rev_file:
@@ -197,14 +205,38 @@ class BlockDB:
 
     def add_rev_block(self, rev_block: RevBlock) -> None:
         rev_block_hash = rev_block.hash
-        if rev_block_hash in self.rev_patches:
+        already_held = (
+            rev_block_hash in self.rev_patches
+            or rev_block_hash in self.pending_rev_blocks
+        )
+        if already_held:
             return
-        data = rev_block.serialize()
-        file = self.__find_rev_file()
-        index, block_size = self.__add_data_to_file(file, data)
-        block_location = BlockLocation(file.name[-10:], index, block_size)
-        self.rev_patches[rev_block_hash] = block_location
-        self.db.put(b"r" + rev_block_hash, block_location.serialize())
+        self.pending_rev_blocks[rev_block_hash] = rev_block
+
+    def finalize(self) -> None:
+        """Write every reverse patch buffered since the last finalize.
+
+        Each goes in the .rev file named for its own block's .blk file
+        (btclib-org/btclib-node#116), looked up now rather than at
+        `add_rev_block` time since that is a pure buffer and this is
+        where the write happens.
+        """
+        for rev_block_hash, rev_block in self.pending_rev_blocks.items():
+            if rev_block_hash not in self.blocks:
+                err_msg = "reverse patch for a block not stored: "
+                err_msg += rev_block_hash.hex()
+                raise Exception(err_msg)
+            file_index = int(Path(self.blocks[rev_block_hash].filename).stem)
+            data = rev_block.serialize()
+            file = self.__find_rev_file(file_index)
+            index, block_size = self.__add_data_to_file(file, data)
+            block_location = BlockLocation(file.name[-10:], index, block_size)
+            self.rev_patches[rev_block_hash] = block_location
+            self.db.put(b"r" + rev_block_hash, block_location.serialize())
+        self.pending_rev_blocks = {}
+
+    def rollback(self) -> None:
+        self.pending_rev_blocks = {}
 
     def get_block(self, hash: bytes) -> Block | None:
         if hash not in self.blocks:

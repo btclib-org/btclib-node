@@ -18,6 +18,27 @@ to check the guess.
 
 ## Unreleased
 
+### A reverse patch is filed with its own block, once its branch connects
+
+- **`BlockDB` resolves the `.rev` file a patch goes in from the block it
+  undoes, not from whichever `.blk` file happens to be open when it is
+  written.** `add_rev_block`'s target used to be `self.file_index`, the
+  block file currently being written, so a patch and the block it
+  undoes could land in files with unrelated numbers. `BlockDB.finalize`
+  now reads the block's own stored location instead, so the two always
+  share a file number (#116). A patch already on disk keeps whatever
+  file it was written to -- `get_rev_block` reads back through the
+  location recorded for it rather than deriving one from a block's own
+  file, so nothing already stored needs moving.
+- **`add_rev_block` buffers what it is given, and `BlockDB.finalize` or
+  `rollback` decides whether it reaches disk** -- the same pattern
+  `UtxoIndex` and `FilterIndex` already hold their own writes under.
+  `update_chain` calls `finalize` only for the branch that connects and
+  `rollback` for the one it refuses, where before, a patch reached disk
+  as soon as its own block validated: the earlier, validated blocks of
+  a branch whose tip then failed kept their reverse patches on disk
+  with nothing left pointing back to them (#200).
+
 ### Header sync tells a refused batch from an empty one, and moves on
 
 - **`BlockIndex.add_headers` raises on a batch it refuses instead of
