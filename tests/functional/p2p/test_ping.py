@@ -3,6 +3,7 @@
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
 import time
+from pathlib import Path
 
 from btclib.p2p.keepalive import Ping
 
@@ -12,7 +13,7 @@ from btclib_node.constants import P2pConnStatus
 from tests.helpers import get_random_port, local_addr, wait_until, wait_until_listening
 
 
-def test_correct_ping(tmp_path):
+def test_correct_ping(tmp_path: Path) -> None:
     node1 = Node(
         config=Config(
             chain="regtest",
@@ -55,7 +56,7 @@ def test_correct_ping(tmp_path):
     node2.stop()
 
 
-def test_wrong_ping(tmp_path):
+def test_wrong_ping(tmp_path: Path) -> None:
     node1 = Node(
         config=Config(
             chain="regtest",

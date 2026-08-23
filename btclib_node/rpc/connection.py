@@ -4,8 +4,15 @@
 
 import asyncio
 import json
+import socket
+from collections.abc import Callable
+from concurrent.futures import Future
 from http.client import parse_headers
 from io import BytesIO
+from typing import TYPE_CHECKING, Any, override
+
+if TYPE_CHECKING:
+    from btclib_node.rpc.manager import RpcManager
 
 HEADER_TERMINATOR = b"\r\n\r\n"
 # Bounds on the read below, which is fed by whoever connects: the RPC
@@ -19,30 +26,39 @@ MAX_BODY_BYTES = 32 * 1024 * 1024
 
 
 class JSONEncoder(json.JSONEncoder):
-    def default(self, obj):
+    @override
+    def default(self, obj: object) -> Any:
         if isinstance(obj, bytes):
             return obj.hex()
         return super().default(obj)
 
 
 class Connection:
-    def __init__(self, loop, client, manager, id):
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        client: socket.socket,
+        manager: RpcManager,
+        id: int,
+    ) -> None:
         super().__init__()
         self.loop = loop
         self.client = client
         self.manager = manager
         self.id = id
         self.rpc_id = ""
-        self.messages = []
+        self.messages: list[Any] = []
         self.buffer = b""
-        self.task = None
+        self.task: Future[None] | None = None
 
-    def close(self):
+    def close(self) -> None:
         if self.task:
             self.task.cancel()
         self.client.close()
 
-    async def _recv_until(self, predicate, max_bytes=None):
+    async def _recv_until(
+        self, predicate: Callable[[], bool], max_bytes: int | None = None
+    ) -> None:
         while not predicate():
             if max_bytes is not None and len(self.buffer) > max_bytes:
                 raise ConnectionError
@@ -51,7 +67,7 @@ class Connection:
                 raise ConnectionError
             self.buffer += data
 
-    async def run(self):
+    async def run(self) -> None:
         try:
             await self._recv_until(
                 lambda: HEADER_TERMINATOR in self.buffer, MAX_HEADER_BYTES
@@ -76,34 +92,36 @@ class Connection:
         except Exception:
             self.client.close()
 
-    async def async_send(self, response):
+    async def async_send(self, response: list[dict[str, Any]]) -> None:
+        body: list[dict[str, Any]] | dict[str, Any] = response
         if len(response) == 1:
-            response = response[0]
-        output_str = json.dumps(response, separators=(",", ":"), cls=JSONEncoder)
+            body = response[0]
+        output_str = json.dumps(body, separators=(",", ":"), cls=JSONEncoder)
         # CRLF, which is what run() above requires of a request and what
         # HTTP/1.1 specifies: this server should not emit framing it
         # would itself refuse to read.
-        response = "HTTP/1.1 200 OK\r\n"
-        response += "Content-Type: application/json\r\n"
-        response += f"Content-Length: {len(output_str) + 1}\r\n"
-        response += "\r\n"  # Important!
-        response += output_str
-        response += "\n"
-        await self.loop.sock_sendall(self.client, response.encode())
+        http_response = "HTTP/1.1 200 OK\r\n"
+        http_response += "Content-Type: application/json\r\n"
+        http_response += f"Content-Length: {len(output_str) + 1}\r\n"
+        http_response += "\r\n"  # Important!
+        http_response += output_str
+        http_response += "\n"
+        await self.loop.sock_sendall(self.client, http_response.encode())
         self.client.close()
 
-    def send(self, response):
+    def send(self, response: list[dict[str, Any]]) -> None:
         asyncio.run_coroutine_threadsafe(self.async_send(response), self.loop)
 
     # Use with care
-    def send_and_wait(self, response):
+    def send_and_wait(self, response: list[dict[str, Any]]) -> None:
         future = asyncio.run_coroutine_threadsafe(self.async_send(response), self.loop)
         try:
             future.result(timeout=2)
         except TimeoutError:
             pass
 
-    def __repr__(self):
+    @override
+    def __repr__(self) -> str:
         try:
             peer = self.client.getpeername()
             out = f"Connection to {peer[0]}:{peer[1]}"

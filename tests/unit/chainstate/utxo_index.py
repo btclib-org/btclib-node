@@ -2,7 +2,9 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from btclib.script import script
@@ -16,7 +18,7 @@ from btclib_node.log import Logger
 from tests.helpers import generate_random_chain
 
 
-def test_long_init(tmp_path):
+def test_long_init(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index
     chain = generate_random_chain(20000, RegTest().genesis.hash)
@@ -32,7 +34,7 @@ def test_long_init(tmp_path):
     assert utxo_dict == new_utxo_dict
 
 
-def test_rev_patch(tmp_path):
+def test_rev_patch(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index
     chain = generate_random_chain(20000, RegTest().genesis.hash)
@@ -46,12 +48,12 @@ def test_rev_patch(tmp_path):
     assert utxo_index.updated_utxo_set == {}
 
 
-def one_tx_block(txs, block_hash=b"\x00" * 32):
+def one_tx_block(txs: list[Tx], block_hash: bytes = b"\x00" * 32) -> Any:
     """The shape UtxoIndex.add_block reads: a header hash, and txs."""
     return SimpleNamespace(header=SimpleNamespace(hash=block_hash), transactions=txs)
 
 
-def coinbase(tag):
+def coinbase(tag: bytes) -> Tx:
     return Tx(
         version=1,
         lock_time=0,
@@ -61,7 +63,7 @@ def coinbase(tag):
     )
 
 
-def spending(prev_out, tag):
+def spending(prev_out: OutPoint, tag: bytes) -> Tx:
     return Tx(
         version=1,
         lock_time=0,
@@ -70,7 +72,7 @@ def spending(prev_out, tag):
     )
 
 
-def test_spending_an_output_the_batch_already_spent_is_refused(tmp_path):
+def test_spending_an_output_the_batch_already_spent_is_refused(tmp_path: Path) -> None:
     # `removed_utxos` holds what has been taken from the database but
     # not yet written back, so a second spend of the same outpoint
     # inside one batch is a double spend the database cannot yet see.
@@ -92,7 +94,7 @@ def test_spending_an_output_the_batch_already_spent_is_refused(tmp_path):
     chainstate.close()
 
 
-def test_spending_an_output_nobody_has_is_refused(tmp_path):
+def test_spending_an_output_nobody_has_is_refused(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index
     nowhere = OutPoint(b"\x11" * 32, 0)
@@ -103,7 +105,7 @@ def test_spending_an_output_nobody_has_is_refused(tmp_path):
     chainstate.close()
 
 
-def test_a_rev_block_that_removes_what_is_not_there_is_refused(tmp_path):
+def test_a_rev_block_that_removes_what_is_not_there_is_refused(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index
     missing = OutPoint(b"\x11" * 32, 0)
@@ -114,7 +116,9 @@ def test_a_rev_block_that_removes_what_is_not_there_is_refused(tmp_path):
     chainstate.close()
 
 
-def test_a_rev_block_that_removes_a_pending_output_takes_it_back(tmp_path):
+def test_a_rev_block_that_removes_a_pending_output_takes_it_back(
+    tmp_path: Path,
+) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index
     funding = coinbase(b"\x05")
@@ -130,7 +134,9 @@ def test_a_rev_block_that_removes_a_pending_output_takes_it_back(tmp_path):
     chainstate.close()
 
 
-def test_a_rev_block_that_removes_a_written_output_marks_it_removed(tmp_path):
+def test_a_rev_block_that_removes_a_written_output_marks_it_removed(
+    tmp_path: Path,
+) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index
     funding = coinbase(b"\x06")
@@ -145,7 +151,9 @@ def test_a_rev_block_that_removes_a_written_output_marks_it_removed(tmp_path):
     chainstate.close()
 
 
-def test_a_rev_block_that_removes_what_the_batch_already_spent_is_refused(tmp_path):
+def test_a_rev_block_that_removes_what_the_batch_already_spent_is_refused(
+    tmp_path: Path,
+) -> None:
     # the outpoint is in `removed_utxos`: the batch has taken it from
     # the database and not written back, so removing it again is the
     # same double spend from the other direction.

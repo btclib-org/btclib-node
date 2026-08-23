@@ -17,8 +17,12 @@ message that carries something nobody has written yet.
 """
 
 from dataclasses import dataclass
+from typing import TypeVar, override
 
+from btclib.alias import BinaryData
 from btclib.p2p.payload import Payload
+
+_Empty = TypeVar("_Empty", bound="_EmptyPayload")
 
 
 @dataclass
@@ -31,7 +35,9 @@ class _EmptyPayload(Payload):
     """
 
     @classmethod
-    def parse(cls, data, *, check_validity: bool = True):
+    def parse(
+        cls: type[_Empty], data: BinaryData, *, check_validity: bool = True
+    ) -> _Empty:
         """Return the payload these no octets carry, whatever they are.
 
         `data` and `check_validity` are btclib's signature for a
@@ -41,6 +47,7 @@ class _EmptyPayload(Payload):
         """
         return cls()
 
+    @override
     def serialize(self, *, check_validity: bool = True) -> bytes:
         return b""
 

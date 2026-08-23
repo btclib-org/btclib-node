@@ -3,6 +3,7 @@
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
 import json
+from pathlib import Path
 
 import requests
 
@@ -11,7 +12,7 @@ from btclib_node.config import Config
 from tests.helpers import get_random_port, wait_until_listening
 
 
-def test_init(tmp_path):
+def test_init(tmp_path: Path) -> None:
     # a port of its own; see tests/functional/p2p/__init__.py
     node = Node(
         config=Config(

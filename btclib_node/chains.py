@@ -13,7 +13,9 @@ from btclib.tx.tx_in import OutPoint, TxIn
 from btclib.tx.tx_out import TxOut
 
 
-def create_genesis(time, nonce, difficulty, version, reward):
+def create_genesis(
+    time: int, nonce: int, difficulty: int, version: int, reward: int
+) -> Block:
     script_sig = script.serialize(
         [
             "FFFF001D",
@@ -68,14 +70,18 @@ class Chain:
     port: int
     addresses: list[str]
     genesis_block: Block
+    # (height, name) pairs, each read by interpreter.get_flags as the
+    # activation height of a script flag; every leaf below sets this in
+    # its own __init__, which is why it carries no default here.
+    flags: list[tuple[int, str]]
 
     @property
-    def genesis(self):
+    def genesis(self) -> BlockHeader:
         """Return the genesis header, which is what most callers want."""
         return self.genesis_block.header
 
     @property
-    def magic(self):
+    def magic(self) -> bytes:
         # bytes, and the four octets that go on the wire: a hex string
         # here is what made the resynchronisation in
         # p2p.connection.Connection.parse_messages hunt for ASCII inside
@@ -87,7 +93,7 @@ class Chain:
         return magic_from_network(self.name)
 
     @property
-    def pow_limit_bits(self):
+    def pow_limit_bits(self) -> bytes:
         # A genesis block is mined at its network's easiest target, so
         # the limit is already stated once, in create_genesis' argument.
         # btclib's validation defaults to mainnet's, which would reject
@@ -97,7 +103,7 @@ class Chain:
 
 @dataclass
 class Main(Chain):
-    def __init__(self):
+    def __init__(self) -> None:
         self.name = "mainnet"
         self.port = 8333
         self.addresses = [
@@ -127,7 +133,7 @@ class Main(Chain):
 
 @dataclass
 class TestNet(Chain):
-    def __init__(self):
+    def __init__(self) -> None:
         self.name = "testnet"
         self.port = 18333
         self.addresses = [
@@ -152,7 +158,7 @@ class TestNet(Chain):
 
 @dataclass
 class SigNet(Chain):
-    def __init__(self):
+    def __init__(self) -> None:
         self.name = "signet"
         self.port = 38333
         self.addresses = ["178.128.221.177"]
@@ -172,7 +178,7 @@ class SigNet(Chain):
 
 @dataclass
 class RegTest(Chain):
-    def __init__(self):
+    def __init__(self) -> None:
         self.name = "regtest"
         self.port = 18444
         self.addresses = []

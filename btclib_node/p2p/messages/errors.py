@@ -4,8 +4,10 @@
 
 import enum
 from dataclasses import dataclass
+from typing import override
 
 from btclib import var_int
+from btclib.alias import BinaryData
 from btclib.p2p.payload import Payload
 from btclib.utils import bytesio_from_binarydata
 
@@ -31,7 +33,7 @@ class Reject(Payload):
     data: bytes
 
     @classmethod
-    def parse(cls, data, *, check_validity: bool = True):
+    def parse(cls, data: BinaryData, *, check_validity: bool = True) -> Reject:
         stream = bytesio_from_binarydata(data)
         message = stream.read(var_int.parse(stream)).decode()
         code = RejectCode.from_bytes(stream.read(1), "little")
@@ -41,6 +43,7 @@ class Reject(Payload):
         data = stream.read(32)[::-1]
         return cls(message, code, reason, data)
 
+    @override
     def serialize(self, *, check_validity: bool = True) -> bytes:
         payload = var_int.serialize(len(self.message))
         payload += self.message.encode()

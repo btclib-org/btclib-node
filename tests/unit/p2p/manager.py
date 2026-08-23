@@ -13,18 +13,24 @@ messages addressed to a connection that is no longer there.
 import asyncio
 import socket
 import time
+from collections.abc import Iterator, Sequence
 from contextlib import closing, suppress
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast
 
 import pytest
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 from btclib.p2p.keepalive import Ping
+from btclib.p2p.payload import Payload
 
 from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.p2p import manager as manager_module
-from btclib_node.p2p.address import peer_address
+from btclib_node.p2p.address import PeerDB, peer_address
 from btclib_node.p2p.manager import P2pManager
+
+if TYPE_CHECKING:
+    from btclib_node import Node
 from tests.helpers import (
     generate_random_transaction,
     get_random_port,
@@ -34,13 +40,13 @@ from tests.helpers import (
 
 
 def a_conn(
-    conn_id,
+    conn_id: int,
     *,
-    status=P2pConnStatus.Connected,
-    last_receive=None,
-    address=None,
-    relay_tx=True,
-):
+    status: P2pConnStatus = P2pConnStatus.Connected,
+    last_receive: float | None = None,
+    address: NetworkAddressV2 | None = None,
+    relay_tx: bool = True,
+) -> Any:
     conn = SimpleNamespace(
         id=conn_id,
         status=status,
@@ -54,7 +60,7 @@ def a_conn(
     conn.send = conn.sent.append
     conn.stop = lambda: conn.stopped.append(True)
 
-    def send_ping():
+    def send_ping() -> None:
         # a ping already answered by nothing: the manager reads the time
         # it was sent to decide the peer is gone
         conn.ping_sent = time.time() - 200
@@ -64,12 +70,29 @@ def a_conn(
     return conn
 
 
-@pytest.fixture
-def a_manager():
-    """Build managers, and close their event loops however the test ends."""
-    made = []
+class AManagerFactory(Protocol):
+    def __call__(
+        self,
+        conns: Sequence[Any] = (),
+        *,
+        peer_db: Any = None,
+        status: NodeStatus = NodeStatus.BlockSynced,
+        port: int = 18444,
+    ) -> P2pManager: ...
 
-    def make(conns=(), *, peer_db=None, status=NodeStatus.BlockSynced, port=18444):
+
+@pytest.fixture
+def a_manager() -> Iterator[AManagerFactory]:
+    """Build managers, and close their event loops however the test ends."""
+    made: list[P2pManager] = []
+
+    def make(
+        conns: Sequence[Any] = (),
+        *,
+        peer_db: Any = None,
+        status: NodeStatus = NodeStatus.BlockSynced,
+        port: int = 18444,
+    ) -> P2pManager:
         node = SimpleNamespace(
             status=status,
             chain=RegTest(),
@@ -82,14 +105,17 @@ def a_manager():
         # a peer db that refuses to be asked by default: a test that
         # should not reach for a peer proves it by the log staying quiet
         manager = P2pManager(
-            node,
+            cast("Node", node),
             port,
-            peer_db
-            or SimpleNamespace(
-                is_empty=True,
-                random_address=refuses_to_be_asked,
-                get_addr_from_dns=asks_no_dns_server,
-                add_active_address=lambda address: None,
+            cast(
+                "PeerDB",
+                peer_db
+                or SimpleNamespace(
+                    is_empty=True,
+                    random_address=refuses_to_be_asked,
+                    get_addr_from_dns=asks_no_dns_server,
+                    add_active_address=lambda address: None,
+                ),
             ),
         )
         for conn in conns:
@@ -111,7 +137,7 @@ def a_manager():
             manager.loop.close()
 
 
-async def one_pass(manager):
+async def one_pass(manager: P2pManager) -> bool:
     """Run the housekeeping loop's body exactly once.
 
     `ensure_future` queues the task's first step ahead of the timer, so
@@ -119,7 +145,9 @@ async def one_pass(manager):
     passes is this twice, rather than a sleep long enough for the loop's
     own -- which is a wait on the scheduler, and #46's shape.
     """
-    task = asyncio.ensure_future(manager.manage_connections(None))
+    task = asyncio.ensure_future(
+        manager.manage_connections(cast("asyncio.AbstractEventLoop", None))
+    )
     await asyncio.sleep(0.05)
     still_running = not task.done()
     task.cancel()
@@ -128,7 +156,9 @@ async def one_pass(manager):
     return still_running
 
 
-def test_removing_a_connection_that_is_not_there_changes_nothing(a_manager):
+def test_removing_a_connection_that_is_not_there_changes_nothing(
+    a_manager: AManagerFactory,
+) -> None:
     conn = a_conn(1)
     manager = a_manager([conn])
     manager.remove_connection(99)
@@ -136,7 +166,7 @@ def test_removing_a_connection_that_is_not_there_changes_nothing(a_manager):
     assert not conn.stopped
 
 
-def test_removing_a_connection_stops_it(a_manager):
+def test_removing_a_connection_stops_it(a_manager: AManagerFactory) -> None:
     conn = a_conn(1)
     manager = a_manager([conn])
     manager.remove_connection(1)
@@ -144,8 +174,10 @@ def test_removing_a_connection_stops_it(a_manager):
     assert conn.stopped == [True]
 
 
-def test_a_peer_that_cannot_be_dialled_is_not_kept(a_manager, monkeypatch):
-    async def never_connects(address):
+def test_a_peer_that_cannot_be_dialled_is_not_kept(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def never_connects(address: NetworkAddressV2) -> None:
         return None
 
     monkeypatch.setattr(manager_module, "dial", never_connects)
@@ -154,18 +186,20 @@ def test_a_peer_that_cannot_be_dialled_is_not_kept(a_manager, monkeypatch):
     assert not manager.connections
 
 
-def test_a_connection_that_has_closed_is_let_go_of(a_manager):
+def test_a_connection_that_has_closed_is_let_go_of(a_manager: AManagerFactory) -> None:
     conn = a_conn(1, status=P2pConnStatus.Closed)
     manager = a_manager([conn])
     asyncio.run(one_pass(manager))
     assert not manager.connections
 
 
-def test_a_peer_that_has_gone_quiet_is_pinged_and_then_dropped(a_manager):
+def test_a_peer_that_has_gone_quiet_is_pinged_and_then_dropped(
+    a_manager: AManagerFactory,
+) -> None:
     conn = a_conn(1, last_receive=time.time() - 200)
     manager = a_manager([conn])
 
-    async def pinged_then_dropped():
+    async def pinged_then_dropped() -> None:
         await one_pass(manager)
         assert conn.sent == ["ping"]
         assert list(manager.connections) == [1]
@@ -175,7 +209,9 @@ def test_a_peer_that_has_gone_quiet_is_pinged_and_then_dropped(a_manager):
     assert not manager.connections
 
 
-def test_a_peer_that_answered_recently_is_left_alone(a_manager):
+def test_a_peer_that_answered_recently_is_left_alone(
+    a_manager: AManagerFactory,
+) -> None:
     conn = a_conn(1)
     manager = a_manager([conn])
     asyncio.run(one_pass(manager))
@@ -183,7 +219,9 @@ def test_a_peer_that_answered_recently_is_left_alone(a_manager):
     assert list(manager.connections) == [1]
 
 
-def test_an_address_already_connected_to_is_not_dialled_again(a_manager):
+def test_an_address_already_connected_to_is_not_dialled_again(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # an onion address, which this node cannot dial: reaching for it
     # would raise into the housekeeping loop's own handler, so a quiet
     # log is the assertion that the manager never reached
@@ -192,14 +230,16 @@ def test_an_address_already_connected_to_is_not_dialled_again(a_manager):
     peer_db = SimpleNamespace(is_empty=False, random_address=lambda: onion)
     manager = a_manager([conn], peer_db=peer_db)
     logged: list[str] = []
-    manager.logger.exception = logged.append
+    monkeypatch.setattr(manager.logger, "exception", logged.append)
     asyncio.run(one_pass(manager))
     assert not logged
     assert list(manager.connections) == [1]
 
 
-def test_a_dial_that_comes_back_with_nothing_adds_no_connection(a_manager, monkeypatch):
-    async def comes_back_with_nothing(address):
+def test_a_dial_that_comes_back_with_nothing_adds_no_connection(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def comes_back_with_nothing(address: NetworkAddressV2) -> None:
         return None
 
     monkeypatch.setattr(manager_module, "dial", comes_back_with_nothing)
@@ -212,26 +252,30 @@ def test_a_dial_that_comes_back_with_nothing_adds_no_connection(a_manager, monke
     assert not manager.connections
 
 
-def refuses_to_be_asked():
+def refuses_to_be_asked() -> NoReturn:
     raise RuntimeError("no")
 
 
-async def asks_no_dns_server():
+async def asks_no_dns_server() -> None:
     return None
 
 
-def test_a_peer_db_that_raises_does_not_stop_the_housekeeping(a_manager):
+def test_a_peer_db_that_raises_does_not_stop_the_housekeeping(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
     logged: list[str] = []
     peer_db = SimpleNamespace(is_empty=False, random_address=refuses_to_be_asked)
     manager = a_manager(peer_db=peer_db)
-    manager.logger.exception = logged.append
+    monkeypatch.setattr(manager.logger, "exception", logged.append)
     # still running when the pass ended: catching the exception and
     # returning would leave the node with no housekeeping at all
     assert asyncio.run(one_pass(manager)) is True
     assert logged
 
 
-def test_only_one_peer_is_wanted_until_the_headers_are_synced(a_manager):
+def test_only_one_peer_is_wanted_until_the_headers_are_synced(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # a peer db that refuses to be asked: reaching for a second peer
     # would raise into the housekeeping loop's own handler, so a quiet
     # log is the assertion that one peer was enough
@@ -239,21 +283,25 @@ def test_only_one_peer_is_wanted_until_the_headers_are_synced(a_manager):
     peer_db = SimpleNamespace(is_empty=False, random_address=refuses_to_be_asked)
     manager = a_manager([conn], peer_db=peer_db, status=NodeStatus.Starting)
     logged: list[str] = []
-    manager.logger.exception = logged.append
+    monkeypatch.setattr(manager.logger, "exception", logged.append)
     asyncio.run(one_pass(manager))
     assert not logged
 
 
-def test_a_message_for_a_connection_that_is_gone_is_dropped(a_manager):
+def test_a_message_for_a_connection_that_is_gone_is_dropped(
+    a_manager: AManagerFactory,
+) -> None:
     conn = a_conn(1)
     manager = a_manager([conn])
-    manager.send("message", 99)
+    manager.send(cast(Payload, "message"), 99)
     assert conn.sent == []
-    manager.send("message", 1)
+    manager.send(cast(Payload, "message"), 1)
     assert conn.sent == ["message"]
 
 
-def test_every_connection_is_pinged_and_every_connection_is_stopped(a_manager):
+def test_every_connection_is_pinged_and_every_connection_is_stopped(
+    a_manager: AManagerFactory,
+) -> None:
     first, second = a_conn(1), a_conn(2)
     manager = a_manager([first, second])
     manager.ping_all()
@@ -262,7 +310,9 @@ def test_every_connection_is_pinged_and_every_connection_is_stopped(a_manager):
     assert first.stopped == [True] and second.stopped == [True]
 
 
-def test_a_transaction_of_our_own_goes_only_to_the_peers_that_want_them(a_manager):
+def test_a_transaction_of_our_own_goes_only_to_the_peers_that_want_them(
+    a_manager: AManagerFactory,
+) -> None:
     # the RPC's sendrawtransaction, which is the other way a transaction
     # leaves this node: a peer that declined BIP37's relay declined
     # transactions, not only the ones another peer handed us
@@ -275,7 +325,9 @@ def test_a_transaction_of_our_own_goes_only_to_the_peers_that_want_them(a_manage
     assert declined.sent == []
 
 
-def test_a_peer_that_was_pinged_recently_is_given_time_to_answer(a_manager):
+def test_a_peer_that_was_pinged_recently_is_given_time_to_answer(
+    a_manager: AManagerFactory,
+) -> None:
     conn = a_conn(1, last_receive=time.time() - 200)
     conn.ping_sent = time.time()
     manager = a_manager([conn])
@@ -284,17 +336,21 @@ def test_a_peer_that_was_pinged_recently_is_given_time_to_answer(a_manager):
     assert list(manager.connections) == [1]
 
 
-def test_an_empty_peer_db_is_not_asked_for_an_address(a_manager):
+def test_an_empty_peer_db_is_not_asked_for_an_address(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # nothing to draw from: asking anyway is how a node with no peers
     # spends its housekeeping raising and logging
     manager = a_manager()
     logged: list[str] = []
-    manager.logger.exception = logged.append
+    monkeypatch.setattr(manager.logger, "exception", logged.append)
     asyncio.run(one_pass(manager))
     assert not logged
 
 
-def test_a_peer_db_with_nothing_dialable_is_a_pass_that_does_nothing(a_manager):
+def test_a_peer_db_with_nothing_dialable_is_a_pass_that_does_nothing(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # `is_empty` is false and the draw still comes back with nothing:
     # a table of ipv6 and onion addresses. The pass has to do nothing
     # and come round again -- dialling the nothing it was handed would
@@ -302,16 +358,18 @@ def test_a_peer_db_with_nothing_dialable_is_a_pass_that_does_nothing(a_manager):
     peer_db = SimpleNamespace(is_empty=False, random_address=lambda: None)
     manager = a_manager(peer_db=peer_db)
     logged: list[str] = []
-    manager.logger.exception = logged.append
+    monkeypatch.setattr(manager.logger, "exception", logged.append)
     assert asyncio.run(one_pass(manager)) is True
     assert not logged
     assert not manager.connections
 
 
-def test_a_peer_that_answers_the_dial_becomes_a_connection(a_manager, monkeypatch):
+def test_a_peer_that_answers_the_dial_becomes_a_connection(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
     ours, theirs = socket.socketpair()
 
-    async def answers(address):
+    async def answers(address: NetworkAddressV2) -> socket.socket:
         return ours
 
     monkeypatch.setattr(manager_module, "dial", answers)
@@ -322,11 +380,12 @@ def test_a_peer_that_answers_the_dial_becomes_a_connection(a_manager, monkeypatc
     )
     manager = a_manager(peer_db=peer_db)
 
-    async def dial():
+    async def dial() -> None:
         await one_pass(manager)
         (conn,) = manager.connections.values()
         assert conn.client is ours
         assert not conn.inbound
+        assert conn.task is not None
         conn.task.cancel()
         await asyncio.sleep(0)
 
@@ -337,7 +396,7 @@ def test_a_peer_that_answers_the_dial_becomes_a_connection(a_manager, monkeypatc
         manager.loop.run_until_complete(dial())
 
 
-def test_a_transaction_is_relayed_with_its_witness(a_manager):
+def test_a_transaction_is_relayed_with_its_witness(a_manager: AManagerFactory) -> None:
     # without the witness the peer receives a transaction whose txid is
     # the one it was told about and whose wtxid is not
     conn = a_conn(1)
@@ -349,13 +408,15 @@ def test_a_transaction_is_relayed_with_its_witness(a_manager):
     assert payload.include_witness
 
 
-def a_running_manager(a_manager, port):
+def a_running_manager(a_manager: AManagerFactory, port: int) -> P2pManager:
     manager = a_manager(port=port)
     manager.start()
     return manager
 
 
-def test_a_manager_says_when_it_is_listening_and_not_before(a_manager):
+def test_a_manager_says_when_it_is_listening_and_not_before(
+    a_manager: AManagerFactory,
+) -> None:
     """#46: `is_alive()` holds before `run` has bound anything.
 
     A peer dialled on the strength of it is refused, silently and once,
@@ -387,7 +448,9 @@ def test_a_manager_says_when_it_is_listening_and_not_before(a_manager):
     assert not manager.is_alive()
 
 
-def test_a_manager_that_cannot_bind_never_says_it_is_listening(a_manager):
+def test_a_manager_that_cannot_bind_never_says_it_is_listening(
+    a_manager: AManagerFactory,
+) -> None:
     # set after the bind and not before it, which is the whole of what a
     # caller waiting on the event is told. A port already taken raises
     # inside a coroutine nobody awaits, so a manager that announced
@@ -406,7 +469,7 @@ def test_a_manager_that_cannot_bind_never_says_it_is_listening(a_manager):
             manager.join(timeout=10)
 
 
-def test_a_manager_dials_the_address_it_is_given(a_manager):
+def test_a_manager_dials_the_address_it_is_given(a_manager: AManagerFactory) -> None:
     # `connect` is called from the node's thread and hands the dial to
     # the manager's own loop. Dialled at itself, so what comes back is
     # both ends of one connection: the one this node opened and the one
@@ -424,7 +487,9 @@ def test_a_manager_dials_the_address_it_is_given(a_manager):
         manager.join(timeout=10)
 
 
-def test_a_message_sent_on_a_running_connection_reaches_the_peer(a_manager):
+def test_a_message_sent_on_a_running_connection_reaches_the_peer(
+    a_manager: AManagerFactory,
+) -> None:
     # `Connection.send` is called from the node's thread and hands the
     # write to the manager's loop; nothing else in these tests crosses
     # that line, and a message that never leaves is a peer that goes
@@ -450,7 +515,9 @@ def test_a_message_sent_on_a_running_connection_reaches_the_peer(a_manager):
         manager.join(timeout=10)
 
 
-def test_a_manager_left_running_is_stopped_by_whoever_built_it(a_manager):
+def test_a_manager_left_running_is_stopped_by_whoever_built_it(
+    a_manager: AManagerFactory,
+) -> None:
     # deliberately not stopped here. A manager thread outliving its test
     # is non-daemon, so a test that fails before reaching its own stop
     # would hold the run open instead of failing it -- the fixture is
@@ -460,7 +527,9 @@ def test_a_manager_left_running_is_stopped_by_whoever_built_it(a_manager):
     assert manager.is_alive()
 
 
-def test_stopping_a_running_manager_stops_the_connections_it_holds(a_manager):
+def test_stopping_a_running_manager_stops_the_connections_it_holds(
+    a_manager: AManagerFactory,
+) -> None:
     port = get_random_port()
     manager = a_running_manager(a_manager, port)
     wait_until_listening(manager)

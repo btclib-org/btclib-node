@@ -7,6 +7,8 @@ import threading
 import time
 from math import log as ln
 from multiprocessing.pool import Pool
+from types import FrameType
+from typing import override
 
 from btclib_node.block_db import BlockDB
 from btclib_node.chainstate import Chainstate
@@ -35,10 +37,10 @@ STOP_TIMEOUT = 30
 
 
 class Node(threading.Thread):
-    def __init__(self, config=Config()):
+    def __init__(self, config: Config = Config()) -> None:
         super().__init__()
 
-        def stop_handler(signal, frame):
+        def stop_handler(signal: int, frame: FrameType | None) -> None:
             self.stop()
 
         signal.signal(signal.SIGINT, stop_handler)
@@ -74,13 +76,14 @@ class Node(threading.Thread):
         # serving headers, a node under test, a node that has nothing to
         # connect -- and each one that does pay competes for the cores
         # with the nodes that are actually validating.
-        self._worker_pool = None
+        self._worker_pool: Pool | None = None
         self._worker_pool_lock = threading.Lock()
 
         self.status = NodeStatus.Starting
 
         self.download_manager = DownloadManager(self, self.logger)
 
+        self.p2p_port: int | None
         if config.p2p_port:
             self.p2p_port = config.p2p_port
         else:
@@ -88,6 +91,7 @@ class Node(threading.Thread):
         peer_db = PeerDB(self.chain, self.data_dir)
         self.p2p_manager = P2pManager(self, self.p2p_port, peer_db)
 
+        self.rpc_port: int | None
         if config.rpc_port:
             self.rpc_port = config.rpc_port
         else:
@@ -95,7 +99,7 @@ class Node(threading.Thread):
         self.rpc_manager = RpcManager(self, self.rpc_port)
 
     @property
-    def worker_pool(self):
+    def worker_pool(self) -> Pool:
         # under the lock, so that two callers get one pool: the second
         # would otherwise leave a pool with nothing holding it and
         # nothing to terminate it
@@ -104,7 +108,8 @@ class Node(threading.Thread):
                 self._worker_pool = Pool(processes=8)
             return self._worker_pool
 
-    def run(self):
+    @override
+    def run(self) -> None:
         self.logger.info("Starting main loop")
 
         if self.p2p_port:
@@ -153,7 +158,7 @@ class Node(threading.Thread):
         self.logger.info("Stopping node")
         self.logger.close()
 
-    def stop(self):
+    def stop(self) -> None:
         """Ask the main loop to stop, and wait up to `STOP_TIMEOUT` for it.
 
         Raises if the loop has not come back by then, the node having

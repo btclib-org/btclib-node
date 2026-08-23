@@ -165,3 +165,24 @@ to check the guess.
   editor and of an agent, the files git reads, and `COPYRIGHT`, which
   btclib-org/.github#135 argues is a repository file rather than a
   distributed one.
+
+### Every signature in `btclib_node`, `tests` and `scripts` is annotated
+
+- **`disallow_untyped_defs`, `disallow_untyped_calls` and
+  `disallow_incomplete_defs` join `[tool.mypy]`'s enabled bundle, and
+  `explicit-override` joins `enable_error_code`** — the four #104 was
+  the annotation pass for, each measured at zero over `files` before
+  being turned on. Annotating a signature is what most of it took;
+  where a test built a `SimpleNamespace` in place of a real class, the
+  fix is one of three named patterns and not a fourth invented per
+  call site — `cast` where a production constructor is handed the
+  double, `Any` where the double is never handed to one, a local
+  `Protocol` where several callers share a narrower shape than the
+  real class has. Annotating `btclib_node/db.py`'s `_rows` surfaced
+  that its return type was narrower than the `PRAGMA` queries already
+  run through it; `Config.log_path` was declared `str` where its own
+  `__init__` treats a falsy value as "no file logging" and every
+  `scripts/chains/*.py` script relies on exactly that. Both are
+  widened rather than worked around. `no_implicit_reexport` and
+  `check_untyped_defs` are untouched by this pass and stay off for the
+  reasons `[tool.mypy]`'s own comments give.

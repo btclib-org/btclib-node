@@ -3,6 +3,7 @@
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
 import time
+from typing import TYPE_CHECKING
 
 from btclib.p2p.address import Addr, ServiceFlags
 from btclib.p2p.addrv2 import AddrV2, SendAddrV2
@@ -43,8 +44,12 @@ from btclib_node.p2p.address import addr_entry, can_addrv1, peer_from_addr_entry
 from btclib_node.p2p.messages.empty import Getaddr, Sendheaders, Wtxidrelay
 from btclib_node.p2p.messages.errors import Reject
 
+if TYPE_CHECKING:
+    from btclib_node import Node
+    from btclib_node.p2p.connection import Connection
 
-def version(node, msg, conn):
+
+def version(node: Node, msg: bytes, conn: Connection) -> None:
     version_msg = Version.parse(msg)
 
     conn.version_message = version_msg
@@ -80,7 +85,7 @@ def version(node, msg, conn):
     conn.relay_tx = version_msg.is_relay_requested
 
 
-def verack(node, msg, conn):
+def verack(node: Node, msg: bytes, conn: Connection) -> None:
     if not conn.version_message or not conn.wtxidrelay_received:
         conn.stop()
         return
@@ -96,20 +101,20 @@ def verack(node, msg, conn):
     )
 
 
-def wtxidrelay(node, msg, conn):
+def wtxidrelay(node: Node, msg: bytes, conn: Connection) -> None:
     conn.wtxidrelay_received = True
 
 
-def sendaddrv2(node, msg, conn):
+def sendaddrv2(node: Node, msg: bytes, conn: Connection) -> None:
     conn.prefer_addressv2 = True
 
 
-def ping(node, msg, conn):
+def ping(node: Node, msg: bytes, conn: Connection) -> None:
     nonce = Ping.parse(msg).nonce
     conn.send(Pong(nonce))
 
 
-def pong(node, msg, conn):
+def pong(node: Node, msg: bytes, conn: Connection) -> None:
     nonce = Pong.parse(msg).nonce
     if conn.ping_sent:
         if conn.ping_nonce != nonce:
@@ -120,26 +125,26 @@ def pong(node, msg, conn):
         conn.ping_nonce = 0
 
 
-def getaddr(node, msg, conn):
-    addresses = node.p2p_manager.peer_db.get_active_addresses()
+def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
+    active = node.p2p_manager.peer_db.get_active_addresses()
     # either message class, and not whichever the first branch names:
     # Addr and AddrV2 are siblings under Payload rather than one a
-    # subclass of the other, so the annotation has to say both.
-    addr_cls: type[Addr] | type[AddrV2]
-    if conn.prefer_addressv2:
-        addr_cls = AddrV2
-    else:
-        addr_cls = Addr
-        # an addr version 1 message has nowhere to put a tor, i2p or
-        # cjdns address, so those are left out rather than made up
-        addresses = [addr_entry(addr) for addr in addresses if can_addrv1(addr)]
+    # subclass of the other, so each is built from its own list rather
+    # than through a shared name of a type the other could not accept.
     # the bound btclib's Addr and AddrV2 refuse a longer message than,
     # which is Core's own: a table above it is sent as several messages
-    for x in range(0, len(addresses), MAX_ADDR_TO_SEND):
-        conn.send(addr_cls(addresses[x : x + MAX_ADDR_TO_SEND]))
+    if conn.prefer_addressv2:
+        for x in range(0, len(active), MAX_ADDR_TO_SEND):
+            conn.send(AddrV2(active[x : x + MAX_ADDR_TO_SEND]))
+    else:
+        # an addr version 1 message has nowhere to put a tor, i2p or
+        # cjdns address, so those are left out rather than made up
+        entries = [addr_entry(addr) for addr in active if can_addrv1(addr)]
+        for x in range(0, len(entries), MAX_ADDR_TO_SEND):
+            conn.send(Addr(entries[x : x + MAX_ADDR_TO_SEND]))
 
 
-def addr(node, msg, conn):
+def addr(node: Node, msg: bytes, conn: Connection) -> None:
     entries = Addr.parse(msg).addresses
     # BIP155's record is what the table holds, an addr version 1 entry
     # having no room for the networks a peer may yet gossip
@@ -148,12 +153,12 @@ def addr(node, msg, conn):
     )
 
 
-def addrv2(node, msg, conn):
+def addrv2(node: Node, msg: bytes, conn: Connection) -> None:
     addresses = AddrV2.parse(msg).addresses
     node.p2p_manager.peer_db.add_addresses(addresses)
 
 
-def tx(node, msg, conn):
+def tx(node: Node, msg: bytes, conn: Connection) -> None:
     tx = TxMsg.parse(msg).tx
     try:
         verify_mempool_acceptance(node, tx)
@@ -165,7 +170,7 @@ def tx(node, msg, conn):
         node.download_manager.received_txs.append((conn.id, tx.hash))
 
 
-def block(node, msg, conn):
+def block(node: Node, msg: bytes, conn: Connection) -> None:
     # btclib's BlockPayload validates against mainnet's pow limit by
     # default, which no regtest or signet block meets. Its own docstring
     # names the shape: build unchecked and ask afterwards, which is what
@@ -193,7 +198,7 @@ def block(node, msg, conn):
         node.chainstate.block_index.insert_block_info(block_info)
 
 
-def inv(node, msg, conn):
+def inv(node: Node, msg: bytes, conn: Connection) -> None:
     if node.status < NodeStatus.BlockSynced:
         return
     inv = Inv.parse(msg)
@@ -209,7 +214,7 @@ def inv(node, msg, conn):
         node.download_manager.inv_txs.extend([(conn.id, wtxid) for wtxid in missing_tx])
 
 
-def getdata(node, msg, conn):
+def getdata(node: Node, msg: bytes, conn: Connection) -> None:
     getdata = GetData.parse(msg)
 
     tx_types = (
@@ -257,7 +262,7 @@ def getdata(node, msg, conn):
             )
 
 
-def headers(node, msg, conn):
+def headers(node: Node, msg: bytes, conn: Connection) -> None:
     headers = Headers.parse(msg).headers
     added = node.chainstate.block_index.add_headers(headers)
     # A fork below our tip is new to us and still does not move
@@ -273,7 +278,7 @@ def headers(node, msg, conn):
         node.status = NodeStatus.HeaderSynced
 
 
-def getheaders(node, msg, conn):
+def getheaders(node: Node, msg: bytes, conn: Connection) -> None:
     getheaders = GetHeaders.parse(msg)
     headers = node.chainstate.block_index.get_headers_from_locators(
         getheaders.locator, getheaders.hash_stop
@@ -282,7 +287,7 @@ def getheaders(node, msg, conn):
         conn.send(Headers(headers))
 
 
-def _height_on_the_active_chain(node, block_hash):
+def _height_on_the_active_chain(node: Node, block_hash: bytes) -> int | None:
     """Return the height of a block this node has on its chain, or None.
 
     Two questions and not one: a hash can be known and not be the block
@@ -301,7 +306,13 @@ def _height_on_the_active_chain(node, block_hash):
     return height
 
 
-def _filter_range(node, filter_type, start_height, stop_hash, limit):
+def _filter_range(
+    node: Node,
+    filter_type: BlockFilterType | int,
+    start_height: int,
+    stop_hash: bytes,
+    limit: int,
+) -> range | None:
     """Return the active-chain heights a BIP157 request names, or None.
 
     A range is a start height and the hash of the block it ends at, so
@@ -336,7 +347,7 @@ def _filter_range(node, filter_type, start_height, stop_hash, limit):
     return range(start_height, stop_height + 1)
 
 
-def get_cfilters(node, msg, conn):
+def get_cfilters(node: Node, msg: bytes, conn: Connection) -> None:
     request = GetCFilters.parse(msg)
     heights = _filter_range(
         node,
@@ -354,16 +365,22 @@ def get_cfilters(node, msg, conn):
     # messages rather than one
     for height in heights:
         block_hash = active_chain[height]
+        # every block on the active chain is caught up before the node
+        # starts listening, and kept up as blocks connect
+        block_filter = filter_index.get_filter(block_hash)
+        if block_filter is None:
+            err_msg = f"no filter for a block on the active chain: {block_hash.hex()}"
+            raise Exception(err_msg)
         conn.send(
             CFilter(
                 BlockFilterType.BASIC,
                 block_hash,
-                filter_index.get_filter(block_hash),
+                block_filter,
             )
         )
 
 
-def get_cfheaders(node, msg, conn):
+def get_cfheaders(node: Node, msg: bytes, conn: Connection) -> None:
     request = GetCFHeaders.parse(msg)
     heights = _filter_range(
         node,
@@ -386,17 +403,30 @@ def get_cfheaders(node, msg, conn):
         if start
         else NO_PREVIOUS_FILTER_HEADER
     )
+    # every block on the active chain is caught up before the node
+    # starts listening, and kept up as blocks connect
+    if previous is None:
+        err_msg = "no filter header for the parent of the requested range"
+        raise Exception(err_msg)
+    filter_hashes = []
+    for h in heights:
+        filter_hash = filter_index.get_filter_hash(active_chain[h])
+        if filter_hash is None:
+            block_hash = active_chain[h]
+            err_msg = f"no filter for a block on the active chain: {block_hash.hex()}"
+            raise Exception(err_msg)
+        filter_hashes.append(filter_hash)
     conn.send(
         CFHeaders(
             BlockFilterType.BASIC,
             request.stop_hash,
             previous,
-            [filter_index.get_filter_hash(active_chain[h]) for h in heights],
+            filter_hashes,
         )
     )
 
 
-def get_cfcheckpt(node, msg, conn):
+def get_cfcheckpt(node: Node, msg: bytes, conn: Connection) -> None:
     request = GetCFCheckpt.parse(msg)
     # not _filter_range: this request carries no start height, a
     # checkpoint chain always beginning at the genesis block, so the two
@@ -414,26 +444,32 @@ def get_cfcheckpt(node, msg, conn):
     # interval and not at zero, and the stop block is an entry when its
     # own height falls on one. No bound: the chain's length is the
     # bound, which is BIP157's answer too.
+    # every block on the active chain is caught up before the node
+    # starts listening, and kept up as blocks connect
+    checkpoints = []
+    for height in range(CFCHECKPT_INTERVAL, stop_height + 1, CFCHECKPT_INTERVAL):
+        block_hash = active_chain[height]
+        header = filter_index.get_header(block_hash)
+        if header is None:
+            err_msg = "no filter header for a block on the active chain: "
+            err_msg += block_hash.hex()
+            raise Exception(err_msg)
+        checkpoints.append(header)
     conn.send(
         CFCheckpt(
             BlockFilterType.BASIC,
             request.stop_hash,
-            [
-                filter_index.get_header(active_chain[height])
-                for height in range(
-                    CFCHECKPT_INTERVAL, stop_height + 1, CFCHECKPT_INTERVAL
-                )
-            ],
+            checkpoints,
         )
     )
 
 
-def not_found(node, msg, conn):
+def not_found(node: Node, msg: bytes, conn: Connection) -> None:
     missing = NotFound.parse(msg)
     node.logger.warning(f"Missing objects:{missing}")
 
 
-def reject(node, msg, conn):
+def reject(node: Node, msg: bytes, conn: Connection) -> None:
     reject = Reject.parse(msg)
     err_msg = (
         f"Reject received: {reject.code.name}, {reject.reason}, {reject.data.hex()}"

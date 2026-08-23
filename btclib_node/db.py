@@ -33,8 +33,10 @@ is not one Core has.
 
 import sqlite3
 import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any, cast
 
 # What a LevelDB directory always holds, and this one never will. A
 # datadir written before this store existed cannot be read by it, and
@@ -66,7 +68,7 @@ class KeyValueStore:
     the writes inside it come back through the same door.
     """
 
-    def __init__(self, path):
+    def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.mkdir(exist_ok=True, parents=True)
         if (self.path / _LEVELDB_MARKER).exists():
@@ -89,40 +91,46 @@ class KeyValueStore:
         self._connection.execute("PRAGMA synchronous=NORMAL")
         self._connection.execute(_SCHEMA)
 
-    def _run(self, statement, parameters=()):
+    def _run(self, statement: str, parameters: tuple[bytes, ...] = ()) -> None:
         """Execute a statement that answers nothing."""
         with self._lock:
             if self._closed:
                 raise Exception(f"the store at {self.path} is closed")
             self._connection.execute(statement, parameters)
 
-    def _rows(self, statement, parameters=()):
+    def _rows(
+        self, statement: str, parameters: tuple[bytes, ...] = ()
+    ) -> list[tuple[Any, ...]]:
         """Execute a statement and read its answer, both under the lock.
 
         Both, and not the execute alone: a cursor read after the lock is
         released is a cursor another thread can step on -- one
         connection means one statement at a time, and `fetchone` is part
         of the statement.
+
+        The row shape is `Any`, and genuinely so: this runs whatever SQL
+        it is given, `PRAGMA` statements the tests read included, and
+        not only the two `kv` shapes the methods below build on.
         """
         with self._lock:
             if self._closed:
                 raise Exception(f"the store at {self.path} is closed")
             return self._connection.execute(statement, parameters).fetchall()
 
-    def get(self, key):
+    def get(self, key: bytes) -> bytes | None:
         """Return the value stored under a key, or None."""
         rows = self._rows("SELECT v FROM kv WHERE k = ?", (key,))
-        return rows[0][0] if rows else None
+        return cast(bytes, rows[0][0]) if rows else None
 
-    def put(self, key, value):
+    def put(self, key: bytes, value: bytes) -> None:
         """Store a value under a key, replacing what was there."""
         self._run("INSERT OR REPLACE INTO kv VALUES (?, ?)", (key, value))
 
-    def delete(self, key):
+    def delete(self, key: bytes) -> None:
         """Remove a key, whether or not it was there."""
         self._run("DELETE FROM kv WHERE k = ?", (key,))
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[tuple[bytes, bytes]]:
         """Walk every pair, in ascending key order.
 
         Read whole under the lock rather than handed out as a cursor: a
@@ -131,10 +139,11 @@ class KeyValueStore:
         the store once at startup.
         """
         with self._lock:
-            return iter(self._rows("SELECT k, v FROM kv ORDER BY k"))
+            rows = self._rows("SELECT k, v FROM kv ORDER BY k")
+            return iter(cast("list[tuple[bytes, bytes]]", rows))
 
     @contextmanager
-    def write_batch(self):
+    def write_batch(self) -> Iterator[KeyValueStore]:
         """Write everything in the block, or nothing at all.
 
         The lock is held for the whole batch, so nothing else reaches
@@ -158,7 +167,7 @@ class KeyValueStore:
                 raise
             self._run("COMMIT")
 
-    def close(self):
+    def close(self) -> None:
         """Close the connection, once, and refuse every later use."""
         with self._lock:
             if self._closed:
@@ -167,5 +176,5 @@ class KeyValueStore:
             self._connection.close()
 
     @property
-    def closed(self):
+    def closed(self) -> bool:
         return self._closed

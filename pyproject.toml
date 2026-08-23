@@ -130,11 +130,12 @@ test = [
 # a word. types-requests is the one stub package that hook carried and
 # this environment still needs, requests being a test dependency that
 # ships none.
-# Not strict yet, which is a separate step and a large one: mypy --strict
-# over this tree reports 2134 errors in 63 of its 69 files, 595 of them
-# a definition with no annotation and 1475 calls to one. That is the
-# annotation pass btclib-org/.github#9 defers, and it is not what moving
-# the hook needs.
+# Not strict yet at the time this moved: mypy --strict over this tree
+# reported thousands of errors, most of them a definition with no
+# annotation or a call to one. That was the annotation pass
+# btclib-org/.github#9 deferred and btclib-org/btclib-node#104 later
+# did; [tool.mypy] carries what is left of strict once it did, measured
+# the same way that block's own comments measure the rest of it.
 lint = [
     "pre-commit>=4.6.2",
     "ruff>=0.16.4",
@@ -524,6 +525,12 @@ strict_bytes = true
 # taken is a branch no test can cover, and this tree is held to
 # covering all of them
 warn_unreachable = true
+# btclib-org/btclib-node#104's annotation pass: every signature in
+# `files` now carries one, each flag measured at zero on its own before
+# being turned on here.
+disallow_untyped_defs = true
+disallow_untyped_calls = true
+disallow_incomplete_defs = true
 
 # The rest of the bundle is left off. What one of them costs is a
 # number nothing checks and any commit can move, so it is not recorded
@@ -531,30 +538,23 @@ warn_unreachable = true
 # the gate runs on, with
 #
 #   uv run --locked --no-default-groups --group lint --group test \
-#     mypy --disallow-untyped-defs
+#     mypy --check-untyped-defs
 #
-# The annotation pass is what silences these, which is why none of them
-# is enabled ahead of it (btclib-org/btclib-node#104):
-#
-#   disallow_untyped_defs      the annotation pass itself
-#   disallow_untyped_calls     a typed caller of an untyped callee
-#   disallow_incomplete_defs   half-annotated signatures
-#
-# `no_implicit_reexport` is not that job: it reports a name imported
-# from a module that re-exports it rather than defines it, which is an
-# import to redirect and not a signature to annotate.
-# `check_untyped_defs` is not either: it checks the bodies of
-# unannotated functions, so what it reports is type errors in code the
-# node runs. #105 is where those are read one at a time, and it stays
-# open until the flag goes on.
+# `no_implicit_reexport` reports a name imported from a module that
+# re-exports it rather than defines it, which is an import to redirect
+# and not a signature to annotate: not #104's job.
+# `check_untyped_defs` checks the bodies of unannotated functions, and
+# #104's annotation pass leaves none in `files` for it to check --
+# measured at zero for that reason, and not because #105, where a
+# finding of it is read one at a time, has been worked. It stays open
+# until this flag goes on.
 
 # --- the optional error codes, surveyed one at a time ------------------
 #
 # Same method: enable, measure, decide. Each reports nothing today.
-# `explicit-override` is the one left off, every finding of it a
-# decorator to add -- the annotation pass again, so it goes with #104.
 enable_error_code = [
     "deprecated",
+    "explicit-override",
     "ignore-without-code",
     "mutable-override",
     "narrowed-type-not-subtype",

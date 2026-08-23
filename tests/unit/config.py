@@ -10,18 +10,18 @@ from btclib_node.chains import Main, RegTest, SigNet, TestNet
 from btclib_node.config import Config
 
 
-def test_chain_selection():
+def test_chain_selection() -> None:
     assert Config(chain="mainnet") == Config(chain=Main())
     assert Config(chain="testnet") == Config(chain=TestNet())
     assert Config(chain="signet") == Config(chain=SigNet())
     assert Config(chain="regtest") == Config(chain=RegTest())
     with pytest.raises(ValueError):
-        Config(chain=None)
+        Config(chain=None)  # type: ignore[arg-type]
     with pytest.raises(ValueError):
         Config(chain="wrongchain")
 
 
-def test_data_dir():
+def test_data_dir() -> None:
     config = Config(chain="regtest", data_dir="dir")
     # what it is, and not `!= "dir"`: a Path is never equal to a str,
     # so that comparison held whatever __init__ had done to it -- an
@@ -29,12 +29,12 @@ def test_data_dir():
     assert config.data_dir == Path("dir").absolute() / "regtest"
 
 
-def test_port():
+def test_port() -> None:
     assert Config(chain="regtest", p2p_port=1).p2p_port == 1
     assert Config(chain="regtest", rpc_port=1).rpc_port == 1
 
 
-def test_a_disallowed_port_is_none_rather_than_some_other_number():
+def test_a_disallowed_port_is_none_rather_than_some_other_number() -> None:
     # `is None` and not `!= 1`: None is what Node reads as "do not
     # start this listener", and the declaration in Config says so now.
     # Any other number would satisfy `!= 1` and be a port to bind.

@@ -2,15 +2,26 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-from btclib.tx import TxOut
+from typing import TYPE_CHECKING
 
-from btclib_node.chainstate.block_index import BlockStatus
+from btclib.block import Block
+from btclib.tx import TxOut
+from btclib.tx.tx import Tx
+
+from btclib_node.block_db import RevBlock
+from btclib_node.chainstate.block_index import BlockIndex, BlockStatus
 from btclib_node.constants import NodeStatus
+from btclib_node.db import KeyValueStore
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.interpreter import check_transaction, check_transactions
 
+if TYPE_CHECKING:
+    from btclib_node import Node
 
-def update_block_status(index, hash, status, wb):
+
+def update_block_status(
+    index: BlockIndex, hash: bytes, status: BlockStatus, wb: KeyValueStore | None
+) -> None:
     block_info = index.get_block_info(hash)
     block_info.status = status
     index.insert_block_info(block_info, wb)
@@ -18,11 +29,11 @@ def update_block_status(index, hash, status, wb):
 
 # a stub: nothing invalidates the headers built on a failed block.
 # btclib-org/btclib-node#120
-def update_header_index(index):
+def update_header_index(index: BlockIndex) -> None:
     pass
 
 
-def finish_sync(node):
+def finish_sync(node: Node) -> None:
     if node.status == NodeStatus.BlockSynced:
         return
     node.status = NodeStatus.BlockSynced
@@ -30,7 +41,7 @@ def finish_sync(node):
     node.p2p_manager.stop_all()
 
 
-def update_chain(node):
+def update_chain(node: Node) -> None:
     if node.status < NodeStatus.HeaderSynced:
         return None
 
@@ -58,18 +69,33 @@ def update_chain(node):
     node.logger.info("Start block validation")
 
     node.logger.debug("Start getting blocks")
-    to_add = [node.block_db.get_block(hash) for hash in to_add_hash]
+    # every hash here was just checked downloaded, or was on the active
+    # chain this is replacing, so block_db holds it; the type is wider
+    # than that invariant
+    to_add: list[Block] = []
+    for hash in to_add_hash:
+        block = node.block_db.get_block(hash)
+        if block is None:
+            err_msg = f"block just checked downloaded is missing: {hash.hex()}"
+            raise Exception(err_msg)
+        to_add.append(block)
     # tip first: an output the branch created may have been spent again
     # further along it, and the block that spent it has to be undone
     # before the block that made it. `remove_from_active_chain` asks for
     # the same order, and refuses anything but the tip
-    to_remove = [node.block_db.get_rev_block(hash) for hash in reversed(to_remove_hash)]
+    to_remove: list[RevBlock] = []
+    for hash in reversed(to_remove_hash):
+        rev_block = node.block_db.get_rev_block(hash)
+        if rev_block is None:
+            err_msg = f"no reverse patch for a block on the active chain: {hash.hex()}"
+            raise Exception(err_msg)
+        to_remove.append(rev_block)
     node.logger.debug("Got all blocks")
 
     node.logger.debug("Start chainstate test")
 
     success = True
-    generated_rev_patches = []
+    generated_rev_patches: list[RevBlock] = []
     try:
         for rev_block in to_remove:
             utxo_index.apply_rev_block(rev_block)
@@ -125,11 +151,14 @@ def update_chain(node):
 
     if success and node.status == NodeStatus.BlockSynced:
         for rev_block in to_remove:
-            block = node.block_db.get_block(rev_block.hash)
-            for tx in block.transactions[1:]:
+            removed_block = node.block_db.get_block(rev_block.hash)
+            if removed_block is None:
+                err_msg = f"block just removed is missing: {rev_block.hash.hex()}"
+                raise Exception(err_msg)
+            for tx in removed_block.transactions[1:]:
                 node.mempool.add_tx(tx)
-        for rev_block, block in zip(generated_rev_patches, to_add):
-            for tx in block.transactions:
+        for _rev_block, added_block in zip(generated_rev_patches, to_add):
+            for tx in added_block.transactions:
                 node.mempool.remove_tx(tx)
 
     node.logger.debug("Finished main\n")
@@ -138,8 +167,8 @@ def update_chain(node):
         return finish_sync(node)
 
 
-def verify_mempool_acceptance(node, tx):
-    prev_outputs = []
+def verify_mempool_acceptance(node: Node, tx: Tx) -> None:
+    prev_outputs: list[TxOut] = []
 
     block_index = node.chainstate.block_index
     utxo_index = node.chainstate.utxo_index

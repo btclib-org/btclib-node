@@ -12,13 +12,13 @@ MAGIC = RegTest().magic
 TXID = bytes(range(32))  # not a palindrome: a symmetric hash tells nothing
 
 
-def test_reject():
+def test_reject() -> None:
     msg = Reject("tx", RejectCode(0x42), "", TXID)
     msg_bytes = msg.to_message(MAGIC).serialize()
     assert msg == Reject.parse(Message.parse(msg_bytes).payload)
 
 
-def test_a_reject_puts_a_hash_on_the_wire_the_way_an_inventory_does():
+def test_a_reject_puts_a_hash_on_the_wire_the_way_an_inventory_does() -> None:
     # a round trip holds whichever way round the two sides agree on;
     # this is which way round that is, and it is the one everything
     # else in the protocol uses

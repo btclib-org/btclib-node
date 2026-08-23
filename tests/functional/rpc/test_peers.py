@@ -3,6 +3,7 @@
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
 import json
+from pathlib import Path
 
 import requests
 
@@ -12,7 +13,7 @@ from btclib_node.constants import P2pConnStatus
 from tests.helpers import get_random_port, local_addr, wait_until, wait_until_listening
 
 
-def test_get_connection_count(tmp_path):
+def test_get_connection_count(tmp_path: Path) -> None:
     node1 = Node(
         config=Config(
             chain="regtest",
@@ -71,7 +72,7 @@ def test_get_connection_count(tmp_path):
     node2.stop()
 
 
-def test_get_peer_info(tmp_path):
+def test_get_peer_info(tmp_path: Path) -> None:
     node1 = Node(
         config=Config(
             chain="regtest",

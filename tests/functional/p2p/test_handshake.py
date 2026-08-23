@@ -2,13 +2,15 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+from pathlib import Path
+
 from btclib_node import Node
 from btclib_node.config import Config
 from btclib_node.constants import P2pConnStatus
 from tests.helpers import get_random_port, local_addr, wait_until, wait_until_listening
 
 
-def test_simple_connection(tmp_path):
+def test_simple_connection(tmp_path: Path) -> None:
     node1 = Node(
         config=Config(
             chain="regtest",
@@ -42,7 +44,7 @@ def test_simple_connection(tmp_path):
     node2.stop()
 
 
-def test_connection_to_ourselves(tmp_path):
+def test_connection_to_ourselves(tmp_path: Path) -> None:
     node = Node(
         config=Config(
             chain="regtest",

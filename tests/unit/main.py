@@ -2,13 +2,17 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+from pathlib import Path
+
 import pytest
+from btclib.block import Block
 from btclib.script import script
 from btclib.tx.tx import Tx, TxIn, TxOut
 from btclib.tx.tx_in import OutPoint
 
 from btclib_node import Node
 from btclib_node.chains import RegTest
+from btclib_node.chainstate.block_index import BlockIndex
 from btclib_node.config import Config
 from btclib_node.constants import NodeStatus
 from btclib_node.exceptions import MissingPrevoutError
@@ -21,7 +25,7 @@ from tests.helpers import (
 )
 
 
-def regtest_node(tmp_path):
+def regtest_node(tmp_path: Path) -> Node:
     node = Node(
         config=Config(
             chain="regtest",
@@ -35,7 +39,7 @@ def regtest_node(tmp_path):
     return node
 
 
-def connect(node, chain):
+def connect(node: Node, chain: list[Block]) -> BlockIndex:
     """Offer a chain to the node and drive it to connect what it will."""
     block_index = node.chainstate.block_index
     block_index.add_headers([block.header for block in chain])
@@ -50,7 +54,7 @@ def connect(node, chain):
     return block_index
 
 
-def test_chain(tmp_path):
+def test_chain(tmp_path: Path) -> None:
     node = Node(
         config=Config(
             chain="regtest",
@@ -65,20 +69,20 @@ def test_chain(tmp_path):
     chain = generate_random_chain(length, RegTest().genesis.hash)
     headers = [block.header for block in chain]
     block_index = node.chainstate.block_index
-    for x in range(0, length, 2000):
-        block_index.add_headers(headers[x : x + 2000])
-    for x in block_index.header_dict:
-        block_info = block_index.get_block_info(x)
+    for start in range(0, length, 2000):
+        block_index.add_headers(headers[start : start + 2000])
+    for block_hash in block_index.header_dict:
+        block_info = block_index.get_block_info(block_hash)
         block_info.downloaded = True
         block_index.insert_block_info(block_info)
     for block in chain:
         node.block_db.add_block(block)
-    for x in range(len(chain)):
+    for _ in range(len(chain)):
         update_chain(node)
     assert len(block_index.active_chain) == length + 1
 
 
-def spend(prevout_tx, value, script_sig=None):
+def spend(prevout_tx: Tx, value: int, script_sig: bytes | None = None) -> Tx:
     return Tx(
         version=1,
         lock_time=0,
@@ -97,7 +101,7 @@ def spend(prevout_tx, value, script_sig=None):
     )
 
 
-def test_reject_block_that_prints_money(tmp_path):
+def test_reject_block_that_prints_money(tmp_path: Path) -> None:
     # Script validation never reads the amounts except through the
     # sig_hash, so nothing in the engine notices an output larger than
     # the input it spends.
@@ -118,7 +122,7 @@ def test_reject_block_that_prints_money(tmp_path):
     assert len(block_index.active_chain) == connected
 
 
-def test_reject_block_with_a_failing_script(tmp_path):
+def test_reject_block_with_a_failing_script(tmp_path: Path) -> None:
     # An input that does not verify has to fail the block. It used to be
     # written to errors/ and swallowed, inside a worker pool, so nothing
     # reached update_chain and the block was connected anyway.
@@ -142,7 +146,7 @@ def test_reject_block_with_a_failing_script(tmp_path):
     assert len(block_index.active_chain) == connected
 
 
-def test_add_tx(tmp_path):
+def test_add_tx(tmp_path: Path) -> None:
     node = Node(
         config=Config(
             chain="regtest",
@@ -157,13 +161,13 @@ def test_add_tx(tmp_path):
     headers = [block.header for block in chain]
     block_index = node.chainstate.block_index
     block_index.add_headers(headers)
-    for x in block_index.header_dict:
-        block_info = block_index.get_block_info(x)
+    for block_hash in block_index.header_dict:
+        block_info = block_index.get_block_info(block_hash)
         block_info.downloaded = True
         block_index.insert_block_info(block_info)
     for block in chain:
         node.block_db.add_block(block)
-    for x in range(len(chain)):
+    for _ in range(len(chain)):
         update_chain(node)
 
     with pytest.raises(MissingPrevoutError):
@@ -184,7 +188,9 @@ def test_add_tx(tmp_path):
     verify_mempool_acceptance(node, tx2)
 
 
-def test_a_candidate_whose_block_has_not_arrived_is_not_connected(tmp_path):
+def test_a_candidate_whose_block_has_not_arrived_is_not_connected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # headers run ahead of blocks for the whole of a sync, so the
     # commonest state of a candidate is one whose block is still being
     # fetched. It is declined before block_db is asked for anything:
@@ -195,19 +201,37 @@ def test_a_candidate_whose_block_has_not_arrived_is_not_connected(tmp_path):
     chain = generate_random_chain(2, RegTest().genesis.hash)
     block_index = node.chainstate.block_index
     block_index.add_headers([block.header for block in chain])
-    asked = []
-    node.block_db.get_block = asked.append
-    assert update_chain(node) is None
+    asked: list[bytes] = []
+    monkeypatch.setattr(node.block_db, "get_block", asked.append)
+    update_chain(node)
     assert not asked
     assert block_index.active_chain == [RegTest().genesis.hash]
     assert node.status == NodeStatus.HeaderSynced
 
 
-def hashes(chain):
+def test_update_chain_refuses_a_block_marked_downloaded_but_missing(
+    tmp_path: Path,
+) -> None:
+    # the download manager and block_db agree by construction; this is
+    # the state they would be in if they did not
+    node = regtest_node(tmp_path)
+    chain = generate_random_chain(1, RegTest().genesis.hash)
+    block_index = node.chainstate.block_index
+    block_index.add_headers([block.header for block in chain])
+    for hash in block_index.header_dict:
+        block_info = block_index.get_block_info(hash)
+        block_info.downloaded = True
+        block_index.insert_block_info(block_info)
+    # deliberately not added to node.block_db
+    with pytest.raises(Exception, match="just checked downloaded is missing"):
+        update_chain(node)
+
+
+def hashes(chain: list[Block]) -> list[bytes]:
     return [block.header.hash for block in chain]
 
 
-def test_a_heavier_fork_replaces_the_chain_the_node_was_on(tmp_path):
+def test_a_heavier_fork_replaces_the_chain_the_node_was_on(tmp_path: Path) -> None:
     # more than one block on the branch being left, because that is the
     # shallowest branch whose blocks have to be undone in an order: an
     # output block N created and block N+1 spent is gone from the utxo
@@ -224,7 +248,36 @@ def test_a_heavier_fork_replaces_the_chain_the_node_was_on(tmp_path):
         assert block_hash not in block_index.active_chain
 
 
-def test_a_reorg_gives_the_orphaned_transactions_back_to_the_mempool(tmp_path):
+def test_a_reorg_refuses_a_missing_reverse_patch(tmp_path: Path) -> None:
+    # every block on the active chain has one, by construction; this is
+    # the state block_db would be in if it did not
+    node = regtest_node(tmp_path)
+    first = generate_random_chain(2, RegTest().genesis.hash)
+    connect(node, first)
+    node.block_db.rev_patches.pop(first[-1].header.hash)
+
+    second = generate_random_chain(3, RegTest().genesis.hash)
+    with pytest.raises(Exception, match="no reverse patch"):
+        connect(node, second)
+
+
+def test_a_reorg_refuses_a_missing_removed_block(tmp_path: Path) -> None:
+    # the reverse patch of the block being undone is enough to roll the
+    # chainstate back; giving the transactions of that same block back
+    # to the mempool needs the block itself, which is the gap this pins
+    node = regtest_node(tmp_path)
+    first = generate_random_chain(2, RegTest().genesis.hash)
+    connect(node, first)
+    node.block_db.blocks.pop(first[-1].header.hash)
+
+    second = generate_random_chain(3, RegTest().genesis.hash)
+    with pytest.raises(Exception, match="block just removed is missing"):
+        connect(node, second)
+
+
+def test_a_reorg_gives_the_orphaned_transactions_back_to_the_mempool(
+    tmp_path: Path,
+) -> None:
     # only once the node is synced: while it is still catching up, a
     # transaction from a block it steps off is not worth relaying
     node = regtest_node(tmp_path)
@@ -252,7 +305,9 @@ def test_a_reorg_gives_the_orphaned_transactions_back_to_the_mempool(tmp_path):
     assert not node.mempool.contains_tx(confirmed)
 
 
-def test_a_reorg_before_the_node_is_synced_leaves_the_mempool_alone(tmp_path):
+def test_a_reorg_before_the_node_is_synced_leaves_the_mempool_alone(
+    tmp_path: Path,
+) -> None:
     node = regtest_node(tmp_path)
     first = generate_random_chain(2, RegTest().genesis.hash)
     connect(node, first)

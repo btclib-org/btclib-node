@@ -6,6 +6,7 @@ import json
 
 import requests
 
+from btclib_node import Node
 from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus
 from tests.helpers import (
@@ -16,7 +17,7 @@ from tests.helpers import (
 )
 
 
-def test_add_tx(rpc_node):
+def test_add_tx(rpc_node: Node) -> None:
     node = rpc_node
 
     wait_until_listening(node.rpc_manager)

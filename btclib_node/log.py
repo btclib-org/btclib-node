@@ -3,10 +3,17 @@
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
 import logging
+from pathlib import Path
+from typing import Any
 
 
 class Logger(logging.Logger):
-    def __init__(self, log_path=None, debug=False, **kwargs):
+    def __init__(
+        self,
+        log_path: str | Path | None = None,
+        debug: bool = False,
+        **kwargs: Any,
+    ) -> None:
         level = logging.DEBUG if debug else logging.INFO
         super().__init__(name="Logger", level=level, **kwargs)
         # `logging.Handler`, which is the type the two branches share:
@@ -23,7 +30,7 @@ class Logger(logging.Logger):
         handler.setFormatter(formatter)
         self.addHandler(handler)
 
-    def close(self):
+    def close(self) -> None:
         for handler in self.handlers:
             handler.close()
             self.removeHandler(handler)

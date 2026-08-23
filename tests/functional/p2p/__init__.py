@@ -2,12 +2,14 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+from pathlib import Path
+
 from btclib_node import Node
 from btclib_node.config import Config
 from tests.helpers import get_random_port, wait_until_listening
 
 
-def test_init(tmp_path):
+def test_init(tmp_path: Path) -> None:
     # a port of its own, as every other node in the suite has: left to
     # the chain's default this binds regtest's fixed 18444, and a second
     # suite running anywhere on the machine takes it. The bind then

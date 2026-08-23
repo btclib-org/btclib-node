@@ -2,25 +2,29 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+from btclib.block import Block
+from btclib.tx.tx import Tx
 from btclib.tx.tx_in import OutPoint
 from btclib.tx.tx_out import TxOut
 
 from btclib_node.block_db import RevBlock
+from btclib_node.db import KeyValueStore
+from btclib_node.log import Logger
 
 
 class UtxoIndex:
-    def __init__(self, parent_db, logger):
+    def __init__(self, parent_db: KeyValueStore, logger: Logger) -> None:
         self.db = parent_db
 
-        self.removed_utxos = set()
-        self.updated_utxo_set = {}
+        self.removed_utxos: set[bytes] = set()
+        self.updated_utxo_set: dict[bytes, TxOut] = {}
 
         self.logger = logger
 
-    def add_block(self, block):
-        removed = []
-        added = []
-        complete_transactions = []
+    def add_block(self, block: Block) -> tuple[list[tuple[list[TxOut], Tx]], RevBlock]:
+        removed: list[tuple[OutPoint, TxOut]] = []
+        added: list[OutPoint] = []
+        complete_transactions: list[tuple[list[TxOut], Tx]] = []
 
         for i, tx_out in enumerate(block.transactions[0].vout):
             out_point = OutPoint(block.transactions[0].id, i, check_validity=False)
@@ -30,21 +34,22 @@ class UtxoIndex:
         for tx in block.transactions[1:]:
             tx_id = tx.id
 
-            prev_outputs = []
+            prev_outputs: list[TxOut] = []
 
             for tx_in in tx.vin:
                 prevout_bytes = tx_in.prev_out.serialize(check_validity=False)
 
                 if prevout_bytes in self.removed_utxos:
                     raise Exception
+                prevout: TxOut
                 if prevout_bytes in self.updated_utxo_set:
                     prevout = self.updated_utxo_set[prevout_bytes]
                     prev_outputs.append(prevout)
                     self.updated_utxo_set.pop(prevout_bytes)
                 else:
-                    prevout = self.db.get(b"utxo-" + prevout_bytes)
-                    if prevout:
-                        prevout = TxOut.parse(prevout, check_validity=False)
+                    prevout_data = self.db.get(b"utxo-" + prevout_bytes)
+                    if prevout_data:
+                        prevout = TxOut.parse(prevout_data, check_validity=False)
                         prev_outputs.append(prevout)
                         self.removed_utxos.add(prevout_bytes)
                     else:
@@ -59,13 +64,13 @@ class UtxoIndex:
                 )
                 added.append(out_point)
 
-            complete_transactions.append([prev_outputs, tx])
+            complete_transactions.append((prev_outputs, tx))
 
         rev_block = RevBlock(hash=block.header.hash, to_add=removed, to_remove=added)
 
         return complete_transactions, rev_block
 
-    def apply_rev_block(self, rev_block):
+    def apply_rev_block(self, rev_block: RevBlock) -> None:
         for out_point in rev_block.to_remove:
             out_point_bytes = out_point.serialize(check_validity=False)
 
@@ -81,7 +86,7 @@ class UtxoIndex:
         for out_point, tx_out in rev_block.to_add:
             self.updated_utxo_set[out_point.serialize(check_validity=False)] = tx_out
 
-    def finalize(self, wb=None):
+    def finalize(self, wb: KeyValueStore | None = None) -> None:
         db = wb or self.db
         for x in self.removed_utxos:
             db.delete(b"utxo-" + x)
@@ -90,6 +95,6 @@ class UtxoIndex:
         self.removed_utxos = set()
         self.updated_utxo_set = {}
 
-    def rollback(self):
+    def rollback(self) -> None:
         self.removed_utxos = set()
         self.updated_utxo_set = {}

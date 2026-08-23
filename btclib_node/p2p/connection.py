@@ -4,63 +4,79 @@
 
 import asyncio
 import secrets
+import socket
 import time
+from concurrent.futures import Future
 from io import BytesIO
+from typing import TYPE_CHECKING, cast, override
 
 from btclib.exceptions import BTClibValueError, IncompleteMessageError
 from btclib.p2p.address import NetworkAddress, ServiceFlags
+from btclib.p2p.addrv2 import NetworkAddressV2
 from btclib.p2p.handshake import Version
 from btclib.p2p.keepalive import Ping
 from btclib.p2p.message import Message
+from btclib.p2p.payload import Payload
 
 from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion
 from btclib_node.p2p.address import network_address
 from btclib_node.p2p.callbacks import handshake_callbacks
 
+if TYPE_CHECKING:
+    from btclib_node import Node
+    from btclib_node.p2p.manager import P2pManager
+
 
 class Connection:
-    def __init__(self, manager, client, address, id, inbound):
+    def __init__(
+        self,
+        manager: P2pManager,
+        client: socket.socket,
+        address: NetworkAddressV2,
+        id: int,
+        inbound: bool,
+    ) -> None:
         super().__init__()
 
         self.id = id
         self.manager = manager
-        self.node = manager.node
+        self.node: Node = manager.node
 
         self.loop = manager.loop
-        self.client = client
-        self.address = address
+        self.client: socket.socket = client
+        self.address: NetworkAddressV2 = address
         self.buffer = b""
-        self.task = None
+        self.task: Future[None] | None = None
 
-        self.status = P2pConnStatus.Open
-        self.inbound = inbound
+        self.status: P2pConnStatus = P2pConnStatus.Open
+        self.inbound: bool = inbound
 
-        self.version_message = None
-        self.wtxidrelay_received = False
+        self.version_message: Version | None = None
+        self.wtxidrelay_received: bool = False
 
         # BIP37's default until the peer's version says otherwise, which
         # is what callbacks.version writes here
-        self.relay_tx = True
-        self.prefer_addressv2 = False
+        self.relay_tx: bool = True
+        self.prefer_addressv2: bool = False
 
-        self.last_receive = time.time()
-        self.last_send = time.time()
-        self.ping_nonce = None
-        self.ping_sent = 0
-        self.latency = 0
+        self.last_receive: float = time.time()
+        self.last_send: float = time.time()
+        self.ping_nonce: int | None = None
+        self.ping_sent: float = 0
+        self.latency: float = 0
 
-        self.download_queue = []
-        self.pending_eviction = False
-        self.last_block_timestamp = time.time()
+        self.download_queue: list[bytes] = []
+        self.pending_eviction: bool = False
+        self.last_block_timestamp: float = time.time()
 
-    def stop(self, cancel_task=True):
+    def stop(self, cancel_task: bool = True) -> None:
         self.manager.peer_db.add_active_address(self.address)
         self.status = P2pConnStatus.Closed
         if self.task and cancel_task:
             self.task.cancel()
         self.client.close()
 
-    async def run(self, connect=True):
+    async def run(self, connect: bool = True) -> None:
         await self.send_version()
         while self.status < P2pConnStatus.Closed:
             data = await self.loop.sock_recv(self.client, 1024)
@@ -72,13 +88,13 @@ class Connection:
             except Exception:
                 return self.stop(cancel_task=False)
 
-    async def _send(self, data):
+    async def _send(self, data: bytes) -> None:
         try:
             await self.loop.sock_sendall(self.client, data)
         except OSError:  # probably connection dropped
             pass
 
-    async def async_send(self, payload):
+    async def async_send(self, payload: Payload) -> None:
         self.node.logger.debug(f"Sending message: {payload.command}")
 
         try:
@@ -107,10 +123,10 @@ class Connection:
         await self._send(data)
         self.last_send = time.time()
 
-    def send(self, msg):
+    def send(self, msg: Payload) -> None:
         asyncio.run_coroutine_threadsafe(self.async_send(msg), self.loop)
 
-    async def send_version(self):
+    async def send_version(self) -> None:
         # compact_filters is BIP157's NODE_COMPACT_FILTERS, and saying
         # it promises an answer to getcfilters, getcfheaders and
         # getcfcheckpt for every block of the chain. The filter index is
@@ -129,6 +145,12 @@ class Connection:
         self.manager.nonces.append(nonce)
         self.manager.nonces = self.manager.nonces[:10]
 
+        # A connection exists only once P2pManager.start() has run, and
+        # that only happens with a port to listen on (Node.run guards
+        # it on self.p2p_port): the type is wider than the invariant,
+        # so this is a cast rather than a check that would be dead code
+        # on every path that reaches here.
+        port = cast(int, self.manager.port)
         version = Version(
             version=ProtocolVersion,
             services=services,
@@ -142,7 +164,7 @@ class Connection:
             # zero octets btclib writes, and no peer reads the field:
             # Core has ignored it since it started learning its own
             # address elsewhere
-            addr_from=NetworkAddress(services=services, port=self.manager.port),
+            addr_from=NetworkAddress(services=services, port=port),
             nonce=nonce,
             # octets and not text: Core reads the subversion into a
             # string it sanitizes only for the log, so btclib carries
@@ -153,7 +175,7 @@ class Connection:
         )
         await self.async_send(version)
 
-    def send_ping(self):
+    def send_ping(self) -> None:
         # The nonce is the sender's to choose, and btclib's Ping defaults
         # it to zero rather than drawing one. Zero is also what
         # ping_nonce means "no ping outstanding", so it is drawn here and
@@ -164,7 +186,7 @@ class Connection:
         self.ping_nonce = ping_msg.nonce
         self.send(ping_msg)
 
-    def parse_messages(self):
+    def parse_messages(self) -> None:
         # A stream and not the bytes: Message.parse consumes one message
         # and leaves the position after it, so several whole messages in
         # one read are taken one at a time, and a partial one rewinds.
@@ -198,7 +220,8 @@ class Connection:
             if stream.tell():
                 self.buffer = stream.read()
 
-    def __repr__(self):
+    @override
+    def __repr__(self) -> str:
         try:
             peer = self.client.getpeername()
             out = f"Connection to {peer[0]}:{peer[1]}"

@@ -27,7 +27,13 @@ dynamically on request, as malicious peers may be able to perform DoS
 attacks by requesting small filters derived from large blocks."
 """
 
+from btclib.block import Block
 from btclib.block.block_filter import BasicBlockFilter, prevout_scripts_from_utxos
+
+from btclib_node.block_db import BlockDB, RevBlock
+from btclib_node.chains import Chain
+from btclib_node.db import KeyValueStore
+from btclib_node.log import Logger
 
 _FILTER = b"cfilter-"
 _HEADER = b"cfheader-"
@@ -45,11 +51,11 @@ _CATCH_UP_BATCH = 500
 
 
 class FilterIndex:
-    def __init__(self, parent_db, chain, logger):
+    def __init__(self, parent_db: KeyValueStore, chain: Chain, logger: Logger) -> None:
         self.db = parent_db
         self.logger = logger
 
-        self.pending = {}
+        self.pending: dict[bytes, tuple[bytes, bytes]] = {}
 
         # no peer serves the genesis block and no `getdata` asks for it,
         # so its filter is built from the chain's own copy, here, rather
@@ -59,19 +65,19 @@ class FilterIndex:
             self.add_block(chain.genesis_block, [])
             self.finalize()
 
-    def get_filter(self, block_hash):
+    def get_filter(self, block_hash: bytes) -> bytes | None:
         """Return the serialized filter of a block, or None."""
         if block_hash in self.pending:
             return self.pending[block_hash][0]
         return self.db.get(_FILTER + block_hash)
 
-    def get_header(self, block_hash):
+    def get_header(self, block_hash: bytes) -> bytes | None:
         """Return the filter header of a block, or None."""
         if block_hash in self.pending:
             return self.pending[block_hash][1]
         return self.db.get(_HEADER + block_hash)
 
-    def get_filter_hash(self, block_hash):
+    def get_filter_hash(self, block_hash: bytes) -> bytes | None:
         """Return the filter hash of a block, in display order, or None."""
         filter_bytes = self.get_filter(block_hash)
         if filter_bytes is None:
@@ -83,11 +89,12 @@ class FilterIndex:
             filter_bytes, block_hash, check_validity=False
         ).hash
 
-    def add_block(self, block, prevout_scripts):
+    def add_block(self, block: Block, prevout_scripts: list[bytes]) -> None:
         """Index the filter of a block whose parent is already indexed."""
         block_hash = block.header.hash
         if self.get_filter(block_hash) is not None:
             return
+        previous_header: bytes | None
         if block_hash == self.genesis_hash:
             previous_header = NO_PREVIOUS_FILTER_HEADER
         else:
@@ -104,7 +111,7 @@ class FilterIndex:
             block_filter.header(previous_header),
         )
 
-    def add_connected_block(self, block, rev_block):
+    def add_connected_block(self, block: Block, rev_block: RevBlock) -> None:
         """Index a block from the reverse patch its connection produced.
 
         `RevBlock.to_add` is the output every input of the block spent,
@@ -112,7 +119,7 @@ class FilterIndex:
         """
         self.add_block(block, prevout_scripts_from_utxos(block, dict(rev_block.to_add)))
 
-    def catch_up(self, active_chain, block_db):
+    def catch_up(self, active_chain: list[bytes], block_db: BlockDB) -> int:
         """Index every block of the active chain that has no filter yet.
 
         A datadir synced before this index existed has the blocks and
@@ -150,7 +157,7 @@ class FilterIndex:
         self.finalize()
         return built
 
-    def finalize(self, wb=None):
+    def finalize(self, wb: KeyValueStore | None = None) -> None:
         """Write what is held, into `wb` if there is one and atomically.
 
         The header before the filter, and the pair in one write. Both
@@ -166,11 +173,11 @@ class FilterIndex:
         with self.db.write_batch() as batch:
             self._write(batch)
 
-    def _write(self, db):
+    def _write(self, db: KeyValueStore) -> None:
         for block_hash, (filter_bytes, header) in self.pending.items():
             db.put(_HEADER + block_hash, header)
             db.put(_FILTER + block_hash, filter_bytes)
         self.pending = {}
 
-    def rollback(self):
+    def rollback(self) -> None:
         self.pending = {}
