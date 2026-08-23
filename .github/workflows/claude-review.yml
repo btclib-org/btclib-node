@@ -8,9 +8,10 @@ name: claude-review
 #
 # Not a required check, and it must not become one. What it produces is a
 # comment, which is an opinion for the author to weigh; a review that gated
-# a merge would make a model's judgement a branch rule. That holds with
-# particular force here, where it is for now the *only* workflow: being the
-# only check is not a reason to become the required one.
+# a merge would make a model's judgement a branch rule. lint.yml and
+# test.yml already run beside it on the same pull request and are
+# required checks on main; this one deliberately is not, for the reason
+# just given.
 #
 # It is one job on every pull request, which is not free: the organization
 # has twenty concurrent jobs and the other repositories' matrices compete
@@ -117,6 +118,19 @@ jobs:
         uses: anthropics/claude-code-action@d40ddef4c030e508327d6e35a9c45f3368482c50 # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # dependabot opens a pull request here every Thursday, and the
+          # action refuses a run a bot initiated unless that bot is named:
+          # "Workflow initiated by non-human actor". Without this those
+          # are the one class of pull request that can never carry the
+          # ack of record, which REVIEWING.md says comes from this
+          # workflow. Named rather than `*`, which this input's own
+          # description warns against on a public repository: with it an
+          # external App could invoke this action carrying a prompt it
+          # wrote.
+          # The mention job below takes no such input, deliberately --
+          # what triggers it is somebody writing @claude, and a bot doing
+          # that is not a thing this repository has asked for
+          allowed_bots: "dependabot[bot]"
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
@@ -153,10 +167,16 @@ jobs:
           # folded rather than literal, and `gh pr` rather than the three
           # subcommands spelled out: the flag has to reach the CLI as one
           # line, and the line that spells out comment, diff and view is
-          # past the 100 columns yamllint holds this file to
+          # past the 100 columns yamllint holds this file to. git and
+          # gh issue view/api are what a review needs and `gh pr diff`
+          # alone does not give: history to check a claim about what the
+          # tree looked like before this diff, and the issues a pull
+          # request says it closes rather than only its own restatement
+          # of them
           claude_args: >-
             --allowedTools
-            "mcp__github_inline_comment__create_inline_comment,Bash(gh pr:*),Read,Grep,Glob"
+            "mcp__github_inline_comment__create_inline_comment,Bash(gh pr:*),
+            Bash(git:*),Bash(gh issue view:*),Bash(gh api:*),Read,Grep,Glob"
 
       # the action refuses to run when this file differs from the copy on
       # the default branch -- a pull request must not be able to edit the
