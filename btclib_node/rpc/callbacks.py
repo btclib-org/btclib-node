@@ -111,12 +111,19 @@ def get_peer_info(node: Node, conn: Connection, _: list[Any]) -> list[dict[str, 
             # connection that reached Connected without one
             version_message = cast(Version, p2p_conn.version_message)
             services = version_message.services
+            addr_recv = version_message.addr_recv
 
             conn_dict: dict[str, Any] = {}
             conn_dict["id"] = id
-            conn_dict["addr"] = f"{addr[0]}:{addr[1]}"
-            conn_dict["addrbind"] = f"{addrbind[0]}:{addrbind[1]}"
-            conn_dict["addrlocal"] = ip_and_port(version_message.addr_recv)
+            # Core writes addrbind with `CService::ToStringAddrPort`,
+            # and addrlocal from the string `CopyStats` builds with it;
+            # its addr is `m_addr_name`, which is that same string only
+            # where the peer was not dialled by name. Here addr is
+            # `getpeername`'s and never a name, so one formatter serves
+            # them all.
+            conn_dict["addr"] = ip_and_port(addr[0], addr[1])
+            conn_dict["addrbind"] = ip_and_port(addrbind[0], addrbind[1])
+            conn_dict["addrlocal"] = ip_and_port(str(addr_recv.ip), addr_recv.port)
             # `.name` and not a lookup that tolerates a bare int: a
             # BIP155 id no member names reaches PeerDB but cannot reach
             # a Connection, `peer_address` building only the two IP

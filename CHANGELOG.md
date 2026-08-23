@@ -486,3 +486,35 @@ to check the guess.
   `tests/conftest.py` drops out of the report as fully covered. A fix of
   this shape has to be tested deliberately rather than left for the
   floor to ask.
+
+### `getpeerinfo` brackets an IPv6 host the way Core does
+
+- **A peer on IPv6 is reported as `[2001:db8::1]:8333`** (#147). Run
+  against a snapshot of `55c5512`, `get_peer_info` answered
+  `2001:db8::1:8333` for a peer at that address on that port, where the
+  host and the port cannot be told apart: `2001:db8::1:8333` is itself
+  an address, so a client splitting on the last colon reads one of the
+  two wrong. `addr`, `addrbind` and `addrlocal` were each written that
+  way, and each now carries the brackets.
+- **The rule is `CService::ToStringAddrPort`'s**, in Core's
+  `src/netaddress.cpp`, which writes
+  `"[" + ToStringAddr() + "]:" + port_str` for every network its
+  `IsIPv4() || IsTor() || IsI2P() || IsInternal()` does not name.
+  Core's own `getpeerinfo` puts each of those fields through it:
+  `src/rpc/net.cpp` writes `addrbind` from it, `addr` from
+  `m_addr_name`, which `src/net.cpp` sets to it where no name was
+  dialled, and `addrlocal` from the string `CopyStats` builds with it.
+  This node has no onion or i2p socket to read a peer from, so IPv4 is
+  the whole of what its own answer leaves unbracketed.
+- **A v4-mapped host is unwrapped rather than bracketed**, so a v4 peer
+  reads `1.2.3.4:8333`. That is Core's answer too, `SetLegacyIPv6`
+  filing a mapped address under NET_IPV4, and it is what a
+  `NetworkAddress` needs, holding every address in the sixteen octets
+  of an IPv6 one. Whether a BIP155 record spelled that way should be
+  kept at all, and what a peer reads it back as, is a different
+  question, and #151 is it.
+- **`btclib_node/p2p/address.py`'s `ip_and_port` takes a host's text
+  and a port**, which is what lets the fields share it: `getpeername`
+  and `getsockname` answer with a tuple and have no `NetworkAddress` to
+  offer. A host that is not an IP address is refused rather than shown
+  with brackets guessed at, `ipaddress.ip_address` being what refuses.
