@@ -83,6 +83,44 @@ to check the guess.
   rather than asked for (#233) — unlike Core's own
   `HandleUnconnectingHeaders`, which asks regardless of batch size.
 
+### A header out of parent-before-child order no longer vanishes
+
+- **`BlockIndex.add_headers` refuses the whole batch, rather than
+  silently dropping one header, when a header's parent is itself later
+  in the same batch.** A header whose parent had not yet arrived was
+  left out of `pending` with a bare `continue`, and never retried once
+  its parent was processed a few lines later in the same call: neither
+  an exception nor the batch's own return value said anything had been
+  lost (#214). A peer is not required to send a `headers` message in
+  strict parent-before-child order, and Core's own per-message
+  continuity check (`CheckHeadersAreContinuous`, `net_processing.cpp`)
+  refuses such a message unconditionally rather than accepting part of
+  it; this now raises `BTClibValueError` the same way a header failing
+  its own proof-of-work or context check already does, so the caller
+  can tell the batch was refused. A header whose parent this index has
+  never heard of at all, from this batch or an earlier one, is
+  unaffected: that batch still answers `None`, not a refusal (#75).
+
+### `header_index` drops a chain once `invalidate` has proved it bad
+
+- **`BlockIndex.header_index` no longer holds a chain `invalidate` has
+  since marked bad.** `add_headers` weighed a candidate for
+  `header_index` purely by chainwork, the same way it weighed
+  `block_candidates` before #77/#120/#125, so a peer sending more
+  headers onto an already-invalidated fork kept growing what this index
+  reported as its best known header chain, and `invalidate` itself never
+  touched `header_index` for a chain it already held (#218). Both are
+  fixed the way Core's own `InvalidateBlock` (`src/validation.cpp`)
+  recomputes `m_best_header`: `add_headers` skips a header computed
+  invalid the same way it already skips it for `block_candidates`, and
+  `invalidate` rescans the whole index to rebuild `header_index` when,
+  and only when, the block it just invalidated was part of it.
+  `generate_header_index`, which shares the rescan with `invalidate`,
+  used to build `header_index` from a reloaded database without ever
+  reading `BlockStatus` either, so a restart could bring an invalidated
+  chain back as the best known one; it now reads it the same way
+  `generate_block_candidates` already did.
+
 ### `get_cfilters` stops once the connection it is answering has closed
 
 - **`get_cfilters`'s loop over a `getcfilters` range now breaks once
