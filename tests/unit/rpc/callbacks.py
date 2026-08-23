@@ -6,8 +6,9 @@
 
 The functional tests drive the happy path of a few of these through a
 real client. What is left is the rest of the table, and the branches a
-client reaches only by asking about a block at the tip, a peer that goes
-away mid-lookup, or a transaction the mempool refuses.
+client reaches only by asking about a block at the tip or on a fork this
+node did not follow, a peer that goes away mid-lookup, or a transaction
+the mempool refuses.
 """
 
 from types import SimpleNamespace
@@ -294,14 +295,33 @@ def test_a_transaction_the_mempool_will_not_have_is_not_reported_relayed(
     assert broadcast == []
 
 
-def a_header_index(chain: list[BlockHeader]) -> Any:
-    hashes = [header.hash for header in chain]
+def a_header_index(
+    chain: list[BlockHeader], off_chain: list[BlockHeader] | None = None
+) -> Any:
+    """An index whose two lookups are two collections, as the real one's are.
+
+    `header_index` is the best chain and nothing else, where
+    `get_block_info` answers for every header the node has indexed, the
+    losing side of a fork included. A fake keying both off one list
+    cannot hold a block that is known and not on the best chain, which
+    is why btclib-org/btclib-node#87 was an issue rather than a test.
+
+    A height is the parent's plus one, which is how `BlockInfo.index` is
+    built, so a header off the best chain is at the height its own fork
+    puts it and not at a position in a chain it is not on.
+    """
+
+    def block(header: BlockHeader, height: int) -> Any:
+        return SimpleNamespace(header=header, index=height, chainwork=height + 1)
+
+    blocks = {header.hash: block(header, height) for height, header in enumerate(chain)}
+    for header in off_chain or []:
+        blocks[header.hash] = block(
+            header, blocks[header.previous_block_hash].index + 1
+        )
     return SimpleNamespace(
-        header_index=hashes,
-        get_block_info=lambda block_hash: SimpleNamespace(
-            header=chain[hashes.index(block_hash)],
-            chainwork=hashes.index(block_hash) + 1,
-        ),
+        header_index=[header.hash for header in chain],
+        get_block_info=blocks.__getitem__,
     )
 
 
@@ -334,6 +354,53 @@ def test_the_first_header_has_nothing_before_it_and_the_last_nothing_after() -> 
     assert last["previousblockhash"] == chain[-2].hash
     assert "nextblockhash" not in last
     assert last["confirmations"] == 1
+
+
+def test_a_block_off_the_best_chain_is_described_and_not_refused() -> None:
+    # what Core's blockheaderToJSON answers for one: the height the
+    # block has on its own fork, confirmations -1 in place of a depth,
+    # the parent it names, and no nextblockhash
+    chain = generate_random_header_chain(3, RegTest().genesis.hash)
+    fork = generate_random_header_chain(1, chain[0].hash)
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chainstate=SimpleNamespace(block_index=a_header_index(chain, fork))
+        ),
+    )
+    stale = get_block_header(node, _CONN, [fork[0].hash.hex()])
+    assert stale["hash"] == fork[0].hash
+    assert stale["height"] == 1
+    assert stale["confirmations"] == -1
+    assert stale["previousblockhash"] == chain[0].hash
+    assert "nextblockhash" not in stale
+
+    # the block the best chain kept at that height is another block, and
+    # is answered as before
+    best = get_block_header(node, _CONN, [chain[1].hash.hex()])
+    assert best["hash"] != stale["hash"]
+    assert best["height"] == 1
+    assert best["confirmations"] == 2
+    assert best["nextblockhash"] == chain[2].hash
+
+
+def test_a_fork_reaching_past_the_tip_is_not_read_off_the_end_of_the_chain() -> None:
+    # a fork longer than the best chain is still not it, work and not
+    # length being what decides -- and the best chain has no position to
+    # answer for a height past its own
+    chain = generate_random_header_chain(2, RegTest().genesis.hash)
+    fork = generate_random_header_chain(3, chain[0].hash)
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chainstate=SimpleNamespace(block_index=a_header_index(chain, fork))
+        ),
+    )
+    past_the_tip = get_block_header(node, _CONN, [fork[-1].hash.hex()])
+    assert past_the_tip["height"] == 3
+    assert past_the_tip["confirmations"] == -1
+    assert past_the_tip["previousblockhash"] == fork[-2].hash
+    assert "nextblockhash" not in past_the_tip
 
 
 def test_the_tip_and_the_block_at_a_height_are_read_off_the_active_chain() -> None:

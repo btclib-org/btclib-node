@@ -38,14 +38,26 @@ def get_block_header(node: Node, conn: Connection, params: list[Any]) -> dict[st
     out: dict[str, Any] = header.to_dict()
     out["hash"] = header.hash
 
-    # raises for a block that is known and not on the best chain,
-    # where Core answers with confirmations -1: btclib-org/btclib-node#87
-    height = header_index.index(block_hash)
+    # the block's own height, which is what Core answers with for a
+    # block off the best chain as much as for one on it. `BlockInfo`
+    # carries it for every header the index holds, where a position in
+    # header_index is a number only the ones on the best chain have.
+    height = block_info.index
     out["height"] = height
-    out["confirmations"] = len(header_index) - height
+    on_best_chain = height < len(header_index) and header_index[height] == block_hash
+
+    # Core's ComputeNextBlockAndDepth: a block off the best chain is
+    # answered with -1 rather than a depth, and with no nextblockhash --
+    # nothing follows a block this chain did not keep. The depth itself
+    # is counted over the best header chain, where Core counts it over
+    # the blocks it has validated: btclib-org/btclib-node#178
+    out["confirmations"] = len(header_index) - height if on_best_chain else -1
     if height > 0:
-        out["previousblockhash"] = header_index[height - 1]
-    if height < len(header_index) - 1:
+        # the header's own parent, which for a block on the best chain
+        # is header_index[height - 1] and for one off it is the fork's
+        # ancestor: Core answers with pprev either way
+        out["previousblockhash"] = header.previous_block_hash
+    if on_best_chain and height < len(header_index) - 1:
         out["nextblockhash"] = header_index[height + 1]
     out["chainwork"] = block_info.chainwork
 
