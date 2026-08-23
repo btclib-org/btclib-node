@@ -688,6 +688,78 @@ def test_the_tip_and_the_block_at_a_height_are_read_off_the_active_chain() -> No
     assert get_block_hash(node, _CONN, [1]) == chain[1]
 
 
+def a_chain_index_node(chain: list[bytes]) -> Any:
+    return cast(
+        "Node",
+        SimpleNamespace(
+            chainstate=SimpleNamespace(block_index=SimpleNamespace(active_chain=chain))
+        ),
+    )
+
+
+def test_a_negative_height_is_refused_rather_than_read_off_the_chain_s_end() -> None:
+    # btclib-org/btclib-node#234: a negative index used to count from
+    # the end of active_chain, Python's own list semantics, silently
+    # answering the tip's hash for a height nothing asked for. Core
+    # refuses nHeight < 0 outright, src/rpc/blockchain.cpp:600-601
+    node = a_chain_index_node([b"\x11" * 32, b"\x22" * 32])
+    with pytest.raises(RpcError) as raised:
+        get_block_hash(node, _CONN, [-1])
+    assert raised.value.code == RpcErrorCode.INVALID_PARAMETER
+    assert raised.value.message == "Block height out of range"
+
+
+def test_a_height_past_the_tip_is_refused() -> None:
+    node = a_chain_index_node([b"\x11" * 32, b"\x22" * 32])
+    with pytest.raises(RpcError) as raised:
+        get_block_hash(node, _CONN, [2])
+    assert raised.value.code == RpcErrorCode.INVALID_PARAMETER
+    assert raised.value.message == "Block height out of range"
+
+
+def test_a_height_of_the_wrong_json_type_is_named_rather_than_faulted() -> None:
+    # btclib-org/btclib-node#234: int(None) raises TypeError, int("x")
+    # raises ValueError, neither caught before this fix, both reaching
+    # -32603 Internal Error
+    node = a_chain_index_node([b"\x11" * 32])
+    for bad, type_name in (
+        (None, "null"),
+        ("1", "string"),
+        ([1], "array"),
+        (True, "bool"),
+    ):
+        with pytest.raises(RpcError) as raised:
+            get_block_hash(node, _CONN, [bad])
+        assert raised.value.code == RpcErrorCode.TYPE_ERROR
+        assert raised.value.message == (
+            f"JSON value of type {type_name} is not of expected type number"
+        )
+
+
+def test_a_fractional_height_is_refused_the_way_core_s_own_parse_refuses_it() -> None:
+    # a JSON number written with a decimal point is still VNUM, so it
+    # passes the check above the way an int does, but
+    # UniValue::getInt<int>() fails on it regardless of its value --
+    # RPC_MISC_ERROR, not RPC_TYPE_ERROR, src/rpc/server.cpp:884-886
+    node = a_chain_index_node([b"\x11" * 32])
+    with pytest.raises(RpcError) as raised:
+        get_block_hash(node, _CONN, [1.0])
+    assert raised.value.code == RpcErrorCode.MISC_ERROR
+    assert raised.value.message == "JSON integer out of range"
+
+
+def test_no_height_at_all_is_answered_with_the_usage() -> None:
+    # unquoted: RPCArg::ToString(oneline=true) quotes an argument's name
+    # only for Type::STR/STR_HEX, and height is Type::NUM
+    # (src/rpc/blockchain.cpp:585, src/rpc/util.cpp:1265-1286) -- unlike
+    # blockhash's own quoted usage string, which is STR_HEX
+    node = a_chain_index_node([b"\x11" * 32])
+    with pytest.raises(RpcError) as raised:
+        get_block_hash(node, _CONN, [])
+    assert raised.value.code == RpcErrorCode.MISC_ERROR
+    assert raised.value.message == "getblockhash height"
+
+
 def test_a_transaction_whose_scripts_do_not_verify_is_still_answered_with_its_txid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

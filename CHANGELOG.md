@@ -980,3 +980,35 @@ to check the guess.
   `MempoolToJSON`'s own `RPC_INVALID_PARAMETER` for the combination
   (`src/rpc/mempool.cpp:608-611`), rather than silently answering one
   and dropping the other.
+
+### `getblockhash`'s height, checked and bounded the way Core's is
+
+- **A negative height no longer reads the active chain from its own
+  end** (#234). `active_chain[int(params[0])]` handed Python's own list
+  indexing a negative number, which counts from the end rather than
+  raising, so `getblockhash` with `-1` silently answered the tip's hash
+  — a wrong answer, not an error. Core refuses `nHeight < 0` outright
+  (`src/rpc/blockchain.cpp:599-601`), the same `RPC_INVALID_PARAMETER`,
+  `"Block height out of range"`, a height past the tip already got.
+- **A height of the wrong JSON type, or none at all, used to reach
+  `int()` unguarded** (#234), the same shape #212 and #219 named on
+  `getblockheader`'s `blockhash` and `getrawmempool`'s `verbose`:
+  `int(None)` raises `TypeError`, `int("x")` raises `ValueError`, and an
+  empty `params` raises `IndexError`, none of them caught, all three
+  reaching `-32603 Internal Error`. `height` is declared
+  `RPCArg::Type::NUM` (`src/rpc/blockchain.cpp:585`); a JSON value of
+  any other type is now `RPC_TYPE_ERROR`, the same check
+  `RPCMethod::HandleRequest` makes before its own handler runs
+  (`src/rpc/util.cpp:653-661`), and an omitted height is
+  `RPC_MISC_ERROR` with the method's own usage — `getblockhash height`,
+  unquoted, unlike `getblockheader`'s own quoted `"blockhash"`:
+  `RPCArg::ToString(oneline=true)` quotes an argument's name only for
+  `Type::STR`/`STR_HEX`, and `height` is `Type::NUM`
+  (`src/rpc/util.cpp:1265-1286`).
+- **A height written as a JSON number with a decimal point is
+  `RPC_MISC_ERROR`, not silently truncated.** `int(1.5)` truncates
+  toward zero without complaint; `UniValue::getInt<int>()` fails on any
+  such literal regardless of its value, and the `std::runtime_error` it
+  throws is `ExecuteCommand`'s generic `catch (const std::exception&)`
+  case, answered `RPC_MISC_ERROR` and not `RPC_TYPE_ERROR`
+  (`src/rpc/server.cpp:884-886`).

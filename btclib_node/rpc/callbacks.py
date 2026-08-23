@@ -26,7 +26,52 @@ def get_best_block_hash(node: Node, conn: Connection, _: list[Any]) -> bytes:
 
 
 def get_block_hash(node: Node, conn: Connection, params: list[Any]) -> bytes:
-    return node.chainstate.block_index.active_chain[int(params[0])]
+    active_chain = node.chainstate.block_index.active_chain
+
+    if not params:
+        # the same mechanism get_block_header's own missing-argument
+        # case answers with: RPCMethod::HandleRequest throws HelpResult
+        # for a call short of a required argument, and ExecuteCommand's
+        # `catch (const std::exception& e)` turns that into
+        # JSONRPCError(RPC_MISC_ERROR, e.what()), src/rpc/server.cpp
+        # :884-886. Unquoted, unlike blockhash's own usage string:
+        # RPCArg::ToString(oneline=true) quotes an argument's name only
+        # for Type::STR/STR_HEX, and height is Type::NUM
+        # (src/rpc/blockchain.cpp:585), which formats bare
+        # (src/rpc/util.cpp:1265-1286)
+        raise RpcError(RpcErrorCode.MISC_ERROR, "getblockhash height")
+
+    height = params[0]
+    if isinstance(height, bool) or not isinstance(height, (int, float)):
+        # height is declared RPCArg::Type::NUM (src/rpc/blockchain.cpp
+        # :585); RPCMethod::HandleRequest checks a declared argument's
+        # JSON type before the handler body runs, src/rpc/util.cpp
+        # :653-661 -- a JSON bool is its own VBOOL, not VNUM
+        # (src/rpc/util.cpp:878-890), so it is refused here the same
+        # way blockhash's own wrong-typed argument is
+        raise RpcError(
+            RpcErrorCode.TYPE_ERROR,
+            f"JSON value of type {json_type_name(height)} is "
+            "not of expected type number",
+        )
+    if isinstance(height, float):
+        # a JSON number literal written with a decimal point or
+        # exponent is still VNUM, so it passes the check above, but
+        # UniValue::getInt<int>()'s std::from_chars fails on it
+        # regardless of its value; the std::runtime_error("JSON integer
+        # out of range") it throws is ExecuteCommand's generic
+        # `catch (const std::exception&)` case, RPC_MISC_ERROR and not
+        # RPC_TYPE_ERROR (src/rpc/server.cpp:884-886, src/univalue
+        # /include/univalue.h:139-150)
+        raise RpcError(RpcErrorCode.MISC_ERROR, "JSON integer out of range")
+
+    if height < 0 or height >= len(active_chain):
+        # src/rpc/blockchain.cpp:599-601: one check either direction,
+        # and the same message both ways -- height < 0 is what used to
+        # read the active chain from its own end instead of raising
+        raise RpcError(RpcErrorCode.INVALID_PARAMETER, "Block height out of range")
+
+    return active_chain[height]
 
 
 def get_block_header(
