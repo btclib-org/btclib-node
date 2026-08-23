@@ -22,9 +22,18 @@ class Mempool:
         # Core's own external-tracking counter, `CTxMemPool::m_sequence_number`
         # (`src/txmempool.h:200-202`): "incremented once every time a
         # transaction is added or removed from the mempool for any reason".
-        # `getrawmempool`'s `mempool_sequence` is a read of this value, not
-        # itself a bump.
-        self.sequence: int = 0
+        # `getrawmempool`'s `mempool_sequence` is a read of this value
+        # (`GetSequence`, `src/txmempool.h:598-600`), not itself a bump.
+        # Core initializes the field to 1, not 0 (`src/txmempool.h:202`),
+        # and bumps it through `GetAndIncrementSequence`'s C++
+        # post-increment (`return m_sequence_number++;`, `:594-596`) --
+        # the value handed to a signal recipient is the one *before* the
+        # bump, but the field itself, which is what `GetSequence` later
+        # reads, is already past it. Starting at 1 here is what makes a
+        # fresh mempool answer `mempool_sequence: 1`, matching Core's own
+        # answer for zero events, and what keeps every later answer at
+        # Core's own N+1 after N add/remove events rather than N.
+        self.sequence: int = 1
 
     def is_full(self) -> bool:
         return self.bytesize >= self.bytesize_limit

@@ -920,12 +920,13 @@ to check the guess.
   `Mempool`'s own running count of the transactions it has added or
   removed, under the key `mempool_sequence`, next to `txids`
   (`src/rpc/mempool.cpp:635-639`). `Mempool` gained a `sequence` field,
-  bumped once in `add_tx` and once in `remove_tx`, on the same branch
-  that already guards each against a no-op — Core's own
-  `m_sequence_number` is "incremented once every time a transaction is
-  added or removed from the mempool for any reason"
-  (`src/txmempool.h:200-202`), and a duplicate add or an absent remove
-  is neither.
+  starting at `1` and bumped once in `add_tx` and once in `remove_tx`, on
+  the same branch that already guards each against a no-op — Core's own
+  `m_sequence_number` starts at `1`, not `0` (`src/txmempool.h:202`), and
+  is "incremented once every time a transaction is added or removed from
+  the mempool for any reason" (`:200-202`), so a fresh mempool with no
+  events answers `mempool_sequence: 1`, not `0`, and a duplicate add or
+  an absent remove is neither an addition nor a removal.
 - **`verbose` and `mempool_sequence` both true is refused**, matching
   `MempoolToJSON`'s own `RPC_INVALID_PARAMETER` for the combination
   (`src/rpc/mempool.cpp:608-611`), rather than silently answering one

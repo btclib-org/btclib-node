@@ -249,12 +249,19 @@ def test_mempool_sequence_attaches_the_mempool_s_own_counter() -> None:
     # ignored; MempoolToJSON's own shape for it is an object carrying
     # both the array and the count, src/rpc/mempool.cpp:635-639
     mempool = Mempool(Logger(debug=True))
-    tx = a_tx()
-    mempool.add_tx(tx)
     node = a_node(mempool=mempool)
 
+    # a fresh mempool answers 1, not 0: Core's own m_sequence_number
+    # starts at 1 (src/txmempool.h:202) and GetSequence (:598-600) is a
+    # plain read of the current value, with zero add/remove events
+    # behind it
+    empty = get_raw_mempool(node, _CONN, [False, True])
+    assert empty == {"txids": [], "mempool_sequence": 1}
+
+    tx = a_tx()
+    mempool.add_tx(tx)
     answer = get_raw_mempool(node, _CONN, [False, True])
-    assert answer == {"txids": [tx.id.hex()], "mempool_sequence": 1}
+    assert answer == {"txids": [tx.id.hex()], "mempool_sequence": 2}
 
     # the counter is the mempool's own, not recomputed by the callback:
     # a second addition after the first answer moves it
@@ -263,7 +270,7 @@ def test_mempool_sequence_attaches_the_mempool_s_own_counter() -> None:
     again = get_raw_mempool(node, _CONN, [None, True])
     assert isinstance(again, dict)
     assert set(again["txids"]) == {tx.id.hex(), second.id.hex()}
-    assert again["mempool_sequence"] == 2
+    assert again["mempool_sequence"] == 3
 
 
 def test_verbose_and_mempool_sequence_together_are_refused() -> None:
