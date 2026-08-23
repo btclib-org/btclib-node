@@ -2,9 +2,8 @@
   // this file mirrors .pre-commit-config.yaml, which is the lint gate: what
   // the editor fixes on save is what the hook would have fixed, so nothing
   // reaches `git commit` for the first time there. extensions.json beside it
-  // names the tool each setting drives. What no extension wraps --
-  // codespell, yamllint, detect-secrets, toml-comment-width, uv-lock and
-  // the pygrep hooks -- is only ever seen by
+  // names the tool each setting drives, and a hook with no entry there is
+  // only ever seen by
   //
   //   uv run pre-commit run --all-files
   //
@@ -13,13 +12,16 @@
   // made and an editor cannot read from pyproject.toml
 
   // there is no pyright among the hooks and mypy is the type gate, so what
-  // Pylance reports is a second opinion nothing enforces, and one this
-  // repository's mypy is not yet strict enough to have reconciled. Off
-  // rather than at its own default; the survey, for whoever wants to see
-  // what it would say, is
+  // Pylance reports is a second opinion nothing enforces. Off rather than
+  // at its own default; the survey, for whoever wants to see what it would
+  // say, is
   //
-  //   uvx pyright --pythonpath .venv/bin/python btclib_node tests
+  //   uvx pyright --pythonpath .venv/bin/python
   //
+  // and it answers errors where `uv run mypy` exits 0. No path list on it:
+  // pyright's defaults exclude every hidden directory, .venv with them, so
+  // what it reads is the directories [tool.mypy]'s `files` names, and a
+  // list here would be a second copy of that one.
   // Completion, hover and go-to-definition are unaffected by this setting
   "python.analysis.typeCheckingMode": "off",
 

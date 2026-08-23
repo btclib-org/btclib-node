@@ -1,10 +1,10 @@
-# btclib_node
+# btclib-node
 
-[btclib_node](https://github.com/btclib-org/btclib_node) is a bitcoin node
-with its consensus and network code written in python, using the
-[btclib](https://github.com/btclib-org/btclib) bitcoin library.
+btclib-node is a bitcoin node with its consensus and network code written
+in python, using the [btclib](https://github.com/btclib-org/btclib)
+bitcoin library.
 
-**btclib_node** succeeded in downloading and validating the entire bitcoin
+**btclib-node** succeeded in downloading and validating the entire bitcoin
 blockchain, starting from version 0.1.0 and, as far as I can tell, is the
 first python implementation that was able to do so
 

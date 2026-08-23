@@ -171,12 +171,20 @@ gh api repos/btclib-org/btclib-node \
 #  "visibility":"public","wiki":true}
 ```
 
-The wiki and the projects board are on, where the aligned siblings turn
-both off. The standard states no rule about either, so this is a
-divergence rather than a decision, and closing it is a settings change
-with no diff to review. A wiki is in any case a second place for
-documentation to go stale, and this tree's documentation sits beside what
-it describes.
+The wiki and the projects board are on, and the standard states no rule
+about either, so each is this repository's own answer rather than a
+divergence from one. The wiki holds nothing, this tree's documentation
+sitting beside what it describes:
+
+```shell
+git ls-remote https://github.com/btclib-org/btclib-node.wiki.git
+# remote: Repository not found.
+git ls-remote https://github.com/btclib-org/btclib-node.git
+# (the refs of this repository)
+```
+
+The second call is what says the first reports the wiki rather than the
+network or the credentials.
 
 ```shell
 gh api repos/btclib-org/btclib-node --jq '.topics | join(", ")'
@@ -245,15 +253,18 @@ rather than this file's.
 
 ```shell
 gh api repos/btclib-org/btclib-node/private-vulnerability-reporting
-# {"enabled":false}
+# {"enabled":true}
 gh api repos/btclib-org/btclib-node/dependabot/alerts --jq 'length'
 ```
 
-**Private vulnerability reporting is off**, where three siblings have it
-on, so this repository has no advisory route of its own and the
-organization's security policy — the one shown here, this tree keeping
-none — gives an address instead. btclib-org/btclib-node#136 is where
-turning it on is tracked; it is a setting only the maintainer can change.
+**Private vulnerability reporting is on**, so *Report a vulnerability* on
+this repository's Security tab opens an advisory only the maintainers
+see. That is where the organization's security policy — the one shown
+here, this tree keeping none — sends a reporter, and the policy states
+the call above rather than the answer, the route being a setting and not
+a file. btclib-org/btclib-node#136 is where
+`.github/ISSUE_TEMPLATE/config.yml`'s link to that policy, rather than to
+the advisory form, is decided.
 
 The second command is what the open alerts are. Every one of them today
 answers `poetry.lock` for its `dependency.manifest_path`, which is a file
