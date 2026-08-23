@@ -58,6 +58,7 @@ from btclib.p2p.limits import (
     MAX_GETCFHEADERS_SIZE,
     MAX_GETCFILTERS_SIZE,
 )
+from btclib.p2p.negotiation import GetAddr, SendHeaders, WtxidRelay
 from btclib.script.witness import Witness
 from btclib.tx.tx import Tx
 
@@ -91,7 +92,6 @@ from btclib_node.p2p.callbacks import (
 from btclib_node.p2p.callbacks import block as block_callback
 from btclib_node.p2p.connection import Connection
 from btclib_node.p2p.manager import P2pManager
-from btclib_node.p2p.messages.empty import Getaddr, Sendheaders, Wtxidrelay
 from btclib_node.p2p.messages.errors import Reject, RejectCode
 from tests.helpers import (
     generate_random_chain,
@@ -274,8 +274,8 @@ def commands(peer: Any) -> list[str]:
 def test_a_version_is_answered_with_what_this_node_speaks() -> None:
     peer = a_peer()
     version(a_handshake_node(), a_version(), peer)
-    assert commands(peer) == ["Wtxidrelay", "SendAddrV2", "Verack"]
-    assert isinstance(peer.sent[0], Wtxidrelay)
+    assert commands(peer) == ["WtxidRelay", "SendAddrV2", "Verack"]
+    assert isinstance(peer.sent[0], WtxidRelay)
     assert isinstance(peer.sent[1], SendAddrV2)
     assert isinstance(peer.sent[2], Verack)
     assert peer.relay_tx is True
@@ -374,15 +374,15 @@ def test_a_verack_completes_the_handshake() -> None:
     verack(a_handshake_node(), b"", peer)
     assert peer.status == P2pConnStatus.Connected
     assert commands(peer) == [
-        "Sendheaders",
+        "SendHeaders",
         "SendCmpct",
         "ping",
-        "Getaddr",
+        "GetAddr",
         "GetHeaders",
     ]
-    assert isinstance(peer.sent[0], Sendheaders)
+    assert isinstance(peer.sent[0], SendHeaders)
     assert isinstance(peer.sent[1], SendCmpct)
-    assert isinstance(peer.sent[3], Getaddr)
+    assert isinstance(peer.sent[3], GetAddr)
     assert isinstance(peer.sent[4], GetHeaders)
     assert not peer.stopped
 

@@ -65,6 +65,22 @@ to check the guess.
   moves into the batch `update_chain` commits on success, where the rest
   of the chainstate already wrote.
 
+### The command-only messages are btclib's
+
+- **`getaddr`, `mempool`, `sendheaders` and `wtxidrelay` are
+  `btclib.p2p.negotiation`'s `GetAddr`, `Mempool`, `SendHeaders` and
+  `WtxidRelay`, and `btclib_node/p2p/messages/empty.py` goes with the
+  copies it held** (#196). btclib defines the wire format these commands
+  travel under, so a codec for them kept here is one this tree has to
+  hold in step with a format it does not own.
+
+- **`btclib_node/p2p/messages/` defines BIP61's `reject` alone.**
+  Bitcoin Core's `NetMsgType` has no entry for that command and
+  `btclib.p2p` carries no codec for it. `btclib.p2p.negotiation`
+  declares `FeeFilter` beside the four taken here. Neither `feefilter`
+  nor `mempool` is a key in this node's dispatch tables, and #94 is
+  where the first is wired up.
+
 ### `enable_error_code` holds only codes that need enabling
 
 - **`REVIEWING.md`'s *The gates are the evidence* excepts no gate from

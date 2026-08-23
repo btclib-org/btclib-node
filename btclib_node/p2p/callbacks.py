@@ -35,13 +35,13 @@ from btclib.p2p.limits import (
     MAX_GETCFHEADERS_SIZE,
     MAX_GETCFILTERS_SIZE,
 )
+from btclib.p2p.negotiation import GetAddr, SendHeaders, WtxidRelay
 
 from btclib_node.chainstate.filter_index import NO_PREVIOUS_FILTER_HEADER
 from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.main import verify_mempool_acceptance
 from btclib_node.p2p.address import addr_entry, can_addrv1, peer_from_addr_entry
-from btclib_node.p2p.messages.empty import Getaddr, Sendheaders, Wtxidrelay
 from btclib_node.p2p.messages.errors import Reject
 
 if TYPE_CHECKING:
@@ -72,7 +72,7 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
         conn.stop()
         return
 
-    conn.send(Wtxidrelay())
+    conn.send(WtxidRelay())
     conn.send(SendAddrV2())
     conn.send(Verack())
 
@@ -90,10 +90,10 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
         conn.stop()
         return
     conn.status = P2pConnStatus.Connected
-    conn.send(Sendheaders())
+    conn.send(SendHeaders())
     conn.send(SendCmpct(False, 1))
     conn.send_ping()
-    conn.send(Getaddr())
+    conn.send(GetAddr())
     block_locators = node.chainstate.block_index.get_block_locator_hashes()
     conn.send(GetHeaders(ProtocolVersion, block_locators, b"\x00" * 32))
     node.logger.info(

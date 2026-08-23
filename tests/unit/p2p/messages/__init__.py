@@ -21,6 +21,7 @@ from btclib.exceptions import BTClibValueError
 from btclib.p2p.handshake import Verack
 from btclib.p2p.keepalive import Ping
 from btclib.p2p.message import Message
+from btclib.p2p.negotiation import Mempool
 from btclib.p2p.payload import Payload
 
 from btclib_node.chains import RegTest
@@ -28,13 +29,12 @@ from btclib_node.constants import P2pConnStatus
 from btclib_node.p2p.callbacks import callbacks, handshake_callbacks
 from btclib_node.p2p.connection import Connection
 from btclib_node.p2p.manager import P2pManager
-from btclib_node.p2p.messages.empty import Mempool
 
 MAGIC = RegTest().magic
 
-# what this package still defines: everything else the node speaks is
+# what this package defines: everything else the node speaks is
 # btclib.p2p's, and named there
-_MESSAGE_MODULES = ("empty", "errors")
+_MESSAGE_MODULES = ("errors",)
 
 # where the rest of what the node speaks is defined
 _BTCLIB_P2P_MODULES = (
@@ -46,20 +46,18 @@ _BTCLIB_P2P_MODULES = (
     "btclib.p2p.handshake",
     "btclib.p2p.inventory",
     "btclib.p2p.keepalive",
+    "btclib.p2p.negotiation",
 )
 
-# Bitcoin Core's NetMsgType, which is the authority: a command is what a
-# peer dispatches on, so a name only this tree agrees with is a message
-# nobody answers. Nothing but the value can say a name is right -- a
-# misspelling serializes, parses and round-trips exactly as well as the
-# real thing, which is how "sendcmpt" and "cmptblock" went to the whole
-# network unnoticed.
+# the spelling the specification gives, which is the authority: a
+# command is what a peer dispatches on, so a name only this tree agrees
+# with is a message nobody answers. Nothing but the value can say a name
+# is right -- a misspelling serializes, parses and round-trips exactly as
+# well as the real thing. BIP61 introduces the message as "reject", and
+# Bitcoin Core's NetMsgType has no entry for it, so the BIP is where the
+# spelling is read rather than Core's header.
 _COMMANDS = {
-    "Getaddr": "getaddr",
-    "Mempool": "mempool",
     "Reject": "reject",
-    "Sendheaders": "sendheaders",
-    "Wtxidrelay": "wtxidrelay",
 }
 
 
@@ -78,7 +76,7 @@ def payload_classes() -> dict[str, type[Payload]]:
     return found
 
 
-def test_every_payload_travels_under_core_s_name() -> None:
+def test_every_payload_travels_under_its_specification_s_name() -> None:
     classes = payload_classes()
     # no payload without an expected name, and no expected name without
     # a payload: a class added here has to be spelled out above
