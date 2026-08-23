@@ -337,3 +337,21 @@ repos:
     hooks:
       # keep uv.lock in sync with pyproject.toml
       - id: uv-lock
+  # what is tracked and not in the sdist, and what is in the sdist and not
+  # tracked, both ways round, against the patterns of
+  # [tool.uv.build-backend] -- which is also where what nothing asked
+  # before this hook existed is written down. Nothing is configured here:
+  # the hook's own manifest passes --no-isolation and --inject-junk and
+  # installs uv, which is the whole of what this needs. --no-isolation is
+  # what pre-commit.ci requires -- an isolated build environment cannot be
+  # created there -- and it costs nothing to build without one, the
+  # backend being the copy bundled in that uv. --inject-junk plants the
+  # leftovers a working directory collects, for the length of the run, so
+  # the check is made against a tree in the state it is usually in rather
+  # than a clean one; which of them an include pattern reaches, and which
+  # the backend's own default excludes already drop, is answered beside
+  # [tool.uv.build-backend] source-exclude
+  - repo: https://github.com/henryiii/check-sdist
+    rev: v1.6.0
+    hooks:
+      - id: check-sdist
