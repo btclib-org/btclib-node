@@ -18,6 +18,28 @@ to check the guess.
 
 ## Unreleased
 
+### A `match` statement has to cover the type it matches on
+
+- **`exhaustive-match` joins `enable_error_code`, so a `match` leaving a
+  member of its subject's type unhandled is an error** (#188). mypy
+  leaves that code off and no flag `strict = true` sets turns it on, so
+  without the entry
+
+  ```python
+  def f(v: int | str) -> str:
+      match v:
+          case int():
+              return "i"
+      return "?"
+  ```
+
+  type-checks. `mypy` passes over `files` with the entry as it does
+  without it, and what the entry answers is the first `match` written
+  there.
+
+  The comment above the list answers for `unused-ignore` too, which
+  stays outside it.
+
 ### `enable_error_code` holds only codes that need enabling
 
 - **`REVIEWING.md` says the reviewer runs the whole suite, every time.**
