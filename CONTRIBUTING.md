@@ -215,10 +215,12 @@ there is and reasoned about where it is set.
 
 ### What gates a merge, and what only reports
 
-`lint.yml` runs `.pre-commit-config.yaml` — the same command above, so
-there is no second list of tools and versions to keep in step — and
-`test.yml` runs the suite on one image and one interpreter, held to the
-coverage floor `pyproject.toml` declares. A pull request that touches
+`lint.yml` runs the hooks `.pre-commit-config.yaml` declares, so there
+is no second list of tools and versions to keep in step; its invocation
+differs from the one above only in being `--locked` and in printing what
+a fixing hook would have written. `test.yml` runs the suite on one image
+and one interpreter, held to the coverage floor `pyproject.toml`
+declares. A pull request that touches
 only the root prose skips the suite and reports the skip as a pass, which
 is what keeps an aggregate check from blocking on a run that never
 happened.
