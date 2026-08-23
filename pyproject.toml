@@ -532,9 +532,14 @@ warn_unreachable = true
 # `narrowed-type-not-subtype` are the ones that answer `True` and so do
 # not belong here, each already deciding over `files`.
 # `comparison-overlap` twice over: what it reports is gated by
-# `strict_equality`, which `strict = true` above sets.
+# `strict_equality`, which `strict = true` above sets. That second
+# reason stands alone for `unused-ignore`, which answers `False` and
+# still belongs outside: `warn_unused_ignores` is the flag form of it,
+# and `strict = true` sets that too.
 enable_error_code = [
     "deprecated",
+    # what this answers is the first `match` written under `files`
+    "exhaustive-match",
     "explicit-override",
     "ignore-without-code",
     "mutable-override",
