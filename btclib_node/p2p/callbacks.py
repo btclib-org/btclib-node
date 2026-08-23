@@ -412,8 +412,17 @@ def get_cfilters(node: Node, msg: bytes, conn: Connection) -> None:
     filter_index = node.chainstate.filter_index
     # "sequentially in order by block height", which is BIP157's own
     # words and the reason this is the one request answered by many
-    # messages rather than one
+    # messages rather than one -- and the reason a status worth checking
+    # mid-loop exists here and not in get_cfheaders or get_cfcheckpt
+    # below, which build their one answer and call conn.send once: a
+    # peer whose answer trips Connection's send-buffer bound
+    # (MAX_QUEUED_SEND_BYTES, connection.py) partway through is
+    # conn.status == P2pConnStatus.Closed already, and every height
+    # still to come would otherwise be serialized into a CFilter and
+    # scheduled onto a connection nothing more will ever reach.
     for height in heights:
+        if conn.status == P2pConnStatus.Closed:
+            break
         block_hash = active_chain[height]
         # every block on the active chain is caught up before the node
         # starts listening, and kept up as blocks connect
