@@ -119,6 +119,13 @@ def sendaddrv2(node: Node, msg: bytes, conn: Connection) -> None:
     conn.prefer_addressv2 = True
 
 
+def sendheaders(node: Node, msg: bytes, conn: Connection) -> None:
+    # BIP130: an empty payload, so nothing to parse -- the message
+    # itself is the request. Core's own handler does the same one
+    # thing and nothing else (net_processing.cpp). btclib-org/btclib-node#202
+    conn.prefers_headers = True
+
+
 def ping(node: Node, msg: bytes, conn: Connection) -> None:
     nonce = Ping.parse(msg).nonce
     conn.send(Pong(nonce))
@@ -300,9 +307,19 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     # own does: a peer that sent it is not one telling us it has
     # nothing left, and this is not the ordinary end of a sync.
     # btclib-org/btclib-node#75
-    tip = node.chainstate.block_index.add_headers(headers)
-    if len(headers) == 2000:  # the peer may have more to give us
-        block_index = node.chainstate.block_index
+    block_index = node.chainstate.block_index
+    tip = block_index.add_headers(headers)
+    if tip is None:
+        # a batch connecting to nothing this node knows, whatever its
+        # length: get_block_locator_hashes asks from what this node
+        # already has, the same request Core's own
+        # HandleUnconnectingHeaders sends regardless of batch size
+        # (src/net_processing.cpp), rather than a short, BIP130-style
+        # announcement being silently dropped for missing its own
+        # ancestors. btclib-org/btclib-node#233
+        block_locators = block_index.get_block_locator_hashes()
+        conn.send(GetHeaders(ProtocolVersion, block_locators, b"\x00" * 32))
+    elif len(headers) == 2000:  # the peer may have more to give us
         # [tip] only for a live fork below header_index's own tip: that
         # is the one case get_block_locator_hashes cannot reach on its
         # own, since header_index only moves for a header extending it
@@ -316,11 +333,10 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
         # anywhere in this tree to ever stop it otherwise.
         # btclib-org/btclib-node#122
         if (
-            tip is not None
-            and tip != block_index.header_index[-1]
+            tip != block_index.header_index[-1]
             and block_index.get_block_info(tip).status != BlockStatus.invalid
         ):
-            block_locators: list[bytes] = [tip]
+            block_locators = [tip]
         else:
             block_locators = block_index.get_block_locator_hashes()
         conn.send(GetHeaders(ProtocolVersion, block_locators, b"\x00" * 32))
@@ -555,6 +571,7 @@ callbacks = {
     "addr": addr,
     "addrv2": addrv2,
     "getaddr": getaddr,
+    "sendheaders": sendheaders,
     "getcfilters": get_cfilters,
     "getcfheaders": get_cfheaders,
     "getcfcheckpt": get_cfcheckpt,

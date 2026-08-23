@@ -58,6 +58,31 @@ to check the guess.
   --help` names it only as the inverse of `--hide-error-codes`, which
   reads `False` with or without the line.
 
+### A peer's `sendheaders` now changes what a connected block is sent as
+
+- **`callbacks.sendheaders` sets `Connection.prefers_headers`.** Neither
+  dispatch table had a `sendheaders` entry, so the message was silently
+  dropped and nothing recorded the preference Core's own handler sets
+  as `peer.m_prefers_headers` (#202).
+- **A block `update_chain` adds to the active chain is now sent to
+  every connected peer** — as `Headers` where the peer's own
+  `sendheaders` asked for that, as `Inv` otherwise — once the node is
+  past its own initial sync, the gate the mempool bookkeeping beside it
+  already uses. The only `Headers` this node sent before answered a
+  peer's own `getheaders`, and the only `Inv` it built was for a
+  transaction (`download.py`): a block this node accepted reached
+  nobody, by either shape (#202).
+
+### A short header batch that connects to nothing known gets a `getheaders`
+
+- **`callbacks.headers` asks for what is missing whenever a batch's tip
+  is `None`, whatever the batch's own length.** The
+  `len(headers) == 2000` guard was the only place a follow-up
+  `GetHeaders` was built, so a short, BIP130-style announcement whose
+  first header's parent this node does not know was silently dropped
+  rather than asked for (#233) — unlike Core's own
+  `HandleUnconnectingHeaders`, which asks regardless of batch size.
+
 ### `get_cfilters` stops once the connection it is answering has closed
 
 - **`get_cfilters`'s loop over a `getcfilters` range now breaks once

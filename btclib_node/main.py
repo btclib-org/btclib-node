@@ -5,6 +5,7 @@
 from typing import TYPE_CHECKING
 
 from btclib.block import Block
+from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
 from btclib.tx import TxOut
 from btclib.tx.tx import Tx
 
@@ -25,6 +26,28 @@ if TYPE_CHECKING:
 # freshly-failed hash to hand it. btclib-org/btclib-node#120
 def update_header_index(index: BlockIndex, invalid_hash: bytes) -> None:
     index.invalidate(invalid_hash)
+
+
+# update_chain calls this with every block one of its own calls just put
+# on the active chain, never an empty list: get_fork_details' own add
+# list always carries at least the candidate's own hash. So every peer
+# this node has a live connection to hears about it -- by header where
+# sendheaders (callbacks.sendheaders) asked for that, by inventory
+# otherwise, the same per-connection shape DownloadManager.tx_download
+# already uses to announce a transaction. Every connection, including
+# whichever one the block itself arrived on: unlike Core, nothing here
+# tracks what a given peer already knows, so the peer that sent it this
+# block hears about its own block back. Building that tracking is a
+# larger, separate piece of work than #202 asks for; the cost today is
+# a redundant message, not a correctness gap. btclib-org/btclib-node#202
+def _announce_added_blocks(node: Node, blocks: list[Block]) -> None:
+    headers = [block.header for block in blocks]
+    inventory = [Inventory(InventoryType.MSG_BLOCK, header.hash) for header in headers]
+    for conn in node.p2p_manager.connections.copy().values():
+        if conn.prefers_headers:
+            conn.send(Headers(headers))
+        else:
+            conn.send(Inv(inventory))
 
 
 def finish_sync(node: Node) -> None:
@@ -182,6 +205,7 @@ def update_chain(node: Node) -> None:
         for _rev_block, added_block in zip(generated_rev_patches, to_add):
             for tx in added_block.transactions:
                 node.mempool.remove_tx(tx)
+        _announce_added_blocks(node, to_add)
 
     node.logger.debug("Finished main\n")
 
