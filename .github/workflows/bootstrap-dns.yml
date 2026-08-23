@@ -1,0 +1,105 @@
+---
+name: bootstrap-dns
+
+# Whether a fresh node still has a way onto the network. `PeerDB.
+# get_addr_from_dns` (btclib_node/p2p/address.py) is what a node with an
+# empty table calls, and `btclib_node/chains.py`'s `Main`, `TestNet` and
+# `SigNet` are what it calls it with: a DNS seed going away, or the
+# resolver on this runner failing, is the kind of thing that happens to
+# seeds and to networks, on nobody's schedule and for no reason this
+# tree's own commits control.
+#
+# Not a merge gate, for exactly links.yml's own reason: a host having a
+# bad afternoon would turn a red merge into a thing to re-run rather than
+# a thing to fix. issue #135 is where that was found true here too --
+# `pyproject.toml`'s `addopts` used to force the three tests that made
+# this same call live into every coverage run, and moved them here.
+# What replaced them in tests/unit/p2p/address.py stubs the resolver and
+# still covers `get_addr_from_dns`'s own logic -- the union over seeds,
+# the dedup, the `gaierror` skip, the IPv6 answer -- deterministically
+# and on every run. What is left for this file is the one thing a stub
+# cannot stand in for: whether the seeds this tree ships still answer.
+#
+# No `schedule:` yet. Section 10's two tables are the calendar for every
+# periodic workflow in the organization, checked against every `cron:`
+# in both directions by btclib-org/.github's own
+# `tests/grid_test.py::test_every_cron_is_the_instant_the_calendar_names`
+# -- a schedule no row names fails there. Today's tables name no row for
+# a workflow of this shape, so this file runs by hand
+# (`workflow_dispatch`) and on a change to itself until a row exists;
+# btclib-org/.github#201 is where that row is asked for.
+
+on:
+  # the way to run this until a calendar row lands, and afterwards the
+  # way to check a branch before changing the seed lists in
+  # btclib_node/chains.py
+  workflow_dispatch:
+  # so a change to this file is checked by the thing it configures, for
+  # the same reason and with the same caveat as links.yml's own entry
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, closed]
+    paths:
+      - .github/workflows/bootstrap-dns.yml
+
+# least privilege for the GITHUB_TOKEN: this reads the checkout and
+# resolves hostnames, nothing more
+permissions:
+  contents: read
+
+# cancel superseded runs, for the same reason and in the same shape as
+# links.yml's own group
+concurrency:
+  group: bootstrap-dns-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bootstrap-dns:
+    name: Resolve each chain's bootstrap seeds
+    if: ${{ !github.event.pull_request.draft && github.event.action != 'closed' }}
+    runs-on: ubuntu-latest
+    # a resolver timeout per seed is the slow path; a job stuck past this
+    # is the runner's own DNS wedged rather than one seed being slow
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # see the checkout of the coverage job in test.yml
+          persist-credentials: false
+      - name: Setup uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          python-version: "3.14"
+      - name: Ask each chain's seeds for peers
+        # no dependency group: this calls the production code path
+        # directly, importing nothing the test harness adds
+        run: |
+          uv run --locked --no-default-groups python3 - <<'PY'
+          import asyncio
+
+          from btclib_node.chains import Main, SigNet, TestNet
+          from btclib_node.p2p.address import PeerDB
+
+
+          async def answered(chain: object) -> bool:
+              peer_db = PeerDB(chain, None)  # type: ignore[arg-type]
+              peer_db.ask_dns_nodes = True
+              await peer_db.get_addr_from_dns()
+              return not peer_db.is_empty
+
+
+          async def main() -> None:
+              # RegTest carries no seeds -- there is nothing for it to ask
+              silent = [
+                  chain.name
+                  for chain in (Main(), TestNet(), SigNet())
+                  if not await answered(chain)
+              ]
+              if silent:
+                  msg = f"no bootstrap seed answered for: {', '.join(silent)}"
+                  raise SystemExit(msg)
+
+
+          asyncio.run(main())
+          PY

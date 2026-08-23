@@ -13,7 +13,7 @@ import pytest
 from btclib.p2p.address import NetworkAddress
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 
-from btclib_node.chains import Chain, Main, SigNet, TestNet
+from btclib_node.chains import Chain
 from btclib_node.p2p.address import (
     PeerDB,
     addr_entry,
@@ -60,30 +60,6 @@ def test_an_address_not_seen_for_three_hours_stops_being_active() -> None:
     assert peer_db.get_active_addresses() == [fresh]
     # and it is dropped, not merely left out of the answer
     assert peer_db.active_addresses == [fresh]
-
-
-@pytest.mark.remote_data
-def test_main_bootstrap_nodes() -> None:
-    peer_db = a_peer_db(Main())
-    peer_db.ask_dns_nodes = True
-    asyncio.run(peer_db.get_addr_from_dns())
-    assert not peer_db.is_empty
-
-
-@pytest.mark.remote_data
-def test_testnet_bootstrap_nodes() -> None:
-    peer_db = a_peer_db(SigNet())
-    peer_db.ask_dns_nodes = True
-    asyncio.run(peer_db.get_addr_from_dns())
-    assert not peer_db.is_empty
-
-
-@pytest.mark.remote_data
-def test_signet_bootstrap_nodes() -> None:
-    peer_db = a_peer_db(TestNet())
-    peer_db.ask_dns_nodes = True
-    asyncio.run(peer_db.get_addr_from_dns())
-    assert not peer_db.is_empty
 
 
 def test_the_two_ip_networks_are_told_apart_by_the_text_of_the_address() -> None:

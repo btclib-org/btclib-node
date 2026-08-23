@@ -235,8 +235,9 @@ message or an RPC request body to where it is used, which no hook here
 does. `os-macos.yml` runs the suite on the one platform
 `pyproject.toml` classifies that no other workflow runs, and its header
 says what differs beneath it. `links.yml` asks whether somebody else's
-server answered. `claude-review.yml` writes the review and its own header
-says it must not become a required check.
+server answered, and `bootstrap-dns.yml` asks the same question of the
+DNS seeds `btclib_node/chains.py` names. `claude-review.yml` writes the
+review and its own header says it must not become a required check.
 
 Which day each of the periodic ones runs is one calendar for the whole
 organization, in [section 10 of `btclib-org/.github`'s
