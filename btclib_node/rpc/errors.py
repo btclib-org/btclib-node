@@ -5,6 +5,7 @@
 """How a callback refuses a request rather than failing on it."""
 
 import enum
+from typing import Any
 
 
 class RpcErrorCode(enum.IntEnum):
@@ -18,6 +19,7 @@ class RpcErrorCode(enum.IntEnum):
     """
 
     MISC_ERROR = -1
+    TYPE_ERROR = -3
     INVALID_ADDRESS_OR_KEY = -5
     INVALID_PARAMETER = -8
     INVALID_REQUEST = -32600
@@ -37,3 +39,30 @@ class RpcError(Exception):
         super().__init__(f"{code.name}: {message}")
         self.code = code
         self.message = message
+
+
+# univalue's own names for the six JSON types, `uvTypeName` in
+# src/univalue/lib/univalue.cpp -- the vocabulary RPC_TYPE_ERROR's
+# message speaks. Keyed by `type()` rather than `isinstance`, so a bool
+# reads as "bool" and not "number": bool is int's own subclass in
+# Python, not a distinct JSON type, and `type()` is exact where
+# `isinstance` would let the subclass through.
+_JSON_TYPE_NAMES: dict[type, str] = {
+    type(None): "null",
+    bool: "bool",
+    int: "number",
+    float: "number",
+    str: "string",
+    list: "array",
+    dict: "object",
+}
+
+
+def json_type_name(value: Any) -> str:
+    """Name a decoded JSON value the way Core's RPC_TYPE_ERROR names it.
+
+    `value` is always one of the six JSON types here: `connection.py`
+    decodes every request with the standard library's `json.loads`,
+    which produces no other Python type.
+    """
+    return _JSON_TYPE_NAMES[type(value)]

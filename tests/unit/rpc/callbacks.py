@@ -357,13 +357,26 @@ def a_block_index(
     )
 
 
+def header_json(node: Any, conn: Connection, params: list[Any]) -> dict[str, Any]:
+    """`get_block_header`'s object answer, narrowed for a test that indexes it.
+
+    `get_block_header` also answers a plain hex string where verbose is
+    false, so its own return type is a union a test cannot index
+    without narrowing first; every test below that reads a field off
+    the answer calls through here rather than repeating the assertion.
+    """
+    result = get_block_header(node, conn, params)
+    assert isinstance(result, dict)
+    return result
+
+
 def test_a_block_header_names_the_ones_either_side_of_it() -> None:
     chain = generate_random_header_chain(3, RegTest().genesis.hash)
     node = cast(
         "Node",
         SimpleNamespace(chainstate=SimpleNamespace(block_index=a_block_index(chain))),
     )
-    middle = get_block_header(node, _CONN, [chain[1].hash.hex()])
+    middle = header_json(node, _CONN, [chain[1].hash.hex()])
     assert middle["hash"] == chain[1].hash
     assert middle["height"] == 1
     assert middle["confirmations"] == 2
@@ -378,14 +391,59 @@ def test_the_first_header_has_nothing_before_it_and_the_last_nothing_after() -> 
         "Node",
         SimpleNamespace(chainstate=SimpleNamespace(block_index=a_block_index(chain))),
     )
-    first = get_block_header(node, _CONN, [chain[0].hash.hex()])
+    first = header_json(node, _CONN, [chain[0].hash.hex()])
     assert "previousblockhash" not in first
     assert first["nextblockhash"] == chain[1].hash
 
-    last = get_block_header(node, _CONN, [chain[-1].hash.hex()])
+    last = header_json(node, _CONN, [chain[-1].hash.hex()])
     assert last["previousblockhash"] == chain[-2].hash
     assert "nextblockhash" not in last
     assert last["confirmations"] == 1
+
+
+def test_verbose_false_answers_the_serialized_header_hex_not_the_object() -> None:
+    # btclib-org/btclib-node#215: src/rpc/blockchain.cpp:668-673 answers
+    # the same eighty bytes a peer is sent on the wire, hex-encoded,
+    # where this node used to ignore params[1] and answer the object
+    # regardless of what was asked for
+    chain = generate_random_header_chain(2, RegTest().genesis.hash)
+    node = cast(
+        "Node",
+        SimpleNamespace(chainstate=SimpleNamespace(block_index=a_block_index(chain))),
+    )
+    answer = get_block_header(node, _CONN, [chain[1].hash.hex(), False])
+    assert answer == chain[1].serialize().hex()
+
+
+def test_verbose_true_and_the_default_answer_the_same_object() -> None:
+    # verbose's Default is true, src/rpc/blockchain.cpp:617, and Core
+    # treats an explicit null the same as an omitted argument
+    # (`!request.params[1].isNull()`)
+    chain = generate_random_header_chain(2, RegTest().genesis.hash)
+    node = cast(
+        "Node",
+        SimpleNamespace(chainstate=SimpleNamespace(block_index=a_block_index(chain))),
+    )
+    omitted = get_block_header(node, _CONN, [chain[1].hash.hex()])
+    explicit_true = get_block_header(node, _CONN, [chain[1].hash.hex(), True])
+    explicit_null = get_block_header(node, _CONN, [chain[1].hash.hex(), None])
+    assert omitted == explicit_true == explicit_null
+
+
+def test_a_verbose_of_the_wrong_json_type_is_named_rather_than_coerced() -> None:
+    # the same RPCMethod::HandleRequest type check as blockhash's,
+    # against verbose's own declared RPCArg::Type::BOOL
+    chain = generate_random_header_chain(1, RegTest().genesis.hash)
+    node = cast(
+        "Node",
+        SimpleNamespace(chainstate=SimpleNamespace(block_index=a_block_index(chain))),
+    )
+    with pytest.raises(RpcError) as raised:
+        get_block_header(node, _CONN, [chain[0].hash.hex(), "false"])
+    assert raised.value.code == RpcErrorCode.TYPE_ERROR
+    assert (
+        raised.value.message == "JSON value of type string is not of expected type bool"
+    )
 
 
 def test_a_block_off_the_active_chain_is_described_and_not_refused() -> None:
@@ -400,7 +458,7 @@ def test_a_block_off_the_active_chain_is_described_and_not_refused() -> None:
             chainstate=SimpleNamespace(block_index=a_block_index(chain, fork))
         ),
     )
-    stale = get_block_header(node, _CONN, [fork[0].hash.hex()])
+    stale = header_json(node, _CONN, [fork[0].hash.hex()])
     assert stale["hash"] == fork[0].hash
     assert stale["height"] == 1
     assert stale["confirmations"] == -1
@@ -409,7 +467,7 @@ def test_a_block_off_the_active_chain_is_described_and_not_refused() -> None:
 
     # the block the active chain kept at that height is another block,
     # and is answered with a depth
-    best = get_block_header(node, _CONN, [chain[1].hash.hex()])
+    best = header_json(node, _CONN, [chain[1].hash.hex()])
     assert best["hash"] != stale["hash"]
     assert best["height"] == 1
     assert best["confirmations"] == 2
@@ -428,7 +486,7 @@ def test_a_fork_reaching_past_the_tip_is_not_read_off_the_end_of_the_chain() -> 
             chainstate=SimpleNamespace(block_index=a_block_index(chain, fork))
         ),
     )
-    past_the_tip = get_block_header(node, _CONN, [fork[-1].hash.hex()])
+    past_the_tip = header_json(node, _CONN, [fork[-1].hash.hex()])
     assert past_the_tip["height"] == 3
     assert past_the_tip["confirmations"] == -1
     assert past_the_tip["previousblockhash"] == fork[-2].hash
@@ -447,13 +505,13 @@ def test_a_header_whose_block_is_not_validated_is_confirmed_by_nothing() -> None
         ),
     )
     for header in chain[1:]:
-        answer = get_block_header(node, _CONN, [header.hash.hex()])
+        answer = header_json(node, _CONN, [header.hash.hex()])
         assert answer["confirmations"] == -1
         assert "nextblockhash" not in answer
 
     # the one block the active chain does hold is its tip, and the next
     # header is indexed without being what follows it there
-    connected = get_block_header(node, _CONN, [chain[0].hash.hex()])
+    connected = header_json(node, _CONN, [chain[0].hash.hex()])
     assert connected["confirmations"] == 1
     assert "nextblockhash" not in connected
 
@@ -482,6 +540,42 @@ def test_a_block_hash_that_is_not_hex_is_named_back_to_the_client() -> None:
         get_block_header(node, _CONN, ["zz"])
     assert raised.value.code == RpcErrorCode.INVALID_PARAMETER
     assert "zz" in raised.value.message
+
+
+def test_a_block_hash_of_the_wrong_json_type_is_named_rather_than_faulted() -> None:
+    # btclib-org/btclib-node#212: bytes.fromhex(5) raises TypeError, not
+    # the ValueError the hex check above catches, so a non-string
+    # blockhash used to fall through to the -32603 this node owes its
+    # own fault rather than the client's
+    chain = generate_random_header_chain(1, RegTest().genesis.hash)
+    node = cast(
+        "Node",
+        SimpleNamespace(chainstate=SimpleNamespace(block_index=a_block_index(chain))),
+    )
+    with pytest.raises(RpcError) as raised:
+        get_block_header(node, _CONN, [5])
+    assert raised.value.code == RpcErrorCode.TYPE_ERROR
+    assert (
+        raised.value.message
+        == "JSON value of type number is not of expected type string"
+    )
+
+
+def test_a_null_block_hash_is_the_same_wrong_type_as_any_other() -> None:
+    # blockhash is a required argument (RPCArg::Optional::NO), so a
+    # null one is not the "argument omitted" case: it is still the
+    # wrong JSON type, same as a number or an array would be
+    chain = generate_random_header_chain(1, RegTest().genesis.hash)
+    node = cast(
+        "Node",
+        SimpleNamespace(chainstate=SimpleNamespace(block_index=a_block_index(chain))),
+    )
+    with pytest.raises(RpcError) as raised:
+        get_block_header(node, _CONN, [None])
+    assert raised.value.code == RpcErrorCode.TYPE_ERROR
+    assert (
+        raised.value.message == "JSON value of type null is not of expected type string"
+    )
 
 
 def test_no_block_hash_at_all_is_answered_with_the_usage() -> None:
