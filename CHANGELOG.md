@@ -51,6 +51,7 @@ to check the guess.
 - **The `REVIEWING.md` entries filed under `enable_error_code`'s own
   heading move to one of their own** (#194), ahead of
   `enable_error_code`'s remaining bullet.
+
 ### A branch this node has proved bad stops being offered
 
 - **`BlockIndex.invalidate` is the one place a block's invalidity is

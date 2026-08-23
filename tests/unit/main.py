@@ -425,8 +425,15 @@ def test_a_refused_branch_invalidates_headers_that_were_never_candidates(
     )
     # more, structurally fine, blocks on top of the doomed one -- their
     # combined chainwork is what makes the branch's tip outweigh active,
-    # not prints_money on its own
-    continuation = generate_random_chain(4, prints_money.header.hash)
+    # not prints_money on its own. Built with an explicit, increasing
+    # height rather than generate_random_chain's own (which restarts at
+    # 0 for any start): a header's timestamp has to beat the median of
+    # its ancestors, and build_block's is derived from the height alone
+    continuation: list[Block] = []
+    previous = prints_money
+    for height in range(len(below) + 1, len(below) + 5):
+        previous = build_block(previous.header.hash, [generate_coinbase()], height)
+        continuation.append(previous)
     fork = [*below, prints_money, *continuation]
     block_index.add_headers([block.header for block in fork])
     for block in fork:
@@ -435,7 +442,9 @@ def test_a_refused_branch_invalidates_headers_that_were_never_candidates(
 
     # a sibling of the continuation, off prints_money, real and indexed
     # but never downloaded and never its own block_candidates entry
-    sibling = generate_random_header_chain(1, prints_money.header.hash)
+    sibling = generate_random_header_chain(
+        1, prints_money.header.hash, prints_money.header.time
+    )
     block_index.add_headers(sibling)
     # the branch's own tip is the one candidate entry: everything below
     # it, prints_money included, never individually outweighed active

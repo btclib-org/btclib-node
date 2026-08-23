@@ -216,16 +216,17 @@ class BlockIndex:
         return self.header_dict[hash]
 
     # what a block failing validation costs: itself, and every header
-    # this index has ever indexed on top of it, candidate or not --
-    # `children` is walked rather than `header_dict` or
-    # `block_candidates`, so this costs the size of the bad lineage and
-    # not the size of the index. `add_headers` refuses to build a
-    # valid_header on an invalid parent, which is what keeps a header
-    # arriving *after* this call from needing to be walked here. No hash
-    # is ever pushed twice: `_insert_block_info` records a hash as a
-    # child the one time it is new, so it is a value of `children` under
-    # exactly one parent, and the walk below cannot reach it a second
-    # time.
+    # this index has ever indexed on top of it, candidate or not.
+    # Finding them costs the size of the bad lineage and not the size of
+    # the index: `children` is walked rather than `header_dict`, and
+    # `add_headers` refuses to build a valid_header on an invalid
+    # parent, which is what keeps a header arriving *after* this call
+    # from needing to be walked here. No hash is ever pushed twice:
+    # `_insert_block_info` records a hash as a child the one time it is
+    # new, so it is a value of `children` under exactly one parent, and
+    # the walk below cannot reach it a second time. Sweeping them out of
+    # `block_candidates` is not bounded the same way: the scan below is
+    # over the whole deque, not the bad lineage.
     # btclib-org/btclib-node#77, #120, #125
     def invalidate(self, hash: bytes) -> None:
         to_invalidate = [hash]

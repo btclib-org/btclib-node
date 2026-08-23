@@ -275,7 +275,7 @@ def test_a_header_built_on_an_invalid_parent_is_invalid_and_not_a_candidate(
     block_index.add_headers(chain)
     block_index.invalidate(chain[0].hash)
 
-    extension = generate_random_header_chain(1, chain[1].hash)
+    extension = generate_random_header_chain(1, chain[1].hash, chain[1].time)
     assert block_index.add_headers(extension)
 
     info = block_index.get_block_info(extension[0].hash)
