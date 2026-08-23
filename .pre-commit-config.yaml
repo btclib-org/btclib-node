@@ -170,6 +170,23 @@ repos:
       - id: markdownlint-cli2
         name: markdownlint-cli2 (in place fixes)
         args: [--fix]
+  # CHANGELOG.md's own MD022/MD032 are disabled above (btclib-org/
+  # .github#33/#138), because merge=union can join two `### ` sections
+  # without the blank line the rule wants and no conflict flags it
+  # (btclib-org/btclib-node#199, decided against dropping the driver by
+  # btclib-org/.github#21). This is the narrower check that still runs:
+  # a `### ` heading is a problem exactly where the character before its
+  # line is not itself a newline, i.e. the line above it is not blank.
+  # --multiline runs the pattern once against the whole file rather than
+  # line by line, which a lookbehind across two lines needs
+  - repo: local
+    hooks:
+      - id: changelog-heading-blank-line
+        name: every `### ` heading in CHANGELOG.md has a blank line above it
+        language: pygrep
+        args: [--multiline]
+        entry: '[^\n]\n### '
+        files: ^CHANGELOG\.md$
   # what ruff-format is for Python, on the structured files ruff does
   # not read: yaml and the jsonc that carries a comment. Before
   # yamllint below, so the linter judges the formatted file
