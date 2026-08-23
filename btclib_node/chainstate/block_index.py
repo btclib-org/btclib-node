@@ -169,14 +169,27 @@ class BlockIndex:
 
     def generate_header_index(self) -> None:
         self.header_index = self.active_chain[:]
+        self._extend_header_index(self.sorted_header_dict)
+
+    # extends self.header_index, already seeded by the caller, with
+    # whichever of `candidates` continues its current tip or beats it on
+    # work -- skipping one already there and, since an invalidated chain
+    # is never the header chain this index reports as its best known
+    # one, one marked BlockStatus.invalid too. `candidates` has to be in
+    # height order for the incremental fork comparison below to see a
+    # header's own parent before the header itself.
+    # btclib-org/btclib-node#218
+    def _extend_header_index(self, candidates: Iterable[bytes]) -> None:
         header_index_set = set(self.header_index)
-        for block_hash in self.sorted_header_dict:
+        for block_hash in candidates:
             if block_hash in header_index_set:
                 continue
             block_info = self.get_block_info(block_hash)
+            if block_info.status == BlockStatus.invalid:
+                continue
             header = block_info.header
             best_header = self.header_index[-1]
-            if header.previous_block_hash == self.header_index[-1]:
+            if header.previous_block_hash == best_header:
                 self.header_index.append(block_hash)
                 header_index_set.add(block_hash)
             elif self.chainwork[block_hash] > self.chainwork[best_header]:
@@ -243,6 +256,20 @@ class BlockIndex:
         self.block_candidates = deque(
             [h, w] for h, w in self.block_candidates if h not in invalidated
         )
+        # header_index is the best known header chain, tracked
+        # independently of block_candidates -- Core's own InvalidateBlock
+        # (src/validation.cpp) recomputes m_best_header the same way, for
+        # the same reason: what this index reports as its best known
+        # header chain cannot still be one it has just proved bad. Left
+        # alone in the ordinary case, invalidating a losing candidate
+        # branch that header_index never held, since a rescan of the
+        # whole index costs the size of the index and not the bad
+        # lineage. btclib-org/btclib-node#218
+        if invalidated.intersection(self.header_index):
+            self.header_index = self.active_chain[:]
+            self._extend_header_index(
+                sorted(self.header_dict, key=lambda h: self.header_dict[h].index)
+            )
 
     # returns the active chain and the forked chain from the common ancestor
     def get_fork_details(
@@ -288,7 +315,15 @@ class BlockIndex:
         # against, its parent being as likely to be a header two lines
         # above as one already indexed. A header whose parent is in
         # neither is left out of it: there is no chain to weigh it
-        # against, and nothing to give it a height.
+        # against, and nothing to give it a height -- unless that parent
+        # is itself later in this same batch, in which case there *is* a
+        # chain to weigh it against, just not yet processed, and this is
+        # not the peer's ordinary "connects to nothing I know" case:
+        # refusing the whole batch rather than dropping the one header
+        # silently is what Core's own per-message continuity check
+        # (`CheckHeadersAreContinuous`, `net_processing.cpp`) enforces
+        # unconditionally, whether or not the batch would otherwise
+        # connect to known history. btclib-org/btclib-node#214
         #
         # A refusal raises rather than answers False: it is a peer that
         # sent a header failing on its own terms, not the ordinary end
@@ -298,6 +333,12 @@ class BlockIndex:
         now = datetime.now(UTC)
         pow_limit_bits = self.chain.pow_limit_bits
         pending: dict[bytes, tuple[BlockHeader, int]] = {}
+        # every header's hash, shrunk as each is visited: what is still
+        # in here when a header is looked at is strictly later in the
+        # batch, not merely unresolved -- a header already visited and
+        # left unresolved (a batch that connects to nothing at all) is
+        # not in here either, so it does not trip the check below.
+        not_yet_visited = {header.hash for header in headers}
 
         def parent_of(header: BlockHeader) -> BlockHeader:
             previous = header.previous_block_hash
@@ -307,6 +348,7 @@ class BlockIndex:
 
         for header in headers:
             header_hash = header.hash
+            not_yet_visited.discard(header_hash)
             try:
                 header.assert_valid_pow(pow_limit_bits)
                 if header_hash in self.header_dict or header_hash in pending:
@@ -315,6 +357,10 @@ class BlockIndex:
                 if found is None:
                     block_info = self.header_dict.get(header.previous_block_hash)
                     if block_info is None:
+                        if header.previous_block_hash in not_yet_visited:
+                            raise BTClibValueError(
+                                "a header's parent is later in the same batch"
+                            )
                         continue
                     found = (block_info.header, block_info.index)
                 parent, parent_height = found
@@ -350,13 +396,18 @@ class BlockIndex:
             if not invalid and new_work > current_work:
                 self.block_candidates.append([header_hash, new_work])
 
-            best_header = self.header_index[-1]
-            if header.previous_block_hash == best_header:
-                self.header_index.append(header_hash)
-            elif new_work > self.chainwork[best_header]:
-                add, remove = self.get_fork_details(header_hash, self.header_index)
-                self.header_index = self.header_index[: -len(remove)]
-                self.header_index.extend(add)
+            # a peer sending more of an already-invalidated fork must not
+            # grow header_index onto it, work alone deciding nothing here
+            # any more than it did for block_candidates above.
+            # btclib-org/btclib-node#218
+            if not invalid:
+                best_header = self.header_index[-1]
+                if header.previous_block_hash == best_header:
+                    self.header_index.append(header_hash)
+                elif new_work > self.chainwork[best_header]:
+                    add, remove = self.get_fork_details(header_hash, self.header_index)
+                    self.header_index = self.header_index[: -len(remove)]
+                    self.header_index.extend(add)
 
         # The header a caller should resume a sync from: the highest one
         # this batch carried that is indexed now, new or already known.

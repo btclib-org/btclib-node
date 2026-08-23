@@ -323,6 +323,92 @@ def test_a_header_built_on_an_invalid_parent_is_invalid_and_not_a_candidate(
     chainstate.close()
 
 
+def test_invalidate_moves_header_index_off_the_chain_it_was_pointing_at(
+    tmp_path: Path,
+) -> None:
+    # header_index is the best known header chain for locator/announce
+    # purposes, tracked independently of block_candidates and weighed
+    # purely by chainwork -- so invalidating the chain it happened to
+    # end on left it pointing at a chain this node has already refused.
+    # btclib-org/btclib-node#218
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    chain = generate_random_header_chain(3, RegTest().genesis.hash)
+    block_index.add_headers(chain)
+    assert block_index.header_index[-1] == chain[-1].hash
+
+    block_index.invalidate(chain[0].hash)
+
+    assert block_index.header_index[-1] != chain[-1].hash
+    assert chain[-1].hash not in block_index.get_block_locator_hashes()
+    chainstate.close()
+
+
+def test_invalidate_recomputes_header_index_onto_the_next_best_surviving_chain(
+    tmp_path: Path,
+) -> None:
+    # the fallback is not always the active chain: a rescan has to pick
+    # whichever surviving chain now has the most work, the same way
+    # Core's InvalidateBlock (src/validation.cpp) recomputes
+    # m_best_header. btclib-org/btclib-node#218
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    active = generate_random_header_chain(5, RegTest().genesis.hash)
+    block_index.add_headers(active)
+    for header in active:
+        block_index.add_to_active_chain(header.hash)
+
+    fork = generate_random_header_chain(7, RegTest().genesis.hash)
+    assert block_index.add_headers(fork) == fork[-1].hash
+    assert block_index.header_index[-1] == fork[-1].hash
+
+    block_index.invalidate(fork[0].hash)
+
+    assert block_index.header_index == block_index.active_chain
+    chainstate.close()
+
+
+def test_a_batch_extending_an_invalidated_chain_does_not_move_header_index(
+    tmp_path: Path,
+) -> None:
+    # add_headers's own header_index update has to read the same
+    # invalid flag block_candidates already does, or a peer sending
+    # more of a chain this node has already refused keeps growing what
+    # this index reports as its best known header chain.
+    # btclib-org/btclib-node#218
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    chain = generate_random_header_chain(2, RegTest().genesis.hash)
+    block_index.add_headers(chain)
+    block_index.invalidate(chain[0].hash)
+    header_index_before = list(block_index.header_index)
+
+    extension = generate_random_header_chain(10, chain[1].hash, chain[1].time)
+    assert block_index.add_headers(extension) == extension[-1].hash
+    assert block_index.header_index == header_index_before
+    chainstate.close()
+
+
+def test_invalidated_headers_stay_out_of_header_index_after_a_restart(
+    tmp_path: Path,
+) -> None:
+    # generate_header_index rebuilds from the persisted BlockStatus on
+    # every start-up, and used to do so without reading it at all.
+    # btclib-org/btclib-node#218
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    chain = generate_random_header_chain(3, RegTest().genesis.hash)
+    block_index.add_headers(chain)
+    block_index.invalidate(chain[0].hash)
+    header_index_before = list(block_index.header_index)
+    chainstate.db.close()
+
+    new_chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    new_block_index = new_chainstate.block_index
+    assert new_block_index.header_index == header_index_before
+    assert chain[-1].hash not in new_block_index.header_index
+
+
 def test_first_candidate_skips_a_hole_behind_a_downloaded_tip(tmp_path: Path) -> None:
     # get_first_candidate used to ask only whether a candidate's own tip
     # had arrived: a branch missing a block behind it passed that check
@@ -395,6 +481,23 @@ def test_add_headers_connecting_to_nothing_known_is_not_a_refusal(
     assert len(block_index.header_dict) == 2000 + 1
     assert len(block_index.header_index) == 2000 + 1
     assert len(block_index.block_candidates) == 2000
+
+
+def test_a_header_before_its_own_new_parent_in_the_batch_refuses_the_batch(
+    tmp_path: Path,
+) -> None:
+    # a peer is not required to send a headers message in strict
+    # parent-before-child order, and a compliant one reordering
+    # internally produces exactly this: btclib-org/btclib-node#214
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    parent, child = generate_random_header_chain(2, RegTest().genesis.hash)
+
+    with pytest.raises(BTClibValueError):
+        block_index.add_headers([child, parent])
+    assert child.hash not in block_index.header_dict
+    assert parent.hash not in block_index.header_dict
+    assert len(block_index.header_dict) == 1
 
 
 def test_add_headers_short(tmp_path: Path) -> None:
