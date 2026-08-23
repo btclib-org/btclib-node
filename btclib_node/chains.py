@@ -75,6 +75,13 @@ class Chain:
     # activation height of a script flag; every leaf below sets this in
     # its own __init__, which is why it carries no default here.
     flags: list[tuple[int, str]]
+    # Core's fPowAllowMinDifficultyBlocks: a block more than two target
+    # spacings after its parent may be mined at the network's easiest
+    # target, so that a chain nobody is hashing still moves.
+    pow_allow_min_difficulty_blocks: bool
+    # Core's fPowNoRetargeting: the target never moves off the one the
+    # genesis carries.
+    pow_no_retargeting: bool
 
     @property
     def genesis(self) -> BlockHeader:
@@ -130,6 +137,8 @@ class Main(Chain):
             (481824, "NULLDUMMY"),
             (709632, "TAPROOT"),
         ]
+        self.pow_allow_min_difficulty_blocks = False
+        self.pow_no_retargeting = False
 
 
 @dataclass
@@ -155,6 +164,8 @@ class TestNet(Chain):
             (834624, "NULLDUMMY"),
             (1628640000, "TAPROOT"),  # wrong, this is the date
         ]
+        self.pow_allow_min_difficulty_blocks = True
+        self.pow_no_retargeting = False
 
 
 @dataclass
@@ -175,6 +186,8 @@ class SigNet(Chain):
             (0, "NULLDUMMY"),
             (0, "TAPROOT"),
         ]
+        self.pow_allow_min_difficulty_blocks = False
+        self.pow_no_retargeting = False
 
 
 @dataclass
@@ -193,3 +206,5 @@ class RegTest(Chain):
             (0, "NULLDUMMY"),
             (0, "TAPROOT"),
         ]
+        self.pow_allow_min_difficulty_blocks = True
+        self.pow_no_retargeting = True

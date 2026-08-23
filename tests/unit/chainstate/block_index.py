@@ -119,7 +119,7 @@ def test_init_with_fork(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
-    fork = generate_random_header_chain(5, chain[-10].hash)
+    fork = generate_random_header_chain(5, chain[-10].hash, chain[-10].time)
     block_index.add_headers(chain)
     block_index.add_headers(fork)
     chainstate.db.close()
@@ -137,7 +137,7 @@ def test_add_headers_fork(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
-    fork = generate_random_header_chain(200, chain[-10 - 1].hash)
+    fork = generate_random_header_chain(200, chain[-10 - 1].hash, chain[-10 - 1].time)
     block_index.add_headers(chain)
     block_index.add_headers(fork)
     assert len(block_index.header_index) == 2190 + 1
@@ -147,7 +147,7 @@ def test_generate_block_candidates(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
-    fork = generate_random_header_chain(200, chain[-10 - 1].hash)
+    fork = generate_random_header_chain(200, chain[-10 - 1].hash, chain[-10 - 1].time)
     block_index.add_headers(chain)
     block_index.add_headers(fork)
     for x in chain:
@@ -162,7 +162,7 @@ def test_generate_block_candidates_2(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
-    fork = generate_random_header_chain(200, chain[-10 - 1].hash)
+    fork = generate_random_header_chain(200, chain[-10 - 1].hash, chain[-10 - 1].time)
     block_index.add_headers(chain)
     block_index.add_headers(fork)
     for x in fork:
@@ -291,7 +291,7 @@ def test_block_candidates_3(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
-    fork = generate_random_header_chain(200, chain[-10 - 1].hash)
+    fork = generate_random_header_chain(200, chain[-10 - 1].hash, chain[-10 - 1].time)
     block_index.add_headers(chain)
     block_index.add_headers(fork)
     for x in chain:

@@ -8,7 +8,7 @@ import socket
 import threading
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime, timedelta
 from typing import Any, Protocol
 
 import requests
@@ -24,6 +24,7 @@ from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
 from btclib_node import Node
+from btclib_node.chains import RegTest
 from btclib_node.p2p.address import peer_address
 
 
@@ -33,7 +34,23 @@ class _ListensOnAPort(Protocol):
     port: int | None
 
 
-def generate_random_header_chain(length: int, start: bytes) -> list[BlockHeader]:
+# every chain built here is regtest's, from its target down to the block
+# these hang off: a header has to be dated after the median of the
+# eleven before it, so a chain whose first block predates the genesis it
+# extends is one the index refuses
+GENESIS_TIME = RegTest().genesis.time
+
+
+def generate_random_header_chain(
+    length: int, start: bytes, previous_time: datetime = GENESIS_TIME
+) -> list[BlockHeader]:
+    """Return a chain of solved headers, a second apart, off `start`.
+
+    `previous_time` is the timestamp of the block `start` names, the
+    genesis' by default: a chain forking off a block further up has to
+    be given that block's, or its first header is older than the median
+    it has to beat.
+    """
     chain: list[BlockHeader] = []
     for x in range(length):
         if chain:
@@ -44,7 +61,7 @@ def generate_random_header_chain(length: int, start: bytes) -> list[BlockHeader]
             version=70015,
             previous_block_hash=previous_block_hash,
             merkle_root=secrets.token_bytes(32),
-            time=datetime.fromtimestamp(1231006505 + x + 1, UTC),
+            time=previous_time + timedelta(seconds=x + 1),
             bits=REGTEST_POW_LIMIT_BITS,
             nonce=1,
             check_validity=False,
@@ -101,7 +118,7 @@ def build_block(
         version=70015,
         previous_block_hash=previous_block_hash,
         merkle_root=merkle_root_and_mutated_from_transactions(transactions)[0],
-        time=datetime.fromtimestamp(1231006505 + height + 1, UTC),
+        time=GENESIS_TIME + timedelta(seconds=height + 1),
         bits=REGTEST_POW_LIMIT_BITS,
         nonce=1,
         check_validity=False,

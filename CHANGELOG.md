@@ -106,6 +106,30 @@ to check the guess.
   gate alone. The pyright survey drops `btclib_node tests`: pyright
   excludes every hidden directory by default, so with no paths it reads
   the directories `[tool.mypy]`'s `files` names, `scripts` among them.
+### A header is checked for the target and the time its height requires
+
+- **`BlockIndex.add_headers` runs `assert_valid_in_context` beside
+  `assert_valid_pow`** (#118), in `btclib_node/chainstate/contextual.py`:
+  the compact target the header's height requires,
+  `next_bits_required` (Core's `GetNextWorkRequired`), and that its
+  timestamp is later than the median of the eleven ancestors before it,
+  `median_time_past` (Core's `GetMedianTimePast`). Before this,
+  `assert_valid_pow` asked only whether a header's hash met the target
+  the header itself claimed, so a header claiming any easier target
+  within the network's limit was credited that chainwork regardless of
+  what the chain at that height required.
+- **`Chain` carries `pow_allow_min_difficulty_blocks` and
+  `pow_no_retargeting`**, Core's `fPowAllowMinDifficultyBlocks` and
+  `fPowNoRetargeting`, each set once per network in `Main`, `TestNet`,
+  `SigNet` and `RegTest`'s own `__init__`.
+- **A header's parent may be another header earlier in the same
+  batch**, not only one already in the index: `add_headers` weighs each
+  header against what came before it in its own `headers` message
+  before any of the batch is indexed.
+- Left unchecked: the BIP94 timewarp rule, which holds only on testnet4
+  and on a regtest run started with `-test=bip94`, neither of which
+  this node offers, and the version-floor checks
+  `ContextualCheckBlockHeader` also makes.
 
 ### A `match` statement has to cover the type it matches on
 
