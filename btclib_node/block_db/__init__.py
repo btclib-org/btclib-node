@@ -8,7 +8,7 @@ from typing import BinaryIO
 
 from btclib import var_int
 from btclib.block import Block
-from btclib.tx.tx_in import OutPoint
+from btclib.tx.out_point import OutPoint
 from btclib.tx.tx_out import TxOut
 from btclib.utils import bytesio_from_binarydata
 

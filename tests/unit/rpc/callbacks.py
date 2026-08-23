@@ -19,8 +19,10 @@ from btclib.exceptions import BTClibValueError
 from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.script import script
 from btclib.script.witness import Witness
-from btclib.tx.tx import Tx, TxIn, TxOut
-from btclib.tx.tx_in import OutPoint
+from btclib.tx.out_point import OutPoint
+from btclib.tx.tx import Tx
+from btclib.tx.tx_in import TxIn
+from btclib.tx.tx_out import TxOut
 
 from btclib_node.chains import RegTest
 from btclib_node.constants import P2pConnStatus

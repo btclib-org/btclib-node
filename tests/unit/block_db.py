@@ -15,7 +15,7 @@ no longer the file being written to.
 from pathlib import Path
 
 from btclib.script import script
-from btclib.tx.tx_in import OutPoint
+from btclib.tx.out_point import OutPoint
 from btclib.tx.tx_out import TxOut
 
 from btclib_node.block_db import BlockDB, RevBlock

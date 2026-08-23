@@ -7,8 +7,10 @@ from pathlib import Path
 import pytest
 from btclib.block import Block
 from btclib.script import script
-from btclib.tx.tx import Tx, TxIn, TxOut
-from btclib.tx.tx_in import OutPoint
+from btclib.tx.out_point import OutPoint
+from btclib.tx.tx import Tx
+from btclib.tx.tx_in import TxIn
+from btclib.tx.tx_out import TxOut
 
 from btclib_node import Node
 from btclib_node.chains import RegTest
