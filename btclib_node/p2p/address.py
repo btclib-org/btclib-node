@@ -357,9 +357,14 @@ class PeerDB:
         # a peer's word for when it last saw an address is not evidence,
         # and keeping it would make the one address several entries
         with self._write_batch() as wb:
+            # `_endpoint` is what the durable row is already keyed on --
+            # network id, address and port, not `services` -- so a
+            # second gossip for the one endpoint overwrites the row on
+            # disk. This index is what makes `self.addresses` settle on
+            # the endpoint the same way instead of holding one member
+            # per `services` value ever seen for it (#247).
+            by_endpoint = {_endpoint(known): known for known in self.addresses}
             for address in addresses:
-                if len(self.addresses) >= 10000:
-                    break
                 # BIP155's ignore rule: an IPV6 record that is really an
                 # IPv4 or a (long-retired) TORv2 address wearing another
                 # network's sixteen octets is not a second peer, and
@@ -371,17 +376,35 @@ class PeerDB:
                 if _is_embedded_ipv6(address):
                     continue
                 known = replace(address, timestamp=0)
+                key = _endpoint(known)
+                existing = by_endpoint.get(key)
+                # the cap is on distinct endpoints, so updating one
+                # already held does not spend it -- only a genuinely new
+                # endpoint can run the table out of room
+                if existing is None and len(self.addresses) >= 10000:
+                    break
+                if existing is not None:
+                    self.addresses.discard(existing)
                 self.addresses.add(known)
+                by_endpoint[key] = known
                 if wb is not None:
                     value = known.serialize(check_validity=False)
-                    wb.put(_KNOWN + _endpoint(known), value)
+                    wb.put(_KNOWN + key, value)
 
     def get_active_addresses(self) -> list[NetworkAddressV2]:
         now = time.time()
-        # active if seen within the last three hours
-        self.active_addresses = [
-            addr for addr in self.active_addresses if now - addr.timestamp < 3600 * 3
-        ]
+        # active if seen within the last three hours; an entry that ages
+        # out here loses its `answered-` row too, so the durable store
+        # stays bounded by what is still active rather than by every
+        # endpoint this node has ever dialled and heard back from over
+        # its whole lifetime (#253)
+        active: list[NetworkAddressV2] = []
+        for addr in self.active_addresses:
+            if now - addr.timestamp < 3600 * 3:
+                active.append(addr)
+            elif self.db is not None:
+                self.db.delete(_ANSWERED + _endpoint(addr))
+        self.active_addresses = active
         return self.active_addresses
 
     def add_active_address(self, addr: NetworkAddressV2) -> None:

@@ -27,6 +27,25 @@ to check the guess.
   manager was never started, which `Node.run` reaches unconditionally
   for a node built with `p2p_port` unset.
 
+### `PeerDB` settles on one row per endpoint, on disk and in memory alike
+
+- **`add_addresses` no longer keeps a second member of `self.addresses`
+  for an endpoint already known, where a later gossip carries different
+  `services`** (#247). Two records differing only in `services` used to
+  become two entries: the durable `known-` row already settled on the
+  endpoint (keyed on network id, address and port, not `services`), but
+  the in-memory table did not, so the 10000-entry cap could be spent on
+  several rows for the one endpoint, and `random_address`'s uniform draw
+  favoured whichever endpoint had been gossiped with more than one
+  `services` value. Updating an endpoint already held does not count
+  against the cap; only a genuinely new one does.
+- **`get_active_addresses` deletes an `answered-` row from the store
+  once the entry it backs ages out of `active_addresses`** (#253).
+  Nothing here called `KeyValueStore.delete` before, so a durable row
+  outlived the endpoint it recorded for as long as the process ran,
+  bounded only by the count of distinct endpoints ever dialled
+  successfully rather than by what is still active.
+
 ### `REPOSITORY.md`'s required-checks section names what main now enforces
 
 - **`REPOSITORY.md`'s *Required checks on main* section names `Lint and
