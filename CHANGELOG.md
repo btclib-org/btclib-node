@@ -195,6 +195,37 @@ to check the guess.
   same tree fail a different set of tests. Turning this on is
   contingent on #111 and #195, not a `pyproject.toml` line.
 
+### `feefilter` is answered and stored, not thrown away
+
+- **This node sends its own `feefilter` (`Config.min_relay_feerate`,
+  defaulting to Core's own `DEFAULT_MIN_RELAY_TX_FEE` of 100 sat/kvB)
+  once the handshake completes, and a peer's own `feefilter` is parsed
+  and kept on `Connection.feefilter`** (#94), where it used to be an
+  unknown command `handle_p2p` silently dropped. Nothing yet reads the
+  stored rate to skip an announcement below it: that needs a
+  per-transaction fee this node computes nowhere outside
+  `main.verify_mempool_acceptance`'s own prevout lookup, filed as #260.
+
+### An octet past an `addr` or `addrv2` no longer costs the peer
+
+- **A trailing octet past the last address of an `addr` or `addrv2`
+  payload is now silently left unread rather than disconnecting the
+  peer that sent it** (#149). btclib's `Addr.parse`/`AddrV2.parse` raise
+  on it (`assert_no_trailing`, a malleability guard), and
+  `main.handle_p2p` turned that raise into `conn.stop()`; Bitcoin Core
+  does not disconnect over it. Both accept a `BinaryData` stream, and
+  `assert_no_trailing` skips its own check for one by design (its own
+  docstring: a stream is "the caller's"), so wrapping the payload in one
+  reaches Core's leniency without a second copy of either codec.
+  `Version.parse` takes narrower `Octets` and cannot be handed the same
+  way without risking its own optional relay-flag byte being misread, so
+  a version carrying a trailing octet still disconnects the peer -- the
+  same policy question, answered differently because the two codecs
+  offer different means to answer it. Issue #149 also names a second,
+  distinct defect this leaves untouched -- `Version.parse` raising on a
+  relay octet that is neither `0x00` nor `0x01`, where Core reads any
+  nonzero octet as true -- so #149 stays open for that half.
+
 ### `REPOSITORY.md`'s required-checks section names what main now enforces
 
 - **`REPOSITORY.md`'s *Required checks on main* section names `Lint and

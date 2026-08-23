@@ -5,7 +5,17 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+from btclib.fee import FeeRate
+
 from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet
+
+# Core's own floor, `DEFAULT_MIN_RELAY_TX_FEE` (`src/policy/policy.h`,
+# read at bitcoin/bitcoin@58a7869f86): 100 sat/kvB. This node prices
+# nothing at mempool acceptance yet (issue #85 is the open question of
+# what a rejected or evicted transaction costs), so the value below is
+# only ever the floor this node tells a peer about in `feefilter`
+# (btclib-org/btclib-node#94) -- it is not enforced anywhere else.
+DEFAULT_MIN_RELAY_FEERATE = FeeRate(sats_per_kvbyte=100)
 
 
 @dataclass
@@ -24,6 +34,7 @@ class Config:
     rpc_port: int | None
     pruned: bool
     debug: bool
+    min_relay_feerate: FeeRate
 
     def __init__(
         self,
@@ -36,6 +47,7 @@ class Config:
         pruned: bool = False,
         debug: bool = False,
         log_path: str | None = "history.log",
+        min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
     ) -> None:
         if isinstance(chain, Chain):
             self.chain = chain
@@ -75,3 +87,4 @@ class Config:
 
         self.debug = debug
         self.log_path = log_path
+        self.min_relay_feerate = min_relay_feerate
