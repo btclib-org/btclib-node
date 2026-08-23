@@ -18,8 +18,10 @@ from btclib.block.proof_of_work import REGTEST_POW_LIMIT_BITS
 from btclib.exceptions import BTClibValueError
 from btclib.p2p.addrv2 import NetworkAddressV2
 from btclib.script import script
-from btclib.tx.tx import Tx, TxIn, TxOut
-from btclib.tx.tx_in import OutPoint
+from btclib.tx.out_point import OutPoint
+from btclib.tx.tx import Tx
+from btclib.tx.tx_in import TxIn
+from btclib.tx.tx_out import TxOut
 
 from btclib_node import Node
 from btclib_node.p2p.address import peer_address

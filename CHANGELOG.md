@@ -252,3 +252,20 @@ to check the guess.
 - The RPC port binds every interface with no authentication (#27), so
   this was a leak any client could drive, not only an internal
   bookkeeping detail.
+
+### `no_implicit_reexport` is on: every import names where a name is defined
+
+- **`TxIn`, `TxOut` and `OutPoint` were imported from a module that only
+  passes them through.** `TxIn` and `TxOut` came from `btclib.tx.tx`,
+  which imports them for its own use and defines neither; `OutPoint`
+  came from `btclib.tx.tx_in` the same way. `btclib` already answers
+  this correctly at its package boundary -- `btclib.tx`'s own
+  `__init__.py` re-exports all three explicitly, `__all__` and all --
+  the gap was entirely on this side, every affected import redirected
+  to where each name is actually defined: `OutPoint` in
+  `btclib.tx.out_point`, `TxIn` in `btclib.tx.tx_in`, `TxOut` in
+  `btclib.tx.tx_out`. `uv run --locked --no-default-groups --group lint
+  --group test mypy --strict` is clean where it was not before.
+- **`no_implicit_reexport` moves into the enabled bundle** -- the last
+  of the flags `[tool.mypy]`'s comments had left off pending this fix,
+  `check_untyped_defs` (#105) being the one still open.

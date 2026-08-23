@@ -8,8 +8,10 @@ from typing import Any
 
 import pytest
 from btclib.script import script
-from btclib.tx.tx import Tx, TxIn, TxOut
-from btclib.tx.tx_in import OutPoint
+from btclib.tx.out_point import OutPoint
+from btclib.tx.tx import Tx
+from btclib.tx.tx_in import TxIn
+from btclib.tx.tx_out import TxOut
 
 from btclib_node.block_db import RevBlock
 from btclib_node.chains import RegTest

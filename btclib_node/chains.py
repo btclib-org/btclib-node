@@ -8,8 +8,9 @@ from datetime import UTC, datetime
 from btclib.block import Block, BlockHeader, merkle_root_and_mutated_from_transactions
 from btclib.p2p.magic import magic_from_network
 from btclib.script import script
+from btclib.tx.out_point import OutPoint
 from btclib.tx.tx import Tx
-from btclib.tx.tx_in import OutPoint, TxIn
+from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
 

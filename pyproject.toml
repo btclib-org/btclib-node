@@ -531,18 +531,22 @@ warn_unreachable = true
 disallow_untyped_defs = true
 disallow_untyped_calls = true
 disallow_incomplete_defs = true
+# reports a name imported from a module that re-exports it rather than
+# defines it: every btclib.tx.tx_in import of OutPoint (defined in
+# btclib.tx.out_point) and every btclib.tx.tx import of TxIn/TxOut
+# (defined in btclib.tx.tx_in and btclib.tx.tx_out respectively) --
+# redirected to the module that actually defines each name, which is
+# what this flag asks for and costs nothing else in this tree
+no_implicit_reexport = true
 
-# The rest of the bundle is left off. What one of them costs is a
-# number nothing checks and any commit can move, so it is not recorded
-# here; the flag being taken on is measured over the same directories
-# the gate runs on, with
+# The rest of the bundle is left off. What it costs is a number nothing
+# checks and any commit can move, so it is not recorded here; the flag
+# being taken on is measured over the same directories the gate runs
+# on, with
 #
 #   uv run --locked --no-default-groups --group lint --group test \
 #     mypy --check-untyped-defs
 #
-# `no_implicit_reexport` reports a name imported from a module that
-# re-exports it rather than defines it, which is an import to redirect
-# and not a signature to annotate: not #104's job.
 # `check_untyped_defs` checks the bodies of unannotated functions, and
 # #104's annotation pass leaves none in `files` for it to check --
 # measured at zero for that reason, and not because #105, where a

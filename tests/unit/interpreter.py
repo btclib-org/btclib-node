@@ -24,8 +24,10 @@ from btclib.script.script_pub_key import ScriptPubKey
 from btclib.script.taproot import output_prvkey
 from btclib.script.witness import Witness
 from btclib.to_pub_key import point_from_pub_key, pub_keyinfo_from_prv_key
-from btclib.tx.tx import Tx, TxIn, TxOut
-from btclib.tx.tx_in import OutPoint
+from btclib.tx.out_point import OutPoint
+from btclib.tx.tx import Tx
+from btclib.tx.tx_in import TxIn
+from btclib.tx.tx_out import TxOut
 
 from btclib_node.chains import RegTest
 from btclib_node.config import Config

@@ -3,8 +3,8 @@
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
 from btclib.block import Block
+from btclib.tx.out_point import OutPoint
 from btclib.tx.tx import Tx
-from btclib.tx.tx_in import OutPoint
 from btclib.tx.tx_out import TxOut
 
 from btclib_node.block_db import RevBlock
