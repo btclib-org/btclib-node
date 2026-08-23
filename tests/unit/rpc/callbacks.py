@@ -201,6 +201,7 @@ def test_the_raw_mempool_is_txids_or_a_table() -> None:
     assert list(verbose) == [tx.id.hex()]
     assert verbose[tx.id.hex()]["wtxid"] == tx.hash.hex()
     assert verbose[tx.id.hex()]["vsize"] == tx.vsize
+    assert verbose[tx.id.hex()]["weight"] == tx.weight
 
 
 def test_ping_and_stop_answer_without_a_connection() -> None:
