@@ -796,3 +796,20 @@ to check the guess.
   still keeps no `SECURITY.md` of its own: the route the setting opens
   reopens no question #167 already settled about which repositories
   carry one.
+
+### The review workflow reads more, and reviews more pull requests
+
+- **`claude-review.yml`'s `--allowedTools` now carries `Bash(git:*)`,
+  `Bash(gh issue view:*)` and `Bash(gh api:*)`** (#153). `gh pr diff` was
+  the job's only avenue before this: no base to check a "what this did
+  before" claim against, and no way to read the issues a pull request
+  says it closes.
+
+- **The review step now names `allowed_bots: "dependabot[bot]"`**
+  (#168). `.github/dependabot.yml` opens a pull request here every
+  Thursday, and without this the action throws `Workflow initiated by
+  non-human actor` for that actor rather than reviewing it.
+
+- **The header no longer calls this the *only* workflow** (#140).
+  `lint.yml` and `test.yml` already run on the same pull request and are
+  required checks on `main`; this one deliberately is not.
