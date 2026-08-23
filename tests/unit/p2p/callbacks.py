@@ -871,13 +871,17 @@ def test_an_inventory_of_neither_kind_is_skipped() -> None:
 
 
 class FakeHeaderIndex:
-    def __init__(self, added: bool) -> None:
-        self.added = added
+    def __init__(self, tip: bytes | None = None, *, refuse: bool = False) -> None:
+        self.tip = tip
+        self.refuse = refuse
         self.given: list[BlockHeader] | None = None
 
-    def add_headers(self, headers: Iterable[BlockHeader]) -> bool:
+    def add_headers(self, headers: Iterable[BlockHeader]) -> bytes | None:
         self.given = list(headers)
-        return self.added
+        if self.refuse:
+            err_msg = "a header failing on its own terms"
+            raise BTClibValueError(err_msg)
+        return self.tip
 
     def get_block_locator_hashes(self) -> list[bytes]:
         return [b"\x00" * 32]
@@ -886,33 +890,50 @@ class FakeHeaderIndex:
 def test_a_full_batch_of_headers_is_followed_by_a_request_for_more() -> None:
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
     node = a_data_node(status=NodeStatus.SyncingHeaders)
-    index = FakeHeaderIndex(added=True)
+    index = FakeHeaderIndex(tip=chain[-1].hash)
     node.chainstate.block_index = index
     peer = a_peer()
     headers(node, Headers(chain).serialize(), peer)
     assert index.given == chain
     (answer,) = peer.sent
     assert isinstance(answer, GetHeaders)
+    # from the batch's own tip, not the best chain's: btclib-org/btclib-node#122
+    assert answer.locator == (chain[-1].hash,)
     assert node.status == NodeStatus.SyncingHeaders
 
 
-def test_a_full_batch_this_node_refused_still_ends_the_sync() -> None:
-    # what the code does, not what it should: a batch refused for a bad
-    # proof of work is indistinguishable here from one carrying nothing
-    # new, and either declares the headers synced. See #75
+def test_a_full_batch_from_nowhere_known_asks_from_what_this_node_knows() -> None:
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
     node = a_data_node(status=NodeStatus.SyncingHeaders)
-    node.chainstate.block_index = FakeHeaderIndex(added=False)
+    index = FakeHeaderIndex(tip=None)
+    node.chainstate.block_index = index
     peer = a_peer()
     headers(node, Headers(chain).serialize(), peer)
+    (answer,) = peer.sent
+    assert isinstance(answer, GetHeaders)
+    assert answer.locator == (b"\x00" * 32,)
+    assert node.status == NodeStatus.SyncingHeaders
+
+
+def test_a_refused_batch_is_not_the_end_of_a_sync() -> None:
+    # a batch refused for a bad proof of work is a misbehaving peer, not
+    # the ordinary end of a sync: the raise reaches handle_p2p, which
+    # drops the connection instead of this node believing itself caught
+    # up. btclib-org/btclib-node#75
+    chain = generate_random_header_chain(2000, RegTest().genesis.hash)
+    node = a_data_node(status=NodeStatus.SyncingHeaders)
+    node.chainstate.block_index = FakeHeaderIndex(refuse=True)
+    peer = a_peer()
+    with pytest.raises(BTClibValueError):
+        headers(node, Headers(chain).serialize(), peer)
     assert not peer.sent
-    assert node.status == NodeStatus.HeaderSynced
+    assert node.status == NodeStatus.SyncingHeaders
 
 
 def test_a_short_batch_means_the_headers_are_synced() -> None:
     chain = generate_random_header_chain(2, RegTest().genesis.hash)
     node = a_data_node(status=NodeStatus.SyncingHeaders)
-    node.chainstate.block_index = FakeHeaderIndex(added=True)
+    node.chainstate.block_index = FakeHeaderIndex(tip=chain[-1].hash)
     peer = a_peer()
     headers(node, Headers(chain).serialize(), peer)
     assert not peer.sent
@@ -922,7 +943,7 @@ def test_a_short_batch_means_the_headers_are_synced() -> None:
 def test_a_short_batch_when_the_headers_are_already_synced_changes_nothing() -> None:
     chain = generate_random_header_chain(2, RegTest().genesis.hash)
     node = a_data_node(status=NodeStatus.BlockSynced)
-    node.chainstate.block_index = FakeHeaderIndex(added=True)
+    node.chainstate.block_index = FakeHeaderIndex(tip=chain[-1].hash)
     peer = a_peer()
     headers(node, Headers(chain).serialize(), peer)
     assert not peer.sent
