@@ -6,6 +6,7 @@ import enum
 from collections import deque
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import Any
 
 from btclib import var_int
@@ -15,6 +16,7 @@ from btclib.exceptions import BTClibValueError
 from btclib.utils import bytesio_from_binarydata
 
 from btclib_node.chains import Chain
+from btclib_node.chainstate.contextual import assert_valid_in_context
 from btclib_node.db import KeyValueStore
 from btclib_node.log import Logger
 
@@ -65,9 +67,10 @@ class BlockIndex:
 
         self.db = parent_db
 
-        # the network's easiest target, which every header this index
-        # accepts has to beat; btclib defaults it to mainnet's
-        self.pow_limit_bits = chain.pow_limit_bits
+        # the network, for what `add_headers` requires of a header
+        # besides the eighty bytes: its easiest target, and the two
+        # consensus parameters that decide how the target moves
+        self.chain = chain
 
         genesis = chain.genesis
         genesis_info = BlockInfo(genesis, 0, BlockStatus.in_active_chain, True)
@@ -230,38 +233,56 @@ class BlockIndex:
         self.active_chain.pop()
 
     def add_headers(self, headers: Iterable[BlockHeader]) -> bool:
-        # Before anything is indexed, and all of them: chainwork below is
-        # credited from the header's own `bits`, so an unchecked header
-        # can claim any amount of work and become the best chain. The
-        # message is taken or refused whole -- a peer that sent one bad
-        # header is not one to keep the rest of the batch from.
+        # Nothing is indexed until every header has been checked, and the
+        # batch is taken or refused whole: chainwork below is credited
+        # from the header's own `bits`, so a header that keeps a target
+        # the chain does not require becomes the best chain on work
+        # nobody agreed to. A peer that sent one such header is not one
+        # to keep the rest of the batch from either.
         #
-        # This is CheckProofOfWork, not ContextualCheckBlockHeader: the
-        # target a header is *required* to have at its height, and the
-        # median-time-past it must follow, go unchecked.
-        # btclib-org/btclib-node#118
+        # `pending` is what a header brought by this batch is weighed
+        # against, its parent being as likely to be a header two lines
+        # above as one already indexed. A header whose parent is in
+        # neither is left out of it: there is no chain to weigh it
+        # against, and nothing to give it a height.
+        now = datetime.now(UTC)
+        pow_limit_bits = self.chain.pow_limit_bits
+        pending: dict[bytes, tuple[BlockHeader, int]] = {}
+
+        def parent_of(header: BlockHeader) -> BlockHeader:
+            previous = header.previous_block_hash
+            if previous in pending:
+                return pending[previous][0]
+            return self.header_dict[previous].header
+
         for header in headers:
+            header_hash = header.hash
             try:
-                header.assert_valid_pow(self.pow_limit_bits)
+                header.assert_valid_pow(pow_limit_bits)
+                if header_hash in self.header_dict or header_hash in pending:
+                    continue
+                found = pending.get(header.previous_block_hash)
+                if found is None:
+                    block_info = self.header_dict.get(header.previous_block_hash)
+                    if block_info is None:
+                        continue
+                    found = (block_info.header, block_info.index)
+                parent, parent_height = found
+                assert_valid_in_context(
+                    self.chain, header, parent, parent_height, parent_of, now
+                )
             except BTClibValueError as e:
                 self.logger.warning(f"Refused a header batch: {e}")
                 return False
+            pending[header_hash] = (header, parent_height + 1)
 
-        added = False  # flag that signals if there is a new header in this message
         current_work = self.get_block_info(self.active_chain[-1]).chainwork
-        for header in headers:
-            header_hash = header.hash
-
-            if header_hash in self.header_dict:
-                continue
-            if header.previous_block_hash not in self.header_dict:
-                continue
-            added = True
+        for header_hash, (header, height) in pending.items():
             previous_block_info = self.get_block_info(header.previous_block_hash)
             new_work = previous_block_info.chainwork + calculate_work(header)
             block_info = BlockInfo(
                 header,
-                previous_block_info.index + 1,
+                height,
                 BlockStatus.valid_header,
                 False,
                 new_work,
@@ -279,7 +300,8 @@ class BlockIndex:
                 self.header_index = self.header_index[: -len(remove)]
                 self.header_index.extend(add)
 
-        return added
+        # whether the batch carried a header this node did not have
+        return bool(pending)
 
     def get_first_candidate(self) -> BlockInfo | None:
         chainwork = self.get_block_info(self.active_chain[-1]).chainwork

@@ -16,21 +16,29 @@ EXPECTED = {
         "pow_limit_bits": "1d00ffff",
         "magic": "f9beb4d9",
         "genesis": "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
+        "pow_allow_min_difficulty_blocks": False,
+        "pow_no_retargeting": False,
     },
     "testnet": {
         "pow_limit_bits": "1d00ffff",
         "magic": "0b110907",
         "genesis": "000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943",
+        "pow_allow_min_difficulty_blocks": True,
+        "pow_no_retargeting": False,
     },
     "signet": {
         "pow_limit_bits": "1e0377ae",
         "magic": "0a03cf40",
         "genesis": "00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6",
+        "pow_allow_min_difficulty_blocks": False,
+        "pow_no_retargeting": False,
     },
     "regtest": {
         "pow_limit_bits": "207fffff",
         "magic": "fabfb5da",
         "genesis": "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206",
+        "pow_allow_min_difficulty_blocks": True,
+        "pow_no_retargeting": True,
     },
 }
 
@@ -53,6 +61,20 @@ def test_pow_limit_bits() -> None:
     for chain in CHAINS:
         expected = EXPECTED[chain.name]["pow_limit_bits"]
         assert chain.pow_limit_bits.hex() == expected, chain.name
+
+
+def test_pow_allow_min_difficulty_blocks_and_pow_no_retargeting() -> None:
+    # Bitcoin Core's fPowAllowMinDifficultyBlocks and fPowNoRetargeting,
+    # per chain: src/kernel/chainparams.cpp's CMainParams, CTestNetParams,
+    # SigNetParams and CRegTestParams, each setting both fields once in
+    # its constructor
+    for chain in CHAINS:
+        expected = EXPECTED[chain.name]
+        assert (
+            chain.pow_allow_min_difficulty_blocks
+            == expected["pow_allow_min_difficulty_blocks"]
+        ), chain.name
+        assert chain.pow_no_retargeting == expected["pow_no_retargeting"], chain.name
 
 
 def test_magic() -> None:

@@ -393,7 +393,7 @@ def test_a_block_off_the_active_chain_is_described_and_not_refused() -> None:
     # block has on its own fork, confirmations -1 in place of a depth,
     # the parent it names, and no nextblockhash
     chain = generate_random_header_chain(3, RegTest().genesis.hash)
-    fork = generate_random_header_chain(1, chain[0].hash)
+    fork = generate_random_header_chain(1, chain[0].hash, chain[0].time)
     node = cast(
         "Node",
         SimpleNamespace(
@@ -421,7 +421,7 @@ def test_a_fork_reaching_past_the_tip_is_not_read_off_the_end_of_the_chain() -> 
     # length being what decides -- and the active chain has no position
     # to answer for a height past its own
     chain = generate_random_header_chain(2, RegTest().genesis.hash)
-    fork = generate_random_header_chain(3, chain[0].hash)
+    fork = generate_random_header_chain(3, chain[0].hash, chain[0].time)
     node = cast(
         "Node",
         SimpleNamespace(

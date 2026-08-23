@@ -3,7 +3,7 @@
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
 import secrets
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -102,6 +102,62 @@ def test_one_bad_header_refuses_the_whole_batch(tmp_path: Path) -> None:
     assert len(block_index.header_dict) == 5 + 1
 
 
+def test_a_header_with_valid_pow_but_the_wrong_required_target_is_refused(
+    tmp_path: Path,
+) -> None:
+    # assert_valid_pow and assert_valid_in_context share one except
+    # clause in add_headers; this header trips only the second, so a
+    # test that only ever builds a header failing the first cannot
+    # tell the two apart
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    genesis = RegTest().genesis
+    # one target harder than regtest's own limit, so assert_valid_pow
+    # (which only bounds the header's claimed target by the network's)
+    # takes it, and mine still solves it in the same handful of tries a
+    # regtest header always does
+    header = BlockHeader(
+        version=70015,
+        previous_block_hash=genesis.hash,
+        merkle_root=secrets.token_bytes(32),
+        time=genesis.time + timedelta(seconds=1),
+        bits=b"\x20\x7f\xff\xfe",
+        nonce=1,
+        check_validity=False,
+    )
+    brute_force_nonce(header)
+    assert header.bits != REGTEST_POW_LIMIT_BITS
+
+    assert not block_index.add_headers([header])
+    assert header.hash not in block_index.header_dict
+    assert len(block_index.header_dict) == 1
+
+
+def test_a_header_with_valid_pow_but_no_later_than_the_median_is_refused(
+    tmp_path: Path,
+) -> None:
+    # same wiring question as above, tripped by the other branch of
+    # assert_valid_in_context: this header carries the required target
+    # and a solved nonce, and only its timestamp is wrong
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    genesis = RegTest().genesis
+    header = BlockHeader(
+        version=70015,
+        previous_block_hash=genesis.hash,
+        merkle_root=secrets.token_bytes(32),
+        time=genesis.time,  # not later than the median of itself alone
+        bits=REGTEST_POW_LIMIT_BITS,
+        nonce=1,
+        check_validity=False,
+    )
+    brute_force_nonce(header)
+
+    assert not block_index.add_headers([header])
+    assert header.hash not in block_index.header_dict
+    assert len(block_index.header_dict) == 1
+
+
 def test_simple_init(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
@@ -119,7 +175,7 @@ def test_init_with_fork(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
-    fork = generate_random_header_chain(5, chain[-10].hash)
+    fork = generate_random_header_chain(5, chain[-10].hash, chain[-10].time)
     block_index.add_headers(chain)
     block_index.add_headers(fork)
     chainstate.db.close()
@@ -137,7 +193,7 @@ def test_add_headers_fork(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
-    fork = generate_random_header_chain(200, chain[-10 - 1].hash)
+    fork = generate_random_header_chain(200, chain[-10 - 1].hash, chain[-10 - 1].time)
     block_index.add_headers(chain)
     block_index.add_headers(fork)
     assert len(block_index.header_index) == 2190 + 1
@@ -147,7 +203,7 @@ def test_generate_block_candidates(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
-    fork = generate_random_header_chain(200, chain[-10 - 1].hash)
+    fork = generate_random_header_chain(200, chain[-10 - 1].hash, chain[-10 - 1].time)
     block_index.add_headers(chain)
     block_index.add_headers(fork)
     for x in chain:
@@ -162,7 +218,7 @@ def test_generate_block_candidates_2(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
-    fork = generate_random_header_chain(200, chain[-10 - 1].hash)
+    fork = generate_random_header_chain(200, chain[-10 - 1].hash, chain[-10 - 1].time)
     block_index.add_headers(chain)
     block_index.add_headers(fork)
     for x in fork:
@@ -291,7 +347,7 @@ def test_block_candidates_3(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
-    fork = generate_random_header_chain(200, chain[-10 - 1].hash)
+    fork = generate_random_header_chain(200, chain[-10 - 1].hash, chain[-10 - 1].time)
     block_index.add_headers(chain)
     block_index.add_headers(fork)
     for x in chain:
