@@ -41,6 +41,30 @@ to check the guess.
   than asking the same peer for more of a branch already proved bad,
   with no misbehaviour scoring anywhere in this tree to ever stop that
   otherwise (#75, #122).
+### A connection is not reachable by any send until its handshake finishes
+
+- **`P2pManager` keeps an accepted or dialled connection in a new
+  `pending_connections` dict until `callbacks.verack` promotes it into
+  `connections`** (#131), which is where every send that used to reach a
+  handshaking peer read from: `broadcast_raw_transaction`, `ping_all`,
+  the housekeeping sweep's own ping, and `DownloadManager`'s sends over
+  the same dict. Before, a new connection went straight into
+  `connections`, so an `Inv` or a raw `Tx` could reach a peer before its
+  own `version`/`verack` exchange was done, which the protocol treats as
+  a violation.
+- **The housekeeping sweep still closes a connection stuck mid-handshake,
+  without pinging it first**: `ping` is itself one of the messages a
+  connection cannot be sent before `verack`, so a pending connection past
+  the same idle bound `connections` are held to is dropped once quiet
+  rather than pinged and given a second window to answer.
+- **`stop_all` and the manager's own `stop` still close a pending
+  connection**, and the housekeeping loop's dial count and
+  already-connected check both read from `pending_connections` too, so a
+  peer mid-handshake is neither left dangling on shutdown nor dialled a
+  second time.
+- **`getconnectioncount` still counts a peer mid-handshake**, matching
+  Core's own `GetNodeCount`, which counts every entry of `m_nodes` and
+  not only the ones that finished negotiating.
 
 ### `Connection.__repr__` spells a peer's endpoint through `ip_and_port` too
 

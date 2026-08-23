@@ -225,6 +225,7 @@ def a_peer(**attributes: Any) -> Any:
     sent: list[Any] = []
     stopped = []
     peer = SimpleNamespace(
+        id=0,
         send=sent.append,
         sent=sent,
         stop=lambda: stopped.append(True),
@@ -253,10 +254,15 @@ def a_handshake_node(
     nonces: Sequence[int] = (),
     status: NodeStatus = NodeStatus.HeaderSynced,
     peer_db: Any = None,
+    promote_connection: Any = None,
 ) -> Any:
     return SimpleNamespace(
         status=status,
-        p2p_manager=SimpleNamespace(nonces=list(nonces), peer_db=peer_db),
+        p2p_manager=SimpleNamespace(
+            nonces=list(nonces),
+            peer_db=peer_db,
+            promote_connection=promote_connection or (lambda conn_id: None),
+        ),
         chainstate=SimpleNamespace(
             block_index=SimpleNamespace(get_block_locator_hashes=lambda: [b"\x00" * 32])
         ),
@@ -372,8 +378,9 @@ def test_what_a_peer_said_about_relay_lands_on_the_connection(
 
 
 def test_a_verack_completes_the_handshake() -> None:
-    peer = a_peer(version_message=object(), wtxidrelay_received=True)
-    verack(a_handshake_node(), b"", peer)
+    promoted: list[int] = []
+    peer = a_peer(id=9, version_message=object(), wtxidrelay_received=True)
+    verack(a_handshake_node(promote_connection=promoted.append), b"", peer)
     assert peer.status == P2pConnStatus.Connected
     assert commands(peer) == [
         "SendHeaders",
@@ -387,6 +394,9 @@ def test_a_verack_completes_the_handshake() -> None:
     assert isinstance(peer.sent[3], GetAddr)
     assert isinstance(peer.sent[4], GetHeaders)
     assert not peer.stopped
+    # out of P2pManager.pending_connections and into connections, right
+    # where P2pConnStatus.Connected is set: btclib-org/btclib-node#131
+    assert promoted == [9]
 
 
 @pytest.mark.parametrize(
@@ -433,16 +443,20 @@ def test_the_handshake_asks_the_socket_for_the_peer_once() -> None:
 
 
 def test_a_verack_before_the_version_is_let_go() -> None:
+    promoted: list[int] = []
     peer = a_peer(wtxidrelay_received=True)
-    verack(a_handshake_node(), b"", peer)
+    verack(a_handshake_node(promote_connection=promoted.append), b"", peer)
     assert peer.stopped == [True]
     assert peer.status == P2pConnStatus.Open
+    assert promoted == []
 
 
 def test_a_verack_from_a_peer_that_never_asked_for_wtxid_relay_is_let_go() -> None:
+    promoted: list[int] = []
     peer = a_peer(version_message=object())
-    verack(a_handshake_node(), b"", peer)
+    verack(a_handshake_node(promote_connection=promoted.append), b"", peer)
     assert peer.stopped == [True]
+    assert promoted == []
 
 
 def test_the_two_flags_a_peer_sets_on_this_connection() -> None:
@@ -790,16 +804,42 @@ def test_a_transaction_is_not_found_under_the_other_identifier() -> None:
         (InventoryType.MSG_WTX, transaction.id),
     ):
         peer = a_peer()
-        getdata(node, GetData([Inventory(type_code, identifier)]).serialize(), peer)
-        assert not peer.sent
+        item = Inventory(type_code, identifier)
+        getdata(node, GetData([item]).serialize(), peer)
+        (answer,) = peer.sent
+        assert isinstance(answer, NotFound)
+        assert answer.items == (item,)
 
 
-def test_a_transaction_this_node_does_not_hold_is_not_answered() -> None:
+def test_a_transaction_this_node_does_not_hold_gets_a_notfound() -> None:
+    # Core's own answer to a `getdata` `FindTxForGetData` cannot serve:
+    # `vNotFound` in `ProcessGetData`, src/net_processing.cpp
     node = a_data_node()
     peer = a_peer()
-    items = [Inventory(InventoryType.MSG_TX, b"\x11" * 32)]
-    getdata(node, GetData(items).serialize(), peer)
-    assert not peer.sent
+    item = Inventory(InventoryType.MSG_TX, b"\x11" * 32)
+    getdata(node, GetData([item]).serialize(), peer)
+    (answer,) = peer.sent
+    assert isinstance(answer, NotFound)
+    assert answer.items == (item,)
+
+
+def test_several_misses_batch_into_one_notfound_alongside_the_hits() -> None:
+    transaction = a_transaction()
+    mempool = Mempool(Logger(debug=True))
+    mempool.add_tx(transaction)
+    node = a_data_node(mempool=mempool)
+    peer = a_peer()
+    held = Inventory(InventoryType.MSG_WTX, transaction.hash)
+    missing = [
+        Inventory(InventoryType.MSG_TX, b"\x11" * 32),
+        Inventory(InventoryType.MSG_WTX, b"\x22" * 32),
+    ]
+    getdata(node, GetData([held, *missing]).serialize(), peer)
+    tx_answer, notfound_answer = peer.sent
+    assert isinstance(tx_answer, TxMsg)
+    assert tx_answer.tx == transaction
+    assert isinstance(notfound_answer, NotFound)
+    assert notfound_answer.items == tuple(missing)
 
 
 def test_a_peer_that_declined_relay_is_not_served_a_transaction_it_asks_for() -> None:

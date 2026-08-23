@@ -26,6 +26,7 @@ from btclib.p2p.inventory import (
     GetHeaders,
     Headers,
     Inv,
+    Inventory,
     InventoryType,
     NotFound,
 )
@@ -97,6 +98,9 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
         conn.stop()
         return
     conn.status = P2pConnStatus.Connected
+    # out of P2pManager.pending_connections and into connections, the
+    # dict every send iterates: btclib-org/btclib-node#131
+    node.p2p_manager.promote_connection(conn.id)
     conn.send(SendHeaders())
     conn.send(SendCmpct(False, 1))
     conn.send_ping()
@@ -246,6 +250,14 @@ def getdata(node: Node, msg: bytes, conn: Connection) -> None:
     #
     # Blocks are not affected. A peer that wants no transactions is
     # still a peer syncing the chain.
+    #
+    # A hash this node does not hold, once relay is wanted, is answered
+    # with `notfound` rather than silence: `FindTxForGetData` returning
+    # null is `vNotFound`'s only source in Core's own `ProcessGetData`
+    # (src/net_processing.cpp), so a miss is told apart from a peer that
+    # is merely slow. The declined-relay peer above gets none of this
+    # either, matching Core's own `continue` on that path.
+    not_found: list[Inventory] = []
     if conn.relay_tx:
         for item in getdata.items:
             if item.type_code not in tx_types:
@@ -258,6 +270,8 @@ def getdata(node: Node, msg: bytes, conn: Connection) -> None:
                     InventoryType.MSG_WTX,
                 )
                 conn.send(TxMsg(tx, include_witness=include_witness))
+            else:
+                not_found.append(item)
 
     block_types = (InventoryType.MSG_BLOCK, InventoryType.MSG_WITNESS_BLOCK)
     for item in getdata.items:
@@ -269,6 +283,13 @@ def getdata(node: Node, msg: bytes, conn: Connection) -> None:
             conn.send(
                 BlockMsg(block, include_witness=include_witness, check_validity=False)
             )
+        # else: silence, matching Core -- `ProcessGetBlockData` returns
+        # on a block it does not hold with no `notfound` of its own,
+        # `vNotFound` being `ProcessGetData`'s own local and never
+        # touched by the function it calls out to for a block item.
+
+    if not_found:
+        conn.send(NotFound(not_found))
 
 
 def headers(node: Node, msg: bytes, conn: Connection) -> None:
