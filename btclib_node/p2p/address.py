@@ -112,22 +112,36 @@ def peer_from_addr_entry(entry: TimestampedNetworkAddress) -> NetworkAddressV2:
     )
 
 
-def ip_and_port(address: NetworkAddress) -> str:
-    """Return "ip:port", which is how this node has always shown one.
+def ip_and_port(ip: str, port: int) -> str:
+    """Return the endpoint the way Core's `CService::ToStringAddrPort` does.
 
-    A `NetworkAddress` holds every address in the sixteen octets of an
-    IPv6 one, so the mapped form is unwrapped first: a v4 peer would
-    otherwise be shown as `::ffff:1.2.3.4`, which is not what the
-    `__repr__` this replaces wrote and not what an rpc client expects.
+    `"[" + ToStringAddr() + "]:" + port_str` for every network that
+    function's `IsIPv4() || IsTor() || IsI2P() || IsInternal()` does not
+    name. The brackets are what tells a v6 host from its port:
+    `2001:db8::1` on port 8333 and `2001:db8::1:8333` on some other port
+    are both addresses, and without brackets both render as the second.
 
-    Not Core's spelling, and deliberately not changed to it here: Core
-    brackets a v6 address -- `CService::ToStringAddrPort` writes
-    `[2001:db8::1]:8333`, without which the host and the port cannot be
-    told apart -- and this writes what it always wrote. Changing what
-    `getpeerinfo` answers is a change to an interface and its own
-    issue, btclib-org/btclib-node#147, not a rider on a deletion.
+    The host's text rather than the `NetworkAddress` a peer is held in,
+    because a socket's `getpeername` has no such object to offer and
+    answers with this.
+
+    A v4-mapped host is unwrapped rather than bracketed, which is Core's
+    answer too: `CNetAddr::SetLegacyIPv6` files a mapped address under
+    NET_IPV4, which that predicate names. Without the unwrapping a v4
+    peer would read `[::ffff:1.2.3.4]:8333`, a `NetworkAddress` holding
+    every address in the sixteen octets of an IPv6 one.
+
+    Raises `ValueError` where the host is not an IP address, which is
+    what `ipaddress.ip_address` answers with: a hostname is refused
+    rather than shown with brackets guessed at.
     """
-    return f"{address.ip.ipv4_mapped or address.ip}:{address.port}"
+    parsed = ip_address(ip)
+    if not isinstance(parsed, IPv6Address):
+        return f"{parsed}:{port}"
+    mapped = parsed.ipv4_mapped
+    if mapped:
+        return f"{mapped}:{port}"
+    return f"[{parsed}]:{port}"
 
 
 async def dial(address: NetworkAddressV2) -> socket.socket | None:

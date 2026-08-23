@@ -122,8 +122,23 @@ def test_a_v4_peer_survives_the_round_trip_through_an_addr_version_1_entry() -> 
 
 
 def test_an_address_is_shown_the_way_core_writes_one() -> None:
-    assert ip_and_port(NetworkAddress(0, "1.2.3.4", 8333)) == "1.2.3.4:8333"
-    assert ip_and_port(NetworkAddress(0, "2001:db8::1", 8333)) == "2001:db8::1:8333"
+    # `CService::ToStringAddrPort`: bracketed unless the host is IPv4,
+    # so that the host of a v6 peer can be told from its port
+    assert ip_and_port("1.2.3.4", 8333) == "1.2.3.4:8333"
+    assert ip_and_port("2001:db8::1", 8333) == "[2001:db8::1]:8333"
+    # a mapped host is IPv4 to Core too, `SetLegacyIPv6` filing one
+    # under NET_IPV4, and this is the form a `NetworkAddress` hands over
+    assert ip_and_port("::ffff:1.2.3.4", 8333) == "1.2.3.4:8333"
+    assert str(NetworkAddress(0, "1.2.3.4", 8333).ip) == "::ffff:1.2.3.4"
+
+
+def test_a_host_that_is_not_an_ip_address_is_refused() -> None:
+    # nothing reaches `ip_and_port` with one -- a socket answers with an
+    # address and a `NetworkAddress` holds one -- and the refusal is
+    # what says so rather than a hostname being shown with brackets
+    # guessed at
+    with pytest.raises(ValueError, match="does not appear to be"):
+        ip_and_port("seed.bitcoin.sipa.be", 8333)
 
 
 def test_only_ipv4_is_dialled_for_now() -> None:

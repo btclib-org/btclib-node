@@ -77,27 +77,38 @@ def a_tx(tag: bytes = b"\x11") -> Tx:
 
 
 class FakeSocket:
-    def __init__(self, *, gone: bool = False) -> None:
+    def __init__(
+        self, *, gone: bool = False, peer: str = "1.2.3.4", bind: str = "5.6.7.8"
+    ) -> None:
         self.gone = gone
+        self.peer = peer
+        self.bind = bind
 
     def getpeername(self) -> tuple[str, int]:
         if self.gone:
             raise OSError
-        return ("1.2.3.4", 8333)
+        return (self.peer, 8333)
 
     def getsockname(self) -> tuple[str, int]:
-        return ("5.6.7.8", 18444)
+        return (self.bind, 18444)
 
 
 def a_peer(
-    status: P2pConnStatus = P2pConnStatus.Connected, *, gone: bool = False
+    status: P2pConnStatus = P2pConnStatus.Connected,
+    *,
+    gone: bool = False,
+    # a different host in each, so that an answer naming the wrong
+    # source cannot pass
+    peer: str = "1.2.3.4",
+    bind: str = "5.6.7.8",
+    local: str = "9.10.11.12",
 ) -> Any:
     return SimpleNamespace(
         status=status,
-        client=FakeSocket(gone=gone),
+        client=FakeSocket(gone=gone, peer=peer, bind=bind),
         version_message=SimpleNamespace(
             services=ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS,
-            addr_recv=NetworkAddress(0, "9.10.11.12", 8333),
+            addr_recv=NetworkAddress(0, local, 8333),
             version=70015,
         ),
         address=SimpleNamespace(network_id=SimpleNamespace(name="IPV4")),
@@ -140,11 +151,24 @@ def test_the_peer_table_names_a_connected_peer() -> None:
     assert info["addrbind"] == "5.6.7.8:18444"
     assert info["network"] == "ipv4"
     # unwrapped, and not the ::ffff: form the sixteen octets of the
-    # field hold a v4 peer in. Core would bracket a v6 one and this does
-    # not, which is #147 and not this table's business
+    # field hold a v4 peer in
     assert info["addrlocal"] == "9.10.11.12:8333"
     assert info["servicesnames"] == ["NETWORK", "WITNESS"]
     assert info["inbound"] is True
+
+
+def test_a_v6_peer_is_named_with_the_brackets_core_writes() -> None:
+    # every address the answer carries, which is what #147 asked:
+    # without the brackets `2001:db8::1` on port 8333 and
+    # `2001:db8::1:8333` on another port are the same string, and a
+    # client splitting on the last colon reads one of the two wrong
+    node = a_node(
+        {7: a_peer(peer="2001:db8::1", bind="2001:db8::2", local="2001:db8::3")}
+    )
+    (info,) = get_peer_info(node, _CONN, [])
+    assert info["addr"] == "[2001:db8::1]:8333"
+    assert info["addrbind"] == "[2001:db8::2]:18444"
+    assert info["addrlocal"] == "[2001:db8::3]:8333"
 
 
 def test_the_services_are_named_the_way_core_names_them() -> None:
