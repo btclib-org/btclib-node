@@ -26,7 +26,5 @@ fix_idx = 402822
 #         exit()
 
 # for block_hash in blockindex.header_index[fix_idx:]:
-#     block_info = blockindex.get_block_info(block_hash)
-#     block_info.downloaded = False
-#     blockindex.insert_block_info(block_info)
+#     blockindex.set_downloaded(block_hash, downloaded=False)
 #     blockdb.db.delete(b"b" + block_hash)

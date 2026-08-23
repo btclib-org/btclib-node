@@ -194,8 +194,7 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
         block.assert_valid(node.chain.pow_limit_bits)
         node.block_db.add_block(block)
         node.logger.info(f"Received new block with hash:{block_hash.hex()}")
-        block_info.downloaded = True
-        node.chainstate.block_index.insert_block_info(block_info)
+        node.chainstate.block_index.set_downloaded(block_hash)
 
 
 def inv(node: Node, msg: bytes, conn: Connection) -> None:

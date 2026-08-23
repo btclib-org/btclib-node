@@ -151,9 +151,7 @@ def test_generate_block_candidates(tmp_path: Path) -> None:
     block_index.add_headers(chain)
     block_index.add_headers(fork)
     for x in chain:
-        block_info = block_index.get_block_info(x.hash)
-        block_info.status = BlockStatus.in_active_chain
-        block_index.insert_block_info(block_info)
+        block_index.set_status(x.hash, BlockStatus.in_active_chain)
     chainstate.db.close()
     new_chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     new_block_index = new_chainstate.block_index
@@ -168,9 +166,7 @@ def test_generate_block_candidates_2(tmp_path: Path) -> None:
     block_index.add_headers(chain)
     block_index.add_headers(fork)
     for x in fork:
-        block_info = block_index.get_block_info(x.hash)
-        block_info.status = BlockStatus.invalid
-        block_index.insert_block_info(block_info)
+        block_index.set_status(x.hash, BlockStatus.invalid)
     chainstate.db.close()
     new_chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     new_block_index = new_chainstate.block_index
@@ -299,9 +295,7 @@ def test_block_candidates_3(tmp_path: Path) -> None:
     block_index.add_headers(chain)
     block_index.add_headers(fork)
     for x in chain:
-        block_info = block_index.get_block_info(x.hash)
-        block_info.status = BlockStatus.in_active_chain
-        block_index.insert_block_info(block_info)
+        block_index.set_status(x.hash, BlockStatus.in_active_chain)
     chainstate.db.close()
     new_chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     new_block_index = new_chainstate.block_index
@@ -459,9 +453,7 @@ def test_a_block_already_held_is_left_out_of_what_is_asked_for(tmp_path: Path) -
     block_index = chainstate.block_index
     chain = generate_random_header_chain(3, RegTest().genesis.hash)
     block_index.add_headers(chain)
-    held = block_index.get_block_info(chain[1].hash)
-    held.downloaded = True
-    block_index.insert_block_info(held)
+    block_index.set_downloaded(chain[1].hash)
 
     assert block_index.get_download_candidates() == [chain[0].hash, chain[2].hash]
     chainstate.close()

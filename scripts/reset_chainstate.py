@@ -14,9 +14,7 @@ chainstate = Chainstate(config.data_dir, config.chain, logger)
 blockindex = chainstate.block_index
 
 # for block_hash in blockindex.active_chain[1:]:
-#     block_info = blockindex.get_block_info(block_hash)
-#     block_info.status = BlockStatus.valid_header
-#     blockindex.insert_block_info(block_info)
+#     blockindex.set_status(block_hash, BlockStatus.valid_header)
 
 # with chainstate.db.write_batch():
 #     for key, _ in chainstate.db:

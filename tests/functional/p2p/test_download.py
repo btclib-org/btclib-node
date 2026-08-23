@@ -41,9 +41,7 @@ def test_download(tmp_path: Path) -> None:
     for start in range(0, length, 2000):
         bootstrap_block_index.add_headers(headers[start : start + 2000])
     for block_hash in bootstrap_block_index.header_dict:
-        block_info = bootstrap_block_index.get_block_info(block_hash)
-        block_info.downloaded = True
-        bootstrap_block_index.insert_block_info(block_info)
+        bootstrap_block_index.set_downloaded(block_hash)
     for block in chain:
         bootstrap_node.block_db.add_block(block)
     for _ in range(len(chain)):

@@ -14,7 +14,8 @@ from btclib.tx.tx_out import TxOut
 
 from btclib_node import Node
 from btclib_node.chains import RegTest
-from btclib_node.chainstate.block_index import BlockIndex
+from btclib_node.chainstate import Chainstate
+from btclib_node.chainstate.block_index import BlockIndex, BlockStatus
 from btclib_node.config import Config
 from btclib_node.constants import NodeStatus
 from btclib_node.exceptions import MissingPrevoutError
@@ -46,9 +47,7 @@ def connect(node: Node, chain: list[Block]) -> BlockIndex:
     block_index = node.chainstate.block_index
     block_index.add_headers([block.header for block in chain])
     for hash in block_index.header_dict:
-        block_info = block_index.get_block_info(hash)
-        block_info.downloaded = True
-        block_index.insert_block_info(block_info)
+        block_index.set_downloaded(hash)
     for block in chain:
         node.block_db.add_block(block)
     for _ in range(len(chain)):
@@ -74,9 +73,7 @@ def test_chain(tmp_path: Path) -> None:
     for start in range(0, length, 2000):
         block_index.add_headers(headers[start : start + 2000])
     for block_hash in block_index.header_dict:
-        block_info = block_index.get_block_info(block_hash)
-        block_info.downloaded = True
-        block_index.insert_block_info(block_info)
+        block_index.set_downloaded(block_hash)
     for block in chain:
         node.block_db.add_block(block)
     for _ in range(len(chain)):
@@ -164,9 +161,7 @@ def test_add_tx(tmp_path: Path) -> None:
     block_index = node.chainstate.block_index
     block_index.add_headers(headers)
     for block_hash in block_index.header_dict:
-        block_info = block_index.get_block_info(block_hash)
-        block_info.downloaded = True
-        block_index.insert_block_info(block_info)
+        block_index.set_downloaded(block_hash)
     for block in chain:
         node.block_db.add_block(block)
     for _ in range(len(chain)):
@@ -221,9 +216,7 @@ def test_update_chain_refuses_a_block_marked_downloaded_but_missing(
     block_index = node.chainstate.block_index
     block_index.add_headers([block.header for block in chain])
     for hash in block_index.header_dict:
-        block_info = block_index.get_block_info(hash)
-        block_info.downloaded = True
-        block_index.insert_block_info(block_info)
+        block_index.set_downloaded(hash)
     # deliberately not added to node.block_db
     with pytest.raises(Exception, match="just checked downloaded is missing"):
         update_chain(node)
@@ -320,3 +313,46 @@ def test_a_reorg_before_the_node_is_synced_leaves_the_mempool_alone(
     # the reorg happened, and left the mempool out of it
     assert block_index.active_chain[1:] == hashes(second)
     assert node.mempool.size == 0
+
+
+def test_a_refused_branch_leaves_no_status_behind(tmp_path: Path) -> None:
+    # the branch is tried as a unit: its tip is what get_first_candidate
+    # offers, so the blocks under it connect in the same pass the tip is
+    # refused in, and the utxo set and the filter index are rolled back.
+    # Neither rollback reaches the block index, so what keeps a status
+    # off a refused branch is that the pass writes none.
+    node = regtest_node(tmp_path)
+    active = generate_random_chain(2, RegTest().genesis.hash)
+    block_index = connect(node, active)
+
+    below = generate_random_chain(2, RegTest().genesis.hash)
+    prints_money = build_block(
+        below[-1].header.hash,
+        [
+            generate_coinbase(),
+            spend(below[-1].transactions[0], 50 * 10**8 + 1),
+        ],
+        len(below),
+    )
+    fork = [*below, prints_money]
+    block_index.add_headers([block.header for block in fork])
+    for block in fork:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+
+    candidate = block_index.get_first_candidate()
+    assert candidate is not None
+    assert candidate.header.hash == prints_money.header.hash
+
+    update_chain(node)
+    assert block_index.active_chain[1:] == hashes(active)
+    for block in fork:
+        info = block_index.get_block_info(block.header.hash)
+        assert info.status == BlockStatus.valid_header
+
+    node.chainstate.close()
+    reopened = Chainstate(node.data_dir, RegTest(), node.logger)
+    for block in fork:
+        info = reopened.block_index.get_block_info(block.header.hash)
+        assert info.status == BlockStatus.valid_header
+    reopened.close()
