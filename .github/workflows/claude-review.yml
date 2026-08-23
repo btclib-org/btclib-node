@@ -94,9 +94,14 @@ jobs:
           # against the forge, and the credential this job uses is the
           # Anthropic one below
           persist-credentials: false
-          # depth 1 is enough because the diff comes from `gh pr diff`,
-          # which is the base...head three-dot diff REVIEWING.md asks for,
-          # computed by the forge rather than from local history
+          # depth 1 is enough for the diff itself, which comes from
+          # `gh pr diff` -- the base...head three-dot diff REVIEWING.md
+          # asks for, computed by the forge rather than from local
+          # history. Bash(git:*) below is for a check `gh pr diff` cannot
+          # do -- a claim about what the tree looked like before this
+          # diff -- and that does need history this checkout does not
+          # carry. The prompt has the agent fetch that on demand rather
+          # than this step paying for it on every run, reviewed or not
           fetch-depth: 1
       # a missing credential is a silent pass without this, which is the
       # worst shape a gate can take: measured on the first run after the
@@ -134,6 +139,7 @@ jobs:
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
+            BASE REF: ${{ github.event.pull_request.base.ref }}
 
             Read REVIEWING.md in the repository root and review this pull
             request against it. That file is the standard: what is under
@@ -154,6 +160,18 @@ jobs:
             by this job and that those runs are what stands -- and where
             a pull request also states what its author ran locally, say
             that too, or say that it states nothing.
+
+            The checkout is fetch-depth 1: it holds this one commit and
+            no history, so `git log` and `git diff` see nothing by
+            themselves. To check a claim about what a file looked like
+            at some earlier commit, read it with `gh api
+            repos/<REPO>/contents/<path>?ref=<sha>` (REPO from above)
+            rather than a local git command -- that answers regardless
+            of the checkout's depth. Where the check is a real range
+            rather than one file's content -- `git log` or `git diff`
+            against the base branch -- fetch it first: `git fetch
+            origin <the BASE REF above>`, then read the range against
+            `origin/<that ref>`.
 
             Do not file issues from here: a collateral finding goes in the
             summary comment, under a line saying it is not a finding

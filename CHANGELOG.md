@@ -1136,3 +1136,17 @@ to check the guess.
   throws is `ExecuteCommand`'s generic `catch (const std::exception&)`
   case, answered `RPC_MISC_ERROR` and not `RPC_TYPE_ERROR`
   (`src/rpc/server.cpp:884-886`).
+
+### The review prompt is told the checkout it runs against is shallow
+
+- **`claude-review.yml`'s prompt now names the checkout's `fetch-depth:
+  1` and says what to do about it** (#222). `--allowedTools` has carried
+  `Bash(git:*)` since #153, for checking a claim about what the tree
+  looked like before a diff, but a depth-1 checkout of a pull request's
+  merge commit carries no parent history for `git log` or `git diff` to
+  walk, and nothing told the model so. The prompt now points a
+  single-file check at `gh api repos/<repo>/contents/<path>?ref=<sha>`,
+  which answers regardless of the checkout's depth, and a real range at
+  `git fetch origin <base ref>` first — the base ref now passed in the
+  prompt header alongside `REPO` and `PR NUMBER` — rather than raising
+  `fetch-depth` for every run whether a review needs the history or not.
