@@ -5,6 +5,7 @@
 import time
 from typing import TYPE_CHECKING
 
+from btclib.exceptions import BTClibException
 from btclib.p2p.address import Addr, ServiceFlags
 from btclib.p2p.addrv2 import AddrV2, SendAddrV2
 from btclib.p2p.block_filters import (
@@ -192,10 +193,14 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
 
     if not block_info.downloaded:
         # a block that does not hold up is nobody's: the raise reaches
-        # main.handle_p2p, which drops the peer that sent it. Marking
-        # the block itself invalid, so the next peer is not asked for it
-        # too, is #77
-        block.assert_valid(node.chain.pow_limit_bits)
+        # main.handle_p2p, which drops the peer that sent it. Invalidate
+        # first and re-raise, so the next peer offering the same block
+        # is refused before it is asked to send it: btclib-org/btclib-node#77
+        try:
+            block.assert_valid(node.chain.pow_limit_bits)
+        except BTClibException:
+            node.chainstate.block_index.invalidate(block_hash)
+            raise
         node.block_db.add_block(block)
         node.logger.info(f"Received new block with hash:{block_hash.hex()}")
         node.chainstate.block_index.set_downloaded(block_hash)

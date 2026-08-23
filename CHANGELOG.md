@@ -52,6 +52,31 @@ to check the guess.
   heading move to one of their own** (#194), ahead of
   `enable_error_code`'s remaining bullet.
 
+### A branch this node has proved bad stops being offered
+
+- **`BlockIndex.invalidate` is the one place a block's invalidity is
+  recorded, and what it costs**: the block itself and every header this
+  index has already indexed on top of it, candidate or not, are marked
+  `BlockStatus.invalid` and dropped from `block_candidates` where
+  present -- a new `children` map, the reverse of `previous_block_hash`,
+  is what the walk costs the size of the bad lineage rather than the
+  whole index. `add_headers` refuses to build a `valid_header` on a
+  parent already carrying that status, so a header arriving afterwards
+  inherits it without a walk of its own (#125).
+- **A block whose `assert_valid` raises is invalidated before the peer
+  that sent it is dropped**, so the next peer offering it is refused
+  before being asked to send it again (#77).
+- **`update_chain`'s failure path invalidates the block whose
+  contextual check raised** rather than leaving every header built on
+  it a candidate forever (#120).
+- **`get_first_candidate` asks whether a candidate's whole branch has
+  arrived, not just its tip.** A hole behind a downloaded tip used to
+  pass that check, and `update_chain` then gave up its whole pass on
+  the hole, leaving the same candidate at the front of the queue every
+  time; a complete branch further back could not connect until it
+  filled. It is stepped over now, the way a branch missing its tip
+  already was (#121).
+
 ### `[tool.mypy]` sets nothing mypy already has on
 
 - **`show_column_numbers` is set, so an error message names the column

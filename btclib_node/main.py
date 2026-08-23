@@ -18,10 +18,13 @@ if TYPE_CHECKING:
     from btclib_node import Node
 
 
-# a stub: nothing invalidates the headers built on a failed block.
-# btclib-org/btclib-node#120
-def update_header_index(index: BlockIndex) -> None:
-    pass
+# update_chain calls this on the failure path, naming the block whose
+# contextual validation just failed. BlockIndex.invalidate is where
+# what that costs is decided -- the block itself and every candidate
+# already built on top of it; this is the one caller of it that has a
+# freshly-failed hash to hand it. btclib-org/btclib-node#120
+def update_header_index(index: BlockIndex, invalid_hash: bytes) -> None:
+    index.invalidate(invalid_hash)
 
 
 def finish_sync(node: Node) -> None:
@@ -87,6 +90,12 @@ def update_chain(node: Node) -> None:
 
     success = True
     generated_rev_patches: list[RevBlock] = []
+    # set the moment a block starts and cleared once it is fully
+    # through: an exception anywhere in its own iteration leaves it
+    # naming the block that failed, which is what update_header_index
+    # invalidates below. Never set by the to_remove loop -- a rollback
+    # failing there is not a new block being bad.
+    failed_hash: bytes | None = None
     # the block index's database write moves into the batch below and
     # nowhere in here: a status written on the way through reaches the
     # database before the branch is known to connect, and refusing the
@@ -95,6 +104,7 @@ def update_chain(node: Node) -> None:
         for rev_block in to_remove:
             utxo_index.apply_rev_block(rev_block)
         for block_hash, block in zip(to_add_hash, to_add):
+            failed_hash = block_hash
             transactions, rev_patch = utxo_index.add_block(block)
             index = block_index.get_block_info(block_hash).index
             check_transactions(transactions, index, node)
@@ -107,6 +117,7 @@ def update_chain(node: Node) -> None:
             # carry. Read back off the disk it would be the same octets
             # fetched twice.
             filter_index.add_connected_block(block, rev_patch)
+            failed_hash = None
 
     except Exception:
         node.logger.exception("Exception occurred")
@@ -135,9 +146,9 @@ def update_chain(node: Node) -> None:
 
     node.logger.info("End block validation")
 
-    if not success:
+    if not success and failed_hash is not None:
         node.logger.debug("Start updating index")
-        update_header_index(block_index)
+        update_header_index(block_index, failed_hash)
 
     if success and node.status == NodeStatus.BlockSynced:
         for rev_block in to_remove:

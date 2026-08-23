@@ -24,6 +24,7 @@ from tests.helpers import (
     build_block,
     generate_coinbase,
     generate_random_chain,
+    generate_random_header_chain,
     generate_random_transaction,
 )
 
@@ -206,6 +207,33 @@ def test_a_candidate_whose_block_has_not_arrived_is_not_connected(
     assert node.status == NodeStatus.HeaderSynced
 
 
+def test_a_hole_behind_a_downloaded_tip_does_not_block_a_complete_branch(
+    tmp_path: Path,
+) -> None:
+    # get_first_candidate used to ask only whether a candidate's own tip
+    # had arrived, so a branch missing a block *behind* its downloaded
+    # tip still passed it -- and then update_chain found the hole and
+    # gave up the whole pass, leaving that same candidate at the front
+    # of the queue next time: btclib-org/btclib-node#121
+    node = regtest_node(tmp_path)
+    block_index = node.chainstate.block_index
+
+    hole = generate_random_chain(2, RegTest().genesis.hash)
+    block_index.add_headers([block.header for block in hole])
+    for block in hole:
+        node.block_db.add_block(block)
+    block_index.set_downloaded(hole[-1].header.hash)  # the tip alone
+
+    complete = generate_random_chain(1, RegTest().genesis.hash)
+    block_index.add_headers([block.header for block in complete])
+    for block in complete:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+
+    update_chain(node)
+    assert block_index.active_chain[1:] == hashes(complete)
+
+
 def test_update_chain_refuses_a_block_marked_downloaded_but_missing(
     tmp_path: Path,
 ) -> None:
@@ -315,12 +343,16 @@ def test_a_reorg_before_the_node_is_synced_leaves_the_mempool_alone(
     assert node.mempool.size == 0
 
 
-def test_a_refused_branch_leaves_no_status_behind(tmp_path: Path) -> None:
+def test_a_refused_branch_invalidates_only_the_block_that_failed(
+    tmp_path: Path,
+) -> None:
     # the branch is tried as a unit: its tip is what get_first_candidate
     # offers, so the blocks under it connect in the same pass the tip is
     # refused in, and the utxo set and the filter index are rolled back.
-    # Neither rollback reaches the block index, so what keeps a status
-    # off a refused branch is that the pass writes none.
+    # Neither rollback reaches the block index; what does is
+    # update_header_index, on the one block whose own contextual check
+    # raised -- the ones under it never failed anything and stay
+    # valid_header, ready to connect if a different tip is built on them.
     node = regtest_node(tmp_path)
     active = generate_random_chain(2, RegTest().genesis.hash)
     block_index = connect(node, active)
@@ -346,13 +378,86 @@ def test_a_refused_branch_leaves_no_status_behind(tmp_path: Path) -> None:
 
     update_chain(node)
     assert block_index.active_chain[1:] == hashes(active)
-    for block in fork:
+    for block in below:
         info = block_index.get_block_info(block.header.hash)
         assert info.status == BlockStatus.valid_header
+    assert (
+        block_index.get_block_info(prints_money.header.hash).status
+        == BlockStatus.invalid
+    )
+    # the doomed tip no longer weighs on what get_first_candidate offers
+    assert block_index.get_first_candidate() is None
 
     node.chainstate.close()
     reopened = Chainstate(node.data_dir, RegTest(), node.logger)
-    for block in fork:
+    for block in below:
         info = reopened.block_index.get_block_info(block.header.hash)
         assert info.status == BlockStatus.valid_header
+    assert (
+        reopened.block_index.get_block_info(prints_money.header.hash).status
+        == BlockStatus.invalid
+    )
     reopened.close()
+
+
+def test_a_refused_branch_invalidates_headers_that_were_never_candidates(
+    tmp_path: Path,
+) -> None:
+    # neither the block that fails nor a sibling built on it has to have
+    # individually outweighed the active chain to be real: only the
+    # branch's own tip does, for update_chain to try connecting it at
+    # all. Both are hidden from block_candidates and only reachable by
+    # walking BlockIndex.children -- proves the cascade through the real
+    # update_chain -> update_header_index -> invalidate call chain, not
+    # just the isolated BlockIndex-level call: btclib-org/btclib-node#125
+    node = regtest_node(tmp_path)
+    active = generate_random_chain(6, RegTest().genesis.hash)
+    block_index = connect(node, active)
+
+    below = generate_random_chain(2, RegTest().genesis.hash)
+    prints_money = build_block(
+        below[-1].header.hash,
+        [
+            generate_coinbase(),
+            spend(below[-1].transactions[0], 50 * 10**8 + 1),
+        ],
+        len(below),
+    )
+    # more, structurally fine, blocks on top of the doomed one -- their
+    # combined chainwork is what makes the branch's tip outweigh active,
+    # not prints_money on its own. Built with an explicit, increasing
+    # height rather than generate_random_chain's own (which restarts at
+    # 0 for any start): a header's timestamp has to beat the median of
+    # its ancestors, and build_block's is derived from the height alone
+    continuation: list[Block] = []
+    previous = prints_money
+    for height in range(len(below) + 1, len(below) + 5):
+        previous = build_block(previous.header.hash, [generate_coinbase()], height)
+        continuation.append(previous)
+    fork = [*below, prints_money, *continuation]
+    block_index.add_headers([block.header for block in fork])
+    for block in fork:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+
+    # a sibling of the continuation, off prints_money, real and indexed
+    # but never downloaded and never its own block_candidates entry
+    sibling = generate_random_header_chain(
+        1, prints_money.header.hash, prints_money.header.time
+    )
+    block_index.add_headers(sibling)
+    # the branch's own tip is the one candidate entry: everything below
+    # it, prints_money included, never individually outweighed active
+    # on its own
+    hidden = {prints_money.header.hash, sibling[0].hash}
+    hidden.update(block.header.hash for block in continuation[:-1])
+    assert not hidden & {h for h, _ in block_index.block_candidates}
+
+    candidate = block_index.get_first_candidate()
+    assert candidate is not None
+    assert candidate.header.hash == continuation[-1].header.hash
+
+    update_chain(node)
+    assert block_index.active_chain[1:] == hashes(active)
+    for hash in {*hidden, continuation[-1].header.hash}:
+        assert block_index.get_block_info(hash).status == BlockStatus.invalid

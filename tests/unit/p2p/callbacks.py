@@ -622,12 +622,16 @@ class FakeBlockIndex:
     def __init__(self, infos: dict[bytes, Any]) -> None:
         self.infos = infos
         self.marked: list[bytes] = []
+        self.invalidated: list[bytes] = []
 
     def get_block_info(self, block_hash: bytes) -> Any:
         return self.infos[block_hash]
 
     def set_downloaded(self, block_hash: bytes) -> None:
         self.marked.append(block_hash)
+
+    def invalidate(self, block_hash: bytes) -> None:
+        self.invalidated.append(block_hash)
 
 
 def a_block() -> Block:
@@ -659,6 +663,7 @@ def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded() -> None:
     assert peer.pending_eviction is False
     assert added == [block]
     assert index.marked == [block.header.hash]
+    assert index.invalidated == []
 
 
 def test_a_block_already_stored_is_not_stored_again() -> None:
@@ -695,6 +700,9 @@ def a_block_claiming_an_easier_target_than_the_chain_allows(block: Block) -> Blo
 
 
 def test_a_block_whose_proof_of_work_does_not_hold_up_is_refused() -> None:
+    # the raise still reaches main.handle_p2p, which drops the peer;
+    # invalidate is what keeps the next one from being asked to send the
+    # same block again: btclib-org/btclib-node#77
     added: list[Block] = []
     broken = a_block_claiming_an_easier_target_than_the_chain_allows(a_block())
     index = FakeBlockIndex({broken.header.hash: SimpleNamespace(downloaded=False)})
@@ -708,6 +716,7 @@ def test_a_block_whose_proof_of_work_does_not_hold_up_is_refused() -> None:
         block_callback(node, payload, a_peer())
     assert added == []
     assert index.marked == []
+    assert index.invalidated == [broken.header.hash]
 
 
 def test_an_inventory_is_ignored_until_the_blocks_are_synced() -> None:
