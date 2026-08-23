@@ -8,6 +8,7 @@ import time
 from math import log as ln
 from multiprocessing.pool import Pool
 from types import FrameType
+from typing import override
 
 from btclib_node.block_db import BlockDB
 from btclib_node.chainstate import Chainstate
@@ -107,6 +108,7 @@ class Node(threading.Thread):
                 self._worker_pool = Pool(processes=8)
             return self._worker_pool
 
+    @override
     def run(self) -> None:
         self.logger.info("Starting main loop")
 

@@ -17,7 +17,7 @@ message that carries something nobody has written yet.
 """
 
 from dataclasses import dataclass
-from typing import TypeVar
+from typing import TypeVar, override
 
 from btclib.alias import BinaryData
 from btclib.p2p.payload import Payload
@@ -47,6 +47,7 @@ class _EmptyPayload(Payload):
         """
         return cls()
 
+    @override
     def serialize(self, *, check_validity: bool = True) -> bytes:
         return b""
 

@@ -13,7 +13,7 @@ filter to decide whether a block is worth fetching.
 
 from collections import deque
 from collections.abc import Iterator
-from typing import ClassVar, Protocol, Self, cast
+from typing import ClassVar, Protocol, Self, cast, override
 
 import pytest
 from btclib.alias import BinaryData
@@ -80,10 +80,12 @@ class RecordingDeque(deque[Message]):
         super().__init__()
         self.seen: list[Message] = []
 
+    @override
     def append(self, item: Message) -> None:
         self.seen.append(item)
         super().append(item)
 
+    @override
     def appendleft(self, item: Message) -> None:
         self.seen.append(item)
         super().appendleft(item)

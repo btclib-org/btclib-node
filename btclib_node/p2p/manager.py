@@ -8,7 +8,7 @@ import threading
 import time
 from collections import deque
 from contextlib import suppress
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 from btclib.p2p.addrv2 import NetworkAddressV2
 from btclib.p2p.data import TxPayload as Tx
@@ -122,6 +122,7 @@ class P2pManager(threading.Thread):
                 address = peer_address(*ip_and_port)
                 self.create_connection(sock, address, True)
 
+    @override
     def run(self) -> None:
         self.logger.info("Starting P2P manager")
         loop = self.loop

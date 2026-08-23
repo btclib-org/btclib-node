@@ -8,7 +8,7 @@ import socket
 import time
 from concurrent.futures import Future
 from io import BytesIO
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, cast, override
 
 from btclib.exceptions import BTClibValueError, IncompleteMessageError
 from btclib.p2p.address import NetworkAddress, ServiceFlags
@@ -220,6 +220,7 @@ class Connection:
             if stream.tell():
                 self.buffer = stream.read()
 
+    @override
     def __repr__(self) -> str:
         try:
             peer = self.client.getpeername()

@@ -9,7 +9,7 @@ from collections.abc import Callable
 from concurrent.futures import Future
 from http.client import parse_headers
 from io import BytesIO
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, override
 
 if TYPE_CHECKING:
     from btclib_node.rpc.manager import RpcManager
@@ -26,6 +26,7 @@ MAX_BODY_BYTES = 32 * 1024 * 1024
 
 
 class JSONEncoder(json.JSONEncoder):
+    @override
     def default(self, obj: object) -> Any:
         if isinstance(obj, bytes):
             return obj.hex()
@@ -119,6 +120,7 @@ class Connection:
         except TimeoutError:
             pass
 
+    @override
     def __repr__(self) -> str:
         try:
             peer = self.client.getpeername()

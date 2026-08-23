@@ -4,6 +4,7 @@
 
 import enum
 from dataclasses import dataclass
+from typing import override
 
 from btclib import var_int
 from btclib.alias import BinaryData
@@ -42,6 +43,7 @@ class Reject(Payload):
         data = stream.read(32)[::-1]
         return cls(message, code, reason, data)
 
+    @override
     def serialize(self, *, check_validity: bool = True) -> bytes:
         payload = var_int.serialize(len(self.message))
         payload += self.message.encode()

@@ -8,7 +8,7 @@ import threading
 from collections import deque
 from concurrent.futures import Future
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, override
 
 from btclib_node.rpc.connection import Connection
 
@@ -73,6 +73,7 @@ class RpcManager(threading.Thread):
                 )
                 conn.task = task
 
+    @override
     def run(self) -> None:
         self.logger.info("Starting RPC manager")
         loop = self.loop
