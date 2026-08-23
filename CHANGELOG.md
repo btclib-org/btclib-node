@@ -18,6 +18,18 @@ to check the guess.
 
 ## Unreleased
 
+### `get_cfilters` stops once the connection it is answering has closed
+
+- **`get_cfilters`'s loop over a `getcfilters` range now breaks once
+  `conn.status == P2pConnStatus.Closed`.** `Connection.async_send`'s
+  send-buffer bound (#101) can drop a connection partway through a
+  `getcfilters` answer; before this, the loop kept serializing a
+  `CFilter` and scheduling a send for every height still left in the
+  range regardless, none of it ever reaching a peer whose socket is
+  already closed (#239). `get_cfheaders` and `get_cfcheckpt` build their
+  one answer across their own loop and call `conn.send` once at the end
+  rather than per height, so neither has a doomed send mid-loop to skip.
+
 ### A reverse patch is filed with its own block, once its branch connects
 
 - **`BlockDB` resolves the `.rev` file a patch goes in from the block it

@@ -1196,6 +1196,26 @@ def test_one_block_is_a_range_of_one() -> None:
     assert msg.block_hash == (3).to_bytes(32, "big")
 
 
+def test_get_cfilters_stops_once_the_connection_closes_mid_answer() -> None:
+    # what Connection.async_send's own send-buffer bound (#101) looks
+    # like from here: conn.status turns P2pConnStatus.Closed partway
+    # through the range, and nothing further in it is worth serializing
+    node = a_filters_node(length=10)
+    peer = a_peer()
+    sent = peer.sent
+
+    def send_then_close(msg: Any) -> None:
+        sent.append(msg)
+        if len(sent) == 3:
+            peer.status = P2pConnStatus.Closed
+
+    peer.send = send_then_close
+    a_getcfilters(node, peer, 0, 9)
+    assert [msg.block_hash for msg in peer.sent] == [
+        h.to_bytes(32, "big") for h in range(3)
+    ]
+
+
 def test_get_cfilters_refuses_a_gap_in_a_promised_index() -> None:
     # BIP157's service bit promises a filter for every block of the
     # active chain; a gap here is the index breaking that promise
