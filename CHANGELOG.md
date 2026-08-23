@@ -299,3 +299,24 @@ to check the guess.
 - **`no_implicit_reexport` moves into the enabled bundle** -- the last
   of the flags `[tool.mypy]`'s comments had left off pending this fix,
   `check_untyped_defs` (#105) being the one still open.
+
+### `[tool.mypy]` is `strict = true`
+
+- **The itemized strict bundle is gone.** `[tool.mypy]` used to
+  enumerate every flag `mypy --help`'s `--strict` entry bundles, one at
+  a time, with the case against turning it on wholesale beside it: the
+  organization's standard now requires `strict = true` outright, with
+  no trajectory-toward-it exception (btclib-org/.github#112), which
+  makes the itemized shape a non-conformance rather than a deferred
+  step of #30. `warn_unused_configs`, `strict_bytes` and
+  `warn_unreachable` are not in that bundle and stay their own lines.
+- **`check_untyped_defs`, the one bundled flag the table still left
+  off, measures at zero and closes #105**: `uv run --locked
+  --no-default-groups --group lint --group test mypy
+  --check-untyped-defs` reports no issues in 82 source files, #104's
+  annotation pass having left nothing in `files` for it to check.
+- `[project.classifiers]`'s reason for omitting `Typing :: Typed` no
+  longer cites mypy not being strict, and the `lint` dependency group's
+  comment above `[tool.mypy]` points at `strict = true` in place of the
+  per-flag measurement it used to describe -- both assumed the itemized
+  shape this removes.
