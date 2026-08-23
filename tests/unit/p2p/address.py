@@ -185,6 +185,24 @@ def test_a_peer_that_is_not_listening_is_given_up_on() -> None:
     assert asyncio.run(dial(address)) is None
 
 
+def test_a_refused_dial_does_not_cost_the_old_poll_s_full_second() -> None:
+    # #90: a poll of ten passes at 0.1s apart cannot tell a refusal from
+    # a peer that is merely slow to answer, so it always spent the whole
+    # second either way. `SO_ERROR`, read through `loop.sock_connect`,
+    # is answered by the kernel as soon as the refusal happens.
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    listener.close()
+    address = peer_address("127.0.0.1", port)
+    start = time.monotonic()
+    assert asyncio.run(dial(address)) is None
+    # generous next to the microseconds a refusal actually takes,
+    # measured directly outside the suite, and still far under the
+    # second the old poll spent
+    assert time.monotonic() - start < 0.5
+
+
 class FakeLoop:
     def __init__(self, answers: dict[str, Exception | list[str]]) -> None:
         self.answers = answers

@@ -871,3 +871,30 @@ to check the guess.
   shape, and btclib-org/.github#201 is where one is asked for — so it
   runs by hand (`workflow_dispatch`) and on a change to itself until a
   row exists.
+
+### A listener that cannot bind now says so, and a refused dial costs microseconds
+
+- **A P2P or RPC listener whose bind fails now ends the manager's
+  thread with the `OSError`, instead of leaving it `is_alive()` over a
+  socket that never came up** (#88). Both managers scheduled `server`
+  through `run_coroutine_threadsafe`, whose returned
+  `concurrent.futures.Future` nobody read; a bind failure inside that
+  coroutine sat in the unread future while the thread ran on. `_bind`
+  now runs synchronously in `run`, before `run_forever`, so the same
+  failure raises out of `run` itself and is logged. Also closes the
+  socket `_bind` had already opened when the bind or the listen after it
+  fails, which used to leak the file descriptor for the same reason the
+  exception vanished.
+- **A refused dial no longer costs the second a ten-pass, 0.1s poll
+  always charged it, refused or merely slow alike** (#90).
+  `btclib_node/p2p/address.py`'s `dial` reads the kernel's own answer
+  through `loop.sock_connect`, which watches the socket become writable
+  and checks `SO_ERROR` the moment it does, wrapped in
+  `asyncio.wait_for` for the one real timeout the poll's two magic
+  numbers stood in for.
+- **A dial that connects without ever raising `BlockingIOError` — a
+  local peer, most often — no longer leaks its socket** (#148): the
+  hand-rolled `except BlockingIOError:` arm that was the only place a
+  successful dial got returned or a failed one got closed is gone
+  along with the poll it guarded, so there is no longer an arm the
+  immediate-success case can fail to reach.

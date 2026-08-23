@@ -452,10 +452,8 @@ def test_a_manager_that_cannot_bind_never_says_it_is_listening(
     a_manager: AManagerFactory,
 ) -> None:
     # set after the bind and not before it, which is the whole of what a
-    # caller waiting on the event is told. A port already taken raises
-    # inside a coroutine nobody awaits, so a manager that announced
-    # itself first would send that caller at a socket that is not there
-    # -- and say nothing about why.
+    # caller waiting on the event is told: a manager whose bind failed
+    # never reaches the line that sets it.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
         taken.bind(("", 0))
         taken.listen()
@@ -467,6 +465,31 @@ def test_a_manager_that_cannot_bind_never_says_it_is_listening(
         finally:
             manager.stop()
             manager.join(timeout=10)
+
+
+def test_a_manager_that_cannot_bind_stops_being_alive(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#88: a bind failure used to vanish into a future nobody read.
+
+    `server` bound inside itself, scheduled through
+    `run_coroutine_threadsafe`, whose returned `concurrent.futures.Future`
+    nobody read -- a taken port's `OSError` sat there unread, and the
+    manager thread ran on, `is_alive()` true over a listener that never
+    came up. `_bind` now runs in `run` itself, before `run_forever`, so
+    the same `OSError` comes back out of `run` -- this thread's own
+    target -- and the thread ends rather than lying about the socket.
+    """
+    logged: list[str] = []
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
+        taken.bind(("", 0))
+        taken.listen()
+        manager = a_manager(port=taken.getsockname()[1])
+        monkeypatch.setattr(manager.logger, "exception", logged.append)
+        manager.start()
+        wait_until(lambda: not manager.is_alive())
+    assert logged
+    assert not manager.listening.is_set()
 
 
 def test_a_manager_dials_the_address_it_is_given(a_manager: AManagerFactory) -> None:
