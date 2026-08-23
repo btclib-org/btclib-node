@@ -18,6 +18,40 @@ to check the guess.
 
 ## Unreleased
 
+### A lint hook, not `.gitattributes`, catches what union merges in silence
+
+- **`merge=union` stays** (#199): `btclib-org/.github#21` decided against
+  dropping it — a guaranteed conflict on every pull request appending to
+  a group, in a file where that conflict has nothing to decide, is a
+  worse trade than the rare silent one, and `git merge-tree --write-tree
+  --messages` on two commits that each add a `###` heading at the same
+  point shows dropping the attribute does exactly that: the merge that
+  used to exit 0 now exits 1 on every such pair, not only the ones that
+  drop a blank line. Doubling the trailing blank line of every entry
+  does not survive the same merge either — the boundary between two
+  branches' own new headings still collapses to none — and a custom
+  merge driver needs a section in the local, unversioned `.git/config`
+  that no `.gitattributes` entry can supply, so neither is a
+  repository-versioned alternative.
+
+- **A local `pre-commit` hook now runs the check by hand instead of
+  requiring somebody to run it by hand** (#199): `changelog-heading-
+  blank-line` fails on any `###` line in `CHANGELOG.md` not preceded by
+  a blank one, which `markdownlint-cli2`'s own MD022 does not catch here
+  since it is disabled for this file. It runs as part of the same `uv
+  run pre-commit run --all-files` a rebase already asks for, not as an
+  installed git hook: `CONTRIBUTING.md`'s *The gate is not installed as
+  a git hook* is why, `.git/hooks` being shared by every worktree of
+  this repository.
+
+- **The headings union had already collapsed are restored** (#194): the
+  blank line is back before `links.yml`'s own heading and before
+  `getrawmempool`'s.
+
+- **The `REVIEWING.md` entries filed under `enable_error_code`'s own
+  heading move to one of their own** (#194), ahead of
+  `enable_error_code`'s remaining bullet.
+
 ### `[tool.mypy]` sets nothing mypy already has on
 
 - **`show_column_numbers` is set, so an error message names the column
@@ -195,7 +229,7 @@ to check the guess.
   nor `mempool` is a key in this node's dispatch tables, and #94 is
   where the first is wired up.
 
-### `enable_error_code` holds only codes that need enabling
+### `REVIEWING.md` is the organization's copy
 
 - **`REVIEWING.md`'s *The gates are the evidence* excepts no gate from
   the run a reviewer may rely on, the test suite included.** The
@@ -210,6 +244,8 @@ to check the guess.
   count, a measurement nothing re-derives, or the history of the code
   told in a comment to go — section 14 of the standard, the shared half
   byte for byte.
+
+### `enable_error_code` holds only codes that need enabling
 
 - **`comparison-overlap`, `import-not-found` and `import-untyped` are
   not added to `enable_error_code`, and `narrowed-type-not-subtype`
@@ -230,6 +266,7 @@ to check the guess.
   Nothing changes about what `mypy` reports. What changes is that the
   list is shorter and its comment now states the condition an entry has
   to meet, which is what keeps these from being proposed again.
+
 ### `links.yml` asks lychee a question its flags let it answer
 
 - **`--accept` is lychee's default range with `429` added, where it was
@@ -554,6 +591,7 @@ to check the guess.
   comment above `[tool.mypy]` points at `strict = true` in place of the
   per-flag measurement it used to describe -- both assumed the itemized
   shape this removes.
+
 ### `getrawmempool`'s verbose output no longer misspells its weight key
 
 - **The JSON-RPC key a client reads for a mempool transaction's weight
