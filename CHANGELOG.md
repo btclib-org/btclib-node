@@ -106,6 +106,7 @@ to check the guess.
   gate alone. The pyright survey drops `btclib_node tests`: pyright
   excludes every hidden directory by default, so with no paths it reads
   the directories `[tool.mypy]`'s `files` names, `scripts` among them.
+
 ### A header is checked for the target and the time its height requires
 
 - **`BlockIndex.add_headers` runs `assert_valid_in_context` beside
