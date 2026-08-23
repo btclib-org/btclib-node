@@ -90,5 +90,5 @@ to check the guess.
   is the one list both a bare `mypy` and the gate read, and cannot drift
   from each other again. The stale per-flag error counts the same
   `[tool.mypy]` block carried are replaced with the command that
-  re-derives them, for the reason `.pydeps`'s entry above gives for not
-  trusting a number nothing re-checks.
+  re-derives them: a count is a line every branch touching that block
+  has to keep true, and this one had already gone false.
