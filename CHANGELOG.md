@@ -43,6 +43,30 @@ to check the guess.
   derived value. `rpc/callbacks.py`'s `getblockheader` reads the same
   value from there now.
 
+### A shutdown mid-reorg is noticed between blocks, not once per fork
+
+- **`update_chain` reads `terminate_flag` before starting each block of
+  `to_add`, not only at the top of `Node.run`'s own loop.** The wait
+  `Node.stop` bounds used to scale with the whole fork: `check_transactions`
+  is a blocking `worker_pool.starmap` over one block's inputs -- on
+  mainnet, thousands of signature checks -- and nothing inside
+  `update_chain` read the flag, so a shutdown requested during a deep
+  reorg could outlast `STOP_TIMEOUT` and be reported as a node that
+  would not stop, when it was validating correctly (#139). `STOP_TIMEOUT`
+  itself is unchanged: it already had to cover only what one pass of the
+  loop could take, and what one pass can now take is one block rather
+  than a whole fork.
+- **Stopping there rolls the trial back the way a failed block does,
+  without marking any block invalid.** Nothing `update_chain` buffers
+  along the way -- the utxo set, the reverse patches, the compact
+  filters -- reaches disk before every block of the fork has validated,
+  so there is no partial state for a stop to leave behind: the
+  chainstate is exactly where it was before the call started. What
+  distinguishes a stop from a block that failed its own check is that
+  `update_header_index` is never called for it -- a shutdown is not the
+  block's own defect, and the candidate is offered again on the next
+  run.
+
 ### A reverse patch is filed with its own block, once its branch connects
 
 - **`BlockDB` resolves the `.rev` file a patch goes in from the block it
