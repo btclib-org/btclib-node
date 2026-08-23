@@ -18,6 +18,29 @@ to check the guess.
 
 ## Unreleased
 
+### `[tool.mypy]` sets nothing mypy already has on
+
+- **`show_column_numbers` is set, so an error message names the column
+  it starts at and not the line alone** (#173): the position reads
+  `2:14` where it read `2`. Section 6 of the organization's standard
+  samples the setting and mypy leaves it off.
+
+- **`strict_bytes` is gone: mypy has it on, and the line bought no
+  check** (#182). `show_error_codes`, which section 6 samples too, is of
+  that same kind and is not added; btclib-org/.github#170 is the
+  divergence from the sample, and the comment above the settings now
+  carries the command that reads one back out of mypy's parsing of this
+  file, so either claim is one line to check.
+
+- **The comment above `enable_error_code` names no code as one mypy has
+  on** (#190). The codes it named read as the whole of mypy's
+  default-enabled set, where the command beside them is what decides
+  any code.
+
+- **The mypy hook's comment in `.pre-commit-config.yaml` states no count
+  for the hosted hook it replaced** (#162). Nothing here configures that
+  hook, so no command in this tree re-derives the number.
+
 ### A `match` statement has to cover the type it matches on
 
 - **`exhaustive-match` joins `enable_error_code`, so a `match` leaving a
