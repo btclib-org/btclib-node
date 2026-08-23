@@ -99,6 +99,29 @@ Do not use Fable unless explicitly instructed.
 - **`python_files = "*.py"`**, so every module under `tests/unit` and
   `tests/functional` is collected, suffix or no suffix, and a helper put
   there is collected too.
+- **A second `pytest` anywhere in this tree, even `--help`, erases a
+  running suite's coverage data, unless `COVERAGE_FILE` points outside
+  the rootdir.** `addopts` names no `data_file`, so every invocation from
+  this rootdir shares `.coverage*`; `pytest-cov` erases that set at
+  configure time unless `--cov-append` is given, and under `-n auto` the
+  erase sweeps every parallel-suffixed file, which is what a running
+  suite's own workers are writing. `--help` reaches it because `pytest`'s
+  own `helpconfig` still calls `_do_configure()` before printing
+  anything. The mechanism runs inside `pytest-cov`'s own `tryfirst` hook
+  on `pytest_load_initial_conftests`, before this tree's `conftest.py` is
+  even imported, so nothing in this repository's pytest configuration
+  intercepts it. `COVERAGE_FILE` does, because `coverage.py` reads it
+  from the environment rather than through that hook chain:
+  `COVERAGE_FILE=$(mktemp -d)/.coverage uv run pytest` keeps a run's data
+  out of reach of a second invocation in the same rootdir. A same-prefix
+  name still inside the rootdir, such as `.coverage.protected`, does not
+  help: a concurrent plain invocation's own erase still reaches it,
+  because `erase(parallel=True)` globs its own base filename plus `.*`
+  in that base's directory, and `.coverage.protected...` starts with the
+  plain default's `.coverage` followed by a literal dot. Only leaving
+  the directory removes the file from that glob's reach. Left unset, the
+  run reports a coverage number with every test passing, which reads as
+  a real regression and is not one: btclib-org/btclib-node#191.
 - **The store is `sqlite3` from the standard library**, since
   btclib-org/btclib-node#107. A datadir written by the LevelDB this
   replaced cannot be read; `btclib_node/db.py` is where that is handled
