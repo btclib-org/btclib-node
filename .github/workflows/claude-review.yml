@@ -127,21 +127,19 @@ jobs:
             must contain and how it labels its severity, what becomes of
             everything you notice that the diff is not about, and the two
             forms the verdict takes. Follow it rather than the review
-            habits you would otherwise bring. CLAUDE.md has the facts
-            about this tree a review has to know, and CONTRIBUTING.md the
-            rules a finding cites.
+            habits you would otherwise bring. CONTRIBUTING.md's last
+            section has the gates and the rules a finding cites, and
+            CLAUDE.md the facts about this tree a review has to know.
 
-            One deviation from REVIEWING.md, because this is CI and not
-            a session, and here it runs the other way from the sibling
-            repositories: pre-commit.ci is the only gate beside you.
-            This repository has no test or docs job on a pull request
-            yet -- issue #33 tracks that -- so nothing green stands
-            behind the author's word that the tests pass. Do not run the
-            gates yourself either: this job sets up no toolchain for
-            them, and a review is not where one gets installed. Say in
-            the summary that no gates were run here and that the author's
-            own statement of what they ran is what stands -- and if a
-            pull request makes no such statement, say that too.
+            Do not run the gates. lint.yml and test.yml both run on
+            pull_request, beside you on this same sha, which is the
+            reliance REVIEWING.md provides for and CONTRIBUTING.md's last
+            section makes sound. Do not run them yourself either: this
+            job sets up no toolchain for them, and a review is not where
+            one gets installed. Say in the summary that no gates were run
+            by this job and that those runs are what stands -- and where
+            a pull request also states what its author ran locally, say
+            that too, or say that it states nothing.
 
             Do not file issues from here: a collateral finding goes in the
             summary comment, under a line saying it is not a finding
