@@ -149,6 +149,46 @@ to check the guess.
 - **`Node.run` closes the peer store on shutdown**, alongside the
   chainstate and the block database.
 
+### IPv6 is dialled, and a listener accepts on it too
+
+- **`can_connect` admits `BIP155Network.IPV6`, and `dial` opens an
+  `AF_INET6` socket for it.** Both used to answer only for `IPV4`, so a
+  peer table that held nothing else -- a DNS seed answering with AAAA
+  records alone, or a peer that only ever gossiped v6 addresses -- had
+  nothing this node would draw and dial (#124). `PeerDB.random_address`
+  already answers `None` for a table with nothing dialable (#89), so a
+  peer whose family this node cannot reach is passed over the same way a
+  peer that is merely slow or refusing is: `dial`'s existing
+  `_DIAL_TIMEOUT` bounds the attempt, and a host with no IPv6 route fails
+  it the same way. No separate reachability check was added for that
+  case -- Bitcoin Core's own default is "everything is reachable"
+  (`ReachableNets`, `src/netbase.h`), leaving an unreachable family to
+  fail its own connection attempts rather than being detected ahead of
+  one.
+- **`P2pManager` binds an IPv6 listener beside the IPv4 one**, `::` with
+  `IPV6_V6ONLY` set so that a v4 peer is never accepted on it wearing its
+  address mapped into sixteen octets. The IPv6 bind is not required for
+  `run` to succeed: a host with no IPv6 support fails only that one, and
+  the IPv4 listener above is what a caller of `run` can still rely on --
+  Core's own `InitBinds` treats its "::" the same way. An inbound
+  peer's `sockaddr` is sliced to its host and port before becoming a
+  `NetworkAddressV2`, an `AF_INET6` one carrying two fields BIP155 has
+  nowhere to put.
+
+### A BIP155 IPv6 record that embeds another network is not kept
+
+- **`PeerDB.add_addresses` drops an `IPV6` record whose sixteen octets
+  are `::ffff:0:0/96`, the IPv4 mapping, or OnionCat's
+  `fd87:d87e:eb43::/48`, once how a TORv2 address was embedded in a fake
+  IPv6 one.** BIP155 says a client should ignore both; before this the
+  table kept whatever an `addrv2` carried, so a v4-mapped entry sat
+  under network id 2 and `addr_entry` later wrote it into an `addr`
+  version 1 message using the same sixteen octets an ordinary IPv4 peer
+  uses -- a peer reading it back saw IPv4, and the same host was two
+  entries in the table (#151). `btclib.p2p.addrv2`'s own docstring calls
+  both rules receive policy left to the caller, which is why the check
+  is here and not in the codec.
+
 ### `get_cfilters` stops once the connection it is answering has closed
 
 - **`get_cfilters`'s loop over a `getcfilters` range now breaks once

@@ -573,6 +573,57 @@ def test_a_manager_says_when_it_is_listening_and_not_before(
     assert not manager.is_alive()
 
 
+def test_a_manager_accepts_an_ipv6_peer_too(a_manager: AManagerFactory) -> None:
+    port = get_random_port()
+    manager = a_running_manager(a_manager, port)
+    wait_until_listening(manager)
+    # held open across the stop rather than closed by a `with`, on
+    # `test_stopping_a_running_manager_stops_the_connections_it_holds`'s
+    # own reasoning: closing it here races the still-running
+    # `Connection`'s own read against the `stop` below
+    with closing(socket.create_connection(("::1", port), timeout=20)) as peer:
+        wait_until(lambda: manager.pending_connections)
+        (conn,) = manager.pending_connections.values()
+        assert conn.address.network_id == BIP155Network.IPV6
+        assert conn.address.port == peer.getsockname()[1]
+        manager.stop()
+        manager.join(timeout=10)
+
+
+def test_a_failed_ipv6_bind_does_not_stop_the_ipv4_listener(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a host with no IPv6 route or support: not fatal, on the reasoning
+    # `_bind`'s docstring cites from Core's own `InitBinds`
+    port = get_random_port()
+    manager = a_manager(port=port)
+    real_socket = socket.socket
+
+    def refuses_ipv6(
+        family: socket.AddressFamily, *args: Any, **kwargs: Any
+    ) -> socket.socket:
+        # `*args, **kwargs` and not the two positional arguments `_bind`
+        # is given: a listening socket's own `accept()` builds the
+        # accepted connection through this same module-level name, with
+        # `fileno=` rather than a family and a kind, and a wrapper that
+        # only took `_bind`'s shape would refuse every inbound peer too
+        if family == socket.AF_INET6:
+            raise OSError("no ipv6 route")
+        return real_socket(family, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "socket", refuses_ipv6)
+    manager.start()
+    wait_until_listening(manager)
+    # held open across the stop rather than closed by a `with`, on
+    # `test_stopping_a_running_manager_stops_the_connections_it_holds`'s
+    # own reasoning: a connection the far side closes first and one this
+    # manager's `stop` closes are otherwise indistinguishable here
+    with closing(socket.create_connection(("127.0.0.1", port), timeout=20)):
+        wait_until(lambda: manager.pending_connections)
+        manager.stop()
+        manager.join(timeout=10)
+
+
 def test_a_manager_that_cannot_bind_never_says_it_is_listening(
     a_manager: AManagerFactory,
 ) -> None:

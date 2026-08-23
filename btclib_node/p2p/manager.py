@@ -144,8 +144,8 @@ class P2pManager(threading.Thread):
                     self.logger.exception("Exception occurred")
             await asyncio.sleep(0.1)
 
-    def _bind(self) -> socket.socket:
-        """Bind and listen, synchronously, before anything is scheduled.
+    def _bind_one(self, family: socket.AddressFamily, host: str) -> socket.socket:
+        """Bind and listen on one family, synchronously.
 
         Not the coroutine below: a coroutine handed to
         `run_coroutine_threadsafe` runs on the loop's own thread, behind a
@@ -156,12 +156,19 @@ class P2pManager(threading.Thread):
         this thread's target -- so the thread ends rather than staying
         `is_alive()` over a listener that never came up.
         """
-        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_socket = socket.socket(family, socket.SOCK_STREAM)
         try:
             server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            # All interfaces, by design: a P2P listener accepts
-            # inbound peers from anywhere. noqa: S104
-            server_socket.bind(("0.0.0.0", self.port))  # noqa: S104
+            if family == socket.AF_INET6:
+                # Otherwise a dual-stack kernel hands this socket an
+                # inbound v4 peer too, its address mapped into sixteen
+                # octets the way #151 has this node refuse to keep
+                # gossiped -- and `server` below has no unmapping of its
+                # own to give such a connection the network id #151
+                # would ask for. Core sets the same option on its own
+                # "::" listener for the same reason (net.cpp, 58a7869f86).
+                server_socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            server_socket.bind((host, self.port))
             server_socket.listen()
             server_socket.settimeout(0.0)
         except OSError:
@@ -170,8 +177,28 @@ class P2pManager(threading.Thread):
             # failed bind's fd outlive the exception in the first place
             server_socket.close()
             raise
-        self.listening.set()
         return server_socket
+
+    def _bind(self) -> list[socket.socket]:
+        """Bind every listener this node has, the IPv4 one required.
+
+        The IPv6 one is not: a host with no IPv6 route or with it turned
+        off at the kernel fails the bind above, and that is not this
+        node's own defect to raise `run` out on, unlike a taken IPv4
+        port. Core's `InitBinds` treats its own "::" the same way --
+        "Don't consider errors to bind on IPv6 '::' fatal because the
+        host OS may not have IPv6 support" (net.cpp, 58a7869f86) -- while
+        a failure to bind "0.0.0.0" is `BF_REPORT_ERROR` there too.
+        """
+        # All interfaces, by design: a P2P listener accepts inbound
+        # peers from anywhere.
+        sockets = [self._bind_one(socket.AF_INET, "0.0.0.0")]  # noqa: S104
+        try:
+            sockets.append(self._bind_one(socket.AF_INET6, "::"))
+        except OSError:
+            self.logger.info(f"No IPv6 P2P listener on port {self.port}")
+        self.listening.set()
+        return sockets
 
     async def server(
         self, loop: asyncio.AbstractEventLoop, server_socket: socket.socket
@@ -179,7 +206,11 @@ class P2pManager(threading.Thread):
         with server_socket:
             while True:
                 sock, sockaddr = await loop.sock_accept(server_socket)
-                address = peer_address(*sockaddr)
+                # two fields for an AF_INET peer, four for an AF_INET6
+                # one -- the flow info and the scope id BIP155 has
+                # nowhere to carry either, `get_addr_from_dns`'s own
+                # sockaddr comment being where that is argued
+                address = peer_address(*sockaddr[:2])
                 self.create_connection(sock, address, True)
 
     @override
@@ -188,12 +219,13 @@ class P2pManager(threading.Thread):
         loop = self.loop
         asyncio.set_event_loop(loop)
         try:
-            server_socket = self._bind()
+            server_sockets = self._bind()
         except OSError:
             self.logger.exception("Could not bind the P2P listener")
             raise
         asyncio.run_coroutine_threadsafe(self.peer_db.get_addr_from_dns(), loop)
-        asyncio.run_coroutine_threadsafe(self.server(loop, server_socket), loop)
+        for server_socket in server_sockets:
+            asyncio.run_coroutine_threadsafe(self.server(loop, server_socket), loop)
         asyncio.run_coroutine_threadsafe(self.manage_connections(loop), loop)
         loop.run_forever()
 
