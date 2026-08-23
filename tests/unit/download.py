@@ -13,8 +13,9 @@ has stopped sending blocks is let go.
 """
 
 import time
+from collections.abc import Sequence
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from btclib.p2p.inventory import GetData, Inv
 
@@ -22,12 +23,21 @@ from btclib_node.constants import NodeStatus
 from btclib_node.download import DownloadManager
 from btclib_node.log import Logger
 
+if TYPE_CHECKING:
+    from btclib_node import Node
 
-def a_hash(n):
+
+def a_hash(n: int) -> bytes:
     return n.to_bytes(32, "big")
 
 
-def a_conn(conn_id, *, queue=None, last_block=None, relay_tx=True):
+def a_conn(
+    conn_id: int,
+    *,
+    queue: list[bytes] | None = None,
+    last_block: float | None = None,
+    relay_tx: bool = True,
+) -> Any:
     sent: list[Any] = []
     return SimpleNamespace(
         id=conn_id,
@@ -41,24 +51,29 @@ def a_conn(conn_id, *, queue=None, last_block=None, relay_tx=True):
     )
 
 
-def make_manager(conns, *, status=NodeStatus.BlockSynced, block_index=None):
+def make_manager(
+    conns: list[Any],
+    *,
+    status: NodeStatus = NodeStatus.BlockSynced,
+    block_index: Any | None = None,
+) -> DownloadManager:
     node = SimpleNamespace(
         status=status,
         p2p_manager=SimpleNamespace(connections={conn.id: conn for conn in conns}),
         chainstate=SimpleNamespace(block_index=block_index),
     )
-    return DownloadManager(node, Logger(debug=True))
+    return DownloadManager(cast("Node", node), Logger(debug=True))
 
 
-def hashes_of(message):
+def hashes_of(message: GetData | Inv) -> list[bytes]:
     return [item.hash for item in message.items]
 
 
-def only(conn, kind):
+def only[M](conn: Any, kind: type[M]) -> list[M]:
     return [message for message in conn.sent if isinstance(message, kind)]
 
 
-def test_a_step_asks_for_neither_kind_while_the_headers_are_syncing():
+def test_a_step_asks_for_neither_kind_while_the_headers_are_syncing() -> None:
     conn = a_conn(1)
     manager = make_manager([conn], status=NodeStatus.SyncingHeaders)
     manager.inv_txs = [(1, a_hash(1))]
@@ -66,7 +81,7 @@ def test_a_step_asks_for_neither_kind_while_the_headers_are_syncing():
     assert not conn.sent
 
 
-def test_a_transaction_a_peer_announced_is_asked_of_that_peer():
+def test_a_transaction_a_peer_announced_is_asked_of_that_peer() -> None:
     first, second = a_conn(1), a_conn(2)
     manager = make_manager([first, second])
     manager.inv_txs = [(1, a_hash(1))]
@@ -76,7 +91,7 @@ def test_a_transaction_a_peer_announced_is_asked_of_that_peer():
     assert not second.sent
 
 
-def test_a_peer_that_announced_the_same_transaction_twice_is_asked_once():
+def test_a_peer_that_announced_the_same_transaction_twice_is_asked_once() -> None:
     conn = a_conn(1)
     manager = make_manager([conn])
     manager.inv_txs = [(1, a_hash(1)), (1, a_hash(1))]
@@ -85,7 +100,7 @@ def test_a_peer_that_announced_the_same_transaction_twice_is_asked_once():
     assert hashes_of(getdata) == [a_hash(1)]
 
 
-def test_an_announcement_from_a_peer_that_is_gone_asks_nobody():
+def test_an_announcement_from_a_peer_that_is_gone_asks_nobody() -> None:
     conn = a_conn(1)
     manager = make_manager([conn])
     manager.inv_txs = [(99, a_hash(1))]
@@ -93,7 +108,7 @@ def test_an_announcement_from_a_peer_that_is_gone_asks_nobody():
     assert not conn.sent
 
 
-def test_the_peer_that_sent_a_transaction_is_not_asked_for_it_again():
+def test_the_peer_that_sent_a_transaction_is_not_asked_for_it_again() -> None:
     # it is in the mempool now: asking its source for it is a round trip
     # and a second copy of something we already hold
     sender = a_conn(1)
@@ -104,7 +119,7 @@ def test_the_peer_that_sent_a_transaction_is_not_asked_for_it_again():
     assert not only(sender, GetData)
 
 
-def test_a_single_transaction_is_announced_rather_than_held_back():
+def test_a_single_transaction_is_announced_rather_than_held_back() -> None:
     # one is a whole step's worth of transactions on a quiet network,
     # and the lists are emptied at the end of the step: a batch size
     # held against them is not a throttle but a filter on whether a
@@ -118,7 +133,7 @@ def test_a_single_transaction_is_announced_rather_than_held_back():
     assert not only(sender, Inv)
 
 
-def test_a_peer_that_already_has_all_of_them_is_told_nothing():
+def test_a_peer_that_already_has_all_of_them_is_told_nothing() -> None:
     # and not told with an empty inv, which is a message with nothing in
     # it for the peer to do
     sender = a_conn(1)
@@ -128,7 +143,7 @@ def test_a_peer_that_already_has_all_of_them_is_told_nothing():
     assert not sender.sent
 
 
-def test_a_peer_that_asked_for_no_transactions_is_sent_none():
+def test_a_peer_that_asked_for_no_transactions_is_sent_none() -> None:
     # BIP37's fRelay, which the version callback puts on the connection:
     # a peer that declined is not sent a shorter inv, it is not sent one
     # at all. With a peer that did ask, so the assertion is about the
@@ -142,7 +157,7 @@ def test_a_peer_that_asked_for_no_transactions_is_sent_none():
     assert hashes_of(inv) == [a_hash(1)]
 
 
-def test_a_peer_that_declined_relay_is_still_answered_about_what_it_wants():
+def test_a_peer_that_declined_relay_is_still_answered_about_what_it_wants() -> None:
     # declining transactions is about what it is sent unasked; a peer
     # that announced one is still asked for it
     declined = a_conn(1, relay_tx=False)
@@ -153,7 +168,7 @@ def test_a_peer_that_declined_relay_is_still_answered_about_what_it_wants():
     assert hashes_of(getdata) == [a_hash(1)]
 
 
-def test_a_transaction_is_announced_to_the_peers_that_do_not_have_it():
+def test_a_transaction_is_announced_to_the_peers_that_do_not_have_it() -> None:
     sender, announcer, other = a_conn(1), a_conn(2), a_conn(3)
     manager = make_manager([sender, announcer, other])
     received = [a_hash(n) for n in range(1, 7)]
@@ -167,7 +182,7 @@ def test_a_transaction_is_announced_to_the_peers_that_do_not_have_it():
     assert hashes_of(inv) == received
 
 
-def test_a_peer_still_wanting_something_else_is_asked_for_it():
+def test_a_peer_still_wanting_something_else_is_asked_for_it() -> None:
     sender, wanter = a_conn(1), a_conn(2)
     manager = make_manager([sender, wanter])
     manager.received_txs = [(1, a_hash(1))]
@@ -178,7 +193,7 @@ def test_a_peer_still_wanting_something_else_is_asked_for_it():
     assert not only(sender, GetData)
 
 
-def test_both_lists_are_emptied_by_a_step():
+def test_both_lists_are_emptied_by_a_step() -> None:
     conn = a_conn(1)
     manager = make_manager([conn])
     manager.inv_txs = [(1, a_hash(1))]
@@ -189,22 +204,28 @@ def test_both_lists_are_emptied_by_a_step():
 
 
 class FakeBlockIndex:
-    def __init__(self, candidates, *, downloaded=(), active_chain_length=1):
+    def __init__(
+        self,
+        candidates: list[bytes],
+        *,
+        downloaded: Sequence[bytes] = (),
+        active_chain_length: int = 1,
+    ) -> None:
         self.candidates = list(candidates)
         self.downloaded = set(downloaded)
         self.active_chain = [a_hash(0)] * active_chain_length
 
-    def get_download_candidates(self):
+    def get_download_candidates(self) -> list[bytes]:
         return list(self.candidates)
 
-    def get_block_info(self, block_hash):
+    def get_block_info(self, block_hash: bytes) -> Any:
         return SimpleNamespace(
             downloaded=block_hash in self.downloaded,
             index=self.candidates.index(block_hash) + 1,
         )
 
 
-def test_nothing_is_downloaded_before_the_headers_are_synced():
+def test_nothing_is_downloaded_before_the_headers_are_synced() -> None:
     conn = a_conn(1)
     manager = make_manager(
         [conn],
@@ -215,7 +236,7 @@ def test_nothing_is_downloaded_before_the_headers_are_synced():
     assert not conn.sent
 
 
-def test_a_block_is_asked_of_a_peer_with_an_empty_queue():
+def test_a_block_is_asked_of_a_peer_with_an_empty_queue() -> None:
     conn = a_conn(1)
     wanted = [a_hash(n) for n in range(1, 4)]
     manager = make_manager([conn], block_index=FakeBlockIndex(wanted))
@@ -225,7 +246,7 @@ def test_a_block_is_asked_of_a_peer_with_an_empty_queue():
     assert conn.download_queue == wanted
 
 
-def test_a_block_that_arrived_while_the_window_was_held_is_not_asked_for():
+def test_a_block_that_arrived_while_the_window_was_held_is_not_asked_for() -> None:
     # get_download_candidates never offers a block already stored, so
     # the filter below it is about the window this manager is holding
     # from an earlier pass, across which a block can have arrived
@@ -240,7 +261,7 @@ def test_a_block_that_arrived_while_the_window_was_held_is_not_asked_for():
     assert hashes_of(getdata) == [a_hash(2)]
 
 
-def test_nothing_left_to_download_asks_for_nothing():
+def test_nothing_left_to_download_asks_for_nothing() -> None:
     conn = a_conn(1)
     manager = make_manager(
         [conn], block_index=FakeBlockIndex([a_hash(1)], downloaded=[a_hash(1)])
@@ -251,7 +272,7 @@ def test_nothing_left_to_download_asks_for_nothing():
     assert manager.block_window == []
 
 
-def test_a_download_too_far_ahead_of_the_chain_waits():
+def test_a_download_too_far_ahead_of_the_chain_waits() -> None:
     # the window is filled from the headers, which run far ahead of the
     # blocks; fetching all of them at once is what the bound is for
     conn = a_conn(1)
@@ -262,7 +283,7 @@ def test_a_download_too_far_ahead_of_the_chain_waits():
     assert not conn.sent
 
 
-def test_a_peer_that_is_already_busy_is_not_asked_again():
+def test_a_peer_that_is_already_busy_is_not_asked_again() -> None:
     busy = a_conn(1, queue=[a_hash(1)])
     manager = make_manager([busy], block_index=FakeBlockIndex([a_hash(1), a_hash(2)]))
     manager.block_download()
@@ -270,7 +291,7 @@ def test_a_peer_that_is_already_busy_is_not_asked_again():
     assert busy.download_queue == [a_hash(1)]
 
 
-def test_a_block_that_arrived_leaves_the_queue_it_was_asked_in():
+def test_a_block_that_arrived_leaves_the_queue_it_was_asked_in() -> None:
     conn = a_conn(1, queue=[a_hash(1)])
     manager = make_manager(
         [conn],
@@ -280,7 +301,7 @@ def test_a_block_that_arrived_leaves_the_queue_it_was_asked_in():
     assert conn.download_queue == [a_hash(2)]
 
 
-def test_a_peer_that_stopped_sending_blocks_is_marked_and_then_dropped():
+def test_a_peer_that_stopped_sending_blocks_is_marked_and_then_dropped() -> None:
     # only while still syncing blocks: a peer with nothing to send is not
     # a peer that has stalled
     quiet = a_conn(1, last_block=time.time() - 200)
@@ -297,7 +318,7 @@ def test_a_peer_that_stopped_sending_blocks_is_marked_and_then_dropped():
     assert stopped == [True]
 
 
-def test_a_block_only_one_peer_was_asked_for_is_asked_of_a_second():
+def test_a_block_only_one_peer_was_asked_for_is_asked_of_a_second() -> None:
     # nothing left in the window that nobody is fetching, and a peer
     # sitting idle: it is given what somebody else is already carrying,
     # which is how a block a peer never sends stops holding the chain up
@@ -313,7 +334,7 @@ def test_a_block_only_one_peer_was_asked_for_is_asked_of_a_second():
     assert hashes_of(getdata) == [a_hash(1)]
 
 
-def test_a_peer_that_is_already_pending_eviction_is_left_alone():
+def test_a_peer_that_is_already_pending_eviction_is_left_alone() -> None:
     quiet = a_conn(1, last_block=time.time() - 200, queue=[a_hash(1)])
     quiet.pending_eviction = True
     manager = make_manager(

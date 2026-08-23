@@ -35,7 +35,7 @@ EXPECTED = {
 }
 
 
-def test_every_chain_is_covered():
+def test_every_chain_is_covered() -> None:
     assert {chain.name for chain in CHAINS} == set(EXPECTED)
     # by class and not by the name an instance carries: `Chain` itself
     # takes its four fields, so building one out of `__subclasses__`
@@ -44,7 +44,7 @@ def test_every_chain_is_covered():
     assert set(Chain.__subclasses__()) == {type(chain) for chain in CHAINS}
 
 
-def test_pow_limit_bits():
+def test_pow_limit_bits() -> None:
     # Chain.pow_limit_bits reads the limit off the genesis header, which
     # holds only because a genesis is mined at exactly its network's
     # easiest target. That is an invariant of the chains defined here
@@ -55,7 +55,7 @@ def test_pow_limit_bits():
         assert chain.pow_limit_bits.hex() == expected, chain.name
 
 
-def test_magic():
+def test_magic() -> None:
     # the four octets that open every p2p message: a wrong one is a node
     # talking to nobody, and nothing else in this tree asserts them now
     # that they are a lookup rather than literals
@@ -63,12 +63,12 @@ def test_magic():
         assert chain.magic.hex() == EXPECTED[chain.name]["magic"], chain.name
 
 
-def test_genesis():
+def test_genesis() -> None:
     for chain in CHAINS:
         assert chain.genesis.hash.hex() == EXPECTED[chain.name]["genesis"], chain.name
 
 
-def test_the_genesis_block_carries_the_coinbase_its_header_commits_to():
+def test_the_genesis_block_carries_the_coinbase_its_header_commits_to() -> None:
     # the header is derived from the transaction, so a block built
     # without it hashes the same and is still wrong: it is the only
     # copy of the genesis block this node has -- no peer serves it --

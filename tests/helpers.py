@@ -6,12 +6,15 @@ import secrets
 import socket
 import threading
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Protocol
 
 from btclib.block import Block, BlockHeader, merkle_root_and_mutated_from_transactions
 from btclib.block.mining import mine
 from btclib.block.proof_of_work import REGTEST_POW_LIMIT_BITS
 from btclib.exceptions import BTClibValueError
+from btclib.p2p.addrv2 import NetworkAddressV2
 from btclib.script import script
 from btclib.tx.tx import Tx, TxIn, TxOut
 from btclib.tx.tx_in import OutPoint
@@ -19,7 +22,13 @@ from btclib.tx.tx_in import OutPoint
 from btclib_node.p2p.address import peer_address
 
 
-def generate_random_header_chain(length, start):
+class _ListensOnAPort(Protocol):
+    # what wait_until_listening needs: a manager, or a stand-in for one
+    listening: threading.Event
+    port: int | None
+
+
+def generate_random_header_chain(length: int, start: bytes) -> list[BlockHeader]:
     chain: list[BlockHeader] = []
     for x in range(length):
         if chain:
@@ -40,7 +49,7 @@ def generate_random_header_chain(length, start):
     return chain
 
 
-def generate_random_transaction(prevouthash=None):
+def generate_random_transaction(prevouthash: bytes | None = None) -> Tx:
     prevouthash = prevouthash or secrets.token_bytes(32)
     tx_in = TxIn(
         prev_out=OutPoint(prevouthash, 0),
@@ -60,7 +69,7 @@ def generate_random_transaction(prevouthash=None):
     return tx
 
 
-def generate_coinbase(value=50 * 10**8):
+def generate_coinbase(value: int = 50 * 10**8) -> Tx:
     return Tx(
         version=1,
         lock_time=0,
@@ -80,7 +89,9 @@ def generate_coinbase(value=50 * 10**8):
     )
 
 
-def build_block(previous_block_hash, transactions, height):
+def build_block(
+    previous_block_hash: bytes, transactions: list[Tx], height: int
+) -> Block:
     header = BlockHeader(
         version=70015,
         previous_block_hash=previous_block_hash,
@@ -97,7 +108,7 @@ def build_block(previous_block_hash, transactions, height):
     return Block(header, transactions, check_validity=False)
 
 
-def generate_random_chain(length, start):
+def generate_random_chain(length: int, start: bytes) -> list[Block]:
     chain: list[Block] = []
     for x in range(length):
         previous_block_hash = chain[-1].header.hash if chain else start
@@ -109,15 +120,17 @@ def generate_random_chain(length, start):
     return chain
 
 
-def get_random_port():
+def get_random_port() -> int:
     # port 0 is the operating system being asked for one that is free,
     # which is what a caller about to bind it wants to know
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("", 0))
-        return sock.getsockname()[1]
+        port = sock.getsockname()[1]
+        assert isinstance(port, int)
+        return port
 
 
-def wait_until(func, timeout=60):
+def wait_until(func: Callable[[], object], timeout: float = 60) -> None:
     # The timeout bounds a failure, not a success: the loop returns as
     # soon as func() holds, so a generous limit costs a passing run
     # nothing and only delays one that was going to fail. Almost every
@@ -154,7 +167,7 @@ def wait_until(func, timeout=60):
     raise Exception(err_msg)
 
 
-def wait_until_listening(manager, timeout=20):
+def wait_until_listening(manager: _ListensOnAPort, timeout: float = 20) -> None:
     """Wait for a manager's socket to be bound, not for its thread.
 
     `wait_until(manager.is_alive)` is `threading.Thread.is_alive`, which
@@ -180,20 +193,21 @@ def wait_until_listening(manager, timeout=20):
     raise Exception(err_msg)
 
 
-def call_within(func, timeout=5):
+def call_within[T](func: Callable[[], T], timeout: float = 5) -> T:
     # For a call whose way of being wrong is never coming back. A test
     # that asserts on the answer hangs the whole suite when there is no
     # answer (btclib-org/btclib-node#98); one that calls through here
     # fails, and names where the call was written. As in wait_until
     # above, the timeout bounds the failure and not the success: the
     # join returns as soon as the call does.
-    outcome = {}
+    returned: list[T] = []
+    raised: list[Exception] = []
 
-    def call():
+    def call() -> None:
         try:
-            outcome["returned"] = func()
+            returned.append(func())
         except Exception as exception:
-            outcome["raised"] = exception
+            raised.append(exception)
 
     # daemon, because a call that never returns must not keep the
     # interpreter alive on the way out
@@ -209,12 +223,12 @@ def call_within(func, timeout=5):
         raise Exception(err_msg)
     # re-raised here rather than left to threading's own hook, which
     # would print a traceback and hand the caller a KeyError
-    if "raised" in outcome:
-        raise outcome["raised"]
-    return outcome["returned"]
+    if raised:
+        raise raised[0]
+    return returned[0]
 
 
-def brute_force_nonce(header):
+def brute_force_nonce(header: BlockHeader) -> None:
     """Solve the header in place, or refuse to hand it back unsolved.
 
     btclib's `mine` does the searching and answers with a copy, so the
@@ -232,8 +246,11 @@ def brute_force_nonce(header):
     header.assert_valid_pow(REGTEST_POW_LIMIT_BITS)
 
 
-def local_addr(port: int, timestamp: int = 0, services: int = 0):
+def local_addr(
+    port: int | None, timestamp: int = 0, services: int = 0
+) -> NetworkAddressV2:
     # A test helper building an unroutable placeholder address, not a
     # socket bind.
+    assert port is not None
     addr = "0.0.0.0"  # noqa: S104
     return peer_address(addr, port, timestamp, services)

@@ -2,6 +2,7 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -12,7 +13,7 @@ from btclib_node.config import Config
 from tests.helpers import get_random_port
 
 
-def asks_for_everything(config):
+def asks_for_everything(config: pytest.Config) -> bool:
     """Whether the paths named on the command line take the suite in.
 
     No path at all is `testpaths`, which is the suite. A path above one
@@ -39,7 +40,7 @@ def asks_for_everything(config):
     )
 
 
-def relax_coverage_floor(config):
+def relax_coverage_floor(config: pytest.Config) -> bool:
     """Hold the coverage floor to runs that could clear it.
 
     `fail_under` is a statement about the whole suite. A run of one file,
@@ -78,12 +79,14 @@ def relax_coverage_floor(config):
     return True
 
 
-def pytest_configure(config):
+def pytest_configure(config: pytest.Config) -> None:
     relax_coverage_floor(config)
 
 
 @contextmanager
-def node_context(tmp_path, allow_p2p: bool = True, allow_rpc: bool = True):
+def node_context(
+    tmp_path: Path, allow_p2p: bool = True, allow_rpc: bool = True
+) -> Iterator[Node]:
     node = Node(
         config=Config(
             chain="regtest",
@@ -103,6 +106,6 @@ def node_context(tmp_path, allow_p2p: bool = True, allow_rpc: bool = True):
 
 
 @pytest.fixture
-def rpc_node(tmp_path):
+def rpc_node(tmp_path: Path) -> Iterator[Node]:
     with node_context(tmp_path, allow_p2p=False) as node:
         yield node

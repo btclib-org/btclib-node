@@ -36,6 +36,7 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any, cast
 
 # What a LevelDB directory always holds, and this one never will. A
 # datadir written before this store existed cannot be read by it, and
@@ -99,13 +100,17 @@ class KeyValueStore:
 
     def _rows(
         self, statement: str, parameters: tuple[bytes, ...] = ()
-    ) -> list[tuple[bytes, bytes]]:
+    ) -> list[tuple[Any, ...]]:
         """Execute a statement and read its answer, both under the lock.
 
         Both, and not the execute alone: a cursor read after the lock is
         released is a cursor another thread can step on -- one
         connection means one statement at a time, and `fetchone` is part
         of the statement.
+
+        The row shape is `Any`, and genuinely so: this runs whatever SQL
+        it is given, `PRAGMA` statements the tests read included, and
+        not only the two `kv` shapes the methods below build on.
         """
         with self._lock:
             if self._closed:
@@ -115,7 +120,7 @@ class KeyValueStore:
     def get(self, key: bytes) -> bytes | None:
         """Return the value stored under a key, or None."""
         rows = self._rows("SELECT v FROM kv WHERE k = ?", (key,))
-        return rows[0][0] if rows else None
+        return cast(bytes, rows[0][0]) if rows else None
 
     def put(self, key: bytes, value: bytes) -> None:
         """Store a value under a key, replacing what was there."""
@@ -134,7 +139,8 @@ class KeyValueStore:
         the store once at startup.
         """
         with self._lock:
-            return iter(self._rows("SELECT k, v FROM kv ORDER BY k"))
+            rows = self._rows("SELECT k, v FROM kv ORDER BY k")
+            return iter(cast("list[tuple[bytes, bytes]]", rows))
 
     @contextmanager
     def write_batch(self) -> Iterator[KeyValueStore]:

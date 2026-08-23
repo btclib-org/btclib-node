@@ -12,6 +12,8 @@ and reopened, and does it come back after the file it was written to is
 no longer the file being written to.
 """
 
+from pathlib import Path
+
 from btclib.script import script
 from btclib.tx.tx_in import OutPoint
 from btclib.tx.tx_out import TxOut
@@ -24,7 +26,7 @@ from tests.helpers import generate_random_chain
 MAX_FILE_SIZE = 128 * 1000**2
 
 
-def a_rev_block(tag=1):
+def a_rev_block(tag: int = 1) -> RevBlock:
     out_point = OutPoint(bytes([tag]) * 32, tag)
     tx_out = TxOut(value=tag * 10**8, script_pub_key=script.serialize([bytes([tag])]))
     return RevBlock(
@@ -34,15 +36,15 @@ def a_rev_block(tag=1):
     )
 
 
-def a_db(tmp_path):
+def a_db(tmp_path: Path) -> BlockDB:
     return BlockDB(tmp_path, Logger(debug=True))
 
 
-def test_init(tmp_path):
+def test_init(tmp_path: Path) -> None:
     BlockDB(tmp_path, Logger(debug=True))
 
 
-def test_blocks(tmp_path):
+def test_blocks(tmp_path: Path) -> None:
     chain = generate_random_chain(2000, RegTest().genesis.hash)
     for x in range(10):
         block_db = BlockDB(tmp_path / f"{x}", Logger(debug=True))
@@ -52,25 +54,25 @@ def test_blocks(tmp_path):
             assert stored_block == block
 
 
-def test_a_rev_patch_survives_the_wire():
+def test_a_rev_patch_survives_the_wire() -> None:
     rev_block = a_rev_block()
     assert RevBlock.deserialize(rev_block.serialize()) == rev_block
 
 
-def test_a_rev_patch_is_read_back_from_the_file_it_went_into(tmp_path):
+def test_a_rev_patch_is_read_back_from_the_file_it_went_into(tmp_path: Path) -> None:
     block_db = a_db(tmp_path)
     rev_block = a_rev_block()
     block_db.add_rev_block(rev_block)
     assert block_db.get_rev_block(rev_block.hash) == rev_block
 
 
-def test_what_was_never_stored_is_not_found(tmp_path):
+def test_what_was_never_stored_is_not_found(tmp_path: Path) -> None:
     block_db = a_db(tmp_path)
     assert block_db.get_block(b"\x11" * 32) is None
     assert block_db.get_rev_block(b"\x11" * 32) is None
 
 
-def test_storing_the_same_block_twice_writes_it_once(tmp_path):
+def test_storing_the_same_block_twice_writes_it_once(tmp_path: Path) -> None:
     block_db = a_db(tmp_path)
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     block_db.add_block(block)
@@ -80,7 +82,7 @@ def test_storing_the_same_block_twice_writes_it_once(tmp_path):
     assert block_db.get_block(block.header.hash) == block
 
 
-def test_storing_the_same_rev_patch_twice_writes_it_once(tmp_path):
+def test_storing_the_same_rev_patch_twice_writes_it_once(tmp_path: Path) -> None:
     block_db = a_db(tmp_path)
     rev_block = a_rev_block()
     block_db.add_rev_block(rev_block)
@@ -90,7 +92,7 @@ def test_storing_the_same_rev_patch_twice_writes_it_once(tmp_path):
     assert block_db.files[filename].size == written
 
 
-def test_a_file_that_has_filled_up_is_left_behind(tmp_path):
+def test_a_file_that_has_filled_up_is_left_behind(tmp_path: Path) -> None:
     block_db = a_db(tmp_path)
     chain = generate_random_chain(2, RegTest().genesis.hash)
     block_db.add_block(chain[0])
@@ -108,7 +110,7 @@ def test_a_file_that_has_filled_up_is_left_behind(tmp_path):
     assert block_db.get_block(chain[1].header.hash) == chain[1]
 
 
-def test_a_file_exactly_at_the_bound_is_not_yet_full(tmp_path):
+def test_a_file_exactly_at_the_bound_is_not_yet_full(tmp_path: Path) -> None:
     # the bound is what the size is compared against, so which side of
     # it is exclusive is a real question. Only where the block lands is
     # asserted here: the size set below is a fiction the file on disk
@@ -123,7 +125,7 @@ def test_a_file_exactly_at_the_bound_is_not_yet_full(tmp_path):
     assert block_db.file_index == 1
 
 
-def test_a_rev_patch_in_an_earlier_file_is_still_read(tmp_path):
+def test_a_rev_patch_in_an_earlier_file_is_still_read(tmp_path: Path) -> None:
     block_db = a_db(tmp_path)
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     block_db.add_block(block)
@@ -143,7 +145,9 @@ def test_a_rev_patch_in_an_earlier_file_is_still_read(tmp_path):
     assert block_db.get_rev_block(second.hash) == second
 
 
-def test_two_rev_patches_share_the_file_named_for_the_block_file(tmp_path):
+def test_two_rev_patches_share_the_file_named_for_the_block_file(
+    tmp_path: Path,
+) -> None:
     block_db = a_db(tmp_path)
     block_db.add_block(generate_random_chain(1, RegTest().genesis.hash)[0])
     first, second = a_rev_block(1), a_rev_block(5)
@@ -156,13 +160,13 @@ def test_two_rev_patches_share_the_file_named_for_the_block_file(tmp_path):
     assert block_db.get_rev_block(second.hash) == second
 
 
-def test_closing_a_store_that_wrote_nothing(tmp_path):
+def test_closing_a_store_that_wrote_nothing(tmp_path: Path) -> None:
     # nothing was written, so there is no file to close: only the
     # database itself
     a_db(tmp_path).close()
 
 
-def test_a_key_this_version_does_not_know_is_left_where_it_is(tmp_path):
+def test_a_key_this_version_does_not_know_is_left_where_it_is(tmp_path: Path) -> None:
     block_db = a_db(tmp_path)
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     block_db.add_block(block)
@@ -180,7 +184,7 @@ def test_a_key_this_version_does_not_know_is_left_where_it_is(tmp_path):
     reopened.close()
 
 
-def test_the_store_comes_back_from_disk(tmp_path):
+def test_the_store_comes_back_from_disk(tmp_path: Path) -> None:
     block_db = a_db(tmp_path)
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     rev_block = a_rev_block()

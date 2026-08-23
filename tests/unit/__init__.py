@@ -18,8 +18,11 @@ import signal
 import threading
 import time
 from collections import deque
+from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -29,7 +32,7 @@ from btclib_node.config import Config
 from tests.helpers import wait_until
 
 
-def a_node(tmp_path):
+def a_node(tmp_path: Path) -> Node:
     return Node(
         config=Config(
             chain="regtest",
@@ -44,22 +47,25 @@ def a_node(tmp_path):
 class AManager:
     """What `Node.run` asks of a manager, and nothing else."""
 
-    def __init__(self):
-        self.messages = deque()
-        self.handshake_messages = deque()
-        self.connections = {}
+    def __init__(self) -> None:
+        # a stand-in for both P2pManager and RpcManager, whose queues
+        # carry different shapes -- (command, payload, id) for one,
+        # (batch, id) for the other -- so this is Any rather than either
+        self.messages: deque[Any] = deque()
+        self.handshake_messages: deque[Any] = deque()
+        self.connections: dict[int, Any] = {}
         self.started = False
         self.stopped = False
 
-    def start(self):
+    def start(self) -> None:
         self.started = True
 
-    def stop(self):
+    def stop(self) -> None:
         self.stopped = True
 
 
 @pytest.fixture
-def a_networked_node(tmp_path):
+def a_networked_node(tmp_path: Path) -> Iterator[Node]:
     """A node whose ports are set and whose managers are stand-ins.
 
     The ports are what `run` reads to decide whether to start a manager;
@@ -84,19 +90,21 @@ def a_networked_node(tmp_path):
     )
     node.p2p_manager.loop.close()
     node.rpc_manager.loop.close()
-    node.p2p_manager = AManager()
-    node.rpc_manager = AManager()
+    # AManager stands in for both real managers, over the shape of
+    # theirs it actually reads: not their own types, deliberately
+    node.p2p_manager = AManager()  # type: ignore[assignment]
+    node.rpc_manager = AManager()  # type: ignore[assignment]
     yield node
     node.stop()
 
 
-def test_init(tmp_path):
+def test_init(tmp_path: Path) -> None:
     node = a_node(tmp_path)
     node.start()
     node.stop()
 
 
-def test_stop_does_not_return_until_the_node_has_stopped(tmp_path):
+def test_stop_does_not_return_until_the_node_has_stopped(tmp_path: Path) -> None:
     # what this pins is not a failure but a hang: a caller that goes on
     # while the node is still running leaves a thread logging into a
     # harness that has moved on, and, when the loop cannot come back at
@@ -113,7 +121,7 @@ def test_stop_does_not_return_until_the_node_has_stopped(tmp_path):
     assert not node.logger.handlers
 
 
-def test_stopping_a_node_that_never_started_is_not_an_error(tmp_path):
+def test_stopping_a_node_that_never_started_is_not_an_error(tmp_path: Path) -> None:
     # __init__ registers the signal handlers, so a node can be asked to
     # stop before it is running and there is nothing to wait for
     node = a_node(tmp_path)
@@ -121,7 +129,9 @@ def test_stopping_a_node_that_never_started_is_not_an_error(tmp_path):
     assert not node.is_alive()
 
 
-def test_the_node_asking_itself_to_stop_does_not_wait_for_itself(tmp_path, monkeypatch):
+def test_the_node_asking_itself_to_stop_does_not_wait_for_itself(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # the `stop` RPC is handled inside the loop it stops, so the caller
     # there is the node's own thread, and a thread that joins itself
     # raises instead of waiting
@@ -140,7 +150,9 @@ def test_the_node_asking_itself_to_stop_does_not_wait_for_itself(tmp_path, monke
 
 
 @pytest.mark.parametrize("signal_number", [signal.SIGTERM, signal.SIGINT])
-def test_a_signal_asks_the_node_to_stop(tmp_path, signal_number):
+def test_a_signal_asks_the_node_to_stop(
+    tmp_path: Path, signal_number: signal.Signals
+) -> None:
     # both are registered on the process, and stopping is what they are
     # for: a node killed without it leaves its databases open
     node = a_node(tmp_path)
@@ -157,14 +169,14 @@ def test_a_signal_asks_the_node_to_stop(tmp_path, signal_number):
 
 
 def test_a_step_that_raises_brings_the_node_down_rather_than_spinning(
-    tmp_path, monkeypatch
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # the loop cannot recover from a chainstate it could not advance, so
     # it stops -- and stopping means closing the databases, which is
     # what makes this different from an exception escaping run()
     import btclib_node
 
-    def boom(node):
+    def boom(node: Node) -> None:
         raise RuntimeError("no")
 
     monkeypatch.setattr(btclib_node, "update_chain", boom)
@@ -186,12 +198,12 @@ WEDGE_LIMIT = 30
 
 
 @contextmanager
-def a_wedged_node(tmp_path, monkeypatch):
+def a_wedged_node(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Node]:
     """A started node whose loop will not come back, and lets go anyway."""
     wedged = threading.Event()
     released = threading.Event()
 
-    def never_returns(node):
+    def never_returns(node: Node) -> None:
         wedged.set()
         released.wait(timeout=WEDGE_LIMIT)
 
@@ -213,8 +225,8 @@ def a_wedged_node(tmp_path, monkeypatch):
 
 
 def test_the_bound_is_under_the_limit_that_would_otherwise_expire_first(
-    pytestconfig,
-):
+    pytestconfig: pytest.Config,
+) -> None:
     # the claim the constant's comment makes, asserted rather than
     # written: a node that will not stop has to be reported by name,
     # and it is only reported at all if this wait ends before the
@@ -223,8 +235,8 @@ def test_the_bound_is_under_the_limit_that_would_otherwise_expire_first(
 
 
 def test_a_node_that_will_not_stop_is_reported_rather_than_waited_for(
-    tmp_path, monkeypatch
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The bound on the wait, and why it has to be one.
 
     `pytest-timeout` arms one timer per test and `setitimer` is
@@ -249,7 +261,9 @@ def test_a_node_that_will_not_stop_is_reported_rather_than_waited_for(
         assert node.is_alive()
 
 
-def test_the_node_that_will_not_stop_is_named(tmp_path, monkeypatch):
+def test_the_node_that_will_not_stop_is_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # several nodes are running in any functional test, and a message
     # that does not say which one leaves the reader to guess
     with a_wedged_node(tmp_path, monkeypatch) as node:
@@ -257,16 +271,20 @@ def test_the_node_that_will_not_stop_is_named(tmp_path, monkeypatch):
             node.stop()
 
 
-def test_a_port_configured_is_a_manager_started_and_stopped(tmp_path, a_networked_node):
+def test_a_port_configured_is_a_manager_started_and_stopped(
+    tmp_path: Path, a_networked_node: Node
+) -> None:
     # the ports decide it: a node given neither starts neither, which is
     # every other node in this file
     node = a_networked_node
+    p2p_manager = cast(AManager, node.p2p_manager)
+    rpc_manager = cast(AManager, node.rpc_manager)
     assert (node.p2p_port, node.rpc_port) == (18444, 18445)
     node.start()
-    wait_until(lambda: node.p2p_manager.started and node.rpc_manager.started)
+    wait_until(lambda: p2p_manager.started and rpc_manager.started)
     node.stop()
-    assert node.p2p_manager.stopped
-    assert node.rpc_manager.stopped
+    assert p2p_manager.stopped
+    assert rpc_manager.stopped
 
     quiet = a_node(tmp_path / "quiet")
     quiet.start()
@@ -279,48 +297,55 @@ def test_a_port_configured_is_a_manager_started_and_stopped(tmp_path, a_networke
     assert not quiet.rpc_manager.is_alive()
 
 
-def test_every_message_waiting_is_taken_before_the_loop_waits(a_networked_node):
+def test_every_message_waiting_is_taken_before_the_loop_waits(
+    a_networked_node: Node,
+) -> None:
     # all three queues, drained in one pass: what each handler does with
     # a message it can deliver is tests/unit/p2p/main.py's and
     # tests/unit/rpc/main.py's. These are addressed to connections that
     # are not there, so the answer is to drop them -- and dropping them
     # is what the loop has to do rather than sleep on them.
     node = a_networked_node
-    node.p2p_manager.handshake_messages.append(("version", None, 99))
-    node.p2p_manager.messages.append(("ping", None, 99))
-    node.rpc_manager.messages.append(([], 99))
+    p2p_manager = cast(AManager, node.p2p_manager)
+    rpc_manager = cast(AManager, node.rpc_manager)
+    p2p_manager.handshake_messages.append(("version", None, 99))
+    p2p_manager.messages.append(("ping", None, 99))
+    rpc_manager.messages.append(([], 99))
 
-    def every_queue_is_empty():
+    def every_queue_is_empty() -> bool:
         return not (
-            node.p2p_manager.handshake_messages
-            or node.p2p_manager.messages
-            or node.rpc_manager.messages
+            p2p_manager.handshake_messages
+            or p2p_manager.messages
+            or rpc_manager.messages
         )
 
     node.start()
     wait_until(every_queue_is_empty)
 
 
-def test_a_message_the_handlers_did_not_expect_does_not_end_the_loop(a_networked_node):
+def test_a_message_the_handlers_did_not_expect_does_not_end_the_loop(
+    a_networked_node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # #97's line. A method that is not a string reaches `request
     # ["method"] not in callbacks` and raises TypeError: unhashable,
     # outside handle_rpc's own try -- so what catches it is `run`'s
     # guard, and the node going on to answer the next request is what
     # says the guard caught it rather than the thread ending.
     node = a_networked_node
-    answered = []
-    node.rpc_manager.connections[0] = SimpleNamespace(
+    rpc_manager = cast(AManager, node.rpc_manager)
+    answered: list[Any] = []
+    rpc_manager.connections[0] = SimpleNamespace(
         send=answered.append, send_and_wait=answered.append
     )
-    logged = []
-    node.logger.exception = logged.append
-    node.rpc_manager.messages.append(
+    logged: list[Any] = []
+    monkeypatch.setattr(node.logger, "exception", logged.append)
+    rpc_manager.messages.append(
         ([{"jsonrpc": "2.0", "id": "a", "method": ["not", "hashable"]}], 0)
     )
     node.start()
     wait_until(lambda: logged)
 
-    node.rpc_manager.messages.append(
+    rpc_manager.messages.append(
         ([{"jsonrpc": "2.0", "id": "b", "method": "getbestblockhash"}], 0)
     )
     wait_until(lambda: answered)
@@ -332,24 +357,26 @@ def test_a_message_the_handlers_did_not_expect_does_not_end_the_loop(a_networked
 class APool:
     """A worker pool that costs nothing to build, and says it was."""
 
-    def __init__(self, built, processes):
+    def __init__(self, built: list[Any], processes: int) -> None:
         self.built = built
         built.append(processes)
 
-    def terminate(self):
+    def terminate(self) -> None:
         self.built.append("terminated")
 
 
 @pytest.fixture
-def pools(monkeypatch):
+def pools(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
     import btclib_node
 
-    built = []
+    built: list[Any] = []
     monkeypatch.setattr(btclib_node, "Pool", lambda processes: APool(built, processes))
     return built
 
 
-def test_the_worker_pool_is_built_on_first_use_and_only_once(tmp_path, pools):
+def test_the_worker_pool_is_built_on_first_use_and_only_once(
+    tmp_path: Path, pools: list[Any]
+) -> None:
     # a pool is interpreters, spawned rather than forked wherever that
     # is the default, and most of the nodes this suite builds never
     # validate a script
@@ -360,15 +387,19 @@ def test_the_worker_pool_is_built_on_first_use_and_only_once(tmp_path, pools):
     assert pools == [8]
 
 
-def test_a_node_that_used_the_pool_takes_it_down_with_it(tmp_path, pools):
+def test_a_node_that_used_the_pool_takes_it_down_with_it(
+    tmp_path: Path, pools: list[Any]
+) -> None:
     node = a_node(tmp_path)
-    assert node.worker_pool
+    assert node.worker_pool is not None
     node.start()
     node.stop()
     assert pools == [8, "terminated"]
 
 
-def test_a_node_that_never_used_the_pool_does_not_build_one_to_stop_it(tmp_path, pools):
+def test_a_node_that_never_used_the_pool_does_not_build_one_to_stop_it(
+    tmp_path: Path, pools: list[Any]
+) -> None:
     node = a_node(tmp_path)
     node.start()
     node.stop()

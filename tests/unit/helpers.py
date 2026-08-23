@@ -35,7 +35,7 @@ from tests.helpers import (
 )
 
 
-def test_the_port_offered_is_one_that_can_be_bound():
+def test_the_port_offered_is_one_that_can_be_bound() -> None:
     port = get_random_port()
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("", port))
@@ -45,15 +45,15 @@ def test_the_port_offered_is_one_that_can_be_bound():
     assert get_random_port() != port
 
 
-def test_a_condition_that_holds_is_not_waited_for():
+def test_a_condition_that_holds_is_not_waited_for() -> None:
     timeout = 10
     start = time.time()
     wait_until(lambda: True, timeout=timeout)
     assert time.time() - start < timeout
 
 
-def test_a_condition_that_never_holds_is_given_up_on():
-    calls = []
+def test_a_condition_that_never_holds_is_given_up_on() -> None:
+    calls: list[bool] = []
     timeout = 0.2
     start = time.time()
     with pytest.raises(Exception, match=f"helpers.py:.* within {timeout} seconds"):
@@ -63,7 +63,7 @@ def test_a_condition_that_never_holds_is_given_up_on():
     assert time.time() - start >= timeout
 
 
-def test_a_manager_that_is_listening_is_not_waited_for():
+def test_a_manager_that_is_listening_is_not_waited_for() -> None:
     listening = SimpleNamespace(listening=threading.Event(), port=18444)
     listening.listening.set()
     start = time.time()
@@ -71,7 +71,7 @@ def test_a_manager_that_is_listening_is_not_waited_for():
     assert time.time() - start < 10
 
 
-def test_a_manager_that_never_binds_is_given_up_on():
+def test_a_manager_that_never_binds_is_given_up_on() -> None:
     # the whole point of the helper: a listener that never comes up is a
     # bounded failure and not a test that waits on it forever -- and the
     # failure says which manager, because a test that waits on several
@@ -81,14 +81,14 @@ def test_a_manager_that_never_binds_is_given_up_on():
         wait_until_listening(never, timeout=0.2)
 
 
-def test_a_bounded_call_hands_back_what_it_returned():
+def test_a_bounded_call_hands_back_what_it_returned() -> None:
     assert call_within(lambda: "answer") == "answer"
 
 
-def test_a_bounded_call_that_raises_raises_where_it_was_called():
+def test_a_bounded_call_that_raises_raises_where_it_was_called() -> None:
     # and not on the thread it ran on, where the caller would see a
     # printed traceback and an error about the answer being missing
-    def refuses():
+    def refuses() -> None:
         err_msg = "no"
         raise ValueError(err_msg)
 
@@ -96,11 +96,11 @@ def test_a_bounded_call_that_raises_raises_where_it_was_called():
         call_within(refuses)
 
 
-def test_a_bounded_call_that_does_not_return_is_given_up_on():
+def test_a_bounded_call_that_does_not_return_is_given_up_on() -> None:
     release = threading.Event()
     timeout = 0.2
 
-    def never_returns():
+    def never_returns() -> None:
         release.wait()
 
     start = time.time()
@@ -112,7 +112,7 @@ def test_a_bounded_call_that_does_not_return_is_given_up_on():
         release.set()
 
 
-def test_a_header_that_is_not_well_formed_is_refused():
+def test_a_header_that_is_not_well_formed_is_refused() -> None:
     header = BlockHeader(
         version=0,
         previous_block_hash=RegTest().genesis.hash,
@@ -126,7 +126,7 @@ def test_a_header_that_is_not_well_formed_is_refused():
         brute_force_nonce(header)
 
 
-def test_a_header_that_cannot_be_solved_is_not_passed_off_as_valid():
+def test_a_header_that_cannot_be_solved_is_not_passed_off_as_valid() -> None:
     # a target of one: nearly the whole hash space is above it, so the
     # bounded search comes back with nothing rather than with a nonce,
     # and what must not happen is the header being handed back unsolved
@@ -143,7 +143,7 @@ def test_a_header_that_cannot_be_solved_is_not_passed_off_as_valid():
         brute_force_nonce(header)
 
 
-def test_a_generated_header_chain_links_and_holds_up():
+def test_a_generated_header_chain_links_and_holds_up() -> None:
     chain = generate_random_header_chain(3, RegTest().genesis.hash)
     assert chain[0].previous_block_hash == RegTest().genesis.hash
     for parent, child in zip(chain, chain[1:]):
@@ -152,7 +152,7 @@ def test_a_generated_header_chain_links_and_holds_up():
         header.assert_valid_pow(RegTest().pow_limit_bits)
 
 
-def test_a_generated_block_chain_spends_what_the_block_before_it_made():
+def test_a_generated_block_chain_spends_what_the_block_before_it_made() -> None:
     chain = generate_random_chain(3, RegTest().genesis.hash)
     for block in chain:
         # btclib's, not a second implementation of it written here: the
@@ -168,28 +168,28 @@ def test_a_generated_block_chain_spends_what_the_block_before_it_made():
         assert spend.vin[0].prev_out.tx_id == previous.transactions[0].id
 
 
-def test_a_coinbase_spends_nothing():
+def test_a_coinbase_spends_nothing() -> None:
     coinbase = generate_coinbase()
     assert coinbase.vin[0].prev_out.tx_id == b"\x00" * 32
     assert coinbase.vout[0].value == 50 * 10**8
     assert generate_coinbase(value=1).vout[0].value == 1
 
 
-def test_a_transaction_spends_what_it_is_told_to():
+def test_a_transaction_spends_what_it_is_told_to() -> None:
     funding = generate_coinbase()
     spend = generate_random_transaction(funding.id)
     assert spend.vin[0].prev_out.tx_id == funding.id
     assert generate_random_transaction().vin[0].prev_out.tx_id != funding.id
 
 
-def test_a_built_block_carries_the_transactions_it_was_given():
+def test_a_built_block_carries_the_transactions_it_was_given() -> None:
     transactions = [generate_coinbase()]
     block = build_block(RegTest().genesis.hash, transactions, 0)
     assert list(block.transactions) == transactions
     block.header.assert_valid_pow(RegTest().pow_limit_bits)
 
 
-def test_a_placeholder_address_is_unroutable():
+def test_a_placeholder_address_is_unroutable() -> None:
     address = local_addr(18444)
     assert address.address == b"\x00\x00\x00\x00"
     assert address.network_id == BIP155Network.IPV4

@@ -11,8 +11,10 @@ said about which test it was. So the bound is part of the harness, and
 this is what asks whether it is still there.
 """
 
+import pytest
 
-def test_every_test_is_bounded(pytestconfig):
+
+def test_every_test_is_bounded(pytestconfig: pytest.Config) -> None:
     # the value is measured and reasoned about where it is set,
     # pyproject.toml; what matters here is that a bound exists at all,
     # which it does not if the plugin is dropped from the dependency

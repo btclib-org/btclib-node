@@ -9,8 +9,10 @@ run the floor is never lowered on -- so the decision is a function, and
 this is what asks it the questions the command line otherwise would.
 """
 
+from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -42,18 +44,18 @@ WHOLE_SUITE = [[], TESTPATHS, ["tests"], ["."], ["./tests"], ["tests/"]]
 
 def a_config(
     *,
-    file_or_dir=(),
-    keyword="",
-    markexpr="",
-    deselect=None,
-    ignore=None,
-    ignore_glob=None,
-    lf=False,
-    args=(),
-    plugin=True,
-    testpaths=None,
-    rootpath=None,
-):
+    file_or_dir: Sequence[str] = (),
+    keyword: str = "",
+    markexpr: str = "",
+    deselect: list[str] | None = None,
+    ignore: list[str] | None = None,
+    ignore_glob: list[str] | None = None,
+    lf: bool = False,
+    args: Sequence[str] = (),
+    plugin: bool = True,
+    testpaths: list[str] | None = None,
+    rootpath: Path | None = None,
+) -> tuple[Any, SimpleNamespace]:
     options = SimpleNamespace(cov_fail_under=FLOOR)
     return SimpleNamespace(
         option=SimpleNamespace(
@@ -83,7 +85,7 @@ def a_config(
 
 
 @pytest.mark.parametrize("paths", WHOLE_SUITE, ids=lambda p: " ".join(p) or "(bare)")
-def test_naming_the_whole_suite_holds_the_floor(paths):
+def test_naming_the_whole_suite_holds_the_floor(paths: list[str]) -> None:
     # a directory above testpaths collects it too, so what decides this
     # is containment: read as strings, the everyday `pytest tests/`
     # would count as a subset and lose the gate
@@ -94,13 +96,15 @@ def test_naming_the_whole_suite_holds_the_floor(paths):
 
 
 @pytest.mark.parametrize("narrowing", NARROWINGS, ids=lambda n: next(iter(n)))
-def test_asking_for_less_than_the_suite_stands_the_floor_down(narrowing):
+def test_asking_for_less_than_the_suite_stands_the_floor_down(
+    narrowing: dict[str, Any],
+) -> None:
     config, options = a_config(**narrowing)
     assert relax_coverage_floor(config) is True
     assert options.cov_fail_under == 0
 
 
-def test_testpaths_are_read_against_the_rootdir_and_not_the_working_directory():
+def test_testpaths_are_read_against_the_rootdir_and_not_the_working_directory() -> None:
     # the paths a run names are the shell's and testpaths is the
     # configuration file's; reading the second against the working
     # directory answers about a tree that is not the one being tested
@@ -113,7 +117,7 @@ def test_testpaths_are_read_against_the_rootdir_and_not_the_working_directory():
     assert asks_for_everything(config) is False
 
 
-def test_a_suite_that_names_no_paths_of_its_own():
+def test_a_suite_that_names_no_paths_of_its_own() -> None:
     # with testpaths unset a bare run collects the rootdir, so anything
     # named is less than the suite. `all` over an empty sequence is
     # true, which would answer the opposite of that.
@@ -123,7 +127,7 @@ def test_a_suite_that_names_no_paths_of_its_own():
     assert options.cov_fail_under == 0
 
 
-def test_a_floor_asked_for_on_the_command_line_is_left_alone():
+def test_a_floor_asked_for_on_the_command_line_is_left_alone() -> None:
     config, options = a_config(
         file_or_dir=["tests/unit/mempool.py"], args=("--cov-fail-under=100",)
     )
@@ -131,13 +135,13 @@ def test_a_floor_asked_for_on_the_command_line_is_left_alone():
     assert options.cov_fail_under == FLOOR
 
 
-def test_there_is_nothing_to_lower_when_coverage_is_not_running():
+def test_there_is_nothing_to_lower_when_coverage_is_not_running() -> None:
     config, options = a_config(file_or_dir=["tests/unit/mempool.py"], plugin=False)
     assert relax_coverage_floor(config) is False
     assert options.cov_fail_under == FLOOR
 
 
-def test_a_run_without_the_cache_plugin_has_no_last_failed_to_read():
+def test_a_run_without_the_cache_plugin_has_no_last_failed_to_read() -> None:
     # -p no:cacheprovider leaves `lf` off the namespace altogether, and
     # reading it as an attribute raises out of pytest_configure. Nothing
     # else about this run narrows it, which is what makes the chain of
@@ -149,7 +153,7 @@ def test_a_run_without_the_cache_plugin_has_no_last_failed_to_read():
     assert options.cov_fail_under == FLOOR
 
 
-def test_the_hook_is_wired_to_the_decision():
+def test_the_hook_is_wired_to_the_decision() -> None:
     # the function is what is tested above; this is that pytest calls it
     config, options = a_config(keyword="mempool")
     pytest_configure(config)
