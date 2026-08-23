@@ -51,7 +51,7 @@ def a_config(
     ignore: list[str] | None = None,
     ignore_glob: list[str] | None = None,
     lf: bool = False,
-    args: Sequence[str] = (),
+    cov_fail_under: float | None = None,
     plugin: bool = True,
     testpaths: list[str] | None = None,
     rootpath: Path | None = None,
@@ -68,6 +68,10 @@ def a_config(
             ignore=ignore,
             ignore_glob=ignore_glob,
             lf=lf,
+            # argparse's own default, whether nothing asked for a floor
+            # or the ask arrived on the command line or through
+            # PYTEST_ADDOPTS -- the two are indistinguishable here
+            cov_fail_under=cov_fail_under,
         ),
         # what testpaths is relative to; the working directory is the
         # same thing only when pytest is run from the rootdir
@@ -75,7 +79,6 @@ def a_config(
         getini=lambda name: {
             "testpaths": TESTPATHS if testpaths is None else testpaths
         }[name],
-        invocation_params=SimpleNamespace(args=tuple(args)),
         # answers to the name pytest-cov registers under, and to no
         # other: the string is what couples this to the plugin
         pluginmanager=SimpleNamespace(
@@ -140,9 +143,14 @@ def test_a_suite_that_names_no_paths_of_its_own() -> None:
     assert options.cov_fail_under == 0
 
 
-def test_a_floor_asked_for_on_the_command_line_is_left_alone() -> None:
+def test_a_floor_asked_for_explicitly_is_left_alone() -> None:
+    # `option.cov_fail_under` is argparse's parsed result, which reads
+    # the same whether the flag arrived on the command line or through
+    # PYTEST_ADDOPTS -- the two are not distinguishable past this point,
+    # which is what fixes #180: a scan of `invocation_params.args` would
+    # only see the first.
     config, options = a_config(
-        file_or_dir=["tests/unit/mempool.py"], args=("--cov-fail-under=100",)
+        file_or_dir=["tests/unit/mempool.py"], cov_fail_under=FLOOR
     )
     assert relax_coverage_floor(config) is False
     assert options.cov_fail_under == FLOOR

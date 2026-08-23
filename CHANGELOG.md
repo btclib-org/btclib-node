@@ -217,6 +217,31 @@ to check the guess.
   both rules receive policy left to the caller, which is why the check
   is here and not in the codec.
 
+### The coverage floor knows what asked for it, and what erases it
+
+- **`relax_coverage_floor`'s `asked_for` reads `config.option.cov_fail_under`
+  instead of scanning `config.invocation_params.args` for a
+  `--cov-fail-under` prefix** (#180). `invocation_params.args` is only
+  what was handed to `pytest.main`; pytest splices `PYTEST_ADDOPTS` in
+  afterwards, so a floor asked for that way never appeared in the scan
+  and was silently stood down to 0 on any run `PYTEST_ADDOPTS` narrowed.
+  `option.cov_fail_under` is argparse's own parsed result and carries the
+  flag regardless of which of the two wrote it.
+- **`CLAUDE.md` names the coverage data a second `pytest` invocation
+  erases, and the environment variable that keeps it out of reach**
+  (#191). `pytest-cov`'s own `tryfirst` hook on
+  `pytest_load_initial_conftests` calls `cov.erase()` before this tree's
+  `conftest.py` is even imported, so nothing at this repository's pytest
+  configuration surface intercepts it; under `-n auto` that erase sweeps
+  every parallel-suffixed file in the rootdir, including a running
+  suite's own workers', and `--help` reaches it too. `COVERAGE_FILE` is
+  read by `coverage.py` from the environment rather than through that
+  hook chain, so pointing it outside the rootdir avoids the collision
+  entirely; a same-prefix name still inside the rootdir does not, since
+  a concurrent plain invocation's own `erase(parallel=True)` globs its
+  base filename plus `.*` in that base's directory regardless of what
+  name the protected run chose.
+
 ### `get_cfilters` stops once the connection it is answering has closed
 
 - **`get_cfilters`'s loop over a `getcfilters` range now breaks once

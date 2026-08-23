@@ -74,9 +74,12 @@ def relax_coverage_floor(config: pytest.Config) -> bool:
         # for rather than read
         or getattr(option, "lf", None)
     )
-    asked_for = any(
-        arg.startswith("--cov-fail-under") for arg in config.invocation_params.args
-    )
+    # `invocation_params.args` is only what was handed to `pytest.main`;
+    # pytest splices `PYTEST_ADDOPTS` in afterwards, so a floor asked for
+    # that way is invisible there. `option.cov_fail_under` is the parsed
+    # result and carries the flag regardless of which of the two wrote
+    # it -- argparse does not remember where an argument came from.
+    asked_for = option.cov_fail_under is not None
     if not selective or asked_for:
         return False
     # pytest-cov keeps its own namespace, built from the arguments before
