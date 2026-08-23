@@ -42,12 +42,13 @@ aggregate, so that a job added to that workflow is gated on by being
 added rather than by somebody editing a rule stored outside the tree.
 Both jobs carry the reasoning in their own headers.
 
-**`links.yml`, `codeql.yml` and `os-macos.yml` must not become required
-checks**, and neither must `claude-review.yml`. The first asks whether
-somebody else's server answered, the next two run on a schedule and
-report what a sweep sees rather than what a pull request introduced, and
-the last writes an opinion for an author to weigh. Each says so in its
-own header.
+**`links.yml`, `codeql.yml`, `os-macos.yml` and `bootstrap-dns.yml` must
+not become required checks**, and neither must `claude-review.yml`. The
+first and the last of those four ask whether somebody else's server
+answered, the middle two run on a schedule and report what a sweep sees
+rather than what a pull request introduced, and `claude-review.yml`
+writes an opinion for an author to weigh. Each says so in its own
+header.
 
 ## Branch protection and the rulesets
 

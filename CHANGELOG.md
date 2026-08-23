@@ -849,3 +849,25 @@ to check the guess.
 - **The header no longer calls this the *only* workflow** (#140).
   `lint.yml` and `test.yml` already run on the same pull request and are
   required checks on `main`; this one deliberately is not.
+
+### The merge gate no longer resolves live DNS to pass
+
+- **The three `@pytest.mark.remote_data` tests in
+  `tests/unit/p2p/address.py` that called `PeerDB.get_addr_from_dns`
+  against `Main`, `TestNet` and `SigNet`'s real bootstrap seeds are gone**
+  (#135). `pyproject.toml`'s `addopts` carries `--remote-data=any`, which
+  forced them into every coverage run test.yml gates a pull request on,
+  so a DNS hiccup or a seed going away turned that gate red on a change
+  that touched neither. `get_addr_from_dns`'s own logic — the union over
+  several seeds, the dedup, the `gaierror` skip, an IPv6 answer's host
+  and port — is still exercised, deterministically, by the stubbed-loop
+  tests already in the same file.
+- **`.github/workflows/bootstrap-dns.yml` asks the three real chains'
+  seeds the same question the removed tests did**, for the same reason
+  `links.yml` is not a merge gate: a host having a bad afternoon is a
+  thing to re-run, not a thing a pull request should have to fix. It
+  carries no `schedule:` yet — the organization's calendar in section 10
+  of `btclib-org/.github`'s README has no row for a workflow of this
+  shape, and btclib-org/.github#201 is where one is asked for — so it
+  runs by hand (`workflow_dispatch`) and on a change to itself until a
+  row exists.
