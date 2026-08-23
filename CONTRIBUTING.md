@@ -244,3 +244,48 @@ README](https://github.com/btclib-org/.github/blob/main/README.md), not
 repeated here. The trade it makes is worth knowing before relying on it:
 a defect only a sweep can see sits on `main` until that sweep runs, at
 most a week.
+
+### A version, and no release
+
+There is no release, and no machinery for one: nothing is on an index,
+`.github/workflows/` holds no `release.yml`, and `REPOSITORY.md`'s *What
+is not configured, and why* has the call that answers `0` environments.
+So this tree carries no `RELEASING.md` and no `RELEASE_NOTES.md` —
+section 2 of [btclib-org/.github's
+README](https://github.com/btclib-org/.github/blob/main/README.md) has
+why a tier-2 repository carries neither — and a file whose content is its
+own absence is this section instead. What anybody runs is a checkout of
+`main`, and a fix reaches them when they pull it.
+
+```shell
+curl -s -o /dev/null -w '%{http_code}\n' https://pypi.org/pypi/btclib-node/json
+# 404
+```
+
+`project.version` is `0.1.0` and static, and `v0.1.0` is the one tag: a
+lightweight one from 2023, with a release page and no artifact on it,
+which btclib-org/.github#105 measures against the rule below — a ref with
+no object of its own has nothing on it to sign. `CHANGELOG.md` opens
+under `## Unreleased` and starts after that tag, for the reason its own
+introduction gives.
+
+Cutting a tag, the day there is something to tag, is signed and not by
+convention: the `tag-integrity` ruleset requires a signature on
+`refs/tags/v*` and has no bypass actor, so a tag made without `-s` is
+refused at the push rather than noticed afterwards. `REPOSITORY.md`
+carries the call that reads that rule back.
+
+```shell
+git tag -s v<version> -m "v<version>"
+git push origin v<version>
+```
+
+`CHANGELOG.md`'s `## Unreleased` heading becomes the version. That rule
+is the whole of what `tag-integrity` holds — `required_signatures`, and
+neither `non_fast_forward` nor `deletion` — so a tag here can still be
+deleted and cut again, which is a property of having published nothing:
+an index refuses a version that has been uploaded once, whatever a tag
+does. The day a distribution is published is the day a bad release stops
+being recoverable and becomes a new version, and it is also the day
+`release.yml` arrives and with it the two files above, which is what
+section 2 calls tier 1.

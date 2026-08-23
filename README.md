@@ -25,8 +25,10 @@ repository publishing nothing for a policy of its own to travel with,
 and the section below is what it cannot say for this tree.
 
 - Source: <https://github.com/btclib-org/btclib-node>
-- [CHANGELOG.md](./CHANGELOG.md), and [RELEASE_NOTES.md](./RELEASE_NOTES.md)
-  for what a release would ask a user to act on
+- [CHANGELOG.md](./CHANGELOG.md) for what changed. There is no release:
+  what anybody runs is a checkout of `main`, and
+  [CONTRIBUTING.md](./CONTRIBUTING.md)'s *A version, and no release* is
+  what the version in `pyproject.toml` and the one tag are for
 - [REPOSITORY.md](./REPOSITORY.md) for the settings that live outside the
   tree
 
