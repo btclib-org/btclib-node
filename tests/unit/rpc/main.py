@@ -123,6 +123,23 @@ def test_stop_is_asked_of_the_batch_not_of_its_last_request() -> None:
     assert not sent
 
 
+def test_an_answered_connection_is_forgotten() -> None:
+    # #64: the entry stayed in `connections` for the life of the node,
+    # every request growing a dict nothing ever shrank
+    node, _, _, _ = make_node([PING])
+    assert 0 in node.rpc_manager.connections
+    handle_rpc(node)
+    assert 0 not in node.rpc_manager.connections
+
+
+def test_a_stopped_connection_is_forgotten_too() -> None:
+    stop = {"jsonrpc": "2.0", "id": "a", "method": "stop"}
+    node, _, _, stopped = make_node([stop])
+    handle_rpc(node)
+    assert stopped == [True]
+    assert 0 not in node.rpc_manager.connections
+
+
 def test_a_message_for_a_connection_that_is_gone_is_dropped() -> None:
     node, sent, _, _ = make_node([PING], conn_id=99)
     handle_rpc(node)

@@ -44,14 +44,6 @@ class RpcManager(threading.Thread):
         self.connections[self.last_connection_id] = new_connection
         return new_connection
 
-    def remove_connection(self, id: int) -> None:
-        if id in self.connections.keys():
-            # Connection has no `stop`, only `close` -- this call has
-            # never had a caller, so the mismatch has never run.
-            # btclib-org/btclib-node#64 is the defect and the fix.
-            self.connections[id].stop()  # type: ignore[attr-defined]
-            self.connections.pop(id)
-
     async def server(self, loop: asyncio.AbstractEventLoop) -> None:
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

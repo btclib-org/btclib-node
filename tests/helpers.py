@@ -2,14 +2,16 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+import json
 import secrets
 import socket
 import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Any, Protocol
 
+import requests
 from btclib.block import Block, BlockHeader, merkle_root_and_mutated_from_transactions
 from btclib.block.mining import mine
 from btclib.block.proof_of_work import REGTEST_POW_LIMIT_BITS
@@ -19,6 +21,7 @@ from btclib.script import script
 from btclib.tx.tx import Tx, TxIn, TxOut
 from btclib.tx.tx_in import OutPoint
 
+from btclib_node import Node
 from btclib_node.p2p.address import peer_address
 
 
@@ -191,6 +194,14 @@ def wait_until_listening(manager: _ListensOnAPort, timeout: float = 20) -> None:
     err_msg = f"{type(manager).__name__} on port {manager.port} was not "
     err_msg += f"listening within {timeout} seconds"
     raise Exception(err_msg)
+
+
+def post(node: Node, payload: Any, timeout: float = 5) -> str:
+    return requests.post(
+        url=f"http://127.0.0.1:{node.rpc_port}",
+        data=json.dumps(payload).encode(),
+        timeout=timeout,
+    ).text
 
 
 def call_within[T](func: Callable[[], T], timeout: float = 5) -> T:

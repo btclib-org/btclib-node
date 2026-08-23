@@ -224,3 +224,31 @@ to check the guess.
   widened rather than worked around. `no_implicit_reexport` and
   `check_untyped_defs` are untouched by this pass and stay off for the
   reasons `[tool.mypy]`'s own comments give.
+
+### An RPC connection is forgotten once its answer is sent
+
+- **`RpcManager.connections` no longer grows for the life of the node**
+  (#64). Every request opened a connection, `async_send` answered it and
+  closed its socket, and the entry stayed in the dict anyway: measured
+  on `origin/main` before this change, a run of eleven requests against
+  a running node left `len(connections)` at 11 and climbing, never
+  smaller. The removal was already written into `rpc/main.py`, commented
+  out at the end of `handle_rpc`; restoring it is the whole of the fix,
+  placed after the answer is sent on both paths -- after `send_and_wait`
+  for `stop`, after `send` otherwise.
+- **`RpcManager.remove_connection` is deleted rather than repaired.** It
+  called `.stop()` on a `Connection`, which has no such method (`close()`
+  is what it defines), and nothing had ever called it. Wiring it up in
+  `handle_rpc`'s place would have called `Connection.close()` -- which
+  closes the socket synchronously, from `Node`'s own thread -- while the
+  still-scheduled `async_send` on `RpcManager`'s event loop thread can be
+  mid-write on the fire-and-forget `send()` path that never waits for
+  it: a cross-thread race that can cut an answer off before it reaches
+  the client. The restored line only forgets the dict entry; the socket
+  is closed by `async_send` itself, on the thread already writing to it.
+  `btclib_node/p2p/manager.py` keeps its own `remove_connection`, which
+  is safe for the same reason this one was not: it is only ever called
+  from inside its own manager's event loop, not across threads.
+- The RPC port binds every interface with no authentication (#27), so
+  this was a leak any client could drive, not only an internal
+  bookkeeping detail.

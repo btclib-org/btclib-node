@@ -17,12 +17,10 @@ import json
 import socket
 import time
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 import pytest
 
-from btclib_node.chains import RegTest
-from btclib_node.log import Logger
 from btclib_node.rpc.connection import (
     MAX_BODY_BYTES,
     MAX_HEADER_BYTES,
@@ -30,9 +28,6 @@ from btclib_node.rpc.connection import (
     JSONEncoder,
 )
 from btclib_node.rpc.manager import RpcManager
-
-if TYPE_CHECKING:
-    from btclib_node import Node
 
 BODY = b'{"jsonrpc":"2.0","id":"x","method":"getbestblockhash"}'
 
@@ -283,20 +278,3 @@ def test_send_and_wait_gives_up_rather_than_blocking_forever() -> None:
     loop.close()
     ours.close()
     theirs.close()
-
-
-def test_a_connection_that_is_removed_is_stopped_and_forgotten() -> None:
-    # nothing calls this yet, which is #64: the dict grows for the life
-    # of the node
-    node = SimpleNamespace(logger=Logger(debug=True), chain=RegTest())
-    manager = RpcManager(cast("Node", node), 18332)
-    stopped: list[bool] = []
-    manager.connections[0] = SimpleNamespace(  # type: ignore[assignment]
-        stop=lambda: stopped.append(True)
-    )
-    manager.remove_connection(99)
-    assert list(manager.connections) == [0]
-    manager.remove_connection(0)
-    assert not manager.connections
-    assert stopped == [True]
-    manager.loop.close()
