@@ -146,7 +146,7 @@ def get_raw_mempool(node: Node, conn: Connection, params: list[Any]) -> dict[str
             tx.id.hex(): {
                 "size": tx.size,
                 "vsize": tx.vsize,
-                "weigth": tx.weight,
+                "weight": tx.weight,
                 "wtxid": tx.hash.hex(),
             }
             for tx in node.mempool.transactions.values()

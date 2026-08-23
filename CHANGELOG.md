@@ -320,3 +320,19 @@ to check the guess.
   comment above `[tool.mypy]` points at `strict = true` in place of the
   per-flag measurement it used to describe -- both assumed the itemized
   shape this removes.
+### `getrawmempool`'s verbose output no longer misspells its weight key
+
+- **The JSON-RPC key a client reads for a mempool transaction's weight
+  is now `weight`** (#28), matching Bitcoin Core's own field name
+  instead of the misspelling `get_raw_mempool` had carried in
+  `btclib_node/rpc/callbacks.py`. A straight rename, with no one
+  release answering to both keys: `btclib_node/rpc/callbacks.py`'s
+  `callbacks` dict still has no `getrawtransaction` or `getblockcount`
+  entry, which is what #21 is tracking, so btclib's `BitcoinCoreFetcher`
+  cannot address this node's JSON-RPC surface yet, and there is no known
+  client of it to carry across a two-key transition.
+- **The spell checkers' suppressions for the misspelling are gone**,
+  `[tool.codespell]`'s `ignore-words-list` entry and
+  `[tool.typos.default.extend-words]`'s entry alike, each with the
+  comment that justified it: a spell checker ignoring a word no longer
+  in the tree has nothing left to ignore.
