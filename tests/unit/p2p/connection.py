@@ -60,11 +60,9 @@ def test_a_message_that_will_not_serialize_is_logged_and_dropped() -> None:
     # a reason to drop a peer that has done nothing wrong
     connection, logged = a_connection()
     sent: list[bytes] = []
-
-    async def fake_send(data: bytes) -> None:
-        sent.append(data)
-
-    connection._send = fake_send  # type: ignore[method-assign]
+    connection._send = lambda data: sent.append(  # type: ignore[method-assign,assignment,return-value]
+        data
+    )
     with connection.client:
         asyncio.run(connection.async_send(cast(Payload, Unserializable())))
     assert not sent
