@@ -41,6 +41,7 @@ to check the guess.
   than asking the same peer for more of a branch already proved bad,
   with no misbehaviour scoring anywhere in this tree to ever stop that
   otherwise (#75, #122).
+
 ### A connection is not reachable by any send until its handshake finishes
 
 - **`P2pManager` keeps an accepted or dialled connection in a new

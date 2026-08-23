@@ -57,9 +57,13 @@ def test_send_tx(tmp_path: Path) -> None:
         wait_until(lambda: node.status == NodeStatus.BlockSynced)
 
     node2.p2p_manager.connect(local_addr(node1.p2p_port))
+    # each side's own `connections` only holds a peer past its own
+    # `verack`, and the two handshakes complete independently, so each
+    # is waited for on its own rather than assuming one implies the other
     wait_until(lambda: len(node1.p2p_manager.connections))
     connection = node1.p2p_manager.connections[0]
     wait_until(lambda: connection.status == P2pConnStatus.Connected)
+    wait_until(lambda: len(node2.p2p_manager.connections))
     connection = node2.p2p_manager.connections[0]
     wait_until(lambda: connection.status == P2pConnStatus.Connected)
 
