@@ -85,6 +85,14 @@ to check the guess.
   conflict on the insertion point, which is a conflict with nothing to
   decide.
 
+- **`.gitattributes` is byte-for-byte the organization's copy.** The
+  attributes it sets do not change: `git check-attr merge
+  CHANGELOG.md RELEASE_NOTES.md` answers `union` for both before and
+  after; what changed is the comment above them, which had been reworded
+  here and did not point at the section of the standard that records
+  the rule. Section 14 of btclib-org/.github is what makes the file one
+  of those compared, and btclib-org/.github#102 is the sweep.
+
 - **`README.md` points at those files rather than repeating them.** It
   carried the install, test and lint commands, which are now
   `CONTRIBUTING.md`'s last section: two copies of a command are two
