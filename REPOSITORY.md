@@ -298,9 +298,9 @@ that waits on one cell and a sweep that runs weekly
   no environment exists for one:
   `gh api repos/btclib-org/btclib-node/environments --jq .total_count`
   answers `0`. There is a `v0.1.0` tag and a GitHub release with no
-  artifact attached to it; `RELEASING.md` says what a release will be
-  when there is one, and `tag-integrity` already holds the signature a
-  tag would need.
+  artifact attached to it; `CONTRIBUTING.md`'s *A version, and no
+  release* says what that tag and `project.version` are for, and
+  `tag-integrity` already holds the signature a tag would need.
 - **No Pages and no Read the Docs.** `gh api repos/btclib-org/btclib-node/pages`
   answers `404`, and there is no `docs/` for either to build. What this
   repository publishes, it publishes by being read on github.com.

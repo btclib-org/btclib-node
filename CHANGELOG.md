@@ -7,10 +7,9 @@
 # Changelog
 
 What a reader of this repository would notice, in the group it belongs
-to: what changed, why, and what it cost. What a *user* has to act on is
-[RELEASE_NOTES.md][notes]; this file is the record behind it.
-
-[notes]: https://github.com/btclib-org/btclib-node/blob/main/RELEASE_NOTES.md
+to: what changed, why, and what it cost. There are no release notes for
+this file to be the record behind: `CONTRIBUTING.md`'s *A version, and
+no release* has why, and what the `## Unreleased` heading becomes.
 
 The record starts here. `v0.1.0` was tagged before this file existed and
 nothing is reconstructed for it: a changelog written backwards from a git
@@ -20,6 +19,29 @@ to check the guess.
 ## Unreleased
 
 ### The root files are the organization's, and the tree says which
+
+- **`RELEASING.md` and `RELEASE_NOTES.md` are gone, and what the first
+  said that is worth keeping is where a contributor reads.** Section 2
+  of btclib-org/.github's README says a tier-2 repository carries neither
+  (btclib-org/.github#150): the first opened *There is no release, and no
+  machinery for one* in a tree with a release page on `v0.1.0`, and the
+  second had nothing to be on top of, its one section reading *Nothing
+  to act on*. What stays — that nothing is on the index and what anybody
+  runs is a checkout of `main`, that a tag is signed and `tag-integrity`
+  refuses one that is not, that `## Unreleased` becomes the version and
+  a tag can be deleted and re-cut only while nothing is published — is
+  `CONTRIBUTING.md`'s *A version, and no release*, under *This repository
+  in particular*. The list of what a release waits on is not carried
+  over: section 2 weighed a procedure kept ready for a release that may
+  come and decided that it arrives with `release.yml` the day it does.
+  `README.md`'s pointer to the release notes is a line saying there is
+  no release, `REPOSITORY.md`'s *No publishing* bullet cites that section
+  where it cited `RELEASING.md`, and this file's introduction stops
+  naming a record it is behind. The entry below that lists the two files
+  among those arriving describes the tree between that landing and this
+  one. `.gitattributes` keeps `RELEASE_NOTES.md merge=union`: section 14
+  of the standard owes the two `merge=union` entries to every copy, and
+  an attribute on a path the tree does not hold is inert.
 
 - **`CONTRIBUTING.md` and `REVIEWING.md` are the same file as every
   sibling's down to `## This repository in particular`.** Section 14 of
