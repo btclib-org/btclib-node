@@ -14,7 +14,7 @@ from btclib_node.constants import P2pConnStatus
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.main import verify_mempool_acceptance
 from btclib_node.p2p.address import ip_and_port
-from btclib_node.rpc.errors import RpcError, RpcErrorCode
+from btclib_node.rpc.errors import RpcError, RpcErrorCode, json_type_name
 
 if TYPE_CHECKING:
     from btclib_node import Node
@@ -29,12 +29,10 @@ def get_block_hash(node: Node, conn: Connection, params: list[Any]) -> bytes:
     return node.chainstate.block_index.active_chain[int(params[0])]
 
 
-def get_block_header(node: Node, conn: Connection, params: list[Any]) -> dict[str, Any]:
+def get_block_header(
+    node: Node, conn: Connection, params: list[Any]
+) -> dict[str, Any] | str:
     block_index = node.chainstate.block_index
-    # the blocks this node has validated and connected, which is what
-    # Core hands blockheaderToJSON: `ActiveChain().Tip()`, at
-    # src/rpc/blockchain.cpp:661
-    active_chain = block_index.active_chain
 
     if not params:
         # Core answers a missing required argument with its own help
@@ -43,6 +41,33 @@ def get_block_header(node: Node, conn: Connection, params: list[Any]) -> dict[st
         # ExecuteCommand's `catch (const std::exception& e)` is what
         # turns that into JSONRPCError(RPC_MISC_ERROR, e.what())
         raise RpcError(RpcErrorCode.MISC_ERROR, 'getblockheader "blockhash"')
+    if not isinstance(params[0], str):
+        # RPCMethod::HandleRequest checks a declared argument's JSON
+        # type before the handler body runs at all, src/rpc/util.cpp
+        # :653-661 -- blockhash is declared RPCArg::Type::STR_HEX, so a
+        # blockhash of any other JSON type never reaches ParseHashV and
+        # is refused here the same way, before bytes.fromhex sees it
+        raise RpcError(
+            RpcErrorCode.TYPE_ERROR,
+            f"JSON value of type {json_type_name(params[0])} is "
+            "not of expected type string",
+        )
+
+    # verbose, src/rpc/blockchain.cpp:617: RPCArg::Type::BOOL,
+    # RPCArg::Default{true}. Read and type-checked up front, the same
+    # as blockhash above and for the same reason: HandleRequest checks
+    # every declared argument's type before any of the handler's own
+    # work runs, not only the first one
+    verbose = True
+    if len(params) > 1 and params[1] is not None:
+        if not isinstance(params[1], bool):
+            raise RpcError(
+                RpcErrorCode.TYPE_ERROR,
+                f"JSON value of type {json_type_name(params[1])} is "
+                "not of expected type bool",
+            )
+        verbose = params[1]
+
     try:
         block_hash = bytes.fromhex(params[0])
     except ValueError as error:
@@ -60,6 +85,17 @@ def get_block_header(node: Node, conn: Connection, params: list[Any]) -> dict[st
             RpcErrorCode.INVALID_ADDRESS_OR_KEY, "Block not found"
         ) from error
     header = block_info.header
+
+    if not verbose:
+        # src/rpc/blockchain.cpp:668-673: the same eighty bytes a peer
+        # is sent on the wire, hex-encoded rather than the JSON object
+        return header.serialize().hex()
+
+    # the blocks this node has validated and connected, which is what
+    # Core hands blockheaderToJSON: `ActiveChain().Tip()`, at
+    # src/rpc/blockchain.cpp:661
+    active_chain = block_index.active_chain
+
     out: dict[str, Any] = header.to_dict()
     out["hash"] = header.hash
 

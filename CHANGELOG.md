@@ -715,3 +715,35 @@ to check the guess.
   `is_valid_rpc` had already read from the request; JSON-RPC 2.0's
   section 5 reserves `null` for a request whose id could not be read at
   all, not for one `is_valid_rpc` already confirmed carried one.
+
+### `getblockheader`'s two parameters, checked and read the way Core's are
+
+- **A `blockhash` that is not a string used to reach `bytes.fromhex`
+  unguarded** (#212). `bytes.fromhex(5)` raises `TypeError`, which the
+  `except ValueError` around that call did not catch, so it fell through
+  to `rpc/main.py`'s catch-all and answered `-32603 Internal Error` — the
+  code this node owes its own fault, for a request that named the wrong
+  JSON type. `RPCMethod::HandleRequest` checks a declared argument's
+  type before the handler body runs at all
+  (`src/rpc/util.cpp:653-661`), so Core never reaches `ParseHashV` for
+  such a call either; it answers `RPC_TYPE_ERROR` (`-3`), which
+  `btclib_node/rpc/errors.py`'s `RpcErrorCode` now names and
+  `get_block_header` raises for a `blockhash` of any type but `str`.
+- **`get_block_header` never read a second parameter** (#215). Core's
+  `getblockheader` takes an optional `verbose`
+  (`RPCArg::Type::BOOL, RPCArg::Default{true}`, `src/rpc/blockchain.cpp
+  :617`): true answers the JSON object this node already built, false
+  answers the header's own eighty bytes, hex-encoded
+  (`src/rpc/blockchain.cpp:668-673`). `get_block_header` now reads
+  `params[1]`, defaults it to `True` where omitted or `null`, and
+  answers `header.serialize().hex()` for a false one — the same bytes
+  `BlockHeader.serialize()` puts on the wire, hex-encoded rather than
+  built into the object.
+- **`verbose` is type-checked the same way `blockhash` is.** A `verbose`
+  of any JSON type but `bool` (or `null`, which stands for the default)
+  is the same `RPC_TYPE_ERROR` `blockhash` is refused with, against
+  `RPCArg::Type::BOOL`.
+- **`errors.py`'s `json_type_name` names the six JSON types the way
+  Core's own `uvTypeName` does** (`src/univalue/lib/univalue.cpp`),
+  which is the vocabulary `RPC_TYPE_ERROR`'s message speaks and what
+  both checks above report the wrong type with.
