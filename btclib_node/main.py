@@ -125,6 +125,13 @@ def update_chain(node: Node) -> None:
     finally:
         if success:
             node.logger.debug("Start chainstate finalize")
+            # block_db is its own KeyValueStore, on its own datadir file,
+            # so it cannot share chainstate's write_batch below -- but it
+            # gets the same held-until-known-good treatment: the reverse
+            # patches add_rev_block buffered during the trial only reach
+            # disk once the branch they belong to is the one that
+            # connected. btclib-org/btclib-node#200
+            node.block_db.finalize()
             with node.chainstate.db.write_batch() as wb:
                 for rev_block in to_remove:
                     block_index.remove_from_active_chain(rev_block.hash)
@@ -140,6 +147,7 @@ def update_chain(node: Node) -> None:
             node.logger.debug("End chainstate finalize")
         else:
             node.logger.debug("Start chainstate rollback")
+            node.block_db.rollback()
             utxo_index.rollback()
             filter_index.rollback()
             node.logger.debug("End chainstate rollback")

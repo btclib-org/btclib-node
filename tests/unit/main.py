@@ -400,6 +400,46 @@ def test_a_refused_branch_invalidates_only_the_block_that_failed(
     reopened.close()
 
 
+def test_a_refused_branch_leaves_no_reverse_patches_in_the_block_store(
+    tmp_path: Path,
+) -> None:
+    # active outweighs below's own two blocks individually, so only
+    # prints_money -- the fork's tip -- is its own candidate and the
+    # whole fork connects in one trial. below's two blocks validate and
+    # each generate a reverse patch before prints_money fails and the
+    # trial is rolled back: btclib-org/btclib-node#200
+    node = regtest_node(tmp_path)
+    active = generate_random_chain(2, RegTest().genesis.hash)
+    block_index = connect(node, active)
+
+    below = generate_random_chain(2, RegTest().genesis.hash)
+    prints_money = build_block(
+        below[-1].header.hash,
+        [
+            generate_coinbase(),
+            spend(below[-1].transactions[0], 50 * 10**8 + 1),
+        ],
+        len(below),
+    )
+    fork = [*below, prints_money]
+    block_index.add_headers([block.header for block in fork])
+    for block in fork:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+
+    candidate = block_index.get_first_candidate()
+    assert candidate is not None
+    assert candidate.header.hash == prints_money.header.hash
+
+    update_chain(node)
+
+    assert block_index.active_chain[1:] == hashes(active)
+    for block in below:
+        assert node.block_db.get_rev_block(block.header.hash) is None
+        assert block.header.hash not in node.block_db.rev_patches
+    assert node.block_db.pending_rev_blocks == {}
+
+
 def test_a_refused_branch_invalidates_headers_that_were_never_candidates(
     tmp_path: Path,
 ) -> None:

@@ -14,6 +14,7 @@ no longer the file being written to.
 
 from pathlib import Path
 
+import pytest
 from btclib.script import script
 from btclib.tx.out_point import OutPoint
 from btclib.tx.tx_out import TxOut
@@ -26,11 +27,11 @@ from tests.helpers import generate_random_chain
 MAX_FILE_SIZE = 128 * 1000**2
 
 
-def a_rev_block(tag: int = 1) -> RevBlock:
+def a_rev_block(tag: int = 1, hash: bytes | None = None) -> RevBlock:
     out_point = OutPoint(bytes([tag]) * 32, tag)
     tx_out = TxOut(value=tag * 10**8, script_pub_key=script.serialize([bytes([tag])]))
     return RevBlock(
-        hash=bytes([tag]) * 32,
+        hash=hash if hash is not None else bytes([tag]) * 32,
         to_add=[(out_point, tx_out)],
         to_remove=[OutPoint(bytes([tag + 1]) * 32, 0)],
     )
@@ -61,8 +62,11 @@ def test_a_rev_patch_survives_the_wire() -> None:
 
 def test_a_rev_patch_is_read_back_from_the_file_it_went_into(tmp_path: Path) -> None:
     block_db = a_db(tmp_path)
-    rev_block = a_rev_block()
+    (block,) = generate_random_chain(1, RegTest().genesis.hash)
+    block_db.add_block(block)
+    rev_block = a_rev_block(hash=block.header.hash)
     block_db.add_rev_block(rev_block)
+    block_db.finalize()
     assert block_db.get_rev_block(rev_block.hash) == rev_block
 
 
@@ -84,11 +88,18 @@ def test_storing_the_same_block_twice_writes_it_once(tmp_path: Path) -> None:
 
 def test_storing_the_same_rev_patch_twice_writes_it_once(tmp_path: Path) -> None:
     block_db = a_db(tmp_path)
-    rev_block = a_rev_block()
+    (block,) = generate_random_chain(1, RegTest().genesis.hash)
+    block_db.add_block(block)
+    rev_block = a_rev_block(hash=block.header.hash)
     block_db.add_rev_block(rev_block)
+    block_db.finalize()
     filename = block_db.rev_patches[rev_block.hash].filename
     written = block_db.files[filename].size
+    # already in rev_patches: buffered a second time and dropped again
+    # without a second write, same as add_block's own dedup
     block_db.add_rev_block(rev_block)
+    assert block_db.pending_rev_blocks == {}
+    block_db.finalize()
     assert block_db.files[filename].size == written
 
 
@@ -125,20 +136,31 @@ def test_a_file_exactly_at_the_bound_is_not_yet_full(tmp_path: Path) -> None:
     assert block_db.file_index == 1
 
 
-def test_a_rev_patch_in_an_earlier_file_is_still_read(tmp_path: Path) -> None:
+def test_a_rev_patch_goes_in_the_file_named_for_its_own_block(
+    tmp_path: Path,
+) -> None:
+    # the first block's own patch is written only after the block file
+    # has rolled over to a second one: were the rev file still named for
+    # whichever block file happens to be open (btclib-org/btclib-node#116),
+    # this patch would land in 000002.rev rather than its own block's
+    # 000001.rev
     block_db = a_db(tmp_path)
-    (block,) = generate_random_chain(1, RegTest().genesis.hash)
-    block_db.add_block(block)
-    first = a_rev_block(1)
+    chain = generate_random_chain(2, RegTest().genesis.hash)
+    block_db.add_block(chain[0])
+    assert block_db.blocks[chain[0].header.hash].filename == "000001.blk"
+
+    block_db.files["000001.blk"].size = MAX_FILE_SIZE + 1
+    block_db.add_block(chain[1])
+    assert block_db.blocks[chain[1].header.hash].filename == "000002.blk"
+
+    first = a_rev_block(1, hash=chain[0].header.hash)
     block_db.add_rev_block(first)
+    block_db.finalize()
     assert block_db.rev_patches[first.hash].filename == "000001.rev"
 
-    # a rev file is named for the block file being written, so a block
-    # file that has filled up moves the rev patches on with it
-    block_db.files["000001.blk"].size = MAX_FILE_SIZE + 1
-    block_db.add_block(generate_random_chain(1, block.header.hash)[0])
-    second = a_rev_block(3)
+    second = a_rev_block(3, hash=chain[1].header.hash)
     block_db.add_rev_block(second)
+    block_db.finalize()
     assert block_db.rev_patches[second.hash].filename == "000002.rev"
 
     assert block_db.get_rev_block(first.hash) == first
@@ -149,15 +171,54 @@ def test_two_rev_patches_share_the_file_named_for_the_block_file(
     tmp_path: Path,
 ) -> None:
     block_db = a_db(tmp_path)
-    block_db.add_block(generate_random_chain(1, RegTest().genesis.hash)[0])
-    first, second = a_rev_block(1), a_rev_block(5)
+    chain = generate_random_chain(2, RegTest().genesis.hash)
+    for block in chain:
+        block_db.add_block(block)
+    first = a_rev_block(1, hash=chain[0].header.hash)
+    second = a_rev_block(5, hash=chain[1].header.hash)
     block_db.add_rev_block(first)
     block_db.add_rev_block(second)
+    block_db.finalize()
     locations = [block_db.rev_patches[patch.hash] for patch in (first, second)]
     assert locations[0].filename == locations[1].filename
     assert locations[0].index != locations[1].index
     assert block_db.get_rev_block(first.hash) == first
     assert block_db.get_rev_block(second.hash) == second
+
+
+def test_a_pending_rev_patch_is_not_yet_on_disk(tmp_path: Path) -> None:
+    block_db = a_db(tmp_path)
+    (block,) = generate_random_chain(1, RegTest().genesis.hash)
+    block_db.add_block(block)
+    rev_block = a_rev_block(hash=block.header.hash)
+    block_db.add_rev_block(rev_block)
+    assert block_db.get_rev_block(rev_block.hash) is None
+    assert block_db.rev_patches == {}
+
+
+def test_rollback_discards_every_pending_rev_patch(tmp_path: Path) -> None:
+    block_db = a_db(tmp_path)
+    (block,) = generate_random_chain(1, RegTest().genesis.hash)
+    block_db.add_block(block)
+    rev_block = a_rev_block(hash=block.header.hash)
+    block_db.add_rev_block(rev_block)
+    block_db.rollback()
+    assert block_db.pending_rev_blocks == {}
+    assert block_db.get_rev_block(rev_block.hash) is None
+
+    # rollback left nothing half-written: buffering and finalizing it
+    # again afterwards works cleanly
+    block_db.add_rev_block(rev_block)
+    block_db.finalize()
+    assert block_db.get_rev_block(rev_block.hash) == rev_block
+
+
+def test_finalize_refuses_a_patch_for_a_block_never_stored(tmp_path: Path) -> None:
+    block_db = a_db(tmp_path)
+    rev_block = a_rev_block()
+    block_db.add_rev_block(rev_block)
+    with pytest.raises(Exception, match="not stored"):
+        block_db.finalize()
 
 
 def test_closing_a_store_that_wrote_nothing(tmp_path: Path) -> None:
@@ -187,9 +248,10 @@ def test_a_key_this_version_does_not_know_is_left_where_it_is(tmp_path: Path) ->
 def test_the_store_comes_back_from_disk(tmp_path: Path) -> None:
     block_db = a_db(tmp_path)
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
-    rev_block = a_rev_block()
     block_db.add_block(block)
+    rev_block = a_rev_block(hash=block.header.hash)
     block_db.add_rev_block(rev_block)
+    block_db.finalize()
     block_db.close()
 
     reopened = a_db(tmp_path)
