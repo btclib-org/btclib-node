@@ -57,6 +57,12 @@ to check the guess.
   conflict on the insertion point, which is a conflict with nothing to
   decide.
 
+- **`README.md` points at those files rather than repeating them.** It
+  carried the install, test and lint commands, which are now
+  `CONTRIBUTING.md`'s last section: two copies of a command are two
+  things to keep in step, and the one a contributor reads is the one CI
+  runs.
+
 ### `.pydeps` and the dependency that read it are gone
 
 - **Nothing ran `pydeps`.** The configuration file was in the tree and
