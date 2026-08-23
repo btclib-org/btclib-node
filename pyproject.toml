@@ -59,10 +59,10 @@ keywords = [
 # claim of support nothing checks, and a classifier is that claim made
 # to an index.
 #
-# No `Typing :: Typed`: this package ships no `py.typed`. The classifier
-# is machine-readable and a downstream type checker acts on it, so
-# declaring it before the marker exists would be read by a tool rather
-# than by a person.
+# `Typing :: Typed` is below, and only because `btclib_node/py.typed`
+# now ships: the classifier is machine-readable and a downstream type
+# checker acts on it, so it is not declared ahead of the marker it
+# reports on (btclib-org/.github#239).
 #
 # No PyPy, and the reason is no longer plyvel: that dependency is gone,
 # and with it the C extension built from source against a LevelDB the
@@ -85,6 +85,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: Implementation :: CPython",
+    "Typing :: Typed",
     # 0.1.0, and the README's own claim for it: this node downloaded and
     # validated the whole chain, which is past pre-alpha and short of
     # what a beta would promise about its interfaces
