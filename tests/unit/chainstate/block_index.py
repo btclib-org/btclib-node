@@ -4,6 +4,7 @@
 
 import secrets
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from btclib.block import BlockHeader
@@ -16,7 +17,7 @@ from btclib_node.log import Logger
 from tests.helpers import brute_force_nonce, generate_random_header_chain
 
 
-def unmined_header(previous_block_hash, bits):
+def unmined_header(previous_block_hash: bytes, bits: bytes) -> BlockHeader:
     # Deliberately not brute_force_nonce'd: the point of each caller is a
     # header carrying a claim its hash does not back.
     return BlockHeader(
@@ -30,7 +31,7 @@ def unmined_header(previous_block_hash, bits):
     )
 
 
-def test_calculate_work():
+def test_calculate_work() -> None:
     header = BlockHeader(
         1,
         "00" * 32,
@@ -45,7 +46,7 @@ def test_calculate_work():
     assert calculate_work(header) == 2
 
 
-def test_reject_header_claiming_work_it_did_not_do(tmp_path):
+def test_reject_header_claiming_work_it_did_not_do(tmp_path: Path) -> None:
     # bits 0x03000001 is a target of 1: nearly the whole hash space is
     # above it, so block_work credits ~2^255 -- more than the real chain
     # has ever accumulated. Nothing mined it, and the hash does not meet
@@ -63,7 +64,7 @@ def test_reject_header_claiming_work_it_did_not_do(tmp_path):
     assert len(block_index.header_dict) == 1
 
 
-def test_reject_header_above_the_pow_limit(tmp_path):
+def test_reject_header_above_the_pow_limit(tmp_path: Path) -> None:
     # Mainnet's target on a regtest index: easier than the network's
     # easiest, so no regtest peer would ever offer it.
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
@@ -74,7 +75,7 @@ def test_reject_header_above_the_pow_limit(tmp_path):
     assert len(block_index.header_dict) == 1
 
 
-def test_reject_header_with_zero_target(tmp_path):
+def test_reject_header_with_zero_target(tmp_path: Path) -> None:
     # A zero target is unsatisfiable, and block_work raises on it rather
     # than reporting the block as free -- so an unchecked one takes the
     # node down from the wire instead of merely being wrong.
@@ -86,7 +87,7 @@ def test_reject_header_with_zero_target(tmp_path):
     assert len(block_index.header_dict) == 1
 
 
-def test_one_bad_header_refuses_the_whole_batch(tmp_path):
+def test_one_bad_header_refuses_the_whole_batch(tmp_path: Path) -> None:
     # Core takes a headers message as a unit, and so does this: the
     # valid prefix is not indexed either.
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
@@ -101,7 +102,7 @@ def test_one_bad_header_refuses_the_whole_batch(tmp_path):
     assert len(block_index.header_dict) == 5 + 1
 
 
-def test_simple_init(tmp_path):
+def test_simple_init(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     block_index.add_headers(generate_random_header_chain(2000, RegTest().genesis.hash))
@@ -114,7 +115,7 @@ def test_simple_init(tmp_path):
     assert block_index.block_candidates == new_block_index.block_candidates
 
 
-def test_init_with_fork(tmp_path):
+def test_init_with_fork(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
@@ -132,7 +133,7 @@ def test_init_with_fork(tmp_path):
     )
 
 
-def test_add_headers_fork(tmp_path):
+def test_add_headers_fork(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
@@ -142,7 +143,7 @@ def test_add_headers_fork(tmp_path):
     assert len(block_index.header_index) == 2190 + 1
 
 
-def test_generate_block_candidates(tmp_path):
+def test_generate_block_candidates(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
@@ -159,7 +160,7 @@ def test_generate_block_candidates(tmp_path):
     assert len(new_block_index.block_candidates) == 190
 
 
-def test_generate_block_candidates_2(tmp_path):
+def test_generate_block_candidates_2(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
@@ -176,7 +177,7 @@ def test_generate_block_candidates_2(tmp_path):
     assert len(new_block_index.block_candidates) == 2000
 
 
-def test_block_info_serialization():
+def test_block_info_serialization() -> None:
     header = BlockHeader(
         1,
         "00" * 32,
@@ -199,7 +200,7 @@ def test_block_info_serialization():
                 assert block_info == BlockInfo.deserialize(block_info.serialize())
 
 
-def test_add_old_header(tmp_path):
+def test_add_old_header(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
@@ -210,7 +211,7 @@ def test_add_old_header(tmp_path):
     assert len(block_index.block_candidates) == 2000
 
 
-def test_add_invalid_header(tmp_path):
+def test_add_invalid_header(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
@@ -222,7 +223,7 @@ def test_add_invalid_header(tmp_path):
     assert len(block_index.block_candidates) == 2000
 
 
-def test_add_headers_short(tmp_path):
+def test_add_headers_short(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     length = 10
@@ -234,7 +235,7 @@ def test_add_headers_short(tmp_path):
     assert len(block_index.block_candidates) == 2000 * length
 
 
-def test_add_headers_medium(tmp_path):
+def test_add_headers_medium(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     length = 40  # 400
@@ -246,7 +247,7 @@ def test_add_headers_medium(tmp_path):
     assert len(block_index.block_candidates) == 2000 * length
 
 
-def test_add_headers_long(tmp_path):
+def test_add_headers_long(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     length = 50  # 2000
@@ -258,7 +259,7 @@ def test_add_headers_long(tmp_path):
     assert len(block_index.block_candidates) == 2000 * length
 
 
-def test_long_init(tmp_path):
+def test_long_init(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     length = 50  # 2000
@@ -274,7 +275,7 @@ def test_long_init(tmp_path):
     assert block_index.block_candidates == new_block_index.block_candidates
 
 
-def test_block_candidates(tmp_path):
+def test_block_candidates(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     chain = generate_random_header_chain(512, RegTest().genesis.hash)
@@ -282,7 +283,7 @@ def test_block_candidates(tmp_path):
     assert block_index.get_download_candidates() == [x.hash for x in chain]
 
 
-def test_block_candidates_2(tmp_path):
+def test_block_candidates_2(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     chain = generate_random_header_chain(1024, RegTest().genesis.hash)
@@ -290,7 +291,7 @@ def test_block_candidates_2(tmp_path):
     assert block_index.get_download_candidates() == [x.hash for x in chain]
 
 
-def test_block_candidates_3(tmp_path):
+def test_block_candidates_3(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
@@ -307,7 +308,7 @@ def test_block_candidates_3(tmp_path):
     assert new_block_index.get_download_candidates() == [x.hash for x in fork]
 
 
-def test_block_locators(tmp_path):
+def test_block_locators(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     chain = generate_random_header_chain(24, RegTest().genesis.hash)
@@ -316,16 +317,18 @@ def test_block_locators(tmp_path):
     assert len(locators) == 14
 
 
-def test_block_locators_2(tmp_path):
+def test_block_locators_2(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
     block_index.add_headers(chain)
-    headers = block_index.get_headers_from_locators([RegTest().genesis.hash], "00" * 32)
+    headers = block_index.get_headers_from_locators(
+        [RegTest().genesis.hash], b"\x00" * 32
+    )
     assert chain == headers
 
 
-def test_block_locators_3(tmp_path):
+def test_block_locators_3(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
@@ -337,18 +340,18 @@ def test_block_locators_3(tmp_path):
     assert headers == chain[: 1000 + 1]
 
 
-def test_block_locators_4(tmp_path):
+def test_block_locators_4(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
     block_index.add_headers(chain[:1000])
     headers = block_index.get_headers_from_locators(
-        [chain[-1].hash, RegTest().genesis.hash], "00" * 32
+        [chain[-1].hash, RegTest().genesis.hash], b"\x00" * 32
     )
     assert headers == chain[:1000]
 
 
-def test_only_the_tip_can_leave_the_active_chain(tmp_path):
+def test_only_the_tip_can_leave_the_active_chain(tmp_path: Path) -> None:
     # a reorg unwinds from the tip: removing anything else would leave
     # the chain with a hole nothing else here checks for
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
@@ -365,14 +368,14 @@ def test_only_the_tip_can_leave_the_active_chain(tmp_path):
     chainstate.close()
 
 
-def test_nothing_is_offered_when_there_are_no_candidates(tmp_path):
+def test_nothing_is_offered_when_there_are_no_candidates(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     assert block_index.get_first_candidate() is None
     chainstate.close()
 
 
-def test_no_candidate_is_offered_when_none_outweighs_the_chain(tmp_path):
+def test_no_candidate_is_offered_when_none_outweighs_the_chain(tmp_path: Path) -> None:
     # a header is a candidate when it arrives and stops being one once
     # the active chain has caught up to it: equal work is not more work,
     # or the node would keep offering the block it is already on
@@ -388,7 +391,7 @@ def test_no_candidate_is_offered_when_none_outweighs_the_chain(tmp_path):
     chainstate.close()
 
 
-def test_headers_from_a_locator_stop_where_asked(tmp_path):
+def test_headers_from_a_locator_stop_where_asked(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
     chain = generate_random_header_chain(10, RegTest().genesis.hash)
@@ -409,7 +412,9 @@ def test_headers_from_a_locator_stop_where_asked(tmp_path):
     chainstate.close()
 
 
-def test_a_header_that_does_not_outweigh_the_chain_is_not_a_candidate(tmp_path):
+def test_a_header_that_does_not_outweigh_the_chain_is_not_a_candidate(
+    tmp_path: Path,
+) -> None:
     # a candidate is a chain worth switching to. A fork branching low
     # carries less accumulated work than the tip, so it is indexed --
     # it may yet be extended -- without being offered for connection.
@@ -428,7 +433,9 @@ def test_a_header_that_does_not_outweigh_the_chain_is_not_a_candidate(tmp_path):
     chainstate.close()
 
 
-def test_a_candidate_the_chain_has_caught_up_with_is_not_downloaded_again(tmp_path):
+def test_a_candidate_the_chain_has_caught_up_with_is_not_downloaded_again(
+    tmp_path: Path,
+) -> None:
     # the deque is not emptied when a branch connects, so what keeps a
     # connected block from being fetched all over again is the work it
     # is weighed against
@@ -444,7 +451,7 @@ def test_a_candidate_the_chain_has_caught_up_with_is_not_downloaded_again(tmp_pa
     chainstate.close()
 
 
-def test_a_block_already_held_is_left_out_of_what_is_asked_for(tmp_path):
+def test_a_block_already_held_is_left_out_of_what_is_asked_for(tmp_path: Path) -> None:
     # the walk back from a candidate goes through blocks this node may
     # already have: they are what it is walking towards, and asking a
     # peer for them again is the download running twice
@@ -460,7 +467,9 @@ def test_a_block_already_held_is_left_out_of_what_is_asked_for(tmp_path):
     chainstate.close()
 
 
-def test_the_locators_of_a_node_that_holds_only_the_genesis_block(tmp_path):
+def test_the_locators_of_a_node_that_holds_only_the_genesis_block(
+    tmp_path: Path,
+) -> None:
     # the list ends at the oldest header this node has, and here the
     # walk back has already named it, it being the newest as well. What
     # keeps it off the end a second time -- and the peer from being
