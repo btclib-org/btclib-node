@@ -18,6 +18,28 @@ to check the guess.
 
 ## Unreleased
 
+### `enable_error_code` holds only codes that need enabling
+
+- **`comparison-overlap`, `import-not-found` and `import-untyped` are
+  not added to `enable_error_code`, and `narrowed-type-not-subtype`
+  leaves it: mypy has each of them on already, so an entry naming one
+  buys no check** (#175). Each answers `True` to
+
+  ```shell
+  uv run --locked --no-default-groups --group lint --group test \
+    python -c "import mypy.errorcodes as m; \
+      print(m.error_codes['import-untyped'].default_enabled)"
+  ```
+
+  where every code the list still holds answers `False`. So under the
+  mypy `uv.lock` pins, `files` is already checked under all of them, and
+  the survey #175 asked for ends in there being nothing to enable rather
+  than in a candidate enabled and measured at zero.
+
+  Nothing changes about what `mypy` reports. What changes is that the
+  list is shorter and its comment now states the condition an entry has
+  to meet, which is what keeps these from being proposed again.
+
 ### The root files are the organization's, and the tree says which
 
 - **`RELEASING.md` and `RELEASE_NOTES.md` are gone, and what the first
