@@ -26,6 +26,38 @@ to check the guess.
   carries both; no ruleset on `main` carries a `required_status_checks`
   rule.
 
+### `license-files` names `AUTHORS.md` beside `LICENSE`
+
+- **The built wheel's `dist-info/licenses/` now carries `AUTHORS.md`
+  next to `LICENSE`** (#235). The MIT notice names *The btclib
+  developers*, a collective, and `AUTHORS.md` is where the archive says
+  its members are listed. The sdist already carried the file through
+  `[tool.uv.build-backend]`'s `*.md` pattern; only the wheel was short
+  it.
+
+### `pytest-remotedata` and `--remote-data=any` are gone
+
+- **`pyproject.toml` drops the `pytest-remotedata` dependency and
+  `addopts`'s `--remote-data=any`** (#227). #135 removed the only
+  `@pytest.mark.remote_data` tests the tree had; `git grep -n
+  remote_data -- tests/` finds none, so neither bought anything left to
+  drop it for.
+
+### The mypy configuration's prose states its decision once, and in the present
+
+- **The move off the hosted `mirrors-mypy` hook is argued once, in
+  `.pre-commit-config.yaml`, with `pyproject.toml`'s
+  `[dependency-groups].lint` comment pointing there instead of arguing
+  it again** (#210). Both comments also drop a paragraph on
+  `[tool.mypy]` not being strict yet, which `strict = true` already
+  states is no longer so.
+- **`[tool.mypy]`'s comment on `show_error_codes` no longer cites
+  btclib-org/.github#170 as an open divergence from the organization's
+  sample** (#228). That issue is closed and the sample no longer sets
+  the key; what stays is why the key is inert here regardless — `mypy
+  --help` names it only as the inverse of `--hide-error-codes`, which
+  reads `False` with or without the line.
+
 ### `get_cfilters` stops once the connection it is answering has closed
 
 - **`get_cfilters`'s loop over a `getcfilters` range now breaks once

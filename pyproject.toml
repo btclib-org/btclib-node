@@ -5,7 +5,7 @@ description = "Bitcoin node in python"
 authors = [{ name = "Giacomo Caironi", email = "giacomo.caironi@gmail.com" }]
 readme = "README.md"
 license = "MIT"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "AUTHORS.md"]
 # Above the standard's 3.10 floor, deliberately: this is the version
 # .python-version pins, and with no CI matrix here
 # (btclib-org/btclib-node#33) it is the only version anything runs on.
@@ -105,7 +105,6 @@ classifiers = [
 harness = [
     "pytest>=9.1.1",
     "pytest-xdist>=3.8.0",
-    "pytest-remotedata>=0.4.2",
     # spells its marker `pytest.mark.order(n)`; the similarly named
     # pytest-ordering is a different, unmaintained package that does not
     # run under pytest 9.
@@ -122,18 +121,10 @@ test = [
     "pytest-cov>=7.1.0",
     "requests>=2.34.2",
 ]
-# mypy is here so that the hook can run it from this environment rather
-# than from one of its own: the hosted mirrors-mypy hook it replaces
-# resolved neither btclib nor pytest, and the mirror's default
-# --ignore-missing-imports turned each of those imports into Any without
-# a word. types-requests is the one stub package that hook carried and
-# this environment still needs, requests being a test dependency that
-# ships none.
-# Not strict yet at the time this moved: mypy --strict over this tree
-# reported thousands of errors, most of them a definition with no
-# annotation or a call to one. That was the annotation pass
-# btclib-org/.github#9 deferred and btclib-org/btclib-node#104 later
-# did; [tool.mypy] is `strict = true` now that it is done.
+# mypy runs from this environment rather than from a hook's own --
+# .pre-commit-config.yaml's mypy hook is where that decision is argued.
+# types-requests is the one stub package this environment needs,
+# requests being a test dependency that ships none.
 lint = [
     "pre-commit>=4.6.2",
     "ruff>=0.16.4",
@@ -249,9 +240,10 @@ module-root = ""
 # by. btclib-org/.github#135 is why it is not named instead: it is a
 # repository file rather than a distributed one, LICENSE carrying the
 # holder a consumer needs, and this being the source of a source-file
-# header. `license-files` above names LICENSE alone, so nothing else
-# puts COPYRIGHT in the archive either. What the CPY rule checks the sources
-# against is notice-rgx in this file, which travels regardless.
+# header. `license-files` above names LICENSE and AUTHORS.md, so
+# nothing else puts COPYRIGHT in the archive either. What the CPY rule
+# checks the sources against is notice-rgx in this file, which travels
+# regardless.
 source-include = [
     "*.jsonc",
     "*.md",
@@ -327,7 +319,7 @@ git-only = [
 testpaths = ["tests/unit", "tests/functional"]
 python_files = "*.py"
 python_functions = "test*"
-addopts = "-n auto --remote-data=any --cov --cov-report term-missing:skip-covered --durations=10"
+addopts = "-n auto --cov --cov-report term-missing:skip-covered --durations=10"
 # What a single test is given before the run says which test hung and
 # where, instead of sitting there. Measured rather than picked, over
 # repeated runs of the whole suite under `-n auto`: the slowest test
@@ -519,9 +511,7 @@ strict = true
 # -- where `strict_bytes` answers `True` with a line and without one,
 # so it has none here. `mypy --help` names a setting mypy has on in the
 # negative, as `--no-strict-bytes`; `--hide-error-codes` reads the same
-# way, which is why `show_error_codes` is absent here and present in
-# the sample section 6 of btclib-org/.github's README gives.
-# btclib-org/.github#170 is that divergence.
+# way, which is why `show_error_codes` is absent here.
 warn_unused_configs = true
 # a branch mypy can prove is never taken is a branch no test can cover,
 # and this tree is held to covering all of them

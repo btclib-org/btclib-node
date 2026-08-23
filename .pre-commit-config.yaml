@@ -319,20 +319,11 @@ repos:
         language: pygrep
         entry: '\b(text|universal_newlines)=True'
         files: \.py$
-  # a local hook running the project environment's mypy, where this was
-  # the hosted mirrors-mypy: that one holds only what
-  # `additional_dependencies` names, so btclib and pytest resolved to
-  # nothing, and the mirror's default --ignore-missing-imports turned
-  # every one of those imports into Any rather than an error. A gate
-  # that cannot see its own main dependency is not reporting on it.
-  # Run against this environment the same tree answers clean: every
-  # import it makes resolves, and there is no unstubbed dependency left
-  # to declare an override for.
-  # Still not strict at the time this moved: that was btclib-org/
-  # btclib-node#104's annotation pass, its own step and a later commit.
-  # What this one changed was what mypy can see, not how much it
-  # demands -- [tool.mypy] is where the demand itself is tracked, both
-  # before and after that pass.
+  # a local hook running mypy from the project environment: every
+  # import the tree makes resolves under it, and there is no unstubbed
+  # dependency left to declare an override for -- pyproject.toml's
+  # [dependency-groups].lint is where that environment (mypy and
+  # types-requests) is declared.
   # --locked and not --frozen, for the reason the uv-lock hook below
   # cannot cover: a dependency added without a re-lock would leave mypy
   # checking a stale environment and saying nothing, and this hook
