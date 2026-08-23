@@ -339,7 +339,9 @@ extend-exclude = [
 [tool.mypy]
 # scripts/ with them: a script that no longer imports is a script
 # nobody runs, and it is the one directory here that nothing else
-# checks.
+# checks. This is the list the lint gate runs on and not only the one a
+# bare `mypy` reads: the hook in .pre-commit-config.yaml passes no
+# paths of its own, for the reason given there.
 files = ["btclib_node", "tests", "scripts"]
 # the floor `project.requires-python` declares, and not the interpreter
 # that happens to be running: a name added to the standard library
@@ -351,10 +353,10 @@ python_version = "3.14"
 
 # --- the strict bundle, one flag at a time -----------------------------
 #
-# `strict = true` is fifteen flags and reports 2158 errors here, 596 of
-# them one missing annotation each: turning it on wholesale writes a
-# backlog into the configuration. Every flag below was measured on its
-# own, over the three directories above, and costs nothing today -- so
+# `strict = true` is a bundle of flags -- `mypy --help` lists the ones
+# it currently holds -- and turning it on wholesale writes a backlog
+# into the configuration. Every flag below was measured on its own,
+# over the directories `files` names, and costs nothing today -- so
 # each is a ratchet, and the first violation is the one that fails.
 warn_unused_configs = true
 disallow_any_generics = true
@@ -375,30 +377,33 @@ strict_bytes = true
 # covering all of them
 warn_unreachable = true
 
-# The six left off, each with what it costs today. Five are one job:
-# annotate the signatures and they go quiet on their own, which is why
-# none is enabled ahead of that pass (btclib-org/btclib-node#104). The
-# sixth is not that job: what is left of it belongs to a branch already
-# open, and its line says where to read it.
+# The rest of the bundle is left off. What one of them costs is a
+# number nothing checks and any commit can move, so it is not recorded
+# here; the flag being taken on is measured over the same directories
+# the gate runs on, with
 #
-#   disallow_untyped_defs      +695   the annotation pass itself
-#   disallow_untyped_calls      +45   a typed caller of an untyped callee
-#   check_untyped_defs           +3   what #105 came down to once each
-#                                     was read, and what is left sits in
-#                                     files another pull request holds
-#                                     open. #105 enumerates them and
-#                                     stays open until the flag goes on
-#                                     with that branch, so this line
-#                                     does not carry a second copy to
-#                                     keep true.
-#   no_implicit_reexport        +21   names imported from where they are
-#                                     re-exported rather than defined
-#   disallow_incomplete_defs    +15   half-annotated signatures
+#   uv run --locked --no-default-groups --group lint --group test \
+#     mypy --disallow-untyped-defs
+#
+# The annotation pass is what silences these, which is why none of them
+# is enabled ahead of it (btclib-org/btclib-node#104):
+#
+#   disallow_untyped_defs      the annotation pass itself
+#   disallow_untyped_calls     a typed caller of an untyped callee
+#   disallow_incomplete_defs   half-annotated signatures
+#
+# `no_implicit_reexport` is not that job: it reports a name imported
+# from a module that re-exports it rather than defines it, which is an
+# import to redirect and not a signature to annotate.
+# `check_untyped_defs` is not either: it checks the bodies of
+# unannotated functions, so what it reports is type errors in code the
+# node runs. #105 is where those are read one at a time, and it stays
+# open until the flag goes on.
 
 # --- the optional error codes, surveyed one at a time ------------------
 #
 # Same method: enable, measure, decide. Each reports nothing today.
-# `explicit-override` is the one left off, +14, every one of them a
+# `explicit-override` is the one left off, every finding of it a
 # decorator to add -- the annotation pass again, so it goes with #104.
 enable_error_code = [
     "deprecated",
