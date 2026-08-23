@@ -104,6 +104,19 @@ def update_chain(node: Node) -> None:
         for rev_block in to_remove:
             utxo_index.apply_rev_block(rev_block)
         for block_hash, block in zip(to_add_hash, to_add):
+            # checked between blocks and not inside one: check_transactions
+            # below is the blocking worker_pool.starmap over a whole
+            # block's inputs, thousands of signature checks on mainnet,
+            # and it is what makes a wait for this loop scale with the
+            # fork rather than with one block. failed_hash is still the
+            # previous iteration's None here, so breaking this way never
+            # reaches update_header_index below: a shutdown is not a
+            # validation failure, and must not invalidate the block it
+            # happened to land on. btclib-org/btclib-node#139
+            if node.terminate_flag.is_set():
+                node.logger.info("Stopping mid-fork: rolling the trial back")
+                success = False
+                break
             failed_hash = block_hash
             transactions, rev_patch = utxo_index.add_block(block)
             index = block_index.get_block_info(block_hash).index

@@ -12,13 +12,14 @@ from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
-from btclib_node import Node
+from btclib_node import Node, main
 from btclib_node.chains import RegTest
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import BlockIndex, BlockStatus
 from btclib_node.config import Config
 from btclib_node.constants import NodeStatus
 from btclib_node.exceptions import MissingPrevoutError
+from btclib_node.interpreter import check_transactions
 from btclib_node.main import update_chain, verify_mempool_acceptance
 from tests.helpers import (
     build_block,
@@ -501,3 +502,80 @@ def test_a_refused_branch_invalidates_headers_that_were_never_candidates(
     assert block_index.active_chain[1:] == hashes(active)
     for hash in {*hidden, continuation[-1].header.hash}:
         assert block_index.get_block_info(hash).status == BlockStatus.invalid
+
+
+def test_a_stop_mid_reorg_rolls_the_trial_back_without_invalidating_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `terminate_flag` is read between the blocks of `to_add`, so a
+    # shutdown requested during a reorg is noticed after the block being
+    # validated when it arrived rather than after the whole fork:
+    # btclib-org/btclib-node#139. Nothing update_chain buffers along the
+    # way reaches disk until every block of the fork has validated, so
+    # the state this pins is not "stopped partway, with some of the fork
+    # applied" -- there is no such state to reach -- but "stopped with
+    # none of it applied, and the block it stopped on left alone", which
+    # is what tells this apart from a block that failed its own check.
+    node = regtest_node(tmp_path)
+    active = generate_random_chain(2, RegTest().genesis.hash)
+    block_index = connect(node, active)
+    active_chain_before = list(block_index.active_chain)
+
+    fork = generate_random_chain(4, RegTest().genesis.hash)
+    block_index.add_headers([block.header for block in fork])
+    for block in fork:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+
+    # get_first_candidate offers the shallowest block that already
+    # outweighs active, not necessarily the fork's own tip -- to_add is
+    # whatever get_fork_details returns for that candidate, and this
+    # pins the trial to stop inside it rather than assuming it is the
+    # whole of `fork`
+    candidate = block_index.get_first_candidate()
+    assert candidate is not None
+    to_add_hash, _ = block_index.get_fork_details(candidate.header.hash)
+    assert len(to_add_hash) >= 3
+
+    calls = 0
+
+    def stop_after_the_second_block(
+        transaction_data: list[tuple[list[TxOut], Tx]], index: int, node: Node
+    ) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            node.terminate_flag.set()
+        return check_transactions(transaction_data, index, node)
+
+    monkeypatch.setattr(main, "check_transactions", stop_after_the_second_block)
+
+    update_chain(node)
+
+    # stopped between the second and the third block of the trial, not
+    # partway through validating either and not at its end
+    assert calls == 2
+    assert block_index.active_chain == active_chain_before
+    # a shutdown is not a defect in the block it landed on: none of the
+    # fork's blocks is marked invalid, and the same candidate is still
+    # offered whole
+    for block in fork:
+        info = block_index.get_block_info(block.header.hash)
+        assert info.status != BlockStatus.invalid
+    stopped_candidate = block_index.get_first_candidate()
+    assert stopped_candidate is not None
+    assert stopped_candidate.header.hash == candidate.header.hash
+    # every buffer the trial writes into on its way to `finalize` is
+    # back to empty, the same as after a block that failed its own check
+    assert node.chainstate.utxo_index.updated_utxo_set == {}
+    assert node.chainstate.utxo_index.removed_utxos == set()
+    assert node.chainstate.filter_index.pending == {}
+    assert node.block_db.pending_rev_blocks == {}
+
+    # nothing here is stuck: a run with nothing asking it to stop
+    # connects the whole fork, the same number of passes connect() takes
+    # to drive any other fork of this length
+    node.terminate_flag.clear()
+    for _ in range(len(fork)):
+        update_chain(node)
+    assert block_index.active_chain[1:] == hashes(fork)

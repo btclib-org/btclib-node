@@ -26,13 +26,15 @@ from btclib_node.rpc.manager import RpcManager
 
 # How long `stop` waits for the loop to come back before saying it did
 # not. The flag is read at the top of the loop, so the wait is however
-# long the pass already running takes: `update_chain` validates a whole
-# fork through a blocking `worker_pool.starmap` and checks nothing in
-# between, which is the term that sets the scale -- an idle stop costs
-# milliseconds. Well under the per-test limit `pyproject.toml` sets, so
-# that a node which will not stop is reported here rather than by
-# whichever bound expires first; `tests/unit/__init__.py` asserts that
-# ordering rather than leaving it to this comment.
+# long the pass already running takes: `update_chain` validates a fork
+# block by block, and checks this same flag between blocks, so what sets
+# the scale is one block's own `worker_pool.starmap` over its inputs --
+# thousands of signature checks on mainnet -- rather than the whole fork
+# a deep reorg walks. An idle stop costs milliseconds. Well under the
+# per-test limit `pyproject.toml` sets, so that a node which will not
+# stop is reported here rather than by whichever bound expires first;
+# `tests/unit/__init__.py` asserts that ordering rather than leaving it
+# to this comment.
 STOP_TIMEOUT = 30
 
 
