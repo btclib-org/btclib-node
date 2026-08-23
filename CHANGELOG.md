@@ -40,6 +40,31 @@ to check the guess.
   The comment above the list answers for `unused-ignore` too, which
   stays outside it.
 
+### A read of the block index is not a write of it
+
+- **`BlockInfo` is frozen, so what `BlockIndex.get_block_info` hands out
+  is the index's own record and a caller cannot assign to its fields**
+  (#117). Assigning to one is refused by the type check,
+  `Property "status" defined in "BlockInfo" is read-only`, where it
+  changed the index in place, reaching neither the write batch nor the
+  database. `header` is btclib's own dataclass and is not frozen, so
+  that one field is still a caller's to change.
+
+- **`BlockIndex.set_status` and `BlockIndex.set_downloaded` are how the
+  fields a caller changes are changed.** Each reads the record the index
+  holds and writes its replacement to memory and to the database in one
+  call, so a copy that has gone stale cannot be written back over one
+  that has not. `insert_block_info` is private to the index and
+  `main.update_block_status` is gone.
+
+- **`update_chain` writes no status while a branch is being tried.** The
+  status set on the trial path reached the database as the trial ran and
+  refusing the branch did not take it back: a fork whose tip prints
+  money left the blocks below that tip at `valid` in the database, where
+  the utxo set the same pass wrote was rolled back. The database write
+  moves into the batch `update_chain` commits on success, where the rest
+  of the chainstate already wrote.
+
 ### `enable_error_code` holds only codes that need enabling
 
 - **`REVIEWING.md` says the reviewer runs the whole suite, every time.**

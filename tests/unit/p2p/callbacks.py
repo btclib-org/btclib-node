@@ -578,13 +578,13 @@ def test_a_transaction_already_held_is_not_reported_twice(
 class FakeBlockIndex:
     def __init__(self, infos: dict[bytes, Any]) -> None:
         self.infos = infos
-        self.inserted: list[Any] = []
+        self.marked: list[bytes] = []
 
     def get_block_info(self, block_hash: bytes) -> Any:
         return self.infos[block_hash]
 
-    def insert_block_info(self, block_info: Any) -> None:
-        self.inserted.append(block_info)
+    def set_downloaded(self, block_hash: bytes) -> None:
+        self.marked.append(block_hash)
 
 
 def a_block() -> Block:
@@ -594,8 +594,7 @@ def a_block() -> Block:
 
 def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded() -> None:
     block = a_block()
-    info = SimpleNamespace(downloaded=False)
-    index = FakeBlockIndex({block.header.hash: info})
+    index = FakeBlockIndex({block.header.hash: SimpleNamespace(downloaded=False)})
     added: list[Block] = []
     node = a_data_node(
         block_index=index, block_db=SimpleNamespace(add_block=added.append)
@@ -616,8 +615,7 @@ def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded() -> None:
     assert peer.last_block_timestamp > 0
     assert peer.pending_eviction is False
     assert added == [block]
-    assert info.downloaded is True
-    assert index.inserted == [info]
+    assert index.marked == [block.header.hash]
 
 
 def test_a_block_already_stored_is_not_stored_again() -> None:
@@ -635,7 +633,7 @@ def test_a_block_already_stored_is_not_stored_again() -> None:
         a_peer(),
     )
     assert added == []
-    assert index.inserted == []
+    assert index.marked == []
 
 
 def a_block_claiming_an_easier_target_than_the_chain_allows(block: Block) -> Block:
@@ -666,7 +664,7 @@ def test_a_block_whose_proof_of_work_does_not_hold_up_is_refused() -> None:
     with pytest.raises(BTClibValueError):
         block_callback(node, payload, a_peer())
     assert added == []
-    assert index.inserted == []
+    assert index.marked == []
 
 
 def test_an_inventory_is_ignored_until_the_blocks_are_synced() -> None:

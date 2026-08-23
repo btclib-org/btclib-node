@@ -48,9 +48,7 @@ def test_send_tx(tmp_path: Path) -> None:
         node.chainstate.block_index.add_headers([block.header])
         node.status = NodeStatus.HeaderSynced
         node.block_db.add_block(block)
-        block_info = block_index.get_block_info(block.header.hash)
-        block_info.downloaded = True
-        block_index.insert_block_info(block_info)
+        block_index.set_downloaded(block.header.hash)
         wait_until(lambda: len(block_index.active_chain) == 2)
         # and not merely the chain being connected: the version a node
         # sends carries BIP37's relay flag set only once it is block

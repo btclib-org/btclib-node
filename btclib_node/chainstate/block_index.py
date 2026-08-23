@@ -5,7 +5,7 @@
 import enum
 from collections import deque
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from btclib import var_int
@@ -30,7 +30,11 @@ class BlockStatus(enum.IntEnum):
     in_active_chain = 4
 
 
-@dataclass
+# Frozen, so that the index can hand out what it stores: what a caller
+# reads is the index's own object and there is nothing it can do to it.
+# `header` is btclib's own dataclass and not frozen, so the header
+# inside the record is the one thing a caller still holds a handle on.
+@dataclass(frozen=True)
 class BlockInfo:
     header: BlockHeader
     index: int
@@ -115,7 +119,19 @@ class BlockIndex:
             else:
                 previousblockhash = block_info.header.previous_block_hash
                 old_work = self.get_block_info(previousblockhash).chainwork
-            block_info.chainwork = old_work + calculate_work(block_info.header)
+            chainwork = old_work + calculate_work(block_info.header)
+            # into the dict and not through `_insert_block_info`:
+            # `serialize` does not carry chainwork, so it is derived
+            # from the headers rather than stored. Constructed field by
+            # field rather than with `replace`, this loop running once
+            # per header at every start
+            self.header_dict[block_hash] = BlockInfo(
+                header=block_info.header,
+                index=block_info.index,
+                status=block_info.status,
+                downloaded=block_info.downloaded,
+                chainwork=chainwork,
+            )
 
     def generate_active_chain(self) -> None:
         chain_dict: dict[int, bytes] = {}
@@ -156,19 +172,28 @@ class BlockIndex:
                 self.header_index.extend(add)
                 header_index_set = set(self.header_index)
 
-    # stores the caller's object rather than a copy, so a read is a
-    # handle on the index: btclib-org/btclib-node#117
-    def insert_block_info(
+    # `wb` is a write batch: given one, the database moves when that
+    # batch commits, where `header_dict` moves now either way
+    def _insert_block_info(
         self, block_info: BlockInfo, wb: KeyValueStore | None = None
     ) -> None:
-        new_block_info = block_info
-        self.header_dict[block_info.header.hash] = new_block_info
-        key = b"blkinfo-" + new_block_info.header.hash
-        value = new_block_info.serialize()
+        self.header_dict[block_info.header.hash] = block_info
+        key = b"blkinfo-" + block_info.header.hash
+        value = block_info.serialize()
         db = wb or self.db
         db.put(key, value)
 
-    # hands out the index's own object: btclib-org/btclib-node#117
+    # the fields a caller changes, read here rather than by the caller,
+    # so that what goes back is the record the index holds now
+    def set_status(
+        self, hash: bytes, status: BlockStatus, wb: KeyValueStore | None = None
+    ) -> None:
+        self._insert_block_info(replace(self.get_block_info(hash), status=status), wb)
+
+    def set_downloaded(self, hash: bytes, downloaded: bool = True) -> None:
+        block_info = self.get_block_info(hash)
+        self._insert_block_info(replace(block_info, downloaded=downloaded))
+
     def get_block_info(self, hash: bytes) -> BlockInfo:
         return self.header_dict[hash]
 
@@ -241,7 +266,7 @@ class BlockIndex:
                 False,
                 new_work,
             )
-            self.insert_block_info(block_info)
+            self._insert_block_info(block_info)
 
             if new_work > current_work:
                 self.block_candidates.append([header_hash, new_work])

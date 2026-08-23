@@ -11,20 +11,11 @@ from btclib.tx.tx import Tx
 from btclib_node.block_db import RevBlock
 from btclib_node.chainstate.block_index import BlockIndex, BlockStatus
 from btclib_node.constants import NodeStatus
-from btclib_node.db import KeyValueStore
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.interpreter import check_transaction, check_transactions
 
 if TYPE_CHECKING:
     from btclib_node import Node
-
-
-def update_block_status(
-    index: BlockIndex, hash: bytes, status: BlockStatus, wb: KeyValueStore | None
-) -> None:
-    block_info = index.get_block_info(hash)
-    block_info.status = status
-    index.insert_block_info(block_info, wb)
 
 
 # a stub: nothing invalidates the headers built on a failed block.
@@ -96,6 +87,10 @@ def update_chain(node: Node) -> None:
 
     success = True
     generated_rev_patches: list[RevBlock] = []
+    # the block index's database write moves into the batch below and
+    # nowhere in here: a status written on the way through reaches the
+    # database before the branch is known to connect, and refusing the
+    # branch does not take it back
     try:
         for rev_block in to_remove:
             utxo_index.apply_rev_block(rev_block)
@@ -103,7 +98,6 @@ def update_chain(node: Node) -> None:
             transactions, rev_patch = utxo_index.add_block(block)
             index = block_index.get_block_info(block_hash).index
             check_transactions(transactions, index, node)
-            update_block_status(block_index, block_hash, BlockStatus.valid, None)
 
             node.block_db.add_rev_block(rev_patch)
             generated_rev_patches.append(rev_patch)
@@ -123,16 +117,12 @@ def update_chain(node: Node) -> None:
             with node.chainstate.db.write_batch() as wb:
                 for rev_block in to_remove:
                     block_index.remove_from_active_chain(rev_block.hash)
-                    update_block_status(
-                        block_index, rev_block.hash, BlockStatus.valid, wb
-                    )
+                    block_index.set_status(rev_block.hash, BlockStatus.valid, wb)
                     node.logger.debug(f"Removed block {rev_block.hash.hex()}")
                 for block in to_add:
                     block_hash = block.header.hash
                     block_index.add_to_active_chain(block_hash)
-                    update_block_status(
-                        block_index, block_hash, BlockStatus.in_active_chain, wb
-                    )
+                    block_index.set_status(block_hash, BlockStatus.in_active_chain, wb)
                     node.logger.info(f"Added block {block_hash.hex()}")
                 utxo_index.finalize(wb)
                 filter_index.finalize(wb)

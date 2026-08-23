@@ -39,9 +39,7 @@ def offer(node: Node, chain: list[Block]) -> None:
     block_index = node.chainstate.block_index
     block_index.add_headers([block.header for block in chain])
     for block_hash in block_index.header_dict:
-        block_info = block_index.get_block_info(block_hash)
-        block_info.downloaded = True
-        block_index.insert_block_info(block_info)
+        block_index.set_downloaded(block_hash)
     for block in chain:
         node.block_db.add_block(block)
 

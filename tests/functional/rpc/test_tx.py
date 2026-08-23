@@ -28,9 +28,7 @@ def test_add_tx(rpc_node: Node) -> None:
     node.status = NodeStatus.HeaderSynced
     for block in chain:
         node.block_db.add_block(block)
-        block_info = block_index.get_block_info(block.header.hash)
-        block_info.downloaded = True
-        block_index.insert_block_info(block_info)
+        block_index.set_downloaded(block.header.hash)
     wait_until(lambda: len(block_index.active_chain) == 11)
 
     invalid_tx = generate_random_transaction()
