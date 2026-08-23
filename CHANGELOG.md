@@ -112,6 +112,41 @@ to check the guess.
   returning a wrong answer. A node upgrading past this change starts
   from an empty `blocks/` directory.
 
+### A reorg checks the transactions it hands back to the mempool
+
+- **`update_chain` puts a transaction of an abandoned block back into
+  the mempool only once `verify_mempool_acceptance` has passed it**
+  (#85), the same check every other entrant into the mempool already
+  went through. A transaction that spent an output only the abandoned
+  branch ever had is now dropped rather than sitting in the mempool
+  answering `getrawmempool` and `getdata` for something the node's own
+  acceptance check would refuse. The abandoned blocks are walked oldest
+  first for this, the opposite of the order the utxo undo above it
+  uses, so that a transaction depending on an earlier abandoned block's
+  own transaction finds it already back in the mempool: Core's
+  `MaybeUpdateMempoolForReorg` re-adds the same way
+  (`src/validation.cpp`).
+- The loop re-adding those transactions to the mempool and the one
+  removing the newly connected chain's own transactions from it now
+  read the same way, `for tx in block.transactions[1:]`: coinbase
+  transactions were excluded from the first and not the second, an
+  asymmetry with no consequence — a coinbase is never a mempool
+  entrant — and no explanation either.
+
+### `finish_sync` no longer drops every peer to revise a relay flag
+
+- **A connection's own `Version` always asks for transaction relay**
+  (#129): Core's `fRelay` is about the connection itself — a
+  block-relay-only peer, a feeler, `-blocksonly`
+  (`RejectIncomingTxs`, `src/net_processing.cpp`) — and never about
+  `IsInitialBlockDownload()`, so it never has to be revised once a node
+  catches up. `finish_sync` no longer calls `p2p_manager.stop_all()` to
+  get there: every connection already asked for relay from its first
+  handshake, inbound or outbound. A transaction a peer sends before
+  this node has enough of the chain to check it is dropped where it
+  arrives, `p2p.callbacks.tx`, matching Core's own early return for the
+  same reason during initial block download.
+
 ### `REPOSITORY.md`'s required-checks section names what main now enforces
 
 - **`REPOSITORY.md`'s *Required checks on main* section names `Lint and

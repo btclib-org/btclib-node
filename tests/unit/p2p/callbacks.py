@@ -625,6 +625,26 @@ def test_a_transaction_whose_parents_are_missing_is_not_kept(
     assert node.download_manager.received_txs == []
 
 
+def test_a_transaction_received_before_the_node_is_synced_is_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #129: a peer's version now always asks for relay, so a
+    # transaction sent while this node is still syncing is possible --
+    # Core's own reason for the same drop is that the utxo set is not
+    # caught up enough to check it, not that the peer misbehaved.
+    # verify_mempool_acceptance is patched to accept unconditionally,
+    # so the mempool staying empty is the gate firing rather than a
+    # coincidental rejection
+    import btclib_node.p2p.callbacks as cb
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: None)
+    transaction = a_transaction()
+    node = a_data_node(status=NodeStatus.HeaderSynced)
+    tx(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
+    assert not node.mempool.contains_tx(transaction)
+    assert node.download_manager.received_txs == []
+
+
 def test_a_transaction_already_held_is_not_reported_twice(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -5,6 +5,7 @@
 from typing import TYPE_CHECKING
 
 from btclib.block import Block
+from btclib.exceptions import BTClibValueError
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
 from btclib.tx import TxOut
 from btclib.tx.tx import Tx
@@ -54,8 +55,6 @@ def finish_sync(node: Node) -> None:
     if node.status == NodeStatus.BlockSynced:
         return
     node.status = NodeStatus.BlockSynced
-    # start new connections with tx relay enabled
-    node.p2p_manager.stop_all()
 
 
 def update_chain(node: Node) -> None:
@@ -112,7 +111,6 @@ def update_chain(node: Node) -> None:
     node.logger.debug("Start chainstate test")
 
     success = True
-    generated_rev_patches: list[RevBlock] = []
     # set the moment a block starts and cleared once it is fully
     # through: an exception anywhere in its own iteration leaves it
     # naming the block that failed, which is what update_header_index
@@ -146,7 +144,6 @@ def update_chain(node: Node) -> None:
             check_transactions(transactions, index, node)
 
             node.block_db.add_rev_block(rev_patch)
-            generated_rev_patches.append(rev_patch)
             # here and not on a pass of its own: the patch names the
             # output every input of this block spent, which is what a
             # BIP158 filter is built from and what a block does not
@@ -195,15 +192,36 @@ def update_chain(node: Node) -> None:
         update_header_index(block_index, failed_hash)
 
     if success and node.status == NodeStatus.BlockSynced:
-        for rev_block in to_remove:
+        # oldest-abandoned-block first, the opposite of to_remove's own
+        # tip-first order above: a transaction from a later abandoned
+        # block may spend an output only an earlier abandoned block's
+        # transaction created, and verify_mempool_acceptance below has
+        # to find that parent already back in the mempool or it reads
+        # as one more permanently invalid transaction. Core re-adds the
+        # same way, walking its disconnectpool "in reverse, so that we
+        # add transactions back to the mempool starting with the
+        # earliest transaction that had been previously seen in a
+        # block" (MaybeUpdateMempoolForReorg, src/validation.cpp).
+        for rev_block in reversed(to_remove):
             removed_block = node.block_db.get_block(rev_block.hash)
             if removed_block is None:
                 err_msg = f"block just removed is missing: {rev_block.hash.hex()}"
                 raise Exception(err_msg)
             for tx in removed_block.transactions[1:]:
+                # a coinbase is never a mempool entrant on any path
+                # into it, and one that is only valid on the branch
+                # just abandoned is never valid again: the output it
+                # spent no longer exists on any chain. Every other
+                # entrant is checked before it is trusted, and this is
+                # the one path into the mempool that skipped that.
+                # btclib-org/btclib-node#85
+                try:
+                    verify_mempool_acceptance(node, tx)
+                except MissingPrevoutError, BTClibValueError:
+                    continue
                 node.mempool.add_tx(tx)
-        for _rev_block, added_block in zip(generated_rev_patches, to_add):
-            for tx in added_block.transactions:
+        for block in to_add:
+            for tx in block.transactions[1:]:
                 node.mempool.remove_tx(tx)
         _announce_added_blocks(node, to_add)
 

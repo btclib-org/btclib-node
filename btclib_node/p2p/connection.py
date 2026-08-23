@@ -19,7 +19,7 @@ from btclib.p2p.limits import MAX_GETCFILTERS_SIZE
 from btclib.p2p.message import Message
 from btclib.p2p.payload import Payload
 
-from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion
+from btclib_node.constants import P2pConnStatus, ProtocolVersion
 from btclib_node.p2p.address import ip_and_port, network_address
 from btclib_node.p2p.callbacks import handshake_callbacks
 
@@ -272,7 +272,15 @@ class Connection:
             # what the peer sent rather than what decodes
             user_agent=b"/Btclib/",
             start_height=0,
-            relay=self.node.status == NodeStatus.BlockSynced,
+            # Core's own `fRelay` is about the connection -- a
+            # block-relay-only peer, a feeler, `-blocksonly`
+            # (`RejectIncomingTxs`, src/net_processing.cpp) -- and never
+            # about `IsInitialBlockDownload()`. None of this node's
+            # connections are any of those, so this is always True and
+            # never has to be revised once the node catches up: what a
+            # peer sends before then is dropped on arrival instead,
+            # `p2p/callbacks.tx`. btclib-org/btclib-node#129
+            relay=True,
         )
         await self.async_send(version)
 

@@ -261,6 +261,17 @@ def hashes(chain: list[Block]) -> list[bytes]:
     return [block.header.hash for block in chain]
 
 
+def settle(node: Node) -> None:
+    # get_first_candidate offers the shallowest block that already
+    # outweighs active, not necessarily a longer fork's own tip, so one
+    # call connects only as far as that block; this drives update_chain
+    # until nothing outweighs active any more, the same thing connect()
+    # does for a chain built from genesis
+    block_index = node.chainstate.block_index
+    while block_index.get_first_candidate() is not None:
+        update_chain(node)
+
+
 def test_a_heavier_fork_replaces_the_chain_the_node_was_on(tmp_path: Path) -> None:
     # more than one block on the branch being left, because that is the
     # shallowest branch whose blocks have to be undone in an order: an
@@ -305,7 +316,7 @@ def test_a_reorg_refuses_a_missing_removed_block(tmp_path: Path) -> None:
         connect(node, second)
 
 
-def test_a_reorg_gives_the_orphaned_transactions_back_to_the_mempool(
+def test_a_reorg_evicts_a_transaction_the_reorg_itself_invalidated(
     tmp_path: Path,
 ) -> None:
     # only once the node is synced: while it is still catching up, a
@@ -328,11 +339,102 @@ def test_a_reorg_gives_the_orphaned_transactions_back_to_the_mempool(
 
     connect(node, second)
 
-    # #85: the orphan spends the abandoned branch's own coinbase, so it
-    # can never be valid again -- it goes back in all the same, which is
-    # what this pins and what that issue is about
-    assert node.mempool.contains_tx(orphaned)
+    # #85: orphaned spends the abandoned branch's own coinbase, which no
+    # longer exists on any chain once the reorg undoes it -- it is
+    # rejected the same way any other entrant into the mempool would be,
+    # and does not go back in
+    with pytest.raises(MissingPrevoutError):
+        verify_mempool_acceptance(node, orphaned)
+    assert not node.mempool.contains_tx(orphaned)
     assert not node.mempool.contains_tx(confirmed)
+
+
+def _extend(previous_hash: bytes, start_height: int, count: int) -> list[Block]:
+    # generate_random_chain restarts its own height at 0 for any start,
+    # which is a timestamp that has to beat the median of *these*
+    # ancestors, not a fresh chain's -- explicit, increasing heights are
+    # what test_a_refused_branch_invalidates_headers_that_were_never_
+    # candidates uses for the same reason
+    continuation: list[Block] = []
+    for height in range(start_height, start_height + count):
+        block = build_block(previous_hash, [generate_coinbase()], height)
+        continuation.append(block)
+        previous_hash = block.header.hash
+    return continuation
+
+
+def test_a_reorg_still_resurrects_a_transaction_its_prevout_survives(
+    tmp_path: Path,
+) -> None:
+    # #85's fix checks every re-added transaction rather than trusting
+    # it: this is the other side of that, a transaction that spent an
+    # output the reorg does not touch and is still good on the chain
+    # that replaces the one it was confirmed on
+    node = regtest_node(tmp_path)
+    common = generate_random_chain(1, RegTest().genesis.hash)
+    block_index = connect(node, common)
+
+    resurrectable = generate_random_transaction(common[0].transactions[0].id)
+    abandoned = build_block(
+        common[0].header.hash, [generate_coinbase(), resurrectable], 1
+    )
+    fork = [*common, abandoned]
+    block_index.add_headers([block.header for block in fork])
+    for block in fork:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    settle(node)
+    assert block_index.active_chain[1:] == hashes(fork)
+
+    heavier = [*common, *_extend(common[0].header.hash, 1, 2)]
+    block_index.add_headers([block.header for block in heavier[1:]])
+    for block in heavier[1:]:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    settle(node)
+    assert block_index.active_chain[1:] == hashes(heavier)
+
+    assert node.mempool.contains_tx(resurrectable)
+
+
+def test_a_reorg_re_adds_abandoned_transactions_parent_first(
+    tmp_path: Path,
+) -> None:
+    # a chain of two transactions confirmed only on the branch being
+    # abandoned: the second spends the first's own output, which exists
+    # nowhere but the mempool once the reorg undoes both blocks, so it
+    # has to find its parent already there. Processed tip-first --
+    # to_remove's own order, kept for the utxo undo above it -- the
+    # child is checked before the parent it depends on ever returns,
+    # and verify_mempool_acceptance drops it as a missing prevout for
+    # good; Core's own MaybeUpdateMempoolForReorg re-adds oldest first
+    # for the same reason (src/validation.cpp)
+    node = regtest_node(tmp_path)
+    common = generate_random_chain(1, RegTest().genesis.hash)
+    block_index = connect(node, common)
+
+    parent = generate_random_transaction(common[0].transactions[0].id)
+    older = build_block(common[0].header.hash, [generate_coinbase(), parent], 1)
+    child = generate_random_transaction(parent.id)
+    newer = build_block(older.header.hash, [generate_coinbase(), child], 2)
+    fork = [*common, older, newer]
+    block_index.add_headers([block.header for block in fork])
+    for block in fork:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    settle(node)
+    assert block_index.active_chain[1:] == hashes(fork)
+
+    heavier = [*common, *_extend(common[0].header.hash, 1, 3)]
+    block_index.add_headers([block.header for block in heavier[1:]])
+    for block in heavier[1:]:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    settle(node)
+    assert block_index.active_chain[1:] == hashes(heavier)
+
+    assert node.mempool.contains_tx(parent)
+    assert node.mempool.contains_tx(child)
 
 
 def test_a_reorg_before_the_node_is_synced_leaves_the_mempool_alone(
@@ -393,10 +495,7 @@ def test_a_reorg_before_the_node_is_synced_announces_nothing(tmp_path: Path) -> 
     sent: list[Any] = []
     node.p2p_manager.connections[1] = cast(
         "Connection",
-        # finish_sync's stop_all fires once this reorg catches the node
-        # back up to BlockSynced, and reaches every connection whether
-        # or not the diff under test ever sends it anything
-        SimpleNamespace(prefers_headers=True, send=sent.append, stop=lambda: None),
+        SimpleNamespace(prefers_headers=True, send=sent.append),
     )
 
     second = generate_random_chain(3, RegTest().genesis.hash)

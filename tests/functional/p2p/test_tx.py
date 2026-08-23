@@ -50,10 +50,9 @@ def test_send_tx(tmp_path: Path) -> None:
         node.block_db.add_block(block)
         block_index.set_downloaded(block.header.hash)
         wait_until(lambda: len(block_index.active_chain) == 2)
-        # and not merely the chain being connected: the version a node
-        # sends carries BIP37's relay flag set only once it is block
-        # synced, and a node handshaking in the gap between the two
-        # would tell its peer it wants no transactions
+        # and not merely the chain being connected: callbacks.tx drops
+        # a transaction that arrives before this node is block synced,
+        # whatever its own version told the peer. btclib-org/btclib-node#129
         wait_until(lambda: node.status == NodeStatus.BlockSynced)
 
     node2.p2p_manager.connect(local_addr(node1.p2p_port))
