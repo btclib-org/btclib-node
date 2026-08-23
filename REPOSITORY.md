@@ -250,9 +250,10 @@ gh api repos/btclib-org/btclib-node/dependabot/alerts --jq 'length'
 ```
 
 **Private vulnerability reporting is off**, where three siblings have it
-on, so this repository has no advisory route of its own and `SECURITY.md`
-gives an address instead. btclib-org/btclib-node#136 is where turning it
-on is tracked; it is a setting only the maintainer can change.
+on, so this repository has no advisory route of its own and the
+organization's security policy — the one shown here, this tree keeping
+none — gives an address instead. btclib-org/btclib-node#136 is where
+turning it on is tracked; it is a setting only the maintainer can change.
 
 The second command is what the open alerts are. Every one of them today
 answers `poetry.lock` for its `dependency.manifest_path`, which is a file

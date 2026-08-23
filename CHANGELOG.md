@@ -1,3 +1,9 @@
+<!-- markdownlint-disable MD022 MD032 -->
+<!-- This file is merge=union, so a rebase joins two sections and drops
+     the blank line between them without a conflict: the rule is off
+     here for the duration of btclib-org/.github#33, and goes back on
+     when that queue is empty. btclib-org/.github#138 is the record. -->
+
 # Changelog
 
 What a reader of this repository would notice, in the group it belongs
@@ -128,6 +134,38 @@ to check the guess.
   run names the hooks left with no file to read. Shipping `.github/` does
   not change the verdict — the same run still exits 1, on the hooks whose
   files are the workspaces `[tool.check-sdist]` keeps back.
+
+### The review check is red on anything but an ack of its head
+
+- **`claude-review.yml` reads the verdict the review posted, and fails
+  on anything but an `ACK` naming the pull request's head.** The one
+  guard it had tested whether the action had started, and that was the
+  whole of the check's colour: on pull request 164 the run for
+  `4da7fba`, a sha the review answered `CHANGES REQUESTED`, concluded
+  `success`. The step is btclib-org/.github's, taken from its
+  `claude-review.yml` at `18e6c64` with the comment that carries its
+  measurement; btclib-org/.github#146 is the finding across the
+  organization. Still not a required check, for the reason the file's
+  header gives.
+
+### Two root files are the organization's, and no longer this tree's
+
+- **`CODE_OF_CONDUCT.md` is gone.** It pointed at the PSF code of
+  conduct, as the one copy in btclib-org/.github does, and GitHub shows
+  that copy for a public repository that has none of its own: a copy per
+  repository is a copy of a pointer, which is why section 14 of the
+  standard no longer lists the file (btclib-org/.github#123).
+
+- **`SECURITY.md` is gone, and its *Limitations* are in `README.md`.**
+  The policy a tree keeps is the one that travels in its sdist, and this
+  repository publishes nothing for one to travel with, so what GitHub
+  shows is the organization's (btclib-org/.github#116). What that policy
+  cannot say for this node — the JSON-RPC listener on `0.0.0.0`
+  authenticating nothing, #27, and what a peer may ask for not being
+  bounded by what asking costs it, #101 — is under its own heading in
+  `README.md`, which is where somebody about to run the node reads.
+  `RELEASING.md`, `REPOSITORY.md` and the issue template's contact link
+  pointed at the file, and now point at the policy shown here.
 
 - **The wheel carries the same members**, less `top_level.txt`, which is
   setuptools' own legacy metadata rather than something the wheel
