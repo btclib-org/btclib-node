@@ -86,6 +86,7 @@ from btclib_node.p2p.callbacks import (
     pong,
     reject,
     sendaddrv2,
+    sendheaders,
     tx,
     verack,
     version,
@@ -234,6 +235,7 @@ def a_peer(**attributes: Any) -> Any:
         version_message=None,
         wtxidrelay_received=False,
         prefer_addressv2=False,
+        prefers_headers=False,
         # what Connection sets, and what the version callback overwrites
         relay_tx=True,
         download_queue=[],
@@ -459,12 +461,14 @@ def test_a_verack_from_a_peer_that_never_asked_for_wtxid_relay_is_let_go() -> No
     assert promoted == []
 
 
-def test_the_two_flags_a_peer_sets_on_this_connection() -> None:
+def test_the_flags_a_peer_sets_on_this_connection() -> None:
     peer = a_peer()
     wtxidrelay(a_handshake_node(), b"", peer)
     sendaddrv2(a_handshake_node(), b"", peer)
+    sendheaders(a_handshake_node(), b"", peer)
     assert peer.wtxidrelay_received
     assert peer.prefer_addressv2
+    assert peer.prefers_headers
 
 
 def test_a_ping_is_answered_with_the_nonce_it_carried() -> None:
@@ -1006,6 +1010,25 @@ def test_a_full_batch_from_nowhere_known_asks_from_what_this_node_knows() -> Non
     (answer,) = peer.sent
     assert isinstance(answer, GetHeaders)
     assert answer.locator == (b"\x00" * 32,)
+    assert node.status == NodeStatus.SyncingHeaders
+
+
+def test_a_short_batch_from_nowhere_known_asks_from_what_this_node_knows() -> None:
+    # a short batch is the ordinary shape of a BIP130 announcement, and
+    # unlike the full-batch case above the pre-existing code never sent
+    # anything for it: the `len(headers) == 2000` guard was the only
+    # place a follow-up GetHeaders was built. btclib-org/btclib-node#233
+    chain = generate_random_header_chain(4, RegTest().genesis.hash)
+    node = a_data_node(status=NodeStatus.SyncingHeaders)
+    index = FakeHeaderIndex(tip=None)
+    node.chainstate.block_index = index
+    peer = a_peer()
+    headers(node, Headers(chain).serialize(), peer)
+    (answer,) = peer.sent
+    assert isinstance(answer, GetHeaders)
+    assert answer.locator == (b"\x00" * 32,)
+    # not the ordinary end of a sync either: nothing of this batch
+    # connected, so there is nothing to have caught up to
     assert node.status == NodeStatus.SyncingHeaders
 
 

@@ -116,6 +116,11 @@ class Connection:
         # is what callbacks.version writes here
         self.relay_tx: bool = True
         self.prefer_addressv2: bool = False
+        # set by callbacks.sendheaders, the peer's own request to be
+        # announced a new block as a header rather than an inventory,
+        # BIP130; Core's default is the same false until asked
+        # (net_processing.cpp's m_prefers_headers). btclib-org/btclib-node#202
+        self.prefers_headers: bool = False
 
         self.last_receive: float = time.time()
         self.last_send: float = time.time()

@@ -3,9 +3,12 @@
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
 from pathlib import Path
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from btclib.block import Block
+from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
 from btclib.script import script
 from btclib.tx.out_point import OutPoint
 from btclib.tx.tx import Tx
@@ -28,6 +31,9 @@ from tests.helpers import (
     generate_random_header_chain,
     generate_random_transaction,
 )
+
+if TYPE_CHECKING:
+    from btclib_node.p2p.connection import Connection
 
 
 def regtest_node(tmp_path: Path) -> Node:
@@ -342,6 +348,60 @@ def test_a_reorg_before_the_node_is_synced_leaves_the_mempool_alone(
     # the reorg happened, and left the mempool out of it
     assert block_index.active_chain[1:] == hashes(second)
     assert node.mempool.size == 0
+
+
+def test_a_newly_connected_block_is_announced_to_every_connected_peer(
+    tmp_path: Path,
+) -> None:
+    # only once the node is synced, the same gate the mempool bookkeeping
+    # above already uses: an accepted block used to reach nobody, by
+    # either shape. btclib-org/btclib-node#202
+    node = regtest_node(tmp_path)
+    first = generate_random_chain(1, RegTest().genesis.hash)
+    connect(node, first)
+    assert node.status == NodeStatus.BlockSynced
+
+    header_sent: list[Any] = []
+    inv_sent: list[Any] = []
+    node.p2p_manager.connections[1] = cast(
+        "Connection", SimpleNamespace(prefers_headers=True, send=header_sent.append)
+    )
+    node.p2p_manager.connections[2] = cast(
+        "Connection", SimpleNamespace(prefers_headers=False, send=inv_sent.append)
+    )
+
+    second = generate_random_chain(2, RegTest().genesis.hash)
+    connect(node, second)
+
+    (sent,) = header_sent
+    assert isinstance(sent, Headers)
+    assert list(sent.headers) == [block.header for block in second]
+
+    (sent,) = inv_sent
+    assert isinstance(sent, Inv)
+    assert sent.items == tuple(
+        Inventory(InventoryType.MSG_BLOCK, block.header.hash) for block in second
+    )
+
+
+def test_a_reorg_before_the_node_is_synced_announces_nothing(tmp_path: Path) -> None:
+    node = regtest_node(tmp_path)
+    first = generate_random_chain(2, RegTest().genesis.hash)
+    connect(node, first)
+    node.status = NodeStatus.HeaderSynced
+
+    sent: list[Any] = []
+    node.p2p_manager.connections[1] = cast(
+        "Connection",
+        # finish_sync's stop_all fires once this reorg catches the node
+        # back up to BlockSynced, and reaches every connection whether
+        # or not the diff under test ever sends it anything
+        SimpleNamespace(prefers_headers=True, send=sent.append, stop=lambda: None),
+    )
+
+    second = generate_random_chain(3, RegTest().genesis.hash)
+    connect(node, second)
+    assert not sent
 
 
 def test_a_refused_branch_invalidates_only_the_block_that_failed(
