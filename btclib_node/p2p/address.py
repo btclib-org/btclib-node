@@ -36,10 +36,18 @@ from btclib_node.chains import Chain
 from btclib_node.db import KeyValueStore
 
 # the two ids whose address field is an IP address, which is the whole
-# of what an addr version 1 entry can carry -- and, of those two, the
-# one this node has a dial for
+# of what an addr version 1 entry can carry, and the whole of what
+# `dial` below opens a socket for
 _IP_NETWORKS = (BIP155Network.IPV4, BIP155Network.IPV6)
-_DIALABLE = BIP155Network.IPV4
+
+# BIP155: a client SHOULD ignore an IPV6 entry whose sixteen octets fall
+# in a range reserved for embedding another network's address into an
+# IPv6 one -- the IPv4 mapping, `::ffff:0:0/96`, and OnionCat's
+# `fd87:d87e:eb43::/48`, once used to carry a TORv2 address the same way.
+# Core's `netaddress.h` (58a7869f86) is `IPV4_IN_IPV6_PREFIX` and
+# `TORV2_IN_IPV6_PREFIX`; `IPv6Address.ipv4_mapped` is `ipaddress`'s own
+# name for the first, and the second has no name of its own to borrow.
+_ONIONCAT_PREFIX = b"\xfd\x87\xd8\x7e\xeb\x43"
 
 
 def peer_address(
@@ -64,7 +72,22 @@ def can_addrv1(address: NetworkAddressV2) -> bool:
 
 def can_connect(address: NetworkAddressV2) -> bool:
     """Answer whether this node has a dial for the peer's network."""
-    return address.network_id == _DIALABLE
+    return address.network_id in _IP_NETWORKS
+
+
+def _is_embedded_ipv6(address: NetworkAddressV2) -> bool:
+    """Answer whether an `IPV6` record's octets are really another network's.
+
+    The two BIP155 ignore rules `_ONIONCAT_PREFIX` documents, applied
+    together: `PeerDB.add_addresses` is where this is asked, that being
+    the point a record kept becomes an entry gossiped back to the next
+    peer -- `btclib.p2p.addrv2`'s own docstring calls both rules receive
+    policy and leaves them to the caller rather than the parser.
+    """
+    return address.network_id == BIP155Network.IPV6 and (
+        IPv6Address(address.address).ipv4_mapped is not None
+        or address.address.startswith(_ONIONCAT_PREFIX)
+    )
 
 
 def network_address(address: NetworkAddressV2) -> NetworkAddress:
@@ -167,13 +190,29 @@ async def dial(address: NetworkAddressV2) -> socket.socket | None:
     that is merely slow. And where `connect` completes without ever
     raising `BlockingIOError` -- a local peer most often -- `sock_connect`
     returns at once instead of an `except` arm that never runs.
+
+    No separate check for a host with no route to the family being
+    dialled: `_DIAL_TIMEOUT` already bounds every attempt, and an
+    unreachable family fails the same `sock_connect` a slow or refusing
+    peer does, landing on the same `None` `P2pManager` already treats as
+    "try someone else". Bitcoin Core's own default (`ReachableNets`,
+    src/netbase.h at 58a7869f86: "Everything is reachable by default")
+    is the same bet -- reachability is what a dial's outcome says it is,
+    not a property guessed at beforehand -- so there is nothing here for
+    a heavier check to buy.
     """
-    if address.network_id != _DIALABLE:
+    if address.network_id not in _IP_NETWORKS:
         raise ValueError("Address type not yet supported")
-    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if address.network_id == BIP155Network.IPV4:
+        family = socket.AF_INET
+        host = str(IPv4Address(address.address))
+    else:
+        family = socket.AF_INET6
+        host = str(IPv6Address(address.address))
+    client = socket.socket(family, socket.SOCK_STREAM)
     client.settimeout(0)
     loop = asyncio.get_running_loop()
-    peer = (str(IPv4Address(address.address)), address.port)
+    peer = (host, address.port)
     try:
         await asyncio.wait_for(loop.sock_connect(client, peer), _DIAL_TIMEOUT)
     except OSError, TimeoutError:
@@ -321,6 +360,16 @@ class PeerDB:
             for address in addresses:
                 if len(self.addresses) >= 10000:
                     break
+                # BIP155's ignore rule: an IPV6 record that is really an
+                # IPv4 or a (long-retired) TORv2 address wearing another
+                # network's sixteen octets is not a second peer, and
+                # keeping it under network id 2 is what used to gossip
+                # it back as IPv4 -- the same host, twice in the table
+                # (#151). Checked before the durable write too, so a
+                # dropped record is dropped everywhere, not merely kept
+                # out of the in-memory set.
+                if _is_embedded_ipv6(address):
+                    continue
                 known = replace(address, timestamp=0)
                 self.addresses.add(known)
                 if wb is not None:

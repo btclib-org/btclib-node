@@ -26,6 +26,12 @@ from btclib_node.p2p.address import (
 )
 from tests.helpers import call_within
 
+# BIP155's own examples: an IPv6-mapped IPv4 host, and an address under
+# OnionCat's `fd87:d87e:eb43::/48`, once how a TORv2 address was carried
+# inside a fake IPv6 one.
+_A_V4_MAPPED_ADDRESS = "::ffff:1.2.3.4"
+_AN_ONIONCAT_ADDRESS = "fd87:d87e:eb43::1"
+
 
 def a_peer_db(chain: Any = None, data_dir: Path | None = None) -> PeerDB:
     return PeerDB(cast(Chain, chain), data_dir)
@@ -117,9 +123,9 @@ def test_a_host_that_is_not_an_ip_address_is_refused() -> None:
         ip_and_port("seed.bitcoin.sipa.be", 8333)
 
 
-def test_only_ipv4_is_dialled_for_now() -> None:
+def test_the_two_ip_networks_are_dialled_and_an_onion_address_is_not() -> None:
     assert can_connect(peer_address("1.2.3.4", 8333))
-    assert not can_connect(peer_address("2001:db8::1", 8333))
+    assert can_connect(peer_address("2001:db8::1", 8333))
     assert not can_connect(an_onion_address())
 
 
@@ -140,6 +146,23 @@ def test_a_peer_that_is_listening_is_connected_to() -> None:
         assert client is not None
         with client:
             assert client.getpeername() == ("127.0.0.1", port)
+    finally:
+        listener.close()
+
+
+def test_a_v6_peer_that_is_listening_is_connected_to() -> None:
+    listener = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("::1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    try:
+        address = peer_address("::1", port)
+        client = asyncio.run(dial(address))
+        assert client is not None
+        assert client.family == socket.AF_INET6
+        with client:
+            assert client.getpeername()[:2] == ("::1", port)
     finally:
         listener.close()
 
@@ -311,11 +334,11 @@ def test_an_address_is_drawn_from_the_ones_that_can_be_dialled() -> None:
 
 def test_a_table_holding_nothing_dialable_answers_that_there_is_nothing() -> None:
     # the case a draw-until-one-can-be-dialled never comes back from,
-    # and a table a node reaches in ordinary operation: a seed answering
-    # with AAAA records alone fills it with exactly this
+    # and a table a node reaches in ordinary operation: onion, i2p and
+    # cjdns peers fill it with exactly this
     peer_db = a_peer_db()
-    peer_db.addresses.add(peer_address("2001:db8::1", 8333))
     peer_db.addresses.add(an_onion_address())
+    peer_db.addresses.add(a_cjdns_address())
     assert call_within(peer_db.random_address) is None
 
 
@@ -328,12 +351,14 @@ def test_an_empty_table_answers_that_there_is_nothing() -> None:
 
 def test_the_draw_reaches_every_address_that_can_be_dialled() -> None:
     # over all of them, not the first one that will do: a node that only
-    # ever dials one entry of its table is a node with one peer
+    # ever dials one entry of its table is a node with one peer -- and
+    # ipv4 and ipv6 are both dialled, not only the first
     peer_db = a_peer_db()
     dialable = {peer_address(f"1.2.3.{host}", 8333) for host in range(1, 4)}
+    dialable.add(peer_address("2001:db8::1", 8333))
     peer_db.addresses |= dialable
-    peer_db.addresses.add(peer_address("2001:db8::1", 8333))
-    assert {peer_db.random_address() for _ in range(60)} == dialable
+    peer_db.addresses.add(an_onion_address())
+    assert {peer_db.random_address() for _ in range(80)} == dialable
 
 
 def test_the_table_of_known_addresses_is_bounded() -> None:
@@ -341,6 +366,33 @@ def test_the_table_of_known_addresses_is_bounded() -> None:
     limit = 10000
     peer_db.add_addresses([peer_address("1.2.3.4", port) for port in range(limit + 10)])
     assert len(peer_db.addresses) == limit
+
+
+def test_a_v4_mapped_ipv6_record_is_not_kept() -> None:
+    # BIP155: a client SHOULD ignore an IPV6 entry whose octets are
+    # `::ffff:0:0/96`, the IPv4 mapping -- keeping it is #151, an entry
+    # that later writes into an addr version 1 message as the same
+    # sixteen octets an ordinary IPv4 peer does
+    peer_db = a_peer_db()
+    peer_db.add_addresses([peer_address(_A_V4_MAPPED_ADDRESS, 8333)])
+    assert not peer_db.addresses
+
+
+def test_an_onioncat_ipv6_record_is_not_kept() -> None:
+    # the other half of the same rule: `fd87:d87e:eb43::/48` is where a
+    # TORv2 address used to be embedded in a fake IPv6 one
+    peer_db = a_peer_db()
+    peer_db.add_addresses([peer_address(_AN_ONIONCAT_ADDRESS, 8333)])
+    assert not peer_db.addresses
+
+
+def test_an_ordinary_ipv6_record_is_kept() -> None:
+    # the rule is about the two reserved ranges and not about the
+    # network id: an address outside both is an ordinary peer
+    peer_db = a_peer_db()
+    address = peer_address("2001:db8::1", 8333)
+    peer_db.add_addresses([address])
+    assert peer_db.addresses == {address}
 
 
 def test_an_address_a_peer_told_us_about_is_kept_without_its_timestamp() -> None:
