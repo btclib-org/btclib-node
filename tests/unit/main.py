@@ -206,6 +206,33 @@ def test_a_candidate_whose_block_has_not_arrived_is_not_connected(
     assert node.status == NodeStatus.HeaderSynced
 
 
+def test_a_hole_behind_a_downloaded_tip_does_not_block_a_complete_branch(
+    tmp_path: Path,
+) -> None:
+    # get_first_candidate used to ask only whether a candidate's own tip
+    # had arrived, so a branch missing a block *behind* its downloaded
+    # tip still passed it -- and then update_chain found the hole and
+    # gave up the whole pass, leaving that same candidate at the front
+    # of the queue next time: btclib-org/btclib-node#121
+    node = regtest_node(tmp_path)
+    block_index = node.chainstate.block_index
+
+    hole = generate_random_chain(2, RegTest().genesis.hash)
+    block_index.add_headers([block.header for block in hole])
+    for block in hole:
+        node.block_db.add_block(block)
+    block_index.set_downloaded(hole[-1].header.hash)  # the tip alone
+
+    complete = generate_random_chain(1, RegTest().genesis.hash)
+    block_index.add_headers([block.header for block in complete])
+    for block in complete:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+
+    update_chain(node)
+    assert block_index.active_chain[1:] == hashes(complete)
+
+
 def test_update_chain_refuses_a_block_marked_downloaded_but_missing(
     tmp_path: Path,
 ) -> None:
@@ -315,12 +342,16 @@ def test_a_reorg_before_the_node_is_synced_leaves_the_mempool_alone(
     assert node.mempool.size == 0
 
 
-def test_a_refused_branch_leaves_no_status_behind(tmp_path: Path) -> None:
+def test_a_refused_branch_invalidates_only_the_block_that_failed(
+    tmp_path: Path,
+) -> None:
     # the branch is tried as a unit: its tip is what get_first_candidate
     # offers, so the blocks under it connect in the same pass the tip is
     # refused in, and the utxo set and the filter index are rolled back.
-    # Neither rollback reaches the block index, so what keeps a status
-    # off a refused branch is that the pass writes none.
+    # Neither rollback reaches the block index; what does is
+    # update_header_index, on the one block whose own contextual check
+    # raised -- the ones under it never failed anything and stay
+    # valid_header, ready to connect if a different tip is built on them.
     node = regtest_node(tmp_path)
     active = generate_random_chain(2, RegTest().genesis.hash)
     block_index = connect(node, active)
@@ -346,13 +377,23 @@ def test_a_refused_branch_leaves_no_status_behind(tmp_path: Path) -> None:
 
     update_chain(node)
     assert block_index.active_chain[1:] == hashes(active)
-    for block in fork:
+    for block in below:
         info = block_index.get_block_info(block.header.hash)
         assert info.status == BlockStatus.valid_header
+    assert (
+        block_index.get_block_info(prints_money.header.hash).status
+        == BlockStatus.invalid
+    )
+    # the doomed tip no longer weighs on what get_first_candidate offers
+    assert block_index.get_first_candidate() is None
 
     node.chainstate.close()
     reopened = Chainstate(node.data_dir, RegTest(), node.logger)
-    for block in fork:
+    for block in below:
         info = reopened.block_index.get_block_info(block.header.hash)
         assert info.status == BlockStatus.valid_header
+    assert (
+        reopened.block_index.get_block_info(prints_money.header.hash).status
+        == BlockStatus.invalid
+    )
     reopened.close()

@@ -229,6 +229,67 @@ def test_generate_block_candidates_2(tmp_path: Path) -> None:
     assert len(new_block_index.block_candidates) == 2000
 
 
+def test_invalidate_marks_the_block_and_its_candidate_descendants(
+    tmp_path: Path,
+) -> None:
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    chain = generate_random_header_chain(3, RegTest().genesis.hash)
+    sibling = generate_random_header_chain(1, RegTest().genesis.hash)
+    block_index.add_headers(chain)
+    block_index.add_headers(sibling)
+    assert len(block_index.block_candidates) == 4
+
+    block_index.invalidate(chain[0].hash)
+
+    for header in chain:
+        assert block_index.get_block_info(header.hash).status == BlockStatus.invalid
+    assert (
+        block_index.get_block_info(sibling[0].hash).status == BlockStatus.valid_header
+    )
+    assert [h for h, _ in block_index.block_candidates] == [sibling[0].hash]
+    chainstate.close()
+
+
+def test_a_header_built_on_an_invalid_parent_is_invalid_and_not_a_candidate(
+    tmp_path: Path,
+) -> None:
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    chain = generate_random_header_chain(2, RegTest().genesis.hash)
+    block_index.add_headers(chain)
+    block_index.invalidate(chain[0].hash)
+
+    extension = generate_random_header_chain(1, chain[1].hash)
+    assert block_index.add_headers(extension)
+
+    info = block_index.get_block_info(extension[0].hash)
+    assert info.status == BlockStatus.invalid
+    assert extension[0].hash not in [h for h, _ in block_index.block_candidates]
+    chainstate.close()
+
+
+def test_first_candidate_skips_a_hole_behind_a_downloaded_tip(tmp_path: Path) -> None:
+    # get_first_candidate used to ask only whether a candidate's own tip
+    # had arrived: a branch missing a block behind it passed that check
+    # and update_chain then stalled on the hole every pass, leaving
+    # nothing else able to connect: btclib-org/btclib-node#121
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    hole = generate_random_header_chain(2, RegTest().genesis.hash)
+    block_index.add_headers(hole)
+    block_index.set_downloaded(hole[-1].hash)  # the tip alone
+
+    complete = generate_random_header_chain(1, RegTest().genesis.hash)
+    block_index.add_headers(complete)
+    block_index.set_downloaded(complete[0].hash)
+
+    candidate = block_index.get_first_candidate()
+    assert candidate is not None
+    assert candidate.header.hash == complete[0].hash
+    chainstate.close()
+
+
 def test_block_info_serialization() -> None:
     header = BlockHeader(
         1,

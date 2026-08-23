@@ -200,6 +200,35 @@ class BlockIndex:
     def get_block_info(self, hash: bytes) -> BlockInfo:
         return self.header_dict[hash]
 
+    # a candidate that reaches here by walking previous_block_hash from
+    # `hash`, stopping at the first index at or below ancestor's own --
+    # below that, it is on another branch and not a descendant
+    def _is_descendant(self, hash: bytes, ancestor_hash: bytes) -> bool:
+        ancestor_index = self.get_block_info(ancestor_hash).index
+        while hash != ancestor_hash:
+            block_info = self.get_block_info(hash)
+            if block_info.index <= ancestor_index:
+                return False
+            hash = block_info.header.previous_block_hash
+        return True
+
+    # what a block failing validation costs: itself, and every header
+    # already offered as a candidate that is built on top of it.
+    # `add_headers` refuses to build a valid_header on an invalid
+    # parent, which is what keeps a header arriving *after* this call
+    # from ever needing to be walked here -- so the only ones swept up
+    # are candidates this index already knew about.
+    # btclib-org/btclib-node#77, #120
+    def invalidate(self, hash: bytes) -> None:
+        self.set_status(hash, BlockStatus.invalid)
+        candidates, self.block_candidates = self.block_candidates, deque()
+        for candidate_hash, work in candidates:
+            if candidate_hash != hash and not self._is_descendant(candidate_hash, hash):
+                self.block_candidates.append([candidate_hash, work])
+                continue
+            if candidate_hash != hash:
+                self.set_status(candidate_hash, BlockStatus.invalid)
+
     # returns the active chain and the forked chain from the common ancestor
     def get_fork_details(
         self, header_hash: bytes, chain: list[bytes] | None = None
@@ -280,16 +309,22 @@ class BlockIndex:
         for header_hash, (header, height) in pending.items():
             previous_block_info = self.get_block_info(header.previous_block_hash)
             new_work = previous_block_info.chainwork + calculate_work(header)
+            # a header built on an invalid one is invalid itself, without
+            # a walk: previous_block_hash is already indexed by the time
+            # this runs, so the parent's status is already settled.
+            # btclib-org/btclib-node#120
+            invalid = previous_block_info.status == BlockStatus.invalid
+            status = BlockStatus.invalid if invalid else BlockStatus.valid_header
             block_info = BlockInfo(
                 header,
                 height,
-                BlockStatus.valid_header,
+                status,
                 False,
                 new_work,
             )
             self._insert_block_info(block_info)
 
-            if new_work > current_work:
+            if not invalid and new_work > current_work:
                 self.block_candidates.append([header_hash, new_work])
 
             best_header = self.header_index[-1]
@@ -302,6 +337,14 @@ class BlockIndex:
 
         # whether the batch carried a header this node did not have
         return bool(pending)
+
+    # whether hash and everything back to the active chain has arrived,
+    # not just hash itself -- a hole behind a downloaded tip is still a
+    # hole, and get_first_candidate used to ask only the tip:
+    # btclib-org/btclib-node#121
+    def _branch_is_downloaded(self, hash: bytes) -> bool:
+        to_add, _ = self.get_fork_details(hash)
+        return all(self.get_block_info(h).downloaded for h in to_add)
 
     def get_first_candidate(self) -> BlockInfo | None:
         chainwork = self.get_block_info(self.active_chain[-1]).chainwork
@@ -316,7 +359,7 @@ class BlockIndex:
                 candidate = self.get_block_info(hash)
                 if not best_candidate:
                     best_candidate = candidate
-                if candidate.downloaded:
+                if self._branch_is_downloaded(hash):
                     return candidate
         return best_candidate
 
