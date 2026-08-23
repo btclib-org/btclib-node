@@ -517,13 +517,27 @@ warn_unreachable = true
 
 # --- the optional error codes, surveyed one at a time ------------------
 #
-# Same method: enable, measure, decide. Each reports nothing today.
+# Same method: enable, measure, decide. Each reports nothing today, and
+# each is a code mypy leaves off until something turns it on, which is
+# the whole of what this list is for. A code mypy already has on reports
+# whether it is named here or not, so an entry for one buys no check and
+# spends a line claiming it did. That is what a candidate is put through
+# first --
+#
+#   uv run --locked --no-default-groups --group lint --group test \
+#     python -c "import mypy.errorcodes as m; \
+#       print(m.error_codes['import-untyped'].default_enabled)"
+#
+# -- and `comparison-overlap`, `import-not-found`, `import-untyped` and
+# `narrowed-type-not-subtype` are the ones that answer `True` and so do
+# not belong here, each already deciding over `files`.
+# `comparison-overlap` twice over: what it reports is gated by
+# `strict_equality`, which `strict = true` above sets.
 enable_error_code = [
     "deprecated",
     "explicit-override",
     "ignore-without-code",
     "mutable-override",
-    "narrowed-type-not-subtype",
     "possibly-undefined",
     "redundant-expr",
     "redundant-self",
