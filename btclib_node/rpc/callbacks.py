@@ -14,7 +14,7 @@ from btclib_node.constants import P2pConnStatus
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.main import verify_mempool_acceptance
 from btclib_node.p2p.address import ip_and_port
-from btclib_node.rpc.errors import RpcError, RpcErrorCode, json_type_name
+from btclib_node.rpc.errors import RpcError, RpcErrorCode, bool_param, json_type_name
 
 if TYPE_CHECKING:
     from btclib_node import Node
@@ -58,15 +58,7 @@ def get_block_header(
     # as blockhash above and for the same reason: HandleRequest checks
     # every declared argument's type before any of the handler's own
     # work runs, not only the first one
-    verbose = True
-    if len(params) > 1 and params[1] is not None:
-        if not isinstance(params[1], bool):
-            raise RpcError(
-                RpcErrorCode.TYPE_ERROR,
-                f"JSON value of type {json_type_name(params[1])} is "
-                "not of expected type bool",
-            )
-        verbose = params[1]
+    verbose = bool_param(params, 1, default=True)
 
     try:
         block_hash = bytes.fromhex(params[0])
@@ -223,8 +215,23 @@ def get_mempool_info(node: Node, conn: Connection, _: list[Any]) -> dict[str, An
     return out
 
 
-def get_raw_mempool(node: Node, conn: Connection, params: list[Any]) -> dict[str, Any]:
-    verbose = params[0] if params else False
+def get_raw_mempool(
+    node: Node, conn: Connection, params: list[Any]
+) -> dict[str, Any] | list[str]:
+    # verbose and mempool_sequence, both RPCArg::Type::BOOL,
+    # RPCArg::Default{false}: src/rpc/mempool.cpp:694-695
+    verbose = bool_param(params, 0, default=False)
+    include_sequence = bool_param(params, 1, default=False)
+
+    if verbose and include_sequence:
+        # MempoolToJSON refuses the combination outright rather than
+        # answering one and dropping the other: src/rpc/mempool.cpp
+        # :608-611
+        raise RpcError(
+            RpcErrorCode.INVALID_PARAMETER,
+            "Verbose results cannot contain mempool sequence values.",
+        )
+
     if verbose:
         return {
             tx.id.hex(): {
@@ -235,7 +242,13 @@ def get_raw_mempool(node: Node, conn: Connection, params: list[Any]) -> dict[str
             }
             for tx in node.mempool.transactions.values()
         }
-    return {"txids": [txid.hex() for txid in node.mempool.txid_index]}
+
+    txids = [txid.hex() for txid in node.mempool.txid_index]
+    if not include_sequence:
+        # MempoolToJSON's plain-array answer, src/rpc/mempool.cpp:624-634
+        return txids
+    # MempoolToJSON's other shape, src/rpc/mempool.cpp:635-639
+    return {"txids": txids, "mempool_sequence": node.mempool.sequence}
 
 
 def test_mempool_accept(

@@ -66,3 +66,25 @@ def json_type_name(value: Any) -> str:
     which produces no other Python type.
     """
     return _JSON_TYPE_NAMES[type(value)]
+
+
+def bool_param(params: list[Any], position: int, *, default: bool) -> bool:
+    """Read a declared `RPCArg::Type::BOOL` parameter, Core's own way.
+
+    Omitted or explicit `null` both stand for the argument's own
+    declared `default`. Anything else is read, and refused with
+    `RPC_TYPE_ERROR` where it is not an actual JSON bool -- the same
+    check `RPCMethod::HandleRequest` makes for every declared argument
+    before the handler body runs at all (`src/rpc/util.cpp:653-661`),
+    applied here to the one JSON type this helper's every caller
+    declares.
+    """
+    if len(params) <= position or params[position] is None:
+        return default
+    value = params[position]
+    if not isinstance(value, bool):
+        raise RpcError(
+            RpcErrorCode.TYPE_ERROR,
+            f"JSON value of type {json_type_name(value)} is not of expected type bool",
+        )
+    return value

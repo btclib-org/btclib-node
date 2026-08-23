@@ -947,3 +947,36 @@ to check the guess.
   successful dial got returned or a failed one got closed is gone
   along with the poll it guarded, so there is no longer an arm the
   immediate-success case can fail to reach.
+
+### `getrawmempool`'s two parameters, checked and read the way Core's are
+
+- **`verbose` was read with `params[0] if params else False` and never
+  type-checked** (#219), the same shape #212 named on `getblockheader`'s
+  `blockhash`. `RPCMethod::HandleRequest` (`src/rpc/util.cpp:653-661`)
+  checks a declared argument's type before the handler body runs;
+  `verbose` and `mempool_sequence` are both declared
+  `RPCArg::Type::BOOL` (`src/rpc/mempool.cpp:694-695`).
+  `btclib_node/rpc/errors.py`'s `bool_param` reads a declared bool
+  argument the same way `get_block_header`'s own `verbose` check does,
+  raising `RPC_TYPE_ERROR` for anything else; `get_block_header` now
+  calls it too, in place of the check it carried on its own.
+- **The default answer, `verbose` and `mempool_sequence` both false, was
+  `{"txids": [...]}`, not the plain array `MempoolToJSON` answers with
+  in that case** (`src/rpc/mempool.cpp:624-634`). `get_raw_mempool` now
+  answers a bare list of hex txids there, and reserves the object shape
+  for where `mempool_sequence` is true.
+- **`mempool_sequence` was never read at all** (#219). It now attaches
+  `Mempool`'s own running count of the transactions it has added or
+  removed, under the key `mempool_sequence`, next to `txids`
+  (`src/rpc/mempool.cpp:635-639`). `Mempool` gained a `sequence` field,
+  starting at `1` and bumped once in `add_tx` and once in `remove_tx`, on
+  the same branch that already guards each against a no-op — Core's own
+  `m_sequence_number` starts at `1`, not `0` (`src/txmempool.h:202`), and
+  is "incremented once every time a transaction is added or removed from
+  the mempool for any reason" (`:200-202`), so a fresh mempool with no
+  events answers `mempool_sequence: 1`, not `0`, and a duplicate add or
+  an absent remove is neither an addition nor a removal.
+- **`verbose` and `mempool_sequence` both true is refused**, matching
+  `MempoolToJSON`'s own `RPC_INVALID_PARAMETER` for the combination
+  (`src/rpc/mempool.cpp:608-611`), rather than silently answering one
+  and dropping the other.

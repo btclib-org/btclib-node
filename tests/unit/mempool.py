@@ -91,6 +91,34 @@ def test_removing_what_was_never_there_changes_nothing() -> None:
     assert mempool.bytesize == 0
 
 
+def test_the_sequence_starts_at_one_and_counts_every_real_add_and_remove_once() -> None:
+    # Core's own semantics, `CTxMemPool::m_sequence_number`
+    # (src/txmempool.h:200-202): "incremented once every time a
+    # transaction is added or removed from the mempool for any
+    # reason" -- but a no-op is neither an addition nor a removal, the
+    # same guard size and bytesize already have above. The field starts
+    # at 1, not 0 (`:202`), and `GetSequence` (`:598-600`) -- what
+    # `getrawmempool`'s `mempool_sequence` reads -- answers the current,
+    # already-bumped value, so a fresh mempool with zero events answers
+    # 1 and every later answer is Core's own N+1 after N events, not N
+    mempool = Mempool(Logger(debug=True))
+    assert mempool.sequence == 1
+    tx = generate_random_transaction()
+
+    mempool.add_tx(tx)
+    assert mempool.sequence == 2
+    mempool.add_tx(tx)
+    assert mempool.sequence == 2
+
+    mempool.remove_tx(tx)
+    assert mempool.sequence == 3
+    mempool.remove_tx(tx)
+    assert mempool.sequence == 3
+
+    mempool.remove_tx(generate_random_transaction())
+    assert mempool.sequence == 3
+
+
 def test_nothing_is_missing_when_everything_is_held() -> None:
     mempool = Mempool(Logger(debug=True))
     txs = [a_witness_transaction() for _ in range(3)]
