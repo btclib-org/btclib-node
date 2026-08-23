@@ -407,6 +407,30 @@ def test_an_address_a_peer_told_us_about_is_kept_without_its_timestamp() -> None
     assert kept.address == early.address
 
 
+def test_two_gossiped_records_for_one_endpoint_settle_on_the_latest_services() -> None:
+    # #247: two records for the same network id, address and port but
+    # different `services` used to become two members of the table
+    # instead of one settling on the endpoint's latest `services`
+    peer_db = a_peer_db()
+    old = peer_address("1.2.3.4", 8333, services=0)
+    new = peer_address("1.2.3.4", 8333, services=1)
+    peer_db.add_addresses([old, new])
+    (kept,) = peer_db.addresses
+    assert kept.services == 1
+
+
+def test_updating_an_endpoint_already_known_does_not_spend_the_cap() -> None:
+    # a second gossip for an endpoint the table already holds is not a
+    # new endpoint, so it must not be turned away as though the cap had
+    # run out on it
+    peer_db = a_peer_db()
+    peer_db.addresses = {peer_address("1.2.3.4", port) for port in range(10000)}
+    peer_db.add_addresses([peer_address("1.2.3.4", 0, services=1)])
+    assert len(peer_db.addresses) == 10000
+    (updated,) = [addr for addr in peer_db.addresses if addr.port == 0]
+    assert updated.services == 1
+
+
 def test_an_address_that_answered_is_preferred_within_the_same_run() -> None:
     # #123: dialling should not draw uniformly over a table that already
     # knows which of its entries actually answered, even before any of
@@ -500,6 +524,45 @@ def test_a_stale_answered_address_no_longer_holds_off_the_seeds(
 
     second = a_peer_db(data_dir=tmp_path)
     assert second.ask_dns_nodes
+    second.close()
+
+
+def test_get_active_addresses_deletes_a_stale_row_from_the_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #253: nothing in `add_active_address` ever bounded the durable
+    # `answered-` rows the way `add_addresses`'s 10000-entry cap bounds
+    # `known-` ones
+    peer_db = a_peer_db(data_dir=tmp_path)
+    stale = peer_address("1.2.3.4", 8333)
+    four_hours_ago = time.time() - 3600 * 4
+    with monkeypatch.context() as patch:
+        patch.setattr(time, "time", lambda: four_hours_ago)
+        peer_db.add_active_address(stale)
+    assert peer_db.db is not None
+    assert list(peer_db.db)
+    peer_db.get_active_addresses()
+    assert not list(peer_db.db)
+    peer_db.close()
+
+
+def test_a_stale_answered_row_does_not_survive_a_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = a_peer_db(data_dir=tmp_path)
+    stale = peer_address("1.2.3.4", 8333)
+    four_hours_ago = time.time() - 3600 * 4
+    with monkeypatch.context() as patch:
+        patch.setattr(time, "time", lambda: four_hours_ago)
+        first.add_active_address(stale)
+    first.close()
+
+    second = a_peer_db(data_dir=tmp_path)
+    # `__init__` already calls `get_active_addresses` once, to decide
+    # `ask_dns_nodes`, so the row is gone from the store by the time
+    # construction returns
+    assert second.db is not None
+    assert not list(second.db)
     second.close()
 
 
