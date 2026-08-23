@@ -28,9 +28,9 @@ dependencies = [
 # PyPI shows keywords as the metadata gives them, and GitHub sorts its
 # own topics, so the order decides only which one goes when the twenty
 # GitHub allows are full. Lowercase throughout, a GitHub topic being
-# lowercase or not a topic, so one spelling serves both lists -- and
-# this repository has no topics set today, which is the other half of
-# this list and a dashboard action rather than a file.
+# lowercase or not a topic, so one spelling serves both lists. The
+# topics set on the repository are the other half of this list and are
+# not in any file: REPOSITORY.md records the call that reads them back.
 #
 # What is not here: `python`, which names no feature and is what the
 # `Programming Language ::` classifiers below already say; and
