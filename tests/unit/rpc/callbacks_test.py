@@ -25,19 +25,22 @@ from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
-from btclib_node.chains import RegTest
+from btclib_node.chains import Main, RegTest
 from btclib_node.constants import P2pConnStatus
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from btclib_node.rpc.callbacks import (
     get_best_block_hash,
+    get_block_count,
     get_block_hash,
     get_block_header,
+    get_blockchain_info,
     get_connection_count,
     get_mempool_info,
     get_peer_info,
     get_raw_mempool,
+    get_raw_transaction,
     ping,
     send_raw_transaction,
     service_names,
@@ -312,6 +315,199 @@ def test_a_raw_mempool_parameter_of_the_wrong_json_type_is_named() -> None:
     assert raised.value.code == RpcErrorCode.TYPE_ERROR
     assert (
         raised.value.message == "JSON value of type number is not of expected type bool"
+    )
+
+
+def a_tx_lookup_node(
+    mempool_txs: list[Tx] | None = None,
+    blocks: dict[bytes, Any] | None = None,
+) -> Any:
+    """A node whose mempool and block store are what get_raw_transaction reads.
+
+    `blocks` keys a `SimpleNamespace(transactions=[...])` off the hash
+    `get_block_info` would answer it for -- `a_block_index`'s own shape,
+    reused here for the height and active-chain position a verbose
+    answer names, with `block_db.get_block` a plain dict lookup beside
+    it, `None` for a hash the index carries and the block store does
+    not: BlockIndex and BlockDb are two stores for a reason (pruning),
+    and this is the one place `get_raw_transaction` reads them both.
+    """
+    mempool = Mempool(Logger(debug=True))
+    for tx in mempool_txs or []:
+        mempool.add_tx(tx)
+    block_index = a_block_index([])
+    if blocks:
+        headers = [block.header for block in blocks.values()]
+        block_index = a_block_index(sorted(headers, key=lambda h: h.time))
+    return cast(
+        "Node",
+        SimpleNamespace(
+            mempool=mempool,
+            chainstate=SimpleNamespace(block_index=block_index),
+            block_db=SimpleNamespace(get_block=(blocks or {}).get),
+        ),
+    )
+
+
+def test_a_mempool_transaction_answers_the_raw_hex_by_default() -> None:
+    tx = a_tx()
+    node = a_tx_lookup_node(mempool_txs=[tx])
+    assert get_raw_transaction(node, _CONN, [tx.id.hex()]) == tx.serialize(True).hex()
+
+
+def test_a_mempool_transaction_verbose_carries_no_block_fields() -> None:
+    tx = a_tx()
+    node = a_tx_lookup_node(mempool_txs=[tx])
+    out = get_raw_transaction(node, _CONN, [tx.id.hex(), True])
+    assert isinstance(out, dict)
+    assert out["txid"] == tx.id.hex()
+    assert out["hex"] == tx.serialize(True).hex()
+    assert "blockhash" not in out
+    assert "confirmations" not in out
+
+
+def test_a_transaction_neither_mempool_nor_named_block_is_refused() -> None:
+    node = a_tx_lookup_node()
+    with pytest.raises(RpcError) as raised:
+        get_raw_transaction(node, _CONN, ["11" * 32])
+    assert raised.value.code == RpcErrorCode.INVALID_ADDRESS_OR_KEY
+    assert raised.value.message.startswith("No such mempool transaction.")
+
+
+def test_a_transaction_is_read_out_of_the_block_named() -> None:
+    tx = a_tx()
+    header = generate_random_header_chain(1, RegTest().genesis.hash)[0]
+    block = SimpleNamespace(header=header, transactions=[tx])
+    node = a_tx_lookup_node(blocks={header.hash: block})
+
+    hex_answer = get_raw_transaction(
+        node, _CONN, [tx.id.hex(), False, header.hash.hex()]
+    )
+    assert hex_answer == tx.serialize(True).hex()
+
+    verbose = get_raw_transaction(node, _CONN, [tx.id.hex(), True, header.hash.hex()])
+    assert isinstance(verbose, dict)
+    assert verbose["blockhash"] == header.hash.hex()
+    assert verbose["in_active_chain"] is True
+    assert verbose["confirmations"] == 1
+
+
+def test_a_transaction_off_the_active_chain_is_named_but_not_confirmed() -> None:
+    tx = a_tx()
+    header = generate_random_header_chain(1, RegTest().genesis.hash)[0]
+    block = SimpleNamespace(header=header, transactions=[tx])
+    node = a_tx_lookup_node(blocks={header.hash: block})
+    # this block is indexed and stored but not on the active chain --
+    # a_block_index's own `validated` narrows what generate_active_chain
+    # would otherwise mean, and here it is simplest to fake directly
+    block_index = node.chainstate.block_index
+    block_index.active_chain = [RegTest().genesis.hash]
+
+    verbose = get_raw_transaction(node, _CONN, [tx.id.hex(), True, header.hash.hex()])
+    assert isinstance(verbose, dict)
+    assert verbose["in_active_chain"] is False
+    assert verbose["confirmations"] == -1
+
+
+def test_a_transaction_the_named_block_does_not_hold_is_refused() -> None:
+    tx = a_tx()
+    other = a_tx(b"\x22")
+    header = generate_random_header_chain(1, RegTest().genesis.hash)[0]
+    block = SimpleNamespace(header=header, transactions=[other])
+    node = a_tx_lookup_node(blocks={header.hash: block})
+
+    with pytest.raises(RpcError) as raised:
+        get_raw_transaction(node, _CONN, [tx.id.hex(), False, header.hash.hex()])
+    assert raised.value.code == RpcErrorCode.INVALID_ADDRESS_OR_KEY
+    assert raised.value.message.startswith(
+        "No such transaction found in the provided block."
+    )
+
+
+def test_an_unknown_block_hash_is_refused_by_name() -> None:
+    node = a_tx_lookup_node()
+    with pytest.raises(RpcError) as raised:
+        get_raw_transaction(node, _CONN, ["11" * 32, False, "22" * 32])
+    assert raised.value.code == RpcErrorCode.INVALID_ADDRESS_OR_KEY
+    assert raised.value.message == "Block hash not found"
+
+
+def test_a_block_the_index_knows_and_the_store_does_not_is_unavailable() -> None:
+    # BlockIndex and BlockDb are two stores; a hash the first carries
+    # and the second does not is a pruned block, not a wrong request
+    tx = a_tx()
+    header = generate_random_header_chain(1, RegTest().genesis.hash)[0]
+    node = a_tx_lookup_node(blocks={header.hash: SimpleNamespace(header=header)})
+    node.block_db.get_block = lambda _hash: None
+
+    with pytest.raises(RpcError) as raised:
+        get_raw_transaction(node, _CONN, [tx.id.hex(), False, header.hash.hex()])
+    assert raised.value.code == RpcErrorCode.MISC_ERROR
+    assert raised.value.message == "Block not available"
+
+
+def test_no_txid_at_all_is_answered_with_the_usage() -> None:
+    node = a_tx_lookup_node()
+    with pytest.raises(RpcError) as raised:
+        get_raw_transaction(node, _CONN, [])
+    assert raised.value.code == RpcErrorCode.MISC_ERROR
+    assert raised.value.message.startswith("getrawtransaction")
+
+
+def test_a_txid_of_the_wrong_json_type_is_named() -> None:
+    node = a_tx_lookup_node()
+    with pytest.raises(RpcError) as raised:
+        get_raw_transaction(node, _CONN, [5])
+    assert raised.value.code == RpcErrorCode.TYPE_ERROR
+    assert (
+        raised.value.message
+        == "JSON value of type number is not of expected type string"
+    )
+
+
+def test_a_txid_that_is_not_hex_is_named_back_to_the_client() -> None:
+    node = a_tx_lookup_node()
+    with pytest.raises(RpcError) as raised:
+        get_raw_transaction(node, _CONN, ["zz"])
+    assert raised.value.code == RpcErrorCode.INVALID_PARAMETER
+    assert "zz" in raised.value.message
+
+
+def test_a_blockhash_of_the_wrong_json_type_is_named() -> None:
+    node = a_tx_lookup_node()
+    with pytest.raises(RpcError) as raised:
+        get_raw_transaction(node, _CONN, ["11" * 32, False, 5])
+    assert raised.value.code == RpcErrorCode.TYPE_ERROR
+    assert (
+        raised.value.message
+        == "JSON value of type number is not of expected type string"
+    )
+
+
+def test_a_blockhash_that_is_not_hex_is_named_back_to_the_client() -> None:
+    node = a_tx_lookup_node()
+    with pytest.raises(RpcError) as raised:
+        get_raw_transaction(node, _CONN, ["11" * 32, False, "zz"])
+    assert raised.value.code == RpcErrorCode.INVALID_PARAMETER
+    assert "zz" in raised.value.message
+
+
+def test_a_null_blockhash_is_the_same_as_none_given() -> None:
+    tx = a_tx()
+    node = a_tx_lookup_node(mempool_txs=[tx])
+    assert (
+        get_raw_transaction(node, _CONN, [tx.id.hex(), False, None])
+        == tx.serialize(True).hex()
+    )
+
+
+def test_a_verbose_of_the_wrong_json_type_is_named() -> None:
+    node = a_tx_lookup_node()
+    with pytest.raises(RpcError) as raised:
+        get_raw_transaction(node, _CONN, ["11" * 32, "true"])
+    assert raised.value.code == RpcErrorCode.TYPE_ERROR
+    assert (
+        raised.value.message == "JSON value of type string is not of expected type bool"
     )
 
 
@@ -691,6 +887,41 @@ def test_the_tip_and_the_block_at_a_height_are_read_off_the_active_chain() -> No
     assert get_best_block_hash(node, _CONN, []) == chain[-1]
     assert get_block_hash(node, _CONN, [0]) == chain[0]
     assert get_block_hash(node, _CONN, [1]) == chain[1]
+
+
+def test_block_count_is_the_active_chain_s_own_last_index() -> None:
+    # the genesis alone is height 0, matching Core's, not length 1
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chainstate=SimpleNamespace(
+                block_index=SimpleNamespace(active_chain=[b"\x00" * 32])
+            )
+        ),
+    )
+    assert get_block_count(node, _CONN, []) == 0
+
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chainstate=SimpleNamespace(
+                block_index=SimpleNamespace(active_chain=[b"\x11" * 32, b"\x22" * 32])
+            )
+        ),
+    )
+    assert get_block_count(node, _CONN, []) == 1
+
+
+def test_blockchain_info_names_the_chain_in_core_s_own_vocabulary() -> None:
+    # btclib-org/btclib-node#21: BitcoinCoreFetcher.assert_network reads
+    # "chain" alone, and Core's own vocabulary for it is not btclib's
+    # network name -- chains.py's Chain.name is "mainnet", Core answers
+    # "main"
+    node = cast("Node", SimpleNamespace(chain=RegTest()))
+    assert get_blockchain_info(node, _CONN, []) == {"chain": "regtest"}
+
+    node = cast("Node", SimpleNamespace(chain=Main()))
+    assert get_blockchain_info(node, _CONN, []) == {"chain": "main"}
 
 
 def a_chain_index_node(chain: list[bytes]) -> Any:

@@ -22,6 +22,7 @@ class RpcErrorCode(enum.IntEnum):
     TYPE_ERROR = -3
     INVALID_ADDRESS_OR_KEY = -5
     INVALID_PARAMETER = -8
+    PARSE_ERROR = -32700
     INVALID_REQUEST = -32600
     METHOD_NOT_FOUND = -32601
     INTERNAL_ERROR = -32603
@@ -66,6 +67,24 @@ def json_type_name(value: Any) -> str:
     which produces no other Python type.
     """
     return _JSON_TYPE_NAMES[type(value)]
+
+
+def error_msg(code: RpcErrorCode, message: str, id: Any = None) -> dict[str, Any]:
+    """The error response of JSON-RPC 2.0's section 5, code and message given.
+
+    The specification requires the answer to carry the id of the request
+    it answers, and reserves null for a request whose id could not be
+    read out of it -- which is what its own example for an invalid
+    request object shows. So a caller passes the id wherever
+    `is_valid_rpc` has already found one, and leaves it out where the
+    request -- or, for `PARSE_ERROR`, the body before it was even a
+    request -- is what was wrong.
+    """
+    return {
+        "jsonrpc": "2.0",
+        "error": {"code": code, "message": message},
+        "id": id,
+    }
 
 
 def bool_param(params: list[Any], position: int, *, default: bool) -> bool:

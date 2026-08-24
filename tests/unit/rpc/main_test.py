@@ -16,9 +16,8 @@ from typing import Any, NoReturn, cast
 import pytest
 
 from btclib_node.rpc.callbacks import callbacks
-from btclib_node.rpc.errors import RpcError, RpcErrorCode
+from btclib_node.rpc.errors import RpcError, RpcErrorCode, error_msg
 from btclib_node.rpc.main import (
-    error_msg,
     get_connection,
     handle_rpc,
     is_valid_rpc,
@@ -185,6 +184,20 @@ def test_is_valid_rpc_wants_an_object_with_a_method_and_an_id() -> None:
     assert not is_valid_rpc("garbage")
     assert not is_valid_rpc({"id": "a"})
     assert not is_valid_rpc({"method": "ping"})
+
+
+def test_a_method_that_is_not_a_string_is_invalid_not_a_crash() -> None:
+    # a list is unhashable, so `request["method"] not in callbacks`
+    # raises TypeError if is_valid_rpc lets it through -- #63
+    assert not is_valid_rpc({"jsonrpc": "2.0", "id": 1, "method": ["a"]})
+    assert not is_valid_rpc({"jsonrpc": "2.0", "id": 1, "method": {"a": 1}})
+
+
+def test_a_method_that_is_not_a_string_is_answered_invalid_request() -> None:
+    node, sent, _, stopped = make_node([{"jsonrpc": "2.0", "id": 1, "method": ["a"]}])
+    handle_rpc(node)
+    assert sent == [[error_msg(RpcErrorCode.INVALID_REQUEST, "Invalid request")]]
+    assert not stopped
 
 
 def test_an_error_carries_the_id_of_the_request_it_answers() -> None:

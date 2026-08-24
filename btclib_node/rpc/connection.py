@@ -12,6 +12,7 @@ from io import BytesIO
 from typing import TYPE_CHECKING, Any, override
 
 from btclib_node.p2p.address import ip_and_port
+from btclib_node.rpc.errors import RpcErrorCode, error_msg
 
 if TYPE_CHECKING:
     from btclib_node.rpc.manager import RpcManager
@@ -87,7 +88,30 @@ class Connection:
                 raise ConnectionError
             await self._recv_until(lambda: len(self.buffer) >= length)
 
-            body = json.loads(self.buffer[:length])
+            try:
+                body = json.loads(self.buffer[:length])
+            except ValueError:
+                # JSON-RPC 2.0 section 5.1's own `PARSE_ERROR`, id
+                # `null`: a body that is not JSON is not a request this
+                # node can read enough of to disagree with, where the
+                # header section above already parsed. `ValueError` and
+                # not `json.JSONDecodeError` alone, since malformed
+                # bytes `json.loads` cannot even decode as text raise
+                # the stdlib's own `UnicodeDecodeError`, a `ValueError`
+                # too and the same "invalid JSON" from the client's side
+                await self.async_send(
+                    [error_msg(RpcErrorCode.PARSE_ERROR, "Parse error")]
+                )
+                # send() below is what a valid request answers through,
+                # and it is what pops this id out of `manager.connections`
+                # once `handle_rpc` is done with it; this reply never
+                # reaches `handle_rpc`, so the entry is forgotten here
+                # instead -- left in place otherwise, an unauthenticated,
+                # all-interfaces port (#27) fed one malformed body per
+                # connection it never forgets
+                self.manager.connections.pop(self.id, None)
+                return
+
             if not isinstance(body, list):
                 body = [body]
             self.manager.messages.append((body, self.id))
