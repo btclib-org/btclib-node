@@ -56,6 +56,10 @@ class AManager:
         self.connections: dict[int, Any] = {}
         self.started = False
         self.stopped = False
+        # only P2pManager's own peer_db attribute has one; run()'s
+        # shutdown path reads it off whichever manager it holds without
+        # checking which, so the stand-in carries it too (#263)
+        self.peer_db = SimpleNamespace(close=lambda: None)
 
     def start(self) -> None:
         self.started = True
