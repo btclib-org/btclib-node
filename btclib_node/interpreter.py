@@ -41,7 +41,7 @@ def check_transactions(
     if not transaction_data:
         return
     if any(len(x[0]) != len(x[1].vin) for x in transaction_data):
-        raise ValueError
+        raise ValueError("prevout count does not match input count")
 
     FLAGS = get_flags(node.config, index)
 

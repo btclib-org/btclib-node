@@ -300,7 +300,7 @@ class BlockIndex:
 
     def remove_from_active_chain(self, block_hash: bytes) -> None:
         if block_hash != self.active_chain[-1]:
-            raise Exception
+            raise Exception("block_hash is not the active chain's tip")
         self.active_chain.pop()
 
     def add_headers(self, headers: Iterable[BlockHeader]) -> bytes | None:

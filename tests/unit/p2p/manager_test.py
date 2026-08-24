@@ -538,13 +538,15 @@ def test_every_connection_is_pinged_and_every_connection_is_stopped(
     manager = a_manager([first, second])
     manager.pending_connections[pending.id] = pending
     manager.ping_all()
-    assert first.sent == ["ping"] and second.sent == ["ping"]
+    assert first.sent == ["ping"]
+    assert second.sent == ["ping"]
     # `ping` is as much a post-handshake message as `inv`/`tx` is, so a
     # connection still finishing its handshake is not one of "every
     # connection" ping_all reaches: btclib-org/btclib-node#131
     assert pending.sent == []
     manager.stop_all()
-    assert first.stopped == [True] and second.stopped == [True]
+    assert first.stopped == [True]
+    assert second.stopped == [True]
     # shutdown is different: a socket mid-handshake still gets closed
     assert pending.stopped == [True]
 
@@ -749,7 +751,7 @@ def test_a_manager_that_cannot_bind_never_says_it_is_listening(
         manager = a_manager(port=taken.getsockname()[1])
         manager.start()
         try:
-            with pytest.raises(Exception, match="within 0.5 seconds"):
+            with pytest.raises(Exception, match=r"within 0\.5 seconds"):
                 wait_until_listening(manager, timeout=0.5)
         finally:
             manager.stop()

@@ -16,9 +16,9 @@ def test_chain_selection() -> None:
     assert Config(chain="testnet") == Config(chain=TestNet())
     assert Config(chain="signet") == Config(chain=SigNet())
     assert Config(chain="regtest") == Config(chain=RegTest())
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="chain must be a Chain or str"):
         Config(chain=None)  # type: ignore[arg-type]
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="unknown chain"):
         Config(chain="wrongchain")
 
 

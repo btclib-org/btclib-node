@@ -71,9 +71,11 @@ class Config:
             elif chain == "regtest":
                 self.chain = RegTest()
             else:
-                raise ValueError
+                raise ValueError(f"unknown chain: {chain!r}")
         else:
-            raise ValueError
+            raise ValueError(
+                f"chain must be a Chain or str, not {type(chain).__name__}"
+            )
 
         if data_dir:
             data_dir = Path(data_dir)

@@ -18,6 +18,41 @@ to check the guess.
 
 ## Unreleased
 
+### `select` gains `PT` and `RUF043`, and bare raises carry a reason
+
+- **`select` gains `PT` (flake8-pytest-style), and `extend-select` gains
+  the single rule `RUF043`** (issue #284). `RUF043` travels with `PT`
+  rather than waiting for the rest of `RUF`, because the fix for
+  `PT011` is to give `pytest.raises` a `match=`, and a `match=` carrying
+  an unescaped regex metacharacter is exactly what `RUF043` reports; the
+  comment above `select` says the rest of `RUF` is its own round.
+- **`Config.__init__`'s `raise ValueError` for an unrecognised `chain`,
+  `check_transactions`'s `raise ValueError` for a prevout list that
+  does not match its transaction's inputs, and the `raise Exception`
+  in `UtxoIndex.add_block`, `UtxoIndex.apply_rev_block` and
+  `BlockIndex.remove_from_active_chain` now carry a message.** Each
+  raised bare before, so nothing told the failures within one function
+  apart; `PT011` asked the tests here for a narrower catch, and a
+  message the tests can `match=` is the honest answer where the
+  exception itself stays what it already was. The `raise Exception`
+  sites already carried a bare `noqa: B017, PT011` with no reason
+  recorded, from before `PT` was selected; a message and a `match=`
+  answer both rules at once — `B017` (still unselected) checks the
+  same way `PT011` does — so the whole `noqa` comes off rather than
+  narrowing to the half that is not yet enforced.
+- **The `pytest.raises(RuntimeError | KeyboardInterrupt)` blocks in
+  `tests/unit/db_test.py` that keep the write before the raise inside
+  the block, against `PT012`, each carry a `noqa` explaining why:** the
+  write has to land on the open batch before the exception that
+  unwinds it, which is what the test is about, so it cannot move out
+  of the block.
+- **A composite `assert a and b` splits into two `assert`s wherever
+  `PT018` finds one**, so a failure names which half failed.
+- The long comment above `select` re-points its two citations of #25,
+  closed in favour of #284 and #285: the general reference-`select`
+  measurement and its suggested shape are #284's, and the `D`
+  (pydocstyle) paragraph is #285's.
+
 ### `RpcManager.stop()` closes what `P2pManager.stop()` was already fixed to close
 
 - **The listening socket is now closed explicitly in `stop()` rather

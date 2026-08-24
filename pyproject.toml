@@ -423,7 +423,7 @@ explicit-preview-rules = true
 # closer to what black/isort/flake8/autoflake/yesqa/pyupgrade/bandit
 # actually checked before this repository moved to ruff: pycodestyle
 # (E/W), pyflakes (F, replacing autoflake and most of yesqa), isort (I),
-# pyupgrade (UP), bandit (S), plus CPY. Issue #25 measured the standard's
+# pyupgrade (UP), bandit (S), plus CPY. Issue #284 measured the standard's
 # full reference `select` (btclib's own, plus CPY) against this tree --
 #
 #   uv run ruff check --select \
@@ -438,11 +438,11 @@ explicit-preview-rules = true
 # FIX, FLY, ISC, PGH, PIE, PTH, RSE, SLOT, T10 and TID. Adopting those
 # now costs nothing, and what is left is the rest of that select list,
 # one rule family (or a handful of related ones) at a time, per issue
-# #25's own suggested shape.
+# #284's own suggested shape.
 # "D" (pydocstyle) is not selected either, and for the same reason at a
 # larger scale: measured, almost every module under `btclib_node/`
 # carries no docstring at all, so turning it on is a documentation pass
-# across the whole package, tracked in the same issue.
+# across the whole package, tracked in #285.
 select = [
     "C4",   # flake8-comprehensions
     "CPY",  # flake8-copyright, replacing the copyright-notice hook below
@@ -455,6 +455,7 @@ select = [
     "ISC",  # flake8-implicit-str-concat
     "PGH",  # pygrep-hooks
     "PIE",  # flake8-pie
+    "PT",   # flake8-pytest-style
     "PTH",  # flake8-use-pathlib
     "RSE",  # flake8-raise
     "S",    # flake8-bandit, replacing the two bandit hooks below
@@ -464,7 +465,11 @@ select = [
     "UP",   # pyupgrade, replacing the pyupgrade hook below
     "W",    # pycodestyle warnings, replacing flake8
 ]
-extend-select = ["unspecified-encoding"]
+# RUF043 alone rather than the rest of RUF, which is its own round
+# (#284): a `match=` fixing PT011 below can carry a regex metacharacter
+# unescaped, and RUF043 is what catches that in the same pass instead of
+# leaving it for whichever round selects the rest of RUF.
+extend-select = ["unspecified-encoding", "RUF043"]
 ignore = [
     # code length is enforced by the formatter, which reflows to its 88
     # columns everything it is allowed to rewrite; max-doc-length below

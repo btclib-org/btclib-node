@@ -143,8 +143,8 @@ def test_add_tx(node: Node) -> None:
     for _ in range(len(chain)):
         update_chain(node)
 
+    invalid_tx = generate_random_transaction()
     with pytest.raises(MissingPrevoutError):
-        invalid_tx = generate_random_transaction()
         verify_mempool_acceptance(node, invalid_tx)
 
     tx1 = generate_random_transaction(chain[-1].transactions[0].id)

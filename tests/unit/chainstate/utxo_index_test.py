@@ -90,7 +90,7 @@ def test_spending_an_output_the_batch_already_spent_is_refused(tmp_path: Path) -
     utxo_index.add_block(
         one_tx_block([coinbase(b"\x02"), spending(out, b"\x02")], b"\x02" * 32)
     )
-    with pytest.raises(Exception):  # noqa: B017, PT011
+    with pytest.raises(Exception, match="already spent"):
         utxo_index.add_block(
             one_tx_block([coinbase(b"\x03"), spending(out, b"\x03")], b"\x03" * 32)
         )
@@ -101,7 +101,7 @@ def test_spending_an_output_nobody_has_is_refused(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index
     nowhere = OutPoint(b"\x11" * 32, 0)
-    with pytest.raises(Exception):  # noqa: B017, PT011
+    with pytest.raises(Exception, match="not found"):
         utxo_index.add_block(
             one_tx_block([coinbase(b"\x04"), spending(nowhere, b"\x04")])
         )
@@ -112,7 +112,7 @@ def test_a_rev_block_that_removes_what_is_not_there_is_refused(tmp_path: Path) -
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index
     missing = OutPoint(b"\x11" * 32, 0)
-    with pytest.raises(Exception):  # noqa: B017, PT011
+    with pytest.raises(Exception, match="not found"):
         utxo_index.apply_rev_block(
             RevBlock(hash=b"\x00" * 32, to_add=[], to_remove=[missing])
         )
@@ -171,7 +171,7 @@ def test_a_rev_block_that_removes_what_the_batch_already_spent_is_refused(
         one_tx_block([coinbase(b"\x08"), spending(out, b"\x08")], b"\x08" * 32)
     )
     assert out.serialize(check_validity=False) in utxo_index.removed_utxos
-    with pytest.raises(Exception):  # noqa: B017, PT011
+    with pytest.raises(Exception, match="already removed"):
         utxo_index.apply_rev_block(
             RevBlock(hash=b"\x08" * 32, to_add=[], to_remove=[out])
         )
