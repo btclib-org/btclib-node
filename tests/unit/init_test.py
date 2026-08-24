@@ -13,6 +13,7 @@ messages directly and what it does with them does not depend on
 scheduling.
 """
 
+import os
 import re
 import signal
 import threading
@@ -371,6 +372,9 @@ class APool:
     def terminate(self) -> None:
         self.built.append("terminated")
 
+    def join(self) -> None:
+        self.built.append("joined")
+
 
 @pytest.fixture
 def pools(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
@@ -391,17 +395,22 @@ def test_the_worker_pool_is_built_on_first_use_and_only_once(
     assert not pools
     pool = node.worker_pool
     assert node.worker_pool is pool
-    assert pools == [8]
+    assert pools == [btclib_node._WORKER_PROCESSES]
 
 
 def test_a_node_that_used_the_pool_takes_it_down_with_it(
     tmp_path: Path, pools: list[Any]
 ) -> None:
+    # terminate() alone leaves the pool referenced by a Node that a
+    # test can go on holding well past its own worker processes exiting
+    # (btclib-org/btclib-node#195): join() has to follow it, and the
+    # reference has to go, so nothing later is left to collect it.
     node = a_node(tmp_path)
     assert node.worker_pool is not None
     node.start()
     node.stop()
-    assert pools == [8, "terminated"]
+    assert pools == [btclib_node._WORKER_PROCESSES, "terminated", "joined"]
+    assert node._worker_pool is None
 
 
 def test_a_node_that_never_used_the_pool_does_not_build_one_to_stop_it(
@@ -410,6 +419,38 @@ def test_a_node_that_never_used_the_pool_does_not_build_one_to_stop_it(
     node = a_node(tmp_path)
     node.start()
     node.stop()
+    assert not pools
+
+
+def test_del_closes_a_worker_pool_on_a_node_that_was_never_started(
+    tmp_path: Path, pools: list[Any]
+) -> None:
+    # tests/unit/main_test.py calls update_chain directly against a
+    # Node built and never start()ed, which is the shape this guards:
+    # run()'s own teardown never runs for one, so nothing but __del__
+    # ever takes the pool it built back down (btclib-org/btclib-node#195).
+    # Called directly rather than through `del` and a collection: the
+    # node's own signal handler closes over `self`, so it is still
+    # referenced from `signal`'s table and a real collection would not
+    # reach it inside this test, only whenever the next test's own node
+    # replaces that handler.
+    node = a_node(tmp_path)
+    assert node.worker_pool is not None
+    assert pools == [btclib_node._WORKER_PROCESSES]
+
+    node.__del__()
+
+    assert pools == [btclib_node._WORKER_PROCESSES, "terminated", "joined"]
+    assert node._worker_pool is None
+
+
+def test_del_on_a_node_that_never_built_a_pool_does_nothing(
+    tmp_path: Path, pools: list[Any]
+) -> None:
+    node = a_node(tmp_path)
+
+    node.__del__()
+
     assert not pools
 
 
@@ -442,7 +483,7 @@ def test_warm_worker_pool_builds_it_and_warms_it_off_the_calling_thread(
 
     assert node._worker_pool_warmup is not None
     node._worker_pool_warmup.join(timeout=5)
-    assert built == [8]
+    assert built == [btclib_node._WORKER_PROCESSES]
     (pool,) = instances
     (call,) = pool.calls
     fn, args = call
@@ -472,7 +513,7 @@ def test_a_second_call_to_warm_worker_pool_does_not_start_a_second_thread(
     node.warm_worker_pool()
 
     assert node._worker_pool_warmup is first
-    assert built == [8]
+    assert built == [btclib_node._WORKER_PROCESSES]
 
 
 def test_stopping_the_node_waits_for_an_in_flight_warmup_before_the_pool_comes_down(
@@ -513,4 +554,43 @@ def test_stopping_the_node_waits_for_an_in_flight_warmup_before_the_pool_comes_d
 
     release.set()
     node.join(timeout=5)
-    assert built == [8, "terminated"]
+    assert built == [btclib_node._WORKER_PROCESSES, "terminated", "joined"]
+
+
+def test_worker_processes_defaults_to_eight_outside_of_xdist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PYTEST_XDIST_WORKER_COUNT", raising=False)
+    assert btclib_node._default_worker_processes() == 8
+
+
+def test_worker_processes_is_the_machine_split_across_xdist_workers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ten cores split six ways is one process short of two each: what
+    # matters is that the total the run spawns tracks the core count
+    # rather than staying flat at eight regardless of it
+    # (btclib-org/btclib-node#46)
+    monkeypatch.setattr(os, "cpu_count", lambda: 10)
+    monkeypatch.setenv("PYTEST_XDIST_WORKER_COUNT", "6")
+    assert btclib_node._default_worker_processes() == 1
+
+
+def test_worker_processes_under_xdist_never_goes_below_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # more xdist workers than cores still has to build a pool at all:
+    # `Pool(processes=0)` raises
+    monkeypatch.setattr(os, "cpu_count", lambda: 4)
+    monkeypatch.setenv("PYTEST_XDIST_WORKER_COUNT", "20")
+    assert btclib_node._default_worker_processes() == 1
+
+
+def test_worker_processes_falls_back_to_eight_split_if_the_core_count_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # `os.cpu_count()` is documented to return `None` where it cannot
+    # tell
+    monkeypatch.setattr(os, "cpu_count", lambda: None)
+    monkeypatch.setenv("PYTEST_XDIST_WORKER_COUNT", "4")
+    assert btclib_node._default_worker_processes() == 2

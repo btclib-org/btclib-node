@@ -2,6 +2,7 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+import os
 import signal
 import threading
 import time
@@ -47,9 +48,32 @@ __all__ = ["Node"]
 # to this comment.
 STOP_TIMEOUT = 30
 
+
+def _default_worker_processes() -> int:
+    """How many processes `Node.worker_pool` spawns.
+
+    Eight outside of a test run, unconditionally. Under `pytest-xdist`,
+    `PYTEST_XDIST_WORKER_COUNT` is the number of worker processes the
+    run was split across (`xdist/remote.py` sets it in the worker's own
+    environment before any test module is imported), and every one of
+    them builds its own `Node`s and, through them, its own pools: eight
+    processes each, on top of `-n auto`'s one worker per core, is what
+    starves a `wait_until` on a machine that has the cores for the
+    xdist workers alone and not for eight more processes per worker on
+    top of that (btclib-org/btclib-node#46). Dividing the machine's own
+    core count across the workers instead keeps the total the run
+    spawns near that core count, whatever `-n` is set to, and leaves a
+    node running outside of pytest at the flat eight.
+    """
+    xdist_workers = os.environ.get("PYTEST_XDIST_WORKER_COUNT")
+    if xdist_workers is None:
+        return 8
+    return max(1, (os.cpu_count() or 8) // int(xdist_workers))
+
+
 # `Node.worker_pool`'s own size, named so `warm_worker_pool` can compute
-# a warm-up call count from it without a second `8` to drift from.
-_WORKER_PROCESSES = 8
+# a warm-up call count from it without a second literal to drift from.
+_WORKER_PROCESSES = _default_worker_processes()
 
 
 class Node(threading.Thread):
@@ -129,6 +153,35 @@ class Node(threading.Thread):
             if self._worker_pool is None:
                 self._worker_pool = Pool(processes=_WORKER_PROCESSES)
             return self._worker_pool
+
+    def _close_worker_pool(self) -> None:
+        # read, not asked for: the property would build the pool this
+        # exists to take down. `terminate()` alone left `_worker_pool`
+        # referencing a pool whose worker processes and handler threads
+        # it had not waited for; `join()` waits for them here, and
+        # dropping the reference is what stops whatever collects the
+        # `Node` afterwards from finding one still to take down.
+        if self._worker_pool is not None:
+            self._worker_pool.terminate()
+            self._worker_pool.join()
+            self._worker_pool = None
+
+    def __del__(self) -> None:
+        # a backstop for a `Node` built and used without ever being
+        # `start()`ed -- `tests/unit/main_test.py` calls `update_chain`
+        # against one directly, on the thread that built it, to reach a
+        # block's own validation without a loop around it, and that
+        # builds a real `worker_pool` that `run`'s own teardown below
+        # never runs to take back down. Without this, that pool is
+        # still in `Pool.RUN` state whenever something finally collects
+        # it, which is what made `Pool.__del__` warn and reach for a
+        # queue of its own on an xdist worker's stderr, reported
+        # against btclib-org/btclib-node#195. `getattr` rather than the
+        # attribute itself: `__init__` can raise before `_worker_pool`
+        # is set, and a constructor's exception should not come back
+        # paired with a second one out of here.
+        if getattr(self, "_worker_pool", None) is not None:
+            self._close_worker_pool()
 
     def warm_worker_pool(self) -> None:
         """Build the worker pool now, on a thread of its own, and warm it.
@@ -216,10 +269,7 @@ class Node(threading.Thread):
         # the attribute's own comment above names
         if self._worker_pool_warmup is not None:
             self._worker_pool_warmup.join()
-        # read, not asked for: the property would build the pool this
-        # line exists to take down
-        if self._worker_pool is not None:
-            self._worker_pool.terminate()
+        self._close_worker_pool()
 
         self.logger.info("Stopping node")
         self.logger.close()
