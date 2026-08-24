@@ -10,11 +10,13 @@ port and that queue -- binding it, accepting a client, and letting go
 of both -- and until now only a functional test reached any of it.
 """
 
+import asyncio
 import json
 import socket
 from collections.abc import Iterator, Mapping
+from contextlib import suppress
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import pytest
 
@@ -203,3 +205,149 @@ def test_a_manager_that_cannot_bind_stops_being_alive(
         wait_until(lambda: not manager.is_alive())
     assert logged
     assert not manager.listening.is_set()
+
+
+def test_stop_closes_the_listening_socket_even_when_the_accept_task_never_ran(
+    a_manager: AManagerFactory,
+) -> None:
+    """#323: `stop()` can cancel `server`'s own task before `run_forever`
+    has stepped it even once -- what a manager started and stopped in
+    quick succession does. `Task.cancel()` reaching a coroutine with no
+    frame yet raises `CancelledError` at its own definition point rather
+    than inside the running body, so `with server_socket:` is never
+    entered and its own `__exit__` never runs.
+
+    The task is cancelled directly, before the loop has run a single
+    iteration, which reproduces that deterministically where the real
+    race -- `stop()` racing `run_forever`'s own first iteration -- is
+    not.
+    """
+    manager = a_manager(get_random_port())
+    loop = manager.loop
+    server_socket = manager._bind()  # noqa: SLF001
+    manager._server_socket = server_socket  # noqa: SLF001
+    task = loop.create_task(manager.server(loop, server_socket))
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        loop.run_until_complete(task)
+    # the `with` was never entered: nothing has closed this yet
+    assert server_socket.fileno() != -1
+
+    manager.stop()
+    # a closed socket's own fileno is -1; still >= 0 is still open
+    assert server_socket.fileno() == -1
+
+
+def test_server_does_not_lose_a_connection_accepted_in_the_instant_of_its_own_cancellation(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#323: mirrors `P2pManager.server`'s own test of the same name
+    (#312). `server`'s own `loop.sock_accept(server_socket)` can have its
+    underlying future already carrying a result -- the OS having handed
+    asyncio a connection -- at the very instant `stop`'s
+    `asyncio.all_tasks()` sweep cancels this task. `Task.cancel()` cannot
+    cancel an already-resolved future, so it throws `CancelledError` into
+    the coroutine on its *next* step instead of resuming it with that
+    result, and that result -- an already connected client socket -- is
+    referenced by nothing else once this frame unwinds. `asyncio.shield`
+    is what keeps `server`'s own accept -- a task in its own right, not
+    only a future -- reachable from the `except` below rather than lost
+    with this coroutine's frame.
+
+    `loop.sock_accept` is replaced with a stand-in whose future is
+    resolved, and this task cancelled, by two `call_soon` callbacks
+    scheduled in that order -- deterministic where the real race is not,
+    since a callback the first schedules is appended after the second
+    and so cannot run before it.
+    """
+    manager = a_manager(get_random_port())
+    loop = manager.loop
+    listening_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    accepted, theirs = socket.socketpair()
+    AcceptResult = tuple[socket.socket, tuple[str, int]]
+    fut_holder: dict[str, asyncio.Future[AcceptResult]] = {}
+
+    async def fake_sock_accept(sock: socket.socket) -> AcceptResult:
+        fut: asyncio.Future[AcceptResult] = loop.create_future()
+        fut_holder["fut"] = fut
+        return await fut
+
+    monkeypatch.setattr(loop, "sock_accept", fake_sock_accept)
+    task = loop.create_task(manager.server(loop, listening_socket))
+    try:
+        while "fut" not in fut_holder:
+            loop.run_until_complete(asyncio.sleep(0))
+
+        loop.call_soon(fut_holder["fut"].set_result, (accepted, ("203.0.113.1", 45000)))
+        loop.call_soon(task.cancel)
+        with suppress(asyncio.CancelledError):
+            loop.run_until_complete(task)
+    finally:
+        theirs.close()
+        listening_socket.close()
+    # a closed socket's own fileno is -1; still >= 0 is still open
+    assert accepted.fileno() == -1
+
+
+def test_stop_requests_every_tasks_cancellation_before_awaiting_any_one_of_them(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#323: mirrors `P2pManager.stop`'s own test of the same name
+    (#312). `run_until_complete(task)`, for any one task, drives the
+    *whole* loop, not only that task -- so under a single combined pass
+    over `asyncio.all_tasks()`, a task whose own turn has not yet come up
+    keeps making ordinary forward progress (`server`'s own accept loop)
+    while an earlier task's cancellation is being delivered. A connection
+    it lands that way is added to `self.connections` strictly after the
+    `asyncio.all_tasks()` snapshot has already run, so cancellation never
+    reaches its own `Connection.run` task, which is reported destroyed
+    while still pending.
+
+    Two dummy tasks, standing in for whatever `pending` holds in a real
+    run, each record whether `cancel()` had already been called on the
+    *other* one by the time either is first driven via
+    `run_until_complete`.
+    """
+    manager = a_manager(get_random_port())
+    loop = manager.loop
+    asyncio.set_event_loop(loop)
+
+    async def a_task() -> None:
+        await asyncio.Event().wait()
+
+    async def b_task() -> None:
+        await asyncio.Event().wait()
+
+    task_a = loop.create_task(a_task())
+    task_b = loop.create_task(b_task())
+    loop.run_until_complete(asyncio.sleep(0))
+
+    order: list[str] = []
+    real_cancel_a, real_cancel_b = task_a.cancel, task_b.cancel
+
+    def cancel_a(*args: Any, **kwargs: Any) -> bool:
+        order.append("cancel_a")
+        return real_cancel_a(*args, **kwargs)
+
+    def cancel_b(*args: Any, **kwargs: Any) -> bool:
+        order.append("cancel_b")
+        return real_cancel_b(*args, **kwargs)
+
+    order_at_first_await: list[list[str]] = []
+    real_run_until_complete = loop.run_until_complete
+
+    def recording_run_until_complete(fut: Any) -> Any:
+        order_at_first_await.append(list(order))
+        return real_run_until_complete(fut)
+
+    monkeypatch.setattr(task_a, "cancel", cancel_a)
+    monkeypatch.setattr(task_b, "cancel", cancel_b)
+    monkeypatch.setattr(asyncio, "all_tasks", lambda loop=None: {task_a, task_b})
+    monkeypatch.setattr(loop, "run_until_complete", recording_run_until_complete)
+
+    manager.stop()
+
+    assert order_at_first_await
+    assert order_at_first_await[0] == ["cancel_a", "cancel_b"] or order_at_first_await[
+        0
+    ] == ["cancel_b", "cancel_a"]

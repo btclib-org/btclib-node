@@ -18,6 +18,26 @@ to check the guess.
 
 ## Unreleased
 
+### `RpcManager.stop()` closes what `P2pManager.stop()` was already fixed to close
+
+- **The listening socket is now closed explicitly in `stop()` rather
+  than only through `server`'s own `with server_socket:`, and
+  `server`'s own accept is wrapped in `asyncio.shield`** (closes #323).
+  Mirrors `P2pManager.stop()`'s own fix for the same two races (#312):
+  a coroutine `Task.cancel()` reaches before its first step raises
+  `CancelledError` at its own definition point, so the `with` is never
+  entered and the listening socket is never closed; and an accept
+  already resolved at the instant of cancellation is lost past an
+  unshielded `await`. `stop()` also requests every task's cancellation
+  in its own pass before awaiting any one of them, as `P2pManager.stop()`
+  does — here this closes log noise rather than a leak, since
+  `RpcManager`'s own connections sweep already runs after that same
+  loop and reaches a connection landed during it, where `P2pManager`'s
+  sweep runs before. `RpcManager` has no `dial` or
+  `manage_connections`, so #312's own third mechanism — an outbound
+  connect losing its socket to the same unguarded `except` — has no
+  counterpart here.
+
 ### `Connection.run` no longer takes a parameter it never reads
 
 - **`Connection.run`'s own `connect` parameter is removed** (closes
