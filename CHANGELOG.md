@@ -1952,4 +1952,9 @@ to check the guess.
   substitution `BroadcastTransaction` itself makes ("Use the mempool's
   wtxid for reannouncement"), needed here for the same reason: announcing
   a wtxid `add_tx` never stored answers a peer's `getdata` with
-  `notfound`.
+  `notfound`. This substitution is not gated on `Mempool.is_full()`:
+  `add_tx` returns `False` for an already-held txid whether or not the
+  mempool is full, so a resubmission under a different witness into a
+  mempool with room to spare reached the same mismatched-wtxid
+  announcement before this change, unrelated to the refusal above and
+  present before this branch touched the file.
