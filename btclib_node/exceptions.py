@@ -21,7 +21,11 @@ a class per site would be a name invented for a message read exactly
 once. What groups here shares an actual class of failure instead --
 `ChainstateInconsistencyError` is every site downstream of
 `update_chain` finding that its own index promised something the data
-underneath it does not have, whichever index asked.
+underneath it does not have, whichever index asked -- except where the
+data in question is a candidate block's own, not yet validated at all:
+`InvalidBlockInputError` is that one, `UtxoIndex.add_block`'s own two
+sites, which fire on a peer's bad block rather than this tree's own
+bug.
 """
 
 from btclib.exceptions import BTClibValueError
@@ -38,14 +42,41 @@ class ChainstateInconsistencyError(RuntimeError):
     invariant this violates -- a block marked downloaded that
     `block_db` does not hold, a reverse patch `set_status` already
     trusts that is not on disk, a UTXO `apply_rev_block` is asked to
-    remove that `add_block` did not just add. A peer's bad data is
-    refused earlier and differently (`BTClibException`, a `None`
-    handled in place); reaching here is this tree's own bookkeeping
-    disagreeing with itself, not a peer's doing.
+    remove that this node's own earlier `add_block` did not just add.
+    That last one is the test that actually separates this class from
+    `InvalidBlockInputError` below, which shares its two messages
+    ("prevout not found", "prevout already spent in this batch") but
+    not the invariant: `apply_rev_block` only ever inverts a reverse
+    patch this node wrote for a block it already validated and
+    connected, so a failure there is this tree's own bookkeeping
+    disagreeing with itself. A peer's bad data is refused earlier and
+    differently (`BTClibException`, a `None` handled in place, or
+    `InvalidBlockInputError`); reaching here is never that.
 
     `message` and not a structured payload per call site: what is
     inconsistent (a hash, a count, a status) differs by call site, and
     every one of them is read exactly once, in whatever it raises to.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class InvalidBlockInputError(ValueError):
+    """A candidate block's own transactions fail a UTXO consistency check.
+
+    Raised only by `UtxoIndex.add_block`, while it is walking a
+    freshly-downloaded candidate block's own transactions against the
+    UTXO set for the first time -- before `check_transactions` (script
+    and signature checks) even runs, per `update_chain`'s own sequence
+    in `main.py`. An input spending an output this index cannot find,
+    or spending one a transaction earlier in the same block already
+    spent, is exactly what a malicious or malformed block looks like,
+    not a bug in this node's own bookkeeping -- `ValueError`, like
+    `MissingPrevoutError` above (the same failure, checked at a
+    different point: mempool reprocessing after a reorg, not connecting
+    a new block), and not `ChainstateInconsistencyError`, whose whole
+    point is the opposite claim.
     """
 
     def __init__(self, message: str) -> None:

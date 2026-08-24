@@ -225,11 +225,19 @@ class Connection:
                 try:
                     self.buffer += data
                     self.parse_messages()
-                # deliberately blind (BLE001): a bug in this node's own
-                # parsing is meant to end this one connection, not the
-                # `P2pManager` event loop every other connection shares
-                # -- narrowing this to BTClibException would let a bug
-                # here propagate out of this coroutine instead
+                # deliberately blind (BLE001), not for the event loop's
+                # own sake: `run` reaches this coroutine through
+                # `run_coroutine_threadsafe`, whose own Future nothing
+                # here ever reads, so an unhandled exception neither
+                # crashes `P2pManager`'s loop nor any other connection
+                # on it -- asyncio isolates that much on its own. What
+                # this catch buys instead is one explicit outcome for
+                # every failure this loop can hit: a bug in this node's
+                # own parsing reaches the same `stop()` below that a
+                # peer's bad envelope does, in the one place that
+                # decides it, rather than falling through to the outer
+                # `finally` by coincidence with nothing having looked at
+                # it
                 except Exception as e:  # noqa: BLE001
                     # A `BTClibException` is `Message.parse` (or the
                     # network-magic check right after it) refusing this

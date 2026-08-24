@@ -177,11 +177,16 @@ class Connection:
             if not isinstance(body, list):
                 body = [body]
             self.manager.messages.append((body, self.id))
-        # deliberately blind (BLE001): RpcManager runs one asyncio loop
-        # for every connection this unauthenticated, all-interfaces port
-        # (#27) accepts, so a bug reading any one of them has to close
-        # that one connection rather than propagate into the loop every
-        # other connection shares
+        # deliberately blind (BLE001), not for the event loop's own
+        # sake: `run` is scheduled through `run_coroutine_threadsafe`,
+        # whose own Future nothing here ever reads, so an unhandled
+        # exception neither crashes `RpcManager`'s loop nor any other
+        # connection on it -- asyncio isolates that much on its own.
+        # What this catch buys instead is the only place `self.client`
+        # gets closed for a failure in this method: there is no outer
+        # `finally` here, so narrowing this would leak the socket this
+        # unauthenticated, all-interfaces port (#27) opened, on top of
+        # losing the exception itself to that same unread Future
         except Exception:  # noqa: BLE001
             self.client.close()
 

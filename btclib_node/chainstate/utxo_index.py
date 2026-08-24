@@ -9,7 +9,7 @@ from btclib.tx.tx_out import TxOut
 
 from btclib_node.block_db import RevBlock
 from btclib_node.db import KeyValueStore
-from btclib_node.exceptions import ChainstateInconsistencyError
+from btclib_node.exceptions import ChainstateInconsistencyError, InvalidBlockInputError
 from btclib_node.log import Logger
 
 
@@ -42,7 +42,7 @@ class UtxoIndex:
 
                 if prevout_bytes in self.removed_utxos:
                     err_msg = "prevout already spent in this batch"
-                    raise ChainstateInconsistencyError(err_msg)
+                    raise InvalidBlockInputError(err_msg)
                 prevout: TxOut
                 if prevout_bytes in self.updated_utxo_set:
                     prevout = self.updated_utxo_set[prevout_bytes]
@@ -56,7 +56,7 @@ class UtxoIndex:
                         self.removed_utxos.add(prevout_bytes)
                     else:
                         err_msg = "prevout not found"
-                        raise ChainstateInconsistencyError(err_msg)
+                        raise InvalidBlockInputError(err_msg)
 
                 removed.append((tx_in.prev_out, prevout))
 

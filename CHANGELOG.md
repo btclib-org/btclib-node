@@ -26,14 +26,23 @@ to check the guess.
   `except` can turn "logged and the loop continues" into "propagates
   and kills the loop" for whichever exception nobody meant to let
   through.
-- **`btclib_node/exceptions.py` gains nine classes**, grouped by what
+- **`btclib_node/exceptions.py` gains ten classes**, grouped by what
   actually went wrong rather than by which module raises it —
   `ChainstateInconsistencyError` alone answers every site downstream
   of `update_chain` finding that its own index promised something the
   data underneath it does not have, across `btclib_node/main.py`,
   `block_db`, `block_index`, `utxo_index` and `filter_index` alike, and
   `StoreClosedError` answers both of `db.py`'s own "the store is
-  closed" sites. `TRY002` (`raise
+  closed" sites. `UtxoIndex.add_block`'s own two raises share the same
+  two messages as two of `ChainstateInconsistencyError`'s sites
+  ("prevout not found", "prevout already spent in this batch") but not
+  the invariant: `add_block` runs against a freshly-downloaded
+  candidate block, before `check_transactions` has validated anything
+  about it, so a failure there is a peer's bad block, not this tree's
+  own bug — `InvalidBlockInputError(ValueError)` is that one, matching
+  `MissingPrevoutError`'s own shape (the same failure, checked at a
+  different point in the pipeline: mempool reprocessing after a
+  reorg) rather than `ChainstateInconsistencyError`'s. `TRY002` (`raise
   Exception(...)`) is what asked for a class; `TRY003` (a message
   built at the `raise` site rather than carried by the class) is why
   each one takes a `message` in its own `__init__` instead of a bare
@@ -59,11 +68,25 @@ to check the guess.
   `TxOut.parse` loop to `BTClibException`, confirmed directly against
   the installed btclib rather than assumed.
 - **Seven `except Exception:` sites stay exactly as broad as they were,
-  each now with a `noqa: BLE001` and a comment saying why**: guarding a
-  shared event loop or a whole RPC batch against a bug in one
-  connection or one entry rather than letting it take down every other
-  one sharing the loop or the batch (`p2p/connection.py` twice,
-  `rpc/connection.py`, `rpc/callbacks.py` twice), and propagating a
+  each now with a `noqa: BLE001` and a comment saying why**:
+  `p2p/connection.py`'s own two, `rpc/connection.py`'s, and
+  `rpc/callbacks.py`'s (`testmempoolaccept` answering one entry per
+  transaction, Core's own contract for that RPC, so an unexpected
+  failure on one is that entry's own reject-reason rather than the
+  whole batch's answer). The two connections' own read loops
+  (`p2p/connection.py`, `rpc/connection.py`) are not guarding a shared
+  event loop from a crash — both are scheduled through
+  `run_coroutine_threadsafe`, and asyncio isolates one scheduled
+  coroutine's own unhandled exception from the loop and from every
+  other connection on it regardless of how broad this `except` is.
+  What each catch buys instead, checked against its own connection's
+  structure rather than assumed: `p2p/connection.py`'s
+  gives every failure the same explicit `stop()` its own outer
+  `finally` would eventually reach anyway, in the one place that also
+  decides whether to discourage the peer; `rpc/connection.py`'s is the
+  *only* place `self.client` gets closed for a failure in that method,
+  there being no outer `finally` there to fall back on. Two more stay
+  broad for an unrelated reason of their own: propagating a
   caller-supplied call's own exception back unchanged
   (`tests/helpers.py`'s `call_within`) or a whole directory of local,
   unpredictable fixtures' own failures back as one line each
