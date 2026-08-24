@@ -72,6 +72,20 @@ def a_conn(
     return conn
 
 
+def a_peer_db_stub(**attributes: Any) -> Any:
+    """A `PeerDB` double good enough for `manage_connections`'s own loop.
+
+    `get_active_addresses` is on every one of them: the loop calls it
+    once `_ACTIVE_PRUNE_INTERVAL` has passed regardless of what else a
+    test's own scenario does, btclib-org/btclib-node#71, so a peer db
+    missing it fails a test on an `AttributeError` the test is not
+    about.
+    """
+    defaults: dict[str, Any] = {"get_active_addresses": list}
+    defaults.update(attributes)
+    return SimpleNamespace(**defaults)
+
+
 class AManagerFactory(Protocol):
     def __call__(
         self,
@@ -116,7 +130,7 @@ def a_manager() -> Iterator[AManagerFactory]:
             cast(
                 "PeerDB",
                 peer_db
-                or SimpleNamespace(
+                or a_peer_db_stub(
                     is_empty=True,
                     random_address=refuses_to_be_asked,
                     get_addr_from_dns=asks_no_dns_server,
@@ -280,6 +294,65 @@ def test_a_pending_connection_gone_quiet_is_dropped_without_a_ping(
     assert conn.sent == []
 
 
+def a_counting_prune() -> tuple[list[None], Any]:
+    """A `get_active_addresses` stub that records every call it answers."""
+    calls: list[None] = []
+
+    def get_active_addresses() -> list[Any]:
+        calls.append(None)
+        return []
+
+    return calls, get_active_addresses
+
+
+def test_the_active_table_is_pruned_without_being_asked(
+    a_manager: AManagerFactory,
+) -> None:
+    # #71: get_active_addresses's own prune only ever runs behind
+    # something that already calls it -- random_address, which this loop
+    # stops reaching for once it has enough connections, and getaddr,
+    # answered once per connection and never again -- so a well-connected
+    # node nobody asks a getaddr would otherwise never prune a stale row
+    calls, get_active_addresses = a_counting_prune()
+    peer_db = a_peer_db_stub(is_empty=True, get_active_addresses=get_active_addresses)
+    manager = a_manager(peer_db=peer_db)
+    asyncio.run(one_pass(manager))
+    asyncio.run(one_pass(manager))
+    assert len(calls) == 1
+
+
+def test_the_active_table_prune_repeats_once_the_interval_passes(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls, get_active_addresses = a_counting_prune()
+    peer_db = a_peer_db_stub(is_empty=True, get_active_addresses=get_active_addresses)
+    manager = a_manager(peer_db=peer_db)
+    asyncio.run(one_pass(manager))
+    future = time.time() + manager_module._ACTIVE_PRUNE_INTERVAL + 1
+    monkeypatch.setattr(time, "time", lambda: future)
+    asyncio.run(one_pass(manager))
+    assert len(calls) == 2
+
+
+def raises_pruning() -> NoReturn:
+    raise RuntimeError("no")
+
+
+def test_a_peer_db_that_raises_pruning_does_not_stop_the_housekeeping(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # whatever get_active_addresses's own db.delete ever raised, and
+    # manage_connections's own future is never awaited, so letting one
+    # out unhandled would end the loop for the rest of this node's life
+    # rather than only this one pass -- btclib-org/btclib-node#71
+    logged: list[str] = []
+    peer_db = a_peer_db_stub(is_empty=True, get_active_addresses=raises_pruning)
+    manager = a_manager(peer_db=peer_db)
+    monkeypatch.setattr(manager.logger, "exception", logged.append)
+    assert asyncio.run(one_pass(manager)) is True
+    assert logged
+
+
 def test_a_pending_connection_still_within_the_window_is_left_alone(
     a_manager: AManagerFactory,
 ) -> None:
@@ -298,7 +371,7 @@ def test_a_pending_connection_also_counts_toward_the_connection_target(
     # synced: reaching for a second would raise into the housekeeping
     # loop's own handler, so a quiet log is the assertion that it did not
     conn = a_conn(1, status=P2pConnStatus.Open)
-    peer_db = SimpleNamespace(is_empty=False, random_address=refuses_to_be_asked)
+    peer_db = a_peer_db_stub(is_empty=False, random_address=refuses_to_be_asked)
     manager = a_manager(peer_db=peer_db, status=NodeStatus.Starting)
     manager.pending_connections[conn.id] = conn
     logged: list[str] = []
@@ -315,7 +388,7 @@ def test_an_address_already_connected_to_is_not_dialled_again(
     # log is the assertion that the manager never reached
     onion = NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, 8333)
     conn = a_conn(1, address=onion)
-    peer_db = SimpleNamespace(is_empty=False, random_address=lambda: onion)
+    peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: onion)
     manager = a_manager([conn], peer_db=peer_db)
     logged: list[str] = []
     monkeypatch.setattr(manager.logger, "exception", logged.append)
@@ -341,7 +414,7 @@ def test_a_connected_peer_drawn_with_a_different_timestamp_is_not_redialled(
     gossiped = NetworkAddressV2(
         int(time.time()), 1, BIP155Network.TORV3, b"\x11" * 32, 8333
     )
-    peer_db = SimpleNamespace(is_empty=False, random_address=lambda: gossiped)
+    peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: gossiped)
     manager = a_manager([conn], peer_db=peer_db)
     logged: list[str] = []
     monkeypatch.setattr(manager.logger, "exception", logged.append)
@@ -355,7 +428,7 @@ def test_a_pending_connection_s_address_is_not_dialled_again_either(
 ) -> None:
     onion = NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, 8333)
     conn = a_conn(1, status=P2pConnStatus.Open, address=onion)
-    peer_db = SimpleNamespace(is_empty=False, random_address=lambda: onion)
+    peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: onion)
     manager = a_manager(peer_db=peer_db)
     manager.pending_connections[conn.id] = conn
     logged: list[str] = []
@@ -372,7 +445,7 @@ def test_a_dial_that_comes_back_with_nothing_adds_no_connection(
         return None
 
     monkeypatch.setattr(manager_module, "dial", comes_back_with_nothing)
-    peer_db = SimpleNamespace(
+    peer_db = a_peer_db_stub(
         is_empty=False,
         random_address=lambda: peer_address("5.6.7.8", 18444),
     )
@@ -394,7 +467,7 @@ def test_a_peer_db_that_raises_does_not_stop_the_housekeeping(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     logged: list[str] = []
-    peer_db = SimpleNamespace(is_empty=False, random_address=refuses_to_be_asked)
+    peer_db = a_peer_db_stub(is_empty=False, random_address=refuses_to_be_asked)
     manager = a_manager(peer_db=peer_db)
     monkeypatch.setattr(manager.logger, "exception", logged.append)
     # still running when the pass ended: catching the exception and
@@ -410,7 +483,7 @@ def test_only_one_peer_is_wanted_until_the_headers_are_synced(
     # would raise into the housekeeping loop's own handler, so a quiet
     # log is the assertion that one peer was enough
     conn = a_conn(1)
-    peer_db = SimpleNamespace(is_empty=False, random_address=refuses_to_be_asked)
+    peer_db = a_peer_db_stub(is_empty=False, random_address=refuses_to_be_asked)
     manager = a_manager([conn], peer_db=peer_db, status=NodeStatus.Starting)
     logged: list[str] = []
     monkeypatch.setattr(manager.logger, "exception", logged.append)
@@ -494,7 +567,7 @@ def test_a_peer_db_with_nothing_dialable_is_a_pass_that_does_nothing(
     # a table of ipv6 and onion addresses. The pass has to do nothing
     # and come round again -- dialling the nothing it was handed would
     # raise into the loop's own handler once every tenth of a second
-    peer_db = SimpleNamespace(is_empty=False, random_address=lambda: None)
+    peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: None)
     manager = a_manager(peer_db=peer_db)
     logged: list[str] = []
     monkeypatch.setattr(manager.logger, "exception", logged.append)
@@ -512,7 +585,7 @@ def test_a_peer_that_answers_the_dial_becomes_a_connection(
         return ours
 
     monkeypatch.setattr(manager_module, "dial", answers)
-    peer_db = SimpleNamespace(
+    peer_db = a_peer_db_stub(
         is_empty=False,
         random_address=lambda: peer_address("5.6.7.8", 18444),
     )

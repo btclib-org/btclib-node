@@ -140,9 +140,11 @@ class Connection:
         self.last_block_timestamp: float = time.time()
 
         # Set by callbacks.getaddr the first time it answers this
-        # connection: a peer that asks again gets nothing, rather than
-        # another walk of the table for every repeat of the same
-        # question. btclib-org/btclib-node#71
+        # connection: a peer that asks again gets nothing, rather than a
+        # second answer from the cache. The cache already stops a fresh
+        # draw per ask; what this flag alone still stops is a peer using
+        # a loop of getaddr on the one connection to learn when this
+        # node's cached sample itself changes. btclib-org/btclib-node#71
         self.answered_getaddr: bool = False
 
         # What `DownloadManager.tx_download` is waiting to tell this peer

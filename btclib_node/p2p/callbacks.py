@@ -201,6 +201,22 @@ def _addresses_to_send(active: list[NetworkAddressV2]) -> list[NetworkAddressV2]
     return secrets.SystemRandom().sample(active, size)
 
 
+# How long a drawn sample is served again rather than redrawn: shared by
+# every connection answered in between, not per connection -- the once-
+# per-connection flag already stops one peer asking twice, this is what
+# stops two peers connecting close together from being handed two
+# different draws to compare. Core's own CachedAddrResponse expiration
+# (src/net.cpp, 58a7869f86): held for `_ADDR_SAMPLE_LIFETIME` plus a
+# fresh random point across `_ADDR_SAMPLE_JITTER` drawn again every time
+# the cache is recomputed, rather than a fixed lifetime alone. A refresh
+# landing at a predictable wall-clock offset would itself be a signal to
+# whatever is scraping this answer over time, the same attacker Core's
+# own comment there reasons about for the duration alone -- the cache
+# exists to be unpredictable, not merely stable. btclib-org/btclib-node#71
+_ADDR_SAMPLE_LIFETIME = 3600 * 21
+_ADDR_SAMPLE_JITTER = 3600 * 6
+
+
 def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
     # Once per connection, matching the flag's own docstring
     # (connection.py): a peer asking in a loop is served the table once
@@ -209,7 +225,22 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
         return
     conn.answered_getaddr = True
 
-    sample = _addresses_to_send(node.p2p_manager.peer_db.get_active_addresses())
+    peer_db = node.p2p_manager.peer_db
+    now = time.time()
+    if now >= peer_db.addr_sample_expiration:
+        peer_db.addr_sample = _addresses_to_send(peer_db.get_active_addresses())
+        # The sample can go on naming an endpoint `active_addresses` has
+        # since aged out or dropped, for as long as this cache is still
+        # good: intended, not overlooked -- the cache is not what a
+        # `getaddr` answer's freshness rests on, an `addr` entry already
+        # carries its own timestamp for whoever receives it to judge
+        # staleness by, and shortening this lifetime toward the active
+        # table's own three-hour window would give back the privacy this
+        # cache exists for to buy an accuracy guarantee gossip never
+        # promised in the first place.
+        jitter = secrets.SystemRandom().uniform(0, _ADDR_SAMPLE_JITTER)
+        peer_db.addr_sample_expiration = now + _ADDR_SAMPLE_LIFETIME + jitter
+    sample = peer_db.addr_sample
     # either message class, and not whichever the first branch names:
     # Addr and AddrV2 are siblings under Payload rather than one a
     # subclass of the other, so each is built from its own list rather

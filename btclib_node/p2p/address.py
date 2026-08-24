@@ -21,6 +21,7 @@ answer to it are this node's.
 import asyncio
 import secrets
 import socket
+import threading
 import time
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
@@ -230,12 +231,11 @@ _KNOWN = b"known-"
 _ANSWERED = b"answered-"
 
 # The bound both tables are kept under: an address a peer gossiped, and
-# an address this node has itself confirmed reachable. Without one on
-# the second, a node that nobody ever asks for addresses keeps recording
-# every successful handshake for as long as it runs -- get_active_
-# addresses only prunes what is stale, and a well-connected node stops
-# calling it once it has enough peers and nobody has asked it a getaddr.
-# btclib-org/btclib-node#71
+# an address this node has itself confirmed reachable. The cap is on
+# distinct endpoints, not on handshakes: `add_active_address` settles a
+# repeat handshake with the same endpoint onto the one row already held
+# for it (#270), the way `add_addresses`'s own `by_endpoint` already
+# does for `self.addresses`.
 _MAX_ADDRESSES = 10000
 
 
@@ -258,6 +258,38 @@ class PeerDB:
         self.data_dir = data_dir
         self.addresses: set[NetworkAddressV2] = set()
         self.active_addresses: list[NetworkAddressV2] = []
+        # endpoint bytes -> its position in `active_addresses`, so
+        # `add_active_address` can find a repeat endpoint's row in O(1)
+        # rather than by scanning the list it is called once per
+        # handshake against (#270). Rebuilt rather than kept in step
+        # wherever something else reshapes the list instead --
+        # `init_from_db`'s bulk load and `get_active_addresses`'s prune,
+        # both already O(n) over it.
+        self._active_index: dict[bytes, int] = {}
+        # `add_active_address` reads this index and then writes into
+        # `active_addresses` at the position it found -- two statements,
+        # not one -- and `get_active_addresses` reassigns the list and
+        # then rebuilds the index against it -- likewise two. The first
+        # runs on `Node`'s own thread, off `callbacks.verack`; the
+        # second runs on `P2pManager`'s, off `manage_connections`, which
+        # calls it every few minutes regardless of what else that loop
+        # is doing (#71). Interleaved without a lock, a position read
+        # before a prune can be written after it, into a list the prune
+        # already reshaped: one endpoint's row silently holding another
+        # endpoint's data, or an `IndexError`. `KeyValueStore` has its
+        # own lock for the store; this one is for these two in-memory
+        # structures alone, and is not the same lock.
+        self._active_lock = threading.Lock()
+        # What `callbacks.getaddr` last answered with, and until when it
+        # is still good for: a fresh `secrets.SystemRandom().sample` per
+        # connection would let two peers connecting close together
+        # compare answers and infer what changed between them, which
+        # "once per connection" alone does not stop -- a new connection
+        # still draws fresh. `0.0` starts already expired, so the first
+        # call computes a sample rather than serving an empty one.
+        # btclib-org/btclib-node#71
+        self.addr_sample: list[NetworkAddressV2] = []
+        self.addr_sample_expiration = 0.0
 
         # `None` is a table kept in memory only, which is what every
         # test here wants and what `data_dir` was before this: assigned
@@ -288,6 +320,20 @@ class PeerDB:
                 self.active_addresses.append(
                     NetworkAddressV2.parse(value, check_validity=False)
                 )
+        self._reindex_active()
+
+    def _reindex_active(self) -> None:
+        """Rebuild the endpoint index over the current `active_addresses`.
+
+        O(n), the same order `get_active_addresses`'s own prune already
+        walks the list at -- called from there and from `init_from_db`,
+        the two places that reshape the list itself rather than through
+        `add_active_address`.
+        """
+        self._active_index = {
+            endpoint_key(address): position
+            for position, address in enumerate(self.active_addresses)
+        }
 
     @contextmanager
     def _write_batch(self) -> Iterator[KeyValueStore | None]:
@@ -402,28 +448,42 @@ class PeerDB:
 
     def get_active_addresses(self) -> list[NetworkAddressV2]:
         now = time.time()
-        # active if seen within the last three hours; an entry that ages
-        # out here loses its `answered-` row too, so the durable store
-        # stays bounded by what is still active rather than by every
-        # endpoint this node has ever dialled and heard back from over
-        # its whole lifetime (#253)
-        active: list[NetworkAddressV2] = []
-        for addr in self.active_addresses:
-            if now - addr.timestamp < 3600 * 3:
-                active.append(addr)
-            elif self.db is not None:
-                self.db.delete(_ANSWERED + endpoint_key(addr))
-        self.active_addresses = active
-        return self.active_addresses
+        with self._active_lock:
+            # active if seen within the last three hours; an entry that
+            # ages out here loses its `answered-` row too, so the
+            # durable store stays bounded by what is still active rather
+            # than by every endpoint this node has ever dialled and
+            # heard back from over its whole lifetime (#253)
+            active: list[NetworkAddressV2] = []
+            for addr in self.active_addresses:
+                if now - addr.timestamp < 3600 * 3:
+                    active.append(addr)
+                elif self.db is not None:
+                    self.db.delete(_ANSWERED + endpoint_key(addr))
+            self.active_addresses = active
+            self._reindex_active()
+            return self.active_addresses
 
     def add_active_address(self, addr: NetworkAddressV2) -> None:
-        if len(self.active_addresses) >= _MAX_ADDRESSES:
-            return
         # a whole second: the field is four octets on the wire
         answered = replace(addr, timestamp=int(time.time()))
-        self.active_addresses.append(answered)
-        if self.db is not None:
-            self.db.put(
-                _ANSWERED + endpoint_key(answered),
-                answered.serialize(check_validity=False),
-            )
+        key = endpoint_key(answered)
+        with self._active_lock:
+            position = self._active_index.get(key)
+            if position is not None:
+                # a repeat handshake with an endpoint already held:
+                # settle onto its one row rather than growing the table
+                # an entry per reconnect (#270), matching
+                # `add_addresses`'s own `by_endpoint`.
+                self.active_addresses[position] = answered
+            else:
+                # the cap is on distinct endpoints, so updating one
+                # already held (above) does not spend it -- only a
+                # genuinely new one can run the table out of room,
+                # `add_addresses`'s own cap check reads the same way.
+                if len(self.active_addresses) >= _MAX_ADDRESSES:
+                    return
+                self._active_index[key] = len(self.active_addresses)
+                self.active_addresses.append(answered)
+            if self.db is not None:
+                self.db.put(_ANSWERED + key, answered.serialize(check_validity=False))
