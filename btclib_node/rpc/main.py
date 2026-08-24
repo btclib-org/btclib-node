@@ -5,7 +5,7 @@
 from typing import TYPE_CHECKING, Any
 
 from btclib_node.rpc.callbacks import callbacks
-from btclib_node.rpc.errors import RpcError, RpcErrorCode
+from btclib_node.rpc.errors import RpcError, RpcErrorCode, error_msg
 
 if TYPE_CHECKING:
     from btclib_node import Node
@@ -26,26 +26,17 @@ def is_valid_rpc(request: Any) -> bool:
         return False
     if "method" not in request:
         return False
+    if not isinstance(request["method"], str):
+        # a JSON-RPC method is a name, and JSON admits an array or an
+        # object anywhere a string is expected: `request["method"] not
+        # in callbacks` below then uses it as a dict key, which raises
+        # `TypeError: unhashable type` for either shape, unhandled by
+        # `handle_rpc`'s own `except Exception` -- that one guards a
+        # callback's own body, not the dispatch in front of it
+        return False
     if "id" not in request:
         return False
     return True
-
-
-def error_msg(code: RpcErrorCode, message: str, id: Any = None) -> dict[str, Any]:
-    """The error response of JSON-RPC 2.0's section 5, code and message given.
-
-    The specification requires the answer to carry the id of the request
-    it answers, and reserves null for a request whose id could not be
-    read out of it -- which is what its own example for an invalid
-    request object shows. So a caller passes the id wherever
-    `is_valid_rpc` has already found one, and leaves it out where the
-    request is what was wrong.
-    """
-    return {
-        "jsonrpc": "2.0",
-        "error": {"code": code, "message": message},
-        "id": id,
-    }
 
 
 def handle_rpc(node: Node) -> None:

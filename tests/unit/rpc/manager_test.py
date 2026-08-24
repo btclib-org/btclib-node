@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 import pytest
 
 from btclib_node.chains import RegTest
+from btclib_node.config import Config
 from btclib_node.log import Logger
 from btclib_node.rpc.manager import RpcManager
 from tests.helpers import get_random_port, wait_until, wait_until_listening
@@ -30,7 +31,7 @@ REQUEST = {"jsonrpc": "2.0", "id": "a", "method": "getbestblockhash"}
 
 
 class AManagerFactory(Protocol):
-    def __call__(self, port: int | None) -> RpcManager: ...
+    def __call__(self, port: int | None, rpc_host: str = "127.0.0.1") -> RpcManager: ...
 
 
 @pytest.fixture
@@ -38,9 +39,16 @@ def a_manager() -> Iterator[AManagerFactory]:
     """Build managers, and close their event loops however the test ends."""
     made: list[RpcManager] = []
 
-    def make(port: int | None) -> RpcManager:
+    def make(port: int | None, rpc_host: str = "127.0.0.1") -> RpcManager:
         manager = RpcManager(
-            cast("Node", SimpleNamespace(logger=Logger(debug=True), chain=RegTest())),
+            cast(
+                "Node",
+                SimpleNamespace(
+                    logger=Logger(debug=True),
+                    chain=RegTest(),
+                    config=Config(chain="regtest", rpc_host=rpc_host),
+                ),
+            ),
             port,
         )
         made.append(manager)
@@ -114,6 +122,61 @@ def test_an_answer_is_written_back_to_the_client_that_asked(
         manager.join(timeout=10)
 
 
+def test_bind_uses_config_rpc_host_not_every_interface(
+    a_manager: AManagerFactory,
+) -> None:
+    # #27: no `("0.0.0.0", self.port)` left unconditional -- `_bind`
+    # reads `Config.rpc_host` off the node it was given, so the socket
+    # itself is asked what it actually bound rather than only asking
+    # whether some interface can still reach it
+    manager = a_manager(get_random_port())
+    server_socket = manager._bind()  # noqa: SLF001
+    try:
+        assert server_socket.getsockname()[0] == "127.0.0.1"
+    finally:
+        server_socket.close()
+
+
+def test_bind_honors_a_different_rpc_host(a_manager: AManagerFactory) -> None:
+    all_interfaces = "0.0.0.0"  # noqa: S104
+    manager = a_manager(get_random_port(), rpc_host=all_interfaces)
+    server_socket = manager._bind()  # noqa: SLF001
+    try:
+        assert server_socket.getsockname()[0] == all_interfaces
+    finally:
+        server_socket.close()
+
+
+def test_a_body_that_is_not_json_answers_parse_error_and_forgets_the_client(
+    a_manager: AManagerFactory,
+) -> None:
+    # #63: JSON-RPC 2.0 section 5.1's PARSE_ERROR, where this used to
+    # close the socket with no answer at all -- the first thing
+    # anything scanning the unauthenticated, all-interfaces port (#27)
+    # would find
+    port = get_random_port()
+    manager = a_manager(port)
+    manager.start()
+    try:
+        wait_until_listening(manager)
+        body = b"not json"
+        head = b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n" % len(body)
+        with socket.create_connection(("127.0.0.1", port), timeout=20) as client:
+            client.sendall(head + body)
+            client.settimeout(20)
+            response_head, _, response_body = client.recv(4096).partition(b"\r\n\r\n")
+        assert response_head.startswith(b"HTTP/1.1 200 OK\r\n")
+        assert json.loads(response_body) == {
+            "jsonrpc": "2.0",
+            "error": {"code": -32700, "message": "Parse error"},
+            "id": None,
+        }
+        wait_until(lambda: not manager.connections)
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
+
+
 def test_a_manager_that_cannot_bind_stops_being_alive(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -126,7 +189,11 @@ def test_a_manager_that_cannot_bind_stops_being_alive(
     """
     logged: list[str] = []
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
-        taken.bind(("", 0))
+        # 127.0.0.1 and not "" (every interface, p2p/manager.py's own
+        # test of the same name): the manager under test binds
+        # Config.rpc_host's default, and a wildcard bind here would not
+        # contend for that specific address the way it did before #27
+        taken.bind(("127.0.0.1", 0))
         taken.listen()
         manager = a_manager(taken.getsockname()[1])
         monkeypatch.setattr(manager.logger, "exception", logged.append)

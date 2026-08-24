@@ -25,6 +25,45 @@ def get_best_block_hash(node: Node, conn: Connection, _: list[Any]) -> bytes:
     return node.chainstate.block_index.active_chain[-1]
 
 
+def get_block_count(node: Node, conn: Connection, _: list[Any]) -> int:
+    # the genesis block is active_chain[0] and Core's own height for it
+    # is 0 (src/validation.h's nHeight on the genesis CBlockIndex), so
+    # the count is the list's own last index, not its length
+    return len(node.chainstate.block_index.active_chain) - 1
+
+
+# Core's own five names for `-chain=` and `getblockchaininfo`'s own
+# "chain" member, keyed by the network name Chain.name (chains.py)
+# carries -- the two vocabularies btclib-org/btclib's own
+# `chain_from_network` translates between, kept local rather than
+# imported from `bitcoin_core_rpc`: that package is a dependency of
+# btclib's fetcher and not one this node declares for itself.
+# `testnet4` is missing on both sides -- chains.py has no such `Chain`.
+_CORE_CHAIN_NAMES = {
+    "mainnet": "main",
+    "testnet": "test",
+    "signet": "signet",
+    "regtest": "regtest",
+}
+
+
+def get_blockchain_info(node: Node, conn: Connection, _: list[Any]) -> dict[str, Any]:
+    """Answer `getblockchaininfo` with the one member a caller checks.
+
+    `BitcoinCoreFetcher.assert_network` (btclib) and
+    `BitcoinCoreRpcClient.assert_chain` (`bitcoin_core_rpc`) call this
+    once before their first fetch, by default, and read `chain` alone --
+    proven by asking a real client of a real node here for
+    `get_best_block_id` before this callback existed: the very first
+    call failed `-32601 Method not found` on `getblockchaininfo`, not on
+    the method it asked for. `SigNet` here carries no configurable
+    challenge (chains.py's own genesis is the one public signet), so
+    the `signet_challenge` member `assert_chain` also reads on that
+    chain is not answered.
+    """
+    return {"chain": _CORE_CHAIN_NAMES[node.chain.name]}
+
+
 def get_block_hash(node: Node, conn: Connection, params: list[Any]) -> bytes:
     active_chain = node.chainstate.block_index.active_chain
 
@@ -296,6 +335,125 @@ def get_raw_mempool(
     return {"txids": txids, "mempool_sequence": node.mempool.sequence}
 
 
+def get_raw_transaction(
+    node: Node, conn: Connection, params: list[Any]
+) -> dict[str, Any] | str:
+    """`getrawtransaction`, for a mempool transaction or a named block's.
+
+    No `-txindex` equivalent: this node keeps no lookup from every
+    txid it has ever confirmed to the block that holds it, so a
+    transaction is answered for exactly the two cases Core itself
+    falls back to without one -- the mempool by itself
+    (`src/rpc/rawtransaction.cpp:313-314`, `!g_txindex`), and a block
+    named explicitly, searched rather than indexed. Both are read-only
+    lookups against `block_index` and `block_db`, which already hold
+    every validated block for reasons of their own; this adds no store.
+
+    `btclib`'s own `BitcoinCoreFetcher.get_tx` calls this with a txid
+    alone, verbosity 0 being its `_call`'s implicit default -- the
+    shape it always gets, unconditionally, below.
+    """
+    if not params:
+        # the same shape as getblockheader's own missing-argument case:
+        # RPCMethod::HandleRequest's HelpResult, RPC_MISC_ERROR
+        # (src/rpc/server.cpp:884-886)
+        raise RpcError(
+            RpcErrorCode.MISC_ERROR,
+            'getrawtransaction "txid" ( verbose ) ( "blockhash" )',
+        )
+    if not isinstance(params[0], str):
+        # txid is declared RPCArg::Type::STR_HEX, type-checked before
+        # the handler body runs, same as blockhash above
+        raise RpcError(
+            RpcErrorCode.TYPE_ERROR,
+            f"JSON value of type {json_type_name(params[0])} is "
+            "not of expected type string",
+        )
+    try:
+        txid = bytes.fromhex(params[0])
+    except ValueError as error:
+        raise RpcError(
+            RpcErrorCode.INVALID_PARAMETER,
+            f"parameter 1 must be hexadecimal string (not '{params[0]}')",
+        ) from error
+
+    # Core declares this argument NUM with allow_bool=true
+    # (src/rpc/rawtransaction.cpp:286); this node answers only the
+    # default and the boolean shape every other verbose flag here
+    # already takes, and not Core's 2 -- fee and prevout data come from
+    # undo data this node does not keep alongside a block
+    verbose = bool_param(params, 1, default=False)
+
+    block_hash: bytes | None = None
+    if len(params) > 2 and params[2] is not None:
+        if not isinstance(params[2], str):
+            raise RpcError(
+                RpcErrorCode.TYPE_ERROR,
+                f"JSON value of type {json_type_name(params[2])} is "
+                "not of expected type string",
+            )
+        try:
+            block_hash = bytes.fromhex(params[2])
+        except ValueError as error:
+            raise RpcError(
+                RpcErrorCode.INVALID_PARAMETER,
+                f"parameter 3 must be hexadecimal string (not '{params[2]}')",
+            ) from error
+
+    tx: Tx | None
+    block_height: int | None = None
+    if block_hash is None:
+        tx = node.mempool.get_tx(txid)
+        if tx is None:
+            raise RpcError(
+                RpcErrorCode.INVALID_ADDRESS_OR_KEY,
+                "No such mempool transaction. This node keeps no "
+                "transaction index; name the block it confirmed in to "
+                "look there instead. Use gettransaction for wallet "
+                "transactions.",
+            )
+    else:
+        try:
+            block_info = node.chainstate.block_index.get_block_info(block_hash)
+        except KeyError as error:
+            raise RpcError(
+                RpcErrorCode.INVALID_ADDRESS_OR_KEY, "Block hash not found"
+            ) from error
+        block = node.block_db.get_block(block_hash)
+        if block is None:
+            raise RpcError(RpcErrorCode.MISC_ERROR, "Block not available")
+        tx = next((t for t in block.transactions if t.id == txid), None)
+        if tx is None:
+            raise RpcError(
+                RpcErrorCode.INVALID_ADDRESS_OR_KEY,
+                "No such transaction found in the provided block. Use "
+                "gettransaction for wallet transactions.",
+            )
+        block_height = block_info.index
+
+    if not verbose:
+        return tx.serialize(True).hex()
+
+    # to_dict()'s own keys are Core's decoderawtransaction ones (its own
+    # docstring), str | int | list -- narrower than this callback's
+    # declared return, so the three below need the wider type spelled
+    # out, the same as get_block_header's out: dict[str, Any] above it
+    out: dict[str, Any] = tx.to_dict()
+    out["hex"] = tx.serialize(True).hex()
+    if block_hash is not None and block_height is not None:
+        active_chain = node.chainstate.block_index.active_chain
+        on_active_chain = (
+            block_height < len(active_chain)
+            and active_chain[block_height] == block_hash
+        )
+        out["in_active_chain"] = on_active_chain
+        out["blockhash"] = block_hash.hex()
+        out["confirmations"] = (
+            len(active_chain) - block_height if on_active_chain else -1
+        )
+    return out
+
+
 def test_mempool_accept(
     node: Node, conn: Connection, params: list[Any]
 ) -> list[dict[str, Any]]:
@@ -354,12 +512,15 @@ def stop(node: Node, conn: Connection, _: list[Any]) -> str:
 
 callbacks = {
     "getbestblockhash": get_best_block_hash,
+    "getblockcount": get_block_count,
+    "getblockchaininfo": get_blockchain_info,
     "getblockhash": get_block_hash,
     "getblockheader": get_block_header,
     "getpeerinfo": get_peer_info,
     "getconnectioncount": get_connection_count,
     "getmempoolinfo": get_mempool_info,
     "getrawmempool": get_raw_mempool,
+    "getrawtransaction": get_raw_transaction,
     "testmempoolaccept": test_mempool_accept,
     "sendrawtransaction": send_raw_transaction,
     "ping": ping,

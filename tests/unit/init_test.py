@@ -326,11 +326,15 @@ def test_every_message_waiting_is_taken_before_the_loop_waits(
 def test_a_message_the_handlers_did_not_expect_does_not_end_the_loop(
     a_networked_node: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # #97's line. A method that is not a string reaches `request
-    # ["method"] not in callbacks` and raises TypeError: unhashable,
-    # outside handle_rpc's own try -- so what catches it is `run`'s
-    # guard, and the node going on to answer the next request is what
-    # says the guard caught it rather than the thread ending.
+    # #97's line. This test's own trigger used to be a method that is
+    # not a string: `request["method"] not in callbacks` raised
+    # TypeError: unhashable, outside handle_rpc's own try. #63 makes
+    # is_valid_rpc refuse that shape before the lookup runs, answered
+    # rather than raised -- tests/unit/rpc/main_test.py covers that
+    # shape now. What is left to exercise here is `run`'s own guard,
+    # not that one particular cause of it firing: a queued entry of the
+    # wrong shape unpacks nowhere handle_rpc's own try reaches,
+    # `data, conn_id = ...popleft()` being the function's first line.
     node = a_networked_node
     rpc_manager = cast(AManager, node.rpc_manager)
     answered: list[Any] = []
@@ -339,9 +343,7 @@ def test_a_message_the_handlers_did_not_expect_does_not_end_the_loop(
     )
     logged: list[Any] = []
     monkeypatch.setattr(node.logger, "exception", logged.append)
-    rpc_manager.messages.append(
-        ([{"jsonrpc": "2.0", "id": "a", "method": ["not", "hashable"]}], 0)
-    )
+    rpc_manager.messages.append("not a (batch, id) pair")
     node.start()
     wait_until(lambda: logged)
 

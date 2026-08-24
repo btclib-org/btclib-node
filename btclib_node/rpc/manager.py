@@ -53,11 +53,11 @@ class RpcManager(threading.Thread):
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            # All interfaces, unconditionally -- there is no host
-            # config option to bind the RPC control plane to
-            # localhost instead. Pre-existing; not this lint-gate
-            # PR to change, tracked as its own issue.
-            server_socket.bind(("0.0.0.0", self.port))  # noqa: S104
+            # Config.rpc_host, "127.0.0.1" unless a caller asks
+            # otherwise -- see its own docstring for why the RPC
+            # control plane's default is not every interface, unlike
+            # P2pManager's
+            server_socket.bind((self.node.config.rpc_host, self.port))
             server_socket.listen()
             server_socket.settimeout(0.0)
         except OSError:

@@ -46,6 +46,16 @@ def test_min_relay_feerate_is_configurable() -> None:
     assert Config(chain="regtest", min_relay_feerate=rate).min_relay_feerate == rate
 
 
+def test_rpc_host_defaults_to_localhost_not_every_interface() -> None:
+    # #27: the rpc listener is an unauthenticated control plane, not a
+    # peer-to-peer one, so its default is not the P2P listener's
+    assert Config(chain="regtest").rpc_host == "127.0.0.1"
+    assert (
+        Config(chain="regtest", rpc_host="0.0.0.0").rpc_host  # noqa: S104
+        == "0.0.0.0"  # noqa: S104
+    )
+
+
 def test_a_disallowed_port_is_none_rather_than_some_other_number() -> None:
     # `is None` and not `!= 1`: None is what Node reads as "do not
     # start this listener", and the declaration in Config says so now.

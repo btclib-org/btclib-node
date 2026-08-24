@@ -32,6 +32,15 @@ class Config:
     # disallowed port for a port to bind.
     p2p_port: int | None
     rpc_port: int | None
+    # what RpcManager binds instead of every interface: an RPC server is
+    # this node's control plane, not a peer-to-peer listener, and
+    # rpc/callbacks.py carries no authentication of its own -- so the
+    # interface it is reachable from is the one thing between an
+    # unauthenticated caller and the network. Bitcoin Core's own
+    # `rpcbind`/`rpcallowip` default to localhost for the same reason;
+    # P2pManager.server binds every interface unconditionally, and is
+    # right to, since a peer listener is supposed to accept a stranger.
+    rpc_host: str
     pruned: bool
     debug: bool
     min_relay_feerate: FeeRate
@@ -42,6 +51,7 @@ class Config:
         data_dir: str | Path | None = None,
         p2p_port: int | None = None,
         rpc_port: int | None = None,
+        rpc_host: str = "127.0.0.1",
         allow_p2p: bool = True,
         allow_rpc: bool = True,
         pruned: bool = False,
@@ -82,6 +92,8 @@ class Config:
             self.rpc_port = self.chain.port + 1
             if rpc_port:
                 self.rpc_port = rpc_port
+
+        self.rpc_host = rpc_host
 
         self.pruned = pruned
 

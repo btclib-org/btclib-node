@@ -92,6 +92,82 @@ def test_block_hash(rpc_node: Node) -> None:
     assert response["result"] == header_chain[50 - 1].hash.hex()
 
 
+def test_block_count(rpc_node: Node) -> None:
+    node = rpc_node
+
+    wait_until_listening(node.rpc_manager)
+
+    chain = generate_random_chain(10, RegTest().genesis.hash)
+    block_index = node.chainstate.block_index
+    block_index.add_headers([block.header for block in chain])
+    node.status = NodeStatus.HeaderSynced
+
+    for block in chain:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+
+    wait_until(lambda: len(block_index.active_chain) == 10 + 1)
+
+    response = json.loads(
+        post(node, {"jsonrpc": "1.0", "id": "pytest", "method": "getblockcount"})
+    )
+    assert response["result"] == 10
+
+
+def test_blockchain_info_names_the_chain_btclib_s_fetcher_checks(
+    rpc_node: Node,
+) -> None:
+    # btclib-org/btclib-node#21: BitcoinCoreFetcher.assert_network reads
+    # this by default, before the fetch it was actually asked for --
+    # measured against a real BitcoinCoreFetcher, not asserted
+    node = rpc_node
+    wait_until_listening(node.rpc_manager)
+
+    response = json.loads(
+        post(node, {"jsonrpc": "1.0", "id": "pytest", "method": "getblockchaininfo"})
+    )
+    assert response["result"] == {"chain": "regtest"}
+
+
+def test_bitcoin_core_fetcher_works_against_this_node_unchanged(
+    rpc_node: Node,
+) -> None:
+    """btclib-org/btclib-node#21, the issue's own title, tested literally.
+
+    The client is btclib's own `BitcoinCoreFetcher`, pointed at this
+    node with no adapter -- `verify_network` at its default `True`, so
+    `getblockchaininfo` is exercised here too, not only the two methods
+    the issue names.
+    """
+    from bitcoin_core_rpc import BitcoinCoreRpcClient
+    from btclib.fetch.bitcoin_core import BitcoinCoreFetcher
+
+    node = rpc_node
+    wait_until_listening(node.rpc_manager)
+
+    chain = generate_random_chain(3, RegTest().genesis.hash)
+    block_index = node.chainstate.block_index
+    block_index.add_headers([block.header for block in chain])
+    node.status = NodeStatus.HeaderSynced
+    for block in chain:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    wait_until(lambda: len(block_index.active_chain) == 3 + 1)
+
+    # no cookie file on disk here, so credentials rather than
+    # `cookie_path` -- this node checks neither, having no
+    # authentication of its own (#27's own finding)
+    client = BitcoinCoreRpcClient(
+        f"http://127.0.0.1:{node.rpc_port}",
+        user="pytest",
+        password="pytest",  # noqa: S106
+    )
+    fetcher = BitcoinCoreFetcher(client, network="regtest")
+
+    assert fetcher.get_best_block_id() == chain[-1].header.hash
+    assert fetcher.get_block_count() == 3
+
+
 def get_block_header(node: Node, block_hash: str) -> Any:
     request = {
         "jsonrpc": "1.0",

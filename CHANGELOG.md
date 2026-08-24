@@ -226,6 +226,50 @@ to check the guess.
   relay octet that is neither `0x00` nor `0x01`, where Core reads any
   nonzero octet as true -- so #149 stays open for that half.
 
+### `getblockcount`, `getrawtransaction` and `getblockchaininfo` answer
+
+- **`getblockcount` answers the active chain's own height** (#21), the
+  active chain's last index rather than its length.
+- **`getrawtransaction` answers a mempool transaction by default, and a
+  block named explicitly alongside it** (#21) -- `block_index` and
+  `block_db`, read and not indexed again, so no store is added. A
+  transaction confirmed and not named a block is answered
+  `RPC_INVALID_ADDRESS_OR_KEY`, the same code Core's own no-`-txindex`
+  fallback answers (`src/rpc/rawtransaction.cpp:313-314`), and verbosity
+  is a bool and not Core's `NUM` `0`/`1`/`2`: `2`'s fee and prevout
+  fields need undo data this node keeps nowhere.
+- **`getblockchaininfo` answers `chain` alone** (#21). btclib's
+  `BitcoinCoreFetcher.assert_network` and `bitcoin_core_rpc`'s
+  `BitcoinCoreRpcClient.assert_chain` both call it before their first
+  fetch by default, `verify_network` defaulting to `True` -- measured
+  against a real `BitcoinCoreFetcher` here, `get_best_block_id` failed
+  `-32601 Method not found` on this method, not on the one asked for,
+  before this. `SigNet` here has no configurable challenge to report
+  the `signet_challenge` member `assert_chain` also reads on that chain.
+
+### `RpcManager` binds `Config.rpc_host`, not every interface, by default
+
+- **`Config` gained `rpc_host`, `"127.0.0.1"` unless a caller asks
+  otherwise, and `RpcManager._bind` reads it in place of a hardcoded
+  `"0.0.0.0"`** (#27). The RPC port is this node's control plane, and
+  `rpc/callbacks.py` and `rpc/connection.py` check no credential of any
+  kind, so its own default should not be a peer-to-peer listener's:
+  Bitcoin Core's own `rpcbind`/`rpcallowip` default to localhost for the
+  same reason. `P2pManager.server`'s own `0.0.0.0` is unchanged and
+  right to be: a peer listener is supposed to accept a stranger.
+
+### A `method` that is not a string, and a body that is not JSON, both answer
+
+- **`is_valid_rpc` now checks that `method` is a JSON string** (#63).
+  `handle_rpc`'s `request["method"] not in callbacks` uses it as a dict
+  key past that check, `TypeError: unhashable type` for a JSON array or
+  object there -- unanswered since #62's guard on `Node.run` caught the
+  exception, and the whole node's crash before #62.
+- **A body `json.loads` cannot parse now answers `-32700 Parse error`,
+  id `null`**, JSON-RPC 2.0 section 5.1's own code for it, in place of
+  `Connection.run`'s `except Exception: self.client.close()`, which
+  closed the socket with no answer at all.
+
 ### `REPOSITORY.md`'s required-checks section names what main now enforces
 
 - **`REPOSITORY.md`'s *Required checks on main* section names `Lint and
