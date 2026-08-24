@@ -1608,3 +1608,13 @@ to check the guess.
   `git fetch origin <base ref>` first — the base ref now passed in the
   prompt header alongside `REPO` and `PR NUMBER` — rather than raising
   `fetch-depth` for every run whether a review needs the history or not.
+
+### The ack-of-record comment cites the organization's standard, not a local section
+
+- **`claude-review.yml`'s ack-of-this-head comment now cites "section
+  11 of the organization's standard" instead of "README.md's section
+  11"** (btclib-org/.github#243). This repository's own `README.md`
+  carries no numbered sections, so the citation pointed a reader at a
+  document this tree does not have; the wording now matches the
+  workflow's other copies, which name the standard rather than a file
+  local to the reading repository.
