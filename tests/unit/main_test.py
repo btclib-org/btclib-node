@@ -44,8 +44,8 @@ def connect(node: Node, chain: list[Block]) -> BlockIndex:
     """Offer a chain to the node and drive it to connect what it will."""
     block_index = node.chainstate.block_index
     block_index.add_headers([block.header for block in chain])
-    for hash in block_index.header_dict:
-        block_index.set_downloaded(hash)
+    for block_hash in block_index.header_dict:
+        block_index.set_downloaded(block_hash)
     for block in chain:
         node.block_db.add_block(block)
     for _ in range(len(chain)):
@@ -215,8 +215,8 @@ def test_update_chain_refuses_a_block_marked_downloaded_but_missing(
     chain = generate_random_chain(1, RegTest().genesis.hash)
     block_index = node.chainstate.block_index
     block_index.add_headers([block.header for block in chain])
-    for hash in block_index.header_dict:
-        block_index.set_downloaded(hash)
+    for block_hash in block_index.header_dict:
+        block_index.set_downloaded(block_hash)
     # deliberately not added to node.block_db
     with pytest.raises(Exception, match="just checked downloaded is missing"):
         update_chain(node)
@@ -633,8 +633,8 @@ def test_a_refused_branch_invalidates_headers_that_were_never_candidates(
 
     update_chain(node)
     assert block_index.active_chain[1:] == hashes(active)
-    for hash in {*hidden, continuation[-1].header.hash}:
-        assert block_index.get_block_info(hash).status == BlockStatus.invalid
+    for block_hash in {*hidden, continuation[-1].header.hash}:
+        assert block_index.get_block_info(block_hash).status == BlockStatus.invalid
 
 
 def test_a_stop_mid_reorg_rolls_the_trial_back_without_invalidating_it(

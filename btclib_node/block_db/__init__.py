@@ -38,7 +38,7 @@ class RevBlock:
     @classmethod
     def deserialize(cls, data: bytes, check_validity: bool = False) -> RevBlock:
         stream = bytesio_from_binarydata(data)
-        hash = stream.read(32)
+        block_hash = stream.read(32)
         to_add: list[tuple[OutPoint, TxOut]] = []
         for _ in range(var_int.parse(stream)):
             out_point = OutPoint.parse(stream, check_validity=check_validity)
@@ -48,7 +48,7 @@ class RevBlock:
         for _ in range(var_int.parse(stream)):
             out_point = OutPoint.parse(stream, check_validity=check_validity)
             to_remove.append(out_point)
-        return cls(hash, to_add, to_remove)
+        return cls(block_hash, to_add, to_remove)
 
     def serialize(self, check_validity: bool = False) -> bytes:
         out = self.hash
@@ -263,20 +263,20 @@ class BlockDB:
     def rollback(self) -> None:
         self.pending_rev_blocks = {}
 
-    def get_block(self, hash: bytes) -> Block | None:
-        if hash not in self.blocks:
+    def get_block(self, block_hash: bytes) -> Block | None:
+        if block_hash not in self.blocks:
             return None
-        block_location = self.blocks[hash]
+        block_location = self.blocks[block_hash]
         file = self.__get_block_file(block_location.filename)
         block_data = self.__get_data_from_file(
             file, block_location.index, block_location.size
         )
         return Block.parse(block_data, check_validity=False)
 
-    def get_rev_block(self, hash: bytes) -> RevBlock | None:
-        if hash not in self.rev_patches:
+    def get_rev_block(self, block_hash: bytes) -> RevBlock | None:
+        if block_hash not in self.rev_patches:
             return None
-        rev_patch_location = self.rev_patches[hash]
+        rev_patch_location = self.rev_patches[block_hash]
         file = self.__get_rev_file(rev_patch_location.filename)
         rev_patch_data = self.__get_data_from_file(
             file, rev_patch_location.index, rev_patch_location.size

@@ -92,12 +92,12 @@ class Connection:
         manager: P2pManager,
         client: socket.socket,
         address: NetworkAddressV2,
-        id: int,
+        connection_id: int,
         inbound: bool,
     ) -> None:
         super().__init__()
 
-        self.id = id
+        self.id = connection_id
         self.manager = manager
         self.node: Node = manager.node
 

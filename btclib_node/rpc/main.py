@@ -13,9 +13,9 @@ if TYPE_CHECKING:
     from btclib_node.rpc.manager import RpcManager
 
 
-def get_connection(manager: RpcManager, id: int) -> Connection | None:
+def get_connection(manager: RpcManager, connection_id: int) -> Connection | None:
     try:
-        return manager.connections[id]
+        return manager.connections[connection_id]
     except Exception:
         return None
 

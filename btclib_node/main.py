@@ -73,8 +73,8 @@ def update_chain(node: Node) -> None:
         first_candidate.header.hash
     )
 
-    for hash in to_add_hash:
-        if not block_index.get_block_info(hash).downloaded:
+    for block_hash in to_add_hash:
+        if not block_index.get_block_info(block_hash).downloaded:
             # get_first_candidate prefers a branch whose tip has
             # arrived, so a branch missing its tip is stepped over; a
             # branch missing a block behind its tip is not, and until
@@ -89,10 +89,10 @@ def update_chain(node: Node) -> None:
     # chain this is replacing, so block_db holds it; the type is wider
     # than that invariant
     to_add: list[Block] = []
-    for hash in to_add_hash:
-        block = node.block_db.get_block(hash)
+    for block_hash in to_add_hash:
+        block = node.block_db.get_block(block_hash)
         if block is None:
-            err_msg = f"block just checked downloaded is missing: {hash.hex()}"
+            err_msg = f"block just checked downloaded is missing: {block_hash.hex()}"
             raise Exception(err_msg)
         to_add.append(block)
     # tip first: an output the branch created may have been spent again
@@ -100,10 +100,12 @@ def update_chain(node: Node) -> None:
     # before the block that made it. `remove_from_active_chain` asks for
     # the same order, and refuses anything but the tip
     to_remove: list[RevBlock] = []
-    for hash in reversed(to_remove_hash):
-        rev_block = node.block_db.get_rev_block(hash)
+    for block_hash in reversed(to_remove_hash):
+        rev_block = node.block_db.get_rev_block(block_hash)
         if rev_block is None:
-            err_msg = f"no reverse patch for a block on the active chain: {hash.hex()}"
+            err_msg = (
+                f"no reverse patch for a block on the active chain: {block_hash.hex()}"
+            )
             raise Exception(err_msg)
         to_remove.append(rev_block)
     node.logger.debug("Got all blocks")

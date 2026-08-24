@@ -105,7 +105,7 @@ class P2pManager(threading.Thread):
         task = asyncio.run_coroutine_threadsafe(conn.run(), self.loop)
         conn.task = task
 
-    def promote_connection(self, id: int) -> None:
+    def promote_connection(self, connection_id: int) -> None:
         """Move a connection out of the handshake and into the herd.
 
         The only caller is `callbacks.verack`, right after it sets
@@ -113,12 +113,14 @@ class P2pManager(threading.Thread):
         calls only because the status belongs to the connection and the
         dict it lives in belongs to the manager.
         """
-        conn = self.pending_connections.pop(id, None)
+        conn = self.pending_connections.pop(connection_id, None)
         if conn is not None:
-            self.connections[id] = conn
+            self.connections[connection_id] = conn
 
-    def remove_connection(self, id: int) -> None:
-        conn = self.connections.pop(id, None) or self.pending_connections.pop(id, None)
+    def remove_connection(self, connection_id: int) -> None:
+        conn = self.connections.pop(
+            connection_id, None
+        ) or self.pending_connections.pop(connection_id, None)
         if conn is not None:
             conn.stop()
 
@@ -416,9 +418,9 @@ class P2pManager(threading.Thread):
         self.listening.clear()
         self.logger.info("Stopping P2P Manager")
 
-    def send(self, msg: Payload, id: int) -> None:
-        if id in self.connections:
-            self.connections[id].send(msg)
+    def send(self, msg: Payload, connection_id: int) -> None:
+        if connection_id in self.connections:
+            self.connections[connection_id].send(msg)
 
     def broadcast_raw_transaction(self, tx: BtclibTx, fee: int) -> None:
         # `DownloadManager.tx_download`'s own queue, with no peer to
