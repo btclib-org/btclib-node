@@ -18,6 +18,13 @@ to check the guess.
 
 ## Unreleased
 
+### `Connection.run` no longer takes a parameter it never reads
+
+- **`Connection.run`'s own `connect` parameter is removed** (closes
+  #318). Its body never read it, and no caller —
+  `P2pManager.create_connection` or any test — ever passed it a
+  non-default value.
+
 ### `block_download`'s out-of-work branch is now covered on purpose
 
 - **`tests/unit/download_test.py` now covers the `else: return` a

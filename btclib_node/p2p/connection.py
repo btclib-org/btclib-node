@@ -200,7 +200,7 @@ class Connection:
             self.task.cancel()
         self.client.close()
 
-    async def run(self, connect: bool = True) -> None:
+    async def run(self) -> None:
         # self.client is this coroutine's own resource, the same
         # guarantee P2pManager.server's own `with server_socket:` gives
         # its listening socket -- so a finally here, not only the
