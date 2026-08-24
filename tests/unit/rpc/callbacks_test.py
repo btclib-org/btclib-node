@@ -721,7 +721,38 @@ def test_a_resubmission_under_a_different_witness_is_also_tolerated_when_full(
 
     answer = send_raw_transaction(node, _CONN, [resubmitted.serialize(True).hex()])
     assert answer == resubmitted.id.hex()
-    assert broadcast == [resubmitted]
+    # the held transaction's own wtxid is what is announced, not the
+    # resubmitted object's: broadcast_raw_transaction reads .hash off
+    # whatever it is given, and add_tx never stored resubmitted's wtxid
+    # -- announcing it would be a wtxid a getdata for it answers with
+    # notfound, the defect #277 closed on the peer-to-peer path
+    assert broadcast == [held]
+    assert mempool.get_tx(broadcast[0].hash, wtxid=True) is held
+
+
+def test_a_resubmission_under_a_different_witness_is_reannounced_by_wtxid_even_when_not_full(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # the same substitution, off the full-mempool guard entirely: a
+    # resubmission's own wtxid is never what add_tx stored, whether or
+    # not the mempool happens to be full
+    import btclib_node.rpc.callbacks as cb
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 1000)
+    held = a_tx()
+    resubmitted = replace(
+        held, vin=[replace(held.vin[0], script_witness=Witness([b"\x22" * 8]))]
+    )
+    mempool = Mempool(Logger(debug=True))
+    mempool.add_tx(held, 1000)
+    assert not mempool.is_full()
+    broadcast: list[Tx] = []
+    node = a_node(mempool=mempool)
+    node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: broadcast.append(tx)
+
+    answer = send_raw_transaction(node, _CONN, [resubmitted.serialize(True).hex()])
+    assert answer == resubmitted.id.hex()
+    assert broadcast == [held]
 
 
 def a_block_index(

@@ -559,8 +559,28 @@ def send_raw_transaction(node: Node, conn: Connection, params: list[Any]) -> str
     # `get_raw_mempool` already does above. btclib-org/btclib-node#293
     if node.mempool.is_full() and tx.id not in node.mempool.txid_index:
         raise RpcError(RpcErrorCode.VERIFY_REJECTED, _MEMPOOL_FULL_REASON)
-    node.mempool.add_tx(tx, fee)
-    node.p2p_manager.broadcast_raw_transaction(tx, fee)
+    if node.mempool.add_tx(tx, fee):
+        to_announce = tx
+    else:
+        # add_tx declined for the one reason the guard above still
+        # allows through: this txid is already held, possibly under a
+        # different witness -- and therefore a different wtxid -- than
+        # what was just resubmitted. Announcing the resubmitted object's
+        # own wtxid here, rather than the mempool's, would queue a wtxid
+        # nothing holds: `Mempool.add_tx`'s own comment on #277 is the
+        # defect this substitution avoids, one call site over.
+        # `BroadcastTransaction` (`node/transaction.cpp`,
+        # bitcoin/bitcoin@58a7869f86) makes the identical substitution
+        # for the identical reason -- "Use the mempool's wtxid for
+        # reannouncement" -- rather than reannouncing what was just
+        # submitted. The type is wider than the invariant: `get_tx`
+        # cannot answer `None` once `txid_index` holds `tx.id`, which
+        # `add_tx` returning `False` here guarantees, so this is a cast
+        # rather than a check dead on every path that reaches it,
+        # matching `Connection.send_version`'s own `self.manager.port`.
+        # btclib-org/btclib-node#293
+        to_announce = cast(Tx, node.mempool.get_tx(tx.id))
+    node.p2p_manager.broadcast_raw_transaction(to_announce, fee)
     return tx.id.hex()
 
 

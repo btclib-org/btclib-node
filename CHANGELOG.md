@@ -1944,4 +1944,12 @@ to check the guess.
   own early return for a txid already in the mempool -- itself
   txid-keyed, and explicit that the held transaction "may have the same
   or different witness" -- which does not reach Core's own capacity
-  check either.
+  check either. What is reannounced on a resubmission is the mempool's
+  own copy of the transaction and not the resubmitted object: the two
+  can carry different witnesses and therefore different wtxids, and
+  `P2pManager.broadcast_raw_transaction` queues whichever one it is
+  handed for announcement by that object's own `.hash` -- the same
+  substitution `BroadcastTransaction` itself makes ("Use the mempool's
+  wtxid for reannouncement"), needed here for the same reason: announcing
+  a wtxid `add_tx` never stored answers a peer's `getdata` with
+  `notfound`.
