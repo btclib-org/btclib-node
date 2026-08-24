@@ -10,6 +10,7 @@ from collections import deque
 from contextlib import suppress
 from typing import TYPE_CHECKING, override
 
+from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.addrv2 import NetworkAddressV2
 from btclib.p2p.data import TxPayload as Tx
 from btclib.p2p.payload import Payload
@@ -258,7 +259,7 @@ class P2pManager(threading.Thread):
         if id in self.connections:
             self.connections[id].send(msg)
 
-    def broadcast_raw_transaction(self, tx: BtclibTx) -> None:
+    def broadcast_raw_transaction(self, tx: BtclibTx, fee: int) -> None:
         # the peers that asked for transactions, and not all of them:
         # a peer whose version set BIP37's fRelay false said so about
         # transactions from anywhere, not only about the ones another
@@ -267,10 +268,23 @@ class P2pManager(threading.Thread):
         # would have been right for is a message every peer is owed, and
         # a transaction is not one, which leaves `sendall` with nothing
         # to do.
+        #
+        # `fee` is the caller's own -- `rpc.callbacks.send_raw_transaction`
+        # has just computed it out of `main.verify_mempool_acceptance` --
+        # rather than looked up here, since a transaction can reach this
+        # method before or without ever sitting in `node.mempool`.
+        # BIP133: a peer's own advertised floor (`conn.feefilter`) is
+        # honoured the same way `DownloadManager.tx_download` does.
+        # btclib-org/btclib-node#260
         msg = Tx(tx, include_witness=True)
         for conn in self.connections.copy().values():
-            if conn.relay_tx:
-                conn.send(msg)
+            if not conn.relay_tx:
+                continue
+            if conn.feefilter and fee < fee_from_vsize(
+                tx.vsize, FeeRate(sats_per_kvbyte=conn.feefilter)
+            ):
+                continue
+            conn.send(msg)
 
     def ping_all(self) -> None:
         for conn in self.connections.copy().values():

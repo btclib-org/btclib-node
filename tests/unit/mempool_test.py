@@ -4,6 +4,7 @@
 
 import secrets
 
+from btclib.fee import FeeRate, fee_from_vsize
 from btclib.script.witness import Witness
 from btclib.tx.tx import Tx
 
@@ -142,3 +143,46 @@ def test_a_transaction_is_found_by_either_of_its_identifiers() -> None:
     assert mempool.get_tx(tx.hash) is None
     assert mempool.get_tx(tx.id, wtxid=True) is None
     assert mempool.get_tx(b"\x11" * 32) is None
+
+
+def test_a_fee_is_kept_and_dropped_with_its_transaction() -> None:
+    mempool = Mempool(Logger(debug=True))
+    tx = generate_random_transaction()
+    mempool.add_tx(tx, 1000)
+    assert mempool.fees[tx.hash] == 1000
+    mempool.remove_tx(tx)
+    assert tx.hash not in mempool.fees
+
+
+def test_a_transaction_added_without_a_fee_is_recorded_at_zero() -> None:
+    mempool = Mempool(Logger(debug=True))
+    tx = generate_random_transaction()
+    mempool.add_tx(tx)
+    assert mempool.fees[tx.hash] == 0
+
+
+def test_a_zero_min_fee_rate_is_no_filter_and_clears_everything() -> None:
+    # BIP133's and Connection.feefilter's own "no filter" value
+    mempool = Mempool(Logger(debug=True))
+    tx = generate_random_transaction()
+    mempool.add_tx(tx, 0)
+    assert mempool.meets_fee_rate(tx.hash, 0)
+
+
+def test_a_wtxid_the_mempool_holds_no_fee_for_clears_every_rate() -> None:
+    # gone already, or never held: there is nothing here to withhold it
+    # for, so the filter does not withhold it
+    mempool = Mempool(Logger(debug=True))
+    assert mempool.meets_fee_rate(b"\x00" * 32, 1000)
+
+
+def test_a_fee_below_the_rate_is_withheld_and_at_or_above_it_clears() -> None:
+    mempool = Mempool(Logger(debug=True))
+    tx = generate_random_transaction()
+    required = fee_from_vsize(tx.vsize, FeeRate(sats_per_kvbyte=1000))
+    mempool.add_tx(tx, required - 1)
+    assert not mempool.meets_fee_rate(tx.hash, 1000)
+
+    mempool.remove_tx(tx)
+    mempool.add_tx(tx, required)
+    assert mempool.meets_fee_rate(tx.hash, 1000)

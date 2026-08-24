@@ -58,6 +58,20 @@ to check the guess.
   where the one it now carries comes from**, instead of continuing to
   describe a state this same change ends.
 
+### A peer's `feefilter` is honoured, and `Mempool` keeps a fee per transaction
+
+- **`Mempool` now keeps the fee each transaction paid alongside it
+  (`Mempool.fees`, `Mempool.add_tx`'s new `fee` argument), and
+  `DownloadManager.tx_download` and `P2pManager.broadcast_raw_transaction`
+  withhold a transaction from a connection whose own `feefilter` (#94)
+  it does not clear** (#260), through the new `Mempool.meets_fee_rate`.
+  The fee itself is `main.verify_mempool_acceptance`'s own
+  sum-of-inputs-less-sum-of-outputs, computed there already and
+  returned rather than discarded. `broadcast_raw_transaction` grew a
+  required `fee` argument to carry it in from
+  `rpc.callbacks.send_raw_transaction`, the one caller outside the
+  mempool's own bookkeeping.
+
 ### `P2pManager.stop` waits on its own thread instead of spinning a core
 
 - **`P2pManager.stop` blocks on `self.join()` rather than polling
@@ -241,10 +255,7 @@ to check the guess.
   defaulting to Core's own `DEFAULT_MIN_RELAY_TX_FEE` of 100 sat/kvB)
   once the handshake completes, and a peer's own `feefilter` is parsed
   and kept on `Connection.feefilter`** (#94), where it used to be an
-  unknown command `handle_p2p` silently dropped. Nothing yet reads the
-  stored rate to skip an announcement below it: that needs a
-  per-transaction fee this node computes nowhere outside
-  `main.verify_mempool_acceptance`'s own prevout lookup, filed as #260.
+  unknown command `handle_p2p` silently dropped.
 
 ### An octet past an `addr` or `addrv2` no longer costs the peer
 

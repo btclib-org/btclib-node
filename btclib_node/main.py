@@ -216,10 +216,10 @@ def update_chain(node: Node) -> None:
                 # the one path into the mempool that skipped that.
                 # btclib-org/btclib-node#85
                 try:
-                    verify_mempool_acceptance(node, tx)
+                    fee = verify_mempool_acceptance(node, tx)
                 except MissingPrevoutError, BTClibValueError:
                     continue
-                node.mempool.add_tx(tx)
+                node.mempool.add_tx(tx, fee)
         for block in to_add:
             for tx in block.transactions[1:]:
                 node.mempool.remove_tx(tx)
@@ -231,7 +231,16 @@ def update_chain(node: Node) -> None:
         return finish_sync(node)
 
 
-def verify_mempool_acceptance(node: Node, tx: Tx) -> None:
+def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
+    """Verify a transaction against its prevouts and return its fee.
+
+    The fee is the same sum-of-inputs-less-sum-of-outputs
+    `btclib.script.engine.verify_amounts` already computes and discards
+    inside `check_transaction` below; recomputed here from the same
+    `prev_outputs` this function built for that call, rather than
+    threaded back out of btclib's engine, which returns nothing.
+    btclib-org/btclib-node#260
+    """
     prev_outputs: list[TxOut] = []
 
     block_index = node.chainstate.block_index
@@ -252,3 +261,4 @@ def verify_mempool_acceptance(node: Node, tx: Tx) -> None:
                 raise MissingPrevoutError
 
     check_transaction(prev_outputs, tx, len(block_index.active_chain) + 1, node)
+    return sum(x.value for x in prev_outputs) - sum(x.value for x in tx.vout)

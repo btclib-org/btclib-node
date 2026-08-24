@@ -201,10 +201,10 @@ def addrv2(node: Node, msg: bytes, conn: Connection) -> None:
 def feefilter(node: Node, msg: bytes, conn: Connection) -> None:
     # BIP133: a peer asking not to be told about a transaction paying
     # less. Stored on the connection, the same shape relay_tx above
-    # already is; nothing reads this yet, since honouring it needs a
-    # per-transaction fee this node computes nowhere outside
-    # main.verify_mempool_acceptance's own prevout lookup, which is
-    # btclib-org/btclib-node#260.
+    # already is; read by DownloadManager.tx_download and
+    # P2pManager.broadcast_raw_transaction, against the fee
+    # main.verify_mempool_acceptance now hands back and Mempool keeps
+    # per transaction. btclib-org/btclib-node#260
     #
     # Core acts on a received rate only within MoneyRange -- 0 to
     # MAX_MONEY inclusive (net_processing.cpp's NetMsgType::FEEFILTER,
@@ -232,12 +232,12 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
         return
     tx = TxMsg.parse(msg).tx
     try:
-        verify_mempool_acceptance(node, tx)
+        fee = verify_mempool_acceptance(node, tx)
     except MissingPrevoutError:
         # We don't have the parents in the mempool
         return
     if not node.mempool.contains_tx(tx):
-        node.mempool.add_tx(tx)
+        node.mempool.add_tx(tx, fee)
         node.download_manager.received_txs.append((conn.id, tx.hash))
 
 

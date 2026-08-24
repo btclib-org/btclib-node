@@ -118,9 +118,9 @@ class Connection:
         # sat/kvB, BIP133's own default of "no filter, everything relays"
         # until callbacks.feefilter writes here -- 0 is Core's own answer
         # for a rate it holds as no rate at all (btclib.fee.fee_from_vsize's
-        # own docstring). Stored and not yet read anywhere: honouring it
-        # needs a per-transaction fee this node does not compute outside
-        # main.verify_mempool_acceptance. btclib-org/btclib-node#260
+        # own docstring). Read by DownloadManager.tx_download and
+        # P2pManager.broadcast_raw_transaction, through
+        # Mempool.meets_fee_rate. btclib-org/btclib-node#260
         self.feefilter: int = 0
         self.prefer_addressv2: bool = False
         # set by callbacks.sendheaders, the peer's own request to be

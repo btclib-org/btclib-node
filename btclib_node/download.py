@@ -60,7 +60,16 @@ class DownloadManager:
                 if not conn.relay_tx:
                     continue
                 known = has_it.get(conn.id, ())
-                inv = [wtxid for wtxid in received if wtxid not in known]
+                # BIP133: a peer told this node its own floor
+                # (callbacks.feefilter, `conn.feefilter`) is not
+                # announced a transaction below it either.
+                # btclib-org/btclib-node#260
+                inv = [
+                    wtxid
+                    for wtxid in received
+                    if wtxid not in known
+                    and self.node.mempool.meets_fee_rate(wtxid, conn.feefilter)
+                ]
                 # every accepted transaction, and not only those that
                 # arrived in a batch of more than five: a batch size is
                 # not a throttle, it is a filter on whether a transaction

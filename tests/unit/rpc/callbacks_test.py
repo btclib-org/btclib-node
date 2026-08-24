@@ -562,15 +562,16 @@ def test_a_relayed_transaction_is_answered_with_its_txid(
 ) -> None:
     import btclib_node.rpc.callbacks as cb
 
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: None)
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 1000)
     tx = a_tx()
     mempool = Mempool(Logger(debug=True))
     broadcast: list[Tx] = []
     node = a_node(mempool=mempool)
-    node.p2p_manager.broadcast_raw_transaction = broadcast.append
+    node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: broadcast.append(tx)
 
     assert send_raw_transaction(node, _CONN, [tx.serialize(True).hex()]) == tx.id.hex()
     assert mempool.contains_tx(tx)
+    assert mempool.fees[tx.hash] == 1000
     assert broadcast == [tx]
 
 
@@ -593,7 +594,7 @@ def test_a_transaction_the_mempool_will_not_have_is_not_reported_relayed(
     mempool = Mempool(Logger(debug=True))
     broadcast: list[Tx] = []
     node = a_node(mempool=mempool)
-    node.p2p_manager.broadcast_raw_transaction = broadcast.append
+    node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: broadcast.append(tx)
 
     with pytest.raises(MissingPrevoutError):
         send_raw_transaction(node, _CONN, [tx.serialize(True).hex()])
@@ -1010,7 +1011,7 @@ def test_a_transaction_whose_scripts_do_not_verify_is_still_answered_with_its_tx
     tx = a_tx()
     mempool = Mempool(Logger(debug=True))
     node = a_node(mempool=mempool)
-    node.p2p_manager.broadcast_raw_transaction = lambda tx: None
+    node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: None
 
     assert send_raw_transaction(node, _CONN, [tx.serialize(True).hex()]) == tx.id.hex()
     assert not mempool.contains_tx(tx)
