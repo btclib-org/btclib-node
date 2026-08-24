@@ -19,7 +19,7 @@ from btclib.script import script
 from btclib.tx.out_point import OutPoint
 from btclib.tx.tx_out import TxOut
 
-from btclib_node.block_db import BlockDB, RevBlock
+from btclib_node.block_db import BlockDB, BlockLocation, FileMetadata, RevBlock
 from btclib_node.chains import RegTest
 from btclib_node.log import Logger
 from tests.helpers import generate_random_chain
@@ -219,6 +219,73 @@ def test_finalize_refuses_a_patch_for_a_block_never_stored(tmp_path: Path) -> No
     block_db.add_rev_block(rev_block)
     with pytest.raises(Exception, match="not stored"):
         block_db.finalize()
+
+
+def test_a_filename_past_ten_characters_survives_the_wire() -> None:
+    # ten octets was a fixed width assumed for `{index:06d}.blk`; past
+    # the millionth file the name is eleven characters
+    # (btclib-org/btclib-node#78)
+    location = BlockLocation("1000000.blk", 5, 10)
+    assert BlockLocation.deserialize(location.serialize()) == location
+
+    metadata = FileMetadata("1000000.rev", 5)
+    assert FileMetadata.deserialize(metadata.serialize()) == metadata
+
+
+def test_an_offset_past_var_ints_default_parse_cap_survives_the_wire() -> None:
+    # BlockLocation.index/size measure a position inside a still-open
+    # 128MB block file, well past var_int.parse's default max_size
+    # (0x02000000, Bitcoin Core's ReadCompactSize guard against an
+    # attacker-inflated item count) before the file ever rotates
+    location = BlockLocation("000001.blk", 40_000_000, 100)
+    assert BlockLocation.deserialize(location.serialize()) == location
+
+    metadata = FileMetadata("000001.blk", MAX_FILE_SIZE)
+    assert FileMetadata.deserialize(metadata.serialize()) == metadata
+
+
+def test_the_file_rotation_counter_passes_the_old_two_octet_ceiling(
+    tmp_path: Path,
+) -> None:
+    # a fixed two-octet field overflows encoding 65536
+    # (btclib-org/btclib-node#78); var_int has no ceiling below its own
+    # 8-byte encoding limit
+    block_db = a_db(tmp_path)
+    block_db.file_index = 65600
+    block_db.files["065600.blk"] = FileMetadata("065600.blk", MAX_FILE_SIZE + 1)
+    (block,) = generate_random_chain(1, RegTest().genesis.hash)
+    block_db.add_block(block)
+    assert block_db.file_index == 65601
+    assert block_db.blocks[block.header.hash].filename == "065601.blk"
+    assert block_db.get_block(block.header.hash) == block
+    block_db.close()
+
+    reopened = a_db(tmp_path)
+    assert reopened.file_index == 65601
+    reopened.close()
+
+
+def test_a_block_file_is_matched_by_its_resolved_path_not_its_basename(
+    tmp_path: Path,
+) -> None:
+    # a handle open on a same-named file under a different directory is
+    # not the file this store means: matching by a basename or a suffix
+    # (btclib-org/btclib-node#79) would accept it anyway
+    block_db = a_db(tmp_path)
+    (block,) = generate_random_chain(1, RegTest().genesis.hash)
+    block_db.add_block(block)
+
+    decoy_dir = tmp_path / "decoy"
+    decoy_dir.mkdir()
+    decoy_file = (decoy_dir / "000001.blk").open("a+b")
+    decoy_file.write(b"not this store's block")
+    decoy_file.flush()
+
+    assert block_db.open_block_file is not None
+    block_db.open_block_file.close()
+    block_db.open_block_file = decoy_file
+    assert block_db.get_block(block.header.hash) == block
+    decoy_file.close()
 
 
 def test_closing_a_store_that_wrote_nothing(tmp_path: Path) -> None:

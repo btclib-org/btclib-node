@@ -15,6 +15,19 @@ from btclib.utils import bytesio_from_binarydata
 from btclib_node.db import KeyValueStore
 from btclib_node.log import Logger
 
+# A file's byte offset or length, and the store's own file-rotation
+# counter, are this store's bookkeeping about itself, not a count of
+# items an untrusted peer handed it -- so none of the three needs
+# var_int.parse's default cap, which exists to bound an attacker-
+# inflated item count (btclib's var_int module docstring) and is what
+# a fixed two-octet counter and a fixed-width filename slice were
+# standing in for (btclib-org/btclib-node#78, #79). Bitcoin Core's own
+# on-disk position and file index, FlatFilePos::nFile and ::nPos, skip
+# that guard the same way: SERIALIZE_METHODS reads them through
+# VARINT_MODE, not ReadCompactSize (src/flatfile.h). var_int's own
+# encoding ceiling, 8 bytes, is the only bound left here.
+_LOCAL_BOOKKEEPING_MAX = 0xFFFF_FFFF_FFFF_FFFF
+
 
 @dataclass
 class RevBlock:
@@ -58,13 +71,16 @@ class BlockLocation:
     @classmethod
     def deserialize(cls, data: bytes) -> BlockLocation:
         stream = bytesio_from_binarydata(data)
-        filename = stream.read(10).decode()
-        index = var_int.parse(stream)
-        size = var_int.parse(stream)
+        filename_length = var_int.parse(stream)
+        filename = stream.read(filename_length).decode()
+        index = var_int.parse(stream, max_size=_LOCAL_BOOKKEEPING_MAX)
+        size = var_int.parse(stream, max_size=_LOCAL_BOOKKEEPING_MAX)
         return cls(filename, index, size)
 
     def serialize(self) -> bytes:
-        out = self.filename.encode()
+        filename_bytes = self.filename.encode()
+        out = var_int.serialize(len(filename_bytes))
+        out += filename_bytes
         out += var_int.serialize(self.index)
         out += var_int.serialize(self.size)
         return out
@@ -78,12 +94,15 @@ class FileMetadata:
     @classmethod
     def deserialize(cls, data: bytes) -> FileMetadata:
         stream = bytesio_from_binarydata(data)
-        filename = stream.read(10).decode()
-        size = var_int.parse(stream)
+        filename_length = var_int.parse(stream)
+        filename = stream.read(filename_length).decode()
+        size = var_int.parse(stream, max_size=_LOCAL_BOOKKEEPING_MAX)
         return cls(filename, size)
 
     def serialize(self) -> bytes:
-        out = self.filename.encode()
+        filename_bytes = self.filename.encode()
+        out = var_int.serialize(len(filename_bytes))
+        out += filename_bytes
         out += var_int.serialize(self.size)
         return out
 
@@ -122,7 +141,7 @@ class BlockDB:
             elif key[:1] == b"r":
                 self.rev_patches[key[1:]] = BlockLocation.deserialize(value)
             elif key == b"i":
-                self.file_index = int.from_bytes(value, "big")
+                self.file_index = var_int.parse(value, max_size=_LOCAL_BOOKKEEPING_MAX)
         self.logger.info("Finished Block database initialization")
 
     def close(self) -> None:
@@ -146,15 +165,20 @@ class BlockDB:
             file_metadata = FileMetadata(filename, 0)
             self.files[filename] = file_metadata
             self.db.put(b"f" + filename.encode(), file_metadata.serialize())
-            self.db.put(b"i", (self.file_index).to_bytes(2, "big"))
+            self.db.put(b"i", var_int.serialize(self.file_index))
         return self.__get_block_file(filename)
 
     def __get_block_file(self, filename: str) -> BinaryIO:
-        if not self.open_block_file:
-            self.open_block_file = (self.data_dir / filename).open("a+b")
-        if self.open_block_file.name[-len(filename) :] != filename:
-            self.open_block_file.close()
-            self.open_block_file = (self.data_dir / filename).open("a+b")
+        # matched by the resolved path, not by a basename or a suffix
+        # comparison: two data_dirs can share a filename, and neither is
+        # unique past that (btclib-org/btclib-node#79).
+        target = (self.data_dir / filename).resolve()
+        if self.open_block_file is None or (
+            Path(self.open_block_file.name).resolve() != target
+        ):
+            if self.open_block_file is not None:
+                self.open_block_file.close()
+            self.open_block_file = target.open("a+b")
         return self.open_block_file
 
     # A patch goes in the .rev file named for its own block's .blk file
@@ -170,17 +194,19 @@ class BlockDB:
         return self.__get_rev_file(filename=filename)
 
     def __get_rev_file(self, filename: str) -> BinaryIO:
-        if not self.open_rev_file:
-            self.open_rev_file = (self.data_dir / filename).open("a+b")
-        if self.open_rev_file.name[-len(filename) :] != filename:
-            self.open_rev_file.close()
-            self.open_rev_file = (self.data_dir / filename).open("a+b")
+        target = (self.data_dir / filename).resolve()
+        if self.open_rev_file is None or (
+            Path(self.open_rev_file.name).resolve() != target
+        ):
+            if self.open_rev_file is not None:
+                self.open_rev_file.close()
+            self.open_rev_file = target.open("a+b")
         return self.open_rev_file
 
     def __add_data_to_file(self, file: BinaryIO, data: bytes) -> tuple[int, int]:
         file.write(data)
         file.flush()
-        file_metadata = self.files[file.name[-10:]]
+        file_metadata = self.files[Path(file.name).name]
         data_index = file_metadata.size
         data_size = len(data)
         file_metadata.size += data_size
@@ -199,7 +225,7 @@ class BlockDB:
         data = block.serialize(check_validity=False)
         file = self.__find_block_file()
         index, block_size = self.__add_data_to_file(file, data)
-        block_location = BlockLocation(file.name[-10:], index, block_size)
+        block_location = BlockLocation(Path(file.name).name, index, block_size)
         self.blocks[block_hash] = block_location
         self.db.put(b"b" + block_hash, block_location.serialize())
 
@@ -230,7 +256,7 @@ class BlockDB:
             data = rev_block.serialize()
             file = self.__find_rev_file(file_index)
             index, block_size = self.__add_data_to_file(file, data)
-            block_location = BlockLocation(file.name[-10:], index, block_size)
+            block_location = BlockLocation(Path(file.name).name, index, block_size)
             self.rev_patches[rev_block_hash] = block_location
             self.db.put(b"r" + rev_block_hash, block_location.serialize())
         self.pending_rev_blocks = {}

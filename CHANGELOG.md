@@ -84,6 +84,34 @@ to check the guess.
   `tests/unit/main.py` reaches `main` as the submodule Python already
   registers on import, not as a name `__all__` would need to carry.
 
+### `BlockDB`'s file counter and filenames no longer have a fixed width
+
+- **The block-file rotation counter is a `var_int`, not a fixed-width
+  field** (#78). `(self.file_index).to_bytes(2, "big")` raised
+  `OverflowError` once the counter grew past what two octets encode,
+  with nothing checking for it beforehand.
+- **`BlockLocation` and `FileMetadata` read and write their filename
+  length-prefixed, not as a fixed-width slice** (#78). `file.name[-10:]`
+  and `stream.read(10)` assumed the name was always exactly ten
+  characters, keying or truncating it wrongly once it grew past that.
+- **`BlockLocation.index` and `FileMetadata.size` parse past
+  `var_int.parse`'s default cap** (collateral of the same fix): that cap
+  bounds an item count a peer could inflate, and a byte offset inside a
+  still-open 128MB block file already exceeds it before the file
+  rotates. Bitcoin Core's own on-disk position, `FlatFilePos::nPos`,
+  skips the same guard for the same reason.
+- **A block or reverse-patch file is matched by its resolved path, not
+  by a basename or a string suffix** (#79). Comparing suffixes accepts
+  another directory's file of the same name; nothing exercises that today
+  since one `BlockDB` owns one `data_dir`, but the comparison now says
+  what is meant instead of what happens to be true.
+- **A block store's `blocks/` directory written before this change
+  cannot be reopened**: its records were the fixed ten-octet filename
+  this change removes, and `BlockLocation.deserialize` now reads the
+  first of those octets as a length prefix instead, raising rather than
+  returning a wrong answer. A node upgrading past this change starts
+  from an empty `blocks/` directory.
+
 ### `REPOSITORY.md`'s required-checks section names what main now enforces
 
 - **`REPOSITORY.md`'s *Required checks on main* section names `Lint and
