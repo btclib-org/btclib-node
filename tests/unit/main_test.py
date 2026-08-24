@@ -310,13 +310,12 @@ def test_a_reorg_evicts_a_transaction_the_reorg_itself_invalidated(
     assert not node.mempool.contains_tx(confirmed)
 
 
-def test_a_connected_block_restarts_the_mempool_s_decay_clock(tmp_path: Path) -> None:
+def test_a_connected_block_restarts_the_mempool_s_decay_clock(node: Node) -> None:
     # note_block_connected runs once per block update_chain connects to the
     # active chain, restarting Mempool.get_min_fee_rate's own decay clock --
     # Core's own removeForBlock (src/txmempool.cpp:405-427,
     # bitcoin/bitcoin@58a7869f86) does this for every block regardless of
     # what it held. btclib-org/btclib-node#294
-    node = regtest_node(tmp_path)
     first = generate_random_chain(2, RegTest().genesis.hash)
     connect(node, first)
     assert node.status == NodeStatus.BlockSynced

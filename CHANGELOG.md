@@ -72,6 +72,7 @@ to check the guess.
   warning raised on purpose (an unhandled exception on a manager's
   thread that cannot bind, a coroutine a deliberately unrun loop never
   awaits), a `pytest.mark.filterwarnings` naming that test alone.
+
 ### `Mempool` evicts to its limit instead of refusing everything past it
 
 - **`Mempool.add_tx` evicts the worst individual feerate, and its

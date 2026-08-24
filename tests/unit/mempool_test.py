@@ -4,6 +4,7 @@
 
 import secrets
 import time
+from fractions import Fraction
 
 from btclib.fee import FeeRate, fee_from_vsize
 from btclib.script.witness import Witness
@@ -280,6 +281,33 @@ def test_eviction_raises_the_rolling_minimum_above_what_it_evicted() -> None:
     # relay fee rate itself -- Core's own DEFAULT_INCREMENTAL_RELAY_FEE
     assert mempool._rolling_min_fee_rate == 100
     assert mempool._block_since_last_rolling_fee_bump is False
+
+
+def test_eviction_bumps_the_rolling_minimum_by_the_whole_package_it_evicts() -> None:
+    # Core's own TrimToSize (src/txmempool.cpp:917-925,
+    # bitcoin/bitcoin@58a7869f86) bumps the rolling minimum from the
+    # removed chunk's own aggregate feerate, not from the worst entry's
+    # own rate alone: a low-fee parent evicted together with a child
+    # overpaying for it (CPFP) bumps the rolling minimum by their
+    # combined rate, higher than the parent's own individual rate --
+    # which is what the parent alone paid nothing would otherwise give,
+    # `test_eviction_raises_the_rolling_minimum_above_what_it_evicted`'s
+    # own 100.
+    mempool = Mempool(Logger(debug=True))
+    parent = generate_random_transaction()
+    child = generate_random_transaction(parent.id)
+    keeper = generate_random_transaction()
+    mempool.add_tx(parent, 0)
+    mempool.add_tx(child, 100_000)
+    mempool.bytesize_limit = mempool.bytesize + keeper.vsize - 1
+    mempool.add_tx(keeper, 1)
+    assert not mempool.contains_tx(parent)
+    assert not mempool.contains_tx(child)
+
+    package_rate = Fraction(100_000, parent.vsize + child.vsize) * 1000
+    expected = float(package_rate + 100)
+    assert mempool._rolling_min_fee_rate == expected
+    assert mempool._rolling_min_fee_rate != 100  # the parent's own rate alone
 
 
 def test_a_lower_rate_eviction_does_not_lower_the_rolling_minimum() -> None:

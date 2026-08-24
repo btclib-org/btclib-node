@@ -241,23 +241,39 @@ class Mempool:
         own prevout no longer resolves. Ties break toward the
         longest-held entry, `self.transactions`' own insertion order and
         `min`'s own stability, there being no ordering Core's package
-        score would give here to break them by instead.
+        score would give here to break them by instead. This is a
+        deliberate, argued departure from Core, unlike `removed_rate`
+        below, which matches it.
         """
         while self.bytesize > self.bytesize_limit and self.transactions:
             worst = min(
                 self.transactions,
                 key=lambda w: Fraction(self.fees[w], self.transactions[w].vsize),
             )
+            package = self._descendants(worst)
+            # Core's own `removed` (`:917-925`): the feerate of the whole
+            # evicted chunk -- `GetWorstMainChunk`'s own aggregate fee
+            # over its own aggregate size, not the worst entry's rate
+            # alone -- with `m_opts.incremental_relay_feerate` added to
+            # it by `CFeeRate::operator+=` (`policy/feerate.h:80-82`),
+            # which sums the two rates' own sat/kvB values rather than
+            # combining them by size. A low-fee parent evicted together
+            # with a child overpaying for it (CPFP) bumps the rolling
+            # minimum by their combined rate, not by the parent's own
+            # rate alone, which the aggregate here reproduces even though
+            # this mempool's own selection above does not chase CPFP the
+            # way `m_txgraph`'s package score does.
+            #
             # sat/kvB, exact until the float `_track_package_removed`
             # stores it as -- Core's own `CFeeRate` arithmetic in
             # `TrimToSize` is int64 rather than float, a difference this
             # module's own advisory, non-consensus use of the number
             # does not need to close.
-            removed_rate = (
-                Fraction(self.fees[worst], self.transactions[worst].vsize) * 1000
-            )
+            package_fee = sum(self.fees[w] for w in package)
+            package_vsize = sum(self.transactions[w].vsize for w in package)
+            removed_rate = Fraction(package_fee, package_vsize) * 1000
             removed_rate += _INCREMENTAL_RELAY_FEE_RATE.sats_per_kvbyte
-            for victim in self._descendants(worst):
+            for victim in package:
                 self._pop(victim)
             self._track_package_removed(float(removed_rate))
 
@@ -307,6 +323,12 @@ class Mempool:
         floored at `_INCREMENTAL_RELAY_FEE_RATE` once it decays, or
         zeroed once it decays under half of that: below that floor it is
         not a small minimum, it is none.
+
+        `round` rather than Core's own `llround` (ties-to-even against
+        ties-away-from-zero) is the one place this departs from
+        `GetMinFee`'s own arithmetic -- a tie only a decayed float lands
+        on exactly, and advisory relay policy this module does not
+        thread through consensus does not need closed to the bit.
         """
         if (
             not self._block_since_last_rolling_fee_bump
