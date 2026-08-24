@@ -244,8 +244,11 @@ def test_the_bound_is_under_the_limit_that_would_otherwise_expire_first(
     # the claim the constant's comment makes, asserted rather than
     # written: a node that will not stop has to be reported by name,
     # and it is only reported at all if this wait ends before the
-    # harness gives up on the test around it
-    assert btclib_node.STOP_TIMEOUT < int(pytestconfig.getini("timeout"))
+    # harness gives up on the test around it. STOP_TIMEOUT stays the
+    # subject on the left -- SIM300 has no accidental-assignment risk
+    # to guard against in Python, and STOP_TIMEOUT's own comment states
+    # the claim this way round: "well under the per-test limit".
+    assert btclib_node.STOP_TIMEOUT < int(pytestconfig.getini("timeout"))  # noqa: SIM300
 
 
 def test_a_node_that_will_not_stop_is_reported_rather_than_waited_for(
@@ -280,9 +283,11 @@ def test_the_node_that_will_not_stop_is_named(
 ) -> None:
     # several nodes are running in any functional test, and a message
     # that does not say which one leaves the reader to guess
-    with a_wedged_node(tmp_path, monkeypatch) as node:
-        with pytest.raises(Exception, match=re.escape(str(tmp_path))):
-            node.stop()
+    with (
+        a_wedged_node(tmp_path, monkeypatch) as node,
+        pytest.raises(Exception, match=re.escape(str(tmp_path))),
+    ):
+        node.stop()
 
 
 def test_a_port_configured_is_a_manager_started_and_stopped(

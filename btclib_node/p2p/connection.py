@@ -3,6 +3,7 @@
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
 import asyncio
+import contextlib
 import secrets
 import socket
 import time
@@ -237,10 +238,8 @@ class Connection:
             self.stop(cancel_task=False)
 
     async def _send(self, data: bytes) -> None:
-        try:
+        with contextlib.suppress(OSError):  # probably connection dropped
             await self.loop.sock_sendall(self.client, data)
-        except OSError:  # probably connection dropped
-            pass
 
     async def async_send(self, payload: Payload) -> None:
         self.node.logger.debug(f"Sending message: {payload.command}")

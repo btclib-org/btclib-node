@@ -15,8 +15,7 @@ if TYPE_CHECKING:
 
 def get_connection(manager: RpcManager, id: int) -> Connection | None:
     try:
-        conn = manager.connections[id]
-        return conn
+        return manager.connections[id]
     except Exception:
         return None
 
@@ -34,9 +33,7 @@ def is_valid_rpc(request: Any) -> bool:
         # `handle_rpc`'s own `except Exception` -- that one guards a
         # callback's own body, not the dispatch in front of it
         return False
-    if "id" not in request:
-        return False
-    return True
+    return "id" in request
 
 
 def handle_rpc(node: Node) -> None:
@@ -66,10 +63,7 @@ def handle_rpc(node: Node) -> None:
             )
         else:
             try:
-                if "params" in request:
-                    params = request["params"]
-                else:
-                    params = []
+                params = request.get("params", [])
                 response.append(
                     {
                         "jsonrpc": "2.0",

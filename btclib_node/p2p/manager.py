@@ -185,10 +185,7 @@ class P2pManager(threading.Thread):
                     self.peer_db.get_active_addresses()
                 except Exception:
                     self.logger.exception("Exception occurred")
-            if self.node.status < NodeStatus.HeaderSynced:
-                connection_num = 1
-            else:
-                connection_num = 10
+            connection_num = 1 if self.node.status < NodeStatus.HeaderSynced else 10
             live = len(self.connections) + len(self.pending_connections)
             if live < connection_num and not self.peer_db.is_empty:
                 # By endpoint_key, not raw equality: a drawn address

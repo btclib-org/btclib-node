@@ -77,10 +77,7 @@ class Config:
                 f"chain must be a Chain or str, not {type(chain).__name__}"
             )
 
-        if data_dir:
-            data_dir = Path(data_dir)
-        else:
-            data_dir = Path.home() / ".btclib"
+        data_dir = Path(data_dir) if data_dir else Path.home() / ".btclib"
         self.data_dir = data_dir.absolute() / self.chain.name
 
         self.p2p_port = None

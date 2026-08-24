@@ -6,7 +6,7 @@ import os
 import signal
 import threading
 import time
-from math import log as ln
+from math import log2
 from multiprocessing.pool import Pool
 from types import FrameType
 from typing import override
@@ -242,10 +242,10 @@ class Node(threading.Thread):
                 while len(self.p2p_manager.handshake_messages):
                     handle_p2p_handshake(self)
                     wait = False
-                for _ in range(int(ln(len(self.rpc_manager.messages) + 1, 2))):
+                for _ in range(int(log2(len(self.rpc_manager.messages) + 1))):
                     handle_rpc(self)
                     wait = False
-                for _ in range(int(ln(len(self.p2p_manager.messages) + 1, 2))):
+                for _ in range(int(log2(len(self.p2p_manager.messages) + 1))):
                     handle_p2p(self)
                     wait = False
             except Exception:

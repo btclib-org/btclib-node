@@ -18,6 +18,41 @@ to check the guess.
 
 ## Unreleased
 
+### `select` gains `SIM`, `RET` and `FURB`
+
+- **`select` gains `SIM` (flake8-simplify), `RET` (flake8-return) and
+  `FURB` (refurb)** (issue #284).
+- **`Node.run`'s `math.log(x, 2)` calls, over how many queued RPC or
+  peer-to-peer messages one pass of the main loop takes, become
+  `math.log2(x)`**, the redundant-base form `FURB163` names — a rate
+  limit, not anything consensus- or network-facing. Checked the two
+  forms are numerically interchangeable for every non-negative integer
+  input these call sites can reach, exact powers of two included,
+  before taking the rewrite rather than trusting it.
+- **`update_chain` gains an explicit `return None` at the fall-through
+  end of the function**, where every other exit is already explicit
+  (`RET503`). Nothing before this point in the function's own
+  `try`/`except`/`finally` is touched — the fall-through in question is
+  the last statement in the function, well after that block ends.
+- **A trivial `assign, then return` pair collapses to `return
+  <expression>`** wherever `RET504` finds one, an `if`/`else` block
+  that only chooses which value to assign becomes a ternary wherever
+  `SIM108` finds one, a `try`/`except ...: pass` becomes
+  `contextlib.suppress(...)` wherever `SIM105` finds one, and
+  `is_valid_rpc`'s own last two lines become `return "id" in request`
+  (`SIM103`). `rpc/main.py`'s own `SIM108` ternary rewrite of a
+  dict-key-with-default `if`/`else` block turns out to still read as an
+  `if` block to `SIM401` once it is a ternary, so that one goes one
+  step further, to `request.get("params", [])`, rather than stopping
+  at the ternary this round's own `select` addition first suggested.
+- **`init_test.py`'s two nested `with` statements over the same test
+  become one `with (...)`** (`SIM117`).
+- **`init_test.py`'s `STOP_TIMEOUT < timeout` keeps the constant on the
+  left, against `SIM300`, with a `noqa` and a reason**: `SIM300`'s own
+  rationale — preventing an accidental `=` for `==` — does not apply to
+  Python, and the constant's own comment states the claim this way
+  round, the constant being the sentence's subject.
+
 ### `select` gains `PT` and `RUF043`, and bare raises carry a reason
 
 - **`select` gains `PT` (flake8-pytest-style), and `extend-select` gains

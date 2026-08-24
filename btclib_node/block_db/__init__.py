@@ -215,8 +215,7 @@ class BlockDB:
 
     def __get_data_from_file(self, file: BinaryIO, index: int, size: int) -> bytes:
         file.seek(index)
-        data = file.read(size)
-        return data
+        return file.read(size)
 
     def add_block(self, block: Block) -> None:
         block_hash = block.header.hash

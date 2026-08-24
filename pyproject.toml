@@ -451,14 +451,17 @@ select = [
     "FA",   # flake8-future-annotations
     "FIX",  # flake8-fixme
     "FLY",  # flynt
+    "FURB", # refurb
     "I",    # isort
     "ISC",  # flake8-implicit-str-concat
     "PGH",  # pygrep-hooks
     "PIE",  # flake8-pie
     "PT",   # flake8-pytest-style
     "PTH",  # flake8-use-pathlib
+    "RET",  # flake8-return
     "RSE",  # flake8-raise
     "S",    # flake8-bandit, replacing the two bandit hooks below
+    "SIM",  # flake8-simplify
     "SLOT", # flake8-slots
     "T10",  # flake8-debugger
     "TID",  # flake8-tidy-imports
