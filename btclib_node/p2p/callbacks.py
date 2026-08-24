@@ -176,6 +176,15 @@ def addrv2(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 def tx(node: Node, msg: bytes, conn: Connection) -> None:
+    # Core's own reason for the same early return, before it even
+    # parses the payload: "we don't have enough information to validate
+    # it yet" (net_processing.cpp, MSG_TX) -- the utxo set is still
+    # catching up, so a prevout this rejects for lacking may only be
+    # missing because sync has not reached it. An unsolicited
+    # transaction this early is not a protocol violation there either,
+    # so this drops it rather than the peer. btclib-org/btclib-node#129
+    if node.status < NodeStatus.BlockSynced:
+        return
     tx = TxMsg.parse(msg).tx
     try:
         verify_mempool_acceptance(node, tx)
