@@ -546,7 +546,10 @@ class DownloadManager:
                     return
                 conn.download_queue = new
                 getdata = GetData(
-                    [Inventory(InventoryType.MSG_WITNESS_BLOCK, hash) for hash in new]
+                    [
+                        Inventory(InventoryType.MSG_WITNESS_BLOCK, block_hash)
+                        for block_hash in new
+                    ]
                 )
                 # a block asked for here is a block coming back for
                 # `update_chain` to validate, so this is the earliest

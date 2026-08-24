@@ -29,11 +29,11 @@ from tests.helpers import generate_random_chain
 MAX_FILE_SIZE = 128 * 1000**2
 
 
-def a_rev_block(tag: int = 1, hash: bytes | None = None) -> RevBlock:
+def a_rev_block(tag: int = 1, block_hash: bytes | None = None) -> RevBlock:
     out_point = OutPoint(bytes([tag]) * 32, tag)
     tx_out = TxOut(value=tag * 10**8, script_pub_key=script.serialize([bytes([tag])]))
     return RevBlock(
-        hash=hash if hash is not None else bytes([tag]) * 32,
+        hash=block_hash if block_hash is not None else bytes([tag]) * 32,
         to_add=[(out_point, tx_out)],
         to_remove=[OutPoint(bytes([tag + 1]) * 32, 0)],
     )
@@ -84,7 +84,7 @@ def test_a_rev_patch_is_read_back_from_the_file_it_went_into(
     block_db = a_db(None)
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     block_db.add_block(block)
-    rev_block = a_rev_block(hash=block.header.hash)
+    rev_block = a_rev_block(block_hash=block.header.hash)
     block_db.add_rev_block(rev_block)
     block_db.finalize()
     assert block_db.get_rev_block(rev_block.hash) == rev_block
@@ -116,7 +116,7 @@ def test_storing_the_same_rev_patch_twice_writes_it_once(
     block_db = a_db(None)
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     block_db.add_block(block)
-    rev_block = a_rev_block(hash=block.header.hash)
+    rev_block = a_rev_block(block_hash=block.header.hash)
     block_db.add_rev_block(rev_block)
     block_db.finalize()
     filename = block_db.rev_patches[rev_block.hash].filename
@@ -183,12 +183,12 @@ def test_a_rev_patch_goes_in_the_file_named_for_its_own_block(
     block_db.add_block(chain[1])
     assert block_db.blocks[chain[1].header.hash].filename == "000002.blk"
 
-    first = a_rev_block(1, hash=chain[0].header.hash)
+    first = a_rev_block(1, block_hash=chain[0].header.hash)
     block_db.add_rev_block(first)
     block_db.finalize()
     assert block_db.rev_patches[first.hash].filename == "000001.rev"
 
-    second = a_rev_block(3, hash=chain[1].header.hash)
+    second = a_rev_block(3, block_hash=chain[1].header.hash)
     block_db.add_rev_block(second)
     block_db.finalize()
     assert block_db.rev_patches[second.hash].filename == "000002.rev"
@@ -204,8 +204,8 @@ def test_two_rev_patches_share_the_file_named_for_the_block_file(
     chain = generate_random_chain(2, RegTest().genesis.hash)
     for block in chain:
         block_db.add_block(block)
-    first = a_rev_block(1, hash=chain[0].header.hash)
-    second = a_rev_block(5, hash=chain[1].header.hash)
+    first = a_rev_block(1, block_hash=chain[0].header.hash)
+    second = a_rev_block(5, block_hash=chain[1].header.hash)
     block_db.add_rev_block(first)
     block_db.add_rev_block(second)
     block_db.finalize()
@@ -222,7 +222,7 @@ def test_a_pending_rev_patch_is_not_yet_on_disk(
     block_db = a_db(None)
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     block_db.add_block(block)
-    rev_block = a_rev_block(hash=block.header.hash)
+    rev_block = a_rev_block(block_hash=block.header.hash)
     block_db.add_rev_block(rev_block)
     assert block_db.get_rev_block(rev_block.hash) is None
     assert block_db.rev_patches == {}
@@ -234,7 +234,7 @@ def test_rollback_discards_every_pending_rev_patch(
     block_db = a_db(None)
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     block_db.add_block(block)
-    rev_block = a_rev_block(hash=block.header.hash)
+    rev_block = a_rev_block(block_hash=block.header.hash)
     block_db.add_rev_block(rev_block)
     block_db.rollback()
     assert block_db.pending_rev_blocks == {}
@@ -356,7 +356,7 @@ def test_the_store_comes_back_from_disk(a_db: Callable[[Path | None], BlockDB]) 
     block_db = a_db(None)
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     block_db.add_block(block)
-    rev_block = a_rev_block(hash=block.header.hash)
+    rev_block = a_rev_block(block_hash=block.header.hash)
     block_db.add_rev_block(rev_block)
     block_db.finalize()
     block_db.close()

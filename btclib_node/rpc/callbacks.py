@@ -235,7 +235,7 @@ def service_names(services: int) -> list[str]:
 
 def get_peer_info(node: Node, conn: Connection, _: list[Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
-    for id, p2p_conn in node.p2p_manager.connections.items():
+    for connection_id, p2p_conn in node.p2p_manager.connections.items():
         if p2p_conn.status == P2pConnStatus.Connected:
             try:
                 addr = p2p_conn.client.getpeername()
@@ -254,7 +254,7 @@ def get_peer_info(node: Node, conn: Connection, _: list[Any]) -> list[dict[str, 
             addr_recv = version_message.addr_recv
 
             conn_dict: dict[str, Any] = {}
-            conn_dict["id"] = id
+            conn_dict["id"] = connection_id
             # Core writes addrbind with `CService::ToStringAddrPort`,
             # and addrlocal from the string `CopyStats` builds with it;
             # its addr is `m_addr_name`, which is that same string only

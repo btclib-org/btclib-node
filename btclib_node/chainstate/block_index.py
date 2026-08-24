@@ -202,17 +202,17 @@ class BlockIndex:
     def _insert_block_info(
         self, block_info: BlockInfo, wb: KeyValueStore | None = None
     ) -> None:
-        hash = block_info.header.hash
+        block_hash = block_info.header.hash
         # a genuinely new hash, and not set_status/set_downloaded
         # overwriting the record already there for it: children is the
         # index invalidate walks, and a hash already present had its
         # parentage recorded the one time it was new
-        if hash not in self.header_dict:
+        if block_hash not in self.header_dict:
             self.children.setdefault(block_info.header.previous_block_hash, []).append(
-                hash
+                block_hash
             )
-        self.header_dict[hash] = block_info
-        key = b"blkinfo-" + hash
+        self.header_dict[block_hash] = block_info
+        key = b"blkinfo-" + block_hash
         value = block_info.serialize()
         db = wb or self.db
         db.put(key, value)
@@ -220,16 +220,18 @@ class BlockIndex:
     # the fields a caller changes, read here rather than by the caller,
     # so that what goes back is the record the index holds now
     def set_status(
-        self, hash: bytes, status: BlockStatus, wb: KeyValueStore | None = None
+        self, block_hash: bytes, status: BlockStatus, wb: KeyValueStore | None = None
     ) -> None:
-        self._insert_block_info(replace(self.get_block_info(hash), status=status), wb)
+        self._insert_block_info(
+            replace(self.get_block_info(block_hash), status=status), wb
+        )
 
-    def set_downloaded(self, hash: bytes, downloaded: bool = True) -> None:
-        block_info = self.get_block_info(hash)
+    def set_downloaded(self, block_hash: bytes, downloaded: bool = True) -> None:
+        block_info = self.get_block_info(block_hash)
         self._insert_block_info(replace(block_info, downloaded=downloaded))
 
-    def get_block_info(self, hash: bytes) -> BlockInfo:
-        return self.header_dict[hash]
+    def get_block_info(self, block_hash: bytes) -> BlockInfo:
+        return self.header_dict[block_hash]
 
     # what a block failing validation costs: itself, and every header
     # this index has ever indexed on top of it, candidate or not.
@@ -244,8 +246,8 @@ class BlockIndex:
     # `block_candidates` is not bounded the same way: the scan below is
     # over the whole deque, not the bad lineage.
     # btclib-org/btclib-node#77, #120, #125
-    def invalidate(self, hash: bytes) -> None:
-        to_invalidate = [hash]
+    def invalidate(self, block_hash: bytes) -> None:
+        to_invalidate = [block_hash]
         invalidated: set[bytes] = set()
         while to_invalidate:
             current = to_invalidate.pop()
@@ -424,8 +426,8 @@ class BlockIndex:
     # not just hash itself -- a hole behind a downloaded tip is still a
     # hole, and get_first_candidate used to ask only the tip:
     # btclib-org/btclib-node#121
-    def _branch_is_downloaded(self, hash: bytes) -> bool:
-        to_add, _ = self.get_fork_details(hash)
+    def _branch_is_downloaded(self, block_hash: bytes) -> bool:
+        to_add, _ = self.get_fork_details(block_hash)
         return all(self.get_block_info(h).downloaded for h in to_add)
 
     def get_first_candidate(self) -> BlockInfo | None:
@@ -436,12 +438,12 @@ class BlockIndex:
             return None
         best_candidate = None
         for i in range(min(100, len(self.block_candidates))):
-            hash, work = self.block_candidates[i]
+            block_hash, work = self.block_candidates[i]
             if work > chainwork:
-                candidate = self.get_block_info(hash)
+                candidate = self.get_block_info(block_hash)
                 if not best_candidate:
                     best_candidate = candidate
-                if self._branch_is_downloaded(hash):
+                if self._branch_is_downloaded(block_hash):
                     return candidate
         return best_candidate
 

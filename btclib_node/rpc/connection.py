@@ -99,13 +99,13 @@ class Connection:
         loop: asyncio.AbstractEventLoop,
         client: socket.socket,
         manager: RpcManager,
-        id: int,
+        connection_id: int,
     ) -> None:
         super().__init__()
         self.loop = loop
         self.client = client
         self.manager = manager
-        self.id = id
+        self.id = connection_id
         self.rpc_id = ""
         self.messages: list[Any] = []
         self.buffer = b""

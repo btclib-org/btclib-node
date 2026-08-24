@@ -72,7 +72,9 @@ def json_type_name(value: Any) -> str:
     return _JSON_TYPE_NAMES[type(value)]
 
 
-def error_msg(code: RpcErrorCode, message: str, id: Any = None) -> dict[str, Any]:
+def error_msg(
+    code: RpcErrorCode, message: str, request_id: Any = None
+) -> dict[str, Any]:
     """The error response of JSON-RPC 2.0's section 5, code and message given.
 
     The specification requires the answer to carry the id of the request
@@ -86,7 +88,7 @@ def error_msg(code: RpcErrorCode, message: str, id: Any = None) -> dict[str, Any
     return {
         "jsonrpc": "2.0",
         "error": {"code": code, "message": message},
-        "id": id,
+        "id": request_id,
     }
 
 

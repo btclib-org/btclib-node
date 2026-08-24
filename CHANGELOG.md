@@ -69,6 +69,33 @@ to check the guess.
   so nothing was ever suppressing anything at those lines, and `RUF100`
   is what now says so.
 
+### `select` gains `A`, flake8-builtins
+
+- **`select` gains `A` (flake8-builtins)** (issue #284): every local
+  variable, loop variable and function argument named `hash` or `id`
+  that shadowed the Python builtin of the same name is renamed to say
+  what the value actually is — `block_hash` wherever it is one, and
+  `connection_id`, `request_id` or `txid` depending on which "id" a
+  given site actually holds — rather than to a generic disambiguator
+  like `hash_` or `id_`.
+- **None of these are wire-facing renames.** `error_msg`'s `id`
+  parameter feeds the JSON-RPC 2.0 response's own `"id"` key, and
+  `get_peer_info`'s loop variable feeds `getpeerinfo`'s own `"id"` field
+  — both dict keys stay the literal string `"id"`, untouched; only the
+  Python identifier that holds the value on its way there changes.
+  Checked for every renamed parameter that no caller in this tree passes
+  it by keyword (`grep -rn` for `hash=` and `id=` across `btclib_node/`,
+  `tests/` and `scripts/`), so no call site needed updating alongside a
+  signature.
+- **`RevBlock`'s own `hash` field, and `Connection.id` (both `p2p` and
+  `rpc`), are untouched.** `A` selects `A003`
+  (builtin-attribute-shadowing) too, and it reports nothing here,
+  checked directly rather than assumed: it only fires where an
+  attribute is referenced ambiguously with the builtin it shadows (a
+  callable resolved as the attribute instead of the type, in the rule's
+  own example), which a plain data attribute assigned once in
+  `__init__` and only ever read is not.
+
 ### `select` gains `SIM`, `RET` and `FURB`
 
 - **`select` gains `SIM` (flake8-simplify), `RET` (flake8-return) and
