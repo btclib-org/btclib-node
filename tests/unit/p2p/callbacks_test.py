@@ -15,13 +15,16 @@ import socket
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import pytest
+from btclib.amount import sats_from_btc
 from btclib.block import Block, BlockHeader
 from btclib.exceptions import BTClibValueError
+from btclib.fee import FeeRate
 from btclib.hashes import hash256
 from btclib.p2p.address import Addr, NetworkAddress, ServiceFlags
 from btclib.p2p.addrv2 import (
@@ -58,13 +61,14 @@ from btclib.p2p.limits import (
     MAX_GETCFHEADERS_SIZE,
     MAX_GETCFILTERS_SIZE,
 )
-from btclib.p2p.negotiation import GetAddr, SendHeaders, WtxidRelay
+from btclib.p2p.negotiation import FeeFilter, GetAddr, SendHeaders, WtxidRelay
 from btclib.script.witness import Witness
 from btclib.tx.tx import Tx
 
 from btclib_node.chains import RegTest
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import BlockStatus
+from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.log import Logger
@@ -73,6 +77,7 @@ from btclib_node.p2p.address import PeerDB, addr_entry, peer_address
 from btclib_node.p2p.callbacks import (
     addr,
     addrv2,
+    feefilter,
     get_cfcheckpt,
     get_cfheaders,
     get_cfilters,
@@ -257,9 +262,11 @@ def a_handshake_node(
     status: NodeStatus = NodeStatus.HeaderSynced,
     peer_db: Any = None,
     promote_connection: Any = None,
+    min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
 ) -> Any:
     return SimpleNamespace(
         status=status,
+        config=SimpleNamespace(min_relay_feerate=min_relay_feerate),
         p2p_manager=SimpleNamespace(
             nonces=list(nonces),
             peer_db=peer_db,
@@ -347,6 +354,40 @@ def test_a_version_without_the_relay_flag_is_a_peer_asking_for_relay() -> None:
     assert peer.relay_tx is True
 
 
+def test_a_version_with_a_trailing_octet_still_costs_the_peer() -> None:
+    # issue #149 leaves this one asymmetric on purpose: addr and addrv2
+    # (below) accept a BinaryData stream, and btclib's own
+    # assert_no_trailing treats one as "the caller's", nothing past it
+    # checked -- Core's own leniency, reached with no second parser.
+    # Version.parse takes Octets alone (its own docstring: "the envelope
+    # is what says where a payload ends"), because its optional relay
+    # byte is detected by whether one more byte is there at all; handing
+    # it a stream that could plausibly hold more would make a genuinely
+    # unknown trailing octet misread as that flag. There is no btclib
+    # mechanism this node can lean on for `version` without a private
+    # copy of its field-by-field parse, so this still raises out of the
+    # callback -- main.handle_p2p_handshake is what turns that into
+    # conn.stop(), covered by tests/unit/p2p/main.py's own coverage of
+    # that generic behaviour.
+    peer = a_peer()
+    with pytest.raises(BTClibValueError):
+        version(a_handshake_node(), a_version() + b"\x00", peer)
+
+
+def test_a_relay_octet_that_is_neither_0_nor_1_still_costs_the_peer() -> None:
+    # issue #149 also names this one, a defect of the same kind and not
+    # fixed here: Core's own Unserialize<bool> reads any nonzero octet as
+    # true, where Version.parse raises for anything but 0x00/0x01. Left
+    # as is because no real encoder -- Core's or this node's own -- ever
+    # writes a third value, so only an adversarial or already-broken peer
+    # reaches this path; #149 stays open for this half.
+    peer = a_peer()
+    # relay=None serializes nothing, so appending one raw octet is the
+    # only relay byte this payload carries
+    with pytest.raises(BTClibValueError):
+        version(a_handshake_node(), a_version(relay=None) + b"\x02", peer)
+
+
 def a_real_connection() -> Connection:
     # not a stand-in: the defect this is about was a callback writing an
     # attribute no Connection has, which a SimpleNamespace peer takes
@@ -387,18 +428,32 @@ def test_a_verack_completes_the_handshake() -> None:
     assert commands(peer) == [
         "SendHeaders",
         "SendCmpct",
+        "FeeFilter",
         "ping",
         "GetAddr",
         "GetHeaders",
     ]
     assert isinstance(peer.sent[0], SendHeaders)
     assert isinstance(peer.sent[1], SendCmpct)
-    assert isinstance(peer.sent[3], GetAddr)
-    assert isinstance(peer.sent[4], GetHeaders)
+    assert isinstance(peer.sent[2], FeeFilter)
+    assert isinstance(peer.sent[4], GetAddr)
+    assert isinstance(peer.sent[5], GetHeaders)
     assert not peer.stopped
     # out of P2pManager.pending_connections and into connections, right
     # where P2pConnStatus.Connected is set: btclib-org/btclib-node#131
     assert promoted == [9]
+
+
+def test_a_verack_tells_the_peer_this_nodes_own_relay_floor() -> None:
+    # issue #94: the value is Config.min_relay_feerate, not a constant
+    # of this module's own
+    peer = a_peer(version_message=object(), wtxidrelay_received=True)
+    node = a_handshake_node(min_relay_feerate=FeeRate(sats_per_kvbyte=500))
+    verack(node, b"", peer)
+    (feefilter_msg,) = [m for m in peer.sent if isinstance(m, FeeFilter)]
+    assert feefilter_msg.feerate == 500
+    # and it survives the wire like every other payload this node sends
+    assert FeeFilter.parse(feefilter_msg.serialize()).feerate == 500
 
 
 @pytest.mark.parametrize(
@@ -471,6 +526,38 @@ def test_the_flags_a_peer_sets_on_this_connection() -> None:
     assert peer.prefers_headers
 
 
+def test_a_feefilter_lands_on_the_connection() -> None:
+    peer = a_peer()
+    feefilter(a_handshake_node(), FeeFilter(500).serialize(), peer)
+    assert peer.feefilter == 500
+
+
+@pytest.mark.parametrize(
+    "feerate",
+    [-500, sats_from_btc(Decimal(21_000_000)) + 1],
+    ids=["negative", "above-max-money"],
+)
+def test_a_feefilter_outside_the_money_range_is_read_as_no_filter(
+    feerate: int,
+) -> None:
+    # Core acts on a received rate only within MoneyRange -- 0 to
+    # MAX_MONEY inclusive (net_processing.cpp's NetMsgType::FEEFILTER,
+    # consensus/amount.h's MoneyRange) -- and leaves either side of it
+    # parsed but unused, rather than turning it into a filter nothing
+    # a real, non-negative fee rate could ever fail
+    peer = a_peer()
+    feefilter(a_handshake_node(), FeeFilter(feerate).serialize(), peer)
+    assert peer.feefilter == 0
+
+
+def test_a_feefilter_at_the_edge_of_the_money_range_is_kept() -> None:
+    # the bound is inclusive, so exactly MAX_MONEY is still a filter
+    peer = a_peer()
+    at_the_edge = sats_from_btc(Decimal(21_000_000))
+    feefilter(a_handshake_node(), FeeFilter(at_the_edge).serialize(), peer)
+    assert peer.feefilter == at_the_edge
+
+
 def test_a_ping_is_answered_with_the_nonce_it_carried() -> None:
     peer = a_peer()
     ping(a_handshake_node(), Ping(1234).serialize(), peer)
@@ -514,6 +601,29 @@ def test_the_addresses_a_peer_sends_are_kept() -> None:
         # translated back into one; and without the timestamp the peer
         # quoted, which is PeerDB.add_addresses' doing
         assert peer_db.addresses == {replace(address, timestamp=0) for address in given}
+
+
+def test_an_octet_past_an_addr_or_addrv2_no_longer_costs_the_peer() -> None:
+    # issue #149: btclib's own assert_no_trailing raises out of
+    # Addr.parse/AddrV2.parse for exactly this, which main.handle_p2p
+    # turns into a disconnect if the callback lets it through. Core does
+    # not disconnect here (net_processing.cpp's ProcessMessage reads what
+    # it wants out of vRecv and never checks for anything left), and this
+    # node now matches that for the two of the three messages issue #149
+    # is about where it can without a second copy of btclib's codec --
+    # Addr and AddrV2 accept a stream, and btclib's own assert_no_trailing
+    # docstring calls a stream "the caller's", nothing past it checked.
+    given = [an_address(1)]
+    for callback, message in (
+        (addr, Addr([addr_entry(address) for address in given])),
+        (addrv2, AddrV2(given)),
+    ):
+        peer_db = PeerDB(cast("Chain", None), cast(Path, None))
+        node = a_handshake_node(peer_db=peer_db)
+        peer = a_peer()
+        callback(node, message.serialize() + b"\x00", peer)
+        assert peer_db.addresses == {replace(address, timestamp=0) for address in given}
+        assert not peer.stopped
 
 
 def test_an_address_of_a_network_nobody_here_has_heard_of_is_kept() -> None:

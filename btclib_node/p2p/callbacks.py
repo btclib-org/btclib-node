@@ -3,9 +3,11 @@
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
 import time
+from io import BytesIO
 from typing import TYPE_CHECKING
 
-from btclib.exceptions import BTClibException
+from btclib.amount import valid_sats_amount
+from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.p2p.address import Addr, ServiceFlags
 from btclib.p2p.addrv2 import AddrV2, SendAddrV2
 from btclib.p2p.block_filters import (
@@ -37,7 +39,7 @@ from btclib.p2p.limits import (
     MAX_GETCFHEADERS_SIZE,
     MAX_GETCFILTERS_SIZE,
 )
-from btclib.p2p.negotiation import GetAddr, SendHeaders, WtxidRelay
+from btclib.p2p.negotiation import FeeFilter, GetAddr, SendHeaders, WtxidRelay
 
 from btclib_node.chainstate.block_index import BlockStatus
 from btclib_node.chainstate.filter_index import NO_PREVIOUS_FILTER_HEADER
@@ -103,6 +105,11 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     node.p2p_manager.promote_connection(conn.id)
     conn.send(SendHeaders())
     conn.send(SendCmpct(False, 1))
+    # BIP133: this node's own floor, once and not again -- it is static
+    # (Config.min_relay_feerate), where Core's own resend-on-change logic
+    # (net_processing.cpp's MaybeSendFeefilter) exists for a mempool-sized
+    # rate this node does not compute (issue #94's own open half).
+    conn.send(FeeFilter(node.config.min_relay_feerate.sats_per_kvbyte))
     conn.send_ping()
     conn.send(GetAddr())
     block_locators = node.chainstate.block_index.get_block_locator_hashes()
@@ -162,7 +169,20 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 def addr(node: Node, msg: bytes, conn: Connection) -> None:
-    entries = Addr.parse(msg).addresses
+    # Addr.parse(msg) would refuse an octet past the last address
+    # (btclib's own assert_no_trailing, a malleability guard that holds
+    # across the library) by raising out of this callback, which
+    # main.handle_p2p turns into conn.stop(): a peer dropped for gossip
+    # this node could simply not fully read. Core does not: ProcessMessage
+    # reads AddrMan-worth of entries out of vRecv and never checks for
+    # anything left. Wrapping the payload in a stream is btclib's own
+    # answer for exactly this -- assert_no_trailing's docstring calls a
+    # stream "the caller's", the same shape a transaction inside a block
+    # is read through, with nothing after it checked -- so this reads
+    # every address BIP155 defines and silently drops whatever else the
+    # peer appended, matching Core's leniency without a second copy of
+    # Addr's codec. btclib-org/btclib-node#149
+    entries = Addr.parse(BytesIO(msg)).addresses
     # BIP155's record is what the table holds, an addr version 1 entry
     # having no room for the networks a peer may yet gossip
     node.p2p_manager.peer_db.add_addresses(
@@ -171,8 +191,33 @@ def addr(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 def addrv2(node: Node, msg: bytes, conn: Connection) -> None:
-    addresses = AddrV2.parse(msg).addresses
+    # the same leniency as addr above, and the same reason: BIP155
+    # entries fully read, anything past them left unchecked rather than
+    # costing the peer its connection. btclib-org/btclib-node#149
+    addresses = AddrV2.parse(BytesIO(msg)).addresses
     node.p2p_manager.peer_db.add_addresses(addresses)
+
+
+def feefilter(node: Node, msg: bytes, conn: Connection) -> None:
+    # BIP133: a peer asking not to be told about a transaction paying
+    # less. Stored on the connection, the same shape relay_tx above
+    # already is; nothing reads this yet, since honouring it needs a
+    # per-transaction fee this node computes nowhere outside
+    # main.verify_mempool_acceptance's own prevout lookup, which is
+    # btclib-org/btclib-node#260.
+    #
+    # Core acts on a received rate only within MoneyRange -- 0 to
+    # MAX_MONEY inclusive (net_processing.cpp's NetMsgType::FEEFILTER,
+    # consensus/amount.h's MoneyRange) -- and leaves a rate outside it
+    # parsed but unused. valid_sats_amount is that same range with its
+    # upper bound un-exported by name (btclib.amount's own _MAX_SATOSHI),
+    # so it is what stands in for MoneyRange here; a rate it refuses
+    # is read as no filter, BIP133's and Core's own answer for one that
+    # would fail a comparison against any real, non-negative fee anyway.
+    try:
+        conn.feefilter = valid_sats_amount(FeeFilter.parse(msg).feerate)
+    except BTClibValueError:
+        conn.feefilter = 0
 
 
 def tx(node: Node, msg: bytes, conn: Connection) -> None:
@@ -586,4 +631,5 @@ callbacks = {
     "getcfcheckpt": get_cfcheckpt,
     "notfound": not_found,
     "reject": reject,
+    "feefilter": feefilter,
 }

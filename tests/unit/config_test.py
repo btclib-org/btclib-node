@@ -5,9 +5,10 @@
 from pathlib import Path
 
 import pytest
+from btclib.fee import FeeRate
 
 from btclib_node.chains import Main, RegTest, SigNet, TestNet
-from btclib_node.config import Config
+from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE, Config
 
 
 def test_chain_selection() -> None:
@@ -32,6 +33,17 @@ def test_data_dir() -> None:
 def test_port() -> None:
     assert Config(chain="regtest", p2p_port=1).p2p_port == 1
     assert Config(chain="regtest", rpc_port=1).rpc_port == 1
+
+
+def test_min_relay_feerate_defaults_to_cores_own_floor() -> None:
+    # bitcoin/bitcoin@58a7869f86's DEFAULT_MIN_RELAY_TX_FEE, src/policy/policy.h
+    assert Config(chain="regtest").min_relay_feerate == DEFAULT_MIN_RELAY_FEERATE
+    assert DEFAULT_MIN_RELAY_FEERATE.sats_per_kvbyte == 100
+
+
+def test_min_relay_feerate_is_configurable() -> None:
+    rate = FeeRate(sats_per_kvbyte=1000)
+    assert Config(chain="regtest", min_relay_feerate=rate).min_relay_feerate == rate
 
 
 def test_a_disallowed_port_is_none_rather_than_some_other_number() -> None:
