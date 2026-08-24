@@ -42,7 +42,7 @@ __all__ = ["Node"]
 # a deep reorg walks. An idle stop costs milliseconds. Well under the
 # per-test limit `pyproject.toml` sets, so that a node which will not
 # stop is reported here rather than by whichever bound expires first;
-# `tests/unit/__init__.py` asserts that ordering rather than leaving it
+# `tests/unit/init_test.py` asserts that ordering rather than leaving it
 # to this comment.
 STOP_TIMEOUT = 30
 

@@ -318,13 +318,31 @@ git-only = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests/unit", "tests/functional"]
-python_files = "*.py"
-python_functions = "test*"
-addopts = "-n auto --cov --cov-report term-missing:skip-covered --durations=10"
+# No `python_files`/`python_functions` here: every test module under
+# tests/ is named `*_test.py`, which pytest's own default `python_files`
+# already collects, and no test function needs a `python_functions`
+# wider than pytest's own `test` prefix. Restating either is a second
+# place for a fact pytest already states, and the second one to fall out
+# of step with the tree.
+addopts = "-n auto --strict-config --strict-markers --cov --cov-report term-missing:skip-covered --durations=10"
+# No `markers = [...]` table needed beside `--strict-markers`: the only
+# markers this suite uses are `pytest.mark.parametrize` (pytest's own)
+# and `pytest.mark.order` (pytest-order, which registers its own), and
+# `--strict-markers` reports nothing unregistered against this tree --
+#
+#   uv run pytest --collect-only -q --strict-config --strict-markers
+#
+# -- so this is a ratchet at zero cost, not a climb, the same shape as
+# `xfail_strict` below.
+# This suite has no `xfail` today (`grep -rn xfail tests/` matches only
+# a comment in tests/_data/README.md, not a call), so this too costs
+# nothing to turn on now rather than when the first one is written and
+# nobody notices it stopped meaning anything.
+xfail_strict = true
 # What a single test is given before the run says which test hung and
 # where, instead of sitting there. Measured rather than picked, over
 # repeated runs of the whole suite under `-n auto`: the slowest test
-# is tests/functional/p2p/test_download.py::test_download, 9.51s on an
+# is tests/functional/p2p/download_test.py::test_download, 9.51s on an
 # idle machine, 27.85s on one shared with other work, and 42.09s on
 # one loaded past three times its core count. That is the bound that
 # matters rather than the spread: a limit anywhere near where the suite
@@ -342,6 +360,18 @@ addopts = "-n auto --cov --cov-report term-missing:skip-covered --durations=10"
 # and the run that failed on a four-core runner reported at 20.24s.
 # Issue #46 is where that starvation is tracked.
 timeout = 120
+# Not `["error"]`: measured with it set, `uv run pytest -q` fails tests
+# scattered across the suite. The bulk are `ResourceWarning`
+# raised by `__del__` at garbage-collection time against sqlite
+# connections, sockets, asyncio event loops and multiprocessing pools
+# that `tests/unit/main_test.py`'s `regtest_node` and its kind build and
+# never close -- issue #111 and issue #195 by name, both already filed
+# and both deferred to a quiet machine. Raising a `ResourceWarning` at
+# GC time also fails whatever test happens to be running when the
+# collector runs, not the test that leaked, which is why the same
+# tests do not fail the same way twice. Turning this on is therefore
+# not a filterwarnings change on its own, it is contingent on #111 and
+# #195 landing first, and is left for whoever picks those up.
 filterwarnings = ['ignore:cannot collect test class']
 
 [tool.coverage.run]
@@ -378,32 +408,50 @@ fail_under = 100
 # alone, rather than every rule ruff is still designing.
 preview = true
 explicit-preview-rules = true
-# Deliberately narrower than the standard's own reference selection
-# (btclib's), and closer to what black/isort/flake8/autoflake/yesqa/
-# pyupgrade/bandit actually checked before this PR: pycodestyle (E/W),
-# pyflakes (F, replacing autoflake and most of yesqa), isort (I),
-# pyupgrade (UP), bandit (S), plus CPY, new below. Measured with the
-# standard's full reference `select` (btclib's own, plus CPY): 245
-# findings, 59 fixed by `ruff check --fix` automatically and the other
-# 186 spread across ~40 rule families -- flake8-bugbear, pylint,
-# tryceratops, eradicate and the rest -- each needing a per-site
-# decision (a refactor, a suppression, or a behaviour change) on
-# consensus- and network-facing code this PR is not otherwise touching.
-# That is a second, larger PR's worth of triage, the same shape as the
-# mypy-strict and coverage climbs btclib-org/.github#9 already defers;
-# tracked as its own issue rather than rushed through here.
+# Narrower than the standard's own reference selection (btclib's), and
+# closer to what black/isort/flake8/autoflake/yesqa/pyupgrade/bandit
+# actually checked before this repository moved to ruff: pycodestyle
+# (E/W), pyflakes (F, replacing autoflake and most of yesqa), isort (I),
+# pyupgrade (UP), bandit (S), plus CPY. Issue #25 measured the standard's
+# full reference `select` (btclib's own, plus CPY) against this tree --
+#
+#   uv run ruff check --select \
+#     A,B,BLE,C4,C90,CPY,E,ERA,F,FA,FIX,FLY,FURB,I,ISC,PGH,PIE,PL,PT, \
+#     PTH,RET,RSE,RUF,S,SIM,SLOT,T10,T20,TID,TRY,UP,W --statistics .
+#
+# -- and every family that reported a finding needs a per-site decision
+# (a refactor, a suppression, or a behaviour change) on consensus- and
+# network-facing code: not a config change, and out of scope for a
+# bundle that touches no `btclib_node/` runtime code. What moved here
+# instead is the families the same command reports nothing for: C4, FA,
+# FIX, FLY, ISC, PGH, PIE, PTH, RSE, SLOT, T10 and TID. Adopting those
+# now costs nothing, and what is left is the rest of that select list,
+# one rule family (or a handful of related ones) at a time, per issue
+# #25's own suggested shape.
 # "D" (pydocstyle) is not selected either, and for the same reason at a
-# larger scale: measured, 33 of btclib_node/'s 34 modules carry no
-# docstring at all, so turning it on is a documentation pass across the
-# whole package. Tracked in the same follow-up.
+# larger scale: measured, almost every module under `btclib_node/`
+# carries no docstring at all, so turning it on is a documentation pass
+# across the whole package, tracked in the same issue.
 select = [
-    "CPY", # flake8-copyright, replacing the copyright-notice hook below
-    "E",   # pycodestyle errors, replacing flake8
-    "F",   # pyflakes, replacing autoflake and most of yesqa
-    "I",   # isort
-    "S",   # flake8-bandit, replacing the two bandit hooks below
-    "UP",  # pyupgrade, replacing the pyupgrade hook below
-    "W",   # pycodestyle warnings, replacing flake8
+    "C4",   # flake8-comprehensions
+    "CPY",  # flake8-copyright, replacing the copyright-notice hook below
+    "E",    # pycodestyle errors, replacing flake8
+    "F",    # pyflakes, replacing autoflake and most of yesqa
+    "FA",   # flake8-future-annotations
+    "FIX",  # flake8-fixme
+    "FLY",  # flynt
+    "I",    # isort
+    "ISC",  # flake8-implicit-str-concat
+    "PGH",  # pygrep-hooks
+    "PIE",  # flake8-pie
+    "PTH",  # flake8-use-pathlib
+    "RSE",  # flake8-raise
+    "S",    # flake8-bandit, replacing the two bandit hooks below
+    "SLOT", # flake8-slots
+    "T10",  # flake8-debugger
+    "TID",  # flake8-tidy-imports
+    "UP",   # pyupgrade, replacing the pyupgrade hook below
+    "W",    # pycodestyle warnings, replacing flake8
 ]
 extend-select = ["unspecified-encoding"]
 ignore = [

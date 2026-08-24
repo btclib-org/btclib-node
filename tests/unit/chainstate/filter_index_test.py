@@ -28,7 +28,7 @@ from btclib_node.db import KeyValueStore
 from btclib_node.main import update_chain
 from tests import load, vector_id
 from tests.helpers import build_block, generate_coinbase, generate_random_chain
-from tests.unit.main import connect, regtest_node, spend
+from tests.unit.main_test import connect, regtest_node, spend
 
 GENESIS = RegTest().genesis
 NO_PREVIOUS = b"\x00" * 32

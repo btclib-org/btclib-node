@@ -56,7 +56,7 @@ def test_a_condition_that_never_holds_is_given_up_on() -> None:
     calls: list[bool] = []
     timeout = 0.2
     start = time.time()
-    with pytest.raises(Exception, match=f"helpers.py:.* within {timeout} seconds"):
+    with pytest.raises(Exception, match=f"helpers_test.py:.* within {timeout} seconds"):
         wait_until(lambda: calls.append(True), timeout=timeout)
     # asked repeatedly, and for as long as it said it would
     assert len(calls) > 1
@@ -105,7 +105,9 @@ def test_a_bounded_call_that_does_not_return_is_given_up_on() -> None:
 
     start = time.time()
     try:
-        with pytest.raises(Exception, match=f"helpers.py:.* within {timeout} seconds"):
+        with pytest.raises(
+            Exception, match=f"helpers_test.py:.* within {timeout} seconds"
+        ):
             call_within(never_returns, timeout=timeout)
         assert time.time() - start >= timeout
     finally:
