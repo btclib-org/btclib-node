@@ -17,7 +17,7 @@ from btclib.p2p.payload import Payload
 from btclib.tx.tx import Tx as BtclibTx
 
 from btclib_node.constants import NodeStatus, P2pConnStatus
-from btclib_node.p2p.address import PeerDB, dial, peer_address
+from btclib_node.p2p.address import PeerDB, dial, endpoint_key, peer_address
 from btclib_node.p2p.connection import Connection
 
 if TYPE_CHECKING:
@@ -121,13 +121,20 @@ class P2pManager(threading.Thread):
                 connection_num = 10
             live = len(self.connections) + len(self.pending_connections)
             if live < connection_num and not self.peer_db.is_empty:
-                already_connected = [
-                    conn.address
+                # By endpoint_key, not raw equality: a drawn address
+                # carries whatever timestamp and services callbacks.verack
+                # or a gossiping peer last recorded it with, which is
+                # never the pair an existing Connection's own address was
+                # constructed with, so comparing the dataclasses
+                # themselves never matches the peer this node is already
+                # holding a connection with and dials it a second time.
+                already_connected = {
+                    endpoint_key(conn.address)
                     for conn in (
                         *self.connections.values(),
                         *self.pending_connections.values(),
                     )
-                ]
+                }
                 try:
                     address = self.peer_db.random_address()
                     # `is_empty` answers whether the table holds
@@ -137,7 +144,10 @@ class P2pManager(threading.Thread):
                     # knows, and it answers with nothing: this pass has
                     # nothing to do, and the sleep below is what keeps
                     # that from being a spin.
-                    if address is not None and address not in already_connected:
+                    if (
+                        address is not None
+                        and endpoint_key(address) not in already_connected
+                    ):
                         sock = await dial(address)
                         if sock:
                             self.create_connection(sock, address, False)

@@ -229,8 +229,17 @@ async def dial(address: NetworkAddressV2) -> socket.socket | None:
 _KNOWN = b"known-"
 _ANSWERED = b"answered-"
 
+# The bound both tables are kept under: an address a peer gossiped, and
+# an address this node has itself confirmed reachable. Without one on
+# the second, a node that nobody ever asks for addresses keeps recording
+# every successful handshake for as long as it runs -- get_active_
+# addresses only prunes what is stale, and a well-connected node stops
+# calling it once it has enough peers and nobody has asked it a getaddr.
+# btclib-org/btclib-node#71
+_MAX_ADDRESSES = 10000
 
-def _endpoint(address: NetworkAddressV2) -> bytes:
+
+def endpoint_key(address: NetworkAddressV2) -> bytes:
     """Return the octets a persisted address is keyed on.
 
     The network id, the address and the port -- what names an endpoint
@@ -357,13 +366,13 @@ class PeerDB:
         # a peer's word for when it last saw an address is not evidence,
         # and keeping it would make the one address several entries
         with self._write_batch() as wb:
-            # `_endpoint` is what the durable row is already keyed on --
+            # `endpoint_key` is what the durable row is already keyed on --
             # network id, address and port, not `services` -- so a
             # second gossip for the one endpoint overwrites the row on
             # disk. This index is what makes `self.addresses` settle on
             # the endpoint the same way instead of holding one member
             # per `services` value ever seen for it (#247).
-            by_endpoint = {_endpoint(known): known for known in self.addresses}
+            by_endpoint = {endpoint_key(known): known for known in self.addresses}
             for address in addresses:
                 # BIP155's ignore rule: an IPV6 record that is really an
                 # IPv4 or a (long-retired) TORv2 address wearing another
@@ -376,12 +385,12 @@ class PeerDB:
                 if _is_embedded_ipv6(address):
                     continue
                 known = replace(address, timestamp=0)
-                key = _endpoint(known)
+                key = endpoint_key(known)
                 existing = by_endpoint.get(key)
                 # the cap is on distinct endpoints, so updating one
                 # already held does not spend it -- only a genuinely new
                 # endpoint can run the table out of room
-                if existing is None and len(self.addresses) >= 10000:
+                if existing is None and len(self.addresses) >= _MAX_ADDRESSES:
                     break
                 if existing is not None:
                     self.addresses.discard(existing)
@@ -403,16 +412,18 @@ class PeerDB:
             if now - addr.timestamp < 3600 * 3:
                 active.append(addr)
             elif self.db is not None:
-                self.db.delete(_ANSWERED + _endpoint(addr))
+                self.db.delete(_ANSWERED + endpoint_key(addr))
         self.active_addresses = active
         return self.active_addresses
 
     def add_active_address(self, addr: NetworkAddressV2) -> None:
+        if len(self.active_addresses) >= _MAX_ADDRESSES:
+            return
         # a whole second: the field is four octets on the wire
         answered = replace(addr, timestamp=int(time.time()))
         self.active_addresses.append(answered)
         if self.db is not None:
             self.db.put(
-                _ANSWERED + _endpoint(answered),
+                _ANSWERED + endpoint_key(answered),
                 answered.serialize(check_validity=False),
             )

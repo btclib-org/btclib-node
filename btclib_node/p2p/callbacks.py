@@ -2,14 +2,16 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+import secrets
 import time
+from dataclasses import replace
 from io import BytesIO
 from typing import TYPE_CHECKING
 
 from btclib.amount import valid_sats_amount
 from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.p2p.address import Addr, ServiceFlags
-from btclib.p2p.addrv2 import AddrV2, SendAddrV2
+from btclib.p2p.addrv2 import AddrV2, NetworkAddressV2, SendAddrV2
 from btclib.p2p.block_filters import (
     BlockFilterType,
     CFCheckpt,
@@ -103,6 +105,37 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     # out of P2pManager.pending_connections and into connections, the
     # dict every send iterates: btclib-org/btclib-node#131
     node.p2p_manager.promote_connection(conn.id)
+
+    # What a completed handshake is evidence this peer is reachable and
+    # listening at, recorded once, here, rather than at the point the
+    # connection ends -- so a peer this node refused earlier in the
+    # handshake, above, is never recorded at all. An outbound connection
+    # is its own evidence: conn.address is what this node dialled, and a
+    # socket connecting there already answered. An inbound one only
+    # proves the IP; sock_accept's own port is the peer's ephemeral one
+    # and nothing this node could ever dial back on, so the port instead
+    # is the one the peer's own version names as addr_from, or nothing
+    # where addr_from names none. btclib-org/btclib-node#70
+    services = conn.version_message.services
+    if conn.inbound:
+        port = conn.version_message.addr_from.port
+        if port:
+            address = replace(conn.address, port=port, services=services)
+            # conn.address itself moves to the resolved endpoint, and not
+            # only the row add_active_address stores it under: manager.py's
+            # already_connected still compares conn.address against a
+            # draw from this same table, and an inbound connection's own
+            # copy would otherwise keep the ephemeral port forever, never
+            # matching its own gossiped address and inviting a second,
+            # redundant dial-out to a peer this node already holds a
+            # connection with.
+            conn.address = address
+            node.p2p_manager.peer_db.add_active_address(address)
+    else:
+        address = replace(conn.address, services=services)
+        conn.address = address
+        node.p2p_manager.peer_db.add_active_address(address)
+
     conn.send(SendHeaders())
     conn.send(SendCmpct(False, 1))
     # BIP133: this node's own floor, once and not again -- it is static
@@ -149,23 +182,50 @@ def pong(node: Node, msg: bytes, conn: Connection) -> None:
         conn.ping_nonce = 0
 
 
+# Core's own MAX_PCT_ADDR_TO_SEND (net_processing.cpp, 58a7869f86):
+# answering with the whole table on demand is what an observer mapping
+# the network wants, so a getaddr answer is a sample of it instead.
+# AddrManImpl::GetAddr_ (src/addrman.cpp, same sha) truncates
+# `len * pct // 100` down; `_addresses_to_send` below rounds up instead,
+# since a table of a handful of addresses -- every functional test's own
+# two-node regtest -- would otherwise be answered with none at all.
+# btclib-org/btclib-node#71
+_MAX_PCT_ADDR_TO_SEND = 23
+
+
+def _addresses_to_send(active: list[NetworkAddressV2]) -> list[NetworkAddressV2]:
+    """Return what a `getaddr` answers with: a sample, not the table."""
+    size = min(MAX_ADDR_TO_SEND, -(-len(active) * _MAX_PCT_ADDR_TO_SEND // 100))
+    if size >= len(active):
+        return active
+    return secrets.SystemRandom().sample(active, size)
+
+
 def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
-    active = node.p2p_manager.peer_db.get_active_addresses()
+    # Once per connection, matching the flag's own docstring
+    # (connection.py): a peer asking in a loop is served the table once
+    # rather than once per ask. btclib-org/btclib-node#71
+    if conn.answered_getaddr:
+        return
+    conn.answered_getaddr = True
+
+    sample = _addresses_to_send(node.p2p_manager.peer_db.get_active_addresses())
     # either message class, and not whichever the first branch names:
     # Addr and AddrV2 are siblings under Payload rather than one a
     # subclass of the other, so each is built from its own list rather
     # than through a shared name of a type the other could not accept.
-    # the bound btclib's Addr and AddrV2 refuse a longer message than,
-    # which is Core's own: a table above it is sent as several messages
+    # `_addresses_to_send` already keeps this under MAX_ADDR_TO_SEND, the
+    # bound btclib's Addr and AddrV2 refuse a longer message than, so one
+    # message is always enough.
     if conn.prefer_addressv2:
-        for x in range(0, len(active), MAX_ADDR_TO_SEND):
-            conn.send(AddrV2(active[x : x + MAX_ADDR_TO_SEND]))
+        if sample:
+            conn.send(AddrV2(sample))
     else:
         # an addr version 1 message has nowhere to put a tor, i2p or
         # cjdns address, so those are left out rather than made up
-        entries = [addr_entry(addr) for addr in active if can_addrv1(addr)]
-        for x in range(0, len(entries), MAX_ADDR_TO_SEND):
-            conn.send(Addr(entries[x : x + MAX_ADDR_TO_SEND]))
+        entries = [addr_entry(addr) for addr in sample if can_addrv1(addr)]
+        if entries:
+            conn.send(Addr(entries))
 
 
 def addr(node: Node, msg: bytes, conn: Connection) -> None:

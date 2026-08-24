@@ -58,6 +58,17 @@ def test_an_address_just_seen_is_active_and_can_be_sent() -> None:
     assert NetworkAddressV2.parse(active.serialize()) == active
 
 
+def test_the_table_of_active_addresses_is_bounded() -> None:
+    # #71: nothing else bounds it -- get_active_addresses only prunes
+    # what is stale, and a well-connected node that nobody asks a
+    # getaddr stops calling that once it has enough peers
+    peer_db = a_peer_db()
+    limit = 10000
+    for port in range(limit + 10):
+        peer_db.add_active_address(peer_address("1.2.3.4", port))
+    assert len(peer_db.active_addresses) == limit
+
+
 def test_an_address_not_seen_for_three_hours_stops_being_active() -> None:
     peer_db = a_peer_db()
     fresh = peer_address("1.2.3.4", 18444, timestamp=int(time.time()) - 3600)
