@@ -18,6 +18,57 @@ to check the guess.
 
 ## Unreleased
 
+### `select` gains `B` and the rest of `RUF`
+
+- **`select` gains `B` (flake8-bugbear) and `RUF` (the rest of ruff's own
+  rules)** (issue #284). `RUF043` moves out of its own `extend-select`
+  entry now that the family it belongs to is selected outright.
+- **`Node.__init__`'s `config: Config = Config()` default becomes
+  `config: Config | None = None`, with the body constructing a `Config`
+  when the caller omits one** (`B008`): a mutable default built once at
+  `def`-time and shared across every call that does not override it is
+  the shape `B008` warns about, and nothing here relies on that sharing.
+- **`Config.__init__`'s `chain: Chain | str = Main()` default becomes
+  `chain: Chain | str = DEFAULT_CHAIN`, a module-level singleton next to
+  the existing `DEFAULT_MIN_RELAY_FEERATE`** (`B008`, the same rule
+  `Node.__init__`'s fix above answers: `Config` defines its own
+  `__init__` rather than one `@dataclass` generates, so its parameter
+  default is ordinary `B008` and not `RUF009`). `Config(chain=None)`
+  still raises `ValueError`, unchanged: the singleton replaces the call
+  in the signature, not the type it stands for.
+- **`BlockInfo`'s `status: BlockStatus = BlockStatus(1)` default becomes
+  `status: BlockStatus = BlockStatus.valid_header`** (`RUF009`, the
+  dataclass-field form of the same warning: `BlockInfo` takes the
+  `__init__` `@dataclass` generates), `BlockStatus` being an `IntEnum`
+  whose members are already singletons.
+- **The two loop variables `RevBlock.deserialize` never reads become
+  `_`** (`B007`), matching the `for _ in range(...)` shape already used
+  elsewhere in this tree.
+- **A `zip()` over two sequences a caller can prove are the same length
+  now says so with `strict=True`**, in `update_chain` and in a
+  functional compact-filters test, wherever `B905` finds one and the
+  invariant that makes the lengths equal is read out of the code around
+  it rather than assumed.
+- **Two `zip(chain, chain[1:])` pairs in `tests/unit/helpers_test.py`
+  become `itertools.pairwise(chain)`**, the idiom `RUF007` names and the
+  same change `B905` would otherwise have asked a `strict=` of.
+- **Three `wait_until(lambda: ...)` calls that close over a `for` loop's
+  own variable keep the pattern, against `B023`, each with a `noqa` and
+  a reason**: `wait_until` itself now carries a comment arguing why the
+  closure is safe — it is read and discarded within the iteration that
+  built it, since `wait_until` returns or raises before the loop can
+  reach its next iteration and rebind the name — and the three call
+  sites point back to it rather than repeating the argument.
+- **Unpacked tuple elements a test never reads become `_`** (`RUF059`),
+  across `tests/functional/p2p/block_filters_test.py` and
+  `tests/unit/rpc/main_test.py`, checked per site that the name really
+  is unread rather than reached some way ruff's own static view misses.
+- **Stale `# noqa: BLE001` and `# noqa: SLF001` comments come off**,
+  in `tests/unit/db_test.py`, `tests/unit/p2p/manager_test.py` and
+  `tests/unit/rpc/manager_test.py`: neither `BLE` nor `SLF` is selected,
+  so nothing was ever suppressing anything at those lines, and `RUF100`
+  is what now says so.
+
 ### `select` gains `SIM`, `RET` and `FURB`
 
 - **`select` gains `SIM` (flake8-simplify), `RET` (flake8-return) and

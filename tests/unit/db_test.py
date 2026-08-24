@@ -138,7 +138,7 @@ def test_a_thread_that_never_used_the_store_is_refused_after_it_closes(
     def late() -> None:
         try:
             store.put(b"k", b"v")
-        except Exception as error:  # noqa: BLE001
+        except Exception as error:
             refused.append(str(error))
 
     thread = threading.Thread(target=late)
@@ -205,7 +205,7 @@ def test_closing_while_another_thread_reads_does_not_take_the_process_down(
         while True:
             try:
                 outcomes.add(store.get(b"k"))
-            except Exception as error:  # noqa: BLE001
+            except Exception as error:
                 outcomes.add(str(error).split(" at ")[0])
                 return
 

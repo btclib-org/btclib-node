@@ -46,7 +46,7 @@ class BlockStatus(enum.IntEnum):
 class BlockInfo:
     header: BlockHeader
     index: int
-    status: BlockStatus = BlockStatus(1)
+    status: BlockStatus = BlockStatus.valid_header
     downloaded: bool = False
 
     @classmethod

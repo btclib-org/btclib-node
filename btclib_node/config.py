@@ -16,6 +16,13 @@ from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet
 # only ever the floor this node tells a peer about in `feefilter`
 # (btclib-org/btclib-node#94) -- it is not enforced anywhere else.
 DEFAULT_MIN_RELAY_FEERATE = FeeRate(sats_per_kvbyte=100)
+# A named module-level singleton rather than `Main()` written straight
+# into __init__'s own signature below: a call there is made once, at
+# import time, and B008 is what a reader would otherwise have to notice
+# on their own -- this is the fix ruff's own message suggests, and the
+# shape `DEFAULT_MIN_RELAY_FEERATE` above already uses for the same
+# reason.
+DEFAULT_CHAIN = Main()
 
 
 @dataclass
@@ -47,7 +54,7 @@ class Config:
 
     def __init__(
         self,
-        chain: Chain | str = Main(),
+        chain: Chain | str = DEFAULT_CHAIN,
         data_dir: str | Path | None = None,
         p2p_port: int | None = None,
         rpc_port: int | None = None,

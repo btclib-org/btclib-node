@@ -951,7 +951,7 @@ def test_stop_closes_the_listening_socket_even_if_the_accept_task_does_not(
     manager.start()
     try:
         wait_until_listening(manager)
-        sockets = list(manager._server_sockets)  # noqa: SLF001
+        sockets = list(manager._server_sockets)
         assert sockets
     finally:
         manager.stop()

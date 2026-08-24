@@ -54,14 +54,14 @@ def test_a_request_is_answered() -> None:
 def test_an_empty_batch_is_an_invalid_request() -> None:
     # JSON-RPC 2.0 says so, and reading the loop variable after a loop
     # that never ran used to end the node instead
-    node, sent, waited, stopped = make_node([])
+    node, sent, _, stopped = make_node([])
     handle_rpc(node)
     assert sent == [[error_msg(RpcErrorCode.INVALID_REQUEST, "Invalid request")]]
     assert not stopped
 
 
 def test_a_batch_ending_in_something_that_is_not_an_object() -> None:
-    node, sent, waited, stopped = make_node([PING, "garbage"])
+    node, sent, _, stopped = make_node([PING, "garbage"])
     handle_rpc(node)
     answers = sent[0]
     assert answers[1] == error_msg(RpcErrorCode.INVALID_REQUEST, "Invalid request")
@@ -119,7 +119,7 @@ def test_a_callback_that_refuses_names_its_own_code_and_reason() -> None:
 
 def test_params_are_passed_when_given(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[Any] = []
-    node, sent, _, _ = make_node(
+    node, _, _, _ = make_node(
         [{"jsonrpc": "2.0", "id": "a", "method": "withparams", "params": [1, 2]}]
     )
     monkeypatch.setitem(
@@ -131,7 +131,7 @@ def test_params_are_passed_when_given(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_no_params_is_an_empty_list(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[Any] = []
-    node, sent, _, _ = make_node([{"jsonrpc": "2.0", "id": "a", "method": "noparams"}])
+    node, _, _, _ = make_node([{"jsonrpc": "2.0", "id": "a", "method": "noparams"}])
     monkeypatch.setitem(
         callbacks, "noparams", lambda node, conn, params: seen.append(params)
     )

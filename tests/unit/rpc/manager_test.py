@@ -132,7 +132,7 @@ def test_bind_uses_config_rpc_host_not_every_interface(
     # itself is asked what it actually bound rather than only asking
     # whether some interface can still reach it
     manager = a_manager(get_random_port())
-    server_socket = manager._bind()  # noqa: SLF001
+    server_socket = manager._bind()
     try:
         assert server_socket.getsockname()[0] == "127.0.0.1"
     finally:
@@ -142,7 +142,7 @@ def test_bind_uses_config_rpc_host_not_every_interface(
 def test_bind_honors_a_different_rpc_host(a_manager: AManagerFactory) -> None:
     all_interfaces = "0.0.0.0"  # noqa: S104
     manager = a_manager(get_random_port(), rpc_host=all_interfaces)
-    server_socket = manager._bind()  # noqa: SLF001
+    server_socket = manager._bind()
     try:
         assert server_socket.getsockname()[0] == all_interfaces
     finally:
@@ -224,8 +224,8 @@ def test_stop_closes_the_listening_socket_even_when_the_accept_task_never_ran(
     """
     manager = a_manager(get_random_port())
     loop = manager.loop
-    server_socket = manager._bind()  # noqa: SLF001
-    manager._server_socket = server_socket  # noqa: SLF001
+    server_socket = manager._bind()
+    manager._server_socket = server_socket
     task = loop.create_task(manager.server(loop, server_socket))
     task.cancel()
     with suppress(asyncio.CancelledError):

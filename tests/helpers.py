@@ -170,6 +170,13 @@ def wait_until(func: Callable[[], object], timeout: float = 60) -> None:
     # at twenty and nobody has recorded by how much it missed. What
     # bounds a genuine hang is `timeout` in pyproject.toml, which still
     # names the test it killed.
+    #
+    # A lambda closing over a `for` loop's own variable is safe to pass
+    # here despite B023's late-binding warning: this function returns
+    # (or raises) before the loop that built the lambda ever reaches its
+    # next iteration and rebinds the name, so the closure is read and
+    # discarded within the same iteration it was built in -- there is no
+    # later call for the rebinding to have changed anything under.
     start = time.time()
     while time.time() - start < timeout:
         if func():
