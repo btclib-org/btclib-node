@@ -162,7 +162,6 @@ class BlockIndex:
             block_info = self.get_block_info(block_hash)
             if block_info.status != BlockStatus.valid_header:
                 continue
-            # header = block_info.header
             work = self.chainwork[block_hash]
             if work > current_work:
                 self.block_candidates.append([block_hash, work])
