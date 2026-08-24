@@ -4,7 +4,7 @@
 
 from typing import TYPE_CHECKING, Any, cast
 
-from btclib.exceptions import BTClibValueError
+from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.addrv2 import BIP155Network
 from btclib.p2p.handshake import Version
@@ -493,12 +493,31 @@ def test_mempool_accept(
     return out
 
 
-def send_raw_transaction(node: Node, conn: Connection, params: list[Any]) -> str | None:
+def send_raw_transaction(node: Node, conn: Connection, params: list[Any]) -> str:
     rawtx = params[0]
+    if not isinstance(rawtx, str):
+        # hexstring is declared RPCArg::Type::STR_HEX
+        # (src/rpc/mempool.cpp:72), type-checked before the handler
+        # body runs, the same as blockhash and txid above
+        raise RpcError(
+            RpcErrorCode.TYPE_ERROR,
+            f"JSON value of type {json_type_name(rawtx)} is "
+            "not of expected type string",
+        )
     try:
         tx = Tx.parse(rawtx)
-    except Exception:
-        return None
+    except BTClibException as error:
+        # Core's own RPC_DESERIALIZATION_ERROR, src/rpc/mempool.cpp: a
+        # rawtx that never was a transaction, not one the mempool below
+        # looked at and refused. Tx.parse raises BTClibValueError for a
+        # string it cannot even decode and BTClibRuntimeError for one
+        # too short for what it declares -- `BTClibException`, neither
+        # itself raised, is the base both share and the one clause this
+        # catches them with
+        raise RpcError(
+            RpcErrorCode.DESERIALIZATION_ERROR,
+            "TX decode failed. Make sure the tx has at least one input.",
+        ) from error
     try:
         fee = verify_mempool_acceptance(node, tx)
     except MissingPrevoutError as exc:
