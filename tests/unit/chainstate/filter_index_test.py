@@ -391,25 +391,17 @@ _VECTOR_IDS = [
 ]
 
 
-@pytest.mark.parametrize("vector", _CORE_VECTORS, ids=_VECTOR_IDS)
-def test_the_index_holds_the_filters_bitcoin_core_computed(
-    regtest_node: Callable[[], Node], vector: list[str]
-) -> None:
-    """Hold the index to Core's numbers rather than to btclib's.
+def _index_a_vector_and_check_it(node: Node, vector: list[str]) -> None:
+    """Index one row of either vector file and check its filter and header.
 
-    `btclib.block.block_filter` is tested against this same file inside
-    btclib, and what is checked here is the layer this tree adds: that
-    the octets stored for a block are the filter Core computed, that
-    they come back unchanged, and that the header chained onto the one
-    before is Core's header. A filter that goes into this index and
-    comes out a different filter is a node telling a light client
-    something it cannot catch until it fetches the block.
+    Shared by both parametrized tests below: the row shape is the same,
+    and what differs between the two files is where the numbers being
+    checked against came from, which each test's own docstring says.
     """
     _, block_hash, block_hex, prevout_scripts, previous, expected, header = vector[:7]
     block = Block.parse(bytes.fromhex(block_hex), check_validity=False)
     assert block.header.hash.hex() == block_hash
 
-    node = regtest_node()
     filter_index = node.chainstate.filter_index
     # a testnet block whose parent this node has never connected, so the
     # header before it comes from the row: what is under test here is
@@ -430,6 +422,55 @@ def test_the_index_holds_the_filters_bitcoin_core_computed(
         filter_index.get_filter_hash(block.header.hash)
         == BasicBlockFilter.parse(bytes.fromhex(expected), block.header.hash).hash
     )
+
+
+@pytest.mark.parametrize("vector", _CORE_VECTORS, ids=_VECTOR_IDS)
+def test_the_index_holds_the_filters_bitcoin_core_computed(
+    regtest_node: Callable[[], Node], vector: list[str]
+) -> None:
+    """Hold the index to Core's numbers rather than to btclib's.
+
+    `btclib.block.block_filter` is tested against this same file inside
+    btclib, and what is checked here is the layer this tree adds: that
+    the octets stored for a block are the filter Core computed, that
+    they come back unchanged, and that the header chained onto the one
+    before is Core's header. A filter that goes into this index and
+    comes out a different filter is a node telling a light client
+    something it cannot catch until it fetches the block.
+    """
+    _index_a_vector_and_check_it(regtest_node(), vector)
+
+
+# Two testnet blocks Core's own file above does not reach the scale of:
+# height 54499 is forty-odd kilobytes and twenty-four transactions, most
+# of them resolving a previous output from elsewhere in the same block,
+# and height 54503 is the positive control. tests/_data/README.md says
+# where the two blocks came from and how the filters were derived; the
+# "previous" and "header" columns are this file's own, chained within
+# it alone and read by nothing outside this module.
+_SCALE_VECTORS = load("unit", "chainstate", "_data", "testnet_bip158_vectors.json")[1:]
+_SCALE_VECTOR_IDS = [
+    vector_id(index, row[0], row[7] if len(row) > 7 else "")
+    for index, row in enumerate(_SCALE_VECTORS)
+]
+
+
+@pytest.mark.parametrize("vector", _SCALE_VECTORS, ids=_SCALE_VECTOR_IDS)
+def test_the_index_holds_the_filters_this_tree_derived_at_scale(
+    regtest_node: Callable[[], Node], vector: list[str]
+) -> None:
+    """Hold the index to a scale Core's own vector file never reaches.
+
+    Neither block's filter was taken on faith: height 54503's,
+    `06294070f18c8b0ff84b92738259ca89b4`, matches what an independent
+    SipHash-2-4 and Golomb-Rice implementation in Libbitcoin's test
+    suite computed for the same block, which is the positive control
+    tests/_data/README.md names. Height 54499 has no such external
+    check -- most of its non-coinbase inputs spend an output paid to
+    earlier in the same block, which is the scenario none of Core's
+    ten rows reaches at all.
+    """
+    _index_a_vector_and_check_it(regtest_node(), vector)
 
 
 def test_the_testnet_genesis_block_this_node_builds_is_the_one_core_filtered() -> None:
