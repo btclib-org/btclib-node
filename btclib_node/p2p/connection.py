@@ -161,6 +161,19 @@ class Connection:
         # btclib-org/btclib-node#144
         self.tx_requested: dict[bytes, float] = {}
 
+        # What this node last told this peer its own minimum relay
+        # feerate is, and when it may next say so again -- Core's own
+        # `Peer::m_fee_filter_sent`/`m_next_send_feefilter`
+        # (`net_processing.cpp`, bitcoin/bitcoin@58a7869f86), both
+        # initialized the same way there: 0 is a rate nothing is
+        # withheld under, so the first comparison in
+        # `DownloadManager._send_due_feefilters` never mistakes "never
+        # sent" for "sent zero on purpose", and 0.0 is "never
+        # scheduled", the same convention `next_inv_send_time` above
+        # already uses. btclib-org/btclib-node#275
+        self.feefilter_sent: int = 0
+        self.next_feefilter_send_time: float = 0.0
+
         # What this connection currently owes the peer: every octet a
         # message has been serialized into and not yet handed to
         # `sock_sendall` in full, counted from `async_send` and not from

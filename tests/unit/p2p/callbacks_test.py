@@ -574,35 +574,25 @@ def test_a_verack_completes_the_handshake() -> None:
     assert commands(peer) == [
         "SendHeaders",
         "SendCmpct",
-        "FeeFilter",
         "ping",
         "GetAddr",
         "GetHeaders",
     ]
     assert isinstance(peer.sent[0], SendHeaders)
     assert isinstance(peer.sent[1], SendCmpct)
-    assert isinstance(peer.sent[2], FeeFilter)
-    assert isinstance(peer.sent[4], GetAddr)
-    assert isinstance(peer.sent[5], GetHeaders)
+    assert isinstance(peer.sent[3], GetAddr)
+    assert isinstance(peer.sent[4], GetHeaders)
     assert not peer.stopped
     # out of P2pManager.pending_connections and into connections, right
     # where P2pConnStatus.Connected is set: btclib-org/btclib-node#131
     assert promoted == [9]
 
 
-def test_a_verack_tells_the_peer_this_nodes_own_relay_floor() -> None:
-    # issue #94: the value is Config.min_relay_feerate, not a constant
-    # of this module's own
-    peer = a_peer(version_message=a_parsed_version(), wtxidrelay_received=True)
-    peer_db = PeerDB(cast("Chain", None), cast(Path, None))
-    node = a_handshake_node(
-        min_relay_feerate=FeeRate(sats_per_kvbyte=500), peer_db=peer_db
-    )
-    verack(node, b"", peer)
-    (feefilter_msg,) = [m for m in peer.sent if isinstance(m, FeeFilter)]
-    assert feefilter_msg.feerate == 500
-    # and it survives the wire like every other payload this node sends
-    assert FeeFilter.parse(feefilter_msg.serialize()).feerate == 500
+# No FeeFilter is sent from verack itself: DownloadManager.
+# _send_due_feefilters (download_test.py) is what tells a peer this
+# node's own relay floor, reached from Node.run's own loop rather than
+# a one-time handshake action, matching Core's own MaybeSendFeefilter.
+# btclib-org/btclib-node#275
 
 
 def test_an_outbound_handshake_records_the_address_dialled() -> None:

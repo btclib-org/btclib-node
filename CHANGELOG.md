@@ -51,6 +51,49 @@ to check the guess.
   `bitcoin-core-rpc` and `portanode` already state the conditional, and
   this tree's `REPOSITORY.md` now matches them.
 
+### This node's own `feefilter` is resent as its mempool's own minimum moves
+
+- **`DownloadManager._send_due_feefilters`, called from `step()` like
+  every other per-connection schedule this file keeps, tells each
+  connected peer this node's own current relay floor and resends it as
+  that floor changes** (closes #275). Sent once and never again before
+  this, out of `callbacks.verack`; Core's own `MaybeSendFeefilter`
+  (`net_processing.cpp:5822`, bitcoin/bitcoin@58a7869f86) is not a
+  handshake action either, reached instead from the ordinary per-peer
+  message loop, so the static send is removed from `verack` rather than
+  kept alongside the new schedule. The floor itself is
+  `Mempool.get_min_fee_rate()` (#294), floored at `Config.
+  min_relay_feerate`, rounded through a geometric bucket set
+  (`_fee_filter_buckets`, Core's own `FeeFilterRounder`) that a 2-in-3
+  draw rounds down from even at an exact boundary, so this node's own
+  rolling minimum is not readable exactly from what it tells a peer.
+  Resent on an exponential schedule averaging ten minutes, pulled
+  forward to within five minutes of one already due where the floor
+  moves by more than a third; during initial block download every peer
+  is sent the top of the bucket set instead, telling it not to bother,
+  the same as Core.
+
+### `getmempoolinfo` answers `maxmempool` and `mempoolminfee`
+
+- **Both read `Mempool.bytesize_limit` and `Mempool.get_min_fee_rate()`
+  (#294), the source neither field had before it** (closes #305).
+  `mempoolminfee` is BTC/kvB, matching Core's own `MempoolInfoToJSON`
+  (`src/rpc/mempool.cpp:1075-1086`, bitcoin/bitcoin@58a7869f86) rather
+  than this tree's own sat/kvB used everywhere else a feerate is
+  emitted or read: Core defines this surface, so the unit follows Core
+  here even though it does not match the rest of this tree. The exact
+  eight-decimal string Core's own `ValueFromAmount` produces is written
+  to the wire directly, through a new `RawJSON` (`rpc/connection.py`),
+  since a Python `float` cannot always carry it without exponent
+  notation. `maxmempool` needs no such divergence, Core's own field
+  being plain bytes already. `minrelaytxfee` and `incrementalrelayfee`
+  are left out despite being real and cheap to answer, because #305
+  named only these two fields; every other field RPC answers is left
+  out because, unlike those two, it has no concept behind it in this
+  tree to read a real number from: none of `usage`, `total_fee`,
+  `unbroadcastcount`, `permitbaremultisig`, `maxdatacarriersize`,
+  `limitclustercount`, `limitclustersize` or `optimal`.
+
 ### `CLAUDE.md` says this tree follows Bitcoin Core, and what a divergence owes
 
 - **Where this tree reimplements something Bitcoin Core also does, it

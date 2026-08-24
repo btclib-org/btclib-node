@@ -14,6 +14,7 @@ from btclib_node.constants import P2pConnStatus
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.main import verify_mempool_acceptance
 from btclib_node.p2p.address import ip_and_port
+from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import RpcError, RpcErrorCode, bool_param, json_type_name
 
 if TYPE_CHECKING:
@@ -293,10 +294,66 @@ def get_connection_count(node: Node, conn: Connection, _: list[Any]) -> int:
     return len(manager.connections) + len(manager.pending_connections)
 
 
+def _btc_amount(sats: int) -> RawJSON:
+    """Format a non-negative satoshi amount as Core's own exact BTC string.
+
+    Core's own `ValueFromAmount` (`src/core_io.cpp:283-293`,
+    bitcoin/bitcoin@58a7869f86): integer `amount / COIN` and
+    `amount % COIN`, formatted `%d.%08d` -- exact at every magnitude,
+    where a Python float division (`sats / 1e8`) serializes through
+    `repr`, which fixes no decimal places and emits exponent notation
+    (`1e-06`) at a magnitude ordinary for a feerate. Takes a
+    non-negative amount only, and needs no sign correction Core's own
+    version applies for a negative one: every caller here is a feerate,
+    which is never negative, and Python's `//`/`%` already agree with
+    C++'s truncating division for a non-negative dividend.
+    """
+    quotient, remainder = divmod(sats, 100_000_000)
+    return RawJSON(f"{quotient}.{remainder:08d}")
+
+
 def get_mempool_info(node: Node, conn: Connection, _: list[Any]) -> dict[str, Any]:
     mempool = node.mempool
-    out = {"loaded": True, "size": mempool.size, "bytes": mempool.bytesize}
-    return out
+    # Core's own MempoolInfoToJSON (`src/rpc/mempool.cpp:1075-1086`,
+    # bitcoin/bitcoin@58a7869f86) answers several fields beyond these
+    # four: `usage`, `total_fee`, `unbroadcastcount`,
+    # `permitbaremultisig`, `maxdatacarriersize`, `limitclustercount`,
+    # `limitclustersize`, `optimal`, the deprecated `fullrbf`. Every one
+    # of those is backed by a concept this tree does not carry -- a
+    # cluster mempool graph, a persisted total fee, unbroadcast-tx
+    # tracking, a bare-multisig policy knob -- and answering any of them
+    # with a placeholder would be exactly the decoration this method's
+    # own sparse answer already was. `minrelaytxfee` and
+    # `incrementalrelayfee` are excluded for a different reason: both
+    # are real and cheap to answer here too (`Config.min_relay_feerate`,
+    # `mempool.py`'s own incremental-fee constant), left out only
+    # because #305 named these two fields and not those. `maxmempool`
+    # and `mempoolminfee` are wired in because #294 gave both a real
+    # source to read. btclib-org/btclib-node#305
+    #
+    # `mempoolminfee` is BTC/kvB, matching Core's own
+    # `ValueFromAmount`-converted unit rather than this tree's own
+    # sat/kvB used everywhere else a feerate is emitted or read
+    # (`Mempool.meets_fee_rate`, BIP133's own `feefilter` wire value,
+    # `Config.min_relay_feerate`): a client written against Core's own
+    # `getmempoolinfo` reads this field expecting BTC/kvB, and Core
+    # defines the unit on this particular surface. BIP133's own wire
+    # value is unaffected -- `_send_due_feefilters`
+    # (`btclib_node/download.py`) still sends sat/kvB, because BIP133
+    # says so, not because this tree chose a unit. `maxmempool` needs no
+    # such divergence: Core's own field is `m_opts.max_size_bytes`,
+    # plain bytes with no amount conversion applied to it either.
+    mempoolminfee = max(
+        mempool.get_min_fee_rate().sats_per_kvbyte,
+        node.config.min_relay_feerate.sats_per_kvbyte,
+    )
+    return {
+        "loaded": True,
+        "size": mempool.size,
+        "bytes": mempool.bytesize,
+        "maxmempool": mempool.bytesize_limit,
+        "mempoolminfee": _btc_amount(mempoolminfee),
+    }
 
 
 def get_raw_mempool(

@@ -151,11 +151,17 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
 
     conn.send(SendHeaders())
     conn.send(SendCmpct(False, 1))
-    # BIP133: this node's own floor, once and not again -- it is static
-    # (Config.min_relay_feerate), where Core's own resend-on-change logic
-    # (net_processing.cpp's MaybeSendFeefilter) exists for a mempool-sized
-    # rate this node does not compute (issue #94's own open half).
-    conn.send(FeeFilter(node.config.min_relay_feerate.sats_per_kvbyte))
+    # BIP133's own floor is not sent here: DownloadManager._send_due_feefilters
+    # (btclib_node/download.py) reaches every connected connection on the
+    # very next step(), Connection.next_feefilter_send_time defaulting to
+    # 0.0, "never scheduled", the same convention next_inv_send_time
+    # already uses -- so a second, special-cased first send here would
+    # duplicate rather than precede it. Core does not send one from its
+    # own verack handler either: PeerManagerImpl::MaybeSendFeefilter
+    # (net_processing.cpp, bitcoin/bitcoin@58a7869f86) is reached from
+    # the ordinary per-peer message loop once a peer is
+    # fSuccessfullyConnected, not from a one-time handshake action.
+    # btclib-org/btclib-node#275
     conn.send_ping()
     conn.send(GetAddr())
     block_locators = node.chainstate.block_index.get_block_locator_hashes()
