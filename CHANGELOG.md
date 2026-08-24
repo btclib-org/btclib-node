@@ -1815,3 +1815,31 @@ to check the guess.
   for the same reason. Before this, a `notfound` was logged and nothing
   else, since there was no per-peer record of an outstanding ask for it
   to clear.
+
+### Transaction relay is bounded, expires and only announces what it kept
+
+- **`_send_due_announcements` now splits `Connection.tx_announce_queue`
+  into `Inv` messages of at most `MAX_INV_SZ` entries each** (closes
+  #282), rather than building one `Inv` from the whole queue.
+  `btclib.p2p.inventory.Inv` raises past that bound on construction, and
+  a slow-scheduled connection's own timer — a mean of several seconds,
+  an exponential draw's own tail longer still — was enough wall-clock
+  time for a busy node's mempool churn to grow the queue past it, taking
+  down `Node.run`'s own loop from inside `tx_download`. Core's own
+  `SendMessages` (net_processing.cpp) answers the same way: several
+  `MakeAndPushMessage` calls of at most `MAX_INV_SZ` each.
+- **`Connection.tx_requested`'s entries now expire after 60 seconds**
+  (closes #289), Core's own `GETDATA_TX_INTERVAL`
+  (`node/txdownloadman.h`). A peer that neither sent the transaction nor
+  answered `notfound` left its own entry in place forever, which made
+  `tx_download`'s `wanted` filter read a `getdata` as still outstanding
+  for the rest of that connection's life — this node would never ask
+  that one peer for the wtxid again, even past a later re-announcement.
+- **`Mempool.add_tx` now reports whether it added the transaction, and
+  `p2p/callbacks.py`'s `tx` handler queues an announcement only when it
+  did** (closes #277). The handler used to gate both `add_tx` and the
+  announcement queue, `DownloadManager.received_txs`, on one
+  `contains_tx` check taken before either ran; `add_tx` silently declines
+  past `Mempool.is_full()`, so a transaction dropped for a full mempool
+  was still announced to every other peer, which then asked for it and
+  got `notfound`.

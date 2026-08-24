@@ -21,6 +21,7 @@ import pytest
 from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.addrv2 import NetworkAddressV2
 from btclib.p2p.inventory import GetData, Inv
+from btclib.p2p.limits import MAX_INV_SZ
 
 import btclib_node.download as download_module
 from btclib_node.constants import NodeStatus
@@ -254,6 +255,29 @@ def test_a_peer_still_wanting_something_else_is_asked_for_it() -> None:
     assert not only(sender, GetData)
 
 
+def test_a_queue_past_max_inv_sz_is_sent_as_several_invs() -> None:
+    # Inv.assert_valid (btclib.p2p.inventory) refuses more than
+    # MAX_INV_SZ entries in one message. btclib-org/btclib-node#282
+    other = a_conn(1)
+    manager = make_manager([other])
+    other.tx_announce_queue = [a_hash(n) for n in range(MAX_INV_SZ + 1)]
+    manager._send_due_announcements()
+    first, second = only(other, Inv)
+    assert len(first.items) == MAX_INV_SZ
+    assert len(second.items) == 1
+    assert hashes_of(second) == [a_hash(MAX_INV_SZ)]
+    assert other.tx_announce_queue == []
+
+
+def test_a_queue_at_exactly_max_inv_sz_is_sent_as_one_inv() -> None:
+    other = a_conn(1)
+    manager = make_manager([other])
+    other.tx_announce_queue = [a_hash(n) for n in range(MAX_INV_SZ)]
+    manager._send_due_announcements()
+    (only_inv,) = only(other, Inv)
+    assert len(only_inv.items) == MAX_INV_SZ
+
+
 def test_a_second_announcement_waits_for_the_peers_own_schedule() -> None:
     # the first ever announcement to a fresh connection fires at once --
     # its schedule reads 0, "never scheduled", which the due-check
@@ -395,6 +419,37 @@ def test_a_notfound_response_frees_the_wtxid_to_be_asked_for_again() -> None:
     manager.inv_txs = [(1, a_hash(1))]
     manager.tx_download()
     assert len(only(conn, GetData)) == 2
+
+
+def test_an_ask_still_within_the_timeout_is_not_repeated() -> None:
+    conn = a_conn(1)
+    conn.tx_requested[a_hash(1)] = time.time()
+    manager = make_manager([conn])
+    manager.inv_txs = [(1, a_hash(1))]
+    manager.tx_download()
+    assert not only(conn, GetData)
+
+
+def test_an_ask_a_peer_never_answered_is_asked_again_once_it_expires() -> None:
+    # a peer that neither sends the transaction nor answers `notfound`
+    # otherwise blocks every future request to it for this wtxid,
+    # permanently: btclib-org/btclib-node#289
+    conn = a_conn(1)
+    conn.tx_requested[a_hash(1)] = time.time() - download_module._TX_REQUEST_TIMEOUT - 1
+    manager = make_manager([conn])
+    manager.inv_txs = [(1, a_hash(1))]
+    manager.tx_download()
+    (getdata,) = only(conn, GetData)
+    assert hashes_of(getdata) == [a_hash(1)]
+
+
+def test_an_expired_asks_entry_is_dropped_even_when_nothing_is_re_announced() -> None:
+    conn = a_conn(1)
+    conn.tx_requested[a_hash(1)] = time.time() - download_module._TX_REQUEST_TIMEOUT - 1
+    manager = make_manager([conn])
+    manager.inv_txs = [(1, a_hash(2))]
+    manager.tx_download()
+    assert a_hash(1) not in conn.tx_requested
 
 
 def test_receiving_a_transaction_frees_every_peers_outstanding_ask_for_it() -> None:
