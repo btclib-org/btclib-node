@@ -13,6 +13,7 @@ from btclib.tx.tx_out import TxOut
 from btclib.utils import bytesio_from_binarydata
 
 from btclib_node.db import KeyValueStore
+from btclib_node.exceptions import ChainstateInconsistencyError
 from btclib_node.log import Logger
 
 # A file's byte offset or length, and the store's own file-rotation
@@ -250,7 +251,7 @@ class BlockDB:
             if rev_block_hash not in self.blocks:
                 err_msg = "reverse patch for a block not stored: "
                 err_msg += rev_block_hash.hex()
-                raise Exception(err_msg)
+                raise ChainstateInconsistencyError(err_msg)
             file_index = int(Path(self.blocks[rev_block_hash].filename).stem)
             data = rev_block.serialize()
             file = self.__find_rev_file(file_index)

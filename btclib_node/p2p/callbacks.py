@@ -46,7 +46,7 @@ from btclib.p2p.negotiation import FeeFilter, GetAddr, SendHeaders, WtxidRelay
 from btclib_node.chainstate.block_index import BlockStatus
 from btclib_node.chainstate.filter_index import NO_PREVIOUS_FILTER_HEADER
 from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion
-from btclib_node.exceptions import MissingPrevoutError
+from btclib_node.exceptions import ChainstateInconsistencyError, MissingPrevoutError
 from btclib_node.main import verify_mempool_acceptance
 from btclib_node.p2p.address import (
     addr_entry,
@@ -620,7 +620,7 @@ def get_cfilters(node: Node, msg: bytes, conn: Connection) -> None:
         block_filter = filter_index.get_filter(block_hash)
         if block_filter is None:
             err_msg = f"no filter for a block on the active chain: {block_hash.hex()}"
-            raise Exception(err_msg)
+            raise ChainstateInconsistencyError(err_msg)
         conn.send(
             CFilter(
                 BlockFilterType.BASIC,
@@ -657,14 +657,14 @@ def get_cfheaders(node: Node, msg: bytes, conn: Connection) -> None:
     # starts listening, and kept up as blocks connect
     if previous is None:
         err_msg = "no filter header for the parent of the requested range"
-        raise Exception(err_msg)
+        raise ChainstateInconsistencyError(err_msg)
     filter_hashes = []
     for h in heights:
         filter_hash = filter_index.get_filter_hash(active_chain[h])
         if filter_hash is None:
             block_hash = active_chain[h]
             err_msg = f"no filter for a block on the active chain: {block_hash.hex()}"
-            raise Exception(err_msg)
+            raise ChainstateInconsistencyError(err_msg)
         filter_hashes.append(filter_hash)
     conn.send(
         CFHeaders(
@@ -703,7 +703,7 @@ def get_cfcheckpt(node: Node, msg: bytes, conn: Connection) -> None:
         if header is None:
             err_msg = "no filter header for a block on the active chain: "
             err_msg += block_hash.hex()
-            raise Exception(err_msg)
+            raise ChainstateInconsistencyError(err_msg)
         checkpoints.append(header)
     conn.send(
         CFCheckpt(

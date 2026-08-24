@@ -8,6 +8,7 @@ from pathlib import Path
 from btclib.fee import FeeRate
 
 from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet
+from btclib_node.exceptions import InvalidChainTypeError, UnknownChainError
 
 # Core's own floor, `DEFAULT_MIN_RELAY_TX_FEE` (`src/policy/policy.h`,
 # read at bitcoin/bitcoin@58a7869f86): 100 sat/kvB. This node prices
@@ -78,11 +79,9 @@ class Config:
             elif chain == "regtest":
                 self.chain = RegTest()
             else:
-                raise ValueError(f"unknown chain: {chain!r}")
+                raise UnknownChainError(chain)
         else:
-            raise ValueError(
-                f"chain must be a Chain or str, not {type(chain).__name__}"
-            )
+            raise InvalidChainTypeError(chain)
 
         data_dir = Path(data_dir) if data_dir else Path.home() / ".btclib"
         self.data_dir = data_dir.absolute() / self.chain.name

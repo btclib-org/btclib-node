@@ -33,6 +33,7 @@ from btclib.block.block_filter import BasicBlockFilter, prevout_scripts_from_utx
 from btclib_node.block_db import BlockDB, RevBlock
 from btclib_node.chains import Chain
 from btclib_node.db import KeyValueStore
+from btclib_node.exceptions import ChainstateInconsistencyError
 from btclib_node.log import Logger
 
 _FILTER = b"cfilter-"
@@ -102,7 +103,7 @@ class FilterIndex:
             if previous_header is None:
                 err_msg = "no filter header for the parent of "
                 err_msg += block_hash.hex()
-                raise Exception(err_msg)
+                raise ChainstateInconsistencyError(err_msg)
         block_filter = BasicBlockFilter.from_block(
             block, prevout_scripts, check_validity=False
         )
@@ -143,7 +144,7 @@ class FilterIndex:
                 # header chains onto this one's, which does not exist
                 err_msg = "cannot build the block filter index: no block "
                 err_msg += f"or reverse patch stored for {block_hash.hex()}"
-                raise Exception(err_msg)
+                raise ChainstateInconsistencyError(err_msg)
             self.add_connected_block(block, rev_block)
             built += 1
             if len(self.pending) >= _CATCH_UP_BATCH:

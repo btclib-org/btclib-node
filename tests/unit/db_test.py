@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from btclib_node.db import KeyValueStore
+from btclib_node.exceptions import IncompatibleStoreError, StoreClosedError
 
 
 def a_store(tmp_path: Path, name: str = "store") -> KeyValueStore:
@@ -108,7 +109,7 @@ def test_a_datadir_from_before_this_store_is_refused(tmp_path: Path) -> None:
     directory = tmp_path / "old"
     directory.mkdir()
     (directory / "CURRENT").write_text("MANIFEST-000001\n", encoding="ascii")
-    with pytest.raises(Exception, match="holds a LevelDB database"):
+    with pytest.raises(IncompatibleStoreError, match="holds a LevelDB database"):
         KeyValueStore(directory)
 
 
@@ -120,7 +121,7 @@ def test_a_closed_store_refuses_to_be_used(tmp_path: Path) -> None:
     store.put(b"k", b"v")
     store.close()
     assert store.closed
-    with pytest.raises(Exception, match="is closed"):
+    with pytest.raises(StoreClosedError, match="is closed"):
         store.get(b"k")
 
 
@@ -138,7 +139,7 @@ def test_a_thread_that_never_used_the_store_is_refused_after_it_closes(
     def late() -> None:
         try:
             store.put(b"k", b"v")
-        except Exception as error:
+        except StoreClosedError as error:
             refused.append(str(error))
 
     thread = threading.Thread(target=late)
@@ -205,7 +206,7 @@ def test_closing_while_another_thread_reads_does_not_take_the_process_down(
         while True:
             try:
                 outcomes.add(store.get(b"k"))
-            except Exception as error:
+            except StoreClosedError as error:
                 outcomes.add(str(error).split(" at ")[0])
                 return
 

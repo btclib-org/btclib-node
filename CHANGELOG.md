@@ -18,6 +18,70 @@ to check the guess.
 
 ## Unreleased
 
+### `select` gains `TRY` and `BLE`, and this tree gets its own exceptions
+
+- **`select` gains `TRY` (tryceratops) and `BLE` (flake8-blind-except)**
+  (issue #284): weighed each finding as a possible latent bug rather
+  than a style preference, per the round's own brief, since a narrowed
+  `except` can turn "logged and the loop continues" into "propagates
+  and kills the loop" for whichever exception nobody meant to let
+  through.
+- **`btclib_node/exceptions.py` gains nine classes**, grouped by what
+  actually went wrong rather than by which module raises it —
+  `ChainstateInconsistencyError` alone answers every site downstream
+  of `update_chain` finding that its own index promised something the
+  data underneath it does not have, across `btclib_node/main.py`,
+  `block_db`, `block_index`, `utxo_index` and `filter_index` alike, and
+  `StoreClosedError` answers both of `db.py`'s own "the store is
+  closed" sites. `TRY002` (`raise
+  Exception(...)`) is what asked for a class; `TRY003` (a message
+  built at the `raise` site rather than carried by the class) is why
+  each one takes a `message` in its own `__init__` instead of a bare
+  `pass` — checked directly against ruff itself rather than assumed:
+  the message still has to be assigned to a variable before the
+  `raise` and not written as a literal there, which is `TRY003`'s own
+  actual test and not quite what its rule name or its docstring's own
+  prose suggest.
+- **`Config.__init__`'s `chain` validation gains two of those classes**:
+  `UnknownChainError(ValueError)` for a `chain` string this tree does
+  not recognise, and `InvalidChainTypeError(TypeError)` for a `chain`
+  that is neither a `Chain` nor a `str` (`TRY004`, prefer `TypeError`
+  for a wrong *type* over `ValueError`) — the existing
+  `unknown chain` test needs no change, being a `ValueError` still, and
+  the `Config(chain=None)` test is updated to expect `TypeError`.
+- **Four `except Exception:` sites narrow to the specific exception the
+  surrounding code actually depends on**: `rpc/main.py`'s
+  `get_connection` to `KeyError` (a plain `dict` lookup, nothing else
+  the miss could raise), two `tests/unit/db_test.py` race tests to the
+  new `StoreClosedError`, checked against `KeyValueStore.close`'s own
+  locking that no other exception can reach that `except` under the
+  race either test drives, and `scripts/test_errors.py`'s own
+  `TxOut.parse` loop to `BTClibException`, confirmed directly against
+  the installed btclib rather than assumed.
+- **Seven `except Exception:` sites stay exactly as broad as they were,
+  each now with a `noqa: BLE001` and a comment saying why**: guarding a
+  shared event loop or a whole RPC batch against a bug in one
+  connection or one entry rather than letting it take down every other
+  one sharing the loop or the batch (`p2p/connection.py` twice,
+  `rpc/connection.py`, `rpc/callbacks.py` twice), and propagating a
+  caller-supplied call's own exception back unchanged
+  (`tests/helpers.py`'s `call_within`) or a whole directory of local,
+  unpredictable fixtures' own failures back as one line each
+  (`scripts/test_errors.py`'s driver loop).
+- **Three `raise`s stay declined rather than rewritten, each with a
+  `noqa` and a reason**: `block_index.py`'s header-batch validation
+  raises `BTClibValueError` from inside the same `try` its own
+  `except` logs and re-raises every refusal through — this one and
+  `assert_valid_in_context`'s own — so abstracting it out against
+  `TRY301` would split one log line into two shapes for no reader's
+  benefit; `rpc/connection.py`'s own bounds check on `Content-Length`
+  is the same shape, one `except Exception` downstream answering
+  everything this method can raise. A third, in
+  `tests/unit/p2p/manager_test.py`, keeps raising a bare `OSError`
+  against `TRY003` rather than a class of this tree's own: `_bind`
+  itself catches `OSError`, and a test double standing in for the real
+  `socket` module has to raise what that module would.
+
 ### `select` gains `B` and the rest of `RUF`
 
 - **`select` gains `B` (flake8-bugbear) and `RUF` (the rest of ruff's own

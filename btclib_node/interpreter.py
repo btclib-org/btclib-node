@@ -10,6 +10,7 @@ from btclib.tx.tx import Tx
 from btclib.tx.tx_out import TxOut
 
 from btclib_node.config import Config
+from btclib_node.exceptions import PrevoutCountMismatchError
 
 if TYPE_CHECKING:
     from btclib_node import Node
@@ -41,7 +42,7 @@ def check_transactions(
     if not transaction_data:
         return
     if any(len(x[0]) != len(x[1].vin) for x in transaction_data):
-        raise ValueError("prevout count does not match input count")
+        raise PrevoutCountMismatchError
 
     FLAGS = get_flags(node.config, index)
 

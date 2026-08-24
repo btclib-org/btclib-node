@@ -142,7 +142,12 @@ class Connection:
             # below true before a single body byte arrived and then
             # slice the body from the wrong end.
             if not 0 <= length <= MAX_BODY_BYTES:
-                raise ConnectionError
+                # kept inside the try, against TRY301: the outer
+                # `except Exception: self.client.close()` below is what
+                # every failure in this method already answers through,
+                # abstracting this one raise to a helper would not
+                # change what catches it, only add a call for no reader
+                raise ConnectionError  # noqa: TRY301
             await self._recv_until(lambda: len(self.buffer) >= length)
 
             try:
@@ -172,7 +177,12 @@ class Connection:
             if not isinstance(body, list):
                 body = [body]
             self.manager.messages.append((body, self.id))
-        except Exception:
+        # deliberately blind (BLE001): RpcManager runs one asyncio loop
+        # for every connection this unauthenticated, all-interfaces port
+        # (#27) accepts, so a bug reading any one of them has to close
+        # that one connection rather than propagate into the loop every
+        # other connection shares
+        except Exception:  # noqa: BLE001
             self.client.close()
 
     async def async_send(self, response: list[dict[str, Any]]) -> None:

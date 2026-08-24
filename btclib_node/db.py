@@ -38,6 +38,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, cast
 
+from btclib_node.exceptions import IncompatibleStoreError, StoreClosedError
+
 # What a LevelDB directory always holds, and this one never will. A
 # datadir written before this store existed cannot be read by it, and
 # starting an empty chain over the top of one is a worse answer than
@@ -75,7 +77,7 @@ class KeyValueStore:
             err_msg = f"{self.path} holds a LevelDB database, which this "
             err_msg += "version cannot read: delete the directory and sync "
             err_msg += "again"
-            raise Exception(err_msg)
+            raise IncompatibleStoreError(err_msg)
         self.file = self.path / "index.sqlite"
 
         self._lock = threading.RLock()
@@ -95,7 +97,8 @@ class KeyValueStore:
         """Execute a statement that answers nothing."""
         with self._lock:
             if self._closed:
-                raise Exception(f"the store at {self.path} is closed")
+                err_msg = f"the store at {self.path} is closed"
+                raise StoreClosedError(err_msg)
             self._connection.execute(statement, parameters)
 
     def _rows(
@@ -114,7 +117,8 @@ class KeyValueStore:
         """
         with self._lock:
             if self._closed:
-                raise Exception(f"the store at {self.path} is closed")
+                err_msg = f"the store at {self.path} is closed"
+                raise StoreClosedError(err_msg)
             return self._connection.execute(statement, parameters).fetchall()
 
     def get(self, key: bytes) -> bytes | None:
