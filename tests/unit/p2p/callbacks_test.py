@@ -375,12 +375,21 @@ def test_a_version_with_a_trailing_octet_still_costs_the_peer() -> None:
 
 
 def test_a_relay_octet_that_is_neither_0_nor_1_still_costs_the_peer() -> None:
-    # issue #149 also names this one, a defect of the same kind and not
-    # fixed here: Core's own Unserialize<bool> reads any nonzero octet as
-    # true, where Version.parse raises for anything but 0x00/0x01. Left
-    # as is because no real encoder -- Core's or this node's own -- ever
-    # writes a third value, so only an adversarial or already-broken peer
-    # reaches this path; #149 stays open for this half.
+    # issue #149's second half, closed on this: Core's own
+    # Unserialize<bool> (serialize.h) reads any nonzero octet as true,
+    # where Version.parse raises for anything but 0x00/0x01. Reaching
+    # Core's leniency here would mean either replaying Version.parse's
+    # whole field walk (the fixed fields, both NetworkAddress entries and
+    # the var_bytes user agent) to find where the flag sits in the
+    # payload, or matching the wording of the BTClibValueError it raises
+    # -- both bind this node to btclib's private shape rather than its
+    # public contract, unlike the stream-based leniency addr/addrv2 use
+    # above. And Core's own encoder (Serialize<bool>, the same
+    # serialize.h) can never write anything but 0x00/0x01: a bool
+    # converts to 0 or 1, nothing else, so no peer running Core -- or
+    # this node's own Version.serialize -- ever reaches this path, only
+    # an adversarial or already-broken one does. Disconnecting it is the
+    # policy kept.
     peer = a_peer()
     # relay=None serializes nothing, so appending one raw octet is the
     # only relay byte this payload carries
