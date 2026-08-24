@@ -30,13 +30,17 @@ to check the guess.
   the shape `B008` warns about, and nothing here relies on that sharing.
 - **`Config.__init__`'s `chain: Chain | str = Main()` default becomes
   `chain: Chain | str = DEFAULT_CHAIN`, a module-level singleton next to
-  the existing `DEFAULT_MIN_RELAY_FEERATE`** (`RUF009`, the dataclass
-  form of the same warning `B008` gives functions). `Config(chain=None)`
+  the existing `DEFAULT_MIN_RELAY_FEERATE`** (`B008`, the same rule
+  `Node.__init__`'s fix above answers: `Config` defines its own
+  `__init__` rather than one `@dataclass` generates, so its parameter
+  default is ordinary `B008` and not `RUF009`). `Config(chain=None)`
   still raises `ValueError`, unchanged: the singleton replaces the call
   in the signature, not the type it stands for.
 - **`BlockInfo`'s `status: BlockStatus = BlockStatus(1)` default becomes
-  `status: BlockStatus = BlockStatus.valid_header`** (`RUF009`),
-  `BlockStatus` being an `IntEnum` whose members are already singletons.
+  `status: BlockStatus = BlockStatus.valid_header`** (`RUF009`, the
+  dataclass-field form of the same warning: `BlockInfo` takes the
+  `__init__` `@dataclass` generates), `BlockStatus` being an `IntEnum`
+  whose members are already singletons.
 - **The two loop variables `RevBlock.deserialize` never reads become
   `_`** (`B007`), matching the `for _ in range(...)` shape already used
   elsewhere in this tree.
