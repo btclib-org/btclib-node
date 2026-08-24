@@ -149,10 +149,11 @@ gh api repos/btclib-org/btclib-node \
 Squash is the only method, and `main-self-merge` names it too, so the
 constraint holds even if this repository setting is flipped back.
 
-`COMMIT_OR_PR_TITLE` with `COMMIT_MESSAGES` is what makes a pull
-request's title the landing commit's subject and the branch's own
-messages its body — which is why a commit message here is prose this tree
-ships.
+`COMMIT_OR_PR_TITLE` is the subject — the pull request title with its
+number, or the subject of the single commit where a branch has one, which
+the convention of writing the two alike keeps the same text.
+`COMMIT_MESSAGES` is the body — which is why a commit message here is
+prose this tree ships.
 
 `delete_branch_on_merge` fires on its own, every landing being a merged
 pull request, so a branch still standing is one that was closed rather
