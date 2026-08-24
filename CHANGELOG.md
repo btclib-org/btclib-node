@@ -18,6 +18,17 @@ to check the guess.
 
 ## Unreleased
 
+### `block_download`'s out-of-work branch is now covered on purpose
+
+- **`tests/unit/download_test.py` now covers the `else: return` a
+  connection's own turn in `block_download` falls into once neither
+  `waiting` nor `pending` has anything left to hand it** (issue #319).
+  Whether that branch ran at all used to depend on how the suite's other
+  tests happened to divide a window's blocks across connections at that
+  moment; the new test builds three connections already holding the
+  window's one block between them and a fourth, idle one, so the branch
+  is reached by construction rather than by luck.
+
 ### `P2pManager.stop()` sweeps connections after `join`, not before
 
 - **The sweep that closes every known connection moved to after

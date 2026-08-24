@@ -924,3 +924,21 @@ def test_a_peer_that_is_already_pending_eviction_is_left_alone() -> None:
     # so it is not asked for the same block again either
     assert quiet.download_queue == [a_hash(1)]
     assert not quiet.sent
+
+
+def test_an_idle_peer_is_asked_for_nothing_once_every_block_has_three_takers() -> None:
+    # three peers already hold the window's one block between them, which
+    # is what Counter's `x[1] < 3` reads as fully requested: the fourth,
+    # idle peer's own turn in the loop finds neither `waiting` nor
+    # `pending` with anything left to hand it. Whether that happens at
+    # all otherwise depends on how the window divides across peers at
+    # that instant, which is what btclib-org/btclib-node#319 is about.
+    takers = [a_conn(n, queue=[a_hash(1)]) for n in (1, 2, 3)]
+    idle = a_conn(4)
+    manager = make_manager([*takers, idle], block_index=FakeBlockIndex([a_hash(1)]))
+    manager.block_download()
+    assert not idle.sent
+    assert idle.download_queue == []
+    for taker in takers:
+        assert not taker.sent
+        assert taker.download_queue == [a_hash(1)]
