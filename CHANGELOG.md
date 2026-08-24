@@ -2106,3 +2106,22 @@ to check the guess.
   mempool with room to spare reached the same mismatched-wtxid
   announcement before this change, unrelated to the refusal above and
   present before this branch touched the file.
+
+### Two testnet blocks exercise the filter index at a scale Core's vectors miss
+
+- **`tests/unit/chainstate/_data/testnet_bip158_vectors.json` adds
+  heights 54499 and 54503, derived rather than vendored, beside
+  `blockfilters.json`'s ten** (closes #181). Neither is in Bitcoin
+  Core's own `src/test/data/blockfilters.json`, whose largest block is a
+  few kilobytes with no transaction spending another in the same block;
+  54499 is forty-odd kilobytes and twenty-four transactions, most of
+  them resolving a previous output from elsewhere in the same block,
+  which is the scenario none of Core's rows reaches. The two blocks were
+  pulled from testnet by the hash a survey of Libbitcoin's test suite
+  named, and their filters built with this tree's own
+  `BasicBlockFilter.from_block` — nothing of Libbitcoin, AGPL-3.0-or-later,
+  is in the tree; only the two block hashes and, as a positive control,
+  the filter an independent SipHash-2-4 and Golomb-Rice implementation
+  in that suite computed for height 54503. The filter header column has
+  no external source either and is computed locally, chained only
+  within the new file. `tests/_data/README.md` has the full derivation.
