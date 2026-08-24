@@ -18,6 +18,24 @@ to check the guess.
 
 ## Unreleased
 
+### `PeerDB.addresses` gets a lock of its own, separate from the active table's
+
+- **`add_addresses` and `random_address` serialize every touch of
+  `PeerDB.addresses` through a lock of their own, distinct from
+  `active_addresses`'s** (closes #298). `add_addresses` reaches the set
+  from both `Node`'s thread, off gossip through `callbacks.addr` and
+  `addrv2`, and `P2pManager`'s, off `get_addr_from_dns` resolving a
+  seed; `random_address`'s own dialable-address comprehension walks the
+  same set from `P2pManager`'s thread while gossip can be mutating it on
+  `Node`'s. Unprotected, that pairing is `RuntimeError: Set changed size
+  during iteration` in CPython, not only a lost update.
+- **A lock shared with `active_addresses` was measured and declined.**
+  Nothing here ever needs the two tables updated as one atomic step, and
+  `add_addresses`'s own durable write batch runs measurably longer than
+  `add_active_address`'s single row; sharing one lock would let that
+  batch hold up every completed handshake for no invariant a lock of its
+  own does not already give.
+
 ### `Node`'s worker pool is sized to the machine, and always closed
 
 - **`_WORKER_PROCESSES` is 8 outside of a test run and the machine's core
