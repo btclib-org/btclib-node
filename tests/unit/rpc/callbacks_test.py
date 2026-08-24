@@ -583,7 +583,7 @@ def test_a_transaction_the_mempool_will_not_have_is_not_reported_relayed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # a refusal is not answered with the txid of a transaction this node
-    # has neither kept nor sent
+    # has neither kept nor sent, and names why: issue #83
     import btclib_node.rpc.callbacks as cb
 
     def missing(node: Any, transaction: Any) -> NoReturn:
@@ -596,8 +596,10 @@ def test_a_transaction_the_mempool_will_not_have_is_not_reported_relayed(
     node = a_node(mempool=mempool)
     node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: broadcast.append(tx)
 
-    with pytest.raises(MissingPrevoutError):
+    with pytest.raises(RpcError) as raised:
         send_raw_transaction(node, _CONN, [tx.serialize(True).hex()])
+    assert raised.value.code == RpcErrorCode.VERIFY_ERROR
+    assert raised.value.message == "Missing prevouts"
     assert not mempool.contains_tx(tx)
     assert broadcast == []
 
@@ -997,11 +999,9 @@ def test_no_height_at_all_is_answered_with_the_usage() -> None:
     assert raised.value.message == "getblockhash height"
 
 
-def test_a_transaction_whose_scripts_do_not_verify_is_still_answered_with_its_txid(
+def test_a_transaction_whose_scripts_do_not_verify_is_answered_with_the_refusal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # what the code does, not what it should: #83 is the verdict a
-    # rejected transaction ought to be answered with
     import btclib_node.rpc.callbacks as cb
 
     def invalid(node: Any, transaction: Any) -> NoReturn:
@@ -1010,8 +1010,13 @@ def test_a_transaction_whose_scripts_do_not_verify_is_still_answered_with_its_tx
     monkeypatch.setattr(cb, "verify_mempool_acceptance", invalid)
     tx = a_tx()
     mempool = Mempool(Logger(debug=True))
+    broadcast: list[Tx] = []
     node = a_node(mempool=mempool)
-    node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: None
+    node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: broadcast.append(tx)
 
-    assert send_raw_transaction(node, _CONN, [tx.serialize(True).hex()]) == tx.id.hex()
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(node, _CONN, [tx.serialize(True).hex()])
+    assert raised.value.code == RpcErrorCode.VERIFY_REJECTED
+    assert raised.value.message == "Invalid signatures or script"
     assert not mempool.contains_tx(tx)
+    assert broadcast == []

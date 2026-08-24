@@ -94,8 +94,14 @@ class RpcManager(threading.Thread):
 
     def stop(self) -> None:
         self.loop.call_soon_threadsafe(self.loop.stop)
-        while self.loop.is_running():
-            pass
+        # `join` blocks this thread without spinning it, the way
+        # `Node.stop` already waits on itself with `self.join`. Guarded
+        # on `is_alive`, since `Node.run` calls this unconditionally --
+        # a node with `rpc_port` unset never calls `start`, and `join`
+        # on a thread that was never started raises. See
+        # `P2pManager.stop` for the same fix, applied there first.
+        if self.is_alive():
+            self.join()
         for task in asyncio.all_tasks(self.loop):
             task.cancel()
             with suppress(asyncio.CancelledError):

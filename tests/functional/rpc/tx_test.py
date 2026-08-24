@@ -143,7 +143,8 @@ def test_add_tx(rpc_node: Node) -> None:
         ).text
     )
     assert "result" not in response
-    assert response["error"]["code"] == -32603
+    assert response["error"]["code"] == -25
+    assert response["error"]["message"] == "Missing prevouts"
 
     response = json.loads(
         requests.post(
