@@ -36,6 +36,7 @@ from btclib_node.interpreter import (
     check_transactions,
     f,
     get_flags,
+    warm,
 )
 
 
@@ -71,6 +72,14 @@ def test_an_input_that_does_not_verify_raises() -> None:
     # connected anyway
     with pytest.raises(ScriptError):
         f([prevout(script.serialize(["OP_RETURN"]))], spend(b""), 0, ())
+
+
+def test_warm_does_nothing() -> None:
+    # dispatched through Pool.starmap in a worker process, so what
+    # matters is only that a worker importing this module to run it
+    # does not itself raise; called directly here for the same reason
+    # f is above
+    warm()
 
 
 def make_node() -> Any:

@@ -15,6 +15,7 @@ from btclib_node.chainstate import Chainstate
 from btclib_node.config import Config
 from btclib_node.constants import NodeStatus
 from btclib_node.download import DownloadManager
+from btclib_node.interpreter import warm
 from btclib_node.log import Logger
 from btclib_node.main import update_chain
 from btclib_node.mempool import Mempool
@@ -45,6 +46,10 @@ __all__ = ["Node"]
 # `tests/unit/init_test.py` asserts that ordering rather than leaving it
 # to this comment.
 STOP_TIMEOUT = 30
+
+# `Node.worker_pool`'s own size, named so `warm_worker_pool` can compute
+# a warm-up call count from it without a second `8` to drift from.
+_WORKER_PROCESSES = 8
 
 
 class Node(threading.Thread):
@@ -89,6 +94,12 @@ class Node(threading.Thread):
         # with the nodes that are actually validating.
         self._worker_pool: Pool | None = None
         self._worker_pool_lock = threading.Lock()
+        # Set by `warm_worker_pool` and joined before `run`'s own
+        # teardown reads `_worker_pool` below: without that join, a
+        # warm-up still building the pool when the loop stops would
+        # race the `is not None` check there, and the pool it goes on
+        # to build would never be handed to `terminate`.
+        self._worker_pool_warmup: threading.Thread | None = None
 
         self.status = NodeStatus.Starting
 
@@ -116,8 +127,47 @@ class Node(threading.Thread):
         # nothing to terminate it
         with self._worker_pool_lock:
             if self._worker_pool is None:
-                self._worker_pool = Pool(processes=8)
+                self._worker_pool = Pool(processes=_WORKER_PROCESSES)
             return self._worker_pool
+
+    def warm_worker_pool(self) -> None:
+        """Build the worker pool now, on a thread of its own, and warm it.
+
+        `check_transactions`' own first call used to be what built and
+        warmed `worker_pool`, on whatever thread called it -- `run`'s
+        own loop below, the same one that drains
+        `p2p_manager.handshake_messages` and promotes a connection once
+        its `verack` arrives. Each of the pool's processes pays its own
+        import of `btclib_node.interpreter` (and, through it,
+        `btclib.script.engine`) the first time it is dispatched a task,
+        and while that first dispatch is running, the loop below cannot
+        drain that queue: a peer whose `verack` the kernel already
+        delivered sits unpromoted until the call returns
+        (btclib-org/btclib-node#262).
+
+        `download_manager.block_download` is the only caller, right
+        before it sends the first real `GetData` for a block this node
+        does not have -- the earliest point a script is actually going
+        to be validated, with a peer's round trip ahead of it as extra
+        runway, rather than the moment header sync merely completes.
+        Reaching `HeaderSynced` is not enough on its own: the comment on
+        `_worker_pool` above is that a node which never validates a
+        script should not pay for the pool, and a node whose headers are
+        synced but which never has a block to fetch -- a header-only
+        peer under test, a peer whose counterpart stops serving blocks
+        -- is exactly that. The guard below makes a second call a no-op,
+        since `block_download` runs on every pass of the loop below and
+        would otherwise ask for a second thread once the first has
+        already built the pool.
+        """
+        if self._worker_pool_warmup is not None:
+            return
+
+        def build_and_warm() -> None:
+            self.worker_pool.starmap(warm, [()] * (_WORKER_PROCESSES * 4))
+
+        self._worker_pool_warmup = threading.Thread(target=build_and_warm, daemon=True)
+        self._worker_pool_warmup.start()
 
     @override
     def run(self) -> None:
@@ -162,6 +212,10 @@ class Node(threading.Thread):
         self.chainstate.close()
         self.block_db.close()
 
+        # joined before the read below, not asked for: the same race
+        # the attribute's own comment above names
+        if self._worker_pool_warmup is not None:
+            self._worker_pool_warmup.join()
         # read, not asked for: the property would build the pool this
         # line exists to take down
         if self._worker_pool is not None:

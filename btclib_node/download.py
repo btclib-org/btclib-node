@@ -170,4 +170,13 @@ class DownloadManager:
                 getdata = GetData(
                     [Inventory(InventoryType.MSG_WITNESS_BLOCK, hash) for hash in new]
                 )
+                # a block asked for here is a block coming back for
+                # `update_chain` to validate, so this is the earliest
+                # point that is actually true, rather than merely
+                # reaching HeaderSynced -- a node whose headers are
+                # synced but which never has a block to ask for (a
+                # header-only peer under test, a peer whose counterpart
+                # stopped serving blocks) never reaches this line and
+                # never builds the pool: btclib-org/btclib-node#262
+                node.warm_worker_pool()
                 conn.send(getdata)

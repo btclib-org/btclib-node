@@ -22,13 +22,14 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, cast, override
 
 import pytest
 
 import btclib_node
 from btclib_node import Node
 from btclib_node.config import Config
+from btclib_node.interpreter import warm
 from tests.helpers import wait_until
 
 
@@ -410,3 +411,106 @@ def test_a_node_that_never_used_the_pool_does_not_build_one_to_stop_it(
     node.start()
     node.stop()
     assert not pools
+
+
+class ARecordingPool(APool):
+    """A worker pool that also remembers what it was asked to run."""
+
+    def __init__(self, built: list[Any], processes: int) -> None:
+        super().__init__(built, processes)
+        self.calls: list[tuple[Any, list[Any]]] = []
+
+    def starmap(self, fn: Any, args: Any) -> None:
+        self.calls.append((fn, list(args)))
+
+
+def test_warm_worker_pool_builds_it_and_warms_it_off_the_calling_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built: list[Any] = []
+    instances: list[ARecordingPool] = []
+
+    def make_pool(processes: int) -> ARecordingPool:
+        pool = ARecordingPool(built, processes)
+        instances.append(pool)
+        return pool
+
+    monkeypatch.setattr(btclib_node, "Pool", make_pool)
+    node = a_node(tmp_path)
+
+    node.warm_worker_pool()
+
+    assert node._worker_pool_warmup is not None
+    node._worker_pool_warmup.join(timeout=5)
+    assert built == [8]
+    (pool,) = instances
+    (call,) = pool.calls
+    fn, args = call
+    assert fn is warm
+    assert len(args) == btclib_node._WORKER_PROCESSES * 4
+    assert all(a == () for a in args)
+
+
+def test_a_second_call_to_warm_worker_pool_does_not_start_a_second_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # download_manager.block_download calls this once per dispatched
+    # batch of blocks, not once per node, so the guard the call site
+    # used to get for free from headers()'s own status transition now
+    # lives here instead: btclib-org/btclib-node#262
+    built: list[Any] = []
+    monkeypatch.setattr(
+        btclib_node, "Pool", lambda processes: ARecordingPool(built, processes)
+    )
+    node = a_node(tmp_path)
+
+    node.warm_worker_pool()
+    first = node._worker_pool_warmup
+    assert first is not None
+    first.join(timeout=5)
+
+    node.warm_worker_pool()
+
+    assert node._worker_pool_warmup is first
+    assert built == [8]
+
+
+def test_stopping_the_node_waits_for_an_in_flight_warmup_before_the_pool_comes_down(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a warm-up still building or warming the pool when the loop stops
+    # races the `is not None` check `run`'s teardown does before
+    # `terminate` -- the pool it eventually builds would never be
+    # handed to it. Held here with a pool whose own starmap blocks
+    # until released, so the race is forced rather than hoped for.
+    built: list[Any] = []
+    entered = threading.Event()
+    release = threading.Event()
+
+    class SlowPool(ARecordingPool):
+        @override
+        def starmap(self, fn: Any, args: Any) -> None:
+            entered.set()
+            release.wait(timeout=5)
+            super().starmap(fn, args)
+
+    monkeypatch.setattr(
+        btclib_node, "Pool", lambda processes: SlowPool(built, processes)
+    )
+    node = a_node(tmp_path)
+    node.start()
+
+    node.warm_worker_pool()
+    assert entered.wait(timeout=5)
+
+    node.terminate_flag.set()
+    # run's own loop has nothing else to drain (p2p and rpc are both
+    # off) and notices the flag within one spin; well short of this is
+    # enough margin for it to reach the join this test is about without
+    # making a passing run wait on it
+    time.sleep(0.2)
+    assert "terminated" not in built
+
+    release.set()
+    node.join(timeout=5)
+    assert built == [8, "terminated"]
