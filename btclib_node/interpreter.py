@@ -24,6 +24,17 @@ def f(prevouts: list[TxOut], tx: Tx, i: int, flags: tuple[str, ...]) -> None:
     verify_input(prevouts, tx, i, flags)
 
 
+def warm() -> None:
+    """Do nothing, once a worker process has imported this module to run it.
+
+    `Node.warm_worker_pool` dispatches several of these across the pool
+    so that every worker process pays the import of this module -- and
+    of `btclib.script.engine` above, the expensive part of it -- before
+    `check_transactions` below ever needs one of them for real
+    (btclib-org/btclib-node#262).
+    """
+
+
 def check_transactions(
     transaction_data: list[tuple[list[TxOut], Tx]], index: int, node: Node
 ) -> None:

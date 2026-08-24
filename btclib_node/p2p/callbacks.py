@@ -396,6 +396,9 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
         conn.send(GetHeaders(ProtocolVersion, block_locators, b"\x00" * 32))
     elif node.status == NodeStatus.SyncingHeaders:
         node.status = NodeStatus.HeaderSynced
+        # off this thread and before the first block that needs it,
+        # rather than on it and during: btclib-org/btclib-node#262
+        node.warm_worker_pool()
 
 
 def getheaders(node: Node, msg: bytes, conn: Connection) -> None:

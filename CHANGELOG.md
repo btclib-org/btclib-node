@@ -81,6 +81,23 @@ to check the guess.
   required `fee` argument to carry it in from
   `rpc.callbacks.send_raw_transaction`, the one caller outside the
   mempool's own bookkeeping.
+### The worker pool's own cold start moves off the thread that promotes a connection
+
+- **`Node.warm_worker_pool` builds `worker_pool` and dispatches
+  warm-up calls across its processes, on a thread of its own, the
+  moment a node's status first reaches `HeaderSynced`** (#262).
+  `check_transactions`' own first call used to be what built and warmed
+  the pool, on `Node.run`'s own thread -- the same one that drains
+  `p2p_manager.handshake_messages` and promotes a connection once its
+  `verack` arrives. Each of the pool's processes pays its own import of
+  `btclib_node.interpreter`, and through it `btclib.script.engine`, on
+  its own first dispatch; while that import ran on `Node.run`'s thread,
+  a peer whose `verack` the kernel had already delivered sat unpromoted
+  in `pending_connections` until the call returned. The import still
+  happens on the same schedule relative to header sync, now on a thread
+  a peer's own promotion does not wait on. A node whose status never
+  reaches `HeaderSynced` through that path builds no pool it would not
+  have built before.
 
 ### `sendrawtransaction` answers a refusal, not a rejected transaction's txid
 
