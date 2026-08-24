@@ -76,6 +76,24 @@ def test_a_full_mempool_takes_nothing_and_asks_for_nothing() -> None:
     assert not mempool.contains_tx(tx)
 
 
+def test_add_tx_reports_a_full_mempool_added_nothing() -> None:
+    # what p2p/callbacks.py's `tx` handler gates queuing an announcement
+    # on: a full mempool's silent no-op has to be visible to the caller,
+    # or a transaction this node declined to keep is still announced to
+    # every other peer. btclib-org/btclib-node#277
+    mempool = Mempool(Logger(debug=True))
+    mempool.bytesize_limit = 0
+    assert mempool.add_tx(generate_random_transaction()) is False
+
+
+def test_add_tx_reports_what_it_added_and_declined() -> None:
+    mempool = Mempool(Logger(debug=True))
+    tx = generate_random_transaction()
+    assert mempool.add_tx(tx) is True
+    # the same transaction a second time is the other no-op add_tx makes
+    assert mempool.add_tx(tx) is False
+
+
 def test_the_same_transaction_twice_is_counted_once() -> None:
     mempool = Mempool(Logger(debug=True))
     tx = generate_random_transaction()

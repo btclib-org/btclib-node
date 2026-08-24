@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 from btclib.p2p.inventory import GetData, Inv, Inventory, InventoryType
+from btclib.p2p.limits import MAX_INV_SZ
 
 from btclib_node.constants import NodeStatus
 from btclib_node.log import Logger
@@ -27,6 +28,19 @@ if TYPE_CHECKING:
 # are why.
 _INBOUND_TX_ANNOUNCE_INTERVAL = 5.0
 _OUTBOUND_TX_ANNOUNCE_INTERVAL = 2.0
+
+# Core's own `GETDATA_TX_INTERVAL` (`node/txdownloadman.h`, 60s): the
+# `TxRequestTracker` bound on how long a `getdata` a peer has not
+# answered still holds that peer's slot before another candidate is
+# tried. `Connection.tx_requested` here is a simpler, per-connection-only
+# table with no second candidate to fall back to, but the same problem
+# applies to it: with no expiry at all, a peer that neither answers nor
+# sends `notfound` blocks this node from ever asking it again for that
+# wtxid, permanently, since `tx_download`'s own `wanted` filter reads the
+# entry as still outstanding. Reusing Core's own bound rather than a
+# fresh one is a lower-risk choice, not evidence the two trackers behave
+# alike beyond this one number. btclib-org/btclib-node#289
+_TX_REQUEST_TIMEOUT = 60.0
 
 # `rand_exp_duration`, the same file: a CSPRNG rather than a statistical
 # one, for the same reason `secrets` is what the rest of this tree draws
@@ -163,6 +177,16 @@ class DownloadManager:
                 target = self.node.p2p_manager.connections.get(conn_id)
                 if not target:
                     continue
+                now = time.time()
+                # an ask outstanding longer than a peer could plausibly
+                # still be about to answer is no longer treated as
+                # outstanding: a peer that neither sends the transaction
+                # nor answers `notfound` would otherwise block every
+                # future request to it for this wtxid, permanently.
+                # btclib-org/btclib-node#289
+                for wtxid, asked_at in list(target.tx_requested.items()):
+                    if now - asked_at > _TX_REQUEST_TIMEOUT:
+                        del target.tx_requested[wtxid]
                 # a peer that announced the same transaction twice is
                 # asked for it once, and a peer already asked for a
                 # transaction is not asked again while that ask is still
@@ -175,7 +199,6 @@ class DownloadManager:
                 ]
                 if not wanted:
                     continue
-                now = time.time()
                 for wtxid in wanted:
                     target.tx_requested[wtxid] = now
                 target.send(
@@ -201,14 +224,22 @@ class DownloadManager:
             if conn.next_inv_send_time and now < conn.next_inv_send_time:
                 continue
             if conn.tx_announce_queue:
-                conn.send(
-                    Inv(
-                        [
-                            Inventory(InventoryType.MSG_WTX, wtxid)
-                            for wtxid in conn.tx_announce_queue
-                        ]
+                # `Inv.assert_valid` (btclib.p2p.inventory) refuses more
+                # than `MAX_INV_SZ` entries, and this queue has had this
+                # connection's whole schedule -- a mean of several
+                # seconds, an exponential draw's own tail longer still --
+                # to grow past that bound. Core's own `SendMessages`
+                # (net_processing.cpp) answers the same way: several
+                # `MakeAndPushMessage` calls of at most `MAX_INV_SZ` each
+                # rather than one built whole. btclib-org/btclib-node#282
+                queue = conn.tx_announce_queue
+                for start in range(0, len(queue), MAX_INV_SZ):
+                    chunk = queue[start : start + MAX_INV_SZ]
+                    conn.send(
+                        Inv(
+                            [Inventory(InventoryType.MSG_WTX, wtxid) for wtxid in chunk]
+                        )
                     )
-                )
                 conn.tx_announce_queue = []
             if conn.inbound:
                 conn.next_inv_send_time = self._next_inbound_inv_time(conn.address, now)

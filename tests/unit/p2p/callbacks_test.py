@@ -930,6 +930,26 @@ def test_a_transaction_already_held_is_not_reported_twice(
     assert node.download_manager.received_txs == []
 
 
+def test_a_transaction_a_full_mempool_declined_is_not_reported_either(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Mempool.add_tx is a silent no-op past bytesize_limit -- the same
+    # transaction the pre-call contains_tx check alone cannot see, since
+    # it has not been added yet either. Reporting it here would queue it
+    # for announcement to every other peer, and one that then asks for it
+    # gets `notfound` for a transaction this node never actually kept.
+    # btclib-org/btclib-node#277
+    import btclib_node.p2p.callbacks as cb
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
+    transaction = a_transaction()
+    node = a_data_node()
+    node.mempool.bytesize_limit = 0
+    tx(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
+    assert not node.mempool.contains_tx(transaction)
+    assert node.download_manager.received_txs == []
+
+
 class FakeBlockIndex:
     def __init__(self, infos: dict[bytes, Any]) -> None:
         self.infos = infos

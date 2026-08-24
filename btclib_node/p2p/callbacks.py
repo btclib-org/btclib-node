@@ -296,8 +296,13 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
     except MissingPrevoutError:
         # We don't have the parents in the mempool
         return
-    if not node.mempool.contains_tx(tx):
-        node.mempool.add_tx(tx, fee)
+    # Queuing this for announcement is gated on `add_tx` actually having
+    # added it, and not merely on the pre-call `contains_tx`: a full
+    # mempool (`Mempool.is_full`) makes `add_tx` a silent no-op, and a
+    # transaction this node declined to keep is not one to tell every
+    # other peer about -- a peer that then asks for it gets `notfound`
+    # for its trouble. btclib-org/btclib-node#277
+    if not node.mempool.contains_tx(tx) and node.mempool.add_tx(tx, fee):
         node.download_manager.received_txs.append((conn.id, tx.hash))
 
 

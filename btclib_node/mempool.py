@@ -62,14 +62,22 @@ class Mempool:
         return self.transactions.get(key)
 
     # Don't need lock because handled in same thread
-    def add_tx(self, tx: Tx, fee: int = 0) -> None:
+    def add_tx(self, tx: Tx, fee: int = 0) -> bool:
         # `fee` defaults to 0 rather than being required, for the
         # callers -- mostly in tests -- that add a transaction without
         # ever asking what it pays; every production caller has just
         # computed the real one out of main.verify_mempool_acceptance
         # and passes it explicitly.
+        #
+        # The return value is what a caller that also queues the
+        # transaction for announcement -- p2p/callbacks.py's `tx` --
+        # gates that on: a full mempool below is a silent no-op, and
+        # queuing an announcement for what this call did not actually
+        # add would tell every other peer about a transaction only to
+        # answer their own `getdata` with `notfound`.
+        # btclib-org/btclib-node#277
         if self.is_full():
-            return
+            return False
         wtxid, txid = tx.hash, tx.id
         if txid not in self.txid_index:
             self.transactions[wtxid] = tx
@@ -78,6 +86,8 @@ class Mempool:
             self.size += 1
             self.bytesize += tx.vsize
             self.sequence += 1
+            return True
+        return False
 
     def remove_tx(self, tx: Tx) -> None:
         txid = tx.id
