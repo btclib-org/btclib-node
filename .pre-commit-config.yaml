@@ -167,7 +167,7 @@ repos:
   # codespell matches whole words and keeps the hyphen inside the token,
   # where typos splits hyphens, snake_case and camelCase
   - repo: https://github.com/crate-ci/typos
-    rev: v1.49.0
+    rev: v1
     hooks:
       - id: typos
         name: typos (identifiers and hyphenated words, in place fixes)
