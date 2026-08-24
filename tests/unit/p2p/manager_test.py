@@ -880,10 +880,18 @@ def test_stop_closes_a_connection_accepted_in_its_own_race_window(
     must still be closed, whether or not its own `run()` task ever gets
     a chance to execute before being cancelled.
 
-    `create_connection` is called from `join`, standing in for
+    `create_connection` is called from `is_alive`, standing in for
     `server()`'s own accept loop landing one more connection in exactly
-    that window -- deterministic where the real race is not, since
-    `join` is where `stop()` itself waits through it.
+    that window -- `stop()` asks it between scheduling `loop.stop` and
+    waiting for the thread, which is the window itself.
+
+    Not from `join`, which is inside the same window but is only reached
+    while the thread is still running: a manager whose loop has already
+    stopped by the time `stop()` looks skips it, and the hook hung there
+    never runs at all. That is a test which passes for the wrong reason
+    on an idle machine and fails on a loaded one, and the run that caught
+    it reported this test's own `create_connection` line as uncovered,
+    which is what says the hook and not the manager was at fault.
     """
     port = get_random_port()
     manager = a_running_manager(a_manager, port)
@@ -891,17 +899,23 @@ def test_stop_closes_a_connection_accepted_in_its_own_race_window(
 
     ours, theirs = socket.socketpair()
     address = peer_address("127.0.0.1", 18444)
-    real_join = manager.join
+    real_is_alive = manager.is_alive
+    landed: list[bool] = []
 
-    def racy_join(*args: Any, **kwargs: Any) -> None:
+    def is_alive_after_landing_one_more() -> bool:
+        landed.append(True)
         manager.create_connection(ours, address, True)
-        real_join(*args, **kwargs)
+        return real_is_alive()
 
-    monkeypatch.setattr(manager, "join", racy_join)
+    monkeypatch.setattr(manager, "is_alive", is_alive_after_landing_one_more)
     try:
         manager.stop()
     finally:
         theirs.close()
+    # exactly once, asserted rather than guarded against: `stop()` asks
+    # this one question, and `monkeypatch` has put the real one back
+    # before the fixture asks its own
+    assert landed == [True]
     # a closed socket's own fileno is -1; still >= 0 is still open
     assert ours.fileno() == -1
 
@@ -909,15 +923,19 @@ def test_stop_closes_a_connection_accepted_in_its_own_race_window(
 def test_stop_closes_the_listening_socket_even_if_the_accept_task_does_not(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#312: a listening socket was observed still unclosed after a real
-    full-suite run under load (`laddr` set, no `raddr`), not tied to a
-    specific interleaving the way the connection race above is -- so
-    `stop` closes every one of `_server_sockets` itself, rather than
-    relying only on `server`'s own `with server_socket:` to have run.
+    """#312: `server`'s own `with server_socket:` is skipped outright
+    where the cancellation reaches that task before its first step, the
+    same fact the connection race above turns on -- a coroutine thrown
+    into before it has a frame never enters its body. `stop` cancels
+    every task it finds before letting the loop run again, so that is
+    the ordinary case for a manager stopped before its loop stepped
+    anything, and closing every one of `_server_sockets` is what answers
+    it.
 
     `server` is replaced with a coroutine that never wraps its socket in
-    a `with` at all, standing in for whatever, under load, kept the real
-    one's own cancellation from reaching that block.
+    a `with` at all: the same thing from the socket's point of view, and
+    it does not have to win a race against the loop's first pass to be
+    it.
     """
     port = get_random_port()
     manager = a_manager(port=port)
@@ -937,3 +955,94 @@ def test_stop_closes_the_listening_socket_even_if_the_accept_task_does_not(
         manager.stop()
         manager.join(timeout=10)
     assert all(s.fileno() == -1 for s in sockets)
+
+
+def test_stop_closes_a_connection_that_arrives_while_it_is_draining(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#312: `run_until_complete` runs the loop, so a task `stop` has not
+    cancelled yet goes on working through the drain.
+
+    `server`'s accept loop is the one that matters: it takes what the
+    kernel left in the listen backlog while `loop.stop` was in flight and
+    hands it to `create_connection`, which registers a connection after
+    the sweep has passed and gives it a task no snapshot taken before the
+    drain holds. Nothing closes that socket and nothing ends that task,
+    and the collector reports both against whichever test it reaches them
+    in -- `Connection.run` pending at its own `sock_recv`, beside an
+    unclosed socket.
+
+    `create_connection` is called from the first `run_until_complete`,
+    which is the only place `stop` runs the loop at all: deterministic
+    where the real interleaving -- which of the loop's tasks the drain
+    happens to reach first -- is not.
+    """
+    port = get_random_port()
+    manager = a_running_manager(a_manager, port)
+    wait_until_listening(manager)
+
+    ours, theirs = socket.socketpair()
+    address = peer_address("127.0.0.1", 18444)
+    real_run_until_complete = manager.loop.run_until_complete
+    arrived: list[bool] = []
+
+    def draining_run_until_complete(future: Any) -> Any:
+        if not arrived:
+            arrived.append(True)
+            manager.create_connection(ours, address, True)
+        return real_run_until_complete(future)
+
+    monkeypatch.setattr(manager.loop, "run_until_complete", draining_run_until_complete)
+    try:
+        manager.stop()
+    finally:
+        theirs.close()
+    assert arrived
+    # a closed socket's own fileno is -1; still >= 0 is still open
+    assert ours.fileno() == -1
+    # and nothing is left for the collector to find pending on a loop
+    # that will never run again
+    assert not asyncio.all_tasks(manager.loop)
+
+
+def test_server_closes_a_connection_accepted_in_the_instant_it_is_cancelled(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#312: `sock_accept`'s own future can already carry a connection
+    when `stop` cancels this task.
+
+    `Task.cancel` cannot cancel a future that is already done, so it
+    throws `CancelledError` in on the next step rather than resuming with
+    the result -- and an accepted socket held by nothing but that future
+    goes out with the frame that unwinds. It has never been a
+    `Connection`, so no dict sweep reaches it and no task cancellation
+    ends it; what is seen is an unclosed socket with both a `laddr` and a
+    `raddr`, and no task destroyed beside it.
+
+    The two `call_soon` callbacks below are that instant, made
+    deterministic: they run in the order they were scheduled, so the
+    accept has certainly landed by the time the cancel reaches it.
+    """
+    manager = a_manager()
+    loop = manager.loop
+    listening_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    accepted, theirs = socket.socketpair()
+    accepts: list[asyncio.Future[tuple[socket.socket, Any]]] = []
+
+    async def sock_accept(sock: socket.socket) -> tuple[socket.socket, Any]:
+        accepts.append(loop.create_future())
+        return await accepts[-1]
+
+    monkeypatch.setattr(loop, "sock_accept", sock_accept)
+    task = loop.create_task(manager.server(loop, listening_socket))
+    try:
+        while not accepts:
+            loop.run_until_complete(asyncio.sleep(0))
+        loop.call_soon(accepts[0].set_result, (accepted, ("127.0.0.1", 18444)))
+        loop.call_soon(task.cancel)
+        with suppress(asyncio.CancelledError):
+            loop.run_until_complete(task)
+    finally:
+        theirs.close()
+        listening_socket.close()
+    assert accepted.fileno() == -1

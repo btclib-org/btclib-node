@@ -25,6 +25,44 @@ to check the guess.
   `P2pManager.create_connection` or any test — ever passed it a
   non-default value.
 
+### `P2pManager.stop()` leaves no socket behind
+
+- **Every task is now cancelled before the loop is allowed to run again,
+  and the sweep of the connection dicts and that cancellation repeat
+  until `asyncio.all_tasks` answers with nothing** (closes #312).
+  `run_until_complete` runs the loop, so a single pass of
+  each left `server()`'s accept loop working through the drain: it took
+  what the kernel had left in the listen backlog, and `create_connection`
+  registered that connection after the sweep had passed and gave it a
+  task the snapshot taken before the drain could not hold. Nothing closed
+  that socket and nothing ended that task, so what a run saw was
+  `Connection.run` pending at its own `sock_recv` beside an unclosed
+  socket, reported against whichever test the collector reached them in.
+- **`dial` closes the socket it opened when it is cancelled mid-connect**
+  (issue #312). `CancelledError` is neither an `OSError` nor a
+  `TimeoutError`, so the arm that answers a peer which never came up did
+  not see it: `stop()` cancelling `manage_connections` while it was
+  inside a dial left that socket open with a `laddr` and no `raddr`,
+  which is the shape the issue was filed on.
+- **`server()` accepts through a shielded task of its own**, so a
+  connection the kernel handed over in the same instant the accept loop
+  was cancelled is closed rather than dropped (issue #312).
+  `Task.cancel` cannot cancel a future that is already done, so it throws
+  `CancelledError` in on the next step instead of resuming with that
+  result, and the accepted socket was held by nothing but the frame that
+  unwound.
+- **The explicit close of the listening sockets is no longer described as
+  a backstop for a mechanism nobody could name**: `server`'s own `with
+  server_socket:` is skipped where `stop` arrives before that task has
+  taken a first step, which is the same fact the connections sweep turns
+  on (issue #312).
+- **`test_stop_closes_a_connection_accepted_in_its_own_race_window` hangs
+  its hook on `is_alive` rather than on `join`** (issue #312). `stop()`
+  reaches `join` only while the thread is still running, so a manager
+  whose loop had already stopped by then skipped the hook and the test
+  asserted on a socket it had never handed over — passing for the wrong
+  reason on an idle machine and failing on a loaded one.
+
 ### `block_download`'s out-of-work branch is now covered on purpose
 
 - **`tests/unit/download_test.py` now covers the `else: return` a
