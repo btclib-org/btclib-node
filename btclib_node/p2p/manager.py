@@ -83,6 +83,17 @@ class P2pManager(threading.Thread):
         self.listening = threading.Event()
 
         self.loop = asyncio.new_event_loop()
+        # What `run` binds and `stop` closes -- kept here rather than
+        # only inside the `with server_socket:` each of `server`'s own
+        # tasks holds, since that alone depends on this manager's own
+        # loop actually delivering that task's cancellation before
+        # `stop` returns, which stop()'s own comment on the connections
+        # sweep below is not the only place that can go wrong under
+        # load (btclib-org/btclib-node#312). Read only by `run` and
+        # `stop`, both on this manager's own object and never
+        # concurrently -- `run` sets it once, from this thread, before
+        # `stop` could possibly be reached by another.
+        self._server_sockets: list[socket.socket] = []
 
     def create_connection(
         self, client: socket.socket, address: NetworkAddressV2, inbound: bool
@@ -298,6 +309,7 @@ class P2pManager(threading.Thread):
         except OSError:
             self.logger.exception("Could not bind the P2P listener")
             raise
+        self._server_sockets = server_sockets
         asyncio.run_coroutine_threadsafe(self.peer_db.get_addr_from_dns(), loop)
         for server_socket in server_sockets:
             asyncio.run_coroutine_threadsafe(self.server(loop, server_socket), loop)
@@ -306,11 +318,6 @@ class P2pManager(threading.Thread):
 
     def stop(self) -> None:
         self.loop.call_soon_threadsafe(self.loop.stop)
-        for conn in (
-            *self.connections.copy().values(),
-            *self.pending_connections.copy().values(),
-        ):
-            conn.stop()
         # `join` blocks this thread without spinning it, the way
         # `Node.stop` already waits on itself with `self.join`. Guarded
         # on `is_alive`, since `Node.run` calls this unconditionally --
@@ -318,11 +325,46 @@ class P2pManager(threading.Thread):
         # on a thread that was never started raises.
         if self.is_alive():
             self.join()
+        # Only after join(), not before: `run()` above has now returned,
+        # so nothing but this thread can still be adding to
+        # `self.connections`/`self.pending_connections` -- `create_connection`
+        # and `remove_connection` are only ever reached from a coroutine
+        # on this manager's own loop, and `promote_connection`, `Node`'s
+        # thread's own exception, cannot race a `stop()` that same
+        # thread is itself blocked inside. A sweep taken before join()
+        # closed whatever it snapshotted correctly but could still miss
+        # a connection `server()`'s own accept loop created in the
+        # window between `loop.stop` merely being scheduled above and
+        # actually being delivered -- accepted, given a task, and never
+        # swept, since nothing before join() ever looked again. Such a
+        # task reaches only the generic cancellation below, which
+        # cannot close `Connection.client` for it: `Task.cancel()`
+        # called before a task has run even once skips the coroutine
+        # entirely, `run()`'s own `finally` included
+        # (btclib-org/btclib-node#312).
+        for conn in (*self.connections.values(), *self.pending_connections.values()):
+            conn.stop()
         pending = asyncio.all_tasks(self.loop)
         for task in pending:
             task.cancel()
             with suppress(asyncio.CancelledError):
                 self.loop.run_until_complete(task)
+        # Closed explicitly and unconditionally, after the loop above
+        # rather than instead of it: `server`'s own `with server_socket:`
+        # is what ordinarily closes each of these, once that task's own
+        # cancellation is delivered and the exception propagates out of
+        # `sock_accept` through the `with`. A listening socket was
+        # observed still unclosed after a full-suite run under load
+        # (`laddr` set, no `raddr`), not tied to a specific interleaving
+        # the way the connections sweep above was -- a backstop, then,
+        # rather than a fix for a mechanism this comment can name
+        # (btclib-org/btclib-node#312). A `with` block already run
+        # leaves nothing here for `close()` to do, since a socket is
+        # closed only once, whichever call reaches it first -- so this
+        # costs nothing on the path that already worked, and closes
+        # what that path, for whatever reason, did not.
+        for server_socket in self._server_sockets:
+            server_socket.close()
         self.loop.close()
         # so that the flag says what its name says: a socket
         # closed here is not one anything should wait for

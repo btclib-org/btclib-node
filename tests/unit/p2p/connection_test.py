@@ -271,6 +271,39 @@ def test_a_peer_that_hangs_up_is_dropped() -> None:
     assert not discouraged_of(connection)
 
 
+def test_a_connections_own_task_cancelled_directly_still_closes_its_socket() -> None:
+    # #312: P2pManager.stop() closes every connection it already knows
+    # about through Connection.stop() -- but its own final sweep, over
+    # asyncio.all_tasks(self.loop), cancels whatever task is still
+    # pending there directly, the only reach it has left for a
+    # connection accepted or dialled after its dict-based sweep already
+    # ran. That direct task.cancel(), with nothing standing between it
+    # and this coroutine's own suspension in sock_recv, must not be able
+    # to leave self.client open the way going through stop() never does.
+    async def drive() -> socket.socket:
+        loop = asyncio.get_running_loop()
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        connection = a_running_connection(loop, ours)
+        task = asyncio.ensure_future(connection.run())
+        connection.task = task  # type: ignore[assignment]
+        # past send_version's own await and parked in sock_recv: nothing
+        # here ever completes that read, so a task still running after
+        # this is one still suspended there and not one already done
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not task.done()
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+        theirs.close()
+        return ours
+
+    ours = asyncio.run(drive())
+    # a closed socket's own fileno is -1; still >= 0 is still open
+    assert ours.fileno() == -1
+
+
 def test_a_peer_already_at_the_send_bound_is_dropped_not_queued_further() -> None:
     async def drive() -> tuple[Connection, list[bytes]]:
         loop = asyncio.get_running_loop()

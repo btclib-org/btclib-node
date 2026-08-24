@@ -870,3 +870,70 @@ def test_stopping_a_running_manager_stops_the_connections_it_holds(
     # stopped manager to listen would otherwise return at once, on a
     # socket that is closed
     assert not manager.listening.is_set()
+
+
+def test_stop_closes_a_connection_accepted_in_its_own_race_window(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#312: a connection `server()`'s own accept loop creates between
+    `stop()` scheduling `loop.stop` and that actually being delivered
+    must still be closed, whether or not its own `run()` task ever gets
+    a chance to execute before being cancelled.
+
+    `create_connection` is called from `join`, standing in for
+    `server()`'s own accept loop landing one more connection in exactly
+    that window -- deterministic where the real race is not, since
+    `join` is where `stop()` itself waits through it.
+    """
+    port = get_random_port()
+    manager = a_running_manager(a_manager, port)
+    wait_until_listening(manager)
+
+    ours, theirs = socket.socketpair()
+    address = peer_address("127.0.0.1", 18444)
+    real_join = manager.join
+
+    def racy_join(*args: Any, **kwargs: Any) -> None:
+        manager.create_connection(ours, address, True)
+        real_join(*args, **kwargs)
+
+    monkeypatch.setattr(manager, "join", racy_join)
+    try:
+        manager.stop()
+    finally:
+        theirs.close()
+    # a closed socket's own fileno is -1; still >= 0 is still open
+    assert ours.fileno() == -1
+
+
+def test_stop_closes_the_listening_socket_even_if_the_accept_task_does_not(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#312: a listening socket was observed still unclosed after a real
+    full-suite run under load (`laddr` set, no `raddr`), not tied to a
+    specific interleaving the way the connection race above is -- so
+    `stop` closes every one of `_server_sockets` itself, rather than
+    relying only on `server`'s own `with server_socket:` to have run.
+
+    `server` is replaced with a coroutine that never wraps its socket in
+    a `with` at all, standing in for whatever, under load, kept the real
+    one's own cancellation from reaching that block.
+    """
+    port = get_random_port()
+    manager = a_manager(port=port)
+
+    async def server_without_a_with(
+        loop: asyncio.AbstractEventLoop, server_socket: socket.socket
+    ) -> None:
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(manager, "server", server_without_a_with)
+    manager.start()
+    try:
+        wait_until_listening(manager)
+        sockets = list(manager._server_sockets)  # noqa: SLF001
+        assert sockets
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
+    assert all(s.fileno() == -1 for s in sockets)
