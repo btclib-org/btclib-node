@@ -301,13 +301,13 @@ that waits on one cell and a sweep that runs weekly
 
 ## What is not configured, and why
 
-- **No publishing, and no release workflow.** Nothing is on an index and
-  no environment exists for one:
+- **No publishing, and no release workflow.** `CONTRIBUTING.md`'s *A
+  version, and no release* is the whole of that answer and carries the
+  commands behind it. There is no `pypi` environment:
   `gh api repos/btclib-org/btclib-node/environments --jq .total_count`
   answers `0`. There is a `v0.1.0` tag and a GitHub release with no
-  artifact attached to it; `CONTRIBUTING.md`'s *A version, and no
-  release* says what that tag and `project.version` are for, and
-  `tag-integrity` already holds the signature a tag would need.
+  artifact attached to it, and `tag-integrity` already holds the
+  signature a tag would need.
 - **No Pages and no Read the Docs.** `gh api repos/btclib-org/btclib-node/pages`
   answers `404`, and there is no `docs/` for either to build. What this
   repository publishes, it publishes by being read on github.com.

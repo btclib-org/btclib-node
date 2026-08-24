@@ -18,6 +18,13 @@ to check the guess.
 
 ## Unreleased
 
+### `REPOSITORY.md` points at the release fact instead of restating it
+
+- **`REPOSITORY.md`'s *What is not configured, and why* restated that
+  nothing here is released instead of pointing at `CONTRIBUTING.md`'s *A
+  version, and no release*** (btclib-org/.github#291). The bullet now
+  carries the pointer, in the shape `bbt`'s `REPOSITORY.md` already uses.
+
 ### `REPOSITORY.md`'s Merge methods section named the wrong landing subject
 
 - **`COMMIT_OR_PR_TITLE` is the pull request title only where a branch
