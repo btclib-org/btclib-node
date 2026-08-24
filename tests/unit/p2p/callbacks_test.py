@@ -992,11 +992,14 @@ def test_a_transaction_already_held_is_not_reported_twice(
 def test_a_transaction_a_full_mempool_declined_is_not_reported_either(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Mempool.add_tx is a silent no-op past bytesize_limit -- the same
-    # transaction the pre-call contains_tx check alone cannot see, since
-    # it has not been added yet either. Reporting it here would queue it
-    # for announcement to every other peer, and one that then asks for it
-    # gets `notfound` for a transaction this node never actually kept.
+    # add_tx adds this provisionally and evicts it right back out for
+    # being the only, and so the worst, transaction held once past
+    # bytesize_limit (Mempool._evict_to_limit, btclib-org/btclib-node#294)
+    # -- the same transaction the pre-call contains_tx check alone
+    # cannot see either way, since it answers False both before the call
+    # and after. Reporting it here would queue it for announcement to
+    # every other peer, and one that then asks for it gets `notfound`
+    # for a transaction this node never actually kept.
     # btclib-org/btclib-node#277
     import btclib_node.p2p.callbacks as cb
 

@@ -644,10 +644,13 @@ def test_a_transaction_the_mempool_will_not_have_is_not_reported_relayed(
 def test_a_transaction_a_full_mempool_cannot_keep_is_refused_not_relayed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Mempool.add_tx is a silent no-op past is_full(): answering with
-    # tx.id.hex() regardless would tell the caller this transaction was
-    # kept when it was not, the same defect #277 fixed on the
-    # peer-to-peer path. btclib-org/btclib-node#293
+    # bytesize_limit at zero makes this transaction the only, and so the
+    # worst, entry held: Mempool._evict_to_limit takes it right back out
+    # once add_tx has added it provisionally (btclib-org/btclib-node#294),
+    # the same silent no-op a full mempool's outright refusal used to be.
+    # Answering with tx.id.hex() regardless would tell the caller this
+    # transaction was kept when it was not, the same defect #277 fixed on
+    # the peer-to-peer path. btclib-org/btclib-node#293
     import btclib_node.rpc.callbacks as cb
 
     monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 1000)

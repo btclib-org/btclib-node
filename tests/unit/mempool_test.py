@@ -3,6 +3,8 @@
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
 import secrets
+import time
+from fractions import Fraction
 
 from btclib.fee import FeeRate, fee_from_vsize
 from btclib.script.witness import Witness
@@ -41,37 +43,54 @@ def test_workflow() -> None:
     assert mempool.bytesize == 0
 
     txs = []
-    for x in range(100):
+    for _ in range(100):
         tx = generate_random_transaction()
         mempool.add_tx(tx)
         txs.append(tx)
 
     prev_size = mempool.size
     prev_bytesize = mempool.bytesize
-    # Test is_full() method
+    # Every entry so far pays no fee, so eviction (`Mempool._evict_to_limit`)
+    # breaks the tie toward insertion order -- `dict.items()`'s own order and
+    # `min`'s own stability -- and takes out the oldest of the 100, `txs[0]`,
+    # to make room for the one just added: size and bytesize both come back
+    # to what they were, not because the add refused (the old `is_full()`
+    # wall this replaces) but because eviction undid exactly what the add
+    # did. btclib-org/btclib-node#294
     mempool.bytesize_limit = mempool.bytesize
-    mempool.add_tx(generate_random_transaction())
+    new_tx = generate_random_transaction()
+    mempool.add_tx(new_tx)
     assert prev_size == mempool.size
     assert prev_bytesize == mempool.bytesize
+    assert not mempool.contains_tx(txs[0])
+    assert mempool.contains_tx(new_tx)
 
-    tx = generate_random_transaction()
+    missing_tx = generate_random_transaction()
     mempool.bytesize_limit = 1000**2
-    assert mempool.get_missing([tx.id for tx in txs] + [tx.id]) == [tx.id]
+    held = [t.id for t in txs[1:]] + [new_tx.id]
+    assert mempool.get_missing([*held, missing_tx.id]) == [missing_tx.id]
 
     assert mempool.get_tx(b"\x00" * 32) is None
 
 
-def test_a_full_mempool_takes_nothing_and_asks_for_nothing() -> None:
-    # bytesize_limit is what stops an unbounded relay: past it the
-    # mempool neither accepts a transaction nor reports one missing, so
-    # download.tx_download stops asking peers for what it cannot hold.
+def test_a_bytesize_limit_of_zero_evicts_every_add_right_back_out() -> None:
+    # bytesize_limit at zero means every add is immediately the only, and so
+    # the worst, entry held: `_evict_to_limit` takes it right back out,
+    # giving the same outcome the old `is_full()` outright refusal gave,
+    # reached now through eviction rather than a pre-check. get_missing no
+    # longer short-circuits on `is_full()` either -- download.tx_download's
+    # own eviction-aware membership check (`Mempool.transactions`) is what
+    # keeps a request for something this mempool cannot hold from being
+    # announced now, not a blanket "nothing is missing" answer that used to
+    # stop every request even for something worth holding.
+    # btclib-org/btclib-node#294
     mempool = Mempool(Logger(debug=True))
     mempool.bytesize_limit = 0
     assert mempool.is_full()
 
     tx = generate_random_transaction()
-    assert mempool.get_missing([tx.id]) == []
-    mempool.add_tx(tx)
+    assert mempool.get_missing([tx.id]) == [tx.id]
+    assert mempool.add_tx(tx) is False
     assert mempool.size == 0
     assert not mempool.contains_tx(tx)
 
@@ -204,3 +223,196 @@ def test_a_fee_below_the_rate_is_withheld_and_at_or_above_it_clears() -> None:
     mempool.remove_tx(tx)
     mempool.add_tx(tx, required)
     assert mempool.meets_fee_rate(tx.hash, 1000)
+
+
+def test_eviction_takes_the_worst_feerate_and_keeps_the_rest() -> None:
+    mempool = Mempool(Logger(debug=True))
+    cheap = generate_random_transaction()
+    rich = generate_random_transaction()
+    mempool.add_tx(cheap, 0)
+    # room for exactly one more: adding rich puts this one vsize over
+    mempool.bytesize_limit = mempool.bytesize + rich.vsize - 1
+    assert mempool.add_tx(rich, 10_000) is True
+    assert not mempool.contains_tx(cheap)
+    assert mempool.contains_tx(rich)
+
+
+def test_eviction_of_the_worst_parent_takes_its_descendant_with_it() -> None:
+    # verify_mempool_acceptance (main.py) admits a child whose parent is
+    # only in the mempool, so evicting the parent alone would leave the
+    # child's own prevout resolving nowhere -- _descendants is what keeps
+    # this from happening. btclib-org/btclib-node#294
+    mempool = Mempool(Logger(debug=True))
+    parent = generate_random_transaction()
+    child = generate_random_transaction(parent.id)
+    other = generate_random_transaction()
+    mempool.add_tx(parent, 0)
+    mempool.add_tx(child, 0)
+    mempool.bytesize_limit = mempool.bytesize + other.vsize - 1
+    assert mempool.add_tx(other, 10_000) is True
+    assert not mempool.contains_tx(parent)
+    assert not mempool.contains_tx(child)
+    assert mempool.contains_tx(other)
+
+
+def test_eviction_runs_multiple_rounds_when_one_is_not_enough() -> None:
+    mempool = Mempool(Logger(debug=True))
+    worst = generate_random_transaction()
+    middle = generate_random_transaction()
+    best = generate_random_transaction()
+    mempool.add_tx(worst, 0)
+    mempool.add_tx(middle, 100)
+    mempool.bytesize_limit = worst.vsize  # room for only one of the three
+    assert mempool.add_tx(best, 10_000) is True
+    assert not mempool.contains_tx(worst)
+    assert not mempool.contains_tx(middle)
+    assert mempool.contains_tx(best)
+    assert mempool.size == 1
+
+
+def test_eviction_raises_the_rolling_minimum_above_what_it_evicted() -> None:
+    mempool = Mempool(Logger(debug=True))
+    victim = generate_random_transaction()
+    keeper = generate_random_transaction()
+    mempool.add_tx(victim, 0)
+    mempool.bytesize_limit = mempool.bytesize + keeper.vsize - 1
+    mempool.add_tx(keeper, 10_000)
+    # victim paid nothing, so the rolling minimum lands on the incremental
+    # relay fee rate itself -- Core's own DEFAULT_INCREMENTAL_RELAY_FEE
+    assert mempool._rolling_min_fee_rate == 100
+    assert mempool._block_since_last_rolling_fee_bump is False
+
+
+def test_eviction_bumps_the_rolling_minimum_by_the_whole_package_it_evicts() -> None:
+    # Core's own TrimToSize (src/txmempool.cpp:917-925,
+    # bitcoin/bitcoin@58a7869f86) bumps the rolling minimum from the
+    # removed chunk's own aggregate feerate, not from the worst entry's
+    # own rate alone: a low-fee parent evicted together with a child
+    # overpaying for it (CPFP) bumps the rolling minimum by their
+    # combined rate, higher than the parent's own individual rate --
+    # which is what the parent alone paid nothing would otherwise give,
+    # `test_eviction_raises_the_rolling_minimum_above_what_it_evicted`'s
+    # own 100.
+    mempool = Mempool(Logger(debug=True))
+    parent = generate_random_transaction()
+    child = generate_random_transaction(parent.id)
+    keeper = generate_random_transaction()
+    mempool.add_tx(parent, 0)
+    mempool.add_tx(child, 100_000)
+    mempool.bytesize_limit = mempool.bytesize + keeper.vsize - 1
+    mempool.add_tx(keeper, 1)
+    assert not mempool.contains_tx(parent)
+    assert not mempool.contains_tx(child)
+
+    package_rate = Fraction(100_000, parent.vsize + child.vsize) * 1000
+    expected = float(package_rate + 100)
+    assert mempool._rolling_min_fee_rate == expected
+    assert mempool._rolling_min_fee_rate != 100  # the parent's own rate alone
+
+
+def test_a_lower_rate_eviction_does_not_lower_the_rolling_minimum() -> None:
+    mempool = Mempool(Logger(debug=True))
+    mempool._rolling_min_fee_rate = 5000.0
+    mempool._block_since_last_rolling_fee_bump = True
+    mempool._track_package_removed(1000.0)
+    assert mempool._rolling_min_fee_rate == 5000.0
+    assert mempool._block_since_last_rolling_fee_bump is True
+
+
+def test_a_higher_rate_eviction_raises_the_rolling_minimum_and_restarts_decay() -> None:
+    mempool = Mempool(Logger(debug=True))
+    mempool._rolling_min_fee_rate = 1000.0
+    mempool._block_since_last_rolling_fee_bump = True
+    mempool._track_package_removed(5000.0)
+    assert mempool._rolling_min_fee_rate == 5000.0
+    assert mempool._block_since_last_rolling_fee_bump is False
+
+
+def test_note_block_connected_restarts_the_decay_clock() -> None:
+    mempool = Mempool(Logger(debug=True))
+    mempool._block_since_last_rolling_fee_bump = False
+    before = time.time()
+    mempool.note_block_connected()
+    assert mempool._block_since_last_rolling_fee_bump is True
+    assert mempool._last_rolling_fee_update >= before
+
+
+def test_get_min_fee_rate_is_zero_before_anything_is_ever_evicted() -> None:
+    mempool = Mempool(Logger(debug=True))
+    assert mempool.get_min_fee_rate() == FeeRate(sats_per_kvbyte=0)
+
+
+def test_get_min_fee_rate_is_zero_after_a_block_but_no_bump_yet() -> None:
+    mempool = Mempool(Logger(debug=True))
+    mempool.note_block_connected()
+    assert mempool.get_min_fee_rate() == FeeRate(sats_per_kvbyte=0)
+
+
+def test_get_min_fee_rate_does_not_decay_before_a_block_has_connected() -> None:
+    # _track_package_removed's own guard: a run of evictions with no block
+    # in between only ever raises the rolling minimum, never decays it
+    mempool = Mempool(Logger(debug=True))
+    mempool._rolling_min_fee_rate = 5000.0
+    mempool._block_since_last_rolling_fee_bump = False
+    mempool._last_rolling_fee_update = time.time() - 60 * 60 * 24
+    assert mempool.get_min_fee_rate() == FeeRate(sats_per_kvbyte=5000)
+
+
+def test_get_min_fee_rate_does_not_decay_within_ten_seconds_of_its_last_move() -> None:
+    mempool = Mempool(Logger(debug=True))
+    mempool._rolling_min_fee_rate = 5000.0
+    mempool._block_since_last_rolling_fee_bump = True
+    mempool._last_rolling_fee_update = time.time()
+    assert mempool.get_min_fee_rate() == FeeRate(sats_per_kvbyte=5000)
+
+
+def test_get_min_fee_rate_decays_by_half_after_one_full_halflife() -> None:
+    # bytesize at least half of bytesize_limit: no halflife shortening
+    mempool = Mempool(Logger(debug=True))
+    mempool.bytesize_limit = 1000
+    mempool.bytesize = 999
+    mempool._rolling_min_fee_rate = 4000.0
+    mempool._block_since_last_rolling_fee_bump = True
+    mempool._last_rolling_fee_update = time.time() - 60 * 60 * 12
+    assert mempool.get_min_fee_rate() == FeeRate(sats_per_kvbyte=2000)
+
+
+def test_get_min_fee_rate_decays_twice_as_fast_under_half_full() -> None:
+    mempool = Mempool(Logger(debug=True))
+    mempool.bytesize_limit = 1000
+    mempool.bytesize = 400  # limit/4 <= bytesize < limit/2
+    mempool._rolling_min_fee_rate = 4000.0
+    mempool._block_since_last_rolling_fee_bump = True
+    mempool._last_rolling_fee_update = time.time() - 60 * 60 * 6  # halflife/2
+    assert mempool.get_min_fee_rate() == FeeRate(sats_per_kvbyte=2000)
+
+
+def test_get_min_fee_rate_decays_four_times_as_fast_near_empty() -> None:
+    mempool = Mempool(Logger(debug=True))
+    mempool.bytesize_limit = 1000
+    mempool.bytesize = 100  # < limit/4
+    mempool._rolling_min_fee_rate = 4000.0
+    mempool._block_since_last_rolling_fee_bump = True
+    mempool._last_rolling_fee_update = time.time() - 60 * 60 * 3  # halflife/4
+    assert mempool.get_min_fee_rate() == FeeRate(sats_per_kvbyte=2000)
+
+
+def test_get_min_fee_rate_floors_at_the_incremental_fee_once_decayed() -> None:
+    mempool = Mempool(Logger(debug=True))
+    mempool.bytesize_limit = 1000
+    mempool.bytesize = 999
+    mempool._rolling_min_fee_rate = 150.0
+    mempool._block_since_last_rolling_fee_bump = True
+    mempool._last_rolling_fee_update = time.time() - 60 * 60 * 12  # 150 -> 75
+    assert mempool.get_min_fee_rate() == FeeRate(sats_per_kvbyte=100)
+
+
+def test_get_min_fee_rate_zeroes_out_below_half_the_incremental_fee() -> None:
+    mempool = Mempool(Logger(debug=True))
+    mempool.bytesize_limit = 1000
+    mempool.bytesize = 999
+    mempool._rolling_min_fee_rate = 100.0
+    mempool._block_since_last_rolling_fee_bump = True
+    mempool._last_rolling_fee_update = time.time() - 60 * 60 * 12 * 20  # 20 halvings
+    assert mempool.get_min_fee_rate() == FeeRate(sats_per_kvbyte=0)
+    assert mempool._rolling_min_fee_rate == 0.0
