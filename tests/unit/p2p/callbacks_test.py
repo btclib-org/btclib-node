@@ -263,7 +263,6 @@ def a_handshake_node(
     peer_db: Any = None,
     promote_connection: Any = None,
     min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
-    warm_worker_pool: Any = None,
 ) -> Any:
     return SimpleNamespace(
         status=status,
@@ -279,7 +278,6 @@ def a_handshake_node(
         logger=SimpleNamespace(
             info=lambda *a: None, warning=lambda *a: None, debug=lambda *a: None
         ),
-        warm_worker_pool=warm_worker_pool or (lambda: None),
     )
 
 
@@ -705,9 +703,8 @@ def a_data_node(
     block_index: Any = None,
     block_db: Any = None,
     status: NodeStatus = NodeStatus.BlockSynced,
-    warm_worker_pool: Any = None,
 ) -> Any:
-    node = a_handshake_node(status=status, warm_worker_pool=warm_worker_pool)
+    node = a_handshake_node(status=status)
     node.mempool = mempool if mempool is not None else Mempool(Logger(debug=True))
     node.chain = RegTest()
     node.block_db = block_db
@@ -1236,33 +1233,14 @@ def test_a_short_batch_means_the_headers_are_synced() -> None:
     assert node.status == NodeStatus.HeaderSynced
 
 
-def test_reaching_header_synced_warms_the_worker_pool_off_this_call() -> None:
-    # the earliest point block validation might start needing the pool,
-    # and warm_worker_pool is what moves its own cold start off this
-    # thread rather than paying it inside check_transactions' first
-    # call, which is this same thread: btclib-org/btclib-node#262
-    warmed = []
-    chain = generate_random_header_chain(2, RegTest().genesis.hash)
-    node = a_data_node(
-        status=NodeStatus.SyncingHeaders, warm_worker_pool=lambda: warmed.append(True)
-    )
-    node.chainstate.block_index = FakeHeaderIndex(tip=chain[-1].hash)
-    headers(node, Headers(chain).serialize(), a_peer())
-    assert warmed == [True]
-
-
 def test_a_short_batch_when_the_headers_are_already_synced_changes_nothing() -> None:
     chain = generate_random_header_chain(2, RegTest().genesis.hash)
-    warmed = []
-    node = a_data_node(
-        status=NodeStatus.BlockSynced, warm_worker_pool=lambda: warmed.append(True)
-    )
+    node = a_data_node(status=NodeStatus.BlockSynced)
     node.chainstate.block_index = FakeHeaderIndex(tip=chain[-1].hash)
     peer = a_peer()
     headers(node, Headers(chain).serialize(), peer)
     assert not peer.sent
     assert node.status == NodeStatus.BlockSynced
-    assert not warmed
 
 
 def test_this_node_answers_a_getheaders_from_what_it_knows() -> None:

@@ -145,14 +145,23 @@ class Node(threading.Thread):
         delivered sits unpromoted until the call returns
         (btclib-org/btclib-node#262).
 
-        `callbacks.headers` is the only caller, the moment this node's
-        own status first reaches `HeaderSynced` -- the earliest point
-        block validation might start needing the pool -- so the cost
-        lands on a thread the loop below is not waiting on instead. A
-        node whose status never reaches `HeaderSynced` through that
-        path never calls this and never pays for a pool it goes on not
-        to use, unchanged from before.
+        `download_manager.block_download` is the only caller, right
+        before it sends the first real `GetData` for a block this node
+        does not have -- the earliest point a script is actually going
+        to be validated, with a peer's round trip ahead of it as extra
+        runway, rather than the moment header sync merely completes.
+        Reaching `HeaderSynced` is not enough on its own: the comment on
+        `_worker_pool` above is that a node which never validates a
+        script should not pay for the pool, and a node whose headers are
+        synced but which never has a block to fetch -- a header-only
+        peer under test, a peer whose counterpart stops serving blocks
+        -- is exactly that. The guard below makes a second call a no-op,
+        since `block_download` runs on every pass of the loop below and
+        would otherwise ask for a second thread once the first has
+        already built the pool.
         """
+        if self._worker_pool_warmup is not None:
+            return
 
         def build_and_warm() -> None:
             self.worker_pool.starmap(warm, [()] * (_WORKER_PROCESSES * 4))

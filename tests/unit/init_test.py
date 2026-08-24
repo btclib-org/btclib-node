@@ -451,6 +451,30 @@ def test_warm_worker_pool_builds_it_and_warms_it_off_the_calling_thread(
     assert all(a == () for a in args)
 
 
+def test_a_second_call_to_warm_worker_pool_does_not_start_a_second_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # download_manager.block_download calls this once per dispatched
+    # batch of blocks, not once per node, so the guard the call site
+    # used to get for free from headers()'s own status transition now
+    # lives here instead: btclib-org/btclib-node#262
+    built: list[Any] = []
+    monkeypatch.setattr(
+        btclib_node, "Pool", lambda processes: ARecordingPool(built, processes)
+    )
+    node = a_node(tmp_path)
+
+    node.warm_worker_pool()
+    first = node._worker_pool_warmup
+    assert first is not None
+    first.join(timeout=5)
+
+    node.warm_worker_pool()
+
+    assert node._worker_pool_warmup is first
+    assert built == [8]
+
+
 def test_stopping_the_node_waits_for_an_in_flight_warmup_before_the_pool_comes_down(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

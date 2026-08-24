@@ -62,12 +62,14 @@ def make_manager(
     status: NodeStatus = NodeStatus.BlockSynced,
     block_index: Any | None = None,
     mempool: Any | None = None,
+    warm_worker_pool: Any = None,
 ) -> DownloadManager:
     node = SimpleNamespace(
         status=status,
         p2p_manager=SimpleNamespace(connections={conn.id: conn for conn in conns}),
         chainstate=SimpleNamespace(block_index=block_index),
         mempool=mempool if mempool is not None else Mempool(Logger(debug=True)),
+        warm_worker_pool=warm_worker_pool or (lambda: None),
     )
     return DownloadManager(cast("Node", node), Logger(debug=True))
 
@@ -291,6 +293,48 @@ def test_a_block_is_asked_of_a_peer_with_an_empty_queue() -> None:
     (getdata,) = only(conn, GetData)
     assert hashes_of(getdata) == wanted
     assert conn.download_queue == wanted
+
+
+def test_asking_for_a_block_warms_the_worker_pool() -> None:
+    # the earliest point a script is actually going to be validated,
+    # with the peer's round trip ahead of it as warm-up runway, rather
+    # than the moment header sync merely completes -- a node whose
+    # headers are synced but which never has a block to ask for never
+    # reaches this and never pays for the pool: btclib-org/btclib-node#262
+    warmed = []
+    conn = a_conn(1)
+    wanted = [a_hash(n) for n in range(1, 4)]
+    manager = make_manager(
+        [conn],
+        block_index=FakeBlockIndex(wanted),
+        warm_worker_pool=lambda: warmed.append(True),
+    )
+    manager.block_download()
+    assert warmed == [True]
+
+
+def test_a_header_only_node_with_nothing_to_download_never_warms_the_pool() -> None:
+    warmed = []
+    conn = a_conn(1)
+    manager = make_manager(
+        [conn],
+        block_index=FakeBlockIndex([]),
+        warm_worker_pool=lambda: warmed.append(True),
+    )
+    manager.block_download()
+    assert not conn.sent
+    assert not warmed
+
+
+def test_a_node_with_no_peer_to_ask_never_warms_the_pool() -> None:
+    warmed = []
+    manager = make_manager(
+        [],
+        block_index=FakeBlockIndex([a_hash(1)]),
+        warm_worker_pool=lambda: warmed.append(True),
+    )
+    manager.block_download()
+    assert not warmed
 
 
 def test_a_block_that_arrived_while_the_window_was_held_is_not_asked_for() -> None:
