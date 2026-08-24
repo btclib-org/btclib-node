@@ -139,6 +139,12 @@ class Connection:
         self.pending_eviction: bool = False
         self.last_block_timestamp: float = time.time()
 
+        # Set by callbacks.getaddr the first time it answers this
+        # connection: a peer that asks again gets nothing, rather than
+        # another walk of the table for every repeat of the same
+        # question. btclib-org/btclib-node#71
+        self.answered_getaddr: bool = False
+
         # What this connection currently owes the peer: every octet a
         # message has been serialized into and not yet handed to
         # `sock_sendall` in full, counted from `async_send` and not from
@@ -160,7 +166,6 @@ class Connection:
             # rather than counted on not to happen, since nothing
             # elsewhere in this class serializes who gets to call it.
             return
-        self.manager.peer_db.add_active_address(self.address)
         self.status = P2pConnStatus.Closed
         if self.task and cancel_task:
             self.task.cancel()

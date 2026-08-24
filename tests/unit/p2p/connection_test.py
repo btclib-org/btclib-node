@@ -18,7 +18,6 @@ from typing import cast
 
 import pytest
 from btclib.hashes import hash256
-from btclib.p2p.addrv2 import NetworkAddressV2
 from btclib.p2p.block_filters import BlockFilterType, CFilter
 from btclib.p2p.keepalive import Ping
 from btclib.p2p.limits import MAX_GETCFILTERS_SIZE
@@ -116,8 +115,7 @@ def test_a_connection_whose_socket_is_gone_says_so() -> None:
 
 def a_running_connection(
     loop: asyncio.AbstractEventLoop, client: socket.socket
-) -> tuple[Connection, list[NetworkAddressV2]]:
-    stopped: list[NetworkAddressV2] = []
+) -> Connection:
     node = SimpleNamespace(
         chain=RegTest(),
         status=NodeStatus.Starting,
@@ -125,17 +123,11 @@ def a_running_connection(
             warning=lambda *a: None, info=lambda *a: None, debug=lambda *a: None
         ),
     )
-    manager = SimpleNamespace(
-        node=node,
-        loop=loop,
-        nonces=[],
-        port=18444,
-        peer_db=SimpleNamespace(add_active_address=stopped.append),
-    )
+    manager = SimpleNamespace(node=node, loop=loop, nonces=[], port=18444, peer_db=None)
     connection = Connection(
         cast(P2pManager, manager), client, peer_address("127.0.0.1", 18444), 0, False
     )
-    return connection, stopped
+    return connection
 
 
 def a_message_for_another_network() -> bytes:
@@ -163,21 +155,20 @@ def a_message_for_another_network() -> bytes:
 def test_a_peer_sending_something_this_node_cannot_read_is_dropped(
     octets: bytes,
 ) -> None:
-    async def drive() -> tuple[Connection, list[NetworkAddressV2]]:
+    async def drive() -> Connection:
         loop = asyncio.get_running_loop()
         ours, theirs = socket.socketpair()
         ours.setblocking(False)
-        connection, stopped = a_running_connection(loop, ours)
+        connection = a_running_connection(loop, ours)
         try:
             theirs.sendall(octets)
             await connection.run()
         finally:
             theirs.close()
-        return connection, stopped
+        return connection
 
-    connection, stopped = asyncio.run(drive())
+    connection = asyncio.run(drive())
     assert connection.status == P2pConnStatus.Closed
-    assert stopped == [connection.address]
 
 
 def test_a_connection_closed_before_it_reads_anything_reads_nothing() -> None:
@@ -185,7 +176,7 @@ def test_a_connection_closed_before_it_reads_anything_reads_nothing() -> None:
         loop = asyncio.get_running_loop()
         ours, theirs = socket.socketpair()
         ours.setblocking(False)
-        connection, _ = a_running_connection(loop, ours)
+        connection = a_running_connection(loop, ours)
         connection.status = P2pConnStatus.Closed
         await connection.run()
         try:
@@ -202,11 +193,11 @@ def test_a_connection_closed_before_it_reads_anything_reads_nothing() -> None:
 
 
 def test_a_peer_that_hangs_up_is_dropped() -> None:
-    async def drive() -> tuple[Connection, list[NetworkAddressV2], bool]:
+    async def drive() -> tuple[Connection, bool]:
         loop = asyncio.get_running_loop()
         ours, theirs = socket.socketpair()
         ours.setblocking(False)
-        connection, stopped = a_running_connection(loop, ours)
+        connection = a_running_connection(loop, ours)
         # the task the read loop is running in: cancelling it from
         # inside would cancel the coroutine doing the cancelling, which
         # is why stop() is asked not to
@@ -220,18 +211,17 @@ def test_a_peer_that_hangs_up_is_dropped() -> None:
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
-        return connection, stopped, left_alone
+        return connection, left_alone
 
-    connection, stopped, left_alone = asyncio.run(drive())
+    connection, left_alone = asyncio.run(drive())
     assert connection.status == P2pConnStatus.Closed
-    assert stopped == [connection.address]
     assert left_alone
 
 
 def test_a_peer_already_at_the_send_bound_is_dropped_not_queued_further() -> None:
-    async def drive() -> tuple[Connection, list[NetworkAddressV2], list[bytes]]:
+    async def drive() -> tuple[Connection, list[bytes]]:
         loop = asyncio.get_running_loop()
-        connection, stopped = a_running_connection(loop, socket.socket())
+        connection = a_running_connection(loop, socket.socket())
         # already owed this much, whatever it is: one more octet queued
         # is refused regardless of what filled the budget
         connection.queued_send_bytes = connection_module.MAX_QUEUED_SEND_BYTES
@@ -242,11 +232,10 @@ def test_a_peer_already_at_the_send_bound_is_dropped_not_queued_further() -> Non
 
         connection._send = _send  # type: ignore[method-assign]
         await connection.async_send(Ping(1))
-        return connection, stopped, sent
+        return connection, sent
 
-    connection, stopped, sent = asyncio.run(drive())
+    connection, sent = asyncio.run(drive())
     assert connection.status == P2pConnStatus.Closed
-    assert stopped == [connection.address]
     # the reservation is untouched: the refused message never joined it
     assert connection.queued_send_bytes == connection_module.MAX_QUEUED_SEND_BYTES
     assert not sent
@@ -302,7 +291,7 @@ def _burst_summing_to(total_wire_bytes: int, count: int) -> list[CFilter]:
 
 def _two_bursts_in_flight(
     first_burst: list[CFilter], second_burst: list[CFilter]
-) -> tuple[Connection, list[NetworkAddressV2], list[int]]:
+) -> tuple[Connection, list[int]]:
     """Put two whole `getcfilters` answers in flight together.
 
     Both bursts are scheduled the way `get_cfilters`'s synchronous loop
@@ -310,13 +299,12 @@ def _two_bursts_in_flight(
     request before the next -- and the first is held open on a socket
     write that never finishes, the way a real one would be by a peer
     reading slower than this node can serialize. Returns the
-    connection, who `stop` told `peer_db` about, and the sizes `_send`
-    actually saw.
+    connection and the sizes `_send` actually saw.
     """
 
-    async def drive() -> tuple[Connection, list[NetworkAddressV2], list[int]]:
+    async def drive() -> tuple[Connection, list[int]]:
         loop = asyncio.get_running_loop()
-        connection, stopped = a_running_connection(loop, socket.socket())
+        connection = a_running_connection(loop, socket.socket())
         release = asyncio.Event()
         delivered: list[int] = []
 
@@ -343,7 +331,7 @@ def _two_bursts_in_flight(
 
         release.set()
         await asyncio.gather(*first_tasks, *second_tasks)
-        return connection, stopped, delivered
+        return connection, delivered
 
     return asyncio.run(drive())
 
@@ -358,7 +346,7 @@ def test_two_maximal_getcfilters_answers_pipelined_are_not_dropped() -> None:
     the first has not finished draining.
     """
     one_response = connection_module.MAX_QUEUED_SEND_BYTES // 2
-    connection, stopped, delivered = _two_bursts_in_flight(
+    connection, delivered = _two_bursts_in_flight(
         _burst_summing_to(one_response, MAX_GETCFILTERS_SIZE),
         _burst_summing_to(
             connection_module.MAX_QUEUED_SEND_BYTES - one_response - 4096,
@@ -366,7 +354,6 @@ def test_two_maximal_getcfilters_answers_pipelined_are_not_dropped() -> None:
         ),
     )
     assert connection.status == P2pConnStatus.Open
-    assert not stopped
     assert len(delivered) == 2 * MAX_GETCFILTERS_SIZE
     assert connection.queued_send_bytes == 0
 
@@ -380,7 +367,7 @@ def test_a_third_maximal_answer_s_worth_in_flight_drops_the_peer() -> None:
     pipelining allowance together account for.
     """
     one_response = connection_module.MAX_QUEUED_SEND_BYTES // 2
-    connection, stopped, delivered = _two_bursts_in_flight(
+    connection, delivered = _two_bursts_in_flight(
         _burst_summing_to(one_response, MAX_GETCFILTERS_SIZE),
         _burst_summing_to(
             connection_module.MAX_QUEUED_SEND_BYTES - one_response + 4096,
@@ -388,7 +375,6 @@ def test_a_third_maximal_answer_s_worth_in_flight_drops_the_peer() -> None:
         ),
     )
     assert connection.status == P2pConnStatus.Closed
-    assert stopped == [connection.address]
     # the first answer reached the socket in full; at least one message
     # of the second, the one that tipped the bound, never did
     assert len(delivered) < 2 * MAX_GETCFILTERS_SIZE

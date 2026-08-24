@@ -353,6 +353,65 @@ to check the guess.
   `Connection.run`'s `except Exception: self.client.close()`, which
   closed the socket with no answer at all.
 
+### `active_addresses` records a completed handshake, not a closed connection
+
+- **`PeerDB.add_active_address` is now called from `callbacks.verack`,
+  once the handshake completes, and no longer from `Connection.stop`.**
+  `stop` recorded `self.address` on every close, including a connection
+  `callbacks.version` had itself just refused for calling itself, for
+  running an old protocol version, or for missing a required service
+  (#70): a peer this node turned away was gossiped to the next one as
+  good. The address recorded is now the evidence the completed
+  handshake is: the address this node dialled, for an outbound
+  connection, since a socket connecting there already answered; the
+  connection's own accepted address with the port the peer's own
+  `version` names as `addr_from`, for an inbound one, since
+  `P2pManager.server`'s own address is `sock_accept`'s source port, the
+  peer's ephemeral one and never one this node could dial back on — and
+  nothing at all where `addr_from` names no port (#70).
+- **`getaddr` answers a connection once.** `Connection.answered_getaddr`
+  is set the first time it does; a peer asking again on the same
+  connection gets nothing, where before every ask walked the table
+  again (#71).
+- **`getaddr` answers with a random sample of `active_addresses`, capped
+  the way Core caps its own answer, rather than the whole table sent as
+  however many messages it takes.** Serving everything this node knows
+  of to whoever asks is what an observer mapping the network wants; the
+  sample is drawn without replacement from the active table, sized like
+  Core's own `MAX_PCT_ADDR_TO_SEND` (23 percent, rounded up here rather
+  than down so a handful of addresses is still answered with something)
+  and capped at `MAX_ADDR_TO_SEND`, so one message is always enough
+  (#71).
+- **`PeerDB.active_addresses` is bounded the same way `PeerDB.addresses`
+  already is, at ten thousand entries.** `get_active_addresses` prunes
+  what has gone stale, but only where something still calls it, and a
+  node with enough peers that nobody ever asks a `getaddr` had nothing
+  left to call it: `add_active_address` had no bound of its own, so such
+  a node grew the table for as long as it ran (#71).
+- **A reconnect to the same endpoint still adds a second row to
+  `active_addresses` rather than replacing the first.**
+  `add_active_address` does not settle on one row per endpoint the way
+  `add_addresses` already does for `self.addresses` (#247): doing so
+  once per handshake rather than once per batch needs an index kept in
+  sync across every mutation site, not a per-call scan, so it stays open
+  as its own issue (#270).
+- **`Connection.address` itself moves to the resolved endpoint `verack`
+  computes, and `P2pManager.manage_connections`'s own already-connected
+  check now compares by `endpoint_key` (`address.py`'s private
+  `_endpoint`, renamed and exported) rather than by the
+  `NetworkAddressV2` dataclasses themselves.** A raw-equality check never
+  matched a live connection against a draw of that same peer's own
+  gossiped address, `timestamp` and `services` differing between the two
+  by construction, so once #70 and #71 made a two-node `getaddr` round
+  trip actually work, `manage_connections` redialled a peer this node
+  was already connected to the moment any connection to it ended --
+  including one `pong` had just dropped for answering the wrong ping
+  nonce, which is what `tests/functional/p2p/ping_test.py::test_wrong_ping`
+  starts asserting by connection id rather than by the manager holding
+  none, since a redial is exactly what now happens next. That a node
+  redials a peer at all right after dropping it for cause, with nothing
+  recording the cause, is left open as its own issue, #283.
+
 ### `REPOSITORY.md`'s required-checks section names what main now enforces
 
 - **`REPOSITORY.md`'s *Required checks on main* section names `Lint and

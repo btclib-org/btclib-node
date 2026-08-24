@@ -58,6 +58,7 @@ from btclib.p2p.inventory import (
 from btclib.p2p.keepalive import Ping, Pong
 from btclib.p2p.limits import (
     CFCHECKPT_INTERVAL,
+    MAX_ADDR_TO_SEND,
     MAX_GETCFHEADERS_SIZE,
     MAX_GETCFILTERS_SIZE,
 )
@@ -73,7 +74,7 @@ from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
-from btclib_node.p2p.address import PeerDB, addr_entry, peer_address
+from btclib_node.p2p.address import PeerDB, addr_entry, endpoint_key, peer_address
 from btclib_node.p2p.callbacks import (
     addr,
     addrv2,
@@ -145,7 +146,9 @@ def make_node(
     for address in addresses:
         peer_db.active_addresses.append(address)
     sent: list[Any] = []
-    conn = SimpleNamespace(prefer_addressv2=prefer_addressv2, send=sent.append)
+    conn = SimpleNamespace(
+        prefer_addressv2=prefer_addressv2, send=sent.append, answered_getaddr=False
+    )
     node = SimpleNamespace(p2p_manager=SimpleNamespace(peer_db=peer_db))
     return node, conn, sent
 
@@ -170,9 +173,16 @@ def test_a_peer_that_asked_for_addrv2_gets_addrv2() -> None:
     assert answer.addresses == (address,)
 
 
-def test_an_address_addr_version_1_cannot_carry_is_left_out() -> None:
+def test_an_address_addr_version_1_cannot_carry_is_left_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # an onion address has no addr version 1 entry to be built into, so
-    # one of them among the active addresses would cost the whole answer
+    # one of them among the active addresses would cost the whole answer.
+    # The sample itself is a different test, below, so this patches it to
+    # the identity to isolate the addr-v1 filter it is testing.
+    import btclib_node.p2p.callbacks as cb
+
+    monkeypatch.setattr(cb, "_addresses_to_send", lambda active: active)
     onion = an_address(network_id=BIP155Network.TORV3)
     ipv4 = an_address()
     ipv6 = an_address(network_id=BIP155Network.IPV6)
@@ -198,13 +208,47 @@ def test_nothing_active_is_answered_with_nothing() -> None:
     assert not sent
 
 
-def test_more_addresses_than_fit_one_message_are_split() -> None:
-    addresses = [an_address(n) for n in range(2001)]
+def test_nothing_active_is_answered_with_nothing_over_addrv2_either() -> None:
+    node, conn, sent = make_node([], prefer_addressv2=True)
+    getaddr(node, b"", conn)
+    assert not sent
+
+
+def test_a_getaddr_answer_is_a_sample_not_the_whole_table() -> None:
+    # #71: Core's own reason for not serving the live table is that doing
+    # so tells anyone who asks the complete set of peers this node knows
+    # of. 500 addresses, 23% rounded up is 115 -- under MAX_ADDR_TO_SEND,
+    # so this also proves one sample answers in one message rather than
+    # several.
+    addresses = [an_address(n) for n in range(500)]
     node, conn, sent = make_node(addresses)
     getaddr(node, b"", conn)
-    assert [len(answer.addresses) for answer in sent] == [1000, 1000, 1]
-    served = [address for answer in sent for address in answer.addresses]
-    assert served == [addr_entry(address) for address in addresses]
+    (answer,) = sent
+    assert len(answer.addresses) == 115
+    # a sample of what is active, not addresses invented for the answer
+    assert set(answer.addresses) <= {addr_entry(address) for address in addresses}
+    # drawn without replacement
+    assert len(set(answer.addresses)) == len(answer.addresses)
+
+
+def test_a_getaddr_answer_is_capped_at_max_addr_to_send() -> None:
+    # #71: the chunking Core itself misbehaves a peer over is right at
+    # 1000 -- 23% of 10000 is 2300, so the cap and not the percentage is
+    # what bounds this answer
+    addresses = [an_address(n) for n in range(10000)]
+    node, conn, sent = make_node(addresses, prefer_addressv2=True)
+    getaddr(node, b"", conn)
+    (answer,) = sent
+    assert len(answer.addresses) == MAX_ADDR_TO_SEND
+
+
+def test_a_second_getaddr_on_the_same_connection_is_ignored() -> None:
+    # #71: a peer asking in a loop is served the table once
+    address = an_address()
+    node, conn, sent = make_node([address])
+    getaddr(node, b"", conn)
+    getaddr(node, b"", conn)
+    assert len(sent) == 1
 
 
 def a_version(
@@ -213,18 +257,39 @@ def a_version(
     services: ServiceFlags = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS,
     nonce: int = 7,
     relay: bool | None = True,
+    addr_from_port: int = 18444,
 ) -> bytes:
+    return a_parsed_version(
+        protocol=protocol,
+        services=services,
+        nonce=nonce,
+        relay=relay,
+        addr_from_port=addr_from_port,
+    ).serialize()
+
+
+def a_parsed_version(
+    *,
+    protocol: int = ProtocolVersion,
+    services: ServiceFlags = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS,
+    nonce: int = 7,
+    relay: bool | None = True,
+    # a different host than "1.2.3.4", a_peer()'s own address: proof
+    # that verack takes only the port from here, for an inbound peer,
+    # and not the address -- btclib-org/btclib-node#70
+    addr_from_port: int = 18444,
+) -> Version:
     return Version(
         version=protocol,
         services=services,
         timestamp=1,
         addr_recv=a_version_address(),
-        addr_from=a_version_address(services),
+        addr_from=NetworkAddress(services, "5.6.7.8", addr_from_port),
         nonce=nonce,
         user_agent=b"/Btclib/",
         start_height=0,
         relay=relay,
-    ).serialize()
+    )
 
 
 def a_peer(**attributes: Any) -> Any:
@@ -251,6 +316,8 @@ def a_peer(**attributes: Any) -> Any:
         latency=0,
         send_ping=lambda: sent.append("ping"),
         client=SimpleNamespace(getpeername=lambda: ("1.2.3.4", 18444)),
+        inbound=False,
+        address=peer_address("1.2.3.4", 18444),
     )
     peer.__dict__.update(attributes)
     return peer
@@ -431,8 +498,10 @@ def test_what_a_peer_said_about_relay_lands_on_the_connection(
 
 def test_a_verack_completes_the_handshake() -> None:
     promoted: list[int] = []
-    peer = a_peer(id=9, version_message=object(), wtxidrelay_received=True)
-    verack(a_handshake_node(promote_connection=promoted.append), b"", peer)
+    peer = a_peer(id=9, version_message=a_parsed_version(), wtxidrelay_received=True)
+    peer_db = PeerDB(cast("Chain", None), cast(Path, None))
+    node = a_handshake_node(promote_connection=promoted.append, peer_db=peer_db)
+    verack(node, b"", peer)
     assert peer.status == P2pConnStatus.Connected
     assert commands(peer) == [
         "SendHeaders",
@@ -456,13 +525,75 @@ def test_a_verack_completes_the_handshake() -> None:
 def test_a_verack_tells_the_peer_this_nodes_own_relay_floor() -> None:
     # issue #94: the value is Config.min_relay_feerate, not a constant
     # of this module's own
-    peer = a_peer(version_message=object(), wtxidrelay_received=True)
-    node = a_handshake_node(min_relay_feerate=FeeRate(sats_per_kvbyte=500))
+    peer = a_peer(version_message=a_parsed_version(), wtxidrelay_received=True)
+    peer_db = PeerDB(cast("Chain", None), cast(Path, None))
+    node = a_handshake_node(
+        min_relay_feerate=FeeRate(sats_per_kvbyte=500), peer_db=peer_db
+    )
     verack(node, b"", peer)
     (feefilter_msg,) = [m for m in peer.sent if isinstance(m, FeeFilter)]
     assert feefilter_msg.feerate == 500
     # and it survives the wire like every other payload this node sends
     assert FeeFilter.parse(feefilter_msg.serialize()).feerate == 500
+
+
+def test_an_outbound_handshake_records_the_address_dialled() -> None:
+    # #70: evidence this node dialled it and a socket answered, not the
+    # peer's own unauthenticated word for its address
+    dialled = peer_address("1.2.3.4", 18444)
+    peer = a_peer(
+        version_message=a_parsed_version(services=ServiceFlags.NODE_NETWORK),
+        wtxidrelay_received=True,
+        inbound=False,
+        address=dialled,
+    )
+    peer_db = PeerDB(cast("Chain", None), cast(Path, None))
+    verack(a_handshake_node(peer_db=peer_db), b"", peer)
+    (recorded,) = peer_db.active_addresses
+    assert recorded.address == dialled.address
+    assert recorded.port == dialled.port
+    # the live handshake's own services, not whatever the address was
+    # last recorded with
+    assert recorded.services == ServiceFlags.NODE_NETWORK
+    # and the connection's own idea of its peer moves to the same
+    # endpoint, or manager.py's already-connected check keeps comparing
+    # against the address dialled with -- never what a later gossip of
+    # this same peer draws back
+    assert endpoint_key(peer.address) == endpoint_key(recorded)
+
+
+def test_an_inbound_handshake_records_the_peers_announced_port() -> None:
+    # #70: sock_accept's own port is the peer's ephemeral one, never one
+    # anything could dial back on -- only the peer's own version names a
+    # listening port
+    accepted = peer_address("1.2.3.4", 55555)
+    peer = a_peer(
+        version_message=a_parsed_version(addr_from_port=8333),
+        wtxidrelay_received=True,
+        inbound=True,
+        address=accepted,
+    )
+    peer_db = PeerDB(cast("Chain", None), cast(Path, None))
+    verack(a_handshake_node(peer_db=peer_db), b"", peer)
+    (recorded,) = peer_db.active_addresses
+    # the accepted connection's own address, proven reachable by the TCP
+    # handshake -- and not addr_from's own "5.6.7.8", which nothing here
+    # ever connected to
+    assert recorded.address == accepted.address
+    assert recorded.port == 8333
+    assert endpoint_key(peer.address) == endpoint_key(recorded)
+
+
+def test_an_inbound_peer_naming_no_port_is_not_recorded() -> None:
+    # #70: a port of zero is not evidence of a listening one
+    peer = a_peer(
+        version_message=a_parsed_version(addr_from_port=0),
+        wtxidrelay_received=True,
+        inbound=True,
+    )
+    peer_db = PeerDB(cast("Chain", None), cast(Path, None))
+    verack(a_handshake_node(peer_db=peer_db), b"", peer)
+    assert peer_db.active_addresses == []
 
 
 @pytest.mark.parametrize(
@@ -478,10 +609,10 @@ def test_the_handshake_logs_the_endpoint_getpeerinfo_answers_with(
     host: str, endpoint: str
 ) -> None:
     logged: list[str] = []
-    node = a_handshake_node()
+    node = a_handshake_node(peer_db=PeerDB(cast("Chain", None), cast(Path, None)))
     node.logger.info = logged.append
     peer = a_peer(
-        version_message=object(),
+        version_message=a_parsed_version(),
         wtxidrelay_received=True,
         client=SimpleNamespace(getpeername=lambda: (host, 18444)),
     )
@@ -500,11 +631,12 @@ def test_the_handshake_asks_the_socket_for_the_peer_once() -> None:
         return sockaddr
 
     peer = a_peer(
-        version_message=object(),
+        version_message=a_parsed_version(),
         wtxidrelay_received=True,
         client=SimpleNamespace(getpeername=getpeername),
     )
-    verack(a_handshake_node(), b"", peer)
+    peer_db = PeerDB(cast("Chain", None), cast(Path, None))
+    verack(a_handshake_node(peer_db=peer_db), b"", peer)
     assert lookups == [sockaddr]
 
 

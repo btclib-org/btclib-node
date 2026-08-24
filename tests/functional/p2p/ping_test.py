@@ -94,12 +94,21 @@ def test_wrong_ping(tmp_path: Path) -> None:
     connection = node2.p2p_manager.connections[0]
     wait_until(lambda: connection.status == P2pConnStatus.Connected)
 
+    node1_conn_id = node1.p2p_manager.connections[0].id
+    node2_conn_id = node2.p2p_manager.connections[0].id
+
     node1.p2p_manager.connections[0].ping_sent = time.time()
     node1.p2p_manager.connections[0].ping_nonce = 1
     node1.p2p_manager.send(Ping(2), 0)
 
-    wait_until(lambda: not len(node1.p2p_manager.connections))
-    wait_until(lambda: not len(node2.p2p_manager.connections))
+    # by id, and not "the manager holds none": with #70 and #71 both
+    # working, each side now knows the other's own gossiped address, so
+    # manage_connections redials it the moment this drop takes the live
+    # count under connection_num -- a peer this connection has nothing to
+    # say about (issue #283) and this test is not either, which is only
+    # that the connection the wrong nonce was sent on is gone.
+    wait_until(lambda: node1_conn_id not in node1.p2p_manager.connections)
+    wait_until(lambda: node2_conn_id not in node2.p2p_manager.connections)
 
     node1.stop()
     node2.stop()

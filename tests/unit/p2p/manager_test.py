@@ -117,7 +117,6 @@ def a_manager() -> Iterator[AManagerFactory]:
                     is_empty=True,
                     random_address=refuses_to_be_asked,
                     get_addr_from_dns=asks_no_dns_server,
-                    add_active_address=lambda address: None,
                 ),
             ),
         )
@@ -322,6 +321,32 @@ def test_an_address_already_connected_to_is_not_dialled_again(
     assert list(manager.connections) == [1]
 
 
+def test_a_connected_peer_drawn_with_a_different_timestamp_is_not_redialled(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #70/#71: callbacks.verack records the peer at a live timestamp and
+    # with its handshake's own services, so the row PeerDB.random_address
+    # can draw back is never equal, field for field, to the Connection's
+    # own address -- endpoint_key is what the manager has to compare on
+    # instead, or a peer already connected to is dialled a second time.
+    # An onion address the same way the sibling tests above use one: `not
+    # in already_connected` regressing to raw equality would reach the
+    # real `dial`, which raises on a network this node cannot open a
+    # socket for, straight into the same quiet-log assertion those use.
+    onion = NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, 8333)
+    conn = a_conn(1, address=onion)
+    gossiped = NetworkAddressV2(
+        int(time.time()), 1, BIP155Network.TORV3, b"\x11" * 32, 8333
+    )
+    peer_db = SimpleNamespace(is_empty=False, random_address=lambda: gossiped)
+    manager = a_manager([conn], peer_db=peer_db)
+    logged: list[str] = []
+    monkeypatch.setattr(manager.logger, "exception", logged.append)
+    asyncio.run(one_pass(manager))
+    assert not logged
+    assert list(manager.connections) == [1]
+
+
 def test_a_pending_connection_s_address_is_not_dialled_again_either(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -499,7 +524,6 @@ def test_a_peer_that_answers_the_dial_becomes_a_connection(
     peer_db = SimpleNamespace(
         is_empty=False,
         random_address=lambda: peer_address("5.6.7.8", 18444),
-        add_active_address=lambda addr: None,
     )
     manager = a_manager(peer_db=peer_db)
 
