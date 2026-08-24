@@ -37,6 +37,16 @@ to check the guess.
   methods do not, so what decides whether state needs a lock is which
   thread reaches it and never which callback names it — which is why
   `Mempool` needs none and `PeerDB` carries two.
+### `CLAUDE.md` names the worktree `wt-<tracker>-<issue>-<repo>-<role>`
+
+- **The recipe named the worktree after the issue alone, `wt<issue>`**
+  (btclib-org/.github#292). A worktree's administrative directory lives
+  in the one shared `.git`, keyed on its path's basename, and one issue
+  is routinely owed by several repositories of the organization, so a
+  session working this repository against such an issue computed the
+  same name a sibling repository's session was computing too, with no
+  error and a silent collision. The recipe now names the worktree
+  `wt-<tracker>-<issue>-<repo>-<role>`, most general part first.
 
 ### `CLAUDE.md`'s primary-checkout paragraph names the read that cannot go stale
 
