@@ -18,6 +18,25 @@ to check the guess.
 
 ## Unreleased
 
+### A relay octet that is neither `0x00` nor `0x01` keeps costing the peer
+
+- **`Version.parse` raising on a relay flag outside `0x00`/`0x01` is this
+  node's policy, not a defect left open** (closes #149). Core's own
+  `Unserialize<bool>` (`src/serialize.h`) reads any nonzero octet as
+  true, so a `0x02` there reads as a peer asking for relay; btclib's own
+  docstring calls that reading the malleability its refusal is for --
+  one payload, two possible readings serializing back to only one of
+  them. Reaching Core's leniency in `btclib_node` would need either
+  replaying `Version.parse`'s whole field walk (both `NetworkAddress`
+  entries, the `var_bytes` user agent) just to find where the octet
+  sits in the payload, or matching the wording of the
+  `BTClibValueError` it raises -- unlike the stream-based leniency
+  `addr`/`addrv2` use below, both bind this node to btclib's private
+  shape rather than its public contract, for a byte Core's own encoder
+  (`Serialize<bool>`, same file) can only ever write as `0x00` or
+  `0x01`. Pinned by
+  `test_a_relay_octet_that_is_neither_0_nor_1_still_costs_the_peer`.
+
 ### `AManager`, the `Node.run` test stand-in, carries a `peer_db`
 
 - **`AManager` gains a `peer_db` attribute whose `close` is a no-op**
@@ -242,10 +261,8 @@ to check the guess.
   way without risking its own optional relay-flag byte being misread, so
   a version carrying a trailing octet still disconnects the peer -- the
   same policy question, answered differently because the two codecs
-  offer different means to answer it. Issue #149 also names a second,
-  distinct defect this leaves untouched -- `Version.parse` raising on a
-  relay octet that is neither `0x00` nor `0x01`, where Core reads any
-  nonzero octet as true -- so #149 stays open for that half.
+  offer different means to answer it. Issue #149's other half -- a relay
+  octet that is neither `0x00` nor `0x01` -- is above.
 
 ### `getblockcount`, `getrawtransaction` and `getblockchaininfo` answer
 
