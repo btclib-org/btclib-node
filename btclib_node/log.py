@@ -22,10 +22,7 @@ class Logger(logging.Logger):
         # stood here before the branch was a third handler, built on
         # every path and used on none.
         handler: logging.Handler
-        if log_path:
-            handler = logging.FileHandler(log_path)
-        else:
-            handler = logging.StreamHandler()
+        handler = logging.FileHandler(log_path) if log_path else logging.StreamHandler()
         formatter = logging.Formatter("%(asctime)s - %(message)s")
         handler.setFormatter(formatter)
         self.addHandler(handler)

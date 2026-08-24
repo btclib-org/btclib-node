@@ -22,8 +22,7 @@ from btclib_node.db import KeyValueStore
 
 
 def a_store(tmp_path: Path, name: str = "store") -> KeyValueStore:
-    store = KeyValueStore(tmp_path / name)
-    return store
+    return KeyValueStore(tmp_path / name)
 
 
 def test_what_is_put_comes_back(tmp_path: Path) -> None:

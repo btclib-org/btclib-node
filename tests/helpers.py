@@ -53,10 +53,7 @@ def generate_random_header_chain(
     """
     chain: list[BlockHeader] = []
     for x in range(length):
-        if chain:
-            previous_block_hash = chain[-1].hash
-        else:
-            previous_block_hash = start
+        previous_block_hash = chain[-1].hash if chain else start
         header = BlockHeader(
             version=70015,
             previous_block_hash=previous_block_hash,
@@ -82,13 +79,12 @@ def generate_random_transaction(prevouthash: bytes | None = None) -> Tx:
         value=50 * 10**8,
         script_pub_key=script.serialize([secrets.token_bytes(32)]),
     )
-    tx = Tx(
+    return Tx(
         version=1,
         lock_time=0,
         vin=[tx_in],
         vout=[tx_out],
     )
-    return tx
 
 
 def generate_coinbase(value: int = 50 * 10**8) -> Tx:

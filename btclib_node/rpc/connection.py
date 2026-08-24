@@ -3,6 +3,7 @@
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
 import asyncio
+import contextlib
 import json
 import re
 import secrets
@@ -208,10 +209,8 @@ class Connection:
     # Use with care
     def send_and_wait(self, response: list[dict[str, Any]]) -> None:
         future = asyncio.run_coroutine_threadsafe(self.async_send(response), self.loop)
-        try:
+        with contextlib.suppress(TimeoutError):
             future.result(timeout=2)
-        except TimeoutError:
-            pass
 
     @override
     def __repr__(self) -> str:

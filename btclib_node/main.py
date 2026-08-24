@@ -237,6 +237,7 @@ def update_chain(node: Node) -> None:
 
     if not block_index.get_first_candidate():
         return finish_sync(node)
+    return None
 
 
 def verify_mempool_acceptance(node: Node, tx: Tx) -> int:

@@ -133,10 +133,9 @@ def a_running_connection(
         discourage=discouraged.append,
         discouraged=discouraged,
     )
-    connection = Connection(
+    return Connection(
         cast(P2pManager, manager), client, peer_address("127.0.0.1", 18444), 0, False
     )
-    return connection
 
 
 def discouraged_of(connection: Connection) -> list[Any]:
