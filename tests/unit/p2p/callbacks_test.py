@@ -251,6 +251,65 @@ def test_a_second_getaddr_on_the_same_connection_is_ignored() -> None:
     assert len(sent) == 1
 
 
+def another_conn(sent: list[Any]) -> Any:
+    return SimpleNamespace(
+        prefer_addressv2=False, send=sent.append, answered_getaddr=False
+    )
+
+
+def test_two_connections_close_together_are_answered_the_same_sample(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #71: a fresh secrets.SystemRandom().sample per connection would let
+    # two peers connecting close together compare answers and infer what
+    # changed between them, which answering once per connection alone
+    # does not stop -- a new connection still draws fresh
+    import btclib_node.p2p.callbacks as cb
+
+    draws: list[list[NetworkAddressV2]] = []
+
+    def counting_sample(active: list[NetworkAddressV2]) -> list[NetworkAddressV2]:
+        draws.append(active)
+        return list(active)
+
+    monkeypatch.setattr(cb, "_addresses_to_send", counting_sample)
+    address = an_address()
+    node, conn1, sent = make_node([address])
+    conn2 = another_conn(sent)
+    getaddr(node, b"", conn1)
+    getaddr(node, b"", conn2)
+    assert len(draws) == 1
+    assert sent[0].addresses == sent[1].addresses
+
+
+def test_the_cached_sample_is_redrawn_once_it_expires(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import btclib_node.p2p.callbacks as cb
+
+    draws: list[list[NetworkAddressV2]] = []
+
+    def counting_sample(active: list[NetworkAddressV2]) -> list[NetworkAddressV2]:
+        draws.append(active)
+        return list(active)
+
+    monkeypatch.setattr(cb, "_addresses_to_send", counting_sample)
+    address = an_address()
+    node, conn1, sent = make_node([address])
+    conn2 = another_conn(sent)
+    base_time = time.time()
+    with monkeypatch.context() as patch:
+        patch.setattr(time, "time", lambda: base_time)
+        getaddr(node, b"", conn1)
+    with monkeypatch.context() as patch:
+        # past the lifetime and the jitter both, so this is past the
+        # expiration however the jitter draw landed
+        future = base_time + cb._ADDR_SAMPLE_LIFETIME + cb._ADDR_SAMPLE_JITTER + 1
+        patch.setattr(time, "time", lambda: future)
+        getaddr(node, b"", conn2)
+    assert len(draws) == 2
+
+
 def a_version(
     *,
     protocol: int = ProtocolVersion,

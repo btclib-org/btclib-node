@@ -42,6 +42,45 @@ to check the guess.
   all rather than merely unjoined -- and `__del__` is what a `Node`
   built and used that way still has.
 
+### `add_active_address` settles a redialled endpoint onto its one row
+
+- **A handshake with an endpoint already active settles onto that
+  endpoint's one row in `PeerDB.active_addresses` rather than adding
+  another** (closes #270), the way `add_addresses`'s own `by_endpoint`
+  already settles `self.addresses`. `add_active_address` runs once per
+  handshake rather than once per batch, so the lookup is an endpoint-
+  keyed index kept alongside the list rather than a per-call scan of
+  it, which would turn many handshakes against the one peer quadratic
+  overall.
+
+### `getaddr` answers from a cached sample, and the active table prunes on its own
+
+- **The sample `getaddr` answers with is drawn once and served to every
+  connection until it expires, rather than redrawn per connection**
+  (#71). A fresh random sample per connection let two peers connecting
+  close together compare answers and infer what changed between them,
+  which answering a `getaddr` only once per connection does not stop by
+  itself, a new connection still drawing its own fresh sample.
+- **`P2pManager.manage_connections` prunes `PeerDB`'s active-address
+  table on its own timer** (#71), rather than only as a side effect of
+  `random_address` or `getaddr`. Both stop reaching for the table once
+  this node already has enough connections or has already answered a
+  connection's one `getaddr`, so a well-connected node nobody ever asks
+  never pruned a stale row.
+- **`PeerDB` serializes every write to `active_addresses` and its
+  endpoint index through one lock** (#71). `add_active_address` reaches
+  them from `Node`'s own thread, off `callbacks.verack`, and the
+  periodic prune above reaches them from `P2pManager`'s, off
+  `manage_connections`; unlocked, a position read against one thread's
+  view of the list could be written into the other's already-reshaped
+  one, corrupting an unrelated row rather than merely losing an update.
+- **The periodic prune runs inside the same `try`/`except`
+  `manage_connections`'s dial already does** (#71). `get_active_addresses`
+  does real I/O against the store, and that coroutine's own future is
+  never awaited, so whatever it ever raised unguarded would end the
+  whole loop's pinging, eviction and dialling for the rest of this
+  node's life rather than only that one prune.
+
 ### A relay octet that is neither `0x00` nor `0x01` keeps costing the peer
 
 - **`Version.parse` raising on a relay flag outside `0x00`/`0x01` is this

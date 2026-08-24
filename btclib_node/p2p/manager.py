@@ -21,6 +21,16 @@ from btclib_node.p2p.connection import Connection
 if TYPE_CHECKING:
     from btclib_node import Node
 
+# How often `manage_connections`' own loop prunes the active-address
+# table on its own rather than only as a side effect of something asking
+# for it. Not tied to the loop's own sleep below -- an O(n) walk of
+# `active_addresses` every pass buys nothing a run every few minutes
+# does not -- but to `get_active_addresses`'s own three-hour staleness
+# window: far enough under it that a stale row does not linger long past
+# it, however rarely this node is asked for its table.
+# btclib-org/btclib-node#71
+_ACTIVE_PRUNE_INTERVAL = 300
+
 
 class P2pManager(threading.Thread):
     def __init__(self, node: Node, port: int | None, peer_db: PeerDB) -> None:
@@ -47,6 +57,10 @@ class P2pManager(threading.Thread):
         self.handshake_messages: deque[tuple[str, bytes, int]] = deque()
         self.nonces: list[int] = []
         self.last_connection_id = -1
+        # 0.0, not `time.time()`: the first pass of `manage_connections`
+        # prunes on the spot rather than waiting a full
+        # `_ACTIVE_PRUNE_INTERVAL` after this manager was constructed.
+        self._last_active_prune = 0.0
 
         # Set once the listening socket is bound and can hold a peer's
         # connection in its backlog. `is_alive()` says only that this
@@ -113,6 +127,29 @@ class P2pManager(threading.Thread):
                 # something #131 forbids sending it.
                 if conn.status == P2pConnStatus.Closed or now - conn.last_receive > 120:
                     self.remove_connection(conn.id)
+            if now - self._last_active_prune >= _ACTIVE_PRUNE_INTERVAL:
+                # The only other callers of `get_active_addresses` are
+                # `random_address`, which this loop stops reaching for
+                # once it has enough connections, and `getaddr`, answered
+                # once per connection and never again -- so a node with
+                # enough peers that nobody asks a `getaddr` would
+                # otherwise never prune a stale row. btclib-org/btclib-node#71
+                self._last_active_prune = now
+                try:
+                    # get_active_addresses deletes every aged-out row
+                    # from the store, real I/O and not a pure read, and
+                    # this coroutine's own future is never awaited
+                    # (`run`, below) -- the same failure mode
+                    # `_bind_one`'s own docstring names for a coroutine
+                    # scheduled that way. Unguarded, whatever `db.delete`
+                    # ever raised would end this loop's pinging, eviction
+                    # and dialling for the rest of this node's life
+                    # rather than only this one prune, the same reason
+                    # the dial below is already inside a `try` of its
+                    # own.
+                    self.peer_db.get_active_addresses()
+                except Exception:
+                    self.logger.exception("Exception occurred")
             if self.node.status < NodeStatus.HeaderSynced:
                 connection_num = 1
             else:

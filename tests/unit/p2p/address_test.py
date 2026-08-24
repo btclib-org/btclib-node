@@ -4,6 +4,7 @@
 
 import asyncio
 import socket
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -59,14 +60,93 @@ def test_an_address_just_seen_is_active_and_can_be_sent() -> None:
 
 
 def test_the_table_of_active_addresses_is_bounded() -> None:
-    # #71: nothing else bounds it -- get_active_addresses only prunes
-    # what is stale, and a well-connected node that nobody asks a
-    # getaddr stops calling that once it has enough peers
+    # #71: the cap is on distinct endpoints, so this many distinct ports
+    # each run the table a step closer to it rather than settling onto
+    # one row the way redialling the same endpoint does, below
     peer_db = a_peer_db()
     limit = 10000
     for port in range(limit + 10):
         peer_db.add_active_address(peer_address("1.2.3.4", port))
     assert len(peer_db.active_addresses) == limit
+
+
+def test_redialling_the_same_endpoint_settles_onto_its_one_row() -> None:
+    # #270: add_active_address ran once per handshake, with no check for
+    # an endpoint already held, so a peer redialled inside the three-hour
+    # window grew one row per handshake instead of settling on the
+    # latest the way add_addresses's own by_endpoint already does
+    peer_db = a_peer_db()
+    for port in (18444, 18444, 18444):
+        peer_db.add_active_address(peer_address("1.2.3.4", port))
+    (active,) = peer_db.active_addresses
+    assert active.port == 18444
+
+
+def test_redialling_the_same_endpoint_many_times_still_holds_one_row() -> None:
+    # #270: this many calls against the one endpoint is the same shape
+    # `test_the_table_of_active_addresses_is_bounded` puts the cap
+    # through, without a distinct port spending it each time. It is also
+    # this fix's own regression guard against reintroducing a per-call
+    # scan of `active_addresses`: `pyproject.toml`'s own per-test
+    # `timeout` is what a scan repeated this many times fails on, not the
+    # assertion below.
+    peer_db = a_peer_db()
+    for _ in range(10010):
+        peer_db.add_active_address(peer_address("1.2.3.4", 18444))
+    assert len(peer_db.active_addresses) == 1
+
+
+def test_add_active_address_waits_out_a_prune_already_in_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A review finding on #71's own timer: add_active_address reads
+    # _active_index and then writes into active_addresses at the
+    # position found, and get_active_addresses reassigns the list and
+    # then rebuilds the index -- both two statements, not one, and
+    # reachable from two different threads (callbacks.verack on Node's,
+    # manage_connections on P2pManager's). Paused mid-prune here rather
+    # than raced on timing: `_reindex_active` is where the pause is
+    # forced, after the list has already been reassigned but before the
+    # index is rebuilt against it, which is the exact gap the finding
+    # traced.
+    peer_db = a_peer_db()
+    stale = peer_address("9.9.9.9", 1, timestamp=int(time.time()) - 3600 * 4)
+    peer_db.active_addresses.append(stale)
+
+    entered_prune = threading.Event()
+    release_prune = threading.Event()
+    real_reindex = peer_db._reindex_active
+
+    def paused_reindex() -> None:
+        entered_prune.set()
+        assert release_prune.wait(timeout=5)
+        real_reindex()
+
+    monkeypatch.setattr(peer_db, "_reindex_active", paused_reindex)
+
+    pruner = threading.Thread(target=peer_db.get_active_addresses)
+    pruner.start()
+    assert entered_prune.wait(timeout=5)
+
+    adder = threading.Thread(
+        target=peer_db.add_active_address, args=(peer_address("1.2.3.4", 18444),)
+    )
+    adder.start()
+    # the lock is what this proves: without it, add_active_address's own
+    # list.append/index write does not wait on anything and this join
+    # returns well inside the bound below
+    adder.join(timeout=0.2)
+    assert adder.is_alive()
+
+    release_prune.set()
+    pruner.join(timeout=5)
+    adder.join(timeout=5)
+    assert not adder.is_alive()
+    # a corrupted list -- an IndexError inside add_active_address, or
+    # the stale row surviving the prune it raced -- fails one of these
+    # two rather than passing on the wrong data
+    (active,) = peer_db.active_addresses
+    assert active.port == 18444
 
 
 def test_an_address_not_seen_for_three_hours_stops_being_active() -> None:
