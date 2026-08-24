@@ -25,6 +25,22 @@ to check the guess.
   version, and no release*** (btclib-org/.github#291). The bullet now
   carries the pointer, in the shape `bbt`'s `REPOSITORY.md` already uses.
 
+### A convention of this tree is not a reason to diverge from Core
+
+- **Where Core defines the surface — an RPC's field names and what they
+  mean, a message's semantics — being consistent with the rest of this
+  codebase is not a reason to answer differently from Core**, the reader
+  on the other side being a client written against Core. `CLAUDE.md`'s
+  *Following Bitcoin Core* names only a constraint of this tree as
+  grounds for a divergence, which leaves a convention of this tree
+  readable as such a constraint. Units are where that bites hardest: a
+  feerate here is satoshis per kvB wherever one is emitted or read, and
+  Core's `getmempoolinfo` answers `mempoolminfee` in BTC per kvB, so the
+  internally consistent answer is the one wrong by eight orders of
+  magnitude. The rule stops where the encoding is not this tree's to
+  pick: BIP133's `feefilter` carries satoshis per kvB because BIP133
+  says so.
+
 ### `REPOSITORY.md`'s Merge methods section named the wrong landing subject
 
 - **`COMMIT_OR_PR_TITLE` is the pull request title only where a branch

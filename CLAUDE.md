@@ -75,6 +75,25 @@ Not always, though. This tree has constraints Core does not share, and a
 divergence one of those forces is legitimate: `btclib_node/db.py`'s
 docstring is the worked example, arguing its store against Core's.
 
+**A convention of this tree is not one of those constraints.** Where
+Core defines the surface — an RPC's field names and what they mean, a
+message's semantics — being consistent with the rest of this codebase is
+not a reason to answer differently from Core, because the reader on the
+other side is a client written against Core rather than against this
+tree.
+
+**Units are where that bites hardest.** A feerate here is satoshis per
+kvB wherever one is emitted or read, and Core's `getmempoolinfo` answers
+`mempoolminfee` in BTC per kvB. A field of Core's that this tree answers
+takes Core's unit and not this one's: the client reading it was written
+against Core, so the internally consistent answer is the one that is
+wrong by eight orders of magnitude with nothing to say so.
+
+The rule stops where the encoding is not this tree's to pick. BIP133's
+`feefilter` carries satoshis per kvB on the wire because BIP133 says so,
+not because either project chose it, and matching Core there is matching
+the protocol.
+
 What is not legitimate is the silent kind. Where the behaviour departs
 from a source the code cites, the code says so and says what forced it.
 A reader who finds a citation and an unexplained difference cannot tell
