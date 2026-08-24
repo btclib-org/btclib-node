@@ -20,19 +20,20 @@ name: bootstrap-dns
 # and on every run. What is left for this file is the one thing a stub
 # cannot stand in for: whether the seeds this tree ships still answer.
 #
-# No `schedule:` yet. Section 10's two tables are the calendar for every
+# Weekly, per the row btclib-org/.github#201 gave this workflow in
+# section 10 of that repository's README.md -- the calendar for every
 # periodic workflow in the organization, checked against every `cron:`
-# in both directions by btclib-org/.github's own
-# `tests/grid_test.py::test_every_cron_is_the_instant_the_calendar_names`
-# -- a schedule no row names fails there. Today's tables name no row for
-# a workflow of this shape, so this file runs by hand
-# (`workflow_dispatch`) and on a change to itself until a row exists;
-# btclib-org/.github#201 is where that row is asked for.
+# in both directions by `tests/grid_test.py` there.
 
 on:
-  # the way to run this until a calendar row lands, and afterwards the
-  # way to check a branch before changing the seed lists in
-  # btclib_node/chains.py
+  schedule:
+    # section 10 of btclib-org/.github's README.md is the calendar, and
+    # this line is not the place to restate it. Only the default branch
+    # schedules anything, so on any other branch the dispatch below is
+    # the way in
+    - cron: "20 5 * * 4"
+  # the escape hatch, and the way to check a branch before changing the
+  # seed lists in btclib_node/chains.py
   workflow_dispatch:
   # so a change to this file is checked by the thing it configures, for
   # the same reason and with the same caveat as links.yml's own entry
