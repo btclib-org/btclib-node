@@ -680,7 +680,7 @@ def test_only_the_tip_can_leave_the_active_chain(
     for header in chain:
         block_index.add_to_active_chain(header.hash)
 
-    with pytest.raises(Exception):  # noqa: B017, PT011
+    with pytest.raises(Exception, match="not the active chain's tip"):
         block_index.remove_from_active_chain(chain[0].hash)
     block_index.remove_from_active_chain(chain[-1].hash)
     assert chain[-1].hash not in block_index.active_chain

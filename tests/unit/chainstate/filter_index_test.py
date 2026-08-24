@@ -614,4 +614,5 @@ def test_the_filters_of_a_connected_batch_go_in_the_chainstate_s_own_write(
     monkeypatch.setattr(filter_index, "finalize", recording_finalize)
 
     a_chain(node, 1)
-    assert given and all(wb is not None for wb in given)
+    assert given
+    assert all(wb is not None for wb in given)

@@ -96,7 +96,7 @@ def test_nothing_to_check_is_not_an_error() -> None:
 def test_a_prevout_count_that_does_not_match_the_inputs_is_refused() -> None:
     # one input, no prevout for it: the caller built the pair wrong, and
     # verifying nothing would look like verifying everything
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="prevout count does not match input count"):
         check_transactions([([], spend(b""))], 1, make_node())
 
 

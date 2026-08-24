@@ -77,7 +77,7 @@ def test_a_manager_that_never_binds_is_given_up_on() -> None:
     # failure says which manager, because a test that waits on several
     # is told nothing by a line number inside the helper
     never = SimpleNamespace(listening=threading.Event(), port=18444)
-    with pytest.raises(Exception, match="18444.* within 0.2 seconds"):
+    with pytest.raises(Exception, match=r"18444.* within 0\.2 seconds"):
         wait_until_listening(never, timeout=0.2)
 
 

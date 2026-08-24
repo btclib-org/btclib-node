@@ -89,7 +89,10 @@ def test_a_batch_that_raises_leaves_nothing_behind(tmp_path: Path) -> None:
     store = a_store(tmp_path)
     store.put(b"before", b"kept")
 
-    with pytest.raises(RuntimeError, match="no"), store.write_batch() as batch:
+    # batch.put/batch.delete have to run inside the open batch, before
+    # the raise that unwinds it: that is what is under test, so they
+    # cannot move out of the block PT012 wants single-statement.
+    with pytest.raises(RuntimeError, match="no"), store.write_batch() as batch:  # noqa: PT012
         batch.put(b"a", b"1")
         batch.delete(b"before")
         raise RuntimeError("no")
@@ -143,7 +146,8 @@ def test_a_thread_that_never_used_the_store_is_refused_after_it_closes(
     thread.start()
     thread.join()
 
-    assert refused and "is closed" in refused[0]
+    assert refused
+    assert "is closed" in refused[0]
 
 
 def test_closing_twice_is_closing_once(tmp_path: Path) -> None:
@@ -260,7 +264,10 @@ def test_a_batch_rolls_back_on_what_is_not_an_exception_either(tmp_path: Path) -
     store = a_store(tmp_path)
     store.put(b"before", b"kept")
 
-    with pytest.raises(KeyboardInterrupt), store.write_batch() as batch:
+    # batch.delete has to run inside the open batch, before the raise
+    # that unwinds it: that is what is under test, so it cannot move
+    # out of the block PT012 wants single-statement.
+    with pytest.raises(KeyboardInterrupt), store.write_batch() as batch:  # noqa: PT012
         batch.delete(b"before")
         raise KeyboardInterrupt
 
