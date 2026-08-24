@@ -88,6 +88,33 @@ to check the guess.
   measurement and its suggested shape are #284's, and the `D`
   (pydocstyle) paragraph is #285's.
 
+### `select` gains `ERA` and `T20`, and a stale local drops out
+
+- **`select` gains `ERA` (eradicate, commented-out code) and `T20`
+  (flake8-print)** (issue #284). `scripts/reset_chainstate.py` and
+  `scripts/reset_download.py` are each a template edited by hand before
+  a run rather than a program run as-is — their reset is commented out
+  on purpose, one block per operation, kept current against the block
+  index's own API across refactors rather than left to rot — so
+  `per-file-ignores` turns `ERA001` off for both files instead of a
+  `noqa` per block. `scripts/test_errors.py` gets the same treatment
+  for `T20`: its `print`s are a manual diagnostic run's progress and
+  result, not debug residue.
+- **`scripts/chains/mainnet.py`'s commented `debug=True,` carries a
+  reason and a `noqa`**: unlike `signet.py`/`testnet.py`'s live
+  `debug=True`, this is the one script that leaves its log quiet by
+  default, meant to be uncommented by hand when chasing a
+  mainnet-specific problem.
+- **`btclib_node/rpc/callbacks.py`'s citation of Core's own
+  `JSONRPCError` call carries a `noqa`**: it is C++ prose citing
+  `src/rpc/server.cpp` for `get_block_hash`'s missing-argument error
+  shape, and `ERA001` reads the parenthesised call as commented-out
+  Python.
+- **`BlockIndex.generate_block_candidates`'s unused `# header =
+  block_info.header` is gone.** Nothing downstream of it ever read
+  `header`; the assignment goes back to an optimisation that removed
+  what used to need it and left the line commented rather than deleted.
+
 ### `RpcManager.stop()` closes what `P2pManager.stop()` was already fixed to close
 
 - **The listening socket is now closed explicitly in `stop()` rather

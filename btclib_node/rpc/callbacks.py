@@ -72,8 +72,10 @@ def get_block_hash(node: Node, conn: Connection, params: list[Any]) -> bytes:
         # the same mechanism get_block_header's own missing-argument
         # case answers with: RPCMethod::HandleRequest throws HelpResult
         # for a call short of a required argument, and ExecuteCommand's
-        # `catch (const std::exception& e)` turns that into
-        # JSONRPCError(RPC_MISC_ERROR, e.what()), src/rpc/server.cpp
+        # `catch (const std::exception& e)` turns that into Core's own
+        # JSONRPCError call, cited below for the shape rather than left
+        # commented out -- ERA001 reads it as Python and is wrong.
+        # JSONRPCError(RPC_MISC_ERROR, e.what()), src/rpc/server.cpp  # noqa: ERA001
         # :884-886. Unquoted, unlike blockhash's own usage string:
         # RPCArg::ToString(oneline=true) quotes an argument's name only
         # for Type::STR/STR_HEX, and height is Type::NUM

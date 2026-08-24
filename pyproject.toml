@@ -447,6 +447,7 @@ select = [
     "C4",   # flake8-comprehensions
     "CPY",  # flake8-copyright, replacing the copyright-notice hook below
     "E",    # pycodestyle errors, replacing flake8
+    "ERA",  # eradicate (commented-out code)
     "F",    # pyflakes, replacing autoflake and most of yesqa
     "FA",   # flake8-future-annotations
     "FIX",  # flake8-fixme
@@ -464,6 +465,7 @@ select = [
     "SIM",  # flake8-simplify
     "SLOT", # flake8-slots
     "T10",  # flake8-debugger
+    "T20",  # flake8-print
     "TID",  # flake8-tidy-imports
     "UP",   # pyupgrade, replacing the pyupgrade hook below
     "W",    # pycodestyle warnings, replacing flake8
@@ -486,6 +488,18 @@ ignore = [
     "S101", # assert
     "S311", # non-cryptographic random: fine in tests
 ]
+# reset_chainstate.py and reset_download.py are each a template edited
+# by hand before a run, not a program run as-is: their reset itself is
+# commented out on purpose, one block per operation, so whoever runs
+# the script picks which by uncommenting it. Each block is kept current
+# against the index's own API across refactors -- most recently issue
+# #117 -- rather than left to rot, which is what distinguishes this
+# from ERA001's usual leftover.
+"scripts/reset_chainstate.py" = ["ERA001"]
+"scripts/reset_download.py" = ["ERA001"]
+# a manual diagnostic run over local error test vectors: the `print`s
+# are its progress and its result, not debug residue left behind.
+"scripts/test_errors.py" = ["T20"]
 
 [tool.ruff.lint.pycodestyle]
 max-doc-length = 80

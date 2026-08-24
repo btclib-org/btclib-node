@@ -13,6 +13,12 @@ logger = Logger(config.data_dir / "history.log", config.debug)
 chainstate = Chainstate(config.data_dir, config.chain, logger)
 blockindex = chainstate.block_index
 
+# Nothing below runs on its own: uncomment whichever reset this run
+# needs before invoking the script by hand. Kept current against the
+# index's own API across refactors (most recently issue #117) rather
+# than deleted, so per-file-ignores below turns ERA001 off for this
+# file rather than a noqa per block.
+
 # for block_hash in blockindex.active_chain[1:]:
 #     blockindex.set_status(block_hash, BlockStatus.valid_header)
 

@@ -38,5 +38,3 @@ for x in Path("errors").iterdir():
             verify_transaction(*get_error_data(txid, vin))
         except Exception:
             print("error")
-        # print(txid, vin)
-        # verify_transaction(*get_error_data(txid, vin))
