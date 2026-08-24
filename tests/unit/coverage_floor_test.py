@@ -24,13 +24,13 @@ TESTPATHS = ["tests/unit", "tests/functional"]
 
 # every way of asking for less than the suite that the function reads
 NARROWINGS = [
-    {"file_or_dir": ["tests/unit/mempool.py"]},
+    {"file_or_dir": ["tests/unit/mempool_test.py"]},
     # some of what testpaths names and not all of it, which is the
     # commonest partial run after a single file
     {"file_or_dir": ["tests/unit"]},
     {"keyword": "mempool"},
     {"markexpr": "order"},
-    {"deselect": ["tests/unit/mempool.py::test_add_tx"]},
+    {"deselect": ["tests/unit/mempool_test.py::test_add_tx"]},
     {"ignore": ["tests/functional"]},
     {"ignore_glob": ["*functional*"]},
     {"lf": True},
@@ -137,7 +137,7 @@ def test_a_suite_that_names_no_paths_of_its_own() -> None:
     # with testpaths unset a bare run collects the rootdir, so anything
     # named is less than the suite. `all` over an empty sequence is
     # true, which would answer the opposite of that.
-    config, options = a_config(file_or_dir=["tests/unit/mempool.py"], testpaths=[])
+    config, options = a_config(file_or_dir=["tests/unit/mempool_test.py"], testpaths=[])
     assert asks_for_everything(config) is False
     assert relax_coverage_floor(config) is True
     assert options.cov_fail_under == 0
@@ -150,14 +150,14 @@ def test_a_floor_asked_for_explicitly_is_left_alone() -> None:
     # which is what fixes #180: a scan of `invocation_params.args` would
     # only see the first.
     config, options = a_config(
-        file_or_dir=["tests/unit/mempool.py"], cov_fail_under=FLOOR
+        file_or_dir=["tests/unit/mempool_test.py"], cov_fail_under=FLOOR
     )
     assert relax_coverage_floor(config) is False
     assert options.cov_fail_under == FLOOR
 
 
 def test_there_is_nothing_to_lower_when_coverage_is_not_running() -> None:
-    config, options = a_config(file_or_dir=["tests/unit/mempool.py"], plugin=False)
+    config, options = a_config(file_or_dir=["tests/unit/mempool_test.py"], plugin=False)
     assert relax_coverage_floor(config) is False
     assert options.cov_fail_under == FLOOR
 

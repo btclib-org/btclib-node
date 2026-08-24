@@ -14,7 +14,7 @@ name: bootstrap-dns
 # a thing to fix. issue #135 is where that was found true here too --
 # `pyproject.toml`'s `addopts` used to force the three tests that made
 # this same call live into every coverage run, and moved them here.
-# What replaced them in tests/unit/p2p/address.py stubs the resolver and
+# What replaced them in tests/unit/p2p/address_test.py stubs the resolver and
 # still covers `get_addr_from_dns`'s own logic -- the union over seeds,
 # the dedup, the `gaierror` skip, the IPv6 answer -- deterministically
 # and on every run. What is left for this file is the one thing a stub

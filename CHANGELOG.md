@@ -147,6 +147,54 @@ to check the guess.
   arrives, `p2p.callbacks.tx`, matching Core's own early return for the
   same reason during initial block download.
 
+### Every test module under `tests/` is named `*_test.py`
+
+- **Every test module under `tests/` is renamed to end in `_test.py`,
+  `tests/unit/`'s losing the `test_` prefix and `tests/functional/`'s
+  losing it for the suffix, and the test modules that had been living
+  inside a package's `__init__.py` move out into a sibling of their
+  own** (#26). A package's own `__init__.py` cannot itself be named
+  `*_test.py`, so `tests/unit/init_test.py`,
+  `tests/unit/chainstate/init_test.py`,
+  `tests/unit/p2p/messages/init_test.py`,
+  `tests/functional/p2p/init_test.py` and
+  `tests/functional/rpc/init_test.py` carry what used to live in the
+  package's `__init__.py`, and `tests/unit/rpc/connection_test.py`
+  carries what `tests/unit/rpc/__init__.py` tested despite
+  `btclib_node/rpc/__init__.py` itself being empty.
+  `tests/unit/helpers.py` renames to `tests/unit/helpers_test.py` for
+  the same reason: nothing imports it, it tests `tests/helpers.py`'s
+  functions, and only its name said otherwise.
+- **`.pre-commit-config.yaml` gains `name-tests-test` at its default
+  args**, enforcing the `*_test.py` pattern the rename above puts in
+  place.
+- **`[tool.pytest.ini_options]` drops `python_files` and
+  `python_functions`**: pytest's own defaults already collect
+  `*_test.py` and any function named `test*`, so restating either was a
+  second place for a fact pytest already states, and the one that had
+  drifted — `python_files = "*.py"` was collecting every module under
+  `tests/`, which is what let the test modules living inside a
+  package's `__init__.py` go unnoticed as anything other than a package
+  marker.
+
+### `pytest --strict-config --strict-markers` and `xfail_strict = true`
+
+- **`addopts` gains `--strict-config --strict-markers`, and
+  `xfail_strict = true` joins `[tool.pytest.ini_options]`** (#31). Every
+  marker this suite uses (`pytest.mark.parametrize`, `pytest.mark.order`)
+  is already registered by pytest or by pytest-order, and the suite has
+  no `xfail` today, so both are ratchets at zero cost.
+- **`filterwarnings` keeps its single, named `ignore` and does not
+  become `["error"]`**: measured, that setting fails tests scattered
+  across the suite, nearly all on a `ResourceWarning` raised at
+  garbage-collection time against the sqlite connections, sockets,
+  event loops and multiprocessing pools issue #111 and issue #195
+  already track, plus a hazard neither issue is about — a
+  `ResourceWarning` raised at GC time fails whatever test the collector
+  happens to run during, not the test that leaked, so two runs of the
+  same tree fail a different set of tests. Turning this on is
+  contingent on #111 and #195, not a `pyproject.toml` line.
+
 ### `REPOSITORY.md`'s required-checks section names what main now enforces
 
 - **`REPOSITORY.md`'s *Required checks on main* section names `Lint and
@@ -1169,7 +1217,7 @@ to check the guess.
 - **The height is `BlockInfo.index`**, which every indexed block carries,
   rather than a position in a chain a fork is not on. Nothing changes for
   a block on the best chain: the two are the same number there, which is
-  what `tests/functional/rpc/test_chain.py` asserts of a height read back
+  what `tests/functional/rpc/chain_test.py` asserts of a height read back
   over a real index built with `add_headers`.
   `previousblockhash` likewise comes from the header's own parent, which
   for a block on the best chain is the `header_index[height - 1]` it was
@@ -1198,7 +1246,7 @@ to check the guess.
   `--co -q tests/helpers.py` exited 5, each reaching the hook with a
   list. No gate types `--help`, which is why nothing caught it.
 - **The guard is a regression test's job, because the coverage floor
-  cannot see it.** `tests/unit/coverage_floor.py` builds the option
+  cannot see it.** `tests/unit/coverage_floor_test.py` builds the option
   namespace by keyword, and now takes `file_or_dir=None` as well as a
   sequence, so `a_config(file_or_dir=None)` asks exactly what `--help`
   asks and asserts the floor is left alone rather than that nothing
@@ -1351,7 +1399,7 @@ to check the guess.
 ### The merge gate no longer resolves live DNS to pass
 
 - **The three `@pytest.mark.remote_data` tests in
-  `tests/unit/p2p/address.py` that called `PeerDB.get_addr_from_dns`
+  `tests/unit/p2p/address_test.py` that called `PeerDB.get_addr_from_dns`
   against `Main`, `TestNet` and `SigNet`'s real bootstrap seeds are gone**
   (#135). `pyproject.toml`'s `addopts` carries `--remote-data=any`, which
   forced them into every coverage run test.yml gates a pull request on,

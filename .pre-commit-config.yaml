@@ -105,6 +105,14 @@ repos:
       - id: detect-private-key
       - id: debug-statements
       - id: check-docstring-first
+      # default args, so the pattern it enforces is `*_test.py`, which
+      # every test module under tests/ is named. `tests/helpers.py` is
+      # not one: the hook's own exception list is `__init__.py` and
+      # `conftest.py`, and this is the third shared, non-test module the
+      # tree happens to keep at the suite's root rather than nested
+      # under a package's `__init__.py` the way the others are
+      - id: name-tests-test
+        exclude: ^tests/helpers\.py$
       - id: check-toml
       # only files being *added* are measured, the hook intersecting its
       # arguments with git's added set
