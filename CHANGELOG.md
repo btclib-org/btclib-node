@@ -18,6 +18,16 @@ to check the guess.
 
 ## Unreleased
 
+### `AManager`, the `Node.run` test stand-in, carries a `peer_db`
+
+- **`AManager` gains a `peer_db` attribute whose `close` is a no-op**
+  (#263). `Node.run`'s shutdown path calls
+  `self.p2p_manager.peer_db.close()` unconditionally, which `AManager`
+  did not carry: a test built on the `a_networked_node` fixture that
+  reached that path raised `AttributeError` in the node's own
+  background thread, surfacing as an unhandled-thread-exception warning
+  rather than a test failure.
+
 ### `P2pManager.stop` waits on its own thread instead of spinning a core
 
 - **`P2pManager.stop` blocks on `self.join()` rather than polling
