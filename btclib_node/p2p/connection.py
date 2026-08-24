@@ -201,24 +201,40 @@ class Connection:
         self.client.close()
 
     async def run(self, connect: bool = True) -> None:
-        await self.send_version()
-        while self.status < P2pConnStatus.Closed:
-            data = await self.loop.sock_recv(self.client, 1024)
-            if not data:
-                return self.stop(cancel_task=False)
-            try:
-                self.buffer += data
-                self.parse_messages()
-            except Exception as e:
-                # A `BTClibException` is `Message.parse` (or the
-                # network-magic check right after it) refusing this
-                # peer's own envelope -- a bad checksum, an oversized
-                # length, a message for another network. Anything else
-                # caught here is this node's own bug, not the peer's
-                # doing. btclib-org/btclib-node#283
-                if isinstance(e, BTClibException):
-                    self.manager.discourage(self.address)
-                return self.stop(cancel_task=False)
+        # self.client is this coroutine's own resource, the same
+        # guarantee P2pManager.server's own `with server_socket:` gives
+        # its listening socket -- so a finally here, not only the
+        # explicit stop() calls below. Every return above already goes
+        # through stop(), which closes it; what a bare `return` would
+        # not cover is this task cancelled directly rather than through
+        # stop() -- P2pManager.stop()'s own final sweep, over
+        # asyncio.all_tasks(self.loop), reaches a connection that way
+        # whenever it was accepted or dialled after that same stop()'s
+        # dict-based sweep over self.connections/self.pending_connections
+        # already ran and missed it (btclib-org/btclib-node#312).
+        # stop() is idempotent on an already-closed connection, so this
+        # costs nothing on every other path, which already called it.
+        try:
+            await self.send_version()
+            while self.status < P2pConnStatus.Closed:
+                data = await self.loop.sock_recv(self.client, 1024)
+                if not data:
+                    return self.stop(cancel_task=False)
+                try:
+                    self.buffer += data
+                    self.parse_messages()
+                except Exception as e:
+                    # A `BTClibException` is `Message.parse` (or the
+                    # network-magic check right after it) refusing this
+                    # peer's own envelope -- a bad checksum, an oversized
+                    # length, a message for another network. Anything else
+                    # caught here is this node's own bug, not the peer's
+                    # doing. btclib-org/btclib-node#283
+                    if isinstance(e, BTClibException):
+                        self.manager.discourage(self.address)
+                    return self.stop(cancel_task=False)
+        finally:
+            self.stop(cancel_task=False)
 
     async def _send(self, data: bytes) -> None:
         try:

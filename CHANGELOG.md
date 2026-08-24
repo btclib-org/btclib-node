@@ -18,6 +18,22 @@ to check the guess.
 
 ## Unreleased
 
+### `P2pManager.stop()` sweeps connections after `join`, not before
+
+- **The sweep that closes every known connection moved to after
+  `join()` returns, and the listening sockets are now closed
+  explicitly rather than only through `server`'s own `with
+  server_socket:`** (issue #312). A connection `server()`'s own accept
+  loop created in the window between `stop()` scheduling `loop.stop`
+  and that being delivered used to be missed by a sweep taken before
+  `join()`, reaching only the generic task-cancellation loop
+  afterward — which cannot close `Connection.client` for a task
+  cancelled before it ever ran. The sweep now runs once nothing but
+  this thread can still be adding to `self.connections`/
+  `self.pending_connections`. `Connection.run` also closes its own
+  socket in a `finally`, the same guarantee `server`'s own `with`
+  already gave its listener.
+
 ### `REPOSITORY.md` points at the release fact instead of restating it
 
 - **`REPOSITORY.md`'s *What is not configured, and why* restated that
