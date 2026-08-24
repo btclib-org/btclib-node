@@ -24,6 +24,15 @@ from btclib_node.p2p.manager import P2pManager
 from btclib_node.rpc.main import handle_rpc
 from btclib_node.rpc.manager import RpcManager
 
+# Everything above this line is imported for `Node` to build on, not to
+# be handed to a caller: `handle_p2p`, `RpcManager` and the rest are
+# named here so this module can wire them together, and nothing outside
+# this repository has ever imported one of them from the package root
+# rather than from its own module. `Node` is the one name a caller
+# reaches for -- `scripts/chains/` and every functional test do exactly
+# that -- so it is the whole of `__all__` (btclib-org/.github#239).
+__all__ = ["Node"]
+
 # How long `stop` waits for the loop to come back before saying it did
 # not. The flag is read at the top of the loop, so the wait is however
 # long the pass already running takes: `update_chain` validates a fork

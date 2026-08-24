@@ -46,6 +46,44 @@ to check the guess.
   bounded only by the count of distinct endpoints ever dialled
   successfully rather than by what is still active.
 
+### `check-sdist` builds with the backend `[build-system]` declares
+
+- **The `check-sdist` hook now carries `args: [--inject-junk,
+  --installer=pip]` and `additional_dependencies:
+  ["uv_build>=0.12.5,<0.13"]`, naming `[build-system]`'s own `requires`
+  range** (btclib-org/.github#197). Without `--installer=pip` the hook
+  packs the archive with the outer `uv`'s own bundled backend regardless
+  of what `additional_dependencies` names, `check_sdist/sdist.py`'s
+  `get_uv()` finding a `uv` on `PATH` before ever consulting the
+  dependency it was given: with the two specifiers set to disagreeing
+  ranges the hook stayed green. `--installer=pip` runs `build
+  --no-isolation` instead, which reads `[build-system]` from the
+  environment and refuses one that does not satisfy it; measured against
+  a deliberately mismatched range, the hook then fails with `ERROR
+  Missing dependencies`.
+
+### `.gitattributes` carries the organization's own paragraph on both lines
+
+- **`.gitattributes` is the standard's file, byte for byte**
+  (btclib-org/.github#192). This tree holds no `RELEASE_NOTES.md` and no
+  attribute of its own, so the shared half is the whole file; its hash
+  matches the raw file `btclib-org/.github` serves at its own `main`,
+  and `git check-attr merge CHANGELOG.md RELEASE_NOTES.md` still answers
+  `union` for both.
+
+### The installed package ships `py.typed` and declares its surface
+
+- **`btclib_node/py.typed` is in the tree, and `uv build` puts it in
+  both the wheel and the sdist** (btclib-org/.github#239), needing no
+  change to `[tool.uv.build-backend]`'s patterns. `classifiers` gains
+  `Typing :: Typed` beside it, the comment that used to argue the
+  classifier's absence now arguing why it is there instead.
+  `btclib_node/__init__.py` declares `__all__ = ["Node"]`: no consumer
+  of the package root, in this repository or out, has ever imported
+  anything else from it — `from btclib_node import Node, main` in
+  `tests/unit/main.py` reaches `main` as the submodule Python already
+  registers on import, not as a name `__all__` would need to carry.
+
 ### `REPOSITORY.md`'s required-checks section names what main now enforces
 
 - **`REPOSITORY.md`'s *Required checks on main* section names `Lint and

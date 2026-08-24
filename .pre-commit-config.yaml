@@ -364,3 +364,12 @@ repos:
     rev: v1.6.0
     hooks:
       - id: check-sdist
+        # --installer=pip is what makes the environment decide the
+        # backend instead of the outer uv's own bundled copy: it runs
+        # `build --no-isolation`, which refuses one that does not
+        # satisfy [build-system] requires above. --inject-junk is
+        # repeated because args: replaces the manifest's own rather
+        # than extending it; --no-isolation stays in the manifest's
+        # entry:, which args: does not touch
+        args: [--inject-junk, --installer=pip]
+        additional_dependencies: ["uv_build>=0.12.5,<0.13"]
