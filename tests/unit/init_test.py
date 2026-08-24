@@ -115,6 +115,35 @@ def test_init(tmp_path: Path) -> None:
     node.stop()
 
 
+def test_a_config_omitted_is_constructed_rather_than_shared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `Node`'s own `config` used to default to `Config()`, built once at
+    # `def`-time and handed to every caller that left it out (B008) --
+    # nothing here relied on that sharing, so `None` plus a construction
+    # in the body is the fix. `Path.home` is patched rather than left
+    # alone: `Config()`'s own default `data_dir` is under it, and this
+    # node is never started, so nothing else here would stop it from
+    # writing under this session's real home directory.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    node = Node()
+    try:
+        assert node.config == Config()
+    finally:
+        # closed by hand, the same way `tests.conftest.unstarted_node_context`
+        # closes a node it never starts: a node built and dropped here
+        # leaves its databases, sockets and event loops for the garbage
+        # collector, which raises against whichever test it is running
+        # when it gets to them rather than against this one.
+        node._close_worker_pool()
+        node.p2p_manager.peer_db.close()
+        node.chainstate.close()
+        node.block_db.close()
+        node.p2p_manager.loop.close()
+        node.rpc_manager.loop.close()
+        node.logger.close()
+
+
 def test_stop_does_not_return_until_the_node_has_stopped(tmp_path: Path) -> None:
     # what this pins is not a failure but a hang: a caller that goes on
     # while the node is still running leaves a thread logging into a

@@ -12,6 +12,7 @@ fails as a bare traceback in the middle of somebody else's test.
 import socket
 import threading
 import time
+from itertools import pairwise
 from types import SimpleNamespace
 
 import pytest
@@ -148,7 +149,7 @@ def test_a_header_that_cannot_be_solved_is_not_passed_off_as_valid() -> None:
 def test_a_generated_header_chain_links_and_holds_up() -> None:
     chain = generate_random_header_chain(3, RegTest().genesis.hash)
     assert chain[0].previous_block_hash == RegTest().genesis.hash
-    for parent, child in zip(chain, chain[1:]):
+    for parent, child in pairwise(chain):
         assert child.previous_block_hash == parent.hash
     for header in chain:
         header.assert_valid_pow(RegTest().pow_limit_bits)
@@ -164,7 +165,7 @@ def test_a_generated_block_chain_spends_what_the_block_before_it_made() -> None:
         root, _ = merkle_root_and_mutated_from_transactions(block.transactions)
         assert block.header.merkle_root == root
     assert chain[0].header.previous_block_hash == RegTest().genesis.hash
-    for previous, block in zip(chain, chain[1:]):
+    for previous, block in pairwise(chain):
         assert block.header.previous_block_hash == previous.header.hash
         spend = block.transactions[1]
         assert spend.vin[0].prev_out.tx_id == previous.transactions[0].id

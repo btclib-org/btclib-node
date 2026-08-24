@@ -124,7 +124,7 @@ def update_chain(node: Node) -> None:
     try:
         for rev_block in to_remove:
             utxo_index.apply_rev_block(rev_block)
-        for block_hash, block in zip(to_add_hash, to_add):
+        for block_hash, block in zip(to_add_hash, to_add, strict=True):
             # checked between blocks and not inside one: check_transactions
             # below is the blocking worker_pool.starmap over a whole
             # block's inputs, thousands of signature checks on mainnet,

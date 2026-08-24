@@ -137,7 +137,9 @@ def peers(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Peers]:
     wait_until(lambda: len(server.p2p_manager.connections))
     for node in nodes:
         connection = node.p2p_manager.connections[0]
-        wait_until(lambda: connection.status == P2pConnStatus.Connected)
+        # safe despite B023: wait_until resolves this lambda before the
+        # loop rebinds connection, see wait_until's own comment
+        wait_until(lambda: connection.status == P2pConnStatus.Connected)  # noqa: B023
 
     try:
         yield server, client, chain
@@ -184,7 +186,7 @@ def ask(client: Node, message: Payload) -> None:
 def test_a_peer_is_told_this_node_serves_compact_filters(
     peers: Peers, mark: int
 ) -> None:
-    server, client, _ = peers
+    server, _, _ = peers
     version = server.p2p_manager.connections[0].version_message
     assert version is not None
     # the client's own advertisement, read by the server: a node
@@ -195,7 +197,7 @@ def test_a_peer_is_told_this_node_serves_compact_filters(
 def test_the_filters_a_peer_is_sent_are_the_ones_it_asked_for(
     peers: Peers, mark: int
 ) -> None:
-    server, client, chain = peers
+    _, client, chain = peers
     ask(
         client,
         GetCFilters(BlockFilterType.BASIC, 1, chain[-1].header.hash),
@@ -206,7 +208,7 @@ def test_the_filters_a_peer_is_sent_are_the_ones_it_asked_for(
     # and each is the filter of its own block, which is the whole
     # of what the message is worth: built here from the block the
     # test made, and matched against a script it pays to
-    for message, block in zip(got, chain):
+    for message, block in zip(got, chain, strict=True):
         block_filter = BasicBlockFilter.parse(message.filter_bytes, message.block_hash)
         paid_to = block.transactions[0].vout[0].script_pub_key.script
         assert block_filter.match(paid_to)
@@ -238,7 +240,7 @@ def test_a_client_can_build_the_header_chain_from_what_it_is_sent(
 def test_the_checkpoints_of_a_chain_shorter_than_the_interval(
     peers: Peers, mark: int
 ) -> None:
-    server, client, chain = peers
+    _, client, chain = peers
     ask(client, GetCFCheckpt(BlockFilterType.BASIC, chain[-1].header.hash))
     (checkpoints,) = answers(client, CFCheckpt, mark)
     assert checkpoints.stop_hash == chain[-1].header.hash
@@ -250,7 +252,7 @@ def test_the_checkpoints_of_a_chain_shorter_than_the_interval(
 def test_a_filter_type_this_node_does_not_serve_gets_no_answer(
     peers: Peers, mark: int
 ) -> None:
-    server, client, chain = peers
+    _, client, chain = peers
     ask(client, GetCFilters(1, 1, chain[-1].header.hash))
     # and then something it does answer, so this waits on an event
     # rather than on a duration: the second answer arriving with no
@@ -266,7 +268,7 @@ def test_the_header_a_peer_derives_is_the_one_a_client_computes(
     # the cross-check that does not go through the node at all: the
     # filters of the blocks, chained from the genesis block the way
     # BIP157 defines it, are what the server says they are
-    server, client, chain = peers
+    server, _, chain = peers
     filter_index = server.chainstate.filter_index
     header = filter_index.get_header(RegTest().genesis.hash)
     assert header is not None

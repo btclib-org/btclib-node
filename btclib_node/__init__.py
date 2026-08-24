@@ -77,8 +77,11 @@ _WORKER_PROCESSES = _default_worker_processes()
 
 
 class Node(threading.Thread):
-    def __init__(self, config: Config = Config()) -> None:
+    def __init__(self, config: Config | None = None) -> None:
         super().__init__()
+
+        if config is None:
+            config = Config()
 
         def stop_handler(signal: int, frame: FrameType | None) -> None:
             self.stop()

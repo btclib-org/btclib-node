@@ -40,12 +40,12 @@ class RevBlock:
         stream = bytesio_from_binarydata(data)
         hash = stream.read(32)
         to_add: list[tuple[OutPoint, TxOut]] = []
-        for x in range(var_int.parse(stream)):
+        for _ in range(var_int.parse(stream)):
             out_point = OutPoint.parse(stream, check_validity=check_validity)
             tx_out = TxOut.parse(stream, check_validity=check_validity)
             to_add.append((out_point, tx_out))
         to_remove: list[OutPoint] = []
-        for x in range(var_int.parse(stream)):
+        for _ in range(var_int.parse(stream)):
             out_point = OutPoint.parse(stream, check_validity=check_validity)
             to_remove.append(out_point)
         return cls(hash, to_add, to_remove)

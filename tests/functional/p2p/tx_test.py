@@ -60,11 +60,14 @@ def test_send_tx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         node.status = NodeStatus.HeaderSynced
         node.block_db.add_block(block)
         block_index.set_downloaded(block.header.hash)
-        wait_until(lambda: len(block_index.active_chain) == 2)
+        # both lambdas below are safe despite B023: wait_until resolves
+        # each one before the loop rebinds block_index/node, see
+        # wait_until's own comment
+        wait_until(lambda: len(block_index.active_chain) == 2)  # noqa: B023
         # and not merely the chain being connected: callbacks.tx drops
         # a transaction that arrives before this node is block synced,
         # whatever its own version told the peer. btclib-org/btclib-node#129
-        wait_until(lambda: node.status == NodeStatus.BlockSynced)
+        wait_until(lambda: node.status == NodeStatus.BlockSynced)  # noqa: B023
 
     node2.p2p_manager.connect(local_addr(node1.p2p_port))
     # each side's own `connections` only holds a peer past its own

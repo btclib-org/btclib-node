@@ -444,6 +444,7 @@ explicit-preview-rules = true
 # carries no docstring at all, so turning it on is a documentation pass
 # across the whole package, tracked in #285.
 select = [
+    "B",    # flake8-bugbear
     "C4",   # flake8-comprehensions
     "CPY",  # flake8-copyright, replacing the copyright-notice hook below
     "E",    # pycodestyle errors, replacing flake8
@@ -460,6 +461,7 @@ select = [
     "PTH",  # flake8-use-pathlib
     "RET",  # flake8-return
     "RSE",  # flake8-raise
+    "RUF",  # ruff-specific rules (RUF043's own extend-select entry folds in)
     "S",    # flake8-bandit, replacing the two bandit hooks below
     "SIM",  # flake8-simplify
     "SLOT", # flake8-slots
@@ -468,11 +470,7 @@ select = [
     "UP",   # pyupgrade, replacing the pyupgrade hook below
     "W",    # pycodestyle warnings, replacing flake8
 ]
-# RUF043 alone rather than the rest of RUF, which is its own round
-# (#284): a `match=` fixing PT011 below can carry a regex metacharacter
-# unescaped, and RUF043 is what catches that in the same pass instead of
-# leaving it for whichever round selects the rest of RUF.
-extend-select = ["unspecified-encoding", "RUF043"]
+extend-select = ["unspecified-encoding"]
 ignore = [
     # code length is enforced by the formatter, which reflows to its 88
     # columns everything it is allowed to rewrite; max-doc-length below
