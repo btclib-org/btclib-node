@@ -1937,7 +1937,11 @@ to check the guess.
   (`node/transaction.cpp`), which `RPCErrorFromTransactionError`
   (`rpc/util.cpp`) answers with `RPC_TRANSACTION_REJECTED` — a bare
   alias of `RPC_VERIFY_REJECTED` (`rpc/protocol.h`,
-  bitcoin/bitcoin@58a7869f86). A resubmission of a transaction already
-  held is exempted and still reannounced, mirroring
-  `BroadcastTransaction`'s own early return for a txid already in the
-  mempool, which does not reach Core's own capacity check either.
+  bitcoin/bitcoin@58a7869f86). The exemption for a resubmission is keyed
+  on `tx.id in node.mempool.txid_index`, not `Mempool.contains_tx`,
+  which is keyed by wtxid: a resubmission under a different witness is
+  still tolerated and reannounced, mirroring `BroadcastTransaction`'s
+  own early return for a txid already in the mempool -- itself
+  txid-keyed, and explicit that the held transaction "may have the same
+  or different witness" -- which does not reach Core's own capacity
+  check either.

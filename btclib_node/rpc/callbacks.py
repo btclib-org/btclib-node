@@ -545,14 +545,19 @@ def send_raw_transaction(node: Node, conn: Connection, params: list[Any]) -> str
     # with `tx.id.hex()` regardless would tell the caller this
     # transaction was kept when it was not -- the same defect #277 fixed
     # on the peer-to-peer path, `p2p/callbacks.py`'s `tx` handler.
-    # `contains_tx` is checked first and skips the refusal: a resubmit of
-    # a transaction already held is tolerated and reannounced rather
-    # than refused for a fullness this particular submission did not
-    # cause, mirroring `BroadcastTransaction`'s own early return for a
-    # txid already in the mempool (`node/transaction.cpp`, same commit)
-    # -- Core does not even reach its own capacity check for that case.
-    # btclib-org/btclib-node#293
-    if node.mempool.is_full() and not node.mempool.contains_tx(tx):
+    # `tx.id in node.mempool.txid_index` -- not `contains_tx`, which is
+    # keyed by wtxid (`Mempool.transactions`) -- is checked first and
+    # skips the refusal: a resubmit of a transaction already held, under
+    # the same witness or a different one, is tolerated and reannounced
+    # rather than refused for a fullness this particular submission did
+    # not cause, mirroring `BroadcastTransaction`'s own early return for
+    # a txid already in the mempool (`node/transaction.cpp`, same
+    # commit, itself txid-keyed and explicit that the held transaction
+    # "may have the same or different witness") -- Core does not even
+    # reach its own capacity check for that case. `txid_index` read
+    # directly rather than through a new accessor, the way
+    # `get_raw_mempool` already does above. btclib-org/btclib-node#293
+    if node.mempool.is_full() and tx.id not in node.mempool.txid_index:
         raise RpcError(RpcErrorCode.VERIFY_REJECTED, _MEMPOOL_FULL_REASON)
     node.mempool.add_tx(tx, fee)
     node.p2p_manager.broadcast_raw_transaction(tx, fee)
