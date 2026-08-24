@@ -41,6 +41,24 @@ closed on the way out.
 - `btclib_node/interpreter.py` validates, and `Node.worker_pool` is what
   it validates a fork across.
 
+`P2pManager` and `RpcManager` are each a thread of their own, running an
+asyncio loop, and a coroutine enters that loop only through
+`run_coroutine_threadsafe`. Their plain methods are another matter:
+`verack` calls `promote_connection` directly, from `Node`'s thread. So
+what decides whether a piece of state needs a lock is which thread
+reaches it, never which callback names it — `handle_p2p`,
+`handle_p2p_handshake` and `handle_rpc` above run on `Node`'s own loop,
+and so does `update_chain` beside them. `Mempool` is reached from that
+one thread and no other, its `add_tx` and `remove_tx` being called from
+the p2p callbacks, the rpc callbacks and `update_chain`: its own
+"handled in same thread" comment needs no lock to back it, and a `cast`
+standing on the same invariant needs no runtime check either. `PeerDB`,
+the address book above, is not so lucky: `add_active_address` arrives
+from the `verack` callback on `Node`'s thread, `get_active_addresses`
+from `manage_connections` on `P2pManager`'s, and `add_addresses` from
+both — gossip on one thread, a DNS answer on the other. It carries two
+locks for that reason, one per table, taken separately and never nested.
+
 `tests/unit/` mirrors that layout and `tests/functional/` builds a node
 and speaks to it over a socket.
 
