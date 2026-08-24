@@ -31,6 +31,7 @@ import btclib_node
 from btclib_node import Node
 from btclib_node.config import Config
 from btclib_node.interpreter import warm
+from tests.conftest import unstarted_node_context
 from tests.helpers import wait_until
 
 
@@ -96,6 +97,10 @@ def a_networked_node(tmp_path: Path) -> Iterator[Node]:
     )
     node.p2p_manager.loop.close()
     node.rpc_manager.loop.close()
+    # the real P2pManager built above opened a real PeerDB, a database
+    # of its own -- closed here, before the stand-in below drops the
+    # only reference to it, or nothing ever closes it
+    node.p2p_manager.peer_db.close()
     # AManager stands in for both real managers, over the shape of
     # theirs it actually reads: not their own types, deliberately
     node.p2p_manager = AManager()  # type: ignore[assignment]
@@ -129,10 +134,13 @@ def test_stop_does_not_return_until_the_node_has_stopped(tmp_path: Path) -> None
 
 def test_stopping_a_node_that_never_started_is_not_an_error(tmp_path: Path) -> None:
     # __init__ registers the signal handlers, so a node can be asked to
-    # stop before it is running and there is nothing to wait for
-    node = a_node(tmp_path)
-    node.stop()
-    assert not node.is_alive()
+    # stop before it is running and there is nothing to wait for. `stop`
+    # itself has nothing to close: `run`'s teardown is what closes the
+    # databases and the loops, and a node that never started never
+    # reaches it -- unstarted_node_context is what closes them here.
+    with unstarted_node_context(tmp_path) as node:
+        node.stop()
+        assert not node.is_alive()
 
 
 def test_the_node_asking_itself_to_stop_does_not_wait_for_itself(
@@ -391,11 +399,11 @@ def test_the_worker_pool_is_built_on_first_use_and_only_once(
     # a pool is interpreters, spawned rather than forked wherever that
     # is the default, and most of the nodes this suite builds never
     # validate a script
-    node = a_node(tmp_path)
-    assert not pools
-    pool = node.worker_pool
-    assert node.worker_pool is pool
-    assert pools == [btclib_node._WORKER_PROCESSES]
+    with unstarted_node_context(tmp_path) as node:
+        assert not pools
+        pool = node.worker_pool
+        assert node.worker_pool is pool
+        assert pools == [btclib_node._WORKER_PROCESSES]
 
 
 def test_a_node_that_used_the_pool_takes_it_down_with_it(
@@ -434,24 +442,23 @@ def test_del_closes_a_worker_pool_on_a_node_that_was_never_started(
     # referenced from `signal`'s table and a real collection would not
     # reach it inside this test, only whenever the next test's own node
     # replaces that handler.
-    node = a_node(tmp_path)
-    assert node.worker_pool is not None
-    assert pools == [btclib_node._WORKER_PROCESSES]
+    with unstarted_node_context(tmp_path) as node:
+        assert node.worker_pool is not None
+        assert pools == [btclib_node._WORKER_PROCESSES]
 
-    node.__del__()
+        node.__del__()
 
-    assert pools == [btclib_node._WORKER_PROCESSES, "terminated", "joined"]
-    assert node._worker_pool is None
+        assert pools == [btclib_node._WORKER_PROCESSES, "terminated", "joined"]
+        assert node._worker_pool is None
 
 
 def test_del_on_a_node_that_never_built_a_pool_does_nothing(
     tmp_path: Path, pools: list[Any]
 ) -> None:
-    node = a_node(tmp_path)
+    with unstarted_node_context(tmp_path) as node:
+        node.__del__()
 
-    node.__del__()
-
-    assert not pools
+        assert not pools
 
 
 class ARecordingPool(APool):
@@ -477,19 +484,18 @@ def test_warm_worker_pool_builds_it_and_warms_it_off_the_calling_thread(
         return pool
 
     monkeypatch.setattr(btclib_node, "Pool", make_pool)
-    node = a_node(tmp_path)
+    with unstarted_node_context(tmp_path) as node:
+        node.warm_worker_pool()
 
-    node.warm_worker_pool()
-
-    assert node._worker_pool_warmup is not None
-    node._worker_pool_warmup.join(timeout=5)
-    assert built == [btclib_node._WORKER_PROCESSES]
-    (pool,) = instances
-    (call,) = pool.calls
-    fn, args = call
-    assert fn is warm
-    assert len(args) == btclib_node._WORKER_PROCESSES * 4
-    assert all(a == () for a in args)
+        assert node._worker_pool_warmup is not None
+        node._worker_pool_warmup.join(timeout=5)
+        assert built == [btclib_node._WORKER_PROCESSES]
+        (pool,) = instances
+        (call,) = pool.calls
+        fn, args = call
+        assert fn is warm
+        assert len(args) == btclib_node._WORKER_PROCESSES * 4
+        assert all(a == () for a in args)
 
 
 def test_a_second_call_to_warm_worker_pool_does_not_start_a_second_thread(
@@ -503,17 +509,16 @@ def test_a_second_call_to_warm_worker_pool_does_not_start_a_second_thread(
     monkeypatch.setattr(
         btclib_node, "Pool", lambda processes: ARecordingPool(built, processes)
     )
-    node = a_node(tmp_path)
+    with unstarted_node_context(tmp_path) as node:
+        node.warm_worker_pool()
+        first = node._worker_pool_warmup
+        assert first is not None
+        first.join(timeout=5)
 
-    node.warm_worker_pool()
-    first = node._worker_pool_warmup
-    assert first is not None
-    first.join(timeout=5)
+        node.warm_worker_pool()
 
-    node.warm_worker_pool()
-
-    assert node._worker_pool_warmup is first
-    assert built == [btclib_node._WORKER_PROCESSES]
+        assert node._worker_pool_warmup is first
+        assert built == [btclib_node._WORKER_PROCESSES]
 
 
 def test_stopping_the_node_waits_for_an_in_flight_warmup_before_the_pool_comes_down(

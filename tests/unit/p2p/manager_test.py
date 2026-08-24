@@ -703,12 +703,18 @@ def test_a_failed_ipv6_bind_does_not_stop_the_ipv4_listener(
         manager.join(timeout=10)
 
 
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
 def test_a_manager_that_cannot_bind_never_says_it_is_listening(
     a_manager: AManagerFactory,
 ) -> None:
     # set after the bind and not before it, which is the whole of what a
     # caller waiting on the event is told: a manager whose bind failed
     # never reaches the line that sets it.
+    #
+    # `_bind` raises out of `run` on purpose (#88, below), so `run` ends
+    # in an exception on the manager's own thread that nothing there
+    # catches -- exactly what this test asks the bind to do, and pytest
+    # warns about any uncaught thread exception by default.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
         taken.bind(("", 0))
         taken.listen()
@@ -722,6 +728,7 @@ def test_a_manager_that_cannot_bind_never_says_it_is_listening(
             manager.join(timeout=10)
 
 
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
 def test_a_manager_that_cannot_bind_stops_being_alive(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

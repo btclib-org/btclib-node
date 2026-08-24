@@ -177,6 +177,7 @@ def test_a_body_that_is_not_json_answers_parse_error_and_forgets_the_client(
         manager.join(timeout=10)
 
 
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
 def test_a_manager_that_cannot_bind_stops_being_alive(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -185,7 +186,8 @@ def test_a_manager_that_cannot_bind_stops_being_alive(
     `_bind` runs in `run` before `run_forever`, so a taken port's
     `OSError` comes back out of `run` itself instead of sitting unread
     in the `concurrent.futures.Future` `run_coroutine_threadsafe` used
-    to hand back.
+    to hand back -- and out of `run` on the manager's own thread, which
+    nothing there catches, is what this test is asking it to do.
     """
     logged: list[str] = []
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:

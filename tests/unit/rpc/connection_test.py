@@ -82,6 +82,13 @@ def drive(
         closed = ours.fileno() == -1
         if theirs.fileno() != -1:
             theirs.close()
+        # `conn.run()` closes `ours` on a refusal, through `async_send`
+        # or its own `except`, and leaves it open on a dispatch --
+        # `handle_rpc`'s `send` is what closes it there, and nothing
+        # here ever calls it. Closed regardless so a dispatched
+        # connection does not outlive this function.
+        if ours.fileno() != -1:
+            ours.close()
         return outcome, manager.messages, closed
 
     return asyncio.run(main())
@@ -284,12 +291,23 @@ def test_close_without_a_task_closes_the_socket_anyway() -> None:
     theirs.close()
 
 
+@pytest.mark.filterwarnings(
+    "ignore:coroutine 'Connection.async_send' was never awaited:RuntimeWarning"
+)
 def test_send_and_wait_gives_up_rather_than_blocking_forever() -> None:
     # It is what the `stop` RPC uses: the answer has to reach the client
     # before the node goes down, but a client that never reads it must
     # not keep the node up. The loop here is never run, so the coroutine
     # never completes and the wait is the whole of what is exercised --
     # which costs the two seconds the timeout is set to.
+    #
+    # `send_and_wait` hands that coroutine to the loop through
+    # `run_coroutine_threadsafe`, which only turns it into a `Task` once
+    # the loop's own thread runs the callback that does so -- never,
+    # since this loop's `run_forever` is never called. The coroutine
+    # object then sits unreferenced except by that queued callback, and
+    # Python warns when it is collected unawaited: a real defect
+    # ordinarily, and exactly the state this test asks for on purpose.
     ours, theirs = socket.socketpair()
     loop = asyncio.new_event_loop()
     conn = Connection(loop, ours, cast(RpcManager, SimpleNamespace(messages=[])), 0)

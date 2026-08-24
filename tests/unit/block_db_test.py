@@ -12,6 +12,8 @@ and reopened, and does it come back after the file it was written to is
 no longer the file being written to.
 """
 
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack
 from pathlib import Path
 
 import pytest
@@ -37,18 +39,34 @@ def a_rev_block(tag: int = 1, hash: bytes | None = None) -> RevBlock:
     )
 
 
-def a_db(tmp_path: Path) -> BlockDB:
-    return BlockDB(tmp_path, Logger(debug=True))
+@pytest.fixture
+def a_db(tmp_path: Path) -> Iterator[Callable[[Path | None], BlockDB]]:
+    """A factory for `BlockDB`s at `tmp_path`, closed at teardown.
+
+    A test that checks a store survives being closed and reopened
+    closes the first itself and builds a second, at the same path or at
+    one of its own; each is closed once more here regardless of what
+    the test already did to it, `BlockDB.close` being safe to call
+    twice.
+    """
+    with ExitStack() as stack:
+
+        def make(path: Path | None = None) -> BlockDB:
+            db = BlockDB(tmp_path if path is None else path, Logger(debug=True))
+            stack.callback(db.close)
+            return db
+
+        yield make
 
 
-def test_init(tmp_path: Path) -> None:
-    BlockDB(tmp_path, Logger(debug=True))
+def test_init(a_db: Callable[[Path | None], BlockDB]) -> None:
+    a_db(None)
 
 
-def test_blocks(tmp_path: Path) -> None:
+def test_blocks(a_db: Callable[[Path | None], BlockDB], tmp_path: Path) -> None:
     chain = generate_random_chain(2000, RegTest().genesis.hash)
     for x in range(10):
-        block_db = BlockDB(tmp_path / f"{x}", Logger(debug=True))
+        block_db = a_db(tmp_path / f"{x}")
         for block in chain:
             block_db.add_block(block)
             stored_block = block_db.get_block(block.header.hash)
@@ -60,8 +78,10 @@ def test_a_rev_patch_survives_the_wire() -> None:
     assert RevBlock.deserialize(rev_block.serialize()) == rev_block
 
 
-def test_a_rev_patch_is_read_back_from_the_file_it_went_into(tmp_path: Path) -> None:
-    block_db = a_db(tmp_path)
+def test_a_rev_patch_is_read_back_from_the_file_it_went_into(
+    a_db: Callable[[Path | None], BlockDB],
+) -> None:
+    block_db = a_db(None)
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     block_db.add_block(block)
     rev_block = a_rev_block(hash=block.header.hash)
@@ -70,14 +90,18 @@ def test_a_rev_patch_is_read_back_from_the_file_it_went_into(tmp_path: Path) -> 
     assert block_db.get_rev_block(rev_block.hash) == rev_block
 
 
-def test_what_was_never_stored_is_not_found(tmp_path: Path) -> None:
-    block_db = a_db(tmp_path)
+def test_what_was_never_stored_is_not_found(
+    a_db: Callable[[Path | None], BlockDB],
+) -> None:
+    block_db = a_db(None)
     assert block_db.get_block(b"\x11" * 32) is None
     assert block_db.get_rev_block(b"\x11" * 32) is None
 
 
-def test_storing_the_same_block_twice_writes_it_once(tmp_path: Path) -> None:
-    block_db = a_db(tmp_path)
+def test_storing_the_same_block_twice_writes_it_once(
+    a_db: Callable[[Path | None], BlockDB],
+) -> None:
+    block_db = a_db(None)
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     block_db.add_block(block)
     written = block_db.files["000001.blk"].size
@@ -86,8 +110,10 @@ def test_storing_the_same_block_twice_writes_it_once(tmp_path: Path) -> None:
     assert block_db.get_block(block.header.hash) == block
 
 
-def test_storing_the_same_rev_patch_twice_writes_it_once(tmp_path: Path) -> None:
-    block_db = a_db(tmp_path)
+def test_storing_the_same_rev_patch_twice_writes_it_once(
+    a_db: Callable[[Path | None], BlockDB],
+) -> None:
+    block_db = a_db(None)
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     block_db.add_block(block)
     rev_block = a_rev_block(hash=block.header.hash)
@@ -103,8 +129,10 @@ def test_storing_the_same_rev_patch_twice_writes_it_once(tmp_path: Path) -> None
     assert block_db.files[filename].size == written
 
 
-def test_a_file_that_has_filled_up_is_left_behind(tmp_path: Path) -> None:
-    block_db = a_db(tmp_path)
+def test_a_file_that_has_filled_up_is_left_behind(
+    a_db: Callable[[Path | None], BlockDB],
+) -> None:
+    block_db = a_db(None)
     chain = generate_random_chain(2, RegTest().genesis.hash)
     block_db.add_block(chain[0])
     assert block_db.blocks[chain[0].header.hash].filename == "000001.blk"
@@ -121,13 +149,15 @@ def test_a_file_that_has_filled_up_is_left_behind(tmp_path: Path) -> None:
     assert block_db.get_block(chain[1].header.hash) == chain[1]
 
 
-def test_a_file_exactly_at_the_bound_is_not_yet_full(tmp_path: Path) -> None:
+def test_a_file_exactly_at_the_bound_is_not_yet_full(
+    a_db: Callable[[Path | None], BlockDB],
+) -> None:
     # the bound is what the size is compared against, so which side of
     # it is exclusive is a real question. Only where the block lands is
     # asserted here: the size set below is a fiction the file on disk
     # does not share, so the offset recorded for that block is not one
     # it can be read back from
-    block_db = a_db(tmp_path)
+    block_db = a_db(None)
     chain = generate_random_chain(2, RegTest().genesis.hash)
     block_db.add_block(chain[0])
     block_db.files["000001.blk"].size = MAX_FILE_SIZE
@@ -137,14 +167,14 @@ def test_a_file_exactly_at_the_bound_is_not_yet_full(tmp_path: Path) -> None:
 
 
 def test_a_rev_patch_goes_in_the_file_named_for_its_own_block(
-    tmp_path: Path,
+    a_db: Callable[[Path | None], BlockDB],
 ) -> None:
     # the first block's own patch is written only after the block file
     # has rolled over to a second one: were the rev file still named for
     # whichever block file happens to be open (btclib-org/btclib-node#116),
     # this patch would land in 000002.rev rather than its own block's
     # 000001.rev
-    block_db = a_db(tmp_path)
+    block_db = a_db(None)
     chain = generate_random_chain(2, RegTest().genesis.hash)
     block_db.add_block(chain[0])
     assert block_db.blocks[chain[0].header.hash].filename == "000001.blk"
@@ -168,9 +198,9 @@ def test_a_rev_patch_goes_in_the_file_named_for_its_own_block(
 
 
 def test_two_rev_patches_share_the_file_named_for_the_block_file(
-    tmp_path: Path,
+    a_db: Callable[[Path | None], BlockDB],
 ) -> None:
-    block_db = a_db(tmp_path)
+    block_db = a_db(None)
     chain = generate_random_chain(2, RegTest().genesis.hash)
     for block in chain:
         block_db.add_block(block)
@@ -186,8 +216,10 @@ def test_two_rev_patches_share_the_file_named_for_the_block_file(
     assert block_db.get_rev_block(second.hash) == second
 
 
-def test_a_pending_rev_patch_is_not_yet_on_disk(tmp_path: Path) -> None:
-    block_db = a_db(tmp_path)
+def test_a_pending_rev_patch_is_not_yet_on_disk(
+    a_db: Callable[[Path | None], BlockDB],
+) -> None:
+    block_db = a_db(None)
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     block_db.add_block(block)
     rev_block = a_rev_block(hash=block.header.hash)
@@ -196,8 +228,10 @@ def test_a_pending_rev_patch_is_not_yet_on_disk(tmp_path: Path) -> None:
     assert block_db.rev_patches == {}
 
 
-def test_rollback_discards_every_pending_rev_patch(tmp_path: Path) -> None:
-    block_db = a_db(tmp_path)
+def test_rollback_discards_every_pending_rev_patch(
+    a_db: Callable[[Path | None], BlockDB],
+) -> None:
+    block_db = a_db(None)
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     block_db.add_block(block)
     rev_block = a_rev_block(hash=block.header.hash)
@@ -213,8 +247,10 @@ def test_rollback_discards_every_pending_rev_patch(tmp_path: Path) -> None:
     assert block_db.get_rev_block(rev_block.hash) == rev_block
 
 
-def test_finalize_refuses_a_patch_for_a_block_never_stored(tmp_path: Path) -> None:
-    block_db = a_db(tmp_path)
+def test_finalize_refuses_a_patch_for_a_block_never_stored(
+    a_db: Callable[[Path | None], BlockDB],
+) -> None:
+    block_db = a_db(None)
     rev_block = a_rev_block()
     block_db.add_rev_block(rev_block)
     with pytest.raises(Exception, match="not stored"):
@@ -245,12 +281,12 @@ def test_an_offset_past_var_ints_default_parse_cap_survives_the_wire() -> None:
 
 
 def test_the_file_rotation_counter_passes_the_old_two_octet_ceiling(
-    tmp_path: Path,
+    a_db: Callable[[Path | None], BlockDB],
 ) -> None:
     # a fixed two-octet field overflows encoding 65536
     # (btclib-org/btclib-node#78); var_int has no ceiling below its own
     # 8-byte encoding limit
-    block_db = a_db(tmp_path)
+    block_db = a_db(None)
     block_db.file_index = 65600
     block_db.files["065600.blk"] = FileMetadata("065600.blk", MAX_FILE_SIZE + 1)
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
@@ -260,18 +296,18 @@ def test_the_file_rotation_counter_passes_the_old_two_octet_ceiling(
     assert block_db.get_block(block.header.hash) == block
     block_db.close()
 
-    reopened = a_db(tmp_path)
+    reopened = a_db(None)
     assert reopened.file_index == 65601
     reopened.close()
 
 
 def test_a_block_file_is_matched_by_its_resolved_path_not_its_basename(
-    tmp_path: Path,
+    a_db: Callable[[Path | None], BlockDB], tmp_path: Path
 ) -> None:
     # a handle open on a same-named file under a different directory is
     # not the file this store means: matching by a basename or a suffix
     # (btclib-org/btclib-node#79) would accept it anyway
-    block_db = a_db(tmp_path)
+    block_db = a_db(None)
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     block_db.add_block(block)
 
@@ -288,20 +324,24 @@ def test_a_block_file_is_matched_by_its_resolved_path_not_its_basename(
     decoy_file.close()
 
 
-def test_closing_a_store_that_wrote_nothing(tmp_path: Path) -> None:
+def test_closing_a_store_that_wrote_nothing(
+    a_db: Callable[[Path | None], BlockDB],
+) -> None:
     # nothing was written, so there is no file to close: only the
     # database itself
-    a_db(tmp_path).close()
+    a_db(None).close()
 
 
-def test_a_key_this_version_does_not_know_is_left_where_it_is(tmp_path: Path) -> None:
-    block_db = a_db(tmp_path)
+def test_a_key_this_version_does_not_know_is_left_where_it_is(
+    a_db: Callable[[Path | None], BlockDB],
+) -> None:
+    block_db = a_db(None)
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     block_db.add_block(block)
     block_db.db.put(b"z", b"from some other version of this store")
     block_db.close()
 
-    reopened = a_db(tmp_path)
+    reopened = a_db(None)
     # stepped over rather than filed under one of the four the store
     # knows: the tables it rebuilt are the ones it wrote
     assert reopened.blocks == block_db.blocks
@@ -312,8 +352,8 @@ def test_a_key_this_version_does_not_know_is_left_where_it_is(tmp_path: Path) ->
     reopened.close()
 
 
-def test_the_store_comes_back_from_disk(tmp_path: Path) -> None:
-    block_db = a_db(tmp_path)
+def test_the_store_comes_back_from_disk(a_db: Callable[[Path | None], BlockDB]) -> None:
+    block_db = a_db(None)
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     block_db.add_block(block)
     rev_block = a_rev_block(hash=block.header.hash)
@@ -321,7 +361,7 @@ def test_the_store_comes_back_from_disk(tmp_path: Path) -> None:
     block_db.finalize()
     block_db.close()
 
-    reopened = a_db(tmp_path)
+    reopened = a_db(None)
     assert reopened.file_index == block_db.file_index
     # the sizes too, not just the names: they are what tells the store
     # where the next block goes and when the file is full

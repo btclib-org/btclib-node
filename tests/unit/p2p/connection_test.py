@@ -331,6 +331,12 @@ def _two_bursts_in_flight(
 
         release.set()
         await asyncio.gather(*first_tasks, *second_tasks)
+        # closed here rather than left to the drop path: that path
+        # closes it only where the third burst tips the connection into
+        # P2pConnStatus.Closed, and the socket built above is real
+        # (`socket.socket()`, not a pair `_send` stands in for) either
+        # way
+        connection.client.close()
         return connection, delivered
 
     return asyncio.run(drive())
