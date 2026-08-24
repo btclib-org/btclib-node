@@ -28,6 +28,17 @@ to check the guess.
   background thread, surfacing as an unhandled-thread-exception warning
   rather than a test failure.
 
+### `bootstrap-dns.yml` runs on the calendar's own schedule
+
+- **The workflow carries a `schedule:` naming `cron: "20 5 * * 4"`**
+  (#272), Thursday at that hour and this repository's own minute being
+  the row btclib-org/.github#201 gave it in section 10 of that
+  repository's README. It previously ran on `workflow_dispatch` alone,
+  waiting on that row to exist.
+- **The header's paragraph on the absent schedule is rewritten to say
+  where the one it now carries comes from**, instead of continuing to
+  describe a state this same change ends.
+
 ### `P2pManager.stop` waits on its own thread instead of spinning a core
 
 - **`P2pManager.stop` blocks on `self.join()` rather than polling
@@ -1497,11 +1508,8 @@ to check the guess.
   seeds the same question the removed tests did**, for the same reason
   `links.yml` is not a merge gate: a host having a bad afternoon is a
   thing to re-run, not a thing a pull request should have to fix. It
-  carries no `schedule:` yet — the organization's calendar in section 10
-  of `btclib-org/.github`'s README has no row for a workflow of this
-  shape, and btclib-org/.github#201 is where one is asked for — so it
-  runs by hand (`workflow_dispatch`) and on a change to itself until a
-  row exists.
+  runs weekly, on the row btclib-org/.github#201 gave it in section 10
+  of that repository's README, and on demand.
 
 ### A listener that cannot bind now says so, and a refused dial costs microseconds
 
