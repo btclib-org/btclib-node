@@ -454,6 +454,14 @@ def get_raw_transaction(
     return out
 
 
+# the two reject reasons `verify_mempool_acceptance` can fail with,
+# named once so that `test_mempool_accept` and `send_raw_transaction`
+# answer the same verdict about the same transaction rather than
+# drifting apart the way btclib-org/btclib-node#83 found them
+_MISSING_PREVOUTS_REASON = "Missing prevouts"
+_INVALID_SCRIPT_REASON = "Invalid signatures or script"
+
+
 def test_mempool_accept(
     node: Node, conn: Connection, params: list[Any]
 ) -> list[dict[str, Any]]:
@@ -476,9 +484,9 @@ def test_mempool_accept(
             verify_mempool_acceptance(node, tx)
             tx_res["allowed"] = True
         except BTClibValueError:
-            tx_res["reject-reason"] = "Invalid signatures or script"
+            tx_res["reject-reason"] = _INVALID_SCRIPT_REASON
         except MissingPrevoutError:
-            tx_res["reject-reason"] = "Missing prevouts"
+            tx_res["reject-reason"] = _MISSING_PREVOUTS_REASON
         except Exception:
             tx_res["reject-reason"] = "Unknown error"
         out.append(tx_res)
@@ -493,12 +501,17 @@ def send_raw_transaction(node: Node, conn: Connection, params: list[Any]) -> str
         return None
     try:
         fee = verify_mempool_acceptance(node, tx)
-        node.mempool.add_tx(tx, fee)
-        node.p2p_manager.broadcast_raw_transaction(tx, fee)
-    except BTClibValueError:
-        # tolerated here alone, and only until #83 decides what a
-        # rejected transaction is answered with
-        pass
+    except MissingPrevoutError as exc:
+        # Core's own missing-inputs code, RPC_VERIFY_ERROR
+        # (src/rpc/protocol.h): a transaction this node cannot verify
+        # for want of what it spends, not one it refuses
+        raise RpcError(RpcErrorCode.VERIFY_ERROR, _MISSING_PREVOUTS_REASON) from exc
+    except BTClibValueError as exc:
+        # Core's own RPC_VERIFY_REJECTED: the mempool looked at the
+        # transaction and refused it
+        raise RpcError(RpcErrorCode.VERIFY_REJECTED, _INVALID_SCRIPT_REASON) from exc
+    node.mempool.add_tx(tx, fee)
+    node.p2p_manager.broadcast_raw_transaction(tx, fee)
     return tx.id.hex()
 
 

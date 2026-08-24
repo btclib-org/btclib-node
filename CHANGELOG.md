@@ -72,6 +72,30 @@ to check the guess.
   `rpc.callbacks.send_raw_transaction`, the one caller outside the
   mempool's own bookkeeping.
 
+### `sendrawtransaction` answers a refusal, not a rejected transaction's txid
+
+- **A transaction `verify_mempool_acceptance` finds invalid is answered
+  `-26` (Core's `RPC_VERIFY_REJECTED`) with the same reject reason
+  `testmempoolaccept` already gives it, and one whose prevout is
+  nowhere is answered `-25` (`RPC_VERIFY_ERROR`, Core's own code for
+  missing inputs) rather than `-32603 Internal error`** (#83). The
+  first case used to be swallowed and answered with the txid, as if the
+  network had taken a transaction this node itself refused; the second
+  fell through to the callback dispatcher's generic handler, which
+  answers as though this node were the one at fault. `send_raw_transaction`
+  and `testmempoolaccept` now share the same two reject-reason strings,
+  so the two RPCs agree about the same transaction.
+
+### `RpcManager.stop` waits on its own thread instead of spinning a core
+
+- **`RpcManager.stop` blocks on `self.join()` rather than polling
+  `self.loop.is_running()` in a tight loop** (#257), the same fix #249
+  gave `P2pManager.stop`. The calling thread no longer spins a full CPU
+  core for the scheduling delay of the manager's own event-loop thread;
+  the join is skipped where the manager was never started, which
+  `Node.run` reaches unconditionally for a node built with `rpc_port`
+  unset.
+
 ### `P2pManager.stop` waits on its own thread instead of spinning a core
 
 - **`P2pManager.stop` blocks on `self.join()` rather than polling
