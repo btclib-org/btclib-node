@@ -5,6 +5,7 @@
 
 from collections.abc import Iterable
 
+from btclib.fee import FeeRate, fee_from_vsize
 from btclib.tx.tx import Tx
 
 from btclib_node.log import Logger
@@ -16,6 +17,10 @@ class Mempool:
 
         self.transactions: dict[bytes, Tx] = {}
         self.txid_index: dict[bytes, bytes] = {}
+        # wtxid -> fee in satoshi, the sum-of-inputs-less-sum-of-outputs
+        # main.verify_mempool_acceptance already computes and would
+        # otherwise discard. btclib-org/btclib-node#260
+        self.fees: dict[bytes, int] = {}
         self.size: int = 0
         self.bytesize: int = 0
         self.bytesize_limit: int = 500 * 1000**2  # 500vMB
@@ -57,13 +62,19 @@ class Mempool:
         return self.transactions.get(key)
 
     # Don't need lock because handled in same thread
-    def add_tx(self, tx: Tx) -> None:
+    def add_tx(self, tx: Tx, fee: int = 0) -> None:
+        # `fee` defaults to 0 rather than being required, for the
+        # callers -- mostly in tests -- that add a transaction without
+        # ever asking what it pays; every production caller has just
+        # computed the real one out of main.verify_mempool_acceptance
+        # and passes it explicitly.
         if self.is_full():
             return
         wtxid, txid = tx.hash, tx.id
         if txid not in self.txid_index:
             self.transactions[wtxid] = tx
             self.txid_index[tx.id] = wtxid
+            self.fees[wtxid] = fee
             self.size += 1
             self.bytesize += tx.vsize
             self.sequence += 1
@@ -73,9 +84,31 @@ class Mempool:
         if txid in self.txid_index:
             wtxid = self.txid_index.pop(tx.id)
             tx = self.transactions.pop(wtxid)
+            self.fees.pop(wtxid, None)
             self.size -= 1
             self.bytesize -= tx.vsize
             self.sequence += 1
 
     def contains_tx(self, tx: Tx) -> bool:
         return tx.hash in self.transactions
+
+    def meets_fee_rate(self, wtxid: bytes, min_fee_rate: int) -> bool:
+        """Whether the entry's own fee clears a rate quoted in sat/kvB.
+
+        BIP133's own comparison -- Core's `txiter->GetFee() <
+        filterrate.GetFee(txiter->GetTxSize())`, net_processing.cpp --
+        against this mempool's own record of what the transaction paid,
+        rather than recomputing it at relay time. `min_fee_rate` of
+        zero, BIP133's and `Connection.feefilter`'s own "no filter"
+        value, always clears; so does a wtxid this mempool holds no fee
+        for -- already relayed out of `Mempool.add_tx`'s own default, or
+        gone from the mempool by the time this is asked -- since there
+        is nothing here to withhold it for.
+        """
+        if not min_fee_rate:
+            return True
+        tx = self.transactions.get(wtxid)
+        fee = self.fees.get(wtxid)
+        if tx is None or fee is None:
+            return True
+        return fee >= fee_from_vsize(tx.vsize, FeeRate(sats_per_kvbyte=min_fee_rate))

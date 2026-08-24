@@ -710,7 +710,7 @@ def test_a_transaction_that_verifies_is_kept_and_reported(
 ) -> None:
     import btclib_node.p2p.callbacks as cb
 
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: None)
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
     transaction = a_transaction()
     node = a_data_node()
     peer = a_peer(id=3)
@@ -747,7 +747,7 @@ def test_a_transaction_received_before_the_node_is_synced_is_dropped(
     # coincidental rejection
     import btclib_node.p2p.callbacks as cb
 
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: None)
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
     transaction = a_transaction()
     node = a_data_node(status=NodeStatus.HeaderSynced)
     tx(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
@@ -760,7 +760,7 @@ def test_a_transaction_already_held_is_not_reported_twice(
 ) -> None:
     import btclib_node.p2p.callbacks as cb
 
-    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: None)
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
     transaction = a_transaction()
     node = a_data_node()
     node.mempool.add_tx(transaction)

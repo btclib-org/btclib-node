@@ -70,7 +70,7 @@ def test_send_tx(tmp_path: Path) -> None:
 
     assert node1.mempool.size == 0
 
-    node2.p2p_manager.broadcast_raw_transaction(tx)
+    node2.p2p_manager.broadcast_raw_transaction(tx, 1000)
 
     try:
         wait_until(lambda: node1.mempool.size)

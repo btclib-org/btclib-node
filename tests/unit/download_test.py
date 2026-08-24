@@ -17,11 +17,14 @@ from collections.abc import Sequence
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
+from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.inventory import GetData, Inv
 
 from btclib_node.constants import NodeStatus
 from btclib_node.download import DownloadManager
 from btclib_node.log import Logger
+from btclib_node.mempool import Mempool
+from tests.helpers import generate_random_transaction
 
 if TYPE_CHECKING:
     from btclib_node import Node
@@ -37,6 +40,7 @@ def a_conn(
     queue: list[bytes] | None = None,
     last_block: float | None = None,
     relay_tx: bool = True,
+    feefilter: int = 0,
 ) -> Any:
     sent: list[Any] = []
     return SimpleNamespace(
@@ -44,6 +48,7 @@ def a_conn(
         send=sent.append,
         sent=sent,
         relay_tx=relay_tx,
+        feefilter=feefilter,
         download_queue=queue if queue is not None else [],
         pending_eviction=False,
         last_block_timestamp=time.time() if last_block is None else last_block,
@@ -56,11 +61,13 @@ def make_manager(
     *,
     status: NodeStatus = NodeStatus.BlockSynced,
     block_index: Any | None = None,
+    mempool: Any | None = None,
 ) -> DownloadManager:
     node = SimpleNamespace(
         status=status,
         p2p_manager=SimpleNamespace(connections={conn.id: conn for conn in conns}),
         chainstate=SimpleNamespace(block_index=block_index),
+        mempool=mempool if mempool is not None else Mempool(Logger(debug=True)),
     )
     return DownloadManager(cast("Node", node), Logger(debug=True))
 
@@ -180,6 +187,46 @@ def test_a_transaction_is_announced_to_the_peers_that_do_not_have_it() -> None:
     assert not only(announcer, Inv)
     (inv,) = only(other, Inv)
     assert hashes_of(inv) == received
+
+
+def test_a_peer_s_feefilter_withholds_a_transaction_below_its_rate() -> None:
+    # BIP133: `wants` asked for nothing below 1000 sat/kvB, and this
+    # transaction pays less
+    sender, wants = a_conn(1), a_conn(2, feefilter=1000)
+    mempool = Mempool(Logger(debug=True))
+    tx = generate_random_transaction()
+    mempool.add_tx(tx, 1)
+    manager = make_manager([sender, wants], mempool=mempool)
+    manager.received_txs = [(1, tx.hash)]
+    manager.tx_download()
+    assert not only(wants, Inv)
+
+
+def test_a_peer_s_feefilter_still_announces_a_transaction_at_its_rate() -> None:
+    sender, wants = a_conn(1), a_conn(2, feefilter=1000)
+    mempool = Mempool(Logger(debug=True))
+    tx = generate_random_transaction()
+    mempool.add_tx(tx, fee_from_vsize(tx.vsize, FeeRate(sats_per_kvbyte=1000)))
+    manager = make_manager([sender, wants], mempool=mempool)
+    manager.received_txs = [(1, tx.hash)]
+    manager.tx_download()
+    (inv,) = only(wants, Inv)
+    assert hashes_of(inv) == [tx.hash]
+
+
+def test_a_transaction_unknown_to_the_mempool_is_announced_regardless_of_a_filter() -> (
+    None
+):
+    # a wtxid this mempool holds no fee for -- an edge the production
+    # path does not reach, since received_txs only ever names a
+    # transaction Mempool.add_tx has just accepted -- clears every
+    # rate rather than being silently withheld
+    sender, wants = a_conn(1), a_conn(2, feefilter=1000)
+    manager = make_manager([sender, wants])
+    manager.received_txs = [(1, a_hash(1))]
+    manager.tx_download()
+    (inv,) = only(wants, Inv)
+    assert hashes_of(inv) == [a_hash(1)]
 
 
 def test_a_peer_still_wanting_something_else_is_asked_for_it() -> None:

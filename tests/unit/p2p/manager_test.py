@@ -19,6 +19,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast
 
 import pytest
+from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 from btclib.p2p.keepalive import Ping
 from btclib.p2p.payload import Payload
@@ -46,6 +47,7 @@ def a_conn(
     last_receive: float | None = None,
     address: NetworkAddressV2 | None = None,
     relay_tx: bool = True,
+    feefilter: int = 0,
 ) -> Any:
     conn = SimpleNamespace(
         id=conn_id,
@@ -54,6 +56,7 @@ def a_conn(
         last_receive=time.time() if last_receive is None else last_receive,
         ping_sent=0,
         relay_tx=relay_tx,
+        feefilter=feefilter,
         sent=[],
         stopped=[],
     )
@@ -426,7 +429,7 @@ def test_a_transaction_of_our_own_goes_only_to_the_peers_that_want_them(
     wants, declined = a_conn(1), a_conn(2, relay_tx=False)
     manager = a_manager([wants, declined])
     tx = generate_random_transaction()
-    manager.broadcast_raw_transaction(tx)
+    manager.broadcast_raw_transaction(tx, 1000)
     (sent,) = wants.sent
     assert sent.tx.id == tx.id
     assert declined.sent == []
@@ -441,7 +444,7 @@ def test_a_transaction_of_our_own_does_not_reach_a_connection_still_pending(
     pending = a_conn(1, status=P2pConnStatus.Open)
     manager = a_manager()
     manager.pending_connections[pending.id] = pending
-    manager.broadcast_raw_transaction(generate_random_transaction())
+    manager.broadcast_raw_transaction(generate_random_transaction(), 1000)
     assert pending.sent == []
 
 
@@ -524,10 +527,33 @@ def test_a_transaction_is_relayed_with_its_witness(a_manager: AManagerFactory) -
     conn = a_conn(1)
     manager = a_manager([conn])
     tx = generate_random_transaction()
-    manager.broadcast_raw_transaction(tx)
+    manager.broadcast_raw_transaction(tx, 1000)
     (payload,) = conn.sent
     assert payload.tx == tx
     assert payload.include_witness
+
+
+def test_a_transaction_of_our_own_below_a_peer_s_feefilter_is_withheld(
+    a_manager: AManagerFactory,
+) -> None:
+    conn = a_conn(1, feefilter=1000)
+    manager = a_manager([conn])
+    tx = generate_random_transaction()
+    required = fee_from_vsize(tx.vsize, FeeRate(sats_per_kvbyte=1000))
+    manager.broadcast_raw_transaction(tx, required - 1)
+    assert conn.sent == []
+
+
+def test_a_transaction_of_our_own_at_a_peer_s_feefilter_still_reaches_it(
+    a_manager: AManagerFactory,
+) -> None:
+    conn = a_conn(1, feefilter=1000)
+    manager = a_manager([conn])
+    tx = generate_random_transaction()
+    required = fee_from_vsize(tx.vsize, FeeRate(sats_per_kvbyte=1000))
+    manager.broadcast_raw_transaction(tx, required)
+    (payload,) = conn.sent
+    assert payload.tx == tx
 
 
 def a_running_manager(a_manager: AManagerFactory, port: int) -> P2pManager:

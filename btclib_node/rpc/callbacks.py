@@ -492,9 +492,9 @@ def send_raw_transaction(node: Node, conn: Connection, params: list[Any]) -> str
     except Exception:
         return None
     try:
-        verify_mempool_acceptance(node, tx)
-        node.mempool.add_tx(tx)
-        node.p2p_manager.broadcast_raw_transaction(tx)
+        fee = verify_mempool_acceptance(node, tx)
+        node.mempool.add_tx(tx, fee)
+        node.p2p_manager.broadcast_raw_transaction(tx, fee)
     except BTClibValueError:
         # tolerated here alone, and only until #83 decides what a
         # rejected transaction is answered with
