@@ -3,6 +3,7 @@
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
 import time
+from bisect import bisect_left
 from collections import Counter
 from random import SystemRandom
 from typing import TYPE_CHECKING
@@ -10,8 +11,9 @@ from typing import TYPE_CHECKING
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 from btclib.p2p.inventory import GetData, Inv, Inventory, InventoryType
 from btclib.p2p.limits import MAX_INV_SZ
+from btclib.p2p.negotiation import FeeFilter
 
-from btclib_node.constants import NodeStatus
+from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.log import Logger
 
 if TYPE_CHECKING:
@@ -42,11 +44,75 @@ _OUTBOUND_TX_ANNOUNCE_INTERVAL = 2.0
 # alike beyond this one number. btclib-org/btclib-node#289
 _TX_REQUEST_TIMEOUT = 60.0
 
+# Core's own `AVG_FEEFILTER_BROADCAST_INTERVAL` (10min) and
+# `MAX_FEEFILTER_CHANGE_DELAY` (5min), `net_processing.cpp`, same commit:
+# the mean of the exponential draw `_send_due_feefilters` makes for a
+# connection's ordinary resend, and the bound a large-enough move pulls
+# that draw forward to instead.
+_AVG_FEEFILTER_BROADCAST_INTERVAL = 600.0
+_MAX_FEEFILTER_CHANGE_DELAY = 300.0
+
+# `FeeFilterRounder`'s own `FEE_FILTER_SPACING`/`MAX_FILTER_FEERATE`
+# (`policy/fees/block_policy_estimator.h`, same commit): the geometric
+# spacing `_fee_filter_buckets` grows its bucket set by, and the sat/kvB
+# ceiling it stops at.
+_FEE_FILTER_SPACING = 1.1
+_MAX_FILTER_FEERATE = 1e7
+
 # `rand_exp_duration`, the same file: a CSPRNG rather than a statistical
 # one, for the same reason `secrets` is what the rest of this tree draws
 # a peer-facing nonce or choice from -- this schedule is exactly what a
 # peer is meant not to be able to predict.
 _rng = SystemRandom()
+
+
+def _fee_filter_buckets(min_relay_feerate: int) -> list[float]:
+    """Return the sat/kvB boundaries `_round_fee_filter` may round to.
+
+    Core's own `MakeFeeSet` (`policy/fees/block_policy_estimator.cpp`,
+    bitcoin/bitcoin@58a7869f86): zero, then a geometric series from half
+    `min_relay_feerate` (never under 1) up to `_MAX_FILTER_FEERATE`,
+    spaced by `_FEE_FILTER_SPACING`. Kept as `float` and not rounded
+    here: Core's own `std::set<double>` holds the raw boundary too, and
+    only the value `_round_fee_filter` finally selects is ever
+    truncated (`static_cast<CAmount>`) -- rounding a boundary to build
+    this set would select a different sat/kvB than Core does for a
+    boundary that was never an integer to begin with, 137.7 truncating
+    to 137 there against rounding to 138 here. Built once, from
+    `Config.min_relay_feerate`, rather than a module constant, since
+    that field is configurable and Core's own equivalent --
+    `-minrelaytxfee`, not the incremental fee `mempool.py`'s own
+    constant of the same default value is -- is what this set is keyed
+    to (`m_fee_filter_rounder{CFeeRate{DEFAULT_MIN_RELAY_TX_FEE}, ...}`,
+    `net_processing.cpp`).
+    """
+    buckets = {0.0}
+    boundary = float(max(1, min_relay_feerate // 2))
+    while boundary <= _MAX_FILTER_FEERATE:
+        buckets.add(boundary)
+        boundary *= _FEE_FILTER_SPACING
+    return sorted(buckets)
+
+
+def _round_fee_filter(rate: int, buckets: list[float]) -> int:
+    """Quantize a feerate to one of `buckets`, for privacy on broadcast.
+
+    Core's own `FeeFilterRounder::round`
+    (`policy/fees/block_policy_estimator.cpp`, same commit): the lowest
+    bucket at or above `rate`, unless that is the top of the set or a
+    2-in-3 draw says round down instead -- so this node's own rolling
+    minimum is not readable exactly from what it tells a peer, and a
+    peer that watches for the transition between two adjacent buckets
+    still cannot tell it apart from the coin landing the other way.
+    The selected boundary is truncated toward zero on the way out
+    (`static_cast<CAmount>`; Python's `int()` does the same for a
+    positive value), Core's own final step rather than a rounding this
+    set already did while it was built.
+    """
+    index = bisect_left(buckets, rate)
+    if index == len(buckets) or (index != 0 and _rng.randrange(3) != 0):
+        index -= 1
+    return int(buckets[index])
 
 
 def _inbound_net_class(address: NetworkAddressV2) -> BIP155Network | int:
@@ -102,9 +168,31 @@ class DownloadManager:
         # it.
         self._next_inv_to_inbounds: dict[BIP155Network | int, float] = {}
 
+        # Built once, from this node's own configured floor, rather than
+        # per call: Core's own `FeeFilterRounder` is a `PeerManagerImpl`
+        # member constructed once too. `_max_feefilter` is what every
+        # rate `_round_fee_filter` is given rounds to once it is at or
+        # above the top bucket -- `_send_due_feefilters`'s own stand-in
+        # for Core's `MAX_FILTER`, computed there by rounding `MAX_MONEY`
+        # through the same set rather than read off it directly, which
+        # is what forces every such value into the top bucket
+        # deterministically instead of through `_round_fee_filter`'s own
+        # coin flip: `bisect_left` finds the top bucket itself already
+        # placed at `len(buckets) - 1`, only "at or past the end" -- not
+        # "equal to the last element" -- always forces the round-down
+        # branch. btclib-org/btclib-node#275
+        self._fee_filter_buckets = _fee_filter_buckets(
+            node.config.min_relay_feerate.sats_per_kvbyte
+        )
+        # int(), not the top bucket's own float: BIP133's wire value is
+        # an integer, and every other value this module ever sends is
+        # one too, by way of _round_fee_filter's identical truncation.
+        self._max_feefilter = int(self._fee_filter_buckets[-1])
+
     def step(self) -> None:
         self.block_download()
         self.tx_download()
+        self._send_due_feefilters()
 
     def tx_download(self) -> None:
         if self.node.status < NodeStatus.BlockSynced:
@@ -279,6 +367,97 @@ class DownloadManager:
             else:
                 conn.next_inv_send_time = now + _rng.expovariate(
                     1 / _OUTBOUND_TX_ANNOUNCE_INTERVAL
+                )
+
+    def _send_due_feefilters(self) -> None:
+        """Tell every connected peer this node's own current relay floor.
+
+        Core's own `MaybeSendFeefilter` (`net_processing.cpp`,
+        bitcoin/bitcoin@58a7869f86), reached from its per-peer message
+        loop for every peer regardless of what else that pass sent --
+        `_send_due_announcements`'s own `conn.relay_tx` gate does not
+        apply here, since BIP133's `feefilter` says what this node will
+        not send *to* a peer, independent of whether that peer asked to
+        be sent transactions at all. `Connection.status` stands in for
+        Core's `fSuccessfullyConnected`: a connection still mid-handshake
+        has no peer at the other end of `Connection.send` yet.
+
+        `NetPermissionFlags::ForceRelay`, block-relay-only outbound
+        connections and `-blocksonly` (`m_opts.ignore_incoming_txs`) all
+        have nothing to read here and are not reproduced: every one is
+        a permission, connection-kind or run mode this tree does not
+        have -- `P2pManager` dials and accepts one connection kind, and
+        nothing here grants a peer immunity from this node's own
+        filter. `Connection.send_version`'s own `relay=True` argues the
+        same absence already, for the identical set of Core concepts
+        read against `RejectIncomingTxs`.
+
+        Core's `GetCommonVersion() < FEEFILTER_VERSION` return is absent
+        on different grounds, this tree having a peer version where it
+        has none of the above: the `version` handshake callback
+        discourages and stops a peer below `ProtocolVersion`, which
+        sits above Core's `FEEFILTER_VERSION`, so a connection reached
+        here has cleared that floor already.
+        """
+        now = time.time()
+        # Core's own `IsInitialBlockDownload()`: while still syncing,
+        # `handle_p2p_handshake`'s own `tx` handler already drops
+        # anything received rather than queue it (btclib-org/btclib-node#129),
+        # so this is telling a peer what this node already does rather
+        # than computing a real minimum there is not yet a synced
+        # mempool to have one.
+        ibd = self.node.status < NodeStatus.BlockSynced
+        current_filter = (
+            self._max_feefilter
+            if ibd
+            else self.node.mempool.get_min_fee_rate().sats_per_kvbyte
+        )
+        min_relay_feerate = self.node.config.min_relay_feerate.sats_per_kvbyte
+
+        for conn in self.node.p2p_manager.connections.copy().values():
+            if conn.status != P2pConnStatus.Connected:
+                continue
+            # Once this node is done with IBD, a peer sitting on the
+            # `_max_feefilter` this branch sent it during IBD is not
+            # left there until its own ordinary schedule comes due --
+            # Core's own `if (peer.m_fee_filter_sent == MAX_FILTER)
+            # peer.m_next_send_feefilter = 0us`.
+            if not ibd and conn.feefilter_sent == self._max_feefilter:
+                conn.next_feefilter_send_time = 0.0
+
+            if now > conn.next_feefilter_send_time:
+                filter_to_send = (
+                    self._max_feefilter
+                    if ibd
+                    else _round_fee_filter(current_filter, self._fee_filter_buckets)
+                )
+                # This node's own outgoing filter never asks a peer to
+                # withhold what BIP133's own floor already relays.
+                filter_to_send = max(filter_to_send, min_relay_feerate)
+                if filter_to_send != conn.feefilter_sent:
+                    conn.send(FeeFilter(filter_to_send))
+                    conn.feefilter_sent = filter_to_send
+                conn.next_feefilter_send_time = now + _rng.expovariate(
+                    1 / _AVG_FEEFILTER_BROADCAST_INTERVAL
+                )
+            elif now + _MAX_FEEFILTER_CHANGE_DELAY < conn.next_feefilter_send_time and (
+                current_filter < 3 * conn.feefilter_sent // 4
+                or current_filter > 4 * conn.feefilter_sent // 3
+            ):
+                # The unrounded rate has moved far enough from what this
+                # peer was last sent that waiting for the ordinary,
+                # several-minutes-average schedule would leave it
+                # filtering on a stale floor for too long -- pulled
+                # forward to within `_MAX_FEEFILTER_CHANGE_DELAY` rather
+                # than sent immediately, so the move itself is not
+                # timestamped exactly either. `//` rather than `/`:
+                # Core's own comparison (`net_processing.cpp:5859`) is
+                # over `CAmount`, `int64_t`, so `3 * m_fee_filter_sent /
+                # 4` is truncating integer division there too, not an
+                # approximation this module tightens by keeping the
+                # remainder.
+                conn.next_feefilter_send_time = now + _rng.uniform(
+                    0, _MAX_FEEFILTER_CHANGE_DELAY
                 )
 
     def _next_inbound_inv_time(self, address: NetworkAddressV2, now: float) -> float:

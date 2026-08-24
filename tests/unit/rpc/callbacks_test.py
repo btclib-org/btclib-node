@@ -11,6 +11,7 @@ node did not follow, a peer that goes away mid-lookup, or a transaction
 the mempool refuses.
 """
 
+import time
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, cast
@@ -18,6 +19,7 @@ from typing import TYPE_CHECKING, Any, NoReturn, cast
 import pytest
 from btclib.block import BlockHeader
 from btclib.exceptions import BTClibValueError
+from btclib.fee import FeeRate
 from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.script import script
 from btclib.script.witness import Witness
@@ -27,6 +29,7 @@ from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
 from btclib_node.chains import Main, RegTest
+from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import P2pConnStatus
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.log import Logger
@@ -51,6 +54,7 @@ from btclib_node.rpc.callbacks import (
 # aliased: pytest collects a module-level `test*` as a test, and this
 # one is a production function that would be handed fixtures
 from btclib_node.rpc.callbacks import test_mempool_accept as mempool_accept
+from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import RpcError, RpcErrorCode
 from tests.helpers import generate_random_header_chain
 
@@ -130,6 +134,7 @@ def a_node(
     mempool: Mempool | None = None,
     accept: Any = None,
     pending: dict[int, Any] | None = None,
+    min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
 ) -> Any:
     return SimpleNamespace(
         p2p_manager=SimpleNamespace(
@@ -138,6 +143,7 @@ def a_node(
             ping_all=lambda: None,
         ),
         mempool=mempool if mempool is not None else Mempool(Logger(debug=True)),
+        config=SimpleNamespace(min_relay_feerate=min_relay_feerate),
         _accept=accept,
     )
 
@@ -224,7 +230,50 @@ def test_the_mempool_reports_its_size_and_bytes() -> None:
     tx = a_tx()
     mempool.add_tx(tx)
     out = get_mempool_info(a_node(mempool=mempool), _CONN, [])
-    assert out == {"loaded": True, "size": 1, "bytes": tx.vsize}
+    assert out["loaded"] is True
+    assert out["size"] == 1
+    assert out["bytes"] == tx.vsize
+
+
+def test_the_mempool_reports_its_own_limit_as_maxmempool() -> None:
+    mempool = Mempool(Logger(debug=True))
+    mempool.bytesize_limit = 12345
+    out = get_mempool_info(a_node(mempool=mempool), _CONN, [])
+    assert out["maxmempool"] == 12345
+
+
+def test_mempoolminfee_floors_at_the_configured_relay_feerate() -> None:
+    # the mempool's own rolling minimum is 0 until something evicts
+    mempool = Mempool(Logger(debug=True))
+    node = a_node(mempool=mempool, min_relay_feerate=FeeRate(sats_per_kvbyte=500))
+    out = get_mempool_info(node, _CONN, [])
+    # BTC/kvB, Core's own ValueFromAmount shape: 500 sat/kvB is
+    # 0.00000500 BTC/kvB, exact to eight decimals rather than a float's
+    # own repr.
+    assert isinstance(out["mempoolminfee"], RawJSON)
+    assert out["mempoolminfee"].text == "0.00000500"
+
+
+def test_mempoolminfee_rises_with_the_mempools_own_rolling_minimum() -> None:
+    mempool = Mempool(Logger(debug=True))
+    mempool._rolling_min_fee_rate = 5000.0
+    mempool._block_since_last_rolling_fee_bump = True
+    mempool._last_rolling_fee_update = time.time()  # nothing decayed yet
+    node = a_node(mempool=mempool, min_relay_feerate=FeeRate(sats_per_kvbyte=500))
+    out = get_mempool_info(node, _CONN, [])
+    assert out["mempoolminfee"].text == "0.00005000"
+
+
+def test_mempoolminfee_at_a_magnitude_a_float_would_write_in_exponent_notation() -> (
+    None
+):
+    # 1 sat/kvB is 1e-08 BTC/kvB in a Python float's own repr -- exactly
+    # the magnitude Core's `%d.%08d` format never produces, and the case
+    # RawJSON exists for
+    mempool = Mempool(Logger(debug=True))
+    node = a_node(mempool=mempool, min_relay_feerate=FeeRate(sats_per_kvbyte=1))
+    out = get_mempool_info(node, _CONN, [])
+    assert out["mempoolminfee"].text == "0.00000001"
 
 
 def test_the_raw_mempool_is_a_plain_list_of_txids_by_default() -> None:

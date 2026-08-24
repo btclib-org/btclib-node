@@ -22,9 +22,11 @@ from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.addrv2 import NetworkAddressV2
 from btclib.p2p.inventory import GetData, Inv
 from btclib.p2p.limits import MAX_INV_SZ
+from btclib.p2p.negotiation import FeeFilter
 
 import btclib_node.download as download_module
-from btclib_node.constants import NodeStatus
+from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
+from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.download import DownloadManager
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
@@ -49,6 +51,9 @@ def a_conn(
     inbound: bool = True,
     pending_eviction: bool = False,
     address: NetworkAddressV2 | None = None,
+    status: Any = P2pConnStatus.Connected,
+    feefilter_sent: int = 0,
+    next_feefilter_send_time: float = 0.0,
 ) -> Any:
     sent: list[Any] = []
     return SimpleNamespace(
@@ -66,6 +71,9 @@ def a_conn(
         tx_announce_queue=[],
         next_inv_send_time=0.0,
         tx_requested={},
+        status=status,
+        feefilter_sent=feefilter_sent,
+        next_feefilter_send_time=next_feefilter_send_time,
     )
 
 
@@ -76,6 +84,7 @@ def make_manager(
     block_index: Any | None = None,
     mempool: Any | None = None,
     warm_worker_pool: Any = None,
+    min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
 ) -> DownloadManager:
     node = SimpleNamespace(
         status=status,
@@ -83,6 +92,7 @@ def make_manager(
         chainstate=SimpleNamespace(block_index=block_index),
         mempool=mempool if mempool is not None else Mempool(Logger(debug=True)),
         warm_worker_pool=warm_worker_pool or (lambda: None),
+        config=SimpleNamespace(min_relay_feerate=min_relay_feerate),
     )
     return DownloadManager(cast("Node", node), Logger(debug=True))
 
@@ -115,11 +125,18 @@ def only[M](conn: Any, kind: type[M]) -> list[M]:
 
 
 def test_a_step_asks_for_neither_kind_while_the_headers_are_syncing() -> None:
+    # _send_due_feefilters still runs while syncing -- Core's own
+    # MaybeSendFeefilter tells a peer MAX_MONEY during IBD rather than
+    # skip the send outright, so a step() while headers are syncing is
+    # not silent, only silent of GetData/Inv. btclib-org/btclib-node#275
     conn = a_conn(1)
     manager = make_manager([conn], status=NodeStatus.SyncingHeaders)
     manager.inv_txs = [(1, a_hash(1))]
     manager.step()
-    assert not conn.sent
+    assert not only(conn, GetData)
+    assert not only(conn, Inv)
+    (feefilter_msg,) = only(conn, FeeFilter)
+    assert feefilter_msg.feerate == manager._max_feefilter
 
 
 def test_a_transaction_a_peer_announced_is_asked_of_that_peer() -> None:
@@ -521,6 +538,186 @@ def test_both_lists_are_emptied_by_a_step() -> None:
     manager.tx_download()
     assert manager.inv_txs == []
     assert manager.received_txs == []
+
+
+def test_the_fee_filter_bucket_set_starts_at_zero_and_half_the_floor() -> None:
+    buckets = download_module._fee_filter_buckets(100)
+    assert buckets[0] == 0
+    assert buckets[1] == 50
+
+
+def test_the_fee_filter_bucket_set_never_drops_below_one_sat_per_kvb() -> None:
+    # Core's own MakeFeeSet: max(CAmount(1), min_incremental_fee/2) --
+    # a floor configured at 1 or 0 still gets a real second bucket
+    buckets = download_module._fee_filter_buckets(1)
+    assert buckets == [0, 1] or buckets[1] == 1
+
+
+def test_the_fee_filter_bucket_set_is_sorted_and_caps_near_the_ceiling() -> None:
+    buckets = download_module._fee_filter_buckets(100)
+    assert buckets == sorted(buckets)
+    assert buckets[-1] <= download_module._MAX_FILTER_FEERATE
+    assert (
+        buckets[-1]
+        > download_module._MAX_FILTER_FEERATE / download_module._FEE_FILTER_SPACING
+    )
+
+
+def test_rounding_below_the_first_bucket_always_gives_zero() -> None:
+    buckets = download_module._fee_filter_buckets(100)
+    assert download_module._round_fee_filter(0, buckets) == 0
+
+
+def test_rounding_above_the_last_bucket_always_gives_the_top_one() -> None:
+    buckets = download_module._fee_filter_buckets(100)
+    top = int(buckets[-1])
+    assert download_module._round_fee_filter(top * 10, buckets) == top
+
+
+def test_rounding_truncates_the_selected_boundary_rather_than_the_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Core's own MakeFeeSet keeps every boundary as a raw double and
+    # truncates only the value FeeFilterRounder::round finally selects
+    # (static_cast<CAmount>) -- so a boundary this set built that is not
+    # itself a whole number, floating-point arithmetic being what it is,
+    # is not rounded to one until it is chosen
+    buckets = download_module._fee_filter_buckets(100)
+    assert not buckets[2].is_integer()
+
+    monkeypatch.setattr(download_module._rng, "randrange", lambda _: 0)
+    assert download_module._round_fee_filter(int(buckets[2]), buckets) == int(
+        buckets[2]
+    )
+
+
+def test_rounding_at_a_bucket_boundary_can_go_either_way(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # FeeFilterRounder::round: a 2-in-3 draw rounds down to the bucket
+    # below even when the rate lands exactly on one, so this node's own
+    # rolling minimum is not readable exactly from what it tells a peer
+    buckets = download_module._fee_filter_buckets(100)
+    exact = int(buckets[2])
+
+    monkeypatch.setattr(download_module._rng, "randrange", lambda _: 0)
+    assert download_module._round_fee_filter(exact, buckets) == exact
+
+    monkeypatch.setattr(download_module._rng, "randrange", lambda _: 1)
+    assert download_module._round_fee_filter(exact, buckets) == int(buckets[1])
+
+
+def test_a_connection_still_mid_handshake_is_sent_no_feefilter() -> None:
+    conn = a_conn(1, status=P2pConnStatus.Open)
+    manager = make_manager([conn])
+    manager._send_due_feefilters()
+    assert not only(conn, FeeFilter)
+
+
+def test_a_fresh_connections_first_feefilter_is_sent_immediately() -> None:
+    # next_feefilter_send_time defaults to 0.0, "never scheduled", the
+    # same convention next_inv_send_time already uses
+    conn = a_conn(1)
+    manager = make_manager([conn], min_relay_feerate=FeeRate(sats_per_kvbyte=100))
+    manager._send_due_feefilters()
+    (sent,) = only(conn, FeeFilter)
+    assert sent.feerate == 100  # the mempool's own rolling minimum is 0
+    assert conn.feefilter_sent == 100
+    assert conn.next_feefilter_send_time > time.time()
+
+
+def test_a_connection_not_yet_due_is_sent_nothing_again() -> None:
+    conn = a_conn(1, feefilter_sent=100, next_feefilter_send_time=time.time() + 1000)
+    manager = make_manager([conn])
+    manager._send_due_feefilters()
+    assert not only(conn, FeeFilter)
+
+
+def test_an_unchanged_rate_is_not_resent_once_its_own_schedule_comes_due() -> None:
+    conn = a_conn(1, feefilter_sent=100, next_feefilter_send_time=0.0)
+    manager = make_manager([conn], min_relay_feerate=FeeRate(sats_per_kvbyte=100))
+    manager._send_due_feefilters()
+    assert not only(conn, FeeFilter)
+    # the schedule still moves even though nothing was sent
+    assert conn.next_feefilter_send_time > time.time()
+
+
+def test_the_floor_is_never_undercut_even_by_an_empty_mempools_own_zero() -> None:
+    conn = a_conn(1)
+    manager = make_manager([conn], min_relay_feerate=FeeRate(sats_per_kvbyte=500))
+    manager._send_due_feefilters()
+    (sent,) = only(conn, FeeFilter)
+    assert sent.feerate == 500
+
+
+def test_ibd_sends_every_connected_peer_the_top_bucket() -> None:
+    conn = a_conn(1)
+    manager = make_manager([conn], status=NodeStatus.SyncingHeaders)
+    manager._send_due_feefilters()
+    (sent,) = only(conn, FeeFilter)
+    assert sent.feerate == manager._max_feefilter
+
+
+def test_leaving_ibd_forces_an_immediate_resend_off_the_top_bucket() -> None:
+    conn = a_conn(1)
+    manager = make_manager([conn], status=NodeStatus.SyncingHeaders)
+    manager._send_due_feefilters()
+    assert conn.feefilter_sent == manager._max_feefilter
+    conn.sent.clear()
+    conn.next_feefilter_send_time = time.time() + 1000  # its ordinary schedule
+
+    manager.node.status = NodeStatus.BlockSynced
+    manager._send_due_feefilters()
+    (sent,) = only(conn, FeeFilter)
+    assert sent.feerate != manager._max_feefilter
+
+
+def test_a_large_enough_move_pulls_the_next_send_forward(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # currentFilter > 4 * peer.m_fee_filter_sent / 3: a rate that has
+    # risen by more than a third is not left on the peer's own several-
+    # minutes-average schedule
+    mempool = Mempool(Logger(debug=True))
+    mempool._rolling_min_fee_rate = 1000.0
+    mempool._block_since_last_rolling_fee_bump = True
+    mempool._last_rolling_fee_update = time.time()  # nothing decayed yet
+    far_future = time.time() + download_module._AVG_FEEFILTER_BROADCAST_INTERVAL
+    conn = a_conn(1, feefilter_sent=100, next_feefilter_send_time=far_future)
+    manager = make_manager([conn], mempool=mempool)
+
+    monkeypatch.setattr(download_module._rng, "uniform", lambda _lo, _hi: 1.0)
+    manager._send_due_feefilters()
+    assert not only(conn, FeeFilter)  # still not due, only rescheduled
+    assert conn.next_feefilter_send_time == pytest.approx(time.time() + 1.0)
+
+
+def test_a_small_move_does_not_pull_the_next_send_forward() -> None:
+    mempool = Mempool(Logger(debug=True))
+    mempool._rolling_min_fee_rate = 110.0
+    mempool._block_since_last_rolling_fee_bump = True
+    mempool._last_rolling_fee_update = time.time()  # nothing decayed yet
+    far_future = time.time() + download_module._AVG_FEEFILTER_BROADCAST_INTERVAL
+    conn = a_conn(1, feefilter_sent=100, next_feefilter_send_time=far_future)
+    manager = make_manager([conn], mempool=mempool)
+
+    manager._send_due_feefilters()
+    assert not only(conn, FeeFilter)
+    assert conn.next_feefilter_send_time == far_future
+
+
+def test_a_move_close_to_its_own_schedule_already_is_not_pulled_forward() -> None:
+    mempool = Mempool(Logger(debug=True))
+    mempool._rolling_min_fee_rate = 1000.0
+    mempool._block_since_last_rolling_fee_bump = True
+    mempool._last_rolling_fee_update = time.time()  # nothing decayed yet
+    soon = time.time() + 1.0  # inside MAX_FEEFILTER_CHANGE_DELAY already
+    conn = a_conn(1, feefilter_sent=100, next_feefilter_send_time=soon)
+    manager = make_manager([conn], mempool=mempool)
+
+    manager._send_due_feefilters()
+    assert not only(conn, FeeFilter)
+    assert conn.next_feefilter_send_time == soon
 
 
 class FakeBlockIndex:

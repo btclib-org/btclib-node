@@ -26,6 +26,7 @@ from btclib_node.rpc.connection import (
     MAX_HEADER_BYTES,
     Connection,
     JSONEncoder,
+    RawJSON,
 )
 from btclib_node.rpc.manager import RpcManager
 
@@ -205,6 +206,59 @@ def test_the_encoder_defers_to_json_for_what_is_not_bytes() -> None:
     assert json.dumps(b"\x01\x02", cls=JSONEncoder) == '"0102"'
     with pytest.raises(TypeError):
         json.dumps(object(), cls=JSONEncoder)
+
+
+def test_a_raw_json_value_with_no_mark_supplied_is_refused_like_any_other_object() -> (
+    None
+):
+    # only Connection.async_send is meant to construct JSONEncoder with
+    # a mark=; a RawJSON reaching one built without it (json.dumps's own
+    # default cls= use) has no placeholder to become, so it is refused
+    # the same as any other object json does not know how to encode
+    with pytest.raises(TypeError):
+        json.dumps(RawJSON("1.00000000"), cls=JSONEncoder)
+
+
+def test_a_raw_json_value_is_written_unquoted_and_verbatim() -> None:
+    # the whole point: an exact decimal string reaches the wire as a
+    # JSON number, not a quoted string and not round-tripped through a
+    # Python float -- 1e-08 is what float("0.00000001") would repr as
+    async def main() -> bytes:
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        theirs.setblocking(False)
+        loop = asyncio.get_running_loop()
+        conn = Connection(loop, ours, cast(RpcManager, SimpleNamespace(messages=[])), 0)
+        await conn.async_send([{"result": RawJSON("0.00000001"), "id": "x"}])
+        data = await loop.sock_recv(theirs, 4096)
+        theirs.close()
+        return data
+
+    data = asyncio.run(main())
+    head, _, body = data.partition(b"\r\n\r\n")
+    assert body == b'{"result":0.00000001,"id":"x"}\n'
+    assert int(head.split(b"Content-Length: ")[1].split(b"\r\n")[0]) == len(body)
+
+
+def test_a_raw_json_value_does_not_swallow_a_field_containing_its_own_mark() -> None:
+    # a string field that happens to contain the marker's own text is
+    # not mistaken for a RawJSON placeholder -- the substitution only
+    # fires where the mark appears twice inside its own pair of quotes
+    async def main() -> bytes:
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        theirs.setblocking(False)
+        loop = asyncio.get_running_loop()
+        conn = Connection(loop, ours, cast(RpcManager, SimpleNamespace(messages=[])), 0)
+        await conn.async_send(
+            [{"result": "RawJSONx", "extra": RawJSON("1.00000000"), "id": "x"}]
+        )
+        data = await loop.sock_recv(theirs, 4096)
+        theirs.close()
+        return data
+
+    body = asyncio.run(main()).partition(b"\r\n\r\n")[2]
+    assert json.loads(body) == {"result": "RawJSONx", "extra": 1.0, "id": "x"}
 
 
 def test_close_cancels_the_task_it_was_given() -> None:
