@@ -18,6 +18,30 @@ to check the guess.
 
 ## Unreleased
 
+### `Node`'s worker pool is sized to the machine, and always closed
+
+- **`_WORKER_PROCESSES` is 8 outside of a test run and the machine's core
+  count divided across `pytest-xdist`'s own workers under one** (closes
+  #46). `-n auto` runs one worker per core, and each independently built
+  every `Node` under test a pool of 8 processes on top of that; on a
+  ten-core machine under ten workers that is up to 80 processes
+  contending with the ten the cores can actually run, which is what a
+  `wait_until` timeout in the functional suite was measuring. Reading
+  `PYTEST_XDIST_WORKER_COUNT`, which `pytest-xdist` sets in a worker's
+  environment before any test module is imported, keeps the total near
+  the core count instead.
+- **`run`'s teardown joins the worker pool after `terminate()` and drops
+  the reference, and `Node.__del__` closes it too, for a `Node` that
+  never reaches that teardown at all** (closes #195). `terminate()`
+  alone left the pool's workers unreaped, but the reference it left
+  behind was not on its own the source of the `Exception ignored ...
+  OSError: [Errno 9] Bad file descriptor` reported against #195:
+  `tests/unit/main_test.py` builds several `Node`s and calls
+  `update_chain` against them directly, never starting the thread
+  `run`'s own teardown lives on, so their pools were never terminated at
+  all rather than merely unjoined -- and `__del__` is what a `Node`
+  built and used that way still has.
+
 ### A relay octet that is neither `0x00` nor `0x01` keeps costing the peer
 
 - **`Version.parse` raising on a relay flag outside `0x00`/`0x01` is this
