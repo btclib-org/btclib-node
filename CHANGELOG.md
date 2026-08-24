@@ -37,6 +37,16 @@ to check the guess.
   `0x01`. Pinned by
   `test_a_relay_octet_that_is_neither_0_nor_1_still_costs_the_peer`.
 
+### `sendrawtransaction` refuses a transaction it cannot decode
+
+- **A `rawtx` `Tx.parse` cannot decode raises `RpcError` with the new
+  `DESERIALIZATION_ERROR` (`-22`) and Core's own message, "TX decode
+  failed. Make sure the tx has at least one input."** (#274), rather
+  than being caught by a bare `except Exception` and answered `{"result":
+  null}` -- a shape a JSON-RPC client reads as success. A `rawtx` of a
+  JSON type other than a string is now named with `TYPE_ERROR`, the same
+  way `getrawtransaction`'s `txid` already is.
+
 ### `AManager`, the `Node.run` test stand-in, carries a `peer_db`
 
 - **`AManager` gains a `peer_db` attribute whose `close` is a no-op**

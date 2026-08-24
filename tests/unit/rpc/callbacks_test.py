@@ -575,8 +575,44 @@ def test_a_relayed_transaction_is_answered_with_its_txid(
     assert broadcast == [tx]
 
 
-def test_something_that_is_not_a_transaction_is_answered_with_nothing() -> None:
-    assert send_raw_transaction(a_node(), _CONN, ["not a transaction"]) is None
+def test_something_that_is_not_a_transaction_is_refused_rather_than_relayed() -> None:
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(a_node(), _CONN, ["not a transaction"])
+    assert raised.value.code == RpcErrorCode.DESERIALIZATION_ERROR
+    assert raised.value.message == (
+        "TX decode failed. Make sure the tx has at least one input."
+    )
+
+
+def test_a_transaction_truncated_inside_a_script_is_the_same_refusal() -> None:
+    # a scriptPubKey whose declared length reaches past the octets that
+    # follow it makes Tx.parse raise BTClibRuntimeError rather than the
+    # BTClibValueError the previous test's unparsable hex raises -- both
+    # are a decode failure and answered the same way
+    truncated = (
+        "01000000"  # version
+        "01"  # input count
+        + "00" * 32  # outpoint tx_id
+        + "00000000"  # outpoint vout
+        + "00"  # scriptSig, empty
+        + "ffffffff"  # sequence
+        + "01"  # output count
+        + "00" * 8  # value
+        + "05"  # scriptPubKey length 5, with nothing after it
+    )
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(a_node(), _CONN, [truncated])
+    assert raised.value.code == RpcErrorCode.DESERIALIZATION_ERROR
+
+
+def test_a_rawtx_of_the_wrong_json_type_is_named() -> None:
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(a_node(), _CONN, [5])
+    assert raised.value.code == RpcErrorCode.TYPE_ERROR
+    assert (
+        raised.value.message
+        == "JSON value of type number is not of expected type string"
+    )
 
 
 def test_a_transaction_the_mempool_will_not_have_is_not_reported_relayed(
