@@ -156,10 +156,26 @@ class DownloadManager:
                 # transaction paid, rather than re-checked on every
                 # `_send_due_announcements` drain of an unchanging queue.
                 # btclib-org/btclib-node#260
+                #
+                # `wtxid in self.node.mempool.transactions` is checked
+                # here too, and not left to `meets_fee_rate` alone: that
+                # method reads a wtxid it holds no fee for as clearing
+                # every rate, which is right for its own purpose -- a
+                # wtxid already relayed out of `Mempool.add_tx`'s own
+                # default -- and wrong for this one. Eviction
+                # (`Mempool._evict_to_limit`) can remove a wtxid this
+                # same batch already recorded in `received` before this
+                # loop reaches it, another transaction in the same batch
+                # having evicted it moments earlier; queuing an
+                # announcement for it regardless would be exactly
+                # #277/#293's own defect, reached through eviction rather
+                # than a full mempool's outright refusal.
+                # btclib-org/btclib-node#294
                 new_for_conn = [
                     wtxid
                     for wtxid in received
                     if wtxid not in known
+                    and wtxid in self.node.mempool.transactions
                     and self.node.mempool.meets_fee_rate(wtxid, conn.feefilter)
                 ]
                 for wtxid in new_for_conn:
@@ -232,7 +248,24 @@ class DownloadManager:
                 # (net_processing.cpp) answers the same way: several
                 # `MakeAndPushMessage` calls of at most `MAX_INV_SZ` each
                 # rather than one built whole. btclib-org/btclib-node#282
-                queue = conn.tx_announce_queue
+                #
+                # Filtered against current mempool membership here, at
+                # send time, rather than trusted from when it was queued:
+                # a wtxid can sit in this queue for this connection's
+                # whole schedule, easily longer than the time between two
+                # eviction rounds (`Mempool._evict_to_limit`), so an entry
+                # that was held when queued can be gone by the time this
+                # runs. Core's own trickle send re-derives its inv from
+                # the live mempool at this same point
+                # (`CTxMemPool::ExtractBestByMiningScoreWithTopology`,
+                # net_processing.cpp) rather than trusting a queue of
+                # hashes either, for the same reason.
+                # btclib-org/btclib-node#294
+                queue = [
+                    wtxid
+                    for wtxid in conn.tx_announce_queue
+                    if wtxid in self.node.mempool.transactions
+                ]
                 for start in range(0, len(queue), MAX_INV_SZ):
                     chunk = queue[start : start + MAX_INV_SZ]
                     conn.send(

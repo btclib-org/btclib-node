@@ -87,6 +87,25 @@ def make_manager(
     return DownloadManager(cast("Node", node), Logger(debug=True))
 
 
+def hold(manager: DownloadManager, *wtxids: bytes) -> None:
+    """Make each wtxid a member of the manager's own mempool, minimally.
+
+    `tx_download` and `_send_due_announcements` now check
+    `Mempool.transactions` membership before queuing or sending an
+    announcement (btclib-org/btclib-node#294), so a synthetic wtxid this
+    file builds with `a_hash` needs an entry there too, or it is read as
+    already evicted -- the same guard that stops a real eviction from
+    being announced. What is stored under it does not matter to that
+    check, only that the key is present, so this skips `Mempool.add_tx`
+    and its own `tx.hash == wtxid` invariant rather than manufacturing a
+    transaction that hashes to a chosen 32 bytes.
+    """
+    for wtxid in wtxids:
+        cast("Any", manager.node).mempool.transactions[wtxid] = (
+            generate_random_transaction()
+        )
+
+
 def hashes_of(message: GetData | Inv) -> list[bytes]:
     return [item.hash for item in message.items]
 
@@ -148,6 +167,7 @@ def test_a_single_transaction_is_announced_rather_than_held_back() -> None:
     # transaction is ever announced at all
     sender, other = a_conn(1), a_conn(2)
     manager = make_manager([sender, other])
+    hold(manager, a_hash(1))
     manager.received_txs = [(1, a_hash(1))]
     manager.tx_download()
     (inv,) = only(other, Inv)
@@ -172,6 +192,7 @@ def test_a_peer_that_asked_for_no_transactions_is_sent_none() -> None:
     # flag rather than about a step that announced to nobody.
     sender, declined, wants = a_conn(1), a_conn(2, relay_tx=False), a_conn(3)
     manager = make_manager([sender, declined, wants])
+    hold(manager, a_hash(1))
     manager.received_txs = [(1, a_hash(1))]
     manager.tx_download()
     assert not only(declined, Inv)
@@ -194,6 +215,7 @@ def test_a_transaction_is_announced_to_the_peers_that_do_not_have_it() -> None:
     sender, announcer, other = a_conn(1), a_conn(2), a_conn(3)
     manager = make_manager([sender, announcer, other])
     received = [a_hash(n) for n in range(1, 7)]
+    hold(manager, *received)
     manager.received_txs = [(1, wtxid) for wtxid in received]
     # peer 2 announced them, so it has them; peer 1 sent them
     manager.inv_txs = [(2, wtxid) for wtxid in received]
@@ -229,19 +251,18 @@ def test_a_peer_s_feefilter_still_announces_a_transaction_at_its_rate() -> None:
     assert hashes_of(inv) == [tx.hash]
 
 
-def test_a_transaction_unknown_to_the_mempool_is_announced_regardless_of_a_filter() -> (
-    None
-):
-    # a wtxid this mempool holds no fee for -- an edge the production
-    # path does not reach, since received_txs only ever names a
-    # transaction Mempool.add_tx has just accepted -- clears every
-    # rate rather than being silently withheld
-    sender, wants = a_conn(1), a_conn(2, feefilter=1000)
+def test_a_wtxid_the_mempool_does_not_hold_is_never_announced() -> None:
+    # `received_txs` names a wtxid `Mempool.add_tx` accepted at the time
+    # it was queued, but eviction (`Mempool._evict_to_limit`) can have
+    # taken it back out before `tx_download` next runs -- announcing it
+    # regardless would be #277's own defect reached through eviction
+    # rather than a full mempool's outright refusal.
+    # btclib-org/btclib-node#294
+    sender, wants = a_conn(1), a_conn(2)
     manager = make_manager([sender, wants])
     manager.received_txs = [(1, a_hash(1))]
     manager.tx_download()
-    (inv,) = only(wants, Inv)
-    assert hashes_of(inv) == [a_hash(1)]
+    assert not only(wants, Inv)
 
 
 def test_a_peer_still_wanting_something_else_is_asked_for_it() -> None:
@@ -261,6 +282,7 @@ def test_a_queue_past_max_inv_sz_is_sent_as_several_invs() -> None:
     other = a_conn(1)
     manager = make_manager([other])
     other.tx_announce_queue = [a_hash(n) for n in range(MAX_INV_SZ + 1)]
+    hold(manager, *other.tx_announce_queue)
     manager._send_due_announcements()
     first, second = only(other, Inv)
     assert len(first.items) == MAX_INV_SZ
@@ -273,9 +295,35 @@ def test_a_queue_at_exactly_max_inv_sz_is_sent_as_one_inv() -> None:
     other = a_conn(1)
     manager = make_manager([other])
     other.tx_announce_queue = [a_hash(n) for n in range(MAX_INV_SZ)]
+    hold(manager, *other.tx_announce_queue)
     manager._send_due_announcements()
     (only_inv,) = only(other, Inv)
     assert len(only_inv.items) == MAX_INV_SZ
+
+
+def test_a_queued_announcement_evicted_before_its_own_schedule_is_not_sent() -> None:
+    # _send_due_announcements filters conn.tx_announce_queue against
+    # current mempool membership at send time, not only at queue time --
+    # a wtxid can sit queued for this connection's whole schedule, long
+    # enough for a later eviction to take it back out before it is ever
+    # sent. btclib-org/btclib-node#294
+    other = a_conn(1)
+    manager = make_manager([other])
+    other.tx_announce_queue = [a_hash(1), a_hash(2)]
+    hold(manager, a_hash(2))  # a_hash(1) evicted since it was queued
+    manager._send_due_announcements()
+    (inv,) = only(other, Inv)
+    assert hashes_of(inv) == [a_hash(2)]
+    assert other.tx_announce_queue == []
+
+
+def test_a_queue_left_with_nothing_still_held_sends_no_inv() -> None:
+    other = a_conn(1)
+    manager = make_manager([other])
+    other.tx_announce_queue = [a_hash(1)]
+    manager._send_due_announcements()
+    assert not only(other, Inv)
+    assert other.tx_announce_queue == []
 
 
 def test_a_second_announcement_waits_for_the_peers_own_schedule() -> None:
@@ -286,6 +334,7 @@ def test_a_second_announcement_waits_for_the_peers_own_schedule() -> None:
     # away, which is the change #141 is about
     other = a_conn(1)
     manager = make_manager([other])
+    hold(manager, a_hash(1), a_hash(2))
     manager.received_txs = [(2, a_hash(1))]
     manager.tx_download()
     (first,) = only(other, Inv)
@@ -301,6 +350,7 @@ def test_a_second_announcement_waits_for_the_peers_own_schedule() -> None:
 def test_a_wtxid_already_queued_for_a_peer_is_not_queued_twice() -> None:
     other = a_conn(1)
     manager = make_manager([other])
+    hold(manager, a_hash(1), a_hash(2))
     # sent at once, the first ever call to a fresh connection's schedule
     # always being due, so the queue below starts from empty
     manager.received_txs = [(2, a_hash(1))]
@@ -317,6 +367,7 @@ def test_a_wtxid_already_queued_for_a_peer_is_not_queued_twice() -> None:
 def test_a_queued_announcement_is_sent_once_its_own_schedule_is_due() -> None:
     other = a_conn(1)
     manager = make_manager([other])
+    hold(manager, a_hash(1), a_hash(2))
     manager.received_txs = [(2, a_hash(1))]
     manager.tx_download()
     other.next_inv_send_time = time.time() - 1
@@ -393,6 +444,7 @@ def test_a_transaction_this_node_originated_is_announced_like_any_other() -> Non
     # its own
     other = a_conn(1)
     manager = make_manager([other])
+    hold(manager, a_hash(1))
     manager.received_txs = [(None, a_hash(1))]
     manager.tx_download()
     (inv,) = only(other, Inv)

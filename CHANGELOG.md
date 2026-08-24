@@ -72,6 +72,41 @@ to check the guess.
   warning raised on purpose (an unhandled exception on a manager's
   thread that cannot bind, a coroutine a deliberately unrun loop never
   awaits), a `pytest.mark.filterwarnings` naming that test alone.
+### `Mempool` evicts to its limit instead of refusing everything past it
+
+- **`Mempool.add_tx` evicts the worst individual feerate, and its
+  in-mempool descendants, to make room past `bytesize_limit` rather
+  than refusing outright once it is reached** (closes #294). A full
+  mempool used to be a wall: nothing already held was ever removed, so
+  a transaction paying whatever fee still could not get in, and
+  `get_missing` answered every request with nothing at all rather than
+  let `add_tx` decide per transaction. Bitcoin Core's own
+  `CTxMemPool::TrimToSize` (`src/txmempool.cpp`) evicts the worst
+  *chunk*, a package score over its whole cluster graph; this mempool
+  keeps no dependency graph to score packages by, so evicting the
+  worst individual feerate together with everything depending on it is
+  the substitute that stays consistent without one --
+  `main.verify_mempool_acceptance` admits a child whose parent is only
+  in the mempool, and evicting a parent alone would leave that child's
+  own prevout resolving nowhere.
+- **`bytesize_limit` moves from 500 vMB to 300, matching Core's own
+  `DEFAULT_MAX_MEMPOOL_SIZE_MB`.** The old value carried no argument on
+  record for the difference, and was inert while nothing ever evicted;
+  eviction is what first makes it an economic threshold rather than a
+  fixed ceiling, which is the reasoning this number needed and did not
+  have. It is not exposed on `Config`: eviction does not need a
+  configurable limit to exist, only a real one.
+- **A rolling minimum feerate, Core's own `GetMinFee`, tracks what an
+  eviction round just raised and decays it once a block confirms.**
+  `Mempool.note_block_connected`, called once per block
+  `main.update_chain` connects, restarts the decay clock
+  `Mempool.get_min_fee_rate` reads.
+- **`DownloadManager` checks current mempool membership at send time**,
+  both for a transaction newly queued in `tx_download` and for one
+  already sitting in a connection's `tx_announce_queue`: eviction can
+  take a transaction back out between the moment it is queued for
+  announcement and the moment that announcement is sent, which a queue
+  of hashes alone cannot tell apart from one still held.
 
 ### `PeerDB.addresses` gets a lock of its own, separate from the active table's
 

@@ -223,6 +223,14 @@ def update_chain(node: Node) -> None:
         for block in to_add:
             for tx in block.transactions[1:]:
                 node.mempool.remove_tx(tx)
+            # Core's own `removeForBlock` (`src/txmempool.cpp:405-427`,
+            # bitcoin/bitcoin@58a7869f86): once per block connected,
+            # whether or not it held anything this mempool was also
+            # holding, restarting `Mempool.get_min_fee_rate`'s own decay
+            # clock -- not folded into `remove_tx` above, which already
+            # runs once per transaction rather than once per block.
+            # btclib-org/btclib-node#294
+            node.mempool.note_block_connected()
         _announce_added_blocks(node, to_add)
 
     node.logger.debug("Finished main\n")

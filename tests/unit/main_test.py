@@ -310,6 +310,28 @@ def test_a_reorg_evicts_a_transaction_the_reorg_itself_invalidated(
     assert not node.mempool.contains_tx(confirmed)
 
 
+def test_a_connected_block_restarts_the_mempool_s_decay_clock(tmp_path: Path) -> None:
+    # note_block_connected runs once per block update_chain connects to the
+    # active chain, restarting Mempool.get_min_fee_rate's own decay clock --
+    # Core's own removeForBlock (src/txmempool.cpp:405-427,
+    # bitcoin/bitcoin@58a7869f86) does this for every block regardless of
+    # what it held. btclib-org/btclib-node#294
+    node = regtest_node(tmp_path)
+    first = generate_random_chain(2, RegTest().genesis.hash)
+    connect(node, first)
+    assert node.status == NodeStatus.BlockSynced
+
+    node.mempool._rolling_min_fee_rate = 5000.0
+    node.mempool._block_since_last_rolling_fee_bump = False
+    node.mempool._last_rolling_fee_update = 0.0
+
+    second = generate_random_chain(3, RegTest().genesis.hash)
+    connect(node, second)
+
+    assert node.mempool._block_since_last_rolling_fee_bump is True
+    assert node.mempool._last_rolling_fee_update > 0.0
+
+
 def _extend(previous_hash: bytes, start_height: int, count: int) -> list[Block]:
     # generate_random_chain restarts its own height at 0 for any start,
     # which is a timestamp that has to beat the median of *these*

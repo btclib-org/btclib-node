@@ -541,45 +541,45 @@ def send_raw_transaction(node: Node, conn: Connection, params: list[Any]) -> str
         # Core's own RPC_VERIFY_REJECTED: the mempool looked at the
         # transaction and refused it
         raise RpcError(RpcErrorCode.VERIFY_REJECTED, _INVALID_SCRIPT_REASON) from exc
-    # `Mempool.add_tx` is a silent no-op past `is_full()`, and answering
-    # with `tx.id.hex()` regardless would tell the caller this
-    # transaction was kept when it was not -- the same defect #277 fixed
-    # on the peer-to-peer path, `p2p/callbacks.py`'s `tx` handler.
-    # `tx.id in node.mempool.txid_index` -- not `contains_tx`, which is
-    # keyed by wtxid (`Mempool.transactions`) -- is checked first and
-    # skips the refusal: a resubmit of a transaction already held, under
-    # the same witness or a different one, is tolerated and reannounced
-    # rather than refused for a fullness this particular submission did
-    # not cause, mirroring `BroadcastTransaction`'s own early return for
-    # a txid already in the mempool (`node/transaction.cpp`, same
-    # commit, itself txid-keyed and explicit that the held transaction
-    # "may have the same or different witness") -- Core does not even
-    # reach its own capacity check for that case. `txid_index` read
-    # directly rather than through a new accessor, the way
-    # `get_raw_mempool` already does above. btclib-org/btclib-node#293
-    if node.mempool.is_full() and tx.id not in node.mempool.txid_index:
-        raise RpcError(RpcErrorCode.VERIFY_REJECTED, _MEMPOOL_FULL_REASON)
-    if node.mempool.add_tx(tx, fee):
+    # `Mempool.add_tx` now evicts to make room rather than refusing
+    # outright past its old `is_full()` gate (btclib-org/btclib-node#294),
+    # so whether this call is answered with the refusal below is no
+    # longer knowable before making it: a transaction that clears
+    # whatever eviction would otherwise remove is kept even into a
+    # mempool already at its limit, and one that does not is evicted
+    # right back out, `add_tx` answering `False` either way a caller
+    # of this method could tell apart before calling it. Answering
+    # `tx.id.hex()` regardless of that boolean would tell the caller
+    # this transaction was kept when it was not -- the same defect #277
+    # fixed on the peer-to-peer path, `p2p/callbacks.py`'s `tx` handler.
+    kept = node.mempool.add_tx(tx, fee)
+    if kept:
         to_announce = tx
-    else:
-        # add_tx declined for the one reason the guard above still
-        # allows through: this txid is already held, possibly under a
-        # different witness -- and therefore a different wtxid -- than
-        # what was just resubmitted. Announcing the resubmitted object's
-        # own wtxid here, rather than the mempool's, would queue a wtxid
-        # nothing holds: `Mempool.add_tx`'s own comment on #277 is the
-        # defect this substitution avoids, one call site over.
-        # `BroadcastTransaction` (`node/transaction.cpp`,
-        # bitcoin/bitcoin@58a7869f86) makes the identical substitution
-        # for the identical reason -- "Use the mempool's wtxid for
-        # reannouncement" -- rather than reannouncing what was just
-        # submitted. The type is wider than the invariant: `get_tx`
-        # cannot answer `None` once `txid_index` holds `tx.id`, which
-        # `add_tx` returning `False` here guarantees, so this is a cast
+    elif tx.id in node.mempool.txid_index:
+        # `add_tx` declined for the other reason it can: this txid is
+        # already held, possibly under a different witness -- and
+        # therefore a different wtxid -- than what was just resubmitted.
+        # Announcing the resubmitted object's own wtxid here, rather
+        # than the mempool's, would queue a wtxid nothing holds:
+        # `Mempool.add_tx`'s own comment on #277 is the defect this
+        # substitution avoids, one call site over. `BroadcastTransaction`
+        # (`node/transaction.cpp`, bitcoin/bitcoin@58a7869f86) makes the
+        # identical substitution for the identical reason -- "Use the
+        # mempool's wtxid for reannouncement" -- rather than
+        # reannouncing what was just submitted. The type is wider than
+        # the invariant: `get_tx` cannot answer `None` once `txid_index`
+        # holds `tx.id`, checked on this very branch, so this is a cast
         # rather than a check dead on every path that reaches it,
         # matching `Connection.send_version`'s own `self.manager.port`.
         # btclib-org/btclib-node#293
         to_announce = cast(Tx, node.mempool.get_tx(tx.id))
+    else:
+        # Neither already held nor kept: `Mempool._evict_to_limit` ran
+        # and took this transaction right back out for being the worst
+        # one held once `Mempool.bytesize_limit` was restored -- exactly
+        # the case `_MEMPOOL_FULL_REASON`'s own comment names, Core's
+        # `TX_RECONSIDERABLE` "mempool full". btclib-org/btclib-node#294
+        raise RpcError(RpcErrorCode.VERIFY_REJECTED, _MEMPOOL_FULL_REASON)
     node.p2p_manager.broadcast_raw_transaction(to_announce, fee)
     return tx.id.hex()
 
