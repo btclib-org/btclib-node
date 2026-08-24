@@ -18,6 +18,26 @@ to check the guess.
 
 ## Unreleased
 
+### `CLAUDE.md` says this tree follows Bitcoin Core, and what a divergence owes
+
+- **Where this tree reimplements something Bitcoin Core also does, it
+  matches Core's behaviour wherever that is possible and reasonable, and
+  the comment names the commit Core was read at.** What differs from
+  Core in consensus or in relay is a difference the network sees. A
+  divergence a constraint of this tree forces is legitimate —
+  `btclib_node/db.py`'s docstring is the worked example — but it is
+  argued where it is made: a citation with an unexplained difference
+  beside it does not tell a reader a decision from an oversight.
+
+### `CLAUDE.md`'s Architecture names which state crosses threads
+
+- **The paragraph #304 added to *Architecture* has no entry of its own
+  above, and this is it.** It says a coroutine enters either manager's
+  asyncio loop only through `run_coroutine_threadsafe` while their plain
+  methods do not, so what decides whether state needs a lock is which
+  thread reaches it and never which callback names it — which is why
+  `Mempool` needs none and `PeerDB` carries two.
+
 ### `CLAUDE.md`'s primary-checkout paragraph names the read that cannot go stale
 
 - **The paragraph said reading the checkout was fine and so was `git

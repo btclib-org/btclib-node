@@ -62,6 +62,27 @@ locks for that reason, one per table, taken separately and never nested.
 `tests/unit/` mirrors that layout and `tests/functional/` builds a node
 and speaks to it over a socket.
 
+## Following Bitcoin Core
+
+Where this tree reimplements something Bitcoin Core also does — a
+constant, an eviction order, the error an RPC answers a refusal with —
+it **matches Core's behaviour wherever that is possible and
+reasonable**, and the comment beside it names the commit Core was read
+at. What differs from Core in consensus or in relay is a difference the
+network sees, so the default is not a matter of taste.
+
+Not always, though. This tree has constraints Core does not share, and a
+divergence one of those forces is legitimate: `btclib_node/db.py`'s
+docstring is the worked example, arguing its store against Core's.
+
+What is not legitimate is the silent kind. Where the behaviour departs
+from a source the code cites, the code says so and says what forced it.
+A reader who finds a citation and an unexplained difference cannot tell
+a decision from an oversight, and will reproduce whichever one they
+guess. Reading Core's own source is part of writing the divergence and
+not only part of matching it, because what gets reproduced is what Core
+does rather than what a report said it does.
+
 ## The primary checkout is the maintainer's
 
 **Never work in it.** No edit, no `git add`, no commit, no branch
