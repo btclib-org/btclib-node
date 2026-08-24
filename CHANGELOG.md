@@ -18,6 +18,16 @@ to check the guess.
 
 ## Unreleased
 
+### `CLAUDE.md`'s primary-checkout paragraph names the read that cannot go stale
+
+- **The paragraph said reading the checkout was fine and so was `git
+  fetch`, without saying `git fetch` moves `refs/remotes/origin/main`
+  and leaves the work tree where it was** (btclib-org/.github#255), so a
+  `grep` or a `Read` against the checkout answered for whenever it was
+  last brought forward. It now names `git show origin/main:<path>` as
+  the read that does not go stale, and gives the fast-forward that
+  brings a clean checkout forward without working in it.
+
 ### `PeerDB.addresses` gets a lock of its own, separate from the active table's
 
 - **`add_addresses` and `random_address` serialize every touch of
