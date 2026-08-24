@@ -232,9 +232,9 @@ jobs:
       #
       # So what is read here is what was posted rather than what the
       # action produced: the verdict is the last line of a comment on
-      # the pull request, which is where README.md's section 11 puts the
-      # ack of record, and only what claude[bot] wrote is one -- an
-      # author's own ack is not.
+      # the pull request, which is where section 11 of the organization's
+      # standard puts the ack of record, and only what claude[bot] wrote
+      # is one -- an author's own ack is not.
       #
       #   gh api repos/btclib-org/.github/issues/139/comments \
       #     --jq '.[] | "\(.user.login) \(.body | split("\n") | last)"'
