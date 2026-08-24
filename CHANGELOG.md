@@ -1924,3 +1924,37 @@ to check the guess.
   past `Mempool.is_full()`, so a transaction dropped for a full mempool
   was still announced to every other peer, which then asked for it and
   got `notfound`.
+
+### `sendrawtransaction` refuses a transaction a full mempool could not keep
+
+- **`send_raw_transaction` now raises `RpcErrorCode.VERIFY_REJECTED`
+  ("Mempool is full") rather than answering `tx.id.hex()` for a
+  transaction `Mempool.add_tx` silently declined past
+  `Mempool.is_full()`** (closes #293), the same defect #277 fixed on the
+  peer-to-peer path. `-26` is Core's own code for this refusal too:
+  `TxValidationResult::TX_MEMPOOL_POLICY` invalidated "mempool full"
+  (`validation.cpp`) becomes `TransactionError::MEMPOOL_REJECTED`
+  (`node/transaction.cpp`), which `RPCErrorFromTransactionError`
+  (`rpc/util.cpp`) answers with `RPC_TRANSACTION_REJECTED` — a bare
+  alias of `RPC_VERIFY_REJECTED` (`rpc/protocol.h`,
+  bitcoin/bitcoin@58a7869f86). The exemption for a resubmission is keyed
+  on `tx.id in node.mempool.txid_index`, not `Mempool.contains_tx`,
+  which is keyed by wtxid: a resubmission under a different witness is
+  still tolerated and reannounced, mirroring `BroadcastTransaction`'s
+  own early return for a txid already in the mempool -- itself
+  txid-keyed, and explicit that the held transaction "may have the same
+  or different witness" -- which does not reach Core's own capacity
+  check either. What is reannounced on a resubmission is the mempool's
+  own copy of the transaction and not the resubmitted object: the two
+  can carry different witnesses and therefore different wtxids, and
+  `P2pManager.broadcast_raw_transaction` queues whichever one it is
+  handed for announcement by that object's own `.hash` -- the same
+  substitution `BroadcastTransaction` itself makes ("Use the mempool's
+  wtxid for reannouncement"), needed here for the same reason: announcing
+  a wtxid `add_tx` never stored answers a peer's `getdata` with
+  `notfound`. This substitution is not gated on `Mempool.is_full()`:
+  `add_tx` returns `False` for an already-held txid whether or not the
+  mempool is full, so a resubmission under a different witness into a
+  mempool with room to spare reached the same mismatched-wtxid
+  announcement before this change, unrelated to the refusal above and
+  present before this branch touched the file.
