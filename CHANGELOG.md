@@ -1769,3 +1769,49 @@ to check the guess.
   document this tree does not have; the wording now matches the
   workflow's other copies, which name the standard rather than a file
   local to the reading repository.
+
+### `DownloadManager`'s per-peer bookkeeping stops working against itself
+
+- **`block_download`'s assignment loop now excludes a connection marked
+  `pending_eviction`** (#68). The 120-second stall mark emptied
+  `conn.download_queue` to free those blocks for another peer, but
+  nothing past it in the loop read the mark, so the loop's own
+  `download_queue == []` test read the just-emptied queue as "ready for
+  more work" and handed the peer back the blocks it was already failing
+  to deliver. The mark now means what it says until the peer's next
+  block clears it (`callbacks.block`) or the 300-second bound
+  disconnects it.
+- **A transaction `DownloadManager.tx_download` accepts is queued on the
+  connection it will be announced to, `Connection.tx_announce_queue`,
+  and sent as an `Inv` only once that connection's own
+  `Connection.next_inv_send_time` comes due** (#141), an exponential
+  draw around a mean of 5 seconds for an inbound connection and 2 for an
+  outbound one — `INBOUND_INVENTORY_BROADCAST_INTERVAL`,
+  `OUTBOUND_INVENTORY_BROADCAST_INTERVAL` and `rand_exp_duration`,
+  net_processing.cpp on bitcoin/bitcoin@58a7869f86 — rather than the
+  single per-step `Inv` the previous batch-of-five removal (#114) turned
+  into an immediate announcement. An outbound connection's draw is its
+  own; an inbound one's is shared with every other inbound connection of
+  the same address family (`DownloadManager._next_inbound_inv_time`,
+  `_inbound_net_class`, mirroring `NextInvToInbounds` and the
+  `CNode::m_network_key` it is keyed on, net.h and net.cpp of the same
+  commit — not `NetGroupManager::GetGroup`, which feeds `nKeyedNetGroup`
+  for addrman and eviction instead), so a peer opening several inbound
+  connections to this node, from one address or from several, cannot
+  average several independent draws down to a receipt time finer than
+  one connection's own jitter allows. `P2pManager.broadcast_raw_transaction`
+  no longer pushes a `Tx` of its own the instant it is called: it appends to the
+  same list a relayed transaction's own arrival does, `conn_id` `None`
+  in place of a peer to exclude, so a transaction of this node's own
+  goes through the same queue and the same delay — the gap between a
+  `tx` a peer sends this node and the `inv` this node sends on no
+  longer says whether this node originated it or relayed it.
+- **A `notfound` this node receives for a transaction now clears that
+  peer's own outstanding ask, `Connection.tx_requested`** (#144), the
+  per-peer table `tx_download`'s own request loop reads to avoid asking
+  a peer twice for a wtxid it has not yet answered — mirroring
+  `TxDownloadManagerImpl::ReceivedNotFound` (net_processing.cpp, the
+  same commit), which reads only the transaction items of a `notfound`
+  for the same reason. Before this, a `notfound` was logged and nothing
+  else, since there was no per-peer record of an outstanding ask for it
+  to clear.

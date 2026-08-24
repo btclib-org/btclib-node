@@ -311,6 +311,7 @@ def a_peer(**attributes: Any) -> Any:
         download_queue=[],
         pending_eviction=False,
         last_block_timestamp=0,
+        tx_requested={},
         ping_sent=0,
         ping_nonce=0,
         latency=0,
@@ -797,6 +798,26 @@ def test_a_notfound_is_logged_rather_than_held_against_the_peer() -> None:
     )
     assert logged
     assert not peer.stopped
+
+
+def test_a_notfound_frees_the_transaction_it_names_to_be_asked_of_someone_else() -> (
+    None
+):
+    # `DownloadManager.tx_download`'s own in-flight table, so an ask
+    # this peer will not answer is not held against it forever
+    node = a_handshake_node()
+    peer = a_peer(tx_requested={b"\x11" * 32: 0.0, b"\x22" * 32: 0.0})
+    not_found(
+        node,
+        NotFound(
+            [
+                Inventory(InventoryType.MSG_WTX, b"\x11" * 32),
+                Inventory(InventoryType.MSG_BLOCK, b"\x22" * 32),
+            ]
+        ).serialize(),
+        peer,
+    )
+    assert peer.tx_requested == {b"\x22" * 32: 0.0}
 
 
 def test_a_reject_names_the_transaction_it_is_about() -> None:

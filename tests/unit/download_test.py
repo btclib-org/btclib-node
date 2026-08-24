@@ -17,13 +17,17 @@ from collections.abc import Sequence
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
+import pytest
 from btclib.fee import FeeRate, fee_from_vsize
+from btclib.p2p.addrv2 import NetworkAddressV2
 from btclib.p2p.inventory import GetData, Inv
 
+import btclib_node.download as download_module
 from btclib_node.constants import NodeStatus
 from btclib_node.download import DownloadManager
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
+from btclib_node.p2p.address import peer_address
 from tests.helpers import generate_random_transaction
 
 if TYPE_CHECKING:
@@ -41,6 +45,9 @@ def a_conn(
     last_block: float | None = None,
     relay_tx: bool = True,
     feefilter: int = 0,
+    inbound: bool = True,
+    pending_eviction: bool = False,
+    address: NetworkAddressV2 | None = None,
 ) -> Any:
     sent: list[Any] = []
     return SimpleNamespace(
@@ -49,10 +56,15 @@ def a_conn(
         sent=sent,
         relay_tx=relay_tx,
         feefilter=feefilter,
+        inbound=inbound,
+        address=address if address is not None else peer_address("10.0.0.1", 8333),
         download_queue=queue if queue is not None else [],
-        pending_eviction=False,
+        pending_eviction=pending_eviction,
         last_block_timestamp=time.time() if last_block is None else last_block,
         stop=lambda: None,
+        tx_announce_queue=[],
+        next_inv_send_time=0.0,
+        tx_requested={},
     )
 
 
@@ -242,6 +254,158 @@ def test_a_peer_still_wanting_something_else_is_asked_for_it() -> None:
     assert not only(sender, GetData)
 
 
+def test_a_second_announcement_waits_for_the_peers_own_schedule() -> None:
+    # the first ever announcement to a fresh connection fires at once --
+    # its schedule reads 0, "never scheduled", which the due-check
+    # always treats as due -- but once a schedule is set, a transaction
+    # arriving before it comes due is queued rather than sent straight
+    # away, which is the change #141 is about
+    other = a_conn(1)
+    manager = make_manager([other])
+    manager.received_txs = [(2, a_hash(1))]
+    manager.tx_download()
+    (first,) = only(other, Inv)
+    assert hashes_of(first) == [a_hash(1)]
+    assert other.next_inv_send_time > time.time()
+
+    manager.received_txs = [(2, a_hash(2))]
+    manager.tx_download()
+    assert len(only(other, Inv)) == 1
+    assert other.tx_announce_queue == [a_hash(2)]
+
+
+def test_a_wtxid_already_queued_for_a_peer_is_not_queued_twice() -> None:
+    other = a_conn(1)
+    manager = make_manager([other])
+    # sent at once, the first ever call to a fresh connection's schedule
+    # always being due, so the queue below starts from empty
+    manager.received_txs = [(2, a_hash(1))]
+    manager.tx_download()
+    other.next_inv_send_time = time.time() + 60
+
+    manager.received_txs = [(2, a_hash(2))]
+    manager.tx_download()
+    manager.received_txs = [(2, a_hash(2))]
+    manager.tx_download()
+    assert other.tx_announce_queue == [a_hash(2)]
+
+
+def test_a_queued_announcement_is_sent_once_its_own_schedule_is_due() -> None:
+    other = a_conn(1)
+    manager = make_manager([other])
+    manager.received_txs = [(2, a_hash(1))]
+    manager.tx_download()
+    other.next_inv_send_time = time.time() - 1
+
+    manager.received_txs = [(2, a_hash(2))]
+    manager.tx_download()
+    first, second = only(other, Inv)
+    assert hashes_of(first) == [a_hash(1)]
+    assert hashes_of(second) == [a_hash(2)]
+
+
+def test_an_outbound_peers_schedule_draws_from_the_shorter_mean(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # net_processing.cpp's OUTBOUND_INVENTORY_BROADCAST_INTERVAL/
+    # INBOUND_INVENTORY_BROADCAST_INTERVAL, bitcoin/bitcoin@58a7869f86:
+    # an outbound connection's mean is the shorter of the two
+    means: list[float] = []
+
+    def record_mean(lambd: float) -> float:
+        means.append(1 / lambd)
+        return 0.0
+
+    monkeypatch.setattr(download_module._rng, "expovariate", record_mean)
+    inbound, outbound = a_conn(1, inbound=True), a_conn(2, inbound=False)
+    manager = make_manager([inbound, outbound])
+    manager.tx_download()
+    assert means == [
+        download_module._INBOUND_TX_ANNOUNCE_INTERVAL,
+        download_module._OUTBOUND_TX_ANNOUNCE_INTERVAL,
+    ]
+
+
+def test_two_inbound_ipv4_peers_share_one_schedule_regardless_of_subnet() -> None:
+    # `CNode::m_network_key` (net.h:755, bitcoin/bitcoin@58a7869f86) is
+    # keyed on the peer's coarse `GetNetClass()` and this node's own bind
+    # address, not on anything of the peer's own subnet -- so two inbound
+    # IPv4 peers share `NextInvToInbounds`'s one draw even from two
+    # different /16s, and a peer opening several inbound connections
+    # cannot average several independent draws down to a receipt time
+    # finer than one connection's own jitter would allow.
+    first = a_conn(1, address=peer_address("10.0.1.1", 8333))
+    second = a_conn(2, address=peer_address("11.0.1.1", 8333))
+    manager = make_manager([first, second])
+    manager.tx_download()
+    assert first.next_inv_send_time == second.next_inv_send_time
+    assert first.next_inv_send_time > time.time()
+
+
+def test_two_inbound_ipv6_peers_share_one_schedule_regardless_of_subnet() -> None:
+    first = a_conn(1, address=peer_address("2001:db8::1", 8333))
+    second = a_conn(2, address=peer_address("2002:db8::1", 8333))
+    manager = make_manager([first, second])
+    manager.tx_download()
+    assert first.next_inv_send_time == second.next_inv_send_time
+
+
+def test_an_inbound_ipv4_peer_and_an_inbound_ipv6_peer_can_differ(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    draws = iter([1.0, 2.0])
+    monkeypatch.setattr(download_module._rng, "expovariate", lambda lambd: next(draws))
+    first = a_conn(1, address=peer_address("10.0.1.1", 8333))
+    second = a_conn(2, address=peer_address("2001:db8::1", 8333))
+    manager = make_manager([first, second])
+    manager.tx_download()
+    assert first.next_inv_send_time != second.next_inv_send_time
+
+
+def test_a_transaction_this_node_originated_is_announced_like_any_other() -> None:
+    # conn_id `None` is `P2pManager.broadcast_raw_transaction`'s own
+    # marker for a transaction with no peer to exclude, going through
+    # the same queue a relayed transaction does rather than a path of
+    # its own
+    other = a_conn(1)
+    manager = make_manager([other])
+    manager.received_txs = [(None, a_hash(1))]
+    manager.tx_download()
+    (inv,) = only(other, Inv)
+    assert hashes_of(inv) == [a_hash(1)]
+
+
+def test_an_outstanding_ask_is_not_repeated_before_it_is_answered() -> None:
+    conn = a_conn(1)
+    manager = make_manager([conn])
+    manager.inv_txs = [(1, a_hash(1))]
+    manager.tx_download()
+    manager.inv_txs = [(1, a_hash(1))]
+    manager.tx_download()
+    assert len(only(conn, GetData)) == 1
+
+
+def test_a_notfound_response_frees_the_wtxid_to_be_asked_for_again() -> None:
+    conn = a_conn(1)
+    manager = make_manager([conn])
+    manager.inv_txs = [(1, a_hash(1))]
+    manager.tx_download()
+    conn.tx_requested.pop(a_hash(1), None)
+
+    manager.inv_txs = [(1, a_hash(1))]
+    manager.tx_download()
+    assert len(only(conn, GetData)) == 2
+
+
+def test_receiving_a_transaction_frees_every_peers_outstanding_ask_for_it() -> None:
+    asked = a_conn(1)
+    asked.tx_requested[a_hash(1)] = time.time()
+    manager = make_manager([asked])
+    manager.received_txs = [(2, a_hash(1))]
+    manager.tx_download()
+    assert a_hash(1) not in asked.tx_requested
+
+
 def test_both_lists_are_emptied_by_a_step() -> None:
     conn = a_conn(1)
     manager = make_manager([conn])
@@ -423,6 +587,24 @@ def test_a_block_only_one_peer_was_asked_for_is_asked_of_a_second() -> None:
     assert busy.download_queue == [a_hash(1)]
     (getdata,) = only(idle, GetData)
     assert hashes_of(getdata) == [a_hash(1)]
+
+
+def test_a_stalled_peers_own_blocks_are_not_handed_straight_back_to_it() -> None:
+    # the queue emptied for stalling past the 120s mark is not read as
+    # "ready for more work": the blocks it was holding go to the healthy
+    # peer instead, and the stalled one is asked for nothing at all
+    stalled = a_conn(1, last_block=time.time() - 200, queue=[a_hash(1), a_hash(2)])
+    healthy = a_conn(2)
+    manager = make_manager(
+        [stalled, healthy],
+        status=NodeStatus.HeaderSynced,
+        block_index=FakeBlockIndex([a_hash(1), a_hash(2), a_hash(3)]),
+    )
+    manager.block_download()
+    assert stalled.pending_eviction
+    assert not stalled.sent
+    (getdata,) = only(healthy, GetData)
+    assert hashes_of(getdata) == [a_hash(1), a_hash(2), a_hash(3)]
 
 
 def test_a_peer_that_is_already_pending_eviction_is_left_alone() -> None:
