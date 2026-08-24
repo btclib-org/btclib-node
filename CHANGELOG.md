@@ -18,6 +18,16 @@ to check the guess.
 
 ## Unreleased
 
+### `REPOSITORY.md`'s Merge methods section named the wrong landing subject
+
+- **`COMMIT_OR_PR_TITLE` is the pull request title only where a branch
+  has more than one commit; a single-commit branch lands under its own
+  subject** (closes #302). `REPOSITORY.md`'s *Merge methods* section
+  named the pull request's title unconditionally, in wording the
+  organization standard's own *Merge method* section does not carry;
+  `bitcoin-core-rpc` and `portanode` already state the conditional, and
+  this tree's `REPOSITORY.md` now matches them.
+
 ### `CLAUDE.md` says this tree follows Bitcoin Core, and what a divergence owes
 
 - **Where this tree reimplements something Bitcoin Core also does, it
