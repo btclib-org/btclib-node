@@ -26,7 +26,7 @@ from btclib.p2p.payload import Payload
 from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.p2p import manager as manager_module
-from btclib_node.p2p.address import PeerDB, peer_address
+from btclib_node.p2p.address import PeerDB, endpoint_key, peer_address
 from btclib_node.p2p.manager import P2pManager
 
 if TYPE_CHECKING:
@@ -202,6 +202,15 @@ def test_removing_a_connection_still_pending_stops_it_too(
     manager.remove_connection(1)
     assert not manager.pending_connections
     assert conn.stopped == [True]
+
+
+def test_discourage_marks_the_endpoint_dialled_or_accepted(
+    a_manager: AManagerFactory,
+) -> None:
+    manager = a_manager()
+    address = peer_address("1.2.3.4", 18444)
+    manager.discourage(address)
+    assert endpoint_key(address) in manager.discouraged
 
 
 def test_promoting_a_connection_moves_it_into_connections(
@@ -395,6 +404,25 @@ def test_an_address_already_connected_to_is_not_dialled_again(
     asyncio.run(one_pass(manager))
     assert not logged
     assert list(manager.connections) == [1]
+
+
+def test_a_discouraged_address_is_not_dialled_again(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # issue #283: an onion address, the same way the already-connected
+    # sibling test above proves a skip -- reaching the real `dial` would
+    # raise on a network this node cannot open a socket for, straight
+    # into the same quiet-log assertion
+    onion = NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, 8333)
+    peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: onion)
+    manager = a_manager(peer_db=peer_db)
+    manager.discouraged.add(endpoint_key(onion))
+    logged: list[str] = []
+    monkeypatch.setattr(manager.logger, "exception", logged.append)
+    asyncio.run(one_pass(manager))
+    assert not logged
+    assert not manager.connections
+    assert not manager.pending_connections
 
 
 def test_a_connected_peer_drawn_with_a_different_timestamp_is_not_redialled(
