@@ -14,6 +14,7 @@ import pytest
 from btclib.p2p.address import NetworkAddress
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 
+import btclib_node.p2p.address as address_module
 from btclib_node.chains import Chain
 from btclib_node.p2p.address import (
     PeerDB,
@@ -147,6 +148,53 @@ def test_add_active_address_waits_out_a_prune_already_in_progress(
     # two rather than passing on the wrong data
     (active,) = peer_db.active_addresses
     assert active.port == 18444
+
+
+def test_add_addresses_and_random_address_do_not_interleave(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #298: random_address's own dialable-address comprehension walks
+    # `addresses` on P2pManager's thread while add_addresses (gossip,
+    # from callbacks.addr/addrv2) mutates the same set on Node's --
+    # unprotected, CPython raises `RuntimeError: Set changed size during
+    # iteration` for that pairing rather than merely losing an update.
+    # Paused mid-add_addresses here rather than raced on timing:
+    # `_is_embedded_ipv6` is where the pause is forced, inside the loop
+    # that reads and mutates `addresses`, before any entry is added.
+    peer_db = a_peer_db()
+
+    entered_add = threading.Event()
+    release_add = threading.Event()
+    real_check = address_module._is_embedded_ipv6
+
+    def paused_check(address: NetworkAddressV2) -> bool:
+        entered_add.set()
+        assert release_add.wait(timeout=5)
+        return real_check(address)
+
+    monkeypatch.setattr(address_module, "_is_embedded_ipv6", paused_check)
+
+    adder = threading.Thread(
+        target=peer_db.add_addresses, args=([peer_address("1.2.3.4", 8333)],)
+    )
+    adder.start()
+    assert entered_add.wait(timeout=5)
+
+    reader = threading.Thread(target=peer_db.random_address)
+    reader.start()
+    # the lock is what this proves: without it, random_address's own
+    # comprehension does not wait on anything and this join returns
+    # well inside the bound below
+    reader.join(timeout=0.2)
+    assert reader.is_alive()
+
+    release_add.set()
+    adder.join(timeout=5)
+    reader.join(timeout=5)
+    assert not adder.is_alive()
+    assert not reader.is_alive()
+    (known,) = peer_db.addresses
+    assert known.port == 8333
 
 
 def test_an_address_not_seen_for_three_hours_stops_being_active() -> None:

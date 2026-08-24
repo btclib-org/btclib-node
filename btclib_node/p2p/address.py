@@ -257,6 +257,23 @@ class PeerDB:
         self.chain = chain
         self.data_dir = data_dir
         self.addresses: set[NetworkAddressV2] = set()
+        # A lock of its own, not `_active_lock` below: `add_addresses`
+        # reaches this set from both threads too (#298) -- gossip
+        # through `callbacks.addr`/`addrv2` on `Node`'s, DNS seed
+        # answers through `get_addr_from_dns` on `P2pManager`'s, and
+        # `random_address`'s own dialable-address comprehension on
+        # `P2pManager`'s as well, racing against gossip on `Node`'s.
+        # Unprotected, that last pairing is not only the lost-update or
+        # wrong-row risk `_active_lock` guards against: iterating a
+        # `set` while another thread mutates it is `RuntimeError: Set
+        # changed size during iteration` in CPython, a crash rather than
+        # a silent corruption. Sharing `_active_lock` instead was
+        # measured and declined: nothing here ever needs the two tables
+        # updated as one atomic step, and `add_addresses`'s own durable
+        # write batch is measurably slower than `add_active_address`'s
+        # single row -- sharing would let it hold up a handshake for no
+        # invariant this table's own lock does not already give it.
+        self._addresses_lock = threading.Lock()
         self.active_addresses: list[NetworkAddressV2] = []
         # endpoint bytes -> its position in `active_addresses`, so
         # `add_active_address` can find a repeat endpoint's row in O(1)
@@ -385,6 +402,13 @@ class PeerDB:
 
     @property
     def is_empty(self) -> bool:
+        # Unlocked on purpose: `len` on a set is one step, not a walk of
+        # it, so there is nothing here for another thread's `add`/
+        # `discard` to catch mid-stride -- the answer is at worst one
+        # mutation stale, the same imprecision `manage_connections`
+        # already reads this property through (a table this answers
+        # empty for can gain an entry the instant after, dialable or
+        # not, and nothing here promised otherwise).
         return not len(self.addresses)
 
     def random_address(self) -> NetworkAddressV2 | None:
@@ -403,7 +427,13 @@ class PeerDB:
         # and cjdns a peer sends -- made that retry a loop with no exit,
         # in the caller's event loop. Nothing to dial is an answer, and
         # `None` is it.
-        dialable = [address for address in self.addresses if can_connect(address)]
+        # Locked, unlike `is_empty` above: this walks the set rather
+        # than asking its length, and add_addresses (#298) reaches it
+        # from Node's own thread while this runs on P2pManager's --
+        # unprotected, that is CPython's `RuntimeError: Set changed
+        # size during iteration`, not merely a stale answer.
+        with self._addresses_lock:
+            dialable = [address for address in self.addresses if can_connect(address)]
         if not dialable:
             return None
         return secrets.choice(dialable)
@@ -411,7 +441,7 @@ class PeerDB:
     def add_addresses(self, addresses: Iterable[NetworkAddressV2]) -> None:
         # a peer's word for when it last saw an address is not evidence,
         # and keeping it would make the one address several entries
-        with self._write_batch() as wb:
+        with self._addresses_lock, self._write_batch() as wb:
             # `endpoint_key` is what the durable row is already keyed on --
             # network id, address and port, not `services` -- so a
             # second gossip for the one endpoint overwrites the row on
