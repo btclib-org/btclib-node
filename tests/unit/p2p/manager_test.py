@@ -19,7 +19,6 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast
 
 import pytest
-from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 from btclib.p2p.keepalive import Ping
 from btclib.p2p.payload import Payload
@@ -104,6 +103,10 @@ def a_manager() -> Iterator[AManagerFactory]:
                 debug=lambda *a: None,
                 exception=lambda *a: None,
             ),
+            # `broadcast_raw_transaction` no longer sends anything of its
+            # own: it hands the transaction to this, the same queue a
+            # relayed transaction goes through. btclib-org/btclib-node#141
+            download_manager=SimpleNamespace(received_txs=[]),
         )
         # a peer db that refuses to be asked by default: a test that
         # should not reach for a peer proves it by the log staying quiet
@@ -445,32 +448,20 @@ def test_every_connection_is_pinged_and_every_connection_is_stopped(
     assert pending.stopped == [True]
 
 
-def test_a_transaction_of_our_own_goes_only_to_the_peers_that_want_them(
+def test_a_transaction_of_our_own_is_handed_to_the_download_manager(
     a_manager: AManagerFactory,
 ) -> None:
     # the RPC's sendrawtransaction, which is the other way a transaction
-    # leaves this node: a peer that declined BIP37's relay declined
-    # transactions, not only the ones another peer handed us
-    wants, declined = a_conn(1), a_conn(2, relay_tx=False)
-    manager = a_manager([wants, declined])
+    # leaves this node: `DownloadManager.tx_download` is what turns this
+    # into an `inv` -- on its own per-peer schedule, gated on `relay_tx`
+    # and unreachable from a connection still mid-handshake exactly as a
+    # relayed transaction's own entry in the same list is -- rather than
+    # this method pushing a `Tx` of its own the instant it is called,
+    # which is the distinguisher #141 is about.
+    manager = a_manager()
     tx = generate_random_transaction()
     manager.broadcast_raw_transaction(tx, 1000)
-    (sent,) = wants.sent
-    assert sent.tx.id == tx.id
-    assert declined.sent == []
-
-
-def test_a_transaction_of_our_own_does_not_reach_a_connection_still_pending(
-    a_manager: AManagerFactory,
-) -> None:
-    # the other of the two sends #114 gated on `relay_tx`:
-    # btclib-org/btclib-node#131 is that neither reaches a connection
-    # the handshake has not cleared to be sent anything at all
-    pending = a_conn(1, status=P2pConnStatus.Open)
-    manager = a_manager()
-    manager.pending_connections[pending.id] = pending
-    manager.broadcast_raw_transaction(generate_random_transaction(), 1000)
-    assert pending.sent == []
+    assert manager.node.download_manager.received_txs == [(None, tx.hash)]
 
 
 def test_a_peer_that_was_pinged_recently_is_given_time_to_answer(
@@ -543,41 +534,6 @@ def test_a_peer_that_answers_the_dial_becomes_a_connection(
         # connection's loop on. asyncio.run would build a second one and
         # leave the manager holding a loop the fixture then never closes
         manager.loop.run_until_complete(dial())
-
-
-def test_a_transaction_is_relayed_with_its_witness(a_manager: AManagerFactory) -> None:
-    # without the witness the peer receives a transaction whose txid is
-    # the one it was told about and whose wtxid is not
-    conn = a_conn(1)
-    manager = a_manager([conn])
-    tx = generate_random_transaction()
-    manager.broadcast_raw_transaction(tx, 1000)
-    (payload,) = conn.sent
-    assert payload.tx == tx
-    assert payload.include_witness
-
-
-def test_a_transaction_of_our_own_below_a_peer_s_feefilter_is_withheld(
-    a_manager: AManagerFactory,
-) -> None:
-    conn = a_conn(1, feefilter=1000)
-    manager = a_manager([conn])
-    tx = generate_random_transaction()
-    required = fee_from_vsize(tx.vsize, FeeRate(sats_per_kvbyte=1000))
-    manager.broadcast_raw_transaction(tx, required - 1)
-    assert conn.sent == []
-
-
-def test_a_transaction_of_our_own_at_a_peer_s_feefilter_still_reaches_it(
-    a_manager: AManagerFactory,
-) -> None:
-    conn = a_conn(1, feefilter=1000)
-    manager = a_manager([conn])
-    tx = generate_random_transaction()
-    required = fee_from_vsize(tx.vsize, FeeRate(sats_per_kvbyte=1000))
-    manager.broadcast_raw_transaction(tx, required)
-    (payload,) = conn.sent
-    assert payload.tx == tx
 
 
 def a_running_manager(a_manager: AManagerFactory, port: int) -> P2pManager:

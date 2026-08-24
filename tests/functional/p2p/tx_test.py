@@ -4,6 +4,9 @@
 
 from pathlib import Path
 
+import pytest
+
+import btclib_node.download as download_module
 from btclib_node import Node
 from btclib_node.chains import RegTest
 from btclib_node.config import Config
@@ -18,7 +21,15 @@ from tests.helpers import (
 )
 
 
-def test_send_tx(tmp_path: Path) -> None:
+def test_send_tx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # `DownloadManager._send_due_announcements` draws a real, random
+    # delay for both nodes' connections the moment each is created
+    # (#141), so left undrawn this waits out a mean-2s outbound delay
+    # rather than completing as soon as the tx is queued. Pinning the
+    # draw to zero keeps every connection's own schedule always due,
+    # the same way `tests/unit/download_test.py`'s
+    # `test_an_outbound_peers_schedule_draws_from_the_shorter_mean` does.
+    monkeypatch.setattr(download_module._rng, "expovariate", lambda lambd: 0.0)
     node1 = Node(
         config=Config(
             chain="regtest",
@@ -70,6 +81,12 @@ def test_send_tx(tmp_path: Path) -> None:
 
     assert node1.mempool.size == 0
 
+    # `send_raw_transaction`'s own order (rpc/callbacks.py): the mempool
+    # holds it before it is announced, since `broadcast_raw_transaction`
+    # goes through the same `inv`/`getdata` round trip a relayed
+    # transaction does (#141) and `getdata` serves a `tx` from the
+    # mempool, not from what this call was handed.
+    node2.mempool.add_tx(tx, 1000)
     node2.p2p_manager.broadcast_raw_transaction(tx, 1000)
 
     try:

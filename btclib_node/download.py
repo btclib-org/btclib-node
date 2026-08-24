@@ -4,8 +4,10 @@
 
 import time
 from collections import Counter
+from random import SystemRandom
 from typing import TYPE_CHECKING
 
+from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 from btclib.p2p.inventory import GetData, Inv, Inventory, InventoryType
 
 from btclib_node.constants import NodeStatus
@@ -13,6 +15,49 @@ from btclib_node.log import Logger
 
 if TYPE_CHECKING:
     from btclib_node import Node
+
+# net_processing.cpp's INBOUND_INVENTORY_BROADCAST_INTERVAL and
+# OUTBOUND_INVENTORY_BROADCAST_INTERVAL, bitcoin/bitcoin@58a7869f86: the
+# mean of the exponential draw `_send_due_announcements` makes for the
+# next trickle, an outbound peer's own and shorter than an inbound one's
+# for the same reason Core's is -- an outbound peer is one this node
+# chose to open, so there are fewer of them for a spy to multiply an
+# inbound peer's sample count across. An inbound peer's draw is not its
+# own: `_inbound_net_class` and `DownloadManager._next_inbound_inv_time`
+# are why.
+_INBOUND_TX_ANNOUNCE_INTERVAL = 5.0
+_OUTBOUND_TX_ANNOUNCE_INTERVAL = 2.0
+
+# `rand_exp_duration`, the same file: a CSPRNG rather than a statistical
+# one, for the same reason `secrets` is what the rest of this tree draws
+# a peer-facing nonce or choice from -- this schedule is exactly what a
+# peer is meant not to be able to predict.
+_rng = SystemRandom()
+
+
+def _inbound_net_class(address: NetworkAddressV2) -> BIP155Network | int:
+    """Return the key an inbound peer's schedule is shared across.
+
+    `CNode::m_network_key` (net.h:755) is what `NextInvToInbounds`
+    (net_processing.cpp:6318-6319, calling `PeerManagerImpl::
+    NextInvToInbounds` at :1273-1282) actually keys its per-peer timer
+    on, bitcoin/bitcoin@58a7869f86. For an inbound connection it is a
+    hash (net.cpp:1853-1857) of the peer's coarse `GetNetClass()`
+    (netaddress.cpp:674) together with *this node's own* listening bind
+    address and port -- not anything of the peer's own beyond which
+    class it falls into. `NetGroupManager::GetGroup` (netgroup.cpp),
+    which does partition by the peer's /16 or /32, feeds
+    `nKeyedNetGroup` instead: addrman bucketing and inbound-eviction
+    diversity, not this timer.
+
+    So every inbound peer of one address family shares this node's one
+    schedule for that family, regardless of its own subnet. IPv4 and
+    IPv6 are the only two `btclib_node.p2p.address.can_connect` ever
+    hands a connection here, so returning the BIP155 network id itself
+    is enough of a stand-in for Core's hash: there is nothing here for
+    Core's Tor, I2P, CJDNS or bind-address component to do.
+    """
+    return address.network_id
 
 
 class DownloadManager:
@@ -22,8 +67,26 @@ class DownloadManager:
 
         self.block_window: list[bytes] = []
 
-        self.received_txs: list[tuple[int, bytes]] = []
+        # conn_id is `None` for a transaction this node originated
+        # (`P2pManager.broadcast_raw_transaction`) rather than received
+        # from a peer -- the same list either way, so the peer an inv
+        # goes out to cannot tell a relayed transaction from this node's
+        # own by which path carried it. btclib-org/btclib-node#141
+        self.received_txs: list[tuple[int | None, bytes]] = []
         self.inv_txs: list[tuple[int, bytes]] = []
+
+        # Core's `m_next_inv_to_inbounds_per_network_key`
+        # (net_processing.cpp, the same commit): one schedule per
+        # `_inbound_net_class`, shared by every inbound connection
+        # currently in it, rather than one per connection -- an inbound
+        # peer opening several connections to this node samples the same
+        # draw from all of them instead of averaging several independent
+        # ones down to a finer receipt time than one connection's jitter
+        # allows. At most one live key per address family, matching how
+        # coarse `m_network_key` actually is; never pruned, matching
+        # Core, so a family's entry outlives the connections that drew
+        # it.
+        self._next_inv_to_inbounds: dict[BIP155Network | int, float] = {}
 
     def step(self) -> None:
         self.block_download()
@@ -36,8 +99,13 @@ class DownloadManager:
         received = list(dict.fromkeys(wtxid for _, wtxid in self.received_txs))
         if received:
             # a peer that announced a transaction we now hold, or sent it
-            # to us, already has it: it is the others that are told
-            has_it: dict[int, set[bytes]] = {}
+            # to us, already has it: it is the others that are told. A
+            # locally originated transaction's conn_id is `None`, which
+            # matches no real connection, so nobody is excluded on its
+            # account -- the same as Core's own `RelayTransaction` has
+            # nobody to exclude for a transaction it did not receive from
+            # a peer.
+            has_it: dict[int | None, set[bytes]] = {}
             for conn_id, wtxid in self.received_txs:
                 has_it.setdefault(conn_id, set()).add(wtxid)
             still_wanted: list[tuple[int, bytes]] = []
@@ -49,11 +117,18 @@ class DownloadManager:
             self.inv_txs = still_wanted
 
             for conn in self.node.p2p_manager.connections.copy().values():
+                # the tx is in the mempool now: nobody is still owed an
+                # answer to a `getdata` this node already sent for it,
+                # wtxid matching what the request loop below asks by.
+                for wtxid in received:
+                    conn.tx_requested.pop(wtxid, None)
+
                 # what the peer's version asked for. An answer nothing
                 # consults is the same peer told the same thing whatever
                 # it said, which is what #76 is about, so every send
                 # that announces a transaction reads this --
-                # `P2pManager.broadcast_raw_transaction` is the other.
+                # `P2pManager.broadcast_raw_transaction` no longer reads
+                # it itself, going through this same queue instead.
                 # BIP37 is that a peer which sent fRelay false is sent
                 # no transaction inventory at all, so it is skipped
                 # whole rather than sent a shorter list.
@@ -61,28 +136,23 @@ class DownloadManager:
                     continue
                 known = has_it.get(conn.id, ())
                 # BIP133: a peer told this node its own floor
-                # (callbacks.feefilter, `conn.feefilter`) is not
-                # announced a transaction below it either.
+                # (callbacks.feefilter, `conn.feefilter`) is not queued
+                # a transaction below it either -- checked once here,
+                # against the mempool's own record of what the
+                # transaction paid, rather than re-checked on every
+                # `_send_due_announcements` drain of an unchanging queue.
                 # btclib-org/btclib-node#260
-                inv = [
+                new_for_conn = [
                     wtxid
                     for wtxid in received
                     if wtxid not in known
                     and self.node.mempool.meets_fee_rate(wtxid, conn.feefilter)
                 ]
-                # every accepted transaction, and not only those that
-                # arrived in a batch of more than five: a batch size is
-                # not a throttle, it is a filter on whether a transaction
-                # is announced at all, and on a quiet network no batch
-                # ever clears it. What Core has here instead is a
-                # per-peer Poisson timer, which announces everything too
-                # and buys the timing privacy an immediate announcement
-                # does not; that privacy is what this does not have, and
-                # it is a change of its own rather than the defect.
-                if inv:
-                    conn.send(
-                        Inv([Inventory(InventoryType.MSG_WTX, wtxid) for wtxid in inv])
-                    )
+                for wtxid in new_for_conn:
+                    if wtxid not in conn.tx_announce_queue:
+                        conn.tx_announce_queue.append(wtxid)
+
+        self._send_due_announcements()
 
         if self.inv_txs:
             invs: dict[int, list[bytes]] = {}
@@ -91,20 +161,78 @@ class DownloadManager:
 
             for conn_id, inv in invs.items():
                 target = self.node.p2p_manager.connections.get(conn_id)
-                if target:
-                    # a peer that announced the same transaction twice is
-                    # asked for it once
-                    target.send(
-                        GetData(
-                            [
-                                Inventory(InventoryType.MSG_WTX, wtxid)
-                                for wtxid in dict.fromkeys(inv)
-                            ]
-                        )
+                if not target:
+                    continue
+                # a peer that announced the same transaction twice is
+                # asked for it once, and a peer already asked for a
+                # transaction is not asked again while that ask is still
+                # outstanding: `not_found` is what clears it early, the
+                # tx itself arriving is what clears it above.
+                wanted = [
+                    wtxid
+                    for wtxid in dict.fromkeys(inv)
+                    if wtxid not in target.tx_requested
+                ]
+                if not wanted:
+                    continue
+                now = time.time()
+                for wtxid in wanted:
+                    target.tx_requested[wtxid] = now
+                target.send(
+                    GetData(
+                        [Inventory(InventoryType.MSG_WTX, wtxid) for wtxid in wanted]
                     )
+                )
 
         self.inv_txs = []
         self.received_txs = []
+
+    def _send_due_announcements(self) -> None:
+        # Core's `TxRelay::m_next_inv_send_time`/`m_tx_inventory_to_send`
+        # (net_processing.cpp, bitcoin/bitcoin@58a7869f86): each
+        # connection is told what is waiting for it only once its own
+        # timer comes due, rather than the instant something is queued,
+        # so the gap between a `tx` this node receives and the `inv` it
+        # sends on carries no information about when that arrival was.
+        now = time.time()
+        for conn in self.node.p2p_manager.connections.copy().values():
+            if not conn.relay_tx:
+                continue
+            if conn.next_inv_send_time and now < conn.next_inv_send_time:
+                continue
+            if conn.tx_announce_queue:
+                conn.send(
+                    Inv(
+                        [
+                            Inventory(InventoryType.MSG_WTX, wtxid)
+                            for wtxid in conn.tx_announce_queue
+                        ]
+                    )
+                )
+                conn.tx_announce_queue = []
+            if conn.inbound:
+                conn.next_inv_send_time = self._next_inbound_inv_time(conn.address, now)
+            else:
+                conn.next_inv_send_time = now + _rng.expovariate(
+                    1 / _OUTBOUND_TX_ANNOUNCE_INTERVAL
+                )
+
+    def _next_inbound_inv_time(self, address: NetworkAddressV2, now: float) -> float:
+        """Return the schedule this address's net class currently shares.
+
+        `NextInvToInbounds` (net_processing.cpp, the same commit): redrawn
+        only once the class's own timer has already passed, so every
+        inbound connection consulting it before the next redraw is handed
+        the same value -- an outbound connection never calls this, having
+        its own independent draw instead, `_send_due_announcements`'s
+        other branch.
+        """
+        net_class = _inbound_net_class(address)
+        due = self._next_inv_to_inbounds.get(net_class, 0.0)
+        if due < now:
+            due = now + _rng.expovariate(1 / _INBOUND_TX_ANNOUNCE_INTERVAL)
+            self._next_inv_to_inbounds[net_class] = due
+        return due
 
     def block_download(self) -> None:
         node = self.node
@@ -157,7 +285,14 @@ class DownloadManager:
         pending = [x[0] for x in Counter(pending).most_common()[::-1] if x[1] < 3]
 
         for conn in connections:
-            if conn.download_queue == []:
+            # `pending_eviction` is this peer's queue having just been
+            # emptied for stalling past the 120s mark above: an empty
+            # queue is what this loop otherwise reads as "ready for more
+            # work", so a peer marked here is excluded rather than being
+            # handed back the very blocks it was just failing to deliver.
+            # It clears on the peer's own next block (callbacks.block),
+            # or the peer is gone by the 300s mark instead.
+            if conn.download_queue == [] and not conn.pending_eviction:
                 if waiting:
                     new = waiting[:16]
                     waiting = waiting[16:]

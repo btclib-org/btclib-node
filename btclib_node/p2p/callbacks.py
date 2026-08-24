@@ -261,8 +261,8 @@ def addrv2(node: Node, msg: bytes, conn: Connection) -> None:
 def feefilter(node: Node, msg: bytes, conn: Connection) -> None:
     # BIP133: a peer asking not to be told about a transaction paying
     # less. Stored on the connection, the same shape relay_tx above
-    # already is; read by DownloadManager.tx_download and
-    # P2pManager.broadcast_raw_transaction, against the fee
+    # already is; read by DownloadManager.tx_download, through
+    # Mempool.meets_fee_rate, against the fee
     # main.verify_mempool_acceptance now hands back and Mempool keeps
     # per transaction. btclib-org/btclib-node#260
     #
@@ -655,6 +655,24 @@ def get_cfcheckpt(node: Node, msg: bytes, conn: Connection) -> None:
 
 def not_found(node: Node, msg: bytes, conn: Connection) -> None:
     missing = NotFound.parse(msg)
+    # `TxDownloadManagerImpl::ReceivedNotFound`, net_processing.cpp
+    # (bitcoin/bitcoin@58a7869f86): a `notfound` for a transaction this
+    # node asked for is what tells it the ask will go unanswered, so the
+    # peer's own entry in `DownloadManager.tx_download`'s in-flight
+    # table (`conn.tx_requested`, which is what keeps that ask from
+    # being repeated while it is outstanding) is cleared early rather
+    # than sitting there until it would otherwise be overwritten by a
+    # fresh one. A block item carries no such bookkeeping to clear here:
+    # Core's own `NOTFOUND` handling reads only `IsGenTxMsg` items too,
+    # `MSG_BLOCK` never having been requested through a mechanism a
+    # `notfound` could complete. btclib-org/btclib-node#144
+    for item in missing.items:
+        if item.type_code in (
+            InventoryType.MSG_TX,
+            InventoryType.MSG_WTX,
+            InventoryType.MSG_WITNESS_TX,
+        ):
+            conn.tx_requested.pop(item.hash, None)
     node.logger.warning(f"Missing objects:{missing}")
 
 

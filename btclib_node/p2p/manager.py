@@ -10,9 +10,7 @@ from collections import deque
 from contextlib import suppress
 from typing import TYPE_CHECKING, override
 
-from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.addrv2 import NetworkAddressV2
-from btclib.p2p.data import TxPayload as Tx
 from btclib.p2p.payload import Payload
 from btclib.tx.tx import Tx as BtclibTx
 
@@ -270,31 +268,26 @@ class P2pManager(threading.Thread):
             self.connections[id].send(msg)
 
     def broadcast_raw_transaction(self, tx: BtclibTx, fee: int) -> None:
-        # the peers that asked for transactions, and not all of them:
-        # a peer whose version set BIP37's fRelay false said so about
-        # transactions from anywhere, not only about the ones another
-        # peer handed this node. `DownloadManager.tx_download` reads the
-        # same flag for the same reason. What a broadcast to everyone
-        # would have been right for is a message every peer is owed, and
-        # a transaction is not one, which leaves `sendall` with nothing
-        # to do.
+        # `DownloadManager.tx_download`'s own queue, with no peer to
+        # exclude as already holding it, rather than a push of its own:
+        # a direct, unsolicited `Tx` to every peer the instant this
+        # method is called would have been the one thing that told
+        # apart a transaction of this node's own from one it relayed --
+        # the delay and the `inv`/`getdata` round trip are what a
+        # relayed transaction gets, so a locally originated one goes
+        # through them too. `getdata`'s own handler serves a `tx` it
+        # finds in the mempool, so this call answers for what a peer
+        # asks back only where the caller has already put it there --
+        # `send_raw_transaction` (rpc/callbacks.py) does, before calling
+        # this. btclib-org/btclib-node#141
         #
-        # `fee` is the caller's own -- `rpc.callbacks.send_raw_transaction`
-        # has just computed it out of `main.verify_mempool_acceptance` --
-        # rather than looked up here, since a transaction can reach this
-        # method before or without ever sitting in `node.mempool`.
-        # BIP133: a peer's own advertised floor (`conn.feefilter`) is
-        # honoured the same way `DownloadManager.tx_download` does.
-        # btclib-org/btclib-node#260
-        msg = Tx(tx, include_witness=True)
-        for conn in self.connections.copy().values():
-            if not conn.relay_tx:
-                continue
-            if conn.feefilter and fee < fee_from_vsize(
-                tx.vsize, FeeRate(sats_per_kvbyte=conn.feefilter)
-            ):
-                continue
-            conn.send(msg)
+        # `fee` is accepted rather than read here: the same caller has
+        # just recorded it in `node.mempool.add_tx(tx, fee)`, which is
+        # where `tx_download`'s own BIP133 feefilter check
+        # (`Mempool.meets_fee_rate`) reads it from, keyed by the same
+        # wtxid this queues -- one record rather than a second copy of
+        # it threaded through `received_txs` too. btclib-org/btclib-node#260
+        self.node.download_manager.received_txs.append((None, tx.hash))
 
     def ping_all(self) -> None:
         for conn in self.connections.copy().values():

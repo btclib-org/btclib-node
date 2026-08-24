@@ -145,6 +145,20 @@ class Connection:
         # question. btclib-org/btclib-node#71
         self.answered_getaddr: bool = False
 
+        # What `DownloadManager.tx_download` is waiting to tell this peer
+        # about, and when it may next do so -- Core's `TxRelay` holds the
+        # same two things per peer (`m_tx_inventory_to_send`,
+        # `m_next_inv_send_time`) rather than announcing a transaction the
+        # instant it is accepted. 0 is "never scheduled", which the first
+        # check always treats as due. btclib-org/btclib-node#141
+        self.tx_announce_queue: list[bytes] = []
+        self.next_inv_send_time: float = 0.0
+        # wtxid -> when this peer was asked for it, so a `notfound` this
+        # node receives has something to clear and a second `getdata` for
+        # the same wtxid is not sent while the first is still outstanding.
+        # btclib-org/btclib-node#144
+        self.tx_requested: dict[bytes, float] = {}
+
         # What this connection currently owes the peer: every octet a
         # message has been serialized into and not yet handed to
         # `sock_sendall` in full, counted from `async_send` and not from
