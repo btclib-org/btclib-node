@@ -336,6 +336,58 @@ def test_a_dial_that_is_given_up_on_closes_the_socket_it_opened(
     assert all(sock.fileno() == -1 for sock in dialled)
 
 
+def test_a_dial_cancelled_in_flight_closes_the_socket_it_opened(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#312: `P2pManager.stop` cancels `manage_connections`, and a dial
+    it is in the middle of is cancelled with it.
+
+    `CancelledError` is not an `OSError` and not a `TimeoutError`, so
+    the arm that answers a peer which never came up does not see it: the
+    socket opened a few lines earlier is reachable from the frame the
+    cancellation unwinds and from nowhere else, and the caller that
+    would have closed it is never handed it.
+
+    `sock_connect` is replaced with one that never comes back, so the
+    dial is certainly still in flight when it is cancelled, rather than
+    the test racing a real connect.
+    """
+    opened: list[socket.socket] = []
+    real_socket = socket.socket
+
+    def recording_socket(*args: Any, **kwargs: Any) -> socket.socket:
+        sock = real_socket(*args, **kwargs)
+        opened.append(sock)
+        return sock
+
+    monkeypatch.setattr(socket, "socket", recording_socket)
+
+    async def cancel_a_dial_in_flight() -> None:
+        loop = asyncio.get_running_loop()
+
+        async def never_connects(sock: socket.socket, peer: Any) -> None:
+            await asyncio.sleep(3600)
+
+        monkeypatch.setattr(loop, "sock_connect", never_connects)
+        task = asyncio.ensure_future(dial(peer_address("127.0.0.1", 8333)))
+        # the dial's own socket is open and its connect is under way:
+        # one pass of the loop is all it takes to get there, and the
+        # sleep is what makes the task reach it rather than the cancel
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(cancel_a_dial_in_flight())
+    dialled = [
+        sock
+        for sock in opened
+        if sock.family == socket.AF_INET and sock.type == socket.SOCK_STREAM
+    ]
+    assert dialled
+    assert all(sock.fileno() == -1 for sock in dialled)
+
+
 def test_a_peer_that_is_not_listening_is_given_up_on() -> None:
     # nothing bound: the connection never completes, and what comes back
     # is nothing rather than a socket that is not connected

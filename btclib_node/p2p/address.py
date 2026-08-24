@@ -219,6 +219,16 @@ async def dial(address: NetworkAddressV2) -> socket.socket | None:
     except OSError, TimeoutError:
         client.close()
         return None
+    except asyncio.CancelledError:
+        # `manage_connections` cancelled with a dial in flight, which is
+        # what `P2pManager.stop`'s own drain does to it. This socket is
+        # this call's own until it is handed back, and the caller that
+        # never receives it has nothing to close: without this it goes
+        # out with the frame the cancellation unwinds, and is reported
+        # against whichever test the collector reaches it in
+        # (btclib-org/btclib-node#312).
+        client.close()
+        raise
     return client
 
 
