@@ -10,4 +10,4 @@ from btclib_node.log import Logger
 
 
 def test_init(tmp_path: Path) -> None:
-    Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    Chainstate(tmp_path, RegTest(), Logger(debug=True)).close()

@@ -2,14 +2,15 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 import pytest
 
 from btclib_node import Node
 from btclib_node.config import Config
+from btclib_node.constants import NodeStatus
 from tests.helpers import get_random_port
 
 
@@ -122,3 +123,68 @@ def node_context(
 def rpc_node(tmp_path: Path) -> Iterator[Node]:
     with node_context(tmp_path, allow_p2p=False) as node:
         yield node
+
+
+@contextmanager
+def unstarted_node_context(tmp_path: Path) -> Iterator[Node]:
+    """A node built and driven directly, never `start()`ed, closed on exit.
+
+    `run`'s own teardown -- `peer_db.close()`, `chainstate.close()`,
+    `block_db.close()`, both managers' event loops and `logger.close()`
+    -- only runs once a node's thread has reached the end of its loop,
+    which a node built here and driven on the thread that built it
+    never does. Each is closed explicitly rather than dropped: a
+    dropped database or file is a `ResourceWarning` raised against
+    whichever test the collector is running when it reaches it, not
+    against this one, and `tests/unit/init_test.py`'s `a_networked_node`
+    is the precedent for the two loops. The managers' own `stop()` is
+    not called -- it waits on a thread that `start()` never began.
+
+    The worker pool is taken down here too, rather than left to
+    `Node.__del__`'s own backstop: that backstop only runs once the
+    collector reaches this node, and where the pool it built is also
+    unreachable by then, `gc.collect()` does not promise which of the
+    two finalizers -- the node's or the pool's own -- runs first, so
+    relying on it is a `ResourceWarning` that fires on some collection
+    passes and not others.
+    """
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            allow_rpc=False,
+            debug=True,
+        )
+    )
+    try:
+        yield node
+    finally:
+        node._close_worker_pool()
+        node.p2p_manager.peer_db.close()
+        node.chainstate.close()
+        node.block_db.close()
+        node.p2p_manager.loop.close()
+        node.rpc_manager.loop.close()
+        node.logger.close()
+
+
+@pytest.fixture
+def regtest_node(tmp_path: Path) -> Iterator[Callable[[], Node]]:
+    """A factory for header-synced regtest nodes, closed at teardown.
+
+    Every node it hands out shares `tmp_path`: a test that checks a
+    chainstate or a header chain survives being closed and reopened
+    calls it twice, closing the first itself in between. Each is closed
+    once more here regardless of what the test already did to it --
+    `unstarted_node_context`'s own closes are all safe to repeat -- since
+    most callers build exactly one node and never close it themselves.
+    """
+    with ExitStack() as stack:
+
+        def make() -> Node:
+            node = stack.enter_context(unstarted_node_context(tmp_path))
+            node.status = NodeStatus.HeaderSynced
+            return node
+
+        yield make

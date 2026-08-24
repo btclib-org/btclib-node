@@ -48,6 +48,7 @@ def test_rev_patch(tmp_path: Path) -> None:
     for rev_patch in rev_patches:
         utxo_index.apply_rev_block(rev_patch)
     assert utxo_index.updated_utxo_set == {}
+    chainstate.close()
 
 
 def one_tx_block(txs: list[Tx], block_hash: bytes = b"\x00" * 32) -> Any:

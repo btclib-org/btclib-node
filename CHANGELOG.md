@@ -28,6 +28,31 @@ to check the guess.
   the read that does not go stale, and gives the fast-forward that
   brings a clean checkout forward without working in it.
 
+### A test that builds a `Node`, a `Chainstate` or a `BlockDB` closes it
+
+- **A fixture builds a regtest `Node` that is never `start()`ed and
+  closes it: `Chainstate`, `BlockDB`, both managers' event loops and the
+  worker pool** (closes #111). `run`'s own teardown closes all four, and
+  never runs for a node driven directly on the thread that built it,
+  which is the shape `tests/unit/main_test.py`'s tests and
+  `tests/unit/chainstate/filter_index_test.py`'s use throughout.
+  `tests/unit/chainstate/block_index_test.py` and
+  `tests/unit/block_db_test.py`, which open a `Chainstate` or a
+  `BlockDB` directly rather than through a `Node`, get the same
+  factory-fixture shape.
+- **`tests/unit/init_test.py`'s `a_networked_node` closes the real
+  `PeerDB` its own real `P2pManager` opened**, before replacing that
+  manager with a stand-in that carries none of it: nothing else ever
+  reached the original to close it.
+- **`filterwarnings` is `["error"]`**, in place of the blanket
+  `['ignore:cannot collect test class']` (closes #31). What stays
+  named is `TestNet`'s own collection warning -- pytest collects any
+  class whose name matches `Test*`, and `btclib_node.chains.TestNet`
+  is one -- and, on the handful of tests whose own subject is a
+  warning raised on purpose (an unhandled exception on a manager's
+  thread that cannot bind, a coroutine a deliberately unrun loop never
+  awaits), a `pytest.mark.filterwarnings` naming that test alone.
+
 ### `PeerDB.addresses` gets a lock of its own, separate from the active table's
 
 - **`add_addresses` and `random_address` serialize every touch of

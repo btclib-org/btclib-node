@@ -360,19 +360,30 @@ xfail_strict = true
 # and the run that failed on a four-core runner reported at 20.24s.
 # Issue #46 is where that starvation is tracked.
 timeout = 120
-# Not `["error"]`: measured with it set, `uv run pytest -q` fails tests
-# scattered across the suite. The bulk are `ResourceWarning`
-# raised by `__del__` at garbage-collection time against sqlite
-# connections, sockets, asyncio event loops and multiprocessing pools
-# that `tests/unit/main_test.py`'s `regtest_node` and its kind build and
-# never close -- issue #111 and issue #195 by name, both already filed
-# and both deferred to a quiet machine. Raising a `ResourceWarning` at
-# GC time also fails whatever test happens to be running when the
-# collector runs, not the test that leaked, which is why the same
-# tests do not fail the same way twice. Turning this on is therefore
-# not a filterwarnings change on its own, it is contingent on #111 and
-# #195 landing first, and is left for whoever picks those up.
-filterwarnings = ['ignore:cannot collect test class']
+# `["error"]`, once the fixtures in tests/conftest.py closed what
+# tests/unit/main_test.py's regtest_node and its kind (issue #111,
+# issue #195) left open -- a sqlite connection, a socket, an event
+# loop or a worker pool, warned about by __del__ at whatever moment
+# the collector reaches it, which is why the same tests used to fail
+# this differently on every run. Two other warnings that turning this
+# on surfaced are not that shape and stay out of this list: a
+# deliberately unhandled exception on a manager's own thread and a
+# deliberately unawaited coroutine, each provoked on purpose by the
+# handful of tests that exercise it and silenced there with its own
+# `pytest.mark.filterwarnings` rather than named here for the whole
+# suite.
+filterwarnings = [
+    "error",
+    # `TestNet` (`btclib_node/chains.py`) is a chain, not a test: pytest
+    # collects any class whose name matches `Test*` and warns where it
+    # cannot, `__init__` being what stops it here. Named to that one
+    # class rather than to every class the blanket entry above used to
+    # cover -- nothing here is renamed to dodge pytest's own default,
+    # `python_classes` in this same table being what would have to
+    # change instead, at the cost of the name the wire protocol and
+    # every other repository reading it already agree on.
+    "ignore:cannot collect test class 'TestNet'",
+]
 
 [tool.coverage.run]
 # Named, rather than left to `--cov` alone: without it coverage measures

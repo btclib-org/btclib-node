@@ -2,7 +2,7 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-from pathlib import Path
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -19,7 +19,6 @@ from btclib_node import Node, main
 from btclib_node.chains import RegTest
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import BlockIndex, BlockStatus
-from btclib_node.config import Config
 from btclib_node.constants import NodeStatus
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.interpreter import check_transactions
@@ -36,18 +35,9 @@ if TYPE_CHECKING:
     from btclib_node.p2p.connection import Connection
 
 
-def regtest_node(tmp_path: Path) -> Node:
-    node = Node(
-        config=Config(
-            chain="regtest",
-            data_dir=tmp_path,
-            allow_p2p=False,
-            allow_rpc=False,
-            debug=True,
-        )
-    )
-    node.status = NodeStatus.HeaderSynced
-    return node
+@pytest.fixture
+def node(regtest_node: Callable[[], Node]) -> Node:
+    return regtest_node()
 
 
 def connect(node: Node, chain: list[Block]) -> BlockIndex:
@@ -63,17 +53,7 @@ def connect(node: Node, chain: list[Block]) -> BlockIndex:
     return block_index
 
 
-def test_chain(tmp_path: Path) -> None:
-    node = Node(
-        config=Config(
-            chain="regtest",
-            data_dir=tmp_path,
-            allow_p2p=False,
-            allow_rpc=False,
-            debug=True,
-        )
-    )
-    node.status = NodeStatus.HeaderSynced
+def test_chain(node: Node) -> None:
     length = 2000 * 1  # 2000
     chain = generate_random_chain(length, RegTest().genesis.hash)
     headers = [block.header for block in chain]
@@ -108,11 +88,10 @@ def spend(prevout_tx: Tx, value: int, script_sig: bytes | None = None) -> Tx:
     )
 
 
-def test_reject_block_that_prints_money(tmp_path: Path) -> None:
+def test_reject_block_that_prints_money(node: Node) -> None:
     # Script validation never reads the amounts except through the
     # sig_hash, so nothing in the engine notices an output larger than
     # the input it spends.
-    node = regtest_node(tmp_path)
     chain = generate_random_chain(2, RegTest().genesis.hash)
     block_index = connect(node, chain)
     connected = len(block_index.active_chain)
@@ -129,11 +108,10 @@ def test_reject_block_that_prints_money(tmp_path: Path) -> None:
     assert len(block_index.active_chain) == connected
 
 
-def test_reject_block_with_a_failing_script(tmp_path: Path) -> None:
+def test_reject_block_with_a_failing_script(node: Node) -> None:
     # An input that does not verify has to fail the block. It used to be
     # written to errors/ and swallowed, inside a worker pool, so nothing
     # reached update_chain and the block was connected anyway.
-    node = regtest_node(tmp_path)
     chain = generate_random_chain(2, RegTest().genesis.hash)
     block_index = connect(node, chain)
     connected = len(block_index.active_chain)
@@ -153,17 +131,7 @@ def test_reject_block_with_a_failing_script(tmp_path: Path) -> None:
     assert len(block_index.active_chain) == connected
 
 
-def test_add_tx(tmp_path: Path) -> None:
-    node = Node(
-        config=Config(
-            chain="regtest",
-            data_dir=tmp_path,
-            allow_p2p=False,
-            allow_rpc=False,
-            debug=True,
-        )
-    )
-    node.status = NodeStatus.HeaderSynced
+def test_add_tx(node: Node) -> None:
     chain = generate_random_chain(10, RegTest().genesis.hash)
     headers = [block.header for block in chain]
     block_index = node.chainstate.block_index
@@ -194,7 +162,7 @@ def test_add_tx(tmp_path: Path) -> None:
 
 
 def test_a_candidate_whose_block_has_not_arrived_is_not_connected(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    node: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # headers run ahead of blocks for the whole of a sync, so the
     # commonest state of a candidate is one whose block is still being
@@ -202,7 +170,6 @@ def test_a_candidate_whose_block_has_not_arrived_is_not_connected(
     # asking and rolling back reaches the same chain, but by way of an
     # exception, on every pass of a loop that runs until the block
     # arrives.
-    node = regtest_node(tmp_path)
     chain = generate_random_chain(2, RegTest().genesis.hash)
     block_index = node.chainstate.block_index
     block_index.add_headers([block.header for block in chain])
@@ -215,14 +182,13 @@ def test_a_candidate_whose_block_has_not_arrived_is_not_connected(
 
 
 def test_a_hole_behind_a_downloaded_tip_does_not_block_a_complete_branch(
-    tmp_path: Path,
+    node: Node,
 ) -> None:
     # get_first_candidate used to ask only whether a candidate's own tip
     # had arrived, so a branch missing a block *behind* its downloaded
     # tip still passed it -- and then update_chain found the hole and
     # gave up the whole pass, leaving that same candidate at the front
     # of the queue next time: btclib-org/btclib-node#121
-    node = regtest_node(tmp_path)
     block_index = node.chainstate.block_index
 
     hole = generate_random_chain(2, RegTest().genesis.hash)
@@ -242,11 +208,10 @@ def test_a_hole_behind_a_downloaded_tip_does_not_block_a_complete_branch(
 
 
 def test_update_chain_refuses_a_block_marked_downloaded_but_missing(
-    tmp_path: Path,
+    node: Node,
 ) -> None:
     # the download manager and block_db agree by construction; this is
     # the state they would be in if they did not
-    node = regtest_node(tmp_path)
     chain = generate_random_chain(1, RegTest().genesis.hash)
     block_index = node.chainstate.block_index
     block_index.add_headers([block.header for block in chain])
@@ -272,12 +237,11 @@ def settle(node: Node) -> None:
         update_chain(node)
 
 
-def test_a_heavier_fork_replaces_the_chain_the_node_was_on(tmp_path: Path) -> None:
+def test_a_heavier_fork_replaces_the_chain_the_node_was_on(node: Node) -> None:
     # more than one block on the branch being left, because that is the
     # shallowest branch whose blocks have to be undone in an order: an
     # output block N created and block N+1 spent is gone from the utxo
     # set by the time N comes to be undone
-    node = regtest_node(tmp_path)
     first = generate_random_chain(2, RegTest().genesis.hash)
     block_index = connect(node, first)
     assert block_index.active_chain[1:] == hashes(first)
@@ -289,10 +253,9 @@ def test_a_heavier_fork_replaces_the_chain_the_node_was_on(tmp_path: Path) -> No
         assert block_hash not in block_index.active_chain
 
 
-def test_a_reorg_refuses_a_missing_reverse_patch(tmp_path: Path) -> None:
+def test_a_reorg_refuses_a_missing_reverse_patch(node: Node) -> None:
     # every block on the active chain has one, by construction; this is
     # the state block_db would be in if it did not
-    node = regtest_node(tmp_path)
     first = generate_random_chain(2, RegTest().genesis.hash)
     connect(node, first)
     node.block_db.rev_patches.pop(first[-1].header.hash)
@@ -302,11 +265,10 @@ def test_a_reorg_refuses_a_missing_reverse_patch(tmp_path: Path) -> None:
         connect(node, second)
 
 
-def test_a_reorg_refuses_a_missing_removed_block(tmp_path: Path) -> None:
+def test_a_reorg_refuses_a_missing_removed_block(node: Node) -> None:
     # the reverse patch of the block being undone is enough to roll the
     # chainstate back; giving the transactions of that same block back
     # to the mempool needs the block itself, which is the gap this pins
-    node = regtest_node(tmp_path)
     first = generate_random_chain(2, RegTest().genesis.hash)
     connect(node, first)
     node.block_db.blocks.pop(first[-1].header.hash)
@@ -317,11 +279,10 @@ def test_a_reorg_refuses_a_missing_removed_block(tmp_path: Path) -> None:
 
 
 def test_a_reorg_evicts_a_transaction_the_reorg_itself_invalidated(
-    tmp_path: Path,
+    node: Node,
 ) -> None:
     # only once the node is synced: while it is still catching up, a
     # transaction from a block it steps off is not worth relaying
-    node = regtest_node(tmp_path)
     first = generate_random_chain(2, RegTest().genesis.hash)
     connect(node, first)
     assert node.status == NodeStatus.BlockSynced
@@ -364,13 +325,12 @@ def _extend(previous_hash: bytes, start_height: int, count: int) -> list[Block]:
 
 
 def test_a_reorg_still_resurrects_a_transaction_its_prevout_survives(
-    tmp_path: Path,
+    node: Node,
 ) -> None:
     # #85's fix checks every re-added transaction rather than trusting
     # it: this is the other side of that, a transaction that spent an
     # output the reorg does not touch and is still good on the chain
     # that replaces the one it was confirmed on
-    node = regtest_node(tmp_path)
     common = generate_random_chain(1, RegTest().genesis.hash)
     block_index = connect(node, common)
 
@@ -398,7 +358,7 @@ def test_a_reorg_still_resurrects_a_transaction_its_prevout_survives(
 
 
 def test_a_reorg_re_adds_abandoned_transactions_parent_first(
-    tmp_path: Path,
+    node: Node,
 ) -> None:
     # a chain of two transactions confirmed only on the branch being
     # abandoned: the second spends the first's own output, which exists
@@ -409,7 +369,6 @@ def test_a_reorg_re_adds_abandoned_transactions_parent_first(
     # and verify_mempool_acceptance drops it as a missing prevout for
     # good; Core's own MaybeUpdateMempoolForReorg re-adds oldest first
     # for the same reason (src/validation.cpp)
-    node = regtest_node(tmp_path)
     common = generate_random_chain(1, RegTest().genesis.hash)
     block_index = connect(node, common)
 
@@ -438,9 +397,8 @@ def test_a_reorg_re_adds_abandoned_transactions_parent_first(
 
 
 def test_a_reorg_before_the_node_is_synced_leaves_the_mempool_alone(
-    tmp_path: Path,
+    node: Node,
 ) -> None:
-    node = regtest_node(tmp_path)
     first = generate_random_chain(2, RegTest().genesis.hash)
     connect(node, first)
     node.status = NodeStatus.HeaderSynced
@@ -453,12 +411,11 @@ def test_a_reorg_before_the_node_is_synced_leaves_the_mempool_alone(
 
 
 def test_a_newly_connected_block_is_announced_to_every_connected_peer(
-    tmp_path: Path,
+    node: Node,
 ) -> None:
     # only once the node is synced, the same gate the mempool bookkeeping
     # above already uses: an accepted block used to reach nobody, by
     # either shape. btclib-org/btclib-node#202
-    node = regtest_node(tmp_path)
     first = generate_random_chain(1, RegTest().genesis.hash)
     connect(node, first)
     assert node.status == NodeStatus.BlockSynced
@@ -486,8 +443,7 @@ def test_a_newly_connected_block_is_announced_to_every_connected_peer(
     )
 
 
-def test_a_reorg_before_the_node_is_synced_announces_nothing(tmp_path: Path) -> None:
-    node = regtest_node(tmp_path)
+def test_a_reorg_before_the_node_is_synced_announces_nothing(node: Node) -> None:
     first = generate_random_chain(2, RegTest().genesis.hash)
     connect(node, first)
     node.status = NodeStatus.HeaderSynced
@@ -504,7 +460,7 @@ def test_a_reorg_before_the_node_is_synced_announces_nothing(tmp_path: Path) -> 
 
 
 def test_a_refused_branch_invalidates_only_the_block_that_failed(
-    tmp_path: Path,
+    node: Node,
 ) -> None:
     # the branch is tried as a unit: its tip is what get_first_candidate
     # offers, so the blocks under it connect in the same pass the tip is
@@ -513,7 +469,6 @@ def test_a_refused_branch_invalidates_only_the_block_that_failed(
     # update_header_index, on the one block whose own contextual check
     # raised -- the ones under it never failed anything and stay
     # valid_header, ready to connect if a different tip is built on them.
-    node = regtest_node(tmp_path)
     active = generate_random_chain(2, RegTest().genesis.hash)
     block_index = connect(node, active)
 
@@ -561,14 +516,13 @@ def test_a_refused_branch_invalidates_only_the_block_that_failed(
 
 
 def test_a_refused_branch_leaves_no_reverse_patches_in_the_block_store(
-    tmp_path: Path,
+    node: Node,
 ) -> None:
     # active outweighs below's own two blocks individually, so only
     # prints_money -- the fork's tip -- is its own candidate and the
     # whole fork connects in one trial. below's two blocks validate and
     # each generate a reverse patch before prints_money fails and the
     # trial is rolled back: btclib-org/btclib-node#200
-    node = regtest_node(tmp_path)
     active = generate_random_chain(2, RegTest().genesis.hash)
     block_index = connect(node, active)
 
@@ -601,7 +555,7 @@ def test_a_refused_branch_leaves_no_reverse_patches_in_the_block_store(
 
 
 def test_a_refused_branch_invalidates_headers_that_were_never_candidates(
-    tmp_path: Path,
+    node: Node,
 ) -> None:
     # neither the block that fails nor a sibling built on it has to have
     # individually outweighed the active chain to be real: only the
@@ -610,7 +564,6 @@ def test_a_refused_branch_invalidates_headers_that_were_never_candidates(
     # walking BlockIndex.children -- proves the cascade through the real
     # update_chain -> update_header_index -> invalidate call chain, not
     # just the isolated BlockIndex-level call: btclib-org/btclib-node#125
-    node = regtest_node(tmp_path)
     active = generate_random_chain(6, RegTest().genesis.hash)
     block_index = connect(node, active)
 
@@ -664,7 +617,7 @@ def test_a_refused_branch_invalidates_headers_that_were_never_candidates(
 
 
 def test_a_stop_mid_reorg_rolls_the_trial_back_without_invalidating_it(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    node: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # `terminate_flag` is read between the blocks of `to_add`, so a
     # shutdown requested during a reorg is noticed after the block being
@@ -675,7 +628,6 @@ def test_a_stop_mid_reorg_rolls_the_trial_back_without_invalidating_it(
     # applied" -- there is no such state to reach -- but "stopped with
     # none of it applied, and the block it stopped on left alone", which
     # is what tells this apart from a block that failed its own check.
-    node = regtest_node(tmp_path)
     active = generate_random_chain(2, RegTest().genesis.hash)
     block_index = connect(node, active)
     active_chain_before = list(block_index.active_chain)
