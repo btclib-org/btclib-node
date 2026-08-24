@@ -1924,3 +1924,20 @@ to check the guess.
   past `Mempool.is_full()`, so a transaction dropped for a full mempool
   was still announced to every other peer, which then asked for it and
   got `notfound`.
+
+### `sendrawtransaction` refuses a transaction a full mempool could not keep
+
+- **`send_raw_transaction` now raises `RpcErrorCode.VERIFY_REJECTED`
+  ("Mempool is full") rather than answering `tx.id.hex()` for a
+  transaction `Mempool.add_tx` silently declined past
+  `Mempool.is_full()`** (closes #293), the same defect #277 fixed on the
+  peer-to-peer path. `-26` is Core's own code for this refusal too:
+  `TxValidationResult::TX_MEMPOOL_POLICY` invalidated "mempool full"
+  (`validation.cpp`) becomes `TransactionError::MEMPOOL_REJECTED`
+  (`node/transaction.cpp`), which `RPCErrorFromTransactionError`
+  (`rpc/util.cpp`) answers with `RPC_TRANSACTION_REJECTED` — a bare
+  alias of `RPC_VERIFY_REJECTED` (`rpc/protocol.h`,
+  bitcoin/bitcoin@58a7869f86). A resubmission of a transaction already
+  held is exempted and still reannounced, mirroring
+  `BroadcastTransaction`'s own early return for a txid already in the
+  mempool, which does not reach Core's own capacity check either.

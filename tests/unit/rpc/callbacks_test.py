@@ -640,6 +640,54 @@ def test_a_transaction_the_mempool_will_not_have_is_not_reported_relayed(
     assert broadcast == []
 
 
+def test_a_transaction_a_full_mempool_cannot_keep_is_refused_not_relayed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Mempool.add_tx is a silent no-op past is_full(): answering with
+    # tx.id.hex() regardless would tell the caller this transaction was
+    # kept when it was not, the same defect #277 fixed on the
+    # peer-to-peer path. btclib-org/btclib-node#293
+    import btclib_node.rpc.callbacks as cb
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 1000)
+    tx = a_tx()
+    mempool = Mempool(Logger(debug=True))
+    mempool.bytesize_limit = 0
+    broadcast: list[Tx] = []
+    node = a_node(mempool=mempool)
+    node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: broadcast.append(tx)
+
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(node, _CONN, [tx.serialize(True).hex()])
+    assert raised.value.code == RpcErrorCode.VERIFY_REJECTED
+    assert raised.value.message == "Mempool is full"
+    assert not mempool.contains_tx(tx)
+    assert broadcast == []
+
+
+def test_resubmitting_a_transaction_already_held_is_tolerated_even_when_the_mempool_is_full(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # BroadcastTransaction's own early return for a txid already in the
+    # mempool (node/transaction.cpp, bitcoin/bitcoin@58a7869f86):
+    # resubmission is reannounced rather than refused for a fullness
+    # this particular submission did not cause
+    import btclib_node.rpc.callbacks as cb
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 1000)
+    tx = a_tx()
+    mempool = Mempool(Logger(debug=True))
+    mempool.add_tx(tx, 1000)
+    mempool.bytesize_limit = mempool.bytesize
+    assert mempool.is_full()
+    broadcast: list[Tx] = []
+    node = a_node(mempool=mempool)
+    node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: broadcast.append(tx)
+
+    assert send_raw_transaction(node, _CONN, [tx.serialize(True).hex()]) == tx.id.hex()
+    assert broadcast == [tx]
+
+
 def a_block_index(
     chain: list[BlockHeader],
     off_chain: list[BlockHeader] | None = None,
