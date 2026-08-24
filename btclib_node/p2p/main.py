@@ -4,6 +4,8 @@
 
 from typing import TYPE_CHECKING
 
+from btclib.exceptions import BTClibException
+
 from btclib_node.constants import P2pConnStatus
 from btclib_node.p2p.callbacks import callbacks, handshake_callbacks
 
@@ -26,9 +28,16 @@ def handle_p2p_handshake(node: Node) -> None:
             elif conn.status == P2pConnStatus.Closed:
                 pass
             else:
+                # a second version/verack/wtxidrelay/sendaddrv2, out of
+                # handshake order: discouraged for it (#283)
+                manager.discourage(conn.address)
                 conn.stop()
-        except Exception:
+        except Exception as e:
             conn.stop()
+            # discouraged for a parse failure, `handle_p2p`'s own
+            # `except` below explaining which exceptions count as one
+            if isinstance(e, BTClibException):
+                manager.discourage(conn.address)
             node.logger.exception("Exception occurred")
 
 
@@ -49,8 +58,21 @@ def handle_p2p(node: Node) -> None:
                 elif conn.status == P2pConnStatus.Closed:
                     pass
                 else:
+                    # a message ahead of `verack`, out of handshake
+                    # order: discouraged for it (#283)
+                    manager.discourage(conn.address)
                     conn.stop()
                 node.logger.debug("Finished p2p\n")
-        except Exception:
+        except Exception as e:
             conn.stop()
+            # A `BTClibException` is btclib refusing this peer's own
+            # wire content -- a malformed message, or one failing a
+            # consensus check such as `add_headers`'s or `assert_valid`'s
+            # own. Anything else caught here is this node's own code
+            # failing on content that was fine -- `get_cfilters`'s "no
+            # filter for a block on the active chain" among them -- and
+            # not cause to discourage the peer that merely triggered it.
+            # btclib-org/btclib-node#283
+            if isinstance(e, BTClibException):
+                manager.discourage(conn.address)
             node.logger.exception("Exception occurred")

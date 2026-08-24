@@ -57,6 +57,18 @@ class P2pManager(threading.Thread):
         self.handshake_messages: deque[tuple[str, bytes, int]] = deque()
         self.nonces: list[int] = []
         self.last_connection_id = -1
+        # Endpoints `discourage` has been told to stop redialling, by
+        # `endpoint_key` -- process lifetime, not `peer_db`'s own tables,
+        # so a wrongly discouraged endpoint is recovered by a restart
+        # rather than by touching the datadir, matching Core's own
+        # `CRollingBloomFilter` (`banman.h`, bitcoin/bitcoin@58a7869f86)
+        # over its persisted ban list. Unlocked: `discourage` only ever
+        # adds a key and `manage_connections` only ever asks `in`, never
+        # walks it, so there is nothing here for the two to catch each
+        # other mid-stride the way `PeerDB._addresses_lock`'s own
+        # iteration can -- the same reasoning `PeerDB.is_empty` already
+        # gives for reading its own set unlocked. btclib-org/btclib-node#283
+        self.discouraged: set[bytes] = set()
         # 0.0, not `time.time()`: the first pass of `manage_connections`
         # prunes on the spot rather than waiting a full
         # `_ACTIVE_PRUNE_INTERVAL` after this manager was constructed.
@@ -98,6 +110,18 @@ class P2pManager(threading.Thread):
         conn = self.connections.pop(id, None) or self.pending_connections.pop(id, None)
         if conn is not None:
             conn.stop()
+
+    def discourage(self, address: NetworkAddressV2) -> None:
+        """Stop `manage_connections` from redialling this endpoint.
+
+        The caller is one of the `conn.stop()` sites that stops a
+        connection this node dialled or accepted for cause -- an
+        incompatible peer or one that broke the protocol, never a
+        connection this node closed on its own account. `address` is
+        `conn.address`, keyed the same way `already_connected` below
+        already compares live connections against a draw.
+        """
+        self.discouraged.add(endpoint_key(address))
 
     async def async_connect(self, address: NetworkAddressV2) -> None:
         client = await dial(address)
@@ -178,10 +202,15 @@ class P2pManager(threading.Thread):
                     # and onion addresses through. The draw is what
                     # knows, and it answers with nothing: this pass has
                     # nothing to do, and the sleep below is what keeps
-                    # that from being a spin.
+                    # that from being a spin. `discouraged` is the same
+                    # kind of refusal as `already_connected`, against a
+                    # peer this node has already dialled or accepted and
+                    # dropped for cause rather than one it already holds.
+                    # btclib-org/btclib-node#283
                     if (
                         address is not None
                         and endpoint_key(address) not in already_connected
+                        and endpoint_key(address) not in self.discouraged
                     ):
                         sock = await dial(address)
                         if sock:

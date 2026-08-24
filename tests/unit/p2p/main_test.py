@@ -14,6 +14,8 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from btclib.exceptions import BTClibValueError
+from btclib.p2p.addrv2 import NetworkAddressV2
 
 from btclib_node.constants import P2pConnStatus
 from btclib_node.p2p.callbacks import callbacks, handshake_callbacks
@@ -22,6 +24,9 @@ from btclib_node.p2p.main import handle_p2p, handle_p2p_handshake
 if TYPE_CHECKING:
     from btclib_node import Node
     from btclib_node.p2p.connection import Connection
+
+
+_AN_ADDRESS = NetworkAddressV2(0, 0, 1, b"\x01\x02\x03\x04", 18444)
 
 
 def make_node(
@@ -33,12 +38,17 @@ def make_node(
     pending: bool = False,
 ) -> tuple[Any, list[bool]]:
     stopped: list[bool] = []
-    conn = SimpleNamespace(status=status, stop=lambda: stopped.append(True))
+    discouraged: list[Any] = []
+    conn = SimpleNamespace(
+        status=status, address=_AN_ADDRESS, stop=lambda: stopped.append(True)
+    )
     manager = SimpleNamespace(
         messages=deque(),
         handshake_messages=deque(),
         connections={0: conn} if present and not pending else {},
         pending_connections={0: conn} if present and pending else {},
+        discourage=discouraged.append,
+        discouraged=discouraged,
     )
     getattr(manager, queue_name).append(item)
     node = SimpleNamespace(
@@ -77,12 +87,13 @@ def test_a_handshake_message_on_a_closed_connection_is_dropped() -> None:
 
 def test_a_handshake_message_on_a_connected_one_drops_the_peer() -> None:
     # the handshake is over: a second version or verack is a peer not
-    # speaking the protocol
+    # speaking the protocol, and discouraged for it -- #283
     node, stopped = make_node(
         "handshake_messages", ("verack", b"", 0), status=P2pConnStatus.Connected
     )
     handle_p2p_handshake(node)
     assert stopped == [True]
+    assert node.p2p_manager.discouraged == [_AN_ADDRESS]
 
 
 def test_a_handshake_callback_that_raises_drops_the_peer(
@@ -97,6 +108,24 @@ def test_a_handshake_callback_that_raises_drops_the_peer(
     )
     handle_p2p_handshake(node)
     assert stopped == [True]
+    # #283: not every exception is the peer's fault, and a bare
+    # RuntimeError is not one btclib raised over the peer's own content
+    assert not node.p2p_manager.discouraged
+
+
+def test_a_handshake_callback_that_raises_a_btclib_exception_costs_the_peer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom(node: Node, msg: bytes, conn: Connection) -> None:
+        raise BTClibValueError("no")
+
+    monkeypatch.setitem(handshake_callbacks, "verack", boom)
+    node, stopped = make_node(
+        "handshake_messages", ("verack", b"", 0), status=P2pConnStatus.Open
+    )
+    handle_p2p_handshake(node)
+    assert stopped == [True]
+    assert node.p2p_manager.discouraged == [_AN_ADDRESS]  # #283
 
 
 def test_a_handshake_message_for_a_connection_that_is_gone_is_dropped() -> None:
@@ -152,6 +181,7 @@ def test_a_message_before_the_handshake_is_over_drops_the_peer() -> None:
     node, stopped = make_node("messages", ("ping", b"", 0), status=P2pConnStatus.Open)
     handle_p2p(node)
     assert stopped == [True]
+    assert node.p2p_manager.discouraged == [_AN_ADDRESS]  # #283
 
 
 def test_a_message_on_a_closed_connection_is_dropped() -> None:
@@ -178,6 +208,24 @@ def test_a_callback_that_raises_drops_the_peer(monkeypatch: pytest.MonkeyPatch) 
     )
     handle_p2p(node)
     assert stopped == [True]
+    # #283: an internal failure on content that was fine is this node's
+    # own bug, not cause to discourage the peer that triggered it
+    assert not node.p2p_manager.discouraged
+
+
+def test_a_callback_that_raises_a_btclib_exception_costs_the_peer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom(node: Node, msg: bytes, conn: Connection) -> None:
+        raise BTClibValueError("no")
+
+    monkeypatch.setitem(callbacks, "ping", boom)
+    node, stopped = make_node(
+        "messages", ("ping", b"", 0), status=P2pConnStatus.Connected
+    )
+    handle_p2p(node)
+    assert stopped == [True]
+    assert node.p2p_manager.discouraged == [_AN_ADDRESS]  # #283
 
 
 def test_a_message_for_a_connection_that_is_gone_is_dropped() -> None:
@@ -197,3 +245,4 @@ def test_a_message_on_a_connection_still_pending_drops_the_peer() -> None:
     )
     handle_p2p(node)
     assert stopped == [True]
+    assert node.p2p_manager.discouraged == [_AN_ADDRESS]  # #283

@@ -10,7 +10,7 @@ from concurrent.futures import Future
 from io import BytesIO
 from typing import TYPE_CHECKING, cast, override
 
-from btclib.exceptions import BTClibValueError, IncompleteMessageError
+from btclib.exceptions import BTClibException, BTClibValueError, IncompleteMessageError
 from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.addrv2 import NetworkAddressV2
 from btclib.p2p.handshake import Version
@@ -196,7 +196,15 @@ class Connection:
             try:
                 self.buffer += data
                 self.parse_messages()
-            except Exception:
+            except Exception as e:
+                # A `BTClibException` is `Message.parse` (or the
+                # network-magic check right after it) refusing this
+                # peer's own envelope -- a bad checksum, an oversized
+                # length, a message for another network. Anything else
+                # caught here is this node's own bug, not the peer's
+                # doing. btclib-org/btclib-node#283
+                if isinstance(e, BTClibException):
+                    self.manager.discourage(self.address)
                 return self.stop(cancel_task=False)
 
     async def _send(self, data: bytes) -> None:

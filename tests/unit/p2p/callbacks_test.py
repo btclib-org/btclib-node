@@ -391,6 +391,7 @@ def a_handshake_node(
     promote_connection: Any = None,
     min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
 ) -> Any:
+    discouraged: list[Any] = []
     return SimpleNamespace(
         status=status,
         config=SimpleNamespace(min_relay_feerate=min_relay_feerate),
@@ -398,6 +399,8 @@ def a_handshake_node(
             nonces=list(nonces),
             peer_db=peer_db,
             promote_connection=promote_connection or (lambda conn_id: None),
+            discourage=discouraged.append,
+            discouraged=discouraged,
         ),
         chainstate=SimpleNamespace(
             block_index=SimpleNamespace(get_block_locator_hashes=lambda: [b"\x00" * 32])
@@ -416,52 +419,57 @@ def commands(peer: Any) -> list[str]:
 
 
 def test_a_version_is_answered_with_what_this_node_speaks() -> None:
+    node = a_handshake_node()
     peer = a_peer()
-    version(a_handshake_node(), a_version(), peer)
+    version(node, a_version(), peer)
     assert commands(peer) == ["WtxidRelay", "SendAddrV2", "Verack"]
     assert isinstance(peer.sent[0], WtxidRelay)
     assert isinstance(peer.sent[1], SendAddrV2)
     assert isinstance(peer.sent[2], Verack)
     assert peer.relay_tx is True
     assert not peer.stopped
+    assert not node.p2p_manager.discouraged
 
 
 def test_a_version_carrying_our_own_nonce_is_this_node_calling_itself() -> None:
+    node = a_handshake_node(nonces=[7])
     peer = a_peer()
-    version(a_handshake_node(nonces=[7]), a_version(nonce=7), peer)
+    version(node, a_version(nonce=7), peer)
     assert peer.stopped == [True]
     assert not peer.sent
+    # #283: an incompatibility, not a protocol violation, and still cause
+    assert node.p2p_manager.discouraged == [peer.address]
 
 
 def test_a_peer_speaking_an_older_protocol_is_let_go() -> None:
+    node = a_handshake_node()
     peer = a_peer()
-    version(a_handshake_node(), a_version(protocol=ProtocolVersion - 1), peer)
+    version(node, a_version(protocol=ProtocolVersion - 1), peer)
     assert peer.stopped == [True]
+    assert node.p2p_manager.discouraged == [peer.address]  # #283
 
 
 def test_a_peer_without_the_witness_service_is_let_go() -> None:
+    node = a_handshake_node()
     peer = a_peer()
-    version(a_handshake_node(), a_version(services=ServiceFlags.NODE_NETWORK), peer)
+    version(node, a_version(services=ServiceFlags.NODE_NETWORK), peer)
     assert peer.stopped == [True]
+    assert node.p2p_manager.discouraged == [peer.address]  # #283
 
 
 def test_a_pruned_peer_is_let_go_only_once_the_blocks_are_synced() -> None:
     pruned = ServiceFlags.NODE_WITNESS
+    node = a_handshake_node(status=NodeStatus.HeaderSynced)
     peer = a_peer()
-    version(
-        a_handshake_node(status=NodeStatus.HeaderSynced),
-        a_version(services=pruned),
-        peer,
-    )
+    version(node, a_version(services=pruned), peer)
     assert not peer.stopped
+    assert not node.p2p_manager.discouraged
 
+    node = a_handshake_node(status=NodeStatus.BlockSynced)
     peer = a_peer()
-    version(
-        a_handshake_node(status=NodeStatus.BlockSynced),
-        a_version(services=pruned),
-        peer,
-    )
+    version(node, a_version(services=pruned), peer)
     assert peer.stopped == [True]
+    assert node.p2p_manager.discouraged == [peer.address]  # #283
 
 
 def test_a_version_that_says_it_relays_nothing_is_taken_at_its_word() -> None:
@@ -702,19 +710,23 @@ def test_the_handshake_asks_the_socket_for_the_peer_once() -> None:
 
 def test_a_verack_before_the_version_is_let_go() -> None:
     promoted: list[int] = []
+    node = a_handshake_node(promote_connection=promoted.append)
     peer = a_peer(wtxidrelay_received=True)
-    verack(a_handshake_node(promote_connection=promoted.append), b"", peer)
+    verack(node, b"", peer)
     assert peer.stopped == [True]
     assert peer.status == P2pConnStatus.Open
     assert promoted == []
+    assert node.p2p_manager.discouraged == [peer.address]  # #283
 
 
 def test_a_verack_from_a_peer_that_never_asked_for_wtxid_relay_is_let_go() -> None:
     promoted: list[int] = []
+    node = a_handshake_node(promote_connection=promoted.append)
     peer = a_peer(version_message=object())
-    verack(a_handshake_node(promote_connection=promoted.append), b"", peer)
+    verack(node, b"", peer)
     assert peer.stopped == [True]
     assert promoted == []
+    assert node.p2p_manager.discouraged == [peer.address]  # #283
 
 
 def test_the_flags_a_peer_sets_on_this_connection() -> None:
@@ -768,25 +780,31 @@ def test_a_ping_is_answered_with_the_nonce_it_carried() -> None:
 
 
 def test_a_pong_answering_our_ping_is_a_latency_measurement() -> None:
+    node = a_handshake_node()
     peer = a_peer(ping_sent=time.time() - 0.5, ping_nonce=1234)
-    pong(a_handshake_node(), Pong(1234).serialize(), peer)
+    pong(node, Pong(1234).serialize(), peer)
     assert peer.latency > 0
     assert peer.ping_sent == 0
     assert peer.ping_nonce == 0
     assert not peer.stopped
+    assert not node.p2p_manager.discouraged
 
 
 def test_a_pong_with_the_wrong_nonce_is_a_peer_not_speaking_the_protocol() -> None:
+    node = a_handshake_node()
     peer = a_peer(ping_sent=time.time(), ping_nonce=1234)
-    pong(a_handshake_node(), Pong(4321).serialize(), peer)
+    pong(node, Pong(4321).serialize(), peer)
     assert peer.stopped == [True]
+    assert node.p2p_manager.discouraged == [peer.address]  # #283
 
 
 def test_a_pong_nobody_pinged_for_is_ignored() -> None:
+    node = a_handshake_node()
     peer = a_peer()
-    pong(a_handshake_node(), Pong(1234).serialize(), peer)
+    pong(node, Pong(1234).serialize(), peer)
     assert not peer.stopped
     assert peer.latency == 0
+    assert not node.p2p_manager.discouraged
 
 
 def test_the_addresses_a_peer_sends_are_kept() -> None:

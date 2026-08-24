@@ -109,6 +109,36 @@ to check the guess.
   announcement and the moment that announcement is sent, which a queue
   of hashes alone cannot tell apart from one still held.
 
+### `manage_connections` stops redialling an endpoint it just dropped for cause
+
+- **`P2pManager` keeps an in-memory, process-lifetime set of endpoints
+  `manage_connections` will not dial** (closes #283), added to by every
+  `conn.stop()` site that drops a connection for incompatibility or for
+  a protocol violation -- a self-connection, a `version` below
+  `ProtocolVersion`, no `NODE_WITNESS`, no `NODE_NETWORK` once
+  `BlockSynced`, a `verack` out of order, a `pong` whose nonce does not
+  match, a message ahead of the handshake, and a `BTClibException`
+  raised while handling one. Not a `PeerDB` table and not persisted:
+  Core's own discouragement is the same shape, a `CRollingBloomFilter`
+  held only for the process's life (`banman.h`,
+  bitcoin/bitcoin@58a7869f86), and a wrongly discouraged endpoint is
+  recovered by a restart rather than by touching the datadir. An
+  endpoint this node dialled and closed on its own account -- an idle
+  timeout, a send-buffer bound -- is not marked.
+- **An exception `p2p/main.py`'s bare `except` turns into `conn.stop()`
+  marks the endpoint only where it is a `BTClibException`.** That
+  `except` also catches this node's own bugs on content a peer sent
+  that was otherwise fine -- `get_cfilters`'s "no filter for a block on
+  the active chain" among them -- and those are not cause to discourage
+  the peer that merely triggered them.
+- **`Connection.run`'s own envelope-parsing failure marks the endpoint
+  the same way, and on the same `BTClibException` guard.** A bad
+  checksum, an oversized length, or a message for a network this node is
+  not on never reaches `p2p/main.py` at all -- `Message.parse` and the
+  network-magic check right after it raise straight out of `Connection`
+  itself, which is where `manage_connections` would otherwise have
+  redialled the address back the next tick.
+
 ### `PeerDB.addresses` gets a lock of its own, separate from the active table's
 
 - **`add_addresses` and `random_address` serialize every touch of

@@ -65,22 +65,32 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     version_msg = Version.parse(msg)
 
     conn.version_message = version_msg
+    # Every refusal below is discouraged, and not only a protocol
+    # violation: Core's own discouragement covers "incompatible or
+    # broken peers" alike (banman.h, bitcoin/bitcoin@58a7869f86), and a
+    # peer stopped here is redialled from the address it dialled or was
+    # accepted on, not one a later `verack` may still rewrite (#70).
+    # btclib-org/btclib-node#283
     if version_msg.nonce in node.p2p_manager.nonces:  # connection to ourselves
+        node.p2p_manager.discourage(conn.address)
         conn.stop()
         return
 
     # For simplicity we only allow current protocol version
     if version_msg.version < ProtocolVersion:
+        node.p2p_manager.discourage(conn.address)
         conn.stop()
         return
     # we only connect to witness nodes
     if not version_msg.services & ServiceFlags.NODE_WITNESS:
+        node.p2p_manager.discourage(conn.address)
         conn.stop()
         return
     if (
         not version_msg.services & ServiceFlags.NODE_NETWORK
         and node.status >= NodeStatus.BlockSynced
     ):
+        node.p2p_manager.discourage(conn.address)
         conn.stop()
         return
 
@@ -99,6 +109,9 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
 
 def verack(node: Node, msg: bytes, conn: Connection) -> None:
     if not conn.version_message or not conn.wtxidrelay_received:
+        # a `verack` ahead of the `version`/`wtxidrelay` it depends on:
+        # out of handshake order, and discouraged for it (#283)
+        node.p2p_manager.discourage(conn.address)
         conn.stop()
         return
     conn.status = P2pConnStatus.Connected
@@ -175,6 +188,9 @@ def pong(node: Node, msg: bytes, conn: Connection) -> None:
     nonce = Pong.parse(msg).nonce
     if conn.ping_sent:
         if conn.ping_nonce != nonce:
+            # a nonce this node never sent: a protocol violation, and
+            # discouraged for it (#283)
+            node.p2p_manager.discourage(conn.address)
             conn.stop()
             return
         conn.latency = time.time() - conn.ping_sent

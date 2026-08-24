@@ -14,7 +14,7 @@ import asyncio
 import socket
 from contextlib import suppress
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from btclib.hashes import hash256
@@ -123,11 +123,31 @@ def a_running_connection(
             warning=lambda *a: None, info=lambda *a: None, debug=lambda *a: None
         ),
     )
-    manager = SimpleNamespace(node=node, loop=loop, nonces=[], port=18444, peer_db=None)
+    discouraged: list[object] = []
+    manager = SimpleNamespace(
+        node=node,
+        loop=loop,
+        nonces=[],
+        port=18444,
+        peer_db=None,
+        discourage=discouraged.append,
+        discouraged=discouraged,
+    )
     connection = Connection(
         cast(P2pManager, manager), client, peer_address("127.0.0.1", 18444), 0, False
     )
     return connection
+
+
+def discouraged_of(connection: Connection) -> list[Any]:
+    """The stub `discourage` list `a_running_connection` built.
+
+    `connection.manager` is typed `P2pManager`, whose own `discouraged`
+    is a `set[bytes]` -- the stub underneath is a `SimpleNamespace`
+    carrying a `list` instead, so a caller comparing it against what was
+    passed to `discourage` needs its own, unstatic view of the attribute.
+    """
+    return cast("list[Any]", cast(Any, connection.manager).discouraged)
 
 
 def a_message_for_another_network() -> bytes:
@@ -169,6 +189,37 @@ def test_a_peer_sending_something_this_node_cannot_read_is_dropped(
 
     connection = asyncio.run(drive())
     assert connection.status == P2pConnStatus.Closed
+    # #283: `Message.parse`, or the network-magic check right after it,
+    # refusing this peer's own envelope is cause to discourage it
+    assert discouraged_of(connection) == [connection.address]
+
+
+def test_a_bug_of_this_node_s_own_in_parsing_drops_the_peer_but_not_discouraged() -> (
+    None
+):
+    # #283: not every exception out of parse_messages is the peer's
+    # fault -- a RuntimeError is not one btclib raised over the octets
+    # it sent, the same distinction p2p/main.py's own except draws
+    async def drive() -> Connection:
+        loop = asyncio.get_running_loop()
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        connection = a_running_connection(loop, ours)
+
+        def boom() -> None:
+            raise RuntimeError("no")
+
+        connection.parse_messages = boom  # type: ignore[method-assign]
+        try:
+            theirs.sendall(b"x")
+            await connection.run()
+        finally:
+            theirs.close()
+        return connection
+
+    connection = asyncio.run(drive())
+    assert connection.status == P2pConnStatus.Closed
+    assert not discouraged_of(connection)
 
 
 def test_a_connection_closed_before_it_reads_anything_reads_nothing() -> None:
@@ -216,6 +267,8 @@ def test_a_peer_that_hangs_up_is_dropped() -> None:
     connection, left_alone = asyncio.run(drive())
     assert connection.status == P2pConnStatus.Closed
     assert left_alone
+    # a peer that hung up is not one that broke the protocol: #283
+    assert not discouraged_of(connection)
 
 
 def test_a_peer_already_at_the_send_bound_is_dropped_not_queued_further() -> None:
@@ -239,6 +292,8 @@ def test_a_peer_already_at_the_send_bound_is_dropped_not_queued_further() -> Non
     # the reservation is untouched: the refused message never joined it
     assert connection.queued_send_bytes == connection_module.MAX_QUEUED_SEND_BYTES
     assert not sent
+    # this node's own choice under load, not the peer's doing: #283
+    assert not discouraged_of(connection)
 
 
 def _message_overhead() -> int:
