@@ -47,9 +47,26 @@ and speaks to it over a socket.
 ## The primary checkout is the maintainer's
 
 **Never work in it.** No edit, no `git add`, no commit, no branch
-switch, no rebase, no `git stash` — the hooks fix files in place. Reading
-it is fine, and so is `git fetch`, which writes refs and leaves the work
-tree alone.
+switch, no rebase, no `git stash` — the hooks fix files in place. It is a
+local reference only, and it stays on `main`.
+
+Reading it is fine, but `git fetch` moves `refs/remotes/origin/main` and
+leaves the work tree where it was, so a `grep` or a `Read` against the
+checkout answers for whenever it was last brought forward, not for now.
+The read that cannot go stale is `git show origin/main:<path>`: it
+answers from the ref `git fetch` just moved, never from the tree.
+
+Where the checkout has to be current rather than merely readable, a
+fast-forward of a clean `main` brings it up:
+
+```shell
+git fetch origin && git merge --ff-only origin/main   # clean main only
+```
+
+That writes no commit, switches no branch and runs no hook, so it is on
+the permitted side of *never work in it*, not an exception to it. Stop
+if the checkout is not on `main` or is not clean: that is no longer
+bringing it forward.
 
 **Every session works in a worktree**, its own, from the first edit:
 
