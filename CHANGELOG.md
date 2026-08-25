@@ -30,6 +30,19 @@ to check the guess.
   `tests/unit/rpc/main.py`, which do not exist -- every test module in
   this tree ends in `_test.py`, per #26/#268.
 
+### `test.yml`'s coverage job gates both `3.14` and `3.14t`
+
+- **The coverage job is a two-cell matrix over the interpreter, `3.14`
+  and `3.14t`, and `test: every job passed` requires both** (closes
+  #387): the two cells run as parallel jobs, so the second one costs one
+  more job at the organization's concurrency ceiling and no extra wait,
+  which is what buys it a place in the gate rather than in a weekly
+  sentinel beside it -- the trade `os-macos.yml`'s own header states for
+  a platform row, read the other way. `3.14t` reaches the 100% floor
+  `[tool.coverage.report]` already declares with no change to that
+  configuration; `.python-version` and `requires-python` both stay
+  `3.14`.
+
 ### `scripts/` gets real docstrings, `D100`'s own deferral is gone (issue #373)
 
 - **Every module under `scripts/` -- the three `chains/` launchers, the

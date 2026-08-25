@@ -2,16 +2,27 @@
 name: test
 
 # The suite, gated at the coverage floor pyproject.toml declares, on the
-# one image and the one interpreter btclib-org/.github#85 asks a merge to
-# wait for. Here that is not a matrix reduced to its first cell: this
-# tree's `requires-python` is `>=3.14` and `.python-version` pins 3.14,
-# so the reference interpreter is the whole of what the package claims,
-# and the light gate is what it has by construction.
+# one image btclib-org/.github#85 asks a merge to wait for, over an
+# interpreter axis of two cells: `3.14`, the version `.python-version`
+# pins and `requires-python` floors, and `3.14t`, that same interpreter's
+# free-threaded build. The pin does not move for this -- `3.14t` is not
+# a second interpreter the package claims to support, it is the one it
+# already claims, run a second time with the GIL off (issue #387).
 #
-# What the design puts beside it is a platform sentinel each, and here
-# that is one workflow rather than three. `ubuntu.yml` would run this
-# file's own image over an interpreter axis with one value on it,
-# `requires-python` being `>=3.14`. `windows.yml` would check a claim
+# The organization's own design keeps a gate to one image and one
+# interpreter, at the ceiling the plan puts on the organization's
+# concurrent jobs: a row earns a place in the gate only where waiting
+# for it costs less than the review does -- `os-macos.yml`'s own header
+# states the rule, for the platform row it keeps out of this file. Here
+# it puts the row in instead: the two cells run as parallel jobs rather
+# than in sequence, so the second cell's cost is one more job at the
+# ceiling and no extra wait, against a review that takes longer than
+# either cell does regardless.
+#
+# What the design still puts beside this file is a platform sentinel
+# each, and here that is one workflow rather than three. `ubuntu.yml`
+# would run this file's own image over the interpreter axis this gate
+# already covers, both of its cells. `windows.yml` would check a claim
 # this package does not make: pyproject.toml classifies POSIX and MacOS,
 # and says Windows is out because nothing here runs it rather than
 # because anything is known to stop it -- a sentinel there would be the
@@ -189,13 +200,20 @@ jobs:
           fi
 
   coverage:
-    name: Measure coverage, gated at 100%
+    name: Measure coverage, gated at 100% (${{ matrix.python-version }})
     if: >-
       ${{ !github.event.pull_request.draft
       && github.event.action != 'closed'
       && needs.changes.outputs.code == 'true' }}
     needs: changes
     runs-on: ubuntu-latest
+    # the two cells this file's own header argues, run in parallel: a
+    # cell failing does not cancel the other, since each answers its own
+    # question and a red 3.14t says nothing about 3.14
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.14", "3.14t"]
     # the suite is bounded test by test in pyproject.toml, so this bounds
     # what that cannot: a runner wedged before or between the tests, and
     # it is well above the whole of a local run
@@ -221,13 +239,15 @@ jobs:
           # the cache holds what uv.lock resolves, which is wheels and
           # no build: what this job spends its time on is the suite
           enable-cache: true
-          # what .python-version pins and what a bare `uv run` gives a
-          # maintainer locally. Written out rather than read from that
-          # file because the coupling belongs where the gate is: the
+          # the matrix cell: `3.14`, what .python-version pins and what a
+          # bare `uv run` gives a maintainer locally, or `3.14t`, that
+          # interpreter's free-threaded build. Neither is read from that
+          # file, because the coupling belongs where the gate is: the
           # number this job fails on is a ratio of statements, and a
-          # statement count moves between interpreters, so the floor in
-          # pyproject.toml is a claim about one version and this is it
-          python-version: "3.14"
+          # statement count moves between interpreters, so each cell
+          # measures its own copy of that ratio against pyproject.toml's
+          # one floor rather than one cell inheriting the other's number
+          python-version: ${{ matrix.python-version }}
       # no pytest argument at all: addopts in pyproject.toml carries the
       # coverage flags and the report format, [tool.coverage.report] the
       # floor, and this file is not what anybody runs locally. A second
