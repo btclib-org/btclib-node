@@ -77,10 +77,20 @@ class RawJSON:
     __slots__ = ("text",)
 
     def __init__(self, text: str) -> None:
+        """Wrap `text`, the exact number `JSONEncoder` writes back out."""
         self.text = text
 
 
 class JSONEncoder(json.JSONEncoder):
+    """Encode `bytes` as hex and unwrap a `RawJSON` under a caller's mark.
+
+    `default` below is `json.dumps`'s own hook for a type it has no
+    built-in encoding for; it is what `Connection.async_send` supplies
+    `cls=` and `mark=` to, so that a `RawJSON` value comes out marked
+    rather than quoted, for `async_send` to unquote once encoding is
+    done -- `json` itself has no hook for writing a literal unquoted.
+    """
+
     def __init__(
         self,
         mark: str = "",
@@ -95,6 +105,7 @@ class JSONEncoder(json.JSONEncoder):
         # to.
         **kwargs: Any,  # noqa: ANN401
     ) -> None:
+        """Set `mark`, the token `default` wraps a `RawJSON`'s text in."""
         super().__init__(**kwargs)
         self._mark = mark
 
@@ -117,6 +128,15 @@ class JSONEncoder(json.JSONEncoder):
 
 
 class Connection:
+    """One accepted RPC socket, from the header read through the reply.
+
+    `RpcManager.server` builds one per accepted client, on this
+    manager's own thread; `run` below is scheduled on the same loop and
+    reads the request off `client`, queuing it onto `manager.messages`
+    for `rpc.main.handle_rpc` on `Node`'s own thread to answer, through
+    `send` or `send_and_wait`.
+    """
+
     def __init__(
         self,
         loop: asyncio.AbstractEventLoop,
@@ -124,6 +144,7 @@ class Connection:
         manager: RpcManager,
         connection_id: int,
     ) -> None:
+        """Set up empty buffers for `client`, tracked under `connection_id`."""
         super().__init__()
         self.loop = loop
         self.client = client
@@ -135,6 +156,7 @@ class Connection:
         self.task: Future[None] | None = None
 
     def close(self) -> None:
+        """Cancel the running `run` task, if any, and close `client`."""
         if self.task:
             self.task.cancel()
         self.client.close()
@@ -151,6 +173,17 @@ class Connection:
             self.buffer += data
 
     async def run(self) -> None:
+        """Read one request off `client` and queue it for `handle_rpc`.
+
+        Reads the header section up to `HEADER_TERMINATOR`, then the
+        body up to its own `Content-Length`, both bounded against an
+        unterminated or overstated one; a body that is not valid JSON is
+        answered `PARSE_ERROR` directly, on the spot, and a body that is
+        gets appended to `manager.messages` for `rpc.main.handle_rpc` to
+        answer instead, through `send`. Any failure closes `client`
+        rather than raising, since nothing reads the `Future` this task
+        runs under.
+        """
         try:
             await self._recv_until(
                 lambda: HEADER_TERMINATOR in self.buffer, MAX_HEADER_BYTES
@@ -214,6 +247,14 @@ class Connection:
             self.client.close()
 
     async def async_send(self, response: list[dict[str, Any]]) -> None:
+        """Write `response` back as one JSON-RPC HTTP reply, then close.
+
+        Wraps any `RawJSON` value in a fresh per-call mark before
+        encoding, substitutes it back out unquoted once encoding is
+        done, and frames the result behind a `Content-Length` header --
+        one reply per accepted connection, closing `client` once it is
+        sent.
+        """
         body: list[dict[str, Any]] | dict[str, Any] = response
         if len(response) == 1:
             body = response[0]
@@ -242,10 +283,17 @@ class Connection:
         self.client.close()
 
     def send(self, response: list[dict[str, Any]]) -> None:
+        """Schedule `async_send` on `loop`, from `handle_rpc`'s own thread."""
         asyncio.run_coroutine_threadsafe(self.async_send(response), self.loop)
 
     # Use with care
     def send_and_wait(self, response: list[dict[str, Any]]) -> None:
+        """Like `send`, but block up to 2 seconds for the write to finish.
+
+        `handle_rpc`'s own `stop` request is the only caller: the client
+        has to see its own reply before `node.stop()` starts tearing
+        `loop` down under it.
+        """
         future = asyncio.run_coroutine_threadsafe(self.async_send(response), self.loop)
         with contextlib.suppress(TimeoutError):
             future.result(timeout=2)

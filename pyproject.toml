@@ -550,12 +550,12 @@ explicit-preview-rules = true
 # down defer them for `tests/**` and `scripts/**`, neither being part of
 # the shipped package. `D101`/`D102`/`D103`/`D107`, the bulk of the
 # family (the class, method, function and `__init__` narration #264 did
-# not attempt), are issue #373's, one package directory at a time: slice
-# 1 is `src/btclib_node/`'s own root-level modules, slice 2 is
-# `block_db/`, slice 3 is `chainstate/` and slice 4 is `p2p/`, all clean
-# as of this round, with the per-file-ignore further down deferring
-# `rpc/`, the one subpackage slice 5 has not yet reached, and
-# `tests/**`/`scripts/**` again.
+# not attempt), are issue #373's own five package-directory slices,
+# landed one at a time: `src/btclib_node/`'s own root-level modules,
+# `block_db/`, `chainstate/`, `p2p/` and, this round, `rpc/` -- clean
+# across the whole package as of this round, with the per-file-ignore
+# further down still deferring `tests/**`/`scripts/**`, neither being
+# part of the shipped package.
 # `D205`/`D401`/`D403`/`D404`/`D105` (a summary not on one physical
 # line, a docstring not in the imperative mood, an uncapitalized first
 # word, one starting with "This", an undocumented magic method) are
@@ -770,12 +770,12 @@ ignore = [
 # on for.
 "scripts/**" = ["D100"]
 # `D101`/`D102`/`D103`/`D107` closed for `src/btclib_node/`'s own
-# root-level modules (issue #373, slice 1), for `block_db/` (slice 2),
-# for `chainstate/` (slice 3) and for `p2p/` (slice 4); `rpc/` is the one
-# package directory its own suggested split leaves for slice 5, read on
-# its own the same one-directory-at-a-time shape slices 1-4 themselves
-# used.
-"src/btclib_node/rpc/**" = ["D101", "D102", "D103", "D107"]
+# root-level modules and for `block_db/`, `chainstate/`, `p2p/` and
+# `rpc/` in turn -- issue #373's own five-slice split, one package
+# directory at a time, is done: no directory-wide deferral for any of
+# these four codes is left under `src/btclib_node/`. `exceptions.py`'s
+# own `D107` entry further down is the one reasoned suppression left,
+# argued where it sits rather than deferred by directory.
 # SphinxPostTransform.run itself is typed `(self, **kwargs: Any) -> None`
 # (sphinx.transforms.post_transforms, read directly from the installed
 # package rather than assumed) -- an override matching the base class's

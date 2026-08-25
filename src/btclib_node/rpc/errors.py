@@ -40,6 +40,7 @@ class RpcError(Exception):
     """
 
     def __init__(self, code: RpcErrorCode, message: str) -> None:
+        """Name the refusal `code` and `message`, `handle_rpc` reads back."""
         super().__init__(f"{code.name}: {message}")
         self.code = code
         self.message = message
