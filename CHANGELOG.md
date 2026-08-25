@@ -24,6 +24,27 @@ to check the guess.
   `RuntimeError('Event loop stopped before Future completed.')`
   precisely where `start()` was never called at all. `RpcManager.stop()`
   carries the identical guard, for the identical reason (issue #362).
+### `deps-latest.yml` and `mutation.yml` join this repository's weekly sentinels
+
+- **`deps-latest.yml` upgrades every dependency `uv lock --upgrade`
+  resolves -- `btclib`'s pinned `main` included -- and runs the suite and
+  the lint gate against the result** (issue #287): weekly, at this
+  repository's minute, and gating nothing, the way every workflow this
+  calendar adds does -- a release nobody has locked yet is not a
+  regression a pull request introduced.
+- **`mutation.yml` runs a `cosmic-ray` session against
+  `src/btclib_node/interpreter.py`**, the consensus entry point
+  `CLAUDE.md`'s architecture section names as what validates (issue
+  #287): a new `mutation` dependency group carries `cosmic-ray`, and
+  `.github/mutation/interpreter.toml` is the one scope so far. It gates
+  nothing either: a surviving mutant is a missing test, not a regression
+  a merge caused.
+- Issue #287's own remaining rows are triaged rather than landed by this
+  change: `vendored-vectors.yml` already existed, `os-windows`,
+  `py-arm-authority`, `alignment` and `os-ubuntu` are declined with the
+  measurement on the issue itself, `pypi-install` waits on issue #286's
+  release workflow, and `integration-bitcoind`'s own design is issue
+  #374.
 
 ### `Connection`'s ping state is one step against the two threads that touch it
 

@@ -144,3 +144,10 @@ benchmarks
 
 errors
 tmp
+
+# cosmic-ray sessions, written into the root by the commands
+# CONTRIBUTING.md gives: one row per mutant, and megabytes of them. What
+# is worth keeping is uploaded by mutation.yml as an artifact, where it
+# expires; a session committed here would be a snapshot of a suite that
+# has moved on
+*.sqlite

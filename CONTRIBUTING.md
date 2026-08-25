@@ -268,6 +268,10 @@ says what differs beneath it. `links.yml` asks whether somebody else's
 server answered, and `bootstrap-dns.yml` asks the same question of the
 DNS seeds `src/btclib_node/chains.py` names. `claude-review.yml` writes the
 review and its own header says it must not become a required check.
+`vendored-vectors.yml` re-checks `tests/_data/README.md`'s pin against
+upstream, `deps-latest.yml` upgrades every dependency and runs the suite
+and the lint gate against the result, and `mutation.yml` is its own
+section below.
 
 Which day each of the periodic ones runs is one calendar for the whole
 organization, in [section 10 of `btclib-org/.github`'s
@@ -275,6 +279,31 @@ README](https://github.com/btclib-org/.github/blob/main/README.md), not
 repeated here. The trade it makes is worth knowing before relying on it:
 a defect only a sweep can see sits on `main` until that sweep runs, at
 most a week.
+
+### Mutation testing
+
+`mutation.yml` asks the question coverage cannot: a line the suite
+executes is not a line the suite checks. It gates nothing and runs
+weekly; the configuration is the single source of the scope and the
+test command.
+
+```shell
+uv run --locked --no-default-groups --group test --group mutation \
+    cosmic-ray baseline .github/mutation/interpreter.toml
+uv run --locked --no-default-groups --group test --group mutation \
+    cosmic-ray init .github/mutation/interpreter.toml interpreter.sqlite
+uv run --locked --no-default-groups --group test --group mutation \
+    cosmic-ray exec .github/mutation/interpreter.toml interpreter.sqlite
+uv run --locked --no-default-groups --group test --group mutation \
+    cr-report --surviving-only --show-diff interpreter.sqlite
+```
+
+The session writes each mutation into `src/btclib_node/interpreter.py`
+and restores it afterwards, so nothing else may read the file while it
+runs. `interpreter.py` is the one scope so far — the consensus entry
+point CLAUDE.md's architecture section names as what validates — and a
+second scope is a second `.toml` beside it, the way
+`btclib-org/btclib`'s own `.github/mutation/` holds one per profile.
 
 ### A version, and no release
 
