@@ -5,9 +5,9 @@
 """The listening half of the RPC manager, without a node behind it.
 
 What answers a request is `handle_rpc`, which the node's loop calls and
-tests/unit/rpc/main.py covers. What is left is everything between the
-port and that queue -- binding it, accepting a client, and letting go
-of both -- and until now only a functional test reached any of it.
+tests/unit/rpc/main_test.py covers. What is left is everything between
+the port and that queue -- binding it, accepting a client, and letting
+go of both -- and until now only a functional test reached any of it.
 """
 
 import asyncio
