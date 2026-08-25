@@ -2159,6 +2159,11 @@ def test_the_filter_hashes_of_a_range_are_answered_with_the_header_before_it() -
 
 
 def test_a_range_that_starts_at_the_genesis_block_has_no_header_before_it() -> None:
+    """A `getcfheaders` range starting at genesis answers thirty-two zero octets.
+
+    BIP157 defines the header before the genesis block's filter as
+    thirty-two zero octets, and there is no block to read one off.
+    """
     node = a_filters_node()
     peer = a_peer()
     get_cfheaders(
@@ -2174,6 +2179,7 @@ def test_a_range_that_starts_at_the_genesis_block_has_no_header_before_it() -> N
 
 
 def test_a_getcfheaders_this_node_cannot_answer_is_not_answered() -> None:
+    """A `getcfheaders` naming an unknown stop hash gets no answer."""
     node = a_filters_node()
     peer = a_peer()
     get_cfheaders(
@@ -2183,6 +2189,7 @@ def test_a_getcfheaders_this_node_cannot_answer_is_not_answered() -> None:
 
 
 def test_get_cfheaders_refuses_a_gap_in_the_header_before_the_range() -> None:
+    """A missing filter header for the block just before the range raises, not `notfound`."""
     node = a_filters_node()
     node.chainstate.filter_index.get_header = lambda h: None
     peer = a_peer()
@@ -2197,6 +2204,7 @@ def test_get_cfheaders_refuses_a_gap_in_the_header_before_the_range() -> None:
 
 
 def test_get_cfheaders_refuses_a_gap_in_a_promised_index() -> None:
+    """A missing filter hash somewhere in the range raises, not answered with `notfound`."""
     node = a_filters_node()
     node.chainstate.filter_index.get_filter_hash = lambda h: None
     peer = a_peer()
@@ -2209,6 +2217,12 @@ def test_get_cfheaders_refuses_a_gap_in_a_promised_index() -> None:
 
 
 def test_the_checkpoints_are_every_thousandth_block_and_not_the_first() -> None:
+    """`getcfcheckpt` answers with the filter header at every interval up to the stop.
+
+    "a multiple of 1,000 greater than 0": the genesis block is not a
+    checkpoint, and the stop block is one only if it falls on the
+    interval itself.
+    """
     node = a_filters_node(length=2 * CFCHECKPT_INTERVAL + 3)
     peer = a_peer()
     stop_height = 2 * CFCHECKPT_INTERVAL + 1
@@ -2229,6 +2243,12 @@ def test_the_checkpoints_are_every_thousandth_block_and_not_the_first() -> None:
 
 
 def test_the_stop_block_is_a_checkpoint_when_its_own_height_is_one() -> None:
+    """A stop block whose own height falls on the interval is itself a checkpoint.
+
+    The boundary the rule is most specific about: "each block ... where
+    the block height is a multiple of 1,000 greater than 0" includes
+    the block the range terminates at, when that is what its height is.
+    """
     # the boundary the rule is most specific about: "each block ... where
     # the block height is a multiple of 1,000 greater than 0" includes
     # the block the range terminates at, when that is what its height is
@@ -2243,6 +2263,12 @@ def test_the_stop_block_is_a_checkpoint_when_its_own_height_is_one() -> None:
 
 
 def test_a_chain_shorter_than_the_interval_has_no_checkpoints() -> None:
+    """A chain shorter than the checkpoint interval answers with an empty message.
+
+    An answer, and an empty one: a client that asked has been told
+    there is nothing to check against, which is not the same as
+    having been ignored.
+    """
     node = a_filters_node(length=8)
     peer = a_peer()
     get_cfcheckpt(
@@ -2258,6 +2284,7 @@ def test_a_chain_shorter_than_the_interval_has_no_checkpoints() -> None:
 
 
 def test_get_cfcheckpt_refuses_a_gap_in_a_promised_index() -> None:
+    """A missing filter header at a checkpoint height raises, not answered with `notfound`."""
     node = a_filters_node(length=CFCHECKPT_INTERVAL + 1)
     node.chainstate.filter_index.get_header = lambda h: None
     peer = a_peer()
@@ -2271,6 +2298,11 @@ def test_get_cfcheckpt_refuses_a_gap_in_a_promised_index() -> None:
 
 
 def test_a_getcfcheckpt_this_node_cannot_answer_is_not_answered() -> None:
+    """A `getcfcheckpt` this node cannot answer for any reason gets no answer.
+
+    Three different reasons in one test: a stop hash never heard of, one
+    off the active chain, and a filter type nobody serves -- all silent.
+    """
     node = a_filters_node(length=4, stale={b"\x44" * 32: SimpleNamespace(index=2)})
     for stop_hash, filter_type in (
         (b"\x11" * 32, BlockFilterType.BASIC),  # never heard of
