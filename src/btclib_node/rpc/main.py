@@ -2,6 +2,15 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""`handle_rpc`, called once per pass of `Node`'s loop.
+
+Pops one request off `RpcManager.messages`, validates its JSON-RPC
+shape with `is_valid_rpc`, and dispatches it through
+`rpc.callbacks.callbacks` by method name, answering an unknown method or
+a malformed request with an `RpcError` rather than raising past the
+loop.
+"""
+
 from typing import TYPE_CHECKING, Any
 
 from btclib_node.rpc.callbacks import callbacks

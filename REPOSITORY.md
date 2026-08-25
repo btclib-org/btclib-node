@@ -308,8 +308,14 @@ that waits on one cell and a sweep that runs weekly
   answers `0`. There is a `v0.1.0` tag and a GitHub release with no
   artifact attached to it, and `tag-integrity` already holds the
   signature a tag would need.
-- **No Pages and no Read the Docs.** `gh api repos/btclib-org/btclib-node/pages`
-  answers `404`, and there is no `docs/` for either to build. What this
-  repository publishes, it publishes by being read on github.com.
+- **No Pages, and no Read the Docs project connected.**
+  `gh api repos/btclib-org/btclib-node/pages` answers `404`. `docs/source/`
+  and `.readthedocs.yaml` exist (issue #264) and `docs.yml` builds them
+  on every pull request, but connecting a Read the Docs project to this
+  repository is a setting on that service's own side, outside what a
+  `gh api` call here can read back or a pull request can carry, and this
+  tree does not publish -- the day it does, `btclib`'s own "Read the
+  Docs, which is btclib.readthedocs.io" section of its `REPOSITORY.md`
+  is the shape this file's own section would take.
 - **No `homepage`**, the answer to `.homepage` being empty. There is no
-  site for it to point at while the two above are absent.
+  published site for it to point at.

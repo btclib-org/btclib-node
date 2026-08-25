@@ -2,6 +2,14 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""`UtxoIndex`, the set of transaction outputs a spend may still reference.
+
+`add_block` applies one block's own spends and creations, returning the
+prevouts each transaction consumed -- what `interpreter.check_transactions`
+validates against -- and the `block_db.RevBlock` a reorg away from this
+block would need to undo it.
+"""
+
 from typing import TYPE_CHECKING
 
 from btclib.tx.out_point import OutPoint

@@ -208,12 +208,19 @@ uv sync                                          # the environment
 uv run pytest                                    # the suite, coverage included
 git add -A && uv run pre-commit run --all-files  # the lint gate
 uv run pre-commit validate-config .pre-commit-config.yaml
+uv run --locked --no-default-groups --group docs \
+    sphinx-build -W --keep-going -b html docs/source docs/build/html
 ```
 
 `--all-files` means every file git tracks, so a file that is new and not
 yet staged is not one of them: run it unstaged and the hooks pass over
 exactly the files most likely to fail them. Staging first is what makes
 the local gate answer the same question pre-commit.ci does.
+
+The documentation build is the one no hook reads reStructuredText for: a
+docstring docutils cannot parse fails it with every hook green -- a name
+ending in an underscore is a reference to a link target, which is what
+the double backticks around a literal like ``NODE_`` are for.
 
 The last command is worth running before pushing a change to the hook
 config: it catches what a wrong `types_or` tag or a malformed entry would
@@ -253,9 +260,14 @@ and one interpreter, held to the coverage floor `pyproject.toml`
 declares. A pull request that touches
 only the root prose skips the suite and reports the skip as a pass, which
 is what keeps an aggregate check from blocking on a run that never
-happened.
+happened. `docs.yml` runs the same build the environment section above
+does, on every pull request the way `lint.yml` and `test.yml` do rather
+than on a schedule -- but it is reporting-only for now: `REPOSITORY.md`'s
+required-checks table names only the two above, `docs.yml` having landed
+too recently to have reported the green run branch protection would
+need before naming it a third.
 
-**Whether either of them can refuse a merge is a repository setting and
+**Whether any of these can refuse a merge is a repository setting and
 not a file**, and `REPOSITORY.md` reads it back from the endpoint rather
 than restating it here. Read that file before assuming a red run stops
 anything.

@@ -2,6 +2,15 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""`Mempool`, this node's set of transactions not yet in a block.
+
+Reached from `Node`'s own thread alone -- `add_tx` and `remove_tx` are
+called from the p2p callbacks, the rpc callbacks and `main.update_chain`,
+never from `P2pManager`'s or `RpcManager`'s own asyncio loop -- so it
+carries no lock of its own. The rolling minimum feerate an eviction
+round leaves behind decays the way Core's own does, `_ROLLING_FEE_HALFLIFE`
+below being `ROLLING_FEE_HALFLIFE` (`src/txmempool.h`).
+"""
 
 import time
 from fractions import Fraction

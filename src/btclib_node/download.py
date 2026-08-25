@@ -2,6 +2,17 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""`DownloadManager`, what decides what this node asks its peers for.
+
+Block download candidates and stall detection, transaction
+announcement and request tracking, and the trickle timing behind both
+-- `feefilter` resends, address relay, and the exponential delays that
+keep two peers from being told the same thing in lockstep. Most of the
+constants here are a named Bitcoin Core constant carried over with the
+commit it was read at beside it, per this tree's own convention of
+following Core's behaviour where that is possible and reasonable.
+"""
+
 import time
 from bisect import bisect_left
 from collections import Counter

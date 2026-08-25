@@ -2,6 +2,16 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""`BlockDB`: blocks and their undo data on disk.
+
+Blocks and reverse patches (`RevBlock`) are appended to flat, rotating
+files under `data_dir`; `BlockLocation` and `FileMetadata`, kept in the
+key-value store, are what let a later read seek straight to a block
+instead of scanning a file for it. A reverse patch is filed against its
+own block only once that block's branch connects, `pending_rev_blocks`
+holding one generated for a branch `update_chain` may still refuse.
+"""
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO

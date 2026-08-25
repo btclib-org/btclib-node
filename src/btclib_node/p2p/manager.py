@@ -2,6 +2,17 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""`P2pManager`, the thread listening for and dialing peer connections.
+
+Runs its own asyncio loop -- `manage_connections` accepts inbound
+sockets, dials outbound ones from `PeerDB`, and prunes an idle or
+handshake-stuck `Connection` -- and hands finished messages back to
+`Node`'s own thread through `messages` and `handshake_messages`. A
+coroutine enters this loop only through `run_coroutine_threadsafe`;
+`Node`'s own thread calls this class's plain methods, such as `verack`'s
+own `promote_connection`, directly.
+"""
+
 import asyncio
 import socket
 import threading

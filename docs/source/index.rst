@@ -1,0 +1,20 @@
+.. btclib-node documentation master file: the root `toctree`.
+
+btclib-node documentation
+==========================
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Contents:
+
+   README <readme_link.md>
+   PYTHON PACKAGE <modules>
+   CONTRIBUTING <contributing_link.md>
+   REVIEWING <reviewing_link.md>
+   CHANGELOG <changelog_link.md>
+
+Indices and tables
+==================
+
+* :ref:`genindex`
+* :ref:`modindex`

@@ -2,6 +2,16 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""Script and transaction validation, dispatched across `Node.worker_pool`.
+
+`get_flags` reads which script rules are active at a given height off
+`Config.chain.flags`; `check_transactions` fans a block's inputs out
+across the worker pool and `warm` is what a fresh worker process runs
+once, on `Node.warm_worker_pool`'s dispatch, so the cost of importing
+`btclib.script.engine` is paid before a real check ever needs it
+(btclib-org/btclib-node#262).
+"""
+
 from itertools import chain
 from typing import TYPE_CHECKING
 

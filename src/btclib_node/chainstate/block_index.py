@@ -2,6 +2,16 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""`BlockIndex`, every header this node has seen and which chain is active.
+
+`BlockStatus` tracks a header from `valid_header` up through however far
+its block has been validated; `get_download_candidates` and
+`MAX_DOWNLOAD_WINDOW` are what bound how far ahead of the active chain a
+download is allowed to run, read from both `download.py` and here.
+`invalidate` is what a failed contextual check calls, through
+`main.update_header_index`, to drop a header and everything built on it.
+"""
+
 import enum
 from collections import deque
 from dataclasses import dataclass, replace

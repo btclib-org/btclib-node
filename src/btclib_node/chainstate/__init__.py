@@ -2,6 +2,15 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""`Chainstate`: the block index, the UTXO set and the compact filter index.
+
+Each is kept in its own `db.KeyValueStore`. `block_index.BlockIndex`
+tracks headers and which chain is active, `utxo_index.UtxoIndex` the
+spendable outputs on it, and `filter_index.FilterIndex` the
+BIP157/BIP158 filters served over p2p; `contextual.py` is the height-
+and time-dependent validation the first of those calls before
+extending the active chain.
+"""
 
 from typing import TYPE_CHECKING
 

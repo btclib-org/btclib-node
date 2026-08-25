@@ -2,6 +2,13 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""The small enumerations shared across this package.
+
+`ProtocolVersion`, `P2pConnStatus` for a single peer connection's own
+handshake state, and `NodeStatus` for what stage of startup, sync or
+shutdown the node as a whole is in.
+"""
+
 import enum
 
 ProtocolVersion = 70016

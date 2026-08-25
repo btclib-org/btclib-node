@@ -2,6 +2,19 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""`Node`, the thread that drives everything else in this package.
+
+One loop: drain the handshake queue, then a share of the RPC queue and
+a share of the peer-to-peer queue, then step the download manager and
+extend the chain. A message that raises is logged and the loop
+continues; a failure under `update_chain` leaves the loop, because the
+databases the submodules below open have to be closed on the way out.
+
+`P2pManager` and `RpcManager` are each a thread of their own, running
+an asyncio loop of their own; this module is what calls into them and
+what they hand work back to.
+"""
+
 import os
 import signal
 import threading

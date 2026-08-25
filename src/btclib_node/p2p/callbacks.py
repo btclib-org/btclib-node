@@ -2,6 +2,16 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""One handler per p2p message type, and the two tables that dispatch to them.
+
+`callbacks` is read by `p2p.main.handle_p2p` for a connection past its
+handshake; `handshake_callbacks` is read by `p2p.main.handle_p2p_handshake`
+for a connection still completing one. Every handler shares the same
+signature, `(node, msg, conn)`, whether or not its own body reads every
+argument -- the dispatch table calls each one uniformly, and an unread
+`msg` or `conn` documents that rather than a mistake.
+"""
+
 import secrets
 import time
 from dataclasses import replace

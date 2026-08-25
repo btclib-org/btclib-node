@@ -2,6 +2,17 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""`handle_p2p` and `handle_p2p_handshake`, one pass of `Node`'s own loop.
+
+Each pops one message off its own queue -- `P2pManager.messages` or
+`P2pManager.handshake_messages` -- and dispatches it through
+`p2p.callbacks.callbacks` or `p2p.callbacks.handshake_callbacks`
+depending on the connection's own `P2pConnStatus`. An exception raised
+by a callback stops that connection rather than the loop, and is
+discouraged for where it is a parse failure from the peer's own bytes
+rather than a bug in the handler.
+"""
+
 from typing import TYPE_CHECKING
 
 from btclib.exceptions import BTClibException
