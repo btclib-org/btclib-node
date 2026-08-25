@@ -17,10 +17,11 @@ what they hand work back to.
 
 import os
 import signal
+import sys
 import threading
 import time
 from math import log2
-from multiprocessing.pool import Pool
+from multiprocessing.pool import Pool, ThreadPool
 from typing import TYPE_CHECKING, override
 
 from btclib_node.block_db import BlockDB
@@ -65,21 +66,30 @@ __all__ = ["Node"]
 STOP_TIMEOUT = 30
 
 
-def _default_worker_processes() -> int:
-    """How many processes `Node.worker_pool` spawns.
+def _default_worker_count() -> int:
+    """How many workers `Node.worker_pool` spawns.
 
     Eight outside of a test run, unconditionally. Under `pytest-xdist`,
     `PYTEST_XDIST_WORKER_COUNT` is the number of worker processes the
     run was split across (`xdist/remote.py` sets it in the worker's own
     environment before any test module is imported), and every one of
     them builds its own `Node`s and, through them, its own pools: eight
-    processes each, on top of `-n auto`'s one worker per core, is what
-    starves a `wait_until` on a machine that has the cores for the
-    xdist workers alone and not for eight more processes per worker on
-    top of that (btclib-org/btclib-node#46). Dividing the machine's own
-    core count across the workers instead keeps the total the run
-    spawns near that core count, whatever `-n` is set to, and leaves a
-    node running outside of pytest at the flat eight.
+    workers each, on top of `-n auto`'s one xdist worker per core, is
+    what starves a `wait_until` on a machine that has the cores for the
+    xdist workers alone and not for eight more of `Node.worker_pool`'s
+    own per xdist worker on top of that (btclib-org/btclib-node#46).
+    Dividing the machine's own core count across the xdist workers
+    instead keeps the total the run spawns near that core count,
+    whatever `-n` is set to, and leaves a node running outside of pytest
+    at the flat eight.
+
+    The reasoning is the same whether `_pool_factory` below hands
+    `worker_pool` a process pool or a thread pool: an xdist worker is
+    always an OS process, and what starves it is the machine's core
+    count being oversubscribed by whatever `Node.worker_pool` spawns
+    under it, a real OS thread competing for a core exactly as a real OS
+    process does once the interpreter that spawns it is free-threaded
+    (btclib-org/btclib-node#388).
     """
     xdist_workers = os.environ.get("PYTEST_XDIST_WORKER_COUNT")
     if xdist_workers is None:
@@ -89,7 +99,42 @@ def _default_worker_processes() -> int:
 
 # `Node.worker_pool`'s own size, named so `warm_worker_pool` can compute
 # a warm-up call count from it without a second literal to drift from.
-_WORKER_PROCESSES = _default_worker_processes()
+_WORKER_COUNT = _default_worker_count()
+
+
+def _pool_factory(*, gil_enabled: bool) -> type[Pool]:
+    """Return the pool type `Node.worker_pool` builds, chosen by `gil_enabled`.
+
+    `Pool` under a GIL build, `ThreadPool` under a free-threaded one --
+    `sys._is_gil_enabled()` is `worker_pool`'s own caller for
+    `gil_enabled`, kept out of this function so that both arms are
+    reachable, and asserted, on a single interpreter (issue #388): a
+    `ThreadPool` constructs on a GIL build as readily as a `Pool` does,
+    so a parametrized test exercises both without a second interpreter.
+
+    Two conditions license a `ThreadPool` at all, and both were
+    established by reading and by running rather than by trust of a
+    process-era comment (issue #388): `btclib.script.engine` never
+    writes to the `Tx`, `TxIn` or `PrecomputedTxData` a task is handed
+    -- confirmed by a concurrent run over a real, mixed-flavour,
+    signed transaction with `Tx.__setattr__`/`TxIn.__setattr__`
+    instrumented to catch one, on both interpreters -- and
+    `btclib-secp256k1` verifies through one shared, read-only
+    libsecp256k1 context that its own "Thread safety" section documents
+    as safe for concurrent calls. Under a GIL build the choice does not
+    matter for correctness and matters for speed: the libsecp256k1 cffi
+    call does not release the GIL, so a `ThreadPool` there is threads
+    taking turns behind a process pool's own real parallelism, which is
+    why the GIL build keeps `Pool`.
+
+    Core's own `CCheckQueue` always shares one
+    `PrecomputedTransactionData` by pointer across its worker threads
+    (`validation.h`'s `CScriptCheck::txdata`,
+    bitcoin/bitcoin@794a753958); a `ThreadPool` is this tree's way of
+    doing the same once the interpreter running it makes a real thread
+    as parallel as one of Core's.
+    """
+    return Pool if gil_enabled else ThreadPool
 
 
 class Node(threading.Thread):
@@ -142,12 +187,14 @@ class Node(threading.Thread):
         self.mempool = Mempool(self.logger)
 
         # Built on first use, by the property below: the pool is
-        # interpreters, spawned rather than forked wherever that is the
-        # platform's default, and a node that never validates a script
-        # should not pay for them. Which is most of them -- a node
-        # serving headers, a node under test, a node that has nothing to
-        # connect -- and each one that does pay competes for the cores
-        # with the nodes that are actually validating.
+        # interpreters under a GIL build (spawned rather than forked
+        # wherever that is the platform's default) or threads under a
+        # free-threaded one (issue #388), and a node that never
+        # validates a script should not pay for either. Which is most
+        # of them -- a node serving headers, a node under test, a node
+        # that has nothing to connect -- and each one that does pay
+        # competes for the cores with the nodes that are actually
+        # validating.
         self._worker_pool: Pool | None = None
         self._worker_pool_lock = threading.Lock()
         # Set by `warm_worker_pool` and joined before `run`'s own
@@ -180,13 +227,18 @@ class Node(threading.Thread):
     def worker_pool(self) -> Pool:
         """The pool `interpreter.py` validates a script in, built on first use.
 
-        Under the lock, so that two callers building it at once get one
-        pool between them: the second would otherwise leave a pool with
-        nothing holding it and nothing to terminate it.
+        `_pool_factory` picks the type against `sys._is_gil_enabled()`
+        read here, once, rather than inside that function: a `Pool`
+        under a GIL build, a `ThreadPool` under a free-threaded one
+        (issue #388). Under the lock, so that two callers building it at
+        once get one pool between them: the second would otherwise leave
+        a pool with nothing holding it and nothing to terminate it.
         """
         with self._worker_pool_lock:
             if self._worker_pool is None:
-                self._worker_pool = Pool(processes=_WORKER_PROCESSES)
+                self._worker_pool = _pool_factory(gil_enabled=sys._is_gil_enabled())(
+                    processes=_WORKER_COUNT
+                )
             return self._worker_pool
 
     def _close_worker_pool(self) -> None:
@@ -227,13 +279,18 @@ class Node(threading.Thread):
         warmed `worker_pool`, on whatever thread called it -- `run`'s
         own loop below, the same one that drains
         `p2p_manager.handshake_messages` and promotes a connection once
-        its `verack` arrives. Each of the pool's processes pays its own
-        import of `btclib_node.interpreter` (and, through it,
+        its `verack` arrives. Under `_pool_factory`'s process arm, each
+        of the pool's own processes pays its own import of
+        `btclib_node.interpreter` (and, through it,
         `btclib.script.engine`) the first time it is dispatched a task,
         and while that first dispatch is running, the loop below cannot
         drain that queue: a peer whose `verack` the kernel already
         delivered sits unpromoted until the call returns
-        (btclib-org/btclib-node#262).
+        (btclib-org/btclib-node#262). Under the thread arm every worker
+        already shares the one import this process paid when `Node`
+        itself was imported, so the same dispatch below costs this
+        module nothing there -- and is still made, both arms being one
+        call site and the warm-up being harmless where it is not needed.
 
         `download_manager.block_download` is the only caller, right
         before it sends the first real `GetData` for a block this node
@@ -254,7 +311,7 @@ class Node(threading.Thread):
             return
 
         def build_and_warm() -> None:
-            self.worker_pool.starmap(warm, [()] * (_WORKER_PROCESSES * 4))
+            self.worker_pool.starmap(warm, [()] * (_WORKER_COUNT * 4))
 
         self._worker_pool_warmup = threading.Thread(target=build_and_warm, daemon=True)
         self._worker_pool_warmup.start()
