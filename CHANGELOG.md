@@ -14,6 +14,16 @@ to check the guess.
 
 ## Unreleased
 
+### `docs/source/index.rst`'s toctree names `SECURITY.md` and `RELEASE_NOTES.md`
+
+- **`docs/source/security_link.md` and `docs/source/release_notes_link.md`
+  join the existing four `*_link.md` shims, and `index.rst`'s toctree
+  names both, in the position `bitcoin-core-rpc`'s own index.rst uses**
+  (closes #390): `SECURITY.md` and `RELEASE_NOTES.md` landed at the repo
+  root with the tier-1 promotion and neither had a shim, so the
+  documentation build resolved `README.md`'s own links to either file to
+  a plain GitHub blob link rather than to an in-site page.
+
 ### `CLAUDE.md` names Core's own checkout and the coverage floor's load-based flake
 
 - **`CLAUDE.md`'s *Following Bitcoin Core* now says a checkout of Core is
