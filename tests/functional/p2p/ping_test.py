@@ -2,7 +2,8 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""A `pong` matching its `ping` is recorded, one that does not drops the peer."""
+"""A `pong` matching its `ping` is recorded, one that does not drops the peer.
+"""
 
 import time
 from typing import TYPE_CHECKING

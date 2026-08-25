@@ -192,10 +192,10 @@ def discouraged_of(connection: Connection) -> list[Any]:
 
 
 def a_message_for_another_network() -> bytes:
-    """Build a well-formed `verack` whose magic names a network that is not regtest.
+    """Build a `verack` whose magic names a network that is not regtest.
 
-    Well formed in every other way: the checksum is right, so what is
-    left to refuse it on is the network it announces.
+    Well formed in every other way: the checksum is right, so what is left to
+    refuse it on is the network it announces.
     """
     payload = b""
     return (
@@ -250,11 +250,11 @@ def test_a_peer_sending_something_this_node_cannot_read_is_dropped(
 def test_a_bug_of_this_node_s_own_in_parsing_drops_the_peer_but_not_discouraged() -> (
     None
 ):
-    """A bug in this node's own parsing drops the peer, but is not the peer's fault.
+    """A bug in this node's own parsing drops the peer, but is not its fault.
 
-    #283: not every exception out of `parse_messages` is the peer's
-    fault -- a `RuntimeError` is not one btclib raised over the octets
-    it sent, the same distinction `p2p/main.py`'s own `except` draws.
+    #283: not every exception out of `parse_messages` is the peer's fault -- a
+    `RuntimeError` is not one btclib raised over the octets it sent, the same
+    distinction `p2p/main.py`'s own `except` draws.
     """
 
     # #283: not every exception out of parse_messages is the peer's
@@ -349,17 +349,16 @@ def test_a_peer_that_hangs_up_is_dropped() -> None:
 
 
 def test_a_connections_own_task_cancelled_directly_still_closes_its_socket() -> None:
-    """A `run` task cancelled directly still closes `self.client` on the way out.
+    """A cancelled `run` task still closes `self.client` on the way out.
 
-    #312: `P2pManager.stop()` closes every connection it already knows
-    about through `Connection.stop()` -- but its own final sweep, over
-    `asyncio.all_tasks(self.loop)`, cancels whatever task is still
-    pending there directly, the only reach it has left for a
-    connection accepted or dialled after its dict-based sweep already
-    ran. That direct `task.cancel()`, with nothing standing between it
-    and this coroutine's own suspension in `sock_recv`, must not be
-    able to leave `self.client` open the way going through `stop()`
-    never does.
+    #312: `P2pManager.stop()` closes every connection it already knows about
+    through `Connection.stop()` -- but its own final sweep, over
+    `asyncio.all_tasks(self.loop)`, cancels whatever task is still pending there
+    directly, the only reach it has left for a connection accepted or dialled
+    after its dict-based sweep already ran. That direct `task.cancel()`, with
+    nothing standing between it and this coroutine's own suspension in
+    `sock_recv`, must not be able to leave `self.client` open the way going
+    through `stop()` never does.
     """
 
     async def drive() -> socket.socket:
@@ -440,22 +439,20 @@ def _message_overhead() -> int:
 
 
 def _burst_summing_to(total_wire_bytes: int, count: int) -> list[CFilter]:
-    """`count` `cfilter`-shaped answers whose wire bytes add to `total_wire_bytes`.
+    """`count` `cfilter` answers whose own wire bytes add to `total_wire_bytes`.
 
-    What `async_send` actually counts toward `queued_send_bytes` is the
-    whole wire message, not merely the `filter_bytes` argument each is
-    built from.
+    What `async_send` actually counts toward `queued_send_bytes` is the whole
+    wire message, not merely the `filter_bytes` argument each is built from.
 
-    One `send` per block and nothing between it and the event loop is
-    exactly `get_cfilters`'s own loop over a `getcfilters` request's
-    heights, so a burst is what a single request answers with, not one
-    message of the whole answer's size -- which no message here could
-    be anyway, `Message.serialize` refusing a payload over
-    `MAX_PROTOCOL_MESSAGE_LENGTH` regardless of `check_validity`.
-    `filter_bytes` is not a real Golomb-Rice set: `check_validity=False`
-    on both the object and `async_send`'s own `serialize` call is what
-    lets zeroed octets stand in for one, the way a wrong-shaped block
-    already does elsewhere in this test tree.
+    One `send` per block and nothing between it and the event loop is exactly
+    `get_cfilters`'s own loop over a `getcfilters` request's heights, so a burst
+    is what a single request answers with, not one message of the whole answer's
+    size -- which no message here could be anyway, `Message.serialize` refusing
+    a payload over `MAX_PROTOCOL_MESSAGE_LENGTH` regardless of `check_validity`.
+    `filter_bytes` is not a real Golomb-Rice set: `check_validity=False` on both
+    the object and `async_send`'s own `serialize` call is what lets zeroed
+    octets stand in for one, the way a wrong-shaped block already does elsewhere
+    in this test tree.
     """
     total = total_wire_bytes - count * _message_overhead()
     base = total // count

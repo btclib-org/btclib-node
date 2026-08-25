@@ -2,7 +2,8 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""A broadcast transaction reaches a real peer's mempool over `inv`/`getdata`."""
+"""A broadcast transaction reaches a real peer's mempool over `inv`/`getdata`.
+"""
 
 from typing import TYPE_CHECKING
 

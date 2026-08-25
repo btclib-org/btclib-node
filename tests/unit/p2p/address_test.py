@@ -53,7 +53,8 @@ def a_peer_db(chain: Any = None, data_dir: Path | None = None) -> PeerDB:
 
 
 def an_onion_address(port: int = 8333) -> NetworkAddressV2:
-    """Build a TORv3 peer: BIP155's own undialable network, for its own tests."""
+    """Build a TORv3 peer: BIP155's own undialable network, for its own tests.
+    """
     return NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, port)
 
 
@@ -271,11 +272,11 @@ def test_add_addresses_and_random_address_do_not_interleave(
 
 
 def test_an_address_not_seen_for_three_hours_stops_being_active() -> None:
-    """A stale active address is dropped by `get_active_addresses`, not just hidden.
+    """A stale active address is dropped by `get_active_addresses`.
 
-    Checked twice: the answer excludes it, and the table itself no
-    longer holds it -- a read that filtered it out without pruning
-    would pass the first assertion and fail the second.
+    Not merely hidden: checked twice, the answer excludes it and the
+    table itself no longer holds it -- a read that filtered it out
+    without pruning would pass the first assertion and fail the second.
     """
     peer_db = a_peer_db()
     fresh = peer_address("1.2.3.4", 18444, timestamp=int(time.time()) - 3600)
@@ -564,7 +565,8 @@ def test_a_refused_dial_does_not_cost_the_old_poll_s_full_second() -> None:
 
 
 class FakeLoop:
-    """A `getaddrinfo` stand-in answering fixed hosts without a real DNS query."""
+    """A `getaddrinfo` stand-in answering fixed hosts without a real DNS query.
+    """
 
     def __init__(self, answers: dict[str, Exception | list[str]]) -> None:
         """Record what each host name should answer with, or raise."""
@@ -581,9 +583,11 @@ class FakeLoop:
 
 
 def a_chain(seeds: list[str]) -> Any:
-    """Build a chain stand-in naming `seeds` as its DNS seeds, on regtest's port."""
-    # not 8333: the port has to come from the chain, and a default would
-    # look the same
+    """Build a chain stand-in naming `seeds` as its DNS seeds.
+
+    Its port is regtest's own 18444, not 8333: the port has to come
+    from the chain, and a default would look the same either way.
+    """
     return SimpleNamespace(addresses=list(seeds), port=18444)
 
 
@@ -646,7 +650,8 @@ class FakeIpv6Loop:
     async def getaddrinfo(
         self, host: str, port: int
     ) -> list[tuple[int, int, int, str, tuple[str, int, int, int]]]:
-        """Answer with a sockaddr of four fields, as a real AAAA lookup would."""
+        """Answer with a sockaddr of four fields, as a real AAAA lookup would.
+        """
         # what a AAAA record resolves to: a sockaddr of four fields
         # rather than two, the flow info and the scope id being the two
         # a peer table has nowhere to put
@@ -771,17 +776,13 @@ def test_the_table_of_known_addresses_is_bounded() -> None:
 
 
 def test_a_v4_mapped_ipv6_record_is_not_kept() -> None:
-    """A v4-mapped `IPV6` record is dropped by `add_addresses`, not gossiped back.
+    """A v4-mapped `IPV6` record is dropped by `add_addresses`.
 
-    BIP155: a client SHOULD ignore an `IPV6` entry whose octets are
-    `::ffff:0:0/96`, the IPv4 mapping. #151: keeping it is an entry
-    that later writes into an addr version 1 message as the same
-    sixteen octets an ordinary IPv4 peer does.
+    Not gossiped back either: BIP155 says a client SHOULD ignore an
+    `IPV6` entry whose octets are `::ffff:0:0/96`, the IPv4 mapping.
+    #151: keeping it is an entry that later writes into an addr version
+    1 message as the same sixteen octets an ordinary IPv4 peer does.
     """
-    # BIP155: a client SHOULD ignore an IPV6 entry whose octets are
-    # `::ffff:0:0/96`, the IPv4 mapping -- keeping it is #151, an entry
-    # that later writes into an addr version 1 message as the same
-    # sixteen octets an ordinary IPv4 peer does
     peer_db = a_peer_db()
     peer_db.add_addresses([peer_address(_A_V4_MAPPED_ADDRESS, 8333)])
     assert not peer_db.addresses

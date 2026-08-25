@@ -83,7 +83,7 @@ def payload_classes() -> dict[str, type[Payload]]:
 
 
 def test_every_payload_travels_under_its_specification_s_name() -> None:
-    """This package's own payloads carry the command their spec gives.
+    """Every payload of this package carries the command its own spec gives.
 
     `_COMMANDS` is read off BIP61, not off this tree's own choice, and
     the check is two-way: every payload class has an entry here, and

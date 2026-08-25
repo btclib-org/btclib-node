@@ -38,13 +38,13 @@ def make_node(
     present: bool = True,
     pending: bool = False,
 ) -> tuple[Any, list[bool]]:
-    """Build a node stand-in with one queued `item` and a `Connection` at `status`.
+    """Build a node stand-in, one queued `item` on a `Connection` at `status`.
 
-    `present` files the connection under `connections` or leaves it out
-    entirely (a peer already gone by the time its message is handled);
-    `pending` moves it into `pending_connections` instead, for the
-    handshake's own in-between state. Returns the node alongside the
-    list `conn.stop` was told to record onto.
+    `present` files the connection under `connections` or leaves it out entirely
+    (a peer already gone by the time its message is handled); `pending` moves it
+    into `pending_connections` instead, for the handshake's own in-between
+    state. Returns the node alongside the list `conn.stop` was told to record
+    onto.
     """
     stopped: list[bool] = []
     discouraged: list[Any] = []
@@ -121,12 +121,11 @@ def test_a_handshake_message_on_a_connected_one_drops_the_peer() -> None:
 def test_a_handshake_callback_that_raises_drops_the_peer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A handshake callback raising a bare exception drops the peer, undiscouraged.
+    """A handshake callback's own bare exception drops the peer, undiscouraged.
 
-    #283: not every exception is the peer's fault, and a bare
-    `RuntimeError` is not one btclib raised over the peer's own
-    content, so the connection is dropped but the peer is not
-    discouraged for it.
+    #283: not every exception is the peer's fault, and a bare `RuntimeError` is
+    not one btclib raised over the peer's own content, so the connection is
+    dropped but the peer is not discouraged for it.
     """
 
     def boom(node: Node, msg: bytes, conn: Connection) -> None:
@@ -238,14 +237,16 @@ def test_a_message_before_the_handshake_is_over_drops_the_peer() -> None:
 
 
 def test_a_message_on_a_closed_connection_is_dropped() -> None:
-    """An ordinary message for a `Closed` connection is dropped, not dispatched."""
+    """An ordinary message for a `Closed` connection is dropped, not dispatched.
+    """
     node, stopped = make_node("messages", ("ping", b"", 0), status=P2pConnStatus.Closed)
     handle_p2p(node)
     assert not stopped
 
 
 def test_a_command_nothing_dispatches_is_ignored() -> None:
-    """A command with no entry in `callbacks` is silently ignored, not dropped."""
+    """A command with no entry in `callbacks` is silently ignored, not dropped.
+    """
     node, stopped = make_node(
         "messages", ("nosuchcommand", b"", 0), status=P2pConnStatus.Connected
     )
@@ -277,7 +278,8 @@ def test_a_callback_that_raises_drops_the_peer(monkeypatch: pytest.MonkeyPatch) 
 def test_a_callback_that_raises_a_btclib_exception_costs_the_peer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A callback raising a btclib exception drops the peer and discourages it."""
+    """A callback raising a btclib exception drops the peer and discourages it.
+    """
 
     def boom(node: Node, msg: bytes, conn: Connection) -> None:
         raise BTClibValueError("no")
@@ -292,7 +294,8 @@ def test_a_callback_that_raises_a_btclib_exception_costs_the_peer(
 
 
 def test_a_message_for_a_connection_that_is_gone_is_dropped() -> None:
-    """A message naming a connection id nobody holds is dropped, not dispatched."""
+    """A message naming a connection id nobody holds is dropped, not dispatched.
+    """
     node, stopped = make_node(
         "messages", ("ping", b"", 7), status=P2pConnStatus.Connected, present=False
     )

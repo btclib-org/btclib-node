@@ -142,7 +142,8 @@ def an_address(
 
 
 def a_version_address(services: int = 0) -> NetworkAddress:
-    """Build an unroutable `NetworkAddress`, the narrowest shape a `version` carries.
+    """Build an unroutable `NetworkAddress`, the narrowest shape a `version`
+    carries.
 
     A `version` message's own address field has no timestamp, unlike
     `NetworkAddressV2`.
@@ -153,7 +154,9 @@ def a_version_address(services: int = 0) -> NetworkAddress:
 def make_node(
     addresses: Sequence[NetworkAddressV2], *, prefer_addressv2: bool = False
 ) -> tuple[Any, Any, list[Any]]:
-    """Build a node whose `peer_db` already holds `addresses` as active, and a peer stand-in."""
+    """Build a node whose `peer_db` already holds `addresses` as active, and a
+    peer stand-in.
+    """
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
     for address in addresses:
         peer_db.active_addresses.append(address)
@@ -279,7 +282,9 @@ def test_a_second_getaddr_on_the_same_connection_is_ignored() -> None:
 
 
 def another_conn(sent: list[Any]) -> Any:
-    """Build a second peer stand-in sharing `sent` with the one `make_node` built."""
+    """Build a second peer stand-in sharing `sent` with the one `make_node`
+    built.
+    """
     return SimpleNamespace(
         prefer_addressv2=False, send=sent.append, answered_getaddr=False
     )
@@ -346,7 +351,9 @@ def a_version(
     relay: bool | None = True,
     addr_from_port: int = 18444,
 ) -> bytes:
-    """Build a serialized `version` message, as the `version` callback receives one."""
+    """Build a serialized `version` message, as the `version` callback receives
+    one.
+    """
     return a_parsed_version(
         protocol=protocol,
         services=services,
@@ -367,7 +374,9 @@ def a_parsed_version(
     # and not the address -- btclib-org/btclib-node#70
     addr_from_port: int = 18444,
 ) -> Version:
-    """Return the parsed `Version` `a_version` serializes, for tests that read fields."""
+    """Return the parsed `Version` `a_version` serializes, for tests that read
+    fields.
+    """
     return Version(
         version=protocol,
         services=services,
@@ -382,11 +391,11 @@ def a_parsed_version(
 
 
 def a_peer(**attributes: Any) -> Any:
-    """Build a `Connection` double at every field a callback might read or write.
+    """Build a `Connection` double at every field a callback might read or
+    write.
 
-    `**attributes` overrides any default, for the one or two fields a
-    given test needs to start from something other than the ordinary
-    just-connected shape.
+    `**attributes` overrides any default, for the one or two fields a given test
+    needs to start from something other than the ordinary just-connected shape.
     """
     sent: list[Any] = []
     stopped = []
@@ -428,7 +437,8 @@ def a_handshake_node(
     promote_connection: Any = None,
     min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
 ) -> Any:
-    """Build a node double with just what the handshake callbacks read or write."""
+    """Build a node double with just what the handshake callbacks read or write.
+    """
     discouraged: list[Any] = []
     return SimpleNamespace(
         status=status,
@@ -450,7 +460,9 @@ def a_handshake_node(
 
 
 def commands(peer: Any) -> list[str]:
-    """Return the command each message on `peer.sent` travels under, or itself if a string."""
+    """Return the command each message on `peer.sent` travels under, or itself
+    if a string.
+    """
     return [
         message if isinstance(message, str) else type(message).__name__
         for message in peer.sent
@@ -458,7 +470,8 @@ def commands(peer: Any) -> list[str]:
 
 
 def test_a_version_is_answered_with_what_this_node_speaks() -> None:
-    """A compatible `version` is answered with this node's own handshake trio."""
+    """A compatible `version` is answered with this node's own handshake trio.
+    """
     node = a_handshake_node()
     peer = a_peer()
     version(node, a_version(), peer)
@@ -472,10 +485,11 @@ def test_a_version_is_answered_with_what_this_node_speaks() -> None:
 
 
 def test_a_version_carrying_our_own_nonce_is_this_node_calling_itself() -> None:
-    """A `version` carrying a nonce this node sent is a self-connection, dropped.
+    """A `version` carrying a nonce this node sent is a self-connection,
+    dropped.
 
-    #283: an incompatibility, not a protocol violation, and still cause
-    to discourage.
+    #283: an incompatibility, not a protocol violation, and still cause to
+    discourage.
     """
     node = a_handshake_node(nonces=[7])
     peer = a_peer()
@@ -487,7 +501,8 @@ def test_a_version_carrying_our_own_nonce_is_this_node_calling_itself() -> None:
 
 
 def test_a_peer_speaking_an_older_protocol_is_let_go() -> None:
-    """A `version` below `ProtocolVersion` is refused and the peer discouraged."""
+    """A `version` below `ProtocolVersion` is refused and the peer discouraged.
+    """
     node = a_handshake_node()
     peer = a_peer()
     version(node, a_version(protocol=ProtocolVersion - 1), peer)
@@ -496,7 +511,8 @@ def test_a_peer_speaking_an_older_protocol_is_let_go() -> None:
 
 
 def test_a_peer_without_the_witness_service_is_let_go() -> None:
-    """A peer that never advertised `NODE_WITNESS` is refused and discouraged."""
+    """A peer that never advertised `NODE_WITNESS` is refused and discouraged.
+    """
     node = a_handshake_node()
     peer = a_peer()
     version(node, a_version(services=ServiceFlags.NODE_NETWORK), peer)
@@ -527,11 +543,12 @@ def test_a_pruned_peer_is_let_go_only_once_the_blocks_are_synced() -> None:
 
 
 def test_a_version_that_says_it_relays_nothing_is_taken_at_its_word() -> None:
-    """A `version` with `relay=False` sets `relay_tx` false, on the right attribute.
+    """A `version` with `relay=False` sets `relay_tx` false, on the right
+    attribute.
 
-    The flag went to the attribute `Connection` defines, and nowhere
-    else: the near miss that dropped it before was one letter long,
-    `relay_txs` rather than `relay_tx`.
+    The flag went to the attribute `Connection` defines, and nowhere else: the
+    near miss that dropped it before was one letter long, `relay_txs` rather
+    than `relay_tx`.
     """
     peer = a_peer()
     version(a_handshake_node(), a_version(relay=False), peer)
@@ -542,10 +559,11 @@ def test_a_version_that_says_it_relays_nothing_is_taken_at_its_word() -> None:
 
 
 def test_a_version_without_the_relay_flag_is_a_peer_asking_for_relay() -> None:
-    """A `version` with no relay flag at all is read as BIP37's own default: true.
+    """A `version` with no relay flag at all is read as BIP37's own default:
+    true.
 
-    BIP37's default is what a peer older than the flag relies on: read
-    as a false, it would be recorded as asking for the opposite.
+    BIP37's default is what a peer older than the flag relies on: read as a
+    false, it would be recorded as asking for the opposite.
     """
     peer = a_peer(relay_tx=False)
     version(a_handshake_node(), a_version(relay=None), peer)
@@ -553,22 +571,21 @@ def test_a_version_without_the_relay_flag_is_a_peer_asking_for_relay() -> None:
 
 
 def test_a_version_with_a_trailing_octet_still_costs_the_peer() -> None:
-    """A `version` with a stray trailing octet still raises, unlike `addr`/`addrv2`.
+    """A `version` with a stray trailing octet still raises, unlike
+    `addr`/`addrv2`.
 
-    Issue #149 leaves this one asymmetric on purpose: addr and addrv2
-    (below) accept a BinaryData stream, and btclib's own
-    assert_no_trailing treats one as "the caller's", nothing past it
-    checked -- Core's own leniency, reached with no second parser.
-    Version.parse takes Octets alone (its own docstring: "the envelope
-    is what says where a payload ends"), because its optional relay
-    byte is detected by whether one more byte is there at all; handing
-    it a stream that could plausibly hold more would make a genuinely
-    unknown trailing octet misread as that flag. There is no btclib
-    mechanism this node can lean on for `version` without a private
-    copy of its field-by-field parse, so this still raises out of the
-    callback -- main.handle_p2p_handshake is what turns that into
-    conn.stop(), covered by tests/unit/p2p/main_test.py's own coverage
-    of that generic behaviour.
+    Issue #149 leaves this one asymmetric on purpose: addr and addrv2 (below)
+    accept a BinaryData stream, and btclib's own assert_no_trailing treats one
+    as "the caller's", nothing past it checked -- Core's own leniency, reached
+    with no second parser. Version.parse takes Octets alone (its own docstring:
+    "the envelope is what says where a payload ends"), because its optional
+    relay byte is detected by whether one more byte is there at all; handing it
+    a stream that could plausibly hold more would make a genuinely unknown
+    trailing octet misread as that flag. There is no btclib mechanism this node
+    can lean on for `version` without a private copy of its field-by-field
+    parse, so this still raises out of the callback -- main.handle_p2p_handshake
+    is what turns that into conn.stop(), covered by
+    tests/unit/p2p/main_test.py's own coverage of that generic behaviour.
     """
     peer = a_peer()
     with pytest.raises(BTClibValueError):
@@ -602,14 +619,14 @@ def test_a_relay_octet_that_is_neither_0_nor_1_still_costs_the_peer() -> None:
 
 
 def a_real_connection() -> Connection:
-    """Build a real `Connection`, not a stand-in, for a defect a double cannot catch.
+    """Build a real `Connection`, not a stand-in, for a defect a double cannot
+    catch.
 
-    Not a stand-in: the defect this is about was a callback writing an
-    attribute no `Connection` has, which a `SimpleNamespace` peer takes
-    without a word and a `Connection` takes just as quietly -- Python
-    attribute assignment does not check the name either way. What a
-    real one adds is that the attribute asserted on below is the one
-    the rest of the node reads.
+    Not a stand-in: the defect this is about was a callback writing an attribute
+    no `Connection` has, which a `SimpleNamespace` peer takes without a word and
+    a `Connection` takes just as quietly -- Python attribute assignment does not
+    check the name either way. What a real one adds is that the attribute
+    asserted on below is the one the rest of the node reads.
     """
     manager = SimpleNamespace(node=a_handshake_node(), loop=None, peer_db=None)
     unroutable = peer_address("0.0.0.0", 18444)  # noqa: S104
@@ -630,7 +647,9 @@ def a_real_connection() -> Connection:
 def test_what_a_peer_said_about_relay_lands_on_the_connection(
     *, relay: bool | None, wanted: bool
 ) -> None:
-    """`version`'s relay flag lands on a real `Connection.relay_tx`, every value."""
+    """`version`'s relay flag lands on a real `Connection.relay_tx`, every
+    value.
+    """
     connection = a_real_connection()
     with connection.client:
         assert connection.relay_tx is True  # BIP37's default until told
@@ -866,13 +885,14 @@ def test_a_feefilter_lands_on_the_connection() -> None:
 def test_a_feefilter_outside_the_money_range_is_read_as_no_filter(
     feerate: int,
 ) -> None:
-    """A `feefilter` naming a rate outside MoneyRange is read as no filter at all.
+    """A `feefilter` naming a rate outside MoneyRange is read as no filter at
+    all.
 
-    Core acts on a received rate only within MoneyRange -- 0 to
-    MAX_MONEY inclusive (net_processing.cpp's NetMsgType::FEEFILTER,
-    consensus/amount.h's MoneyRange) -- and leaves either side of it
-    parsed but unused, rather than turning it into a filter nothing
-    a real, non-negative fee rate could ever fail.
+    Core acts on a received rate only within MoneyRange -- 0 to MAX_MONEY
+    inclusive (net_processing.cpp's NetMsgType::FEEFILTER, consensus/amount.h's
+    MoneyRange) -- and leaves either side of it parsed but unused, rather than
+    turning it into a filter nothing a real, non-negative fee rate could ever
+    fail.
     """
     # Core acts on a received rate only within MoneyRange -- 0 to
     # MAX_MONEY inclusive (net_processing.cpp's NetMsgType::FEEFILTER,
@@ -885,7 +905,8 @@ def test_a_feefilter_outside_the_money_range_is_read_as_no_filter(
 
 
 def test_a_feefilter_at_the_edge_of_the_money_range_is_kept() -> None:
-    """A `feefilter` naming exactly MAX_MONEY is kept: the bound is inclusive."""
+    """A `feefilter` naming exactly MAX_MONEY is kept: the bound is inclusive.
+    """
     # the bound is inclusive, so exactly MAX_MONEY is still a filter
     peer = a_peer()
     at_the_edge = sats_from_btc(Decimal(21_000_000))
@@ -1028,7 +1049,8 @@ def test_an_address_of_a_network_nobody_here_has_heard_of_is_kept() -> None:
 
 
 def test_a_notfound_is_logged_rather_than_held_against_the_peer() -> None:
-    """A `notfound` is logged as a warning, and never costs the peer anything."""
+    """A `notfound` is logged as a warning, and never costs the peer anything.
+    """
     logged, warning = log_recorder()
     node = a_handshake_node()
     node.logger.warning = warning
@@ -1045,13 +1067,13 @@ def test_a_notfound_is_logged_rather_than_held_against_the_peer() -> None:
 def test_a_notfound_frees_the_transaction_it_names_to_be_asked_of_someone_else() -> (
     None
 ):
-    """A `notfound` clears the tx entry it names, but leaves a block entry alone.
+    """A `notfound` clears the tx entry it names, but leaves a block entry
+    alone.
 
-    `DownloadManager.tx_download`'s own in-flight table, so an ask this
-    peer will not answer is not held against it forever; a
-    `MSG_BLOCK` item carries no such bookkeeping to clear, blocks never
-    having been requested through a mechanism a `notfound` could
-    complete.
+    `DownloadManager.tx_download`'s own in-flight table, so an ask this peer
+    will not answer is not held against it forever; a `MSG_BLOCK` item carries
+    no such bookkeeping to clear, blocks never having been requested through a
+    mechanism a `notfound` could complete.
     """
     # `DownloadManager.tx_download`'s own in-flight table, so an ask
     # this peer will not answer is not held against it forever
@@ -1071,7 +1093,8 @@ def test_a_notfound_frees_the_transaction_it_names_to_be_asked_of_someone_else()
 
 
 def test_a_reject_names_the_transaction_it_is_about() -> None:
-    """A `reject` is logged with its code, its reason and the txid it is about."""
+    """A `reject` is logged with its code, its reason and the txid it is about.
+    """
     logged: list[str] = []
     node = a_handshake_node()
     node.logger.warning = logged.append
@@ -1119,10 +1142,11 @@ def a_data_node(
     block_db: Any = None,
     status: NodeStatus = NodeStatus.BlockSynced,
 ) -> Any:
-    """Build a node whose mempool, chain and download manager are real enough to test.
+    """Build a node whose mempool, chain and download manager are real enough to
+    test.
 
-    `BlockSynced` by default, since a transaction callback only accepts
-    once the chain is caught up; `status` moves that to test the gate.
+    `BlockSynced` by default, since a transaction callback only accepts once the
+    chain is caught up; `status` moves that to test the gate.
     """
     node = a_handshake_node(status=status)
     node.mempool = mempool if mempool is not None else Mempool(Logger(debug=True))
@@ -1251,10 +1275,14 @@ def test_a_transaction_a_full_mempool_declined_is_not_reported_either(
 
 
 class FakeBlockIndex:
-    """A block index stand-in whose answers are fixed and whose calls are recorded."""
+    """A block index stand-in whose answers are fixed and whose calls are
+    recorded.
+    """
 
     def __init__(self, infos: dict[bytes, Any]) -> None:
-        """Answer `get_block_info` from `infos`, and record `marked`/`invalidated` calls."""
+        """Answer `get_block_info` from `infos`, and record
+        `marked`/`invalidated` calls.
+        """
         self.infos = infos
         self.marked: list[bytes] = []
         self.invalidated: list[bytes] = []
@@ -1313,7 +1341,9 @@ def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded() -> None:
 
 
 def test_a_block_already_stored_is_not_stored_again() -> None:
-    """A block already marked downloaded is a no-op: not re-added, not re-marked."""
+    """A block already marked downloaded is a no-op: not re-added, not
+    re-marked.
+    """
     block = a_block()
     index = FakeBlockIndex({block.header.hash: SimpleNamespace(downloaded=True)})
     added: list[Block] = []
@@ -1352,11 +1382,12 @@ def a_block_claiming_an_easier_target_than_the_chain_allows(block: Block) -> Blo
 
 
 def test_a_block_whose_proof_of_work_does_not_hold_up_is_refused() -> None:
-    """A block whose proof of work fails is invalidated, not stored, and re-raised.
+    """A block whose proof of work fails is invalidated, not stored, and
+    re-raised.
 
-    The raise still reaches main.handle_p2p, which drops the peer;
-    invalidate is what keeps the next one from being asked to send the
-    same block again: btclib-org/btclib-node#77.
+    The raise still reaches main.handle_p2p, which drops the peer; invalidate is
+    what keeps the next one from being asked to send the same block again:
+    btclib-org/btclib-node#77.
     """
     # the raise still reaches main.handle_p2p, which drops the peer;
     # invalidate is what keeps the next one from being asked to send the
@@ -1386,7 +1417,8 @@ def test_an_inventory_is_ignored_until_the_blocks_are_synced() -> None:
 
 
 def test_a_block_announced_is_answered_with_a_getheaders() -> None:
-    """An `inv` naming blocks is answered with `getheaders` stopping at the last one.
+    """An `inv` naming blocks is answered with `getheaders` stopping at the last
+    one.
 
     The last one announced: the headers between are what we are after.
     """
@@ -1402,11 +1434,11 @@ def test_a_block_announced_is_answered_with_a_getheaders() -> None:
 
 
 def test_a_transaction_announced_that_we_lack_is_wanted() -> None:
-    """A `wtx` `inv` for a transaction not in the mempool is queued to be asked for.
+    """A `wtx` `inv` for a transaction not in the mempool is queued to be asked
+    for.
 
-    Queued onto `download_manager.inv_txs` keyed by the announcing
-    peer's id, and no answer sent directly -- the download manager
-    decides who to ask.
+    Queued onto `download_manager.inv_txs` keyed by the announcing peer's id,
+    and no answer sent directly -- the download manager decides who to ask.
     """
     transaction = a_transaction()
     node = a_data_node()
@@ -1429,10 +1461,11 @@ def test_a_transaction_announced_that_we_hold_is_not_wanted() -> None:
 
 
 def test_a_transaction_this_node_holds_is_served() -> None:
-    """A `getdata` for a held transaction is served, witness included when asked.
+    """A `getdata` for a held transaction is served, witness included when
+    asked.
 
-    Which identifier the peer asked by, and whether the answer carries
-    the witness, are two different questions and the codes answer both.
+    Which identifier the peer asked by, and whether the answer carries the
+    witness, are two different questions and the codes answer both.
     """
     transaction = a_transaction()
     mempool = Mempool(Logger(debug=True))
@@ -1454,11 +1487,11 @@ def test_a_transaction_this_node_holds_is_served() -> None:
 
 
 def test_a_transaction_is_not_found_under_the_other_identifier() -> None:
-    """A `getdata` naming the wrong identifier for a held transaction gets `notfound`.
+    """A `getdata` naming the wrong identifier for a held transaction gets
+    `notfound`.
 
-    `MSG_TX` by wtxid, and `MSG_WTX` by txid: the mempool is indexed on
-    the identifier each type actually names, not on either
-    interchangeably.
+    `MSG_TX` by wtxid, and `MSG_WTX` by txid: the mempool is indexed on the
+    identifier each type actually names, not on either interchangeably.
     """
     transaction = a_transaction()
     mempool = Mempool(Logger(debug=True))
@@ -1494,10 +1527,11 @@ def test_a_transaction_this_node_does_not_hold_gets_a_notfound() -> None:
 
 
 def test_several_misses_batch_into_one_notfound_alongside_the_hits() -> None:
-    """One `getdata` naming a hit and several misses answers both, misses batched.
+    """One `getdata` naming a hit and several misses answers both, misses
+    batched.
 
-    The held transaction is sent directly and the misses collect into a
-    single `notfound`, rather than one `notfound` per missing item.
+    The held transaction is sent directly and the misses collect into a single
+    `notfound`, rather than one `notfound` per missing item.
     """
     transaction = a_transaction()
     mempool = Mempool(Logger(debug=True))
@@ -1518,11 +1552,12 @@ def test_several_misses_batch_into_one_notfound_alongside_the_hits() -> None:
 
 
 def test_a_peer_that_declined_relay_is_not_served_a_transaction_it_asks_for() -> None:
-    """A peer with `relay_tx` false gets no answer to a `getdata` for a transaction.
+    """A peer with `relay_tx` false gets no answer to a `getdata` for a
+    transaction.
 
-    Every code it could ask by, because gating one of the three is a
-    peer that gets the same answer by asking a different way -- not
-    even `notfound`, matching Core's own silence on this path.
+    Every code it could ask by, because gating one of the three is a peer that
+    gets the same answer by asking a different way -- not even `notfound`,
+    matching Core's own silence on this path.
     """
     # every code it could ask by, because gating one of the three is a
     # peer that gets the same answer by asking a different way
@@ -1594,7 +1629,8 @@ def test_a_block_this_node_does_not_hold_is_not_answered() -> None:
 
 
 def test_an_inventory_of_neither_kind_is_skipped() -> None:
-    """A `getdata` item that is neither a tx type nor a block type is skipped."""
+    """A `getdata` item that is neither a tx type nor a block type is skipped.
+    """
     node = a_data_node(block_db=SimpleNamespace(get_block=lambda h: None))
     peer = a_peer()
     items = [Inventory(InventoryType.MSG_FILTERED_BLOCK, b"\x11" * 32)]
@@ -1603,7 +1639,9 @@ def test_an_inventory_of_neither_kind_is_skipped() -> None:
 
 
 class FakeHeaderIndex:
-    """A block index stand-in whose `add_headers` answer and tip status are fixed."""
+    """A block index stand-in whose `add_headers` answer and tip status are
+    fixed.
+    """
 
     def __init__(
         self,
@@ -1613,7 +1651,9 @@ class FakeHeaderIndex:
         header_index_tip: bytes = b"\xff" * 32,
         tip_status: BlockStatus = BlockStatus.valid_header,
     ) -> None:
-        """Fix `add_headers`'s own return, whether it raises, and the tip it reports."""
+        """Fix `add_headers`'s own return, whether it raises, and the tip it
+        reports.
+        """
         self.tip = tip
         self.refuse = refuse
         self.header_index = [header_index_tip]
@@ -1638,11 +1678,12 @@ class FakeHeaderIndex:
 
 
 def test_a_full_batch_extending_the_best_chain_uses_the_usual_locator() -> None:
-    """A full, best-chain-extending batch is followed up with the ordinary locator.
+    """A full, best-chain-extending batch is followed up with the ordinary
+    locator.
 
-    header_index already reaches an ordinary batch's own tip -- #122 is
-    about a fork below it, not this case -- so nothing here should
-    narrow the richer, multi-entry locator to a single hash.
+    header_index already reaches an ordinary batch's own tip -- #122 is about a
+    fork below it, not this case -- so nothing here should narrow the richer,
+    multi-entry locator to a single hash.
     """
     # header_index already reaches an ordinary batch's own tip -- #122 is
     # about a fork below it, not this case -- so nothing here should
@@ -1661,11 +1702,11 @@ def test_a_full_batch_extending_the_best_chain_uses_the_usual_locator() -> None:
 
 
 def test_a_full_batch_on_a_live_fork_asks_from_the_fork_s_own_tip() -> None:
-    """A full batch on a fork below `header_index`'s own tip asks from the fork's tip.
+    """A full batch on a fork below `header_index`'s own tip asks from the
+    fork's tip.
 
-    header_index does not move for a fork arriving below its own tip,
-    so its own locator would ask for this same batch again:
-    btclib-org/btclib-node#122.
+    header_index does not move for a fork arriving below its own tip, so its own
+    locator would ask for this same batch again: btclib-org/btclib-node#122.
     """
     # header_index does not move for a fork arriving below its own tip,
     # so its own locator would ask for this same batch again:
@@ -1683,13 +1724,13 @@ def test_a_full_batch_on_a_live_fork_asks_from_the_fork_s_own_tip() -> None:
 
 
 def test_a_full_batch_on_an_invalid_fork_uses_the_usual_locator_instead() -> None:
-    """A full batch on a fork already proved invalid falls back to the usual locator.
+    """A full batch on a fork already proved invalid falls back to the usual
+    locator.
 
-    A batch built on a parent this node already proved invalid is a
-    fork by the header_index test above, but not one worth asking a
-    peer for more of: nothing in this tree scores or bans a peer that
-    keeps sending it, so the locator falls back rather than naming that
-    fork's own tip back to it.
+    A batch built on a parent this node already proved invalid is a fork by the
+    header_index test above, but not one worth asking a peer for more of:
+    nothing in this tree scores or bans a peer that keeps sending it, so the
+    locator falls back rather than naming that fork's own tip back to it.
     """
     # a batch built on a parent this node already proved invalid is a
     # fork by the header_index test above, but not one worth asking a
@@ -1713,11 +1754,12 @@ def test_a_full_batch_on_an_invalid_fork_uses_the_usual_locator_instead() -> Non
 
 
 def test_a_full_batch_from_nowhere_known_asks_from_what_this_node_knows() -> None:
-    """A full batch connecting to nothing known asks again from what this node has.
+    """A full batch connecting to nothing known asks again from what this node
+    has.
 
-    `add_headers` answers `tip=None` for a batch with no known ancestor,
-    which asks with the ordinary locator rather than one built from a
-    tip that was never reached.
+    `add_headers` answers `tip=None` for a batch with no known ancestor, which
+    asks with the ordinary locator rather than one built from a tip that was
+    never reached.
     """
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
     node = a_data_node(status=NodeStatus.SyncingHeaders)
@@ -1732,12 +1774,13 @@ def test_a_full_batch_from_nowhere_known_asks_from_what_this_node_knows() -> Non
 
 
 def test_a_short_batch_from_nowhere_known_asks_from_what_this_node_knows() -> None:
-    """A short, unconnecting batch still gets a `getheaders`, not silent dropping.
+    """A short, unconnecting batch still gets a `getheaders`, not silent
+    dropping.
 
-    A short batch is the ordinary shape of a BIP130 announcement, and
-    unlike the full-batch case above the pre-existing code never sent
-    anything for it: the `len(headers) == 2000` guard was the only
-    place a follow-up GetHeaders was built. btclib-org/btclib-node#233
+    A short batch is the ordinary shape of a BIP130 announcement, and unlike the
+    full-batch case above the pre-existing code never sent anything for it: the
+    `len(headers) == 2000` guard was the only place a follow-up GetHeaders was
+    built. btclib-org/btclib-node#233
     """
     # a short batch is the ordinary shape of a BIP130 announcement, and
     # unlike the full-batch case above the pre-existing code never sent
@@ -1760,14 +1803,14 @@ def test_a_short_batch_from_nowhere_known_asks_from_what_this_node_knows() -> No
 def test_a_batch_on_an_already_invalid_parent_is_not_asked_for_again(
     tmp_path: Path,
 ) -> None:
-    """A batch extending an already-invalidated header falls back to the usual locator.
+    """A batch extending an already-invalidated header falls back to the usual
+    locator.
 
-    add_headers has no reason to refuse this batch -- every header in
-    it still passes its own checks on its own terms, invalid parent or
-    not -- so avoiding a request for more of a branch this node has
-    already proved bad is callbacks.headers's own contract, proved
-    here through the real BlockIndex and not a fake standing in for
-    it. btclib-org/btclib-node#122
+    add_headers has no reason to refuse this batch -- every header in it still
+    passes its own checks on its own terms, invalid parent or not -- so avoiding
+    a request for more of a branch this node has already proved bad is
+    callbacks.headers's own contract, proved here through the real BlockIndex
+    and not a fake standing in for it. btclib-org/btclib-node#122
     """
     # add_headers has no reason to refuse this batch -- every header in
     # it still passes its own checks on its own terms, invalid parent or
@@ -1804,12 +1847,13 @@ def test_a_batch_on_an_already_invalid_parent_is_not_asked_for_again(
 
 
 def test_a_refused_batch_is_not_the_end_of_a_sync() -> None:
-    """A batch `add_headers` refuses re-raises rather than marking sync finished.
+    """A batch `add_headers` refuses re-raises rather than marking sync
+    finished.
 
-    A batch refused for a bad proof of work is a misbehaving peer, not
-    the ordinary end of a sync: the raise reaches handle_p2p, which
-    drops the connection instead of this node believing itself caught
-    up. btclib-org/btclib-node#75
+    A batch refused for a bad proof of work is a misbehaving peer, not the
+    ordinary end of a sync: the raise reaches handle_p2p, which drops the
+    connection instead of this node believing itself caught up. btclib-
+    org/btclib-node#75
     """
     # a batch refused for a bad proof of work is a misbehaving peer, not
     # the ordinary end of a sync: the raise reaches handle_p2p, which
@@ -1826,10 +1870,11 @@ def test_a_refused_batch_is_not_the_end_of_a_sync() -> None:
 
 
 def test_a_short_batch_means_the_headers_are_synced() -> None:
-    """A connecting batch shorter than a full one moves `SyncingHeaders` to `HeaderSynced`.
+    """A connecting batch shorter than a full one moves `SyncingHeaders` to
+    `HeaderSynced`.
 
-    Shorter than `MAX_HEADERS_RESULTS` and still connecting is the
-    peer signalling it has nothing more to give.
+    Shorter than `MAX_HEADERS_RESULTS` and still connecting is the peer
+    signalling it has nothing more to give.
     """
     chain = generate_random_header_chain(2, RegTest().genesis.hash)
     node = a_data_node(status=NodeStatus.SyncingHeaders)
@@ -1841,10 +1886,11 @@ def test_a_short_batch_means_the_headers_are_synced() -> None:
 
 
 def test_a_short_batch_when_the_headers_are_already_synced_changes_nothing() -> None:
-    """A connecting short batch after headers are already synced leaves status alone.
+    """A connecting short batch after headers are already synced leaves status
+    alone.
 
-    Only `SyncingHeaders` moves to `HeaderSynced`; a batch arriving
-    once the node is already past that is not a status change.
+    Only `SyncingHeaders` moves to `HeaderSynced`; a batch arriving once the
+    node is already past that is not a status change.
     """
     chain = generate_random_header_chain(2, RegTest().genesis.hash)
     node = a_data_node(status=NodeStatus.BlockSynced)
@@ -1856,10 +1902,11 @@ def test_a_short_batch_when_the_headers_are_already_synced_changes_nothing() -> 
 
 
 def test_this_node_answers_a_getheaders_from_what_it_knows() -> None:
-    """A `getheaders` reaches `get_headers_from_locators` unchanged, and the answer is sent back.
+    """A `getheaders` reaches `get_headers_from_locators` unchanged, and the
+    answer is sent back.
 
-    The peer's question reaches the index as the peer asked it, which
-    a locator and a stop of the same value could not tell apart.
+    The peer's question reaches the index as the peer asked it, which a locator
+    and a stop of the same value could not tell apart.
     """
     chain = generate_random_header_chain(2, RegTest().genesis.hash)
     node = a_data_node()
@@ -1884,7 +1931,9 @@ def test_this_node_answers_a_getheaders_from_what_it_knows() -> None:
 
 
 def test_a_getheaders_this_node_cannot_answer_is_not_answered() -> None:
-    """A `getheaders` whose locator resolves to nothing gets no answer, not a refusal."""
+    """A `getheaders` whose locator resolves to nothing gets no answer, not a
+    refusal.
+    """
     node = a_data_node()
     node.chainstate.block_index = SimpleNamespace(
         get_headers_from_locators=lambda locator, stop: []
@@ -1899,7 +1948,9 @@ def test_a_getheaders_this_node_cannot_answer_is_not_answered() -> None:
 
 
 def a_filter_hash(height: int) -> bytes:
-    """Return the made-up filter hash `a_filters_node`'s stand-in answers for `height`."""
+    """Return the made-up filter hash `a_filters_node`'s stand-in answers for
+    `height`.
+    """
     return (height + 1).to_bytes(32, "big")
 
 
@@ -1949,7 +2000,9 @@ def a_getcfilters(
     stop_height: int,
     filter_type: BlockFilterType = BlockFilterType.BASIC,
 ) -> None:
-    """Drive `get_cfilters` for the range `[start, stop_height]` on `node`'s active chain."""
+    """Drive `get_cfilters` for the range `[start, stop_height]` on `node`'s
+    active chain.
+    """
     stop_hash = node.chainstate.block_index.active_chain[stop_height]
     get_cfilters(node, GetCFilters(filter_type, start, stop_hash).serialize(), peer)
 
@@ -1976,7 +2029,9 @@ def test_a_range_of_filters_is_answered_one_message_per_block() -> None:
 
 
 def test_one_block_is_a_range_of_one() -> None:
-    """A `getcfilters` naming the same block at both ends answers with one filter."""
+    """A `getcfilters` naming the same block at both ends answers with one
+    filter.
+    """
     node = a_filters_node()
     peer = a_peer()
     a_getcfilters(node, peer, 3, 3)
@@ -2011,11 +2066,12 @@ def test_get_cfilters_stops_once_the_connection_closes_mid_answer() -> None:
 
 
 def test_get_cfilters_refuses_a_gap_in_a_promised_index() -> None:
-    """A missing filter mid-range raises `ChainstateInconsistencyError`, not `notfound`.
+    """A missing filter mid-range raises `ChainstateInconsistencyError`, not
+    `notfound`.
 
-    BIP157's service bit promises a filter for every block of the
-    active chain; a gap here is the index breaking that promise
-    rather than a request this node can decline.
+    BIP157's service bit promises a filter for every block of the active chain;
+    a gap here is the index breaking that promise rather than a request this
+    node can decline.
     """
     # BIP157's service bit promises a filter for every block of the
     # active chain; a gap here is the index breaking that promise
@@ -2028,10 +2084,11 @@ def test_get_cfilters_refuses_a_gap_in_a_promised_index() -> None:
 
 
 def test_a_filter_type_this_node_does_not_serve_is_not_answered() -> None:
-    """A `getcfilters` naming a filter type this node does not serve gets no answer.
+    """A `getcfilters` naming a filter type this node does not serve gets no
+    answer.
 
-    BIP158 defines the basic filter and nothing else, so any other
-    code is a type no node has; BIP157 says answer with nothing.
+    BIP158 defines the basic filter and nothing else, so any other code is a
+    type no node has; BIP157 says answer with nothing.
     """
     # BIP158 defines the basic filter and nothing else, so any other
     # code is a type no node has; BIP157 says answer with nothing
@@ -2071,7 +2128,9 @@ def test_a_stop_hash_off_the_active_chain_is_not_answered() -> None:
 
 
 def test_a_stop_hash_at_a_height_the_chain_has_not_reached_is_not_answered() -> None:
-    """A `getcfilters` naming a stop hash at a height past the chain's own tip is not answered."""
+    """A `getcfilters` naming a stop hash at a height past the chain's own tip
+    is not answered.
+    """
     node = a_filters_node(length=4, stale={b"\x33" * 32: SimpleNamespace(index=9)})
     peer = a_peer()
     get_cfilters(
@@ -2081,11 +2140,12 @@ def test_a_stop_hash_at_a_height_the_chain_has_not_reached_is_not_answered() -> 
 
 
 def test_a_range_that_runs_backwards_is_not_answered() -> None:
-    """A range whose start is past its stop is answered with nothing, either message.
+    """A range whose start is past its stop is answered with nothing, either
+    message.
 
-    And the same range asked of getcfheaders, which is the half that
-    can tell: an empty range sends no cfilter either way, where a
-    cfheaders of no hashes is a message the peer would have to read.
+    And the same range asked of getcfheaders, which is the half that can tell:
+    an empty range sends no cfilter either way, where a cfheaders of no hashes
+    is a message the peer would have to read.
     """
     node = a_filters_node()
     peer = a_peer()
@@ -2138,10 +2198,11 @@ def test_a_range_is_bounded_strictly_below_the_limit(ask: Any, limit: int) -> No
 
 
 def test_the_filter_hashes_of_a_range_are_answered_with_the_header_before_it() -> None:
-    """A `getcfheaders` answer carries the range's own hashes plus the header before it.
+    """A `getcfheaders` answer carries the range's own hashes plus the header
+    before it.
 
-    The header of the block before the range: what the hashes below
-    chain onto, and without it a client could check nothing.
+    The header of the block before the range: what the hashes below chain onto,
+    and without it a client could check nothing.
     """
     node = a_filters_node()
     peer = a_peer()
@@ -2159,10 +2220,11 @@ def test_the_filter_hashes_of_a_range_are_answered_with_the_header_before_it() -
 
 
 def test_a_range_that_starts_at_the_genesis_block_has_no_header_before_it() -> None:
-    """A `getcfheaders` range starting at genesis answers thirty-two zero octets.
+    """A `getcfheaders` range starting at genesis answers thirty-two zero
+    octets.
 
-    BIP157 defines the header before the genesis block's filter as
-    thirty-two zero octets, and there is no block to read one off.
+    BIP157 defines the header before the genesis block's filter as thirty-two
+    zero octets, and there is no block to read one off.
     """
     node = a_filters_node()
     peer = a_peer()
@@ -2189,7 +2251,9 @@ def test_a_getcfheaders_this_node_cannot_answer_is_not_answered() -> None:
 
 
 def test_get_cfheaders_refuses_a_gap_in_the_header_before_the_range() -> None:
-    """A missing filter header for the block just before the range raises, not `notfound`."""
+    """A missing filter header for the block just before the range raises, not
+    `notfound`.
+    """
     node = a_filters_node()
     node.chainstate.filter_index.get_header = lambda h: None
     peer = a_peer()
@@ -2204,7 +2268,9 @@ def test_get_cfheaders_refuses_a_gap_in_the_header_before_the_range() -> None:
 
 
 def test_get_cfheaders_refuses_a_gap_in_a_promised_index() -> None:
-    """A missing filter hash somewhere in the range raises, not answered with `notfound`."""
+    """A missing filter hash somewhere in the range raises, not answered with
+    `notfound`.
+    """
     node = a_filters_node()
     node.chainstate.filter_index.get_filter_hash = lambda h: None
     peer = a_peer()
@@ -2217,11 +2283,11 @@ def test_get_cfheaders_refuses_a_gap_in_a_promised_index() -> None:
 
 
 def test_the_checkpoints_are_every_thousandth_block_and_not_the_first() -> None:
-    """`getcfcheckpt` answers with the filter header at every interval up to the stop.
+    """`getcfcheckpt` answers with the filter header at every interval up to the
+    stop.
 
-    "a multiple of 1,000 greater than 0": the genesis block is not a
-    checkpoint, and the stop block is one only if it falls on the
-    interval itself.
+    "a multiple of 1,000 greater than 0": the genesis block is not a checkpoint,
+    and the stop block is one only if it falls on the interval itself.
     """
     node = a_filters_node(length=2 * CFCHECKPT_INTERVAL + 3)
     peer = a_peer()
@@ -2243,11 +2309,12 @@ def test_the_checkpoints_are_every_thousandth_block_and_not_the_first() -> None:
 
 
 def test_the_stop_block_is_a_checkpoint_when_its_own_height_is_one() -> None:
-    """A stop block whose own height falls on the interval is itself a checkpoint.
+    """A stop block whose own height falls on the interval is itself a
+    checkpoint.
 
-    The boundary the rule is most specific about: "each block ... where
-    the block height is a multiple of 1,000 greater than 0" includes
-    the block the range terminates at, when that is what its height is.
+    The boundary the rule is most specific about: "each block ... where the
+    block height is a multiple of 1,000 greater than 0" includes the block the
+    range terminates at, when that is what its height is.
     """
     # the boundary the rule is most specific about: "each block ... where
     # the block height is a multiple of 1,000 greater than 0" includes
@@ -2263,11 +2330,11 @@ def test_the_stop_block_is_a_checkpoint_when_its_own_height_is_one() -> None:
 
 
 def test_a_chain_shorter_than_the_interval_has_no_checkpoints() -> None:
-    """A chain shorter than the checkpoint interval answers with an empty message.
+    """A chain shorter than the checkpoint interval answers with an empty
+    message.
 
-    An answer, and an empty one: a client that asked has been told
-    there is nothing to check against, which is not the same as
-    having been ignored.
+    An answer, and an empty one: a client that asked has been told there is
+    nothing to check against, which is not the same as having been ignored.
     """
     node = a_filters_node(length=8)
     peer = a_peer()
@@ -2284,7 +2351,9 @@ def test_a_chain_shorter_than_the_interval_has_no_checkpoints() -> None:
 
 
 def test_get_cfcheckpt_refuses_a_gap_in_a_promised_index() -> None:
-    """A missing filter header at a checkpoint height raises, not answered with `notfound`."""
+    """A missing filter header at a checkpoint height raises, not answered with
+    `notfound`.
+    """
     node = a_filters_node(length=CFCHECKPT_INTERVAL + 1)
     node.chainstate.filter_index.get_header = lambda h: None
     peer = a_peer()

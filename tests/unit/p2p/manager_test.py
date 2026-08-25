@@ -210,7 +210,9 @@ def test_removing_a_connection_stops_it(a_manager: AManagerFactory) -> None:
 def test_removing_a_connection_still_pending_stops_it_too(
     a_manager: AManagerFactory,
 ) -> None:
-    """`remove_connection` reaches `pending_connections`, not only `connections`."""
+    """`remove_connection` reaches `pending_connections`, not only
+    `connections`.
+    """
     conn = a_conn(1, status=P2pConnStatus.Open)
     manager = a_manager()
     manager.pending_connections[conn.id] = conn
@@ -283,7 +285,9 @@ def test_a_promote_racing_remove_connection_waits_for_its_own_two_pops(
 def test_discourage_marks_the_endpoint_dialled_or_accepted(
     a_manager: AManagerFactory,
 ) -> None:
-    """`discourage` files the endpoint under `endpoint_key`, not the raw address."""
+    """`discourage` files the endpoint under `endpoint_key`, not the raw
+    address.
+    """
     manager = a_manager()
     address = peer_address("1.2.3.4", 18444)
     manager.discourage(address)
@@ -371,18 +375,19 @@ def test_a_peer_that_answered_recently_is_left_alone(
 def test_a_pong_landing_between_the_idle_check_and_its_reread_does_not_drop_the_peer(
     a_manager: AManagerFactory,
 ) -> None:
-    """#357's first interleaving: a `pong` landing between two rereads of `ping_sent`.
+    """#357's first interleaving: a `pong` landing between two rereads of
+    `ping_sent`.
 
-    `_prune_stale_connections` used to read `conn.ping_sent` twice --
-    once for `if not conn.ping_sent` and again for the `elif` right
-    after -- so a `callbacks.pong` on the other thread clearing it to 0
-    between the two reads made `now - 0 > _IDLE_TIMEOUT` true for a
-    peer that had just answered its ping.
+    `_prune_stale_connections` used to read `conn.ping_sent` twice -- once for
+    `if not conn.ping_sent` and again for the `elif` right after -- so a
+    `callbacks.pong` on the other thread clearing it to 0 between the two reads
+    made `now - 0 > _IDLE_TIMEOUT` true for a peer that had just answered its
+    ping.
 
     Driven deterministically rather than by timing an actual thread: a
-    `ping_sent` that answers a recent timestamp on its first read and 0
-    -- what a pong's own clear would leave behind -- on any read after
-    that stands in for the interleaving without needing one.
+    `ping_sent` that answers a recent timestamp on its first read and 0 -- what
+    a pong's own clear would leave behind -- on any read after that stands in
+    for the interleaving without needing one.
     """
     reads = iter([time.time(), 0])
 
@@ -437,7 +442,8 @@ def test_a_pending_connection_gone_quiet_is_dropped_without_a_ping(
 
 
 def a_counting_prune() -> tuple[list[None], Any]:
-    """Build a `get_active_addresses` stub that records every call it answers."""
+    """Build a `get_active_addresses` stub that records every call it answers.
+    """
     calls: list[None] = []
 
     def get_active_addresses() -> list[Any]:
@@ -470,11 +476,12 @@ def test_the_active_table_is_pruned_without_being_asked(
 def test_the_active_table_prune_repeats_once_the_interval_passes(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A second prune runs once `_ACTIVE_PRUNE_INTERVAL` has elapsed, not sooner.
+    """A second prune runs once `_ACTIVE_PRUNE_INTERVAL` has elapsed, not
+    sooner.
 
-    The previous test checks that two passes inside the interval prune
-    only once; this pushes the clock forward past the interval between
-    two passes and checks the count goes from one to two.
+    The previous test checks that two passes inside the interval prune only
+    once; this pushes the clock forward past the interval between two passes and
+    checks the count goes from one to two.
     """
     calls, get_active_addresses = a_counting_prune()
     peer_db = a_peer_db_stub(is_empty=True, get_active_addresses=get_active_addresses)
@@ -512,7 +519,8 @@ def test_a_peer_db_that_raises_pruning_does_not_stop_the_housekeeping(
 def test_a_pending_connection_still_within_the_window_is_left_alone(
     a_manager: AManagerFactory,
 ) -> None:
-    """A pending connection heard from recently is neither pinged nor dropped."""
+    """A pending connection heard from recently is neither pinged nor dropped.
+    """
     conn = a_conn(1, status=P2pConnStatus.Open)
     manager = a_manager()
     manager.pending_connections[conn.id] = conn
@@ -634,13 +642,13 @@ def test_a_pending_connection_s_address_is_not_dialled_again_either(
 def test_a_promote_racing_the_snapshot_still_counts_as_already_connected(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#355: a `promote_connection` racing the connected-peers snapshot is still counted.
+    """#355: a `promote_connection` racing the connected-peers snapshot is still
+    counted.
 
-    `_maybe_dial_more_peers` reads `connections` and
-    `pending_connections` under `_connections_lock`, so a
-    `promote_connection` racing from a real second thread cannot land
-    between the two reads and go uncounted by both -- which is what
-    would let this pass redial a peer whose handshake just completed.
+    `_maybe_dial_more_peers` reads `connections` and `pending_connections` under
+    `_connections_lock`, so a `promote_connection` racing from a real second
+    thread cannot land between the two reads and go uncounted by both -- which
+    is what would let this pass redial a peer whose handshake just completed.
     """
     address = peer_address("1.2.3.4", 18444)
     conn = a_conn(1, status=P2pConnStatus.Open, address=address)
@@ -701,15 +709,15 @@ def test_a_promote_racing_the_snapshot_still_counts_as_already_connected(
 def test_a_promote_racing_the_count_does_not_dial_past_the_target(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#367: a promote racing the connected-peers count must not dial past the target.
+    """#367: a promote racing the connected-peers count must not dial past the
+    target.
 
-    `_maybe_dial_more_peers` reads `live` under `_connections_lock`
-    too, not only the snapshot below it -- a `promote_connection`
-    racing between two unlocked `len()` calls could undercount a node
-    that already has enough peers, one call reading `connections`
-    before the write and the other reading `pending_connections` after
-    the pop, and this pass would then dial past the target it was told
-    to stop at.
+    `_maybe_dial_more_peers` reads `live` under `_connections_lock` too, not
+    only the snapshot below it -- a `promote_connection` racing between two
+    unlocked `len()` calls could undercount a node that already has enough
+    peers, one call reading `connections` before the write and the other reading
+    `pending_connections` after the pop, and this pass would then dial past the
+    target it was told to stop at.
     """
     onion = NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, 8333)
     conn = a_conn(1, status=P2pConnStatus.Open)
@@ -762,7 +770,8 @@ def test_a_promote_racing_the_count_does_not_dial_past_the_target(
 def test_a_dial_that_comes_back_with_nothing_adds_no_connection(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A dial reached from the housekeeping loop that fails adds no connection."""
+    """A dial reached from the housekeeping loop that fails adds no connection.
+    """
 
     async def comes_back_with_nothing(address: NetworkAddressV2) -> None:
         return None
@@ -779,7 +788,9 @@ def test_a_dial_that_comes_back_with_nothing_adds_no_connection(
 
 
 def refuses_to_be_asked() -> NoReturn:
-    """Stand in for a `random_address`/`get_active_addresses` a test must not reach."""
+    """Stand in for a `random_address`/`get_active_addresses` a test must not
+    reach.
+    """
     raise RuntimeError("no")
 
 
@@ -791,7 +802,8 @@ async def asks_no_dns_server() -> None:
 def test_a_peer_db_that_raises_does_not_stop_the_housekeeping(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A `random_address` that raises logs and lets the housekeeping loop go on."""
+    """A `random_address` that raises logs and lets the housekeeping loop go on.
+    """
     logged: list[str] = []
     peer_db = a_peer_db_stub(is_empty=False, random_address=refuses_to_be_asked)
     manager = a_manager(peer_db=peer_db)
@@ -861,7 +873,9 @@ def test_a_connection_removed_between_the_check_and_the_send_is_not_a_keyerror(
 def test_a_message_for_a_connection_that_is_gone_is_dropped(
     a_manager: AManagerFactory,
 ) -> None:
-    """`send` to an id nobody holds is dropped; a real one still gets the message."""
+    """`send` to an id nobody holds is dropped; a real one still gets the
+    message.
+    """
     conn = a_conn(1)
     manager = a_manager([conn])
     manager.send(cast("Payload", "message"), 99)
@@ -900,15 +914,15 @@ def test_every_connection_is_pinged_and_every_connection_is_stopped(
 def test_a_transaction_of_our_own_is_handed_to_the_download_manager(
     a_manager: AManagerFactory,
 ) -> None:
-    """`broadcast_raw_transaction` queues into `download_manager`, sends nothing itself.
+    """`broadcast_raw_transaction` queues into `download_manager`, sends nothing
+    itself.
 
-    The RPC's `sendrawtransaction`, which is the other way a
-    transaction leaves this node: `DownloadManager.tx_download` is what
-    turns this into an `inv` -- on its own per-peer schedule, gated on
-    `relay_tx` and unreachable from a connection still mid-handshake
-    exactly as a relayed transaction's own entry in the same list is --
-    rather than this method pushing a `Tx` of its own the instant it is
-    called, which is the distinguisher #141 is about.
+    The RPC's `sendrawtransaction`, which is the other way a transaction leaves
+    this node: `DownloadManager.tx_download` is what turns this into an `inv` --
+    on its own per-peer schedule, gated on `relay_tx` and unreachable from a
+    connection still mid-handshake exactly as a relayed transaction's own entry
+    in the same list is -- rather than this method pushing a `Tx` of its own the
+    instant it is called, which is the distinguisher #141 is about.
     """
     manager = a_manager()
     tx = generate_random_transaction()
@@ -946,13 +960,13 @@ def test_an_empty_peer_db_is_not_asked_for_an_address(
 def test_a_peer_db_with_nothing_dialable_is_a_pass_that_does_nothing(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A `random_address` of `None`, with `is_empty` false, is a quiet no-op pass.
+    """A `random_address` of `None`, with `is_empty` false, is a quiet no-op
+    pass.
 
-    `is_empty` is false and the draw still comes back with nothing: a
-    table of onion and CJDNS addresses answers this way. The pass has
-    to do nothing and come round again -- dialling the nothing it was
-    handed would raise into the loop's own handler once every tenth of
-    a second.
+    `is_empty` is false and the draw still comes back with nothing: a table of
+    onion and CJDNS addresses answers this way. The pass has to do nothing and
+    come round again -- dialling the nothing it was handed would raise into the
+    loop's own handler once every tenth of a second.
     """
     peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: None)
     manager = a_manager(peer_db=peer_db)
@@ -966,7 +980,8 @@ def test_a_peer_db_with_nothing_dialable_is_a_pass_that_does_nothing(
 def test_a_peer_that_answers_the_dial_becomes_a_connection(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A successful dial lands a pending, outbound connection with its socket."""
+    """A successful dial lands a pending, outbound connection with its socket.
+    """
     ours, theirs = socket.socketpair()
 
     async def answers(address: NetworkAddressV2) -> socket.socket:
@@ -998,7 +1013,8 @@ def test_a_peer_that_answers_the_dial_becomes_a_connection(
 
 
 def a_running_manager(a_manager: AManagerFactory, port: int) -> P2pManager:
-    """Build and start a `P2pManager`, without waiting for it to be listening."""
+    """Build and start a `P2pManager`, without waiting for it to be listening.
+    """
     manager = a_manager(port=port)
     manager.start()
     return manager
@@ -1042,7 +1058,8 @@ def test_a_manager_says_when_it_is_listening_and_not_before(
 
 
 def test_a_manager_accepts_an_ipv6_peer_too(a_manager: AManagerFactory) -> None:
-    """A manager also binds IPv6, and accepts a peer that dials it over `::1`."""
+    """A manager also binds IPv6, and accepts a peer that dials it over `::1`.
+    """
     port = get_random_port()
     manager = a_running_manager(a_manager, port)
     wait_until_listening(manager)
@@ -1181,12 +1198,12 @@ def test_a_manager_dials_the_address_it_is_given(a_manager: AManagerFactory) -> 
 def test_a_message_sent_on_a_running_connection_reaches_the_peer(
     a_manager: AManagerFactory,
 ) -> None:
-    """`Connection.send`, crossing from the node's thread, actually reaches the wire.
+    """`Connection.send`, crossing from the node's thread, actually reaches the
+    wire.
 
-    `Connection.send` is called from the node's thread and hands the
-    write to the manager's loop; nothing else in these tests crosses
-    that line, and a message that never leaves is a peer that goes
-    quiet for no reason.
+    `Connection.send` is called from the node's thread and hands the write to
+    the manager's loop; nothing else in these tests crosses that line, and a
+    message that never leaves is a peer that goes quiet for no reason.
     """
     port = get_random_port()
     manager = a_running_manager(a_manager, port)
@@ -1230,7 +1247,9 @@ def test_a_manager_left_running_is_stopped_by_whoever_built_it(
 def test_stopping_a_running_manager_stops_the_connections_it_holds(
     a_manager: AManagerFactory,
 ) -> None:
-    """`stop` closes the manager's own connections and its loop, and clears `listening`."""
+    """`stop` closes the manager's own connections and its loop, and clears
+    `listening`.
+    """
     port = get_random_port()
     manager = a_running_manager(a_manager, port)
     wait_until_listening(manager)
@@ -1346,23 +1365,23 @@ def test_stop_closes_the_listening_socket_even_if_the_accept_task_does_not(
 def test_stop_closes_a_connection_that_arrives_while_it_is_draining(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#312: `stop` closes a connection that `server`'s accept loop lands mid-drain.
+    """#312: `stop` closes a connection that `server`'s accept loop lands
+    mid-drain.
 
-    `run_until_complete` runs the loop, so a task `stop` has not
-    cancelled yet goes on working through the drain. `server`'s accept
-    loop is the one that matters: it takes what the
-    kernel left in the listen backlog while `loop.stop` was in flight and
-    hands it to `create_connection`, which registers a connection after
-    the sweep has passed and gives it a task no snapshot taken before the
-    drain holds. Nothing closes that socket and nothing ends that task,
-    and the collector reports both against whichever test it reaches them
-    in -- `Connection.run` pending at its own `sock_recv`, beside an
-    unclosed socket.
+    `run_until_complete` runs the loop, so a task `stop` has not cancelled yet
+    goes on working through the drain. `server`'s accept loop is the one that
+    matters: it takes what the kernel left in the listen backlog while
+    `loop.stop` was in flight and hands it to `create_connection`, which
+    registers a connection after the sweep has passed and gives it a task no
+    snapshot taken before the drain holds. Nothing closes that socket and
+    nothing ends that task, and the collector reports both against whichever
+    test it reaches them in -- `Connection.run` pending at its own `sock_recv`,
+    beside an unclosed socket.
 
-    `create_connection` is called from the first `run_until_complete`,
-    which is the only place `stop` runs the loop at all: deterministic
-    where the real interleaving -- which of the loop's tasks the drain
-    happens to reach first -- is not.
+    `create_connection` is called from the first `run_until_complete`, which is
+    the only place `stop` runs the loop at all: deterministic where the real
+    interleaving -- which of the loop's tasks the drain happens to reach first
+    -- is not.
     """
     port = get_random_port()
     manager = a_running_manager(a_manager, port)
@@ -1395,31 +1414,32 @@ def test_stop_closes_a_connection_that_arrives_while_it_is_draining(
 def test_stop_closes_a_connection_queued_when_the_drain_begins(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#386: a connection queued the instant `stop`'s drain begins is still closed.
+    """#386: a connection queued the instant `stop`'s drain begins is still
+    closed.
 
-    `server`'s own task is what `stop`'s blanket sweep over
-    `asyncio.all_tasks` reaches directly on every pass, `accept` no
-    longer being a task of its own for it to reach instead -- not only
-    through `server`'s task cascading a cancel onto it, which is what
-    the neighbouring tests above and below this one turn on instead.
+    `server`'s own task is what `stop`'s blanket sweep over `asyncio.all_tasks`
+    reaches directly on every pass, `accept` no longer being a task of its own
+    for it to reach instead -- not only through `server`'s task cascading a
+    cancel onto it, which is what the neighbouring tests above and below this
+    one turn on instead.
 
-    `Task.cancel` on a task whose own awaited future is already done
-    cannot cancel that future either: it forces `CancelledError` into
-    the task's next step regardless -- but the item this test lands is
-    in `accepted`'s own deque, not inside the future `Queue.get` awaits
-    to be woken, so the discard costs it nothing, unlike
-    `loop.sock_accept`'s own future before this fix. `server`'s own
-    `finally` is what closes whatever the discard still leaves behind.
+    `Task.cancel` on a task whose own awaited future is already done cannot
+    cancel that future either: it forces `CancelledError` into the task's next
+    step regardless -- but the item this test lands is in `accepted`'s own
+    deque, not inside the future `Queue.get` awaits to be woken, so the discard
+    costs it nothing, unlike `loop.sock_accept`'s own future before this fix.
+    `server`'s own `finally` is what closes whatever the discard still leaves
+    behind.
 
     Landed into the live queue directly, via `P2pManager._accept_queues`,
     scheduled from the same window
-    `test_stop_closes_a_connection_accepted_in_its_own_race_window`
-    below already uses -- between `stop` scheduling `loop.stop` and
-    waiting for the thread. `call_soon_threadsafe` queues behind that
-    scheduling rather than ahead of it, so the manager's own loop sees
-    `loop.stop` first and stops before ever stepping `server`'s own
-    wakeup: the item is queued and the task that owns it is not, which
-    is the same gap a landed kernel accept leaves for real.
+    `test_stop_closes_a_connection_accepted_in_its_own_race_window` below
+    already uses -- between `stop` scheduling `loop.stop` and waiting for the
+    thread. `call_soon_threadsafe` queues behind that scheduling rather than
+    ahead of it, so the manager's own loop sees `loop.stop` first and stops
+    before ever stepping `server`'s own wakeup: the item is queued and the task
+    that owns it is not, which is the same gap a landed kernel accept leaves for
+    real.
     """
     port = get_random_port()
     manager = a_manager(port=port)
@@ -1586,23 +1606,23 @@ def test_stop_does_not_raise_where_start_was_called_but_run_never_reached_run_fo
 def test_server_closes_a_connection_queued_in_the_instant_it_is_cancelled(
     a_manager: AManagerFactory,
 ) -> None:
-    """#386: `server` closes a connection queued the instant its own task is cancelled.
+    """#386: `server` closes a connection queued the instant its own task is
+    cancelled.
 
-    A connection can already sit in `server`'s own accept queue when
-    something cancels the task waiting on it -- `Queue.get`'s own
-    internal wakeup future can be discarded by `Task.cancel` exactly as
-    `loop.sock_accept`'s own future used to be (#312), forcing
-    `CancelledError` in on the task's next step rather than letting it
-    resume with the result. What that discards is only the wakeup: the
-    item itself lives in the queue's own deque and not inside that
-    future, so it is still there for `server`'s own `finally` to close
-    once the cancellation it raises unwinds through it -- unlike an
-    accepted socket held by nothing but a discarded future, which goes
-    out with the frame that unwinds and nothing else ever holding it.
+    A connection can already sit in `server`'s own accept queue when something
+    cancels the task waiting on it -- `Queue.get`'s own internal wakeup future
+    can be discarded by `Task.cancel` exactly as `loop.sock_accept`'s own future
+    used to be (#312), forcing `CancelledError` in on the task's next step
+    rather than letting it resume with the result. What that discards is only
+    the wakeup: the item itself lives in the queue's own deque and not inside
+    that future, so it is still there for `server`'s own `finally` to close once
+    the cancellation it raises unwinds through it -- unlike an accepted socket
+    held by nothing but a discarded future, which goes out with the frame that
+    unwinds and nothing else ever holding it.
 
-    The two `call_soon` callbacks below are that instant, made
-    deterministic: they run in the order they were scheduled, so the
-    item has certainly landed by the time the cancel reaches the task.
+    The two `call_soon` callbacks below are that instant, made deterministic:
+    they run in the order they were scheduled, so the item has certainly landed
+    by the time the cancel reaches the task.
     """
     manager = a_manager()
     loop = manager.loop
