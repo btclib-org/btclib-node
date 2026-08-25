@@ -39,7 +39,7 @@ class RevBlock:
     to_remove: list[OutPoint]
 
     @classmethod
-    def deserialize(cls, data: bytes, check_validity: bool = False) -> RevBlock:
+    def deserialize(cls, data: bytes, *, check_validity: bool = False) -> RevBlock:
         stream = bytesio_from_binarydata(data)
         block_hash = stream.read(32)
         to_add: list[tuple[OutPoint, TxOut]] = []
@@ -53,7 +53,7 @@ class RevBlock:
             to_remove.append(out_point)
         return cls(block_hash, to_add, to_remove)
 
-    def serialize(self, check_validity: bool = False) -> bytes:
+    def serialize(self, *, check_validity: bool = False) -> bytes:
         out = self.hash
         out += var_int.serialize(len(self.to_add))
         for out_point, tx_out in self.to_add:

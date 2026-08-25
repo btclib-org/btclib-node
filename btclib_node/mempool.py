@@ -95,7 +95,7 @@ class Mempool:
         return self.bytesize >= self.bytesize_limit
 
     def get_missing(
-        self, transactions: Iterable[bytes], wtxid: bool = False
+        self, transactions: Iterable[bytes], *, wtxid: bool = False
     ) -> list[bytes]:
         # No `is_full` guard: that used to answer every request with
         # nothing at all once past the limit, which was the wall
@@ -105,7 +105,7 @@ class Mempool:
         index = self.transactions if wtxid else self.txid_index
         return [tx_id for tx_id in transactions if tx_id not in index]
 
-    def get_tx(self, txid: bytes, wtxid: bool = False) -> Tx | None:
+    def get_tx(self, txid: bytes, *, wtxid: bool = False) -> Tx | None:
         key = txid if wtxid else self.txid_index.get(txid)
         if key is None:
             return None

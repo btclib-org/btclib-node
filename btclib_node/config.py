@@ -77,9 +77,18 @@ class Config:
     # this constructor by keyword (`grep -rn "Config(" tests/
     # btclib_node/` finds no positional call). PLR0913/PLR0917 measure a
     # count this object's whole purpose is to be flat, not a shape it
-    # backed into.
-    def __init__(  # noqa: PLR0913, PLR0917
+    # backed into. Keyword-only throughout (issue #341's own FBT round)
+    # for the same reason: `allow_p2p`/`allow_rpc`/`pruned`/`debug` are
+    # what that round's own findings are, but every other parameter here
+    # is already keyword at every call site the grep above found, so
+    # making only the booleans keyword-only would leave the same
+    # constructor answering `Config("regtest")` for one parameter and
+    # refusing it for the next -- which also drops PLR0917 (too many
+    # positional arguments) below to zero, keyword-only meaning there
+    # is no longer a positional count to measure.
+    def __init__(  # noqa: PLR0913
         self,
+        *,
         chain: Chain | str = DEFAULT_CHAIN,
         data_dir: str | Path | None = None,
         p2p_port: int | None = None,

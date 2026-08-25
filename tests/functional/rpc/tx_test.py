@@ -64,7 +64,7 @@ def test_add_tx(rpc_node: Node) -> None:
                     "jsonrpc": "1.0",
                     "id": "pytest",
                     "method": "testmempoolaccept",
-                    "params": [[invalid_tx.serialize(True).hex()]],
+                    "params": [[invalid_tx.serialize(include_witness=True).hex()]],
                 }
             ).encode(),
             headers={"Content-Type": "text/plain"},
@@ -85,7 +85,7 @@ def test_add_tx(rpc_node: Node) -> None:
                     "jsonrpc": "1.0",
                     "id": "pytest",
                     "method": "testmempoolaccept",
-                    "params": [[tx1.serialize(True).hex()]],
+                    "params": [[tx1.serialize(include_witness=True).hex()]],
                 }
             ).encode(),
             headers={"Content-Type": "text/plain"},
@@ -102,7 +102,7 @@ def test_add_tx(rpc_node: Node) -> None:
                     "jsonrpc": "1.0",
                     "id": "pytest",
                     "method": "testmempoolaccept",
-                    "params": [[tx2.serialize(True).hex()]],
+                    "params": [[tx2.serialize(include_witness=True).hex()]],
                 }
             ).encode(),
             headers={"Content-Type": "text/plain"},
@@ -120,7 +120,7 @@ def test_add_tx(rpc_node: Node) -> None:
                     "jsonrpc": "1.0",
                     "id": "pytest",
                     "method": "sendrawtransaction",
-                    "params": [tx1.serialize(True).hex()],
+                    "params": [tx1.serialize(include_witness=True).hex()],
                 }
             ).encode(),
             headers={"Content-Type": "text/plain"},
@@ -140,7 +140,7 @@ def test_add_tx(rpc_node: Node) -> None:
                     "jsonrpc": "1.0",
                     "id": "pytest",
                     "method": "sendrawtransaction",
-                    "params": [invalid_tx.serialize(True).hex()],
+                    "params": [invalid_tx.serialize(include_witness=True).hex()],
                 }
             ).encode(),
             headers={"Content-Type": "text/plain"},
@@ -176,7 +176,7 @@ def test_add_tx(rpc_node: Node) -> None:
                     "jsonrpc": "1.0",
                     "id": "pytest",
                     "method": "testmempoolaccept",
-                    "params": [[tx2.serialize(True).hex()]],
+                    "params": [[tx2.serialize(include_witness=True).hex()]],
                 }
             ).encode(),
             headers={"Content-Type": "text/plain"},
@@ -214,7 +214,7 @@ def test_get_raw_transaction_is_what_btclib_s_fetcher_gets(rpc_node: Node) -> No
                 "jsonrpc": "1.0",
                 "id": "pytest",
                 "method": "sendrawtransaction",
-                "params": [tx.serialize(True).hex()],
+                "params": [tx.serialize(include_witness=True).hex()],
             }
         ).encode(),
         timeout=2,

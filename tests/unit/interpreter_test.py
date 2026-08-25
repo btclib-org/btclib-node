@@ -203,9 +203,9 @@ def test_the_transaction_checked_is_left_as_it_was(
     # and would say nothing -- and one of every preimage, because the
     # blanking differs between them and between hash types.
     prevouts, tx = build(hash_type)
-    before = tx.serialize(True)
+    before = tx.serialize(include_witness=True)
     check_transaction(prevouts, tx, 1, make_node())
-    assert tx.serialize(True) == before
+    assert tx.serialize(include_witness=True) == before
 
 
 def test_the_flags_are_the_forks_active_at_that_height() -> None:

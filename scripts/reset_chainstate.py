@@ -9,7 +9,7 @@ from btclib_node.log import Logger
 config = Config(
     chain="mainnet", data_dir=".btclib", p2p_port=30000, rpc_port=30001, debug=True
 )
-logger = Logger(config.data_dir / "history.log", config.debug)
+logger = Logger(config.data_dir / "history.log", debug=config.debug)
 chainstate = Chainstate(config.data_dir, config.chain, logger)
 blockindex = chainstate.block_index
 

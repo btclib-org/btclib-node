@@ -404,7 +404,10 @@ def a_tx_lookup_node(
 def test_a_mempool_transaction_answers_the_raw_hex_by_default() -> None:
     tx = a_tx()
     node = a_tx_lookup_node(mempool_txs=[tx])
-    assert get_raw_transaction(node, _CONN, [tx.id.hex()]) == tx.serialize(True).hex()
+    assert (
+        get_raw_transaction(node, _CONN, [tx.id.hex()])
+        == tx.serialize(include_witness=True).hex()
+    )
 
 
 def test_a_mempool_transaction_verbose_carries_no_block_fields() -> None:
@@ -413,7 +416,7 @@ def test_a_mempool_transaction_verbose_carries_no_block_fields() -> None:
     out = get_raw_transaction(node, _CONN, [tx.id.hex(), True])
     assert isinstance(out, dict)
     assert out["txid"] == tx.id.hex()
-    assert out["hex"] == tx.serialize(True).hex()
+    assert out["hex"] == tx.serialize(include_witness=True).hex()
     assert "blockhash" not in out
     assert "confirmations" not in out
 
@@ -435,7 +438,7 @@ def test_a_transaction_is_read_out_of_the_block_named() -> None:
     hex_answer = get_raw_transaction(
         node, _CONN, [tx.id.hex(), False, header.hash.hex()]
     )
-    assert hex_answer == tx.serialize(True).hex()
+    assert hex_answer == tx.serialize(include_witness=True).hex()
 
     verbose = get_raw_transaction(node, _CONN, [tx.id.hex(), True, header.hash.hex()])
     assert isinstance(verbose, dict)
@@ -549,7 +552,7 @@ def test_a_null_blockhash_is_the_same_as_none_given() -> None:
     node = a_tx_lookup_node(mempool_txs=[tx])
     assert (
         get_raw_transaction(node, _CONN, [tx.id.hex(), False, None])
-        == tx.serialize(True).hex()
+        == tx.serialize(include_witness=True).hex()
     )
 
 
@@ -576,7 +579,7 @@ def test_mempool_acceptance_reports_a_reason_for_each_refusal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     tx = a_tx()
-    raw = tx.serialize(True).hex()
+    raw = tx.serialize(include_witness=True).hex()
 
     outcomes: dict[str, Exception | None] = {
         "accepted": None,
@@ -615,7 +618,10 @@ def test_a_relayed_transaction_is_answered_with_its_txid(
     node = a_node(mempool=mempool)
     node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: broadcast.append(tx)
 
-    assert send_raw_transaction(node, _CONN, [tx.serialize(True).hex()]) == tx.id.hex()
+    assert (
+        send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
+        == tx.id.hex()
+    )
     assert mempool.contains_tx(tx)
     assert mempool.fees[tx.hash] == 1000
     assert broadcast == [tx]
@@ -677,7 +683,7 @@ def test_a_transaction_the_mempool_will_not_have_is_not_reported_relayed(
     node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: broadcast.append(tx)
 
     with pytest.raises(RpcError) as raised:
-        send_raw_transaction(node, _CONN, [tx.serialize(True).hex()])
+        send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
     assert raised.value.code == RpcErrorCode.VERIFY_ERROR
     assert raised.value.message == "Missing prevouts"
     assert not mempool.contains_tx(tx)
@@ -703,7 +709,7 @@ def test_a_transaction_a_full_mempool_cannot_keep_is_refused_not_relayed(
     node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: broadcast.append(tx)
 
     with pytest.raises(RpcError) as raised:
-        send_raw_transaction(node, _CONN, [tx.serialize(True).hex()])
+        send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
     assert raised.value.code == RpcErrorCode.VERIFY_REJECTED
     assert raised.value.message == "Mempool is full"
     assert not mempool.contains_tx(tx)
@@ -727,7 +733,10 @@ def test_resubmitting_a_transaction_already_held_is_tolerated_even_when_the_memp
     node = a_node(mempool=mempool)
     node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: broadcast.append(tx)
 
-    assert send_raw_transaction(node, _CONN, [tx.serialize(True).hex()]) == tx.id.hex()
+    assert (
+        send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
+        == tx.id.hex()
+    )
     assert broadcast == [tx]
 
 
@@ -759,7 +768,9 @@ def test_a_resubmission_under_a_different_witness_is_also_tolerated_when_full(
     node = a_node(mempool=mempool)
     node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: broadcast.append(tx)
 
-    answer = send_raw_transaction(node, _CONN, [resubmitted.serialize(True).hex()])
+    answer = send_raw_transaction(
+        node, _CONN, [resubmitted.serialize(include_witness=True).hex()]
+    )
     assert answer == resubmitted.id.hex()
     # the held transaction's own wtxid is what is announced, not the
     # resubmitted object's: broadcast_raw_transaction reads .hash off
@@ -788,7 +799,9 @@ def test_a_resubmission_under_a_different_witness_is_reannounced_by_wtxid_even_w
     node = a_node(mempool=mempool)
     node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: broadcast.append(tx)
 
-    answer = send_raw_transaction(node, _CONN, [resubmitted.serialize(True).hex()])
+    answer = send_raw_transaction(
+        node, _CONN, [resubmitted.serialize(include_witness=True).hex()]
+    )
     assert answer == resubmitted.id.hex()
     assert broadcast == [held]
 
@@ -1202,7 +1215,7 @@ def test_a_transaction_whose_scripts_do_not_verify_is_answered_with_the_refusal(
     node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: broadcast.append(tx)
 
     with pytest.raises(RpcError) as raised:
-        send_raw_transaction(node, _CONN, [tx.serialize(True).hex()])
+        send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
     assert raised.value.code == RpcErrorCode.VERIFY_REJECTED
     assert raised.value.message == "Invalid signatures or script"
     assert not mempool.contains_tx(tx)

@@ -539,7 +539,7 @@ def a_real_connection() -> Connection:
     manager = SimpleNamespace(node=a_handshake_node(), loop=None, peer_db=None)
     unroutable = peer_address("0.0.0.0", 18444)  # noqa: S104
     connection = Connection(
-        cast("P2pManager", manager), socket.socket(), unroutable, 0, False
+        cast("P2pManager", manager), socket.socket(), unroutable, 0, inbound=False
     )
     # Connection.send hands the message to an event loop this test does
     # not run; what it would send is tested above
@@ -553,7 +553,7 @@ def a_real_connection() -> Connection:
     ids=["true", "false", "absent"],
 )
 def test_what_a_peer_said_about_relay_lands_on_the_connection(
-    relay: bool | None, wanted: bool
+    *, relay: bool | None, wanted: bool
 ) -> None:
     connection = a_real_connection()
     with connection.client:

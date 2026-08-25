@@ -96,6 +96,7 @@ class Connection:
         client: socket.socket,
         address: NetworkAddressV2,
         connection_id: int,
+        *,
         inbound: bool,
     ) -> None:
         super().__init__()
@@ -189,7 +190,7 @@ class Connection:
         self.queued_send_bytes: int = 0
         self.send_lock = asyncio.Lock()
 
-    def stop(self, cancel_task: bool = True) -> None:
+    def stop(self, *, cancel_task: bool = True) -> None:
         if self.status == P2pConnStatus.Closed:
             # Already stopped: a peer over the send-buffer bound can
             # have several queued messages each independently discover

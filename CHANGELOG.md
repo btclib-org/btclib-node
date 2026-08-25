@@ -18,6 +18,62 @@ to check the guess.
 
 ## Unreleased
 
+### `select` gains `FBT`, closing issue #341
+
+- **`select` gains `FBT` (flake8-boolean-trap)** (closes #341): the
+  third and last of issue #341's own real-judgment rounds, and the only
+  one of the three that changes call sites outside the file each fix is
+  declared in -- a bare `True`/`False` positional argument
+  (`f(a, True)`) is unreadable without the signature open beside it, so
+  the fix is a keyword-only parameter and every caller updated to name
+  it, not a rename. 82 findings, 34 in `btclib_node/`, all fixed by
+  making the parameter keyword-only (`*,`) after confirming, by
+  grepping every call site in the tree first, that none of them was
+  positional to begin with: `RevBlock`/`BlockInfo`'s own
+  `check_validity`, `BlockIndex.set_downloaded`'s `downloaded`,
+  `Config.__init__`'s four booleans (and, since every other parameter
+  there was already keyword at each of its own call sites too, made
+  keyword-only throughout rather than only the four this round is
+  about -- which also drops the `PLR0913` neighbour noqa's own
+  `PLR0917`, positional-count no longer being a thing to measure),
+  `Logger.__init__`'s `debug`, `Mempool.get_missing`/`get_tx`'s
+  `wtxid`, `Connection.__init__`'s `inbound` and `.stop`'s
+  `cancel_task`. `P2pManager.create_connection`'s own `inbound`
+  parameter needed the same fix one layer up, at its own three
+  production call sites and two in `tests/`.
+- **`BlockInfo(...)`'s own two dataclass-constructor call sites** (not
+  a declaration `FBT001`/`FBT002` reach, since `ruff` does not flag an
+  auto-generated dataclass `__init__`) **and two
+  `btclib` calls this tree does not own the signature of**
+  (`SendCmpct(False, 1)`, one site in `p2p/callbacks.py`, and
+  `Tx.serialize(True)`, 23 sites across `rpc/callbacks.py` and the
+  test suite): all `FBT003`, fixed by naming the argument at the call
+  site since the callee's own signature is not this tree's to change.
+- **A pytest test function's own parametrized boolean parameters**
+  (`p2p/callbacks_test.py`'s
+  `test_what_a_peer_said_about_relay_lands_on_the_connection`): made
+  keyword-only like every other finding here, verified by running the
+  test directly rather than assumed safe -- `pytest.mark.parametrize`
+  calls a test function by keyword, matching fixture and parameter
+  names, so this is not a special case needing its own reasoning.
+- **`socket.socket.setblocking`, 16 sites across
+  `tests/unit/p2p/connection_test.py` and
+  `tests/unit/rpc/connection_test.py`**: declined, the one `FBT003`
+  finding this round could not fix either way -- verified directly
+  (`socket().setblocking(flag=False)`) that the standard library's own
+  C-level method takes no keyword arguments at all, so there is no
+  call-site rewrite available and no signature of this tree's own to
+  change. A new `pyproject.toml` per-file-ignore for each of the two
+  files, since every `FBT003` remaining in each is this one call.
+- **Every `FBT` fix's call sites were found by grep across the whole
+  tree first, not by an editor's local references**, the same
+  discipline issue #284's own builtin-shadowing round used: `scripts/`
+  turned up two more `Logger(...)` positional calls `mypy` caught
+  (`Too many positional arguments for "Logger"`) that a `tests/`- and
+  `btclib_node/`-only grep had missed, which is the reason `mypy`
+  stays the round's own real check rather than the grep that started
+  it.
+
 ### `select` gains `ANN`, the first of issue #341's own three real-judgment rounds
 
 - **`select` gains `ANN` (flake8-annotations)** (issue #341): the
