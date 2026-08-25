@@ -1116,7 +1116,7 @@ def test_blockchain_info_names_the_chain_in_core_s_own_vocabulary() -> None:
     assert get_blockchain_info(node, _CONN, []) == {"chain": "main"}
 
 
-def a_chain_index_node(chain: list[bytes]) -> Any:
+def a_chain_index_node(chain: list[bytes]) -> Node:
     return cast(
         "Node",
         SimpleNamespace(
