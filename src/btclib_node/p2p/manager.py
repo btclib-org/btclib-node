@@ -57,6 +57,34 @@ class P2pManager(threading.Thread):
         # `callbacks.verack` is the only caller, right where
         # `P2pConnStatus.Connected` is set.
         self.pending_connections: dict[int, Connection] = {}
+        # `promote_connection` pops from `pending_connections` and then
+        # writes into `connections` -- two statements, not one -- and
+        # `remove_connection` pops from `connections` and then, only if
+        # that missed, from `pending_connections` -- two statements
+        # again. `promote_connection` runs on `Node`'s own loop, off
+        # `callbacks.verack`; `remove_connection` runs on this
+        # manager's own loop, off `_prune_stale_connections`. Unlocked,
+        # a `remove_connection` whose first pop misses because the
+        # connection is still pending can run its second pop after
+        # `promote_connection` has already moved it, missing it there
+        # too -- the connection is live in `connections` with nothing
+        # having stopped it (btclib-org/btclib-node#358). This lock is
+        # what makes the two pops and the pop-then-write one step
+        # apiece; it is also what `_maybe_dial_more_peers` takes to
+        # read both dicts as of one instant rather than two
+        # (btclib-org/btclib-node#355). Held only across the dict
+        # operations themselves in every case above -- never across an
+        # `await` or a call into `Connection` -- so nothing here blocks
+        # `Node`'s thread for longer than an in-memory pop or a write
+        # takes.
+        #
+        # `stop()`'s own closing sweep (below) reads this same pair
+        # unlocked, on purpose: it runs only after `join()`, and its own
+        # comment there is what argues nothing but this manager's thread
+        # can still be reaching either dict by then, `promote_connection`
+        # included -- not a second snapshot-style reader this lock left
+        # out.
+        self._connections_lock = threading.Lock()
         # (command, payload, connection id), which is what a connection
         # appends and what p2p.main pops apart; the handshake ones go
         # in a queue of their own, drained whole before the rest.
@@ -120,16 +148,21 @@ class P2pManager(threading.Thread):
         The only caller is `callbacks.verack`, right after it sets
         `P2pConnStatus.Connected` -- the two are one step, kept as two
         calls only because the status belongs to the connection and the
-        dict it lives in belongs to the manager.
+        dict it lives in belongs to the manager. `_connections_lock`
+        (`__init__`) is what makes the pop and the write one step too,
+        against `remove_connection`'s own two pops below, on the other
+        thread.
         """
-        conn = self.pending_connections.pop(connection_id, None)
-        if conn is not None:
-            self.connections[connection_id] = conn
+        with self._connections_lock:
+            conn = self.pending_connections.pop(connection_id, None)
+            if conn is not None:
+                self.connections[connection_id] = conn
 
     def remove_connection(self, connection_id: int) -> None:
-        conn = self.connections.pop(
-            connection_id, None
-        ) or self.pending_connections.pop(connection_id, None)
+        with self._connections_lock:
+            conn = self.connections.pop(
+                connection_id, None
+            ) or self.pending_connections.pop(connection_id, None)
         if conn is not None:
             conn.stop()
 
@@ -203,7 +236,23 @@ class P2pManager(threading.Thread):
 
     async def _maybe_dial_more_peers(self) -> None:
         connection_num = 1 if self.node.status < NodeStatus.HeaderSynced else 10
-        live = len(self.connections) + len(self.pending_connections)
+        # Locked, and the snapshot below locks separately rather than
+        # sharing this one: `promote_connection` moves a connection
+        # between `connections` and `pending_connections` in two
+        # statements, so two unlocked reads taken apart -- a `len()`
+        # here, `.values()` there -- could each miss it, out of
+        # `connections` because the read ran before the write, out of
+        # `pending_connections` because it ran after the pop, and this
+        # count would then undercount a node that already has enough
+        # peers (btclib-org/btclib-node#367). A second acquisition
+        # rather than one covering both this count and the snapshot
+        # below is what keeps this early return cheap: most passes,
+        # once the node already holds enough peers, return here, and
+        # building `already_connected` -- which such a pass would only
+        # throw away -- is not owed every 100 ms just because this
+        # count is.
+        with self._connections_lock:
+            live = len(self.connections) + len(self.pending_connections)
         if live >= connection_num or self.peer_db.is_empty:
             return
         # By endpoint_key, not raw equality: a drawn address
@@ -213,13 +262,15 @@ class P2pManager(threading.Thread):
         # constructed with, so comparing the dataclasses
         # themselves never matches the peer this node is already
         # holding a connection with and dials it a second time.
-        already_connected = {
-            endpoint_key(conn.address)
-            for conn in (
+        #
+        # Locked for the same reason the count above is
+        # (btclib-org/btclib-node#355).
+        with self._connections_lock:
+            connected = (
                 *self.connections.values(),
                 *self.pending_connections.values(),
             )
-        }
+        already_connected = {endpoint_key(conn.address) for conn in connected}
         try:
             address = self.peer_db.random_address()
             # `is_empty` answers whether the table holds
@@ -474,8 +525,19 @@ class P2pManager(threading.Thread):
         self.logger.info("Stopping P2P Manager")
 
     def send(self, msg: Payload, connection_id: int) -> None:
-        if connection_id in self.connections:
-            self.connections[connection_id].send(msg)
+        # `.get()`, not `in` then `[...]`: `remove_connection` pops
+        # from `connections` on this manager's own loop, off
+        # `_prune_stale_connections`, every pass of `manage_connections`
+        # -- a caller on `Node`'s own loop that passed the `in` and was
+        # preempted before the subscript would otherwise see the
+        # `KeyError` reach whatever called `send`. A connection missing
+        # here means the peer is already gone by the time this runs, so
+        # there is nothing to send it to and this is a no-op, the same
+        # answer `download.py`'s own `_request_wanted_txs` gives a
+        # `connections.get` that misses. btclib-org/btclib-node#359
+        conn = self.connections.get(connection_id)
+        if conn is not None:
+            conn.send(msg)
 
     def broadcast_raw_transaction(self, tx: BtclibTx, fee: int) -> None:  # noqa: ARG002
         # `DownloadManager.tx_download`'s own queue, with no peer to

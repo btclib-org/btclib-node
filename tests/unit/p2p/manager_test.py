@@ -12,10 +12,11 @@ messages addressed to a connection that is no longer there.
 
 import asyncio
 import socket
+import threading
 import time
 from contextlib import closing, suppress
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast, override
 
 import pytest
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
@@ -202,6 +203,65 @@ def test_removing_a_connection_still_pending_stops_it_too(
     manager.remove_connection(1)
     assert not manager.pending_connections
     assert conn.stopped == [True]
+
+
+def test_a_promote_racing_remove_connection_waits_for_its_own_two_pops(
+    a_manager: AManagerFactory,
+) -> None:
+    """#358: `promote_connection`, reached from a real second thread
+    while `remove_connection` is still between its own two pops, waits
+    on `_connections_lock` rather than slipping into the gap -- the
+    interleaving the issue names (the first pop misses because the
+    connection is still pending, `promote_connection` runs whole, the
+    second pop misses because promotion already took it) is what this
+    rules out.
+    """
+    conn = a_conn(1, status=P2pConnStatus.Open)
+    manager = a_manager()
+    manager.pending_connections[1] = conn
+
+    # Set only from the background thread's own `__enter__`, right
+    # before it blocks on the real lock -- the main thread is the one
+    # already holding it, from inside `remove_connection`'s own first
+    # pop below, so this firing is what proves the background thread
+    # reached the lock rather than running unguarded ahead of it.
+    other_thread_about_to_block = threading.Event()
+    real_lock = manager._connections_lock
+
+    class SignallingLock:
+        def __enter__(self) -> None:
+            if threading.current_thread() is not threading.main_thread():
+                other_thread_about_to_block.set()
+            real_lock.acquire()
+
+        def __exit__(self, *exc_info: object) -> None:
+            real_lock.release()
+
+    manager._connections_lock = cast("Any", SignallingLock())
+
+    promote_thread = threading.Thread(target=manager.promote_connection, args=(1,))
+
+    class HookedConnections(dict[int, Any]):
+        @override
+        def pop(self, key: int, default: Any = None) -> Any:
+            result = dict.pop(self, key, default)
+            promote_thread.start()
+            # A bound only against a hang: on the unfixed tree
+            # `promote_connection` takes no lock at all, so this event
+            # is never set and the wait always exhausts its timeout
+            # rather than the interleaving ever being confirmed.
+            other_thread_about_to_block.wait(timeout=5)
+            return result
+
+    manager.connections = HookedConnections(manager.connections)
+
+    manager.remove_connection(1)
+    promote_thread.join(timeout=5)
+
+    assert not promote_thread.is_alive()
+    assert conn.stopped == [True]
+    assert not manager.connections
+    assert not manager.pending_connections
 
 
 def test_discourage_marks_the_endpoint_dialled_or_accepted(
@@ -466,6 +526,130 @@ def test_a_pending_connection_s_address_is_not_dialled_again_either(
     assert list(manager.pending_connections) == [1]
 
 
+def test_a_promote_racing_the_snapshot_still_counts_as_already_connected(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#355: `_maybe_dial_more_peers` reads `connections` and
+    `pending_connections` under `_connections_lock`, so a
+    `promote_connection` racing from a real second thread cannot land
+    between the two reads and go uncounted by both -- which is what
+    would let this pass redial a peer whose handshake just completed.
+    """
+    address = peer_address("1.2.3.4", 18444)
+    conn = a_conn(1, status=P2pConnStatus.Open, address=address)
+    peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: address)
+    manager = a_manager(peer_db=peer_db)
+    manager.pending_connections[1] = conn
+
+    # Set only from the background thread's own `__enter__`, right
+    # before it blocks on the real lock -- the main thread is the one
+    # already holding it, from inside the snapshot below, so this
+    # firing is what proves the background thread reached the lock
+    # rather than running unguarded ahead of it.
+    other_thread_about_to_block = threading.Event()
+    real_lock = manager._connections_lock
+
+    class SignallingLock:
+        def __enter__(self) -> None:
+            if threading.current_thread() is not threading.main_thread():
+                other_thread_about_to_block.set()
+            real_lock.acquire()
+
+        def __exit__(self, *exc_info: object) -> None:
+            real_lock.release()
+
+    manager._connections_lock = cast("Any", SignallingLock())
+
+    promote_thread = threading.Thread(target=manager.promote_connection, args=(1,))
+
+    class HookedPending(dict[int, Any]):
+        @override
+        def values(self) -> Any:
+            # called exactly once, from the snapshot below -- `len()`,
+            # the only other reader of this dict in the method, does
+            # not go through `values()`
+            result = dict.values(self)
+            promote_thread.start()
+            # A bound only against a hang: on the unfixed tree
+            # `promote_connection` takes no lock at all, so this
+            # event is never set and the wait always exhausts its
+            # timeout rather than the interleaving ever being
+            # confirmed.
+            other_thread_about_to_block.wait(timeout=5)
+            return result
+
+    manager.pending_connections = HookedPending(manager.pending_connections)
+
+    logged: list[str] = []
+    monkeypatch.setattr(manager.logger, "exception", logged.append)
+    asyncio.run(manager._maybe_dial_more_peers())
+    promote_thread.join(timeout=5)
+
+    assert not promote_thread.is_alive()
+    assert not logged
+    assert list(manager.connections) == [1]
+    assert not manager.pending_connections
+
+
+def test_a_promote_racing_the_count_does_not_dial_past_the_target(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#367: `_maybe_dial_more_peers` reads `live` under
+    `_connections_lock` too, not only the snapshot below it -- a
+    `promote_connection` racing between two unlocked `len()` calls
+    could undercount a node that already has enough peers, one call
+    reading `connections` before the write and the other reading
+    `pending_connections` after the pop, and this pass would then dial
+    past the target it was told to stop at.
+    """
+    onion = NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, 8333)
+    conn = a_conn(1, status=P2pConnStatus.Open)
+    peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: onion)
+    manager = a_manager(peer_db=peer_db, status=NodeStatus.SyncingHeaders)
+    manager.pending_connections[1] = conn
+
+    promote_done = threading.Event()
+
+    def promote_and_signal() -> None:
+        manager.promote_connection(1)
+        promote_done.set()
+
+    promote_thread = threading.Thread(target=promote_and_signal)
+
+    class HookedPending(dict[int, Any]):
+        @override
+        def __len__(self) -> int:
+            # called exactly once, from the count below -- `.values()`,
+            # the snapshot's own reader further down, is never reached
+            # once the count answers on its own
+            promote_thread.start()
+            # Not a race, on either side: `promote_connection` takes
+            # the same lock this count is read under, so on the fixed
+            # tree it cannot finish inside this wait whatever the
+            # timeout is -- a `threading.Lock` already held by this
+            # method admits no second entrant, ever, not merely a slow
+            # one. On the unfixed tree nothing here contends that lock
+            # at all, and a pop and a dict write finish well inside it.
+            promote_done.wait(timeout=1)
+            return dict.__len__(self)
+
+    manager.pending_connections = HookedPending(manager.pending_connections)
+
+    logged: list[str] = []
+    monkeypatch.setattr(manager.logger, "exception", logged.append)
+    asyncio.run(manager._maybe_dial_more_peers())
+    promote_thread.join(timeout=5)
+
+    assert not promote_thread.is_alive()
+    assert not logged
+    assert list(manager.connections) == [1]
+    # `dict.__len__`, bypassing the hook above: `list(...)` calls
+    # `__len__` too, as a size hint, and both that and `not
+    # manager.pending_connections` would start `promote_thread` a
+    # second time, which it refuses
+    assert dict.__len__(manager.pending_connections) == 0
+
+
 def test_a_dial_that_comes_back_with_nothing_adds_no_connection(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -517,6 +701,42 @@ def test_only_one_peer_is_wanted_until_the_headers_are_synced(
     monkeypatch.setattr(manager.logger, "exception", logged.append)
     asyncio.run(one_pass(manager))
     assert not logged
+
+
+def test_a_connection_removed_between_the_check_and_the_send_is_not_a_keyerror(
+    a_manager: AManagerFactory,
+) -> None:
+    """#359: `send` reads `.get()`, one dict lookup, rather than an `in`
+    check followed by a subscript -- a connection popped between the
+    two (`remove_connection`, on this manager's own loop, on every pass
+    of `manage_connections`) reached the caller as a `KeyError` out of
+    the subscript before this.
+    """
+
+    class PoppingOnContains(dict[int, Any]):
+        @override
+        def __contains__(self, key: object) -> bool:
+            found = dict.__contains__(self, key)
+            if found:
+                # simulates `remove_connection` popping the instant
+                # `in` answers True, before the subscript that used to
+                # follow it
+                dict.pop(self, cast("int", key), None)
+            return found
+
+    conn = a_conn(1)
+    manager = a_manager()
+    manager.connections = PoppingOnContains({1: conn})
+
+    # Both of `__contains__`'s own branches, the same two answers the
+    # old `in`-then-subscript shape got before this fix dropped the
+    # `in` step: found once, popping as a side effect, then not found.
+    assert 1 in manager.connections
+    assert 1 not in manager.connections
+
+    manager.connections[1] = conn
+    manager.send(cast("Payload", "message"), 1)
+    assert conn.sent == ["message"]
 
 
 def test_a_message_for_a_connection_that_is_gone_is_dropped(

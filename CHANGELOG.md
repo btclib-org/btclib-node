@@ -25,6 +25,36 @@ to check the guess.
   how this node is concurrent changes. This package's dependency tree
   now carries compiled, per-platform extensions, where it carried none.
 
+### `P2pManager`'s connection dicts stay consistent across threads
+
+- **`promote_connection` and `remove_connection` share `_connections_lock`**
+  (closes #358): each moves a connection between `connections` and
+  `pending_connections` in two statements, and the lock makes each of
+  those two statements one step against the other's, so a connection
+  `remove_connection` decides to stop is never left in neither dict
+  with nothing having stopped it.
+- **`_maybe_dial_more_peers` reads `connections` and `pending_connections`
+  under the same lock** (closes #355): a connection `promote_connection`
+  is moving between the two dicts is read as being in one of them
+  rather than, for the width of the move, in neither, which is what let
+  this method draw and redial a peer it already holds.
+- **`_maybe_dial_more_peers` reads its own `live` count under the lock
+  too, separately from the snapshot above** (closes #367): two unlocked
+  `len()` calls apart, a `connections` before the write and a
+  `pending_connections` after the pop, could each miss the same moving
+  connection and undercount a node that already has enough peers,
+  which is what let this method dial past the target it was told to
+  stop at.
+- **`get_peer_info` reads `p2p_manager.connections.copy()`** (closes
+  #356): the live dict is popped from on `P2pManager`'s own loop, every
+  pass of `manage_connections`, and a pop landing mid-iteration on
+  `Node`'s own loop raised `RuntimeError: dictionary changed size
+  during iteration` out of a client's `getpeerinfo`.
+- **`P2pManager.send` reads `connections.get(connection_id)`** (closes
+  #359): an `in` check followed by a subscript is two dict operations,
+  not one, and a connection popped between them raised `KeyError` out
+  of the send.
+
 ### The importable package sits under `src/`, closing issue #343
 
 - **`btclib_node` moves under `src/btclib_node/`** (closes #343): a
