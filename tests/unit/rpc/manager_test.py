@@ -355,3 +355,76 @@ def test_stop_requests_every_tasks_cancellation_before_awaiting_any_one_of_them(
     assert order_at_first_await[0] == ["cancel_a", "cancel_b"] or order_at_first_await[
         0
     ] == ["cancel_b", "cancel_a"]
+
+
+def test_stop_closes_an_accept_already_landed_when_the_drain_begins(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#362: mirrors `P2pManager.stop`'s own test of the same name
+    (#353). `server`'s own `accept` is a task of its own, and
+    `asyncio.all_tasks()` below reaches it directly on every call --
+    not only through `server`'s own task cascading a cancel onto it,
+    which the neighbouring test above turns on instead. That test's
+    own cancel never reaches `accept` directly, only `server`, so it
+    does not cover this: `stop` cancels `accept` itself, whether or not
+    `server` is ever cancelled at all.
+
+    `Task.cancel` on a task whose own awaited future is already done
+    cannot cancel that future either: it forces `CancelledError` into
+    the task's next step regardless, discarding whatever the kernel
+    already handed over with nothing left holding it.
+
+    A grace step before the sweep -- `run_until_complete(asyncio.sleep(0))`
+    -- is what lets a task sitting on an already-resolved future return
+    normally instead, into `create_connection`, whose own socket the
+    unconditional `self.connections` sweep at the end of `stop()` then
+    closes -- the same sweep `RpcManager.stop`'s own standing comment
+    already relies on for a connection landed later still, during the
+    cancel-and-drain below rather than before it, which is why this
+    manager needs no `P2pManager`-style repeated pass.
+
+    `sock_accept` is replaced so its own future is one this test can
+    resolve from outside it, scheduled through a monkeypatched
+    `is_alive()` -- the window `stop` itself calls it in, between
+    scheduling `loop.stop` and waiting for the thread.
+    `call_soon_threadsafe` queues behind that scheduling rather than
+    ahead of it, so the manager's own loop sees `loop.stop` first and
+    stops before ever stepping `accept`'s own wakeup: the future is
+    resolved and the task that owns it is not, which is the same gap a
+    landed kernel accept leaves for real.
+    """
+    manager = a_manager(get_random_port())
+
+    accepts: list[asyncio.Future[tuple[socket.socket, Any]]] = []
+
+    async def sock_accept(sock: socket.socket) -> tuple[socket.socket, Any]:
+        accepts.append(manager.loop.create_future())
+        return await accepts[-1]
+
+    monkeypatch.setattr(manager.loop, "sock_accept", sock_accept)
+    manager.start()
+    wait_until_listening(manager)
+    wait_until(lambda: accepts)
+
+    ours, theirs = socket.socketpair()
+    real_is_alive = manager.is_alive
+    landed: list[bool] = []
+
+    def is_alive_after_landing_the_accept() -> bool:
+        landed.append(True)
+        manager.loop.call_soon_threadsafe(
+            accepts[0].set_result, (ours, ("127.0.0.1", 45000))
+        )
+        return real_is_alive()
+
+    monkeypatch.setattr(manager, "is_alive", is_alive_after_landing_the_accept)
+    try:
+        manager.stop()
+    finally:
+        theirs.close()
+    # exactly once, asserted rather than guarded against: `stop()` asks
+    # this one question, and `monkeypatch` has put the real one back
+    # before the fixture asks its own
+    assert landed == [True]
+    # a closed socket's own fileno is -1; still >= 0 is still open
+    assert ours.fileno() == -1
