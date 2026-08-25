@@ -547,15 +547,15 @@ explicit-preview-rules = true
 # instead, on their own: issue #264 added the module and package
 # docstrings `docs/source/`'s own coverage test needed, which closes
 # those two codes for `src/btclib_node/` -- the per-file-ignores further
-# down defer them for `tests/**` and `scripts/**`, neither being part of
-# the shipped package. `D101`/`D102`/`D103`/`D107`, the bulk of the
-# family (the class, method, function and `__init__` narration #264 did
-# not attempt), are issue #373's own five package-directory slices,
-# landed one at a time: `src/btclib_node/`'s own root-level modules,
-# `block_db/`, `chainstate/`, `p2p/` and, this round, `rpc/` -- clean
-# across the whole package as of this round, with the per-file-ignore
-# further down still deferring `tests/**`/`scripts/**`, neither being
-# part of the shipped package.
+# down defer them for every file under `tests/` and for `scripts/**`,
+# neither being part of the shipped package. `D101`/`D102`/`D103`/`D107`,
+# the bulk of the family (the class, method, function and `__init__`
+# narration #264 did not attempt), are issue #373's own five
+# package-directory slices, landed one at a time: `src/btclib_node/`'s
+# own root-level modules, `block_db/`, `chainstate/`, `p2p/` and `rpc/`
+# -- clean across the whole package, with the per-file-ignores further
+# down still deferring every file under `tests/` and `scripts/**`,
+# neither being part of the shipped package.
 # `D205`/`D401`/`D403`/`D404`/`D105` (a summary not on one physical
 # line, a docstring not in the imperative mood, an uncapitalized first
 # word, one starting with "This", an undocumented magic method) are
@@ -564,10 +564,11 @@ explicit-preview-rules = true
 # slice 1's own sweep found a handful of stray findings outside
 # `src/btclib_node/`'s root, in `rpc/` and `p2p/` -- fixed directly
 # rather than deferred, since nothing about them is tied to a
-# directory's own D101-D107 sweep still being incomplete. `tests/**` is
-# the one place they are deferred, in the per-file-ignore below,
-# alongside the rest of the family that directory has not yet had a
-# pass.
+# directory's own D101-D107 sweep still being incomplete. `D205` and
+# `D401` are the two of those five still deferred, in the per-file-ignores
+# below, for `tests/`, the only place either still has findings of its
+# own; `D403`, `D404` and `D105` are already clean there too, and need no
+# deferral.
 #
 # Issue #284 closed that reference selection; ruff's own catalogue is
 # larger still, and issues #340/#341 are a further sweep of every
@@ -672,30 +673,6 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "**/__init__.py" = ["F401"] # re-exported imports
 "tests/**" = [
-    "D100", # a test module narrates itself through its own test names,
-    #          not through a module docstring naming what `src/
-    #          btclib_node/` ships -- issue #373 is where every
-    #          directory's own D100/D104 (this file's package
-    #          equivalent, on tests/**/__init__.py) is read individually
-    #          rather than assumed, alongside the rest of the D family
-    #          this tree has not yet turned on for tests/
-    "D104",
-    "D101", # the class/method/function/__init__ narration issue #373's
-    #          own five package-directory slices are, one at a time --
-    #          `tests/**` is not one of those five and is read on its
-    #          own once they land, not assumed to inherit whichever
-    #          slice happens to be first, the way #264's own D100/D104
-    #          split already treats it
-    "D102",
-    "D103",
-    "D107",
-    "D205", # the two style codes issue #373 asked to fold into
-    #          whichever slice landed first rather than split five ways
-    #          -- folded for `src/btclib_node/` itself (zero findings
-    #          left there as of slice 1), not for `tests/**`, which
-    #          carries findings of its own for both and is not part of
-    #          any of the five slices those two codes rode in on
-    "D401",
     "ANN401", # a test double's own SimpleNamespace, standing in for a
     #            production type across every field a scenario needs
     #            and none it does not -- Any is what lets it satisfy
@@ -735,6 +712,94 @@ ignore = [
     "PLR2004", # a test's own literal expected value, not a magic number
     "S101",    # assert
     "S311",    # non-cryptographic random: fine in tests
+]
+# `D100`/`D104`/`D101`/`D102`/`D103`/`D107`/`D205`/`D401`, the family's
+# own remaining scope past issue #373's five `src/btclib_node/` package
+# slices (886 real findings, measured directly rather than assumed, once
+# the per-file-ignores below are read individually) -- split one key per
+# subdirectory below, mirroring `tests/unit/`'s own package layout, so
+# five parallel slices can each remove their own key without touching
+# the other four's lines or this file's own `tests/**` entry above.
+# Verified before this split landed, not assumed: no two keys below
+# match the same file, and every file matched before the split still
+# matches after it. `ruff`'s own glob crosses a `/` even for a bare `*`
+# -- confirmed directly, `"tests/unit/p2p/*.py"` reaches
+# `tests/unit/p2p/messages/` too -- so the root-level bucket below is an
+# explicit enumeration, not a glob that would also silently catch the
+# four subdirectories split out beside it.
+"tests/unit/p2p/**" = [
+    "D100",
+    "D101",
+    "D102",
+    "D103",
+    "D104",
+    "D107",
+    "D205",
+    "D401",
+]
+"tests/functional/p2p/**" = [
+    "D100",
+    "D101",
+    "D102",
+    "D103",
+    "D104",
+    "D107",
+    "D205",
+    "D401",
+]
+"tests/unit/rpc/**" = [
+    "D100",
+    "D101",
+    "D102",
+    "D103",
+    "D104",
+    "D107",
+    "D205",
+    "D401",
+]
+"tests/functional/rpc/**" = [
+    "D100",
+    "D101",
+    "D102",
+    "D103",
+    "D104",
+    "D107",
+    "D205",
+    "D401",
+]
+"tests/unit/chainstate/**" = [
+    "D100",
+    "D101",
+    "D102",
+    "D103",
+    "D104",
+    "D107",
+    "D205",
+    "D401",
+]
+# every `tests/unit/` file at its own root, not under `p2p/`, `rpc/` or
+# `chainstate/` -- enumerated by name rather than globbed, since a glob
+# here would also catch those three subdirectories (see the comment
+# above)
+"tests/unit/{__init__,block_db_test,chains_test,config_test,coverage_floor_test,db_test,docs_test,download_test,harness_test,helpers_test,init_test,interpreter_test,log_test,main_test,mempool_test}.py" = [
+    "D100",
+    "D101",
+    "D102",
+    "D103",
+    "D104",
+    "D107",
+    "D205",
+    "D401",
+]
+"tests/{__init__,conftest,helpers}.py" = [
+    "D100",
+    "D101",
+    "D102",
+    "D103",
+    "D104",
+    "D107",
+    "D205",
+    "D401",
 ]
 # Every handler in p2p.callbacks.callbacks/handshake_callbacks is called
 # uniformly (node, msg, conn) by p2p.main's handle_p2p/
