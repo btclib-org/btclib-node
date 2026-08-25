@@ -43,12 +43,6 @@ author = "The btclib developers"
 # environment building the documentation, which read the docs does not do
 release = PYPROJECT["project"]["version"]
 
-# this tree carries no [project.urls] yet -- btclib-org/btclib-node#378
-# is where that gap is filed -- so the repository url the transform below
-# resolves every link against is a constant of this file rather than a
-# second read of pyproject.toml
-REPO_URL = "https://github.com/btclib-org/btclib-node"
-
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
@@ -174,8 +168,9 @@ def included(shim: Path) -> tuple[str, str]:
 INCLUDED = dict(map(included, sorted(Path(__file__).parent.glob("*_link.md"))))
 # main, not a permalink pinned to a commit: these are navigation links
 # to files that keep changing, and a reader following one wants the file
-# as it stands
-BLOB = f"{REPO_URL}/blob/main/"
+# as it stands. The base url comes from pyproject.toml, where every url
+# this project publishes is declared
+BLOB = f"{PYPROJECT['project']['urls']['repository']}/blob/main/"
 
 
 class RootFileLinks(SphinxPostTransform):
