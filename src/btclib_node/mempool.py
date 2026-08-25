@@ -51,7 +51,8 @@ class Mempool:
     `transactions` is by wtxid, `txid_index` maps a txid to the wtxid
     that holds it, and `fees` carries what each entry paid -- the module
     docstring above is where the single-thread invariant that lets this
-    class carry no lock of its own is argued.
+    class carry no lock of its own is argued. `spent_by` is the fourth
+    index, `_descendants` below is where it is read.
     """
 
     def __init__(self, logger: Logger) -> None:
@@ -64,6 +65,15 @@ class Mempool:
         # main.verify_mempool_acceptance already computes and would
         # otherwise discard. btclib-org/btclib-node#260
         self.fees: dict[bytes, int] = {}
+        # txid -> the wtxids, held in this mempool, of whatever spends an
+        # output of that txid -- kept up to date in `add_tx` and `_pop`
+        # rather than rebuilt at eviction time, `_descendants` below being
+        # the reader btclib-org/btclib-node#441 added it for. A txid this
+        # mempool never holds a spender of is simply absent, not mapped to
+        # an empty set: `_pop` deletes the entry once its last spender
+        # leaves rather than leaving an empty set behind for every
+        # confirmed parent a mempool transaction ever spent.
+        self.spent_by: dict[bytes, set[bytes]] = {}
         self.size: int = 0
         self.bytesize: int = 0
         # Core's own `DEFAULT_MAX_MEMPOOL_SIZE_MB`
@@ -174,6 +184,8 @@ class Mempool:
         self.transactions[wtxid] = tx
         self.txid_index[txid] = wtxid
         self.fees[wtxid] = fee
+        for vin in tx.vin:
+            self.spent_by.setdefault(vin.prev_out.tx_id, set()).add(wtxid)
         self.size += 1
         self.bytesize += tx.vsize
         self.sequence += 1
@@ -218,13 +230,25 @@ class Mempool:
         """Remove one entry by wtxid and return the transaction removed.
 
         The one place every removal, `remove_tx` and eviction alike,
-        updates the bookkeeping the four dicts and three counters above
-        carry -- so the two never drift the way two independent copies
-        of the same accounting would.
+        updates the bookkeeping the indices and counters above carry --
+        so they never drift the way two independent copies of the same
+        accounting would.
         """
         tx = self.transactions.pop(wtxid)
         self.txid_index.pop(tx.id, None)
         self.fees.pop(wtxid, None)
+        # A set of the spent txids first, not a loop over `tx.vin` itself:
+        # two inputs of one transaction spending two outputs of the same
+        # earlier one are not unusual, and `add_tx` below records that
+        # txid once regardless (`set.add` is idempotent), so popping it
+        # twice here would `del` an already-deleted `spent_by` entry on
+        # the second `vin` and raise `KeyError` on a transaction that
+        # never did anything wrong.
+        for spent_txid in {vin.prev_out.tx_id for vin in tx.vin}:
+            spenders = self.spent_by[spent_txid]
+            spenders.discard(wtxid)
+            if not spenders:
+                del self.spent_by[spent_txid]
         self.size -= 1
         self.bytesize -= tx.vsize
         self.sequence += 1
@@ -236,27 +260,31 @@ class Mempool:
         `verify_mempool_acceptance` (`main.py`) admits a child whose
         parent is only in this mempool, not yet confirmed -- so evicting
         a parent without what spends it would leave a transaction here
-        whose own prevout resolves nowhere. This mempool holds no
-        dependency graph to answer that from directly, only two dicts
-        and a fee map, so the answer is a scan run at eviction time
-        rather than an index kept up to date on every `add_tx` and
-        `_pop`: eviction is the rarer path, and a second index is a
-        second place the accounting above could drift. `prev_out.tx_id`
-        is a txid, matching what `txid_index` keys transactions by and
-        what `verify_mempool_acceptance`'s own mempool lookup reads a
-        prevout by. btclib-org/btclib-node#294
+        whose own prevout resolves nowhere. Answered from `spent_by`,
+        kept up to date in `add_tx` and `_pop` rather than rebuilt here:
+        this walks the package on the frontier, once per element of it,
+        instead of the whole mempool once per element -- the O(n * k)
+        cost btclib-org/btclib-node#441 measured, `n` being every entry
+        this mempool holds and `k` the size of the package being walked.
+        A second index does mean a second place the accounting above
+        could drift, the risk the comment this replaces weighed against
+        the scan -- `_pop` being the single place every removal updates
+        it is what keeps that from happening, the same invariant that
+        already holds `txid_index` and `fees` to the dict they index.
+        `prev_out.tx_id` is a txid, matching what `txid_index` keys
+        transactions by and what `verify_mempool_acceptance`'s own
+        mempool lookup reads a prevout by. btclib-org/btclib-node#294
         """
         root_txid = self.transactions[wtxid].id
         descendants = {wtxid}
         frontier = [root_txid]
         while frontier:
             txid = frontier.pop()
-            for candidate_wtxid, candidate_tx in self.transactions.items():
+            for candidate_wtxid in self.spent_by.get(txid, ()):
                 if candidate_wtxid in descendants:
                     continue
-                if any(vin.prev_out.tx_id == txid for vin in candidate_tx.vin):
-                    descendants.add(candidate_wtxid)
-                    frontier.append(candidate_tx.id)
+                descendants.add(candidate_wtxid)
+                frontier.append(self.transactions[candidate_wtxid].id)
         return descendants
 
     def _evict_to_limit(self) -> None:

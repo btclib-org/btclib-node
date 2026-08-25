@@ -7,17 +7,18 @@
 import secrets
 import time
 from fractions import Fraction
-from typing import TYPE_CHECKING
 
 from btclib.fee import FeeRate, fee_from_vsize
+from btclib.script import script
 from btclib.script.witness import Witness
+from btclib.tx.out_point import OutPoint
+from btclib.tx.tx import Tx
+from btclib.tx.tx_in import TxIn
+from btclib.tx.tx_out import TxOut
 
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from tests.helpers import generate_random_transaction
-
-if TYPE_CHECKING:
-    from btclib.tx.tx import Tx
 
 
 def a_witness_transaction() -> Tx:
@@ -27,6 +28,28 @@ def a_witness_transaction() -> Tx:
     tx = generate_random_transaction()
     tx.vin[0].script_witness = Witness([secrets.token_bytes(32)])
     return tx
+
+
+def a_transaction_spending(*prevout_txids: bytes) -> Tx:
+    """Return a transaction with one input per txid in `prevout_txids`."""
+    return Tx(
+        version=1,
+        lock_time=0,
+        vin=[
+            TxIn(
+                prev_out=OutPoint(txid, 0),
+                script_sig=script.serialize([secrets.token_bytes(32)]),
+                sequence=0xFFFFFFFF,
+            )
+            for txid in prevout_txids
+        ],
+        vout=[
+            TxOut(
+                value=50 * 10**8,
+                script_pub_key=script.serialize([secrets.token_bytes(32)]),
+            )
+        ],
+    )
 
 
 def test_init() -> None:
@@ -276,6 +299,113 @@ def test_eviction_of_the_worst_parent_takes_its_descendant_with_it() -> None:
     assert not mempool.contains_tx(parent)
     assert not mempool.contains_tx(child)
     assert mempool.contains_tx(other)
+
+
+def test_eviction_of_a_diamond_shaped_package_removes_every_descendant_once() -> None:
+    """Evicting a parent takes a grandchild reachable through two children too.
+
+    A parent with two children and a grandchild spending both is one
+    package, and eviction of the parent takes all four out, `grandchild`
+    included -- reached from `parent` through either child, never twice.
+    """
+    # btclib-org/btclib-node#441: the spend index `_descendants` now
+    # walks, `spent_by`, has one entry per (parent txid, spending wtxid)
+    # pair, so a transaction reachable through two parents at once --
+    # this is what a diamond exercises -- has to land in the walk's own
+    # `descendants` set once, not be visited or queued twice.
+    mempool = Mempool(Logger(debug=True))
+    parent = generate_random_transaction()
+    child_a = generate_random_transaction(parent.id)
+    child_b = generate_random_transaction(parent.id)
+    grandchild = a_transaction_spending(child_a.id, child_b.id)
+    keeper = generate_random_transaction()
+    mempool.add_tx(parent, 0)
+    mempool.add_tx(child_a, 0)
+    mempool.add_tx(child_b, 0)
+    mempool.add_tx(grandchild, 0)
+    mempool.bytesize_limit = mempool.bytesize + keeper.vsize - 1
+    assert mempool.add_tx(keeper, 10_000) is True
+    assert not mempool.contains_tx(parent)
+    assert not mempool.contains_tx(child_a)
+    assert not mempool.contains_tx(child_b)
+    assert not mempool.contains_tx(grandchild)
+    assert mempool.contains_tx(keeper)
+    assert mempool.size == 1
+
+
+def test_two_inputs_into_one_parent_do_not_crash_removal() -> None:
+    """A child spending two outputs of one parent is removed without error.
+
+    A child with two inputs into one parent is removed without a
+    `KeyError`, and its parent still evicts cleanly afterwards.
+    """
+    # `spent_by[parent.id]` gets `child`'s own wtxid once (`add_tx`'s own
+    # `set.add` is idempotent over the child's two vins), but a `_pop`
+    # that walked `tx.vin` itself rather than the set of distinct spent
+    # txids would `discard` it, delete the now-empty entry on the first
+    # vin, and then `KeyError` on `spent_by[parent.id]` for the second.
+    # btclib-org/btclib-node#441
+    mempool = Mempool(Logger(debug=True))
+    parent = generate_random_transaction()
+    child = Tx(
+        version=1,
+        lock_time=0,
+        vin=[
+            TxIn(
+                prev_out=OutPoint(parent.id, 0),
+                script_sig=script.serialize([secrets.token_bytes(32)]),
+                sequence=0xFFFFFFFF,
+            ),
+            TxIn(
+                prev_out=OutPoint(parent.id, 1),
+                script_sig=script.serialize([secrets.token_bytes(32)]),
+                sequence=0xFFFFFFFF,
+            ),
+        ],
+        vout=[
+            TxOut(
+                value=50 * 10**8,
+                script_pub_key=script.serialize([secrets.token_bytes(32)]),
+            )
+        ],
+    )
+    mempool.add_tx(parent, 0)
+    mempool.add_tx(child, 0)
+    mempool.remove_tx(child)
+    assert mempool.size == 1
+    mempool.remove_tx(parent)  # would KeyError on a stale spent_by entry
+    assert mempool.size == 0
+
+
+def test_a_removed_child_does_not_reappear_in_a_later_eviction_of_its_parent() -> None:
+    """A child removed by `remove_tx` is not evicted again with its parent.
+
+    `remove_tx` drops a transaction out of the descendant walk too, not
+    only out of `transactions` -- a later eviction of the same parent
+    must not try to evict it a second time.
+    """
+    # A `spent_by` entry `_pop` failed to clear behind `remove_tx` would
+    # leave `stale_child`'s own wtxid in `spent_by[parent.id]` after it
+    # left `transactions`; `_descendants` would then index `transactions`
+    # by that wtxid and raise `KeyError` the next time `parent` is
+    # evicted, rather than silently evicting the wrong set.
+    # btclib-org/btclib-node#441
+    mempool = Mempool(Logger(debug=True))
+    parent = generate_random_transaction()
+    stale_child = generate_random_transaction(parent.id)
+    mempool.add_tx(parent, 0)
+    mempool.add_tx(stale_child, 0)
+    mempool.remove_tx(stale_child)  # e.g. already mined, unrelated to eviction
+
+    fresh_child = generate_random_transaction(parent.id)
+    mempool.add_tx(fresh_child, 0)
+    keeper = generate_random_transaction()
+    mempool.bytesize_limit = mempool.bytesize + keeper.vsize - 1
+    assert mempool.add_tx(keeper, 10_000) is True
+    assert not mempool.contains_tx(parent)
+    assert not mempool.contains_tx(fresh_child)
+    assert mempool.contains_tx(keeper)
+    assert mempool.size == 1
 
 
 def test_eviction_runs_multiple_rounds_when_one_is_not_enough() -> None:

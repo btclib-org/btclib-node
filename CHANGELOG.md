@@ -30,6 +30,21 @@ to check the guess.
   `.blk` and the `.rev` side regardless of which handle a call is
   writing through.
 
+### `Mempool._descendants` walks a spend index, not the mempool (closes #441)
+
+- **`Mempool` keeps `spent_by`, a `dict[bytes, set[bytes]]` from a spent
+  txid to the wtxids, held in this mempool, that spend it** (closes
+  #441), maintained in `add_tx` and `_pop` alongside the dicts those two
+  already kept in step. `_descendants` walks it from the eviction root
+  instead of scanning every held transaction once per element of the
+  package it is discovering, so one eviction round's own cost no longer
+  multiplies the package a peer chose by the size of the mempool it is
+  evicted from: measured against a growing mempool at a fixed package
+  size, `_descendants` now holds flat where it grew with the mempool
+  before. `_evict_to_limit`'s own `min` scan, the other O(n) factor the
+  issue named, is untouched and stays linear per round; #457 is where
+  that is measured and argued on its own.
+
 ### `NodeStatus.Reindexing` goes (closes #445)
 
 - **`NodeStatus` no longer declares a `Reindexing` member** (closes
