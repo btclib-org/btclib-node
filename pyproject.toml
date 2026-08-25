@@ -134,6 +134,12 @@ lint = [
 ]
 dev = [{ include-group = "test" }, { include-group = "lint" }]
 
+[tool.uv]
+# the oldest uv that may read uv.lock, at the ceiling rather than below
+# it -- btclib-org/.github's README.md, section 1, argues why; section
+# 15 carries the command that re-derives the ceiling
+required-version = ">=0.12.1"
+
 [tool.uv.sources]
 # btclib's `main`, and not its last release, because the two are
 # developed together: btclib's p2p package was written against this node
