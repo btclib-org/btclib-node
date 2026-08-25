@@ -152,12 +152,12 @@ repos:
     rev: v2.4.3
     hooks:
       - id: codespell
-        name: codespell (prose and comments)
+        name: codespell (prose and comments, in place fixes)
         # codespell only reads [tool.codespell] when told where to look;
         # without this it neither applies `builtin = "clear"` nor
         # `ignore-words-list`, and reports on its own unconfigured
         # default instead
-        args: [--toml, pyproject.toml]
+        args: [--toml, pyproject.toml, --write-changes]
         # --toml is read through tomllib, which is 3.11 and later; the
         # interpreter pre-commit builds this hook's environment with is
         # its own choice and not this project's requires-python, so the
@@ -169,6 +169,11 @@ repos:
   - repo: https://github.com/crate-ci/typos
     rev: v1.49.0
     hooks:
+      # in place fixes: --write-changes and --force-exclude are also
+      # crate-ci/typos's own upstream default (its .pre-commit-hooks.yaml),
+      # named explicitly here rather than left to that default, so an
+      # args: edit made later for another reason finds them in the list
+      # instead of dropping fixing by leaving them out
       - id: typos
         name: typos (identifiers and hyphenated words, in place fixes)
         args: [--write-changes, --force-exclude]
@@ -178,23 +183,6 @@ repos:
       - id: markdownlint-cli2
         name: markdownlint-cli2 (in place fixes)
         args: [--fix]
-  # CHANGELOG.md's own MD022/MD032 are disabled above (btclib-org/
-  # .github#33/#138), because merge=union can join two `### ` sections
-  # without the blank line the rule wants and no conflict flags it
-  # (btclib-org/btclib-node#199, decided against dropping the driver by
-  # btclib-org/.github#21). This is the narrower check that still runs:
-  # a `### ` heading is a problem exactly where the character before its
-  # line is not itself a newline, i.e. the line above it is not blank.
-  # --multiline runs the pattern once against the whole file rather than
-  # line by line, which a lookbehind across two lines needs
-  - repo: local
-    hooks:
-      - id: changelog-heading-blank-line
-        name: every `### ` heading in CHANGELOG.md has a blank line above it
-        language: pygrep
-        args: [--multiline]
-        entry: '[^\n]\n### '
-        files: ^CHANGELOG\.md$
   # what ruff-format is for Python, on the structured files ruff does
   # not read: yaml and the jsonc that carries a comment. Before
   # yamllint below, so the linter judges the formatted file
@@ -216,6 +204,7 @@ repos:
         exclude: ^uv\.lock$
   # the width of a yaml line, which nothing else here measures.
   # Configured in .yamllint.yaml rather than in args here
+  # check-only: yamllint has no fix mode, and its own CLI names none
   - repo: https://github.com/adrienverge/yamllint
     rev: v1.38.0
     hooks:

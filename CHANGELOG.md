@@ -1,9 +1,3 @@
-<!-- markdownlint-disable MD022 MD032 -->
-<!-- This file is merge=union, so a rebase joins two sections and drops
-     the blank line between them without a conflict: the rule is off
-     here for the duration of btclib-org/.github#33, and goes back on
-     when that queue is empty. btclib-org/.github#138 is the record. -->
-
 # Changelog
 
 What a reader of this repository would notice, in the group it belongs
@@ -17,6 +11,21 @@ log is a guess at what somebody would have noticed, and there is no way
 to check the guess.
 
 ## Unreleased
+
+### `CHANGELOG.md`'s lint derogation is gone, and `codespell` now fixes
+
+- **The two-comment directive disabling MD022 and MD032 at this file's
+  head is deleted** (closes #328): `markdownlint-cli2` already fixes in
+  place, so a `merge=union` join dropping the blank line between two
+  `###` sections is repaired on the hook's next run instead of failing
+  a gate with nothing to fix it, and the two rules apply to this file
+  again.
+- **The local `changelog-heading-blank-line` check the derogation
+  needed alongside it is gone too**, redundant now that MD022 and MD032
+  cover the same defect and repair it rather than only reporting it.
+- **`codespell` gains `--write-changes`**, joining `markdownlint-cli2`
+  and `typos` as hooks that fix in place instead of only reporting;
+  `yamllint` has no fix mode and stays check-only.
 
 ### `select` gains `FBT`, closing issue #341
 
