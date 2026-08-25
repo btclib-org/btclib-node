@@ -335,6 +335,23 @@ def test_a_connection_that_has_closed_is_let_go_of(a_manager: AManagerFactory) -
     assert not manager.connections
 
 
+def test_a_closed_connection_past_the_idle_bound_is_not_pinged(
+    a_manager: AManagerFactory,
+) -> None:
+    """#435: removal does not fall through into the idle check below it.
+
+    A connection `Closed` and idle at once used to be removed by the
+    first check and then, still the loop variable, found idle by the
+    second -- with `last_receive` frozen and `ping_sent` never set, so
+    `send_ping` ran on a connection already out of both tables.
+    """
+    conn = a_conn(1, status=P2pConnStatus.Closed, last_receive=time.time() - 200)
+    manager = a_manager([conn])
+    asyncio.run(one_pass(manager))
+    assert not manager.connections
+    assert conn.sent == []
+
+
 def test_a_peer_that_has_gone_quiet_is_pinged_and_then_dropped(
     a_manager: AManagerFactory,
 ) -> None:

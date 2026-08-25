@@ -231,6 +231,7 @@ class P2pManager(threading.Thread):
         for conn in self.connections.copy().values():
             if conn.status == P2pConnStatus.Closed:
                 self.remove_connection(conn.id)
+                continue
             if now - conn.last_receive > _IDLE_TIMEOUT:
                 # One read, not `conn.ping_sent` re-read in the `elif`
                 # below: `callbacks.pong`, on the other thread, clears

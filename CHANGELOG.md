@@ -27,6 +27,18 @@ to check the guess.
   fields it has no source for (#305). A reindex is represented again by
   whatever change implements one, together with the code that sets it.
 
+### `_prune_stale_connections` continues past a removed connection (closes #435)
+
+- **The `Closed` branch of `_prune_stale_connections`'s first loop now
+  `continue`s** (closes #435): without it, a connection removed there
+  was still the loop variable for the idle check right below, and with
+  `last_receive` frozen at whatever it stopped at and `ping_sent` still
+  `0`, that check ran `send_ping` on a connection already out of both
+  `connections` and `pending_connections` -- drawing a nonce and
+  taking `_ping_lock` for a socket `remove_connection` had just handed
+  to `conn.stop()`. `#357` is what made `_ping_lock` protect exactly
+  that state.
+
 ### The docs gate warns against `--only-group docs` (closes #425)
 
 - **`CONTRIBUTING.md`'s *The environment and the gates* now names
