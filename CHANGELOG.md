@@ -28,6 +28,18 @@ to check the guess.
   directory it deferred is clean. `tests/**`'s own seven per-subdirectory
   keys for the same eight codes are unaffected and remain #373's
   outstanding scope.
+### `tests/unit/rpc/` and `tests/functional/rpc/` get real docstrings (issue #373)
+
+- **`D100`/`D104`/`D101`/`D102`/`D103`/`D107`/`D205`/`D401` are selected
+  for `tests/unit/rpc/` and `tests/functional/rpc/`** (issue #373): every
+  module, class, function and `__init__` across both directories now
+  carries a docstring grounded in what it actually tests, read against
+  the source and the test body rather than restated from the function
+  name -- `RpcManager`'s own accept-queue mechanism among them. The two
+  `pyproject.toml` per-file-ignore keys these codes occupied are removed
+  outright now that both directories answer zero. Sibling slices of the
+  same issue, covering the rest of `tests/**` and `scripts/**`, remain
+  open.
 
 ### `docs/source/index.rst`'s toctree names `SECURITY.md` and `RELEASE_NOTES.md`
 
