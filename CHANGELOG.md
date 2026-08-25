@@ -37,9 +37,11 @@ to check the guess.
   the source and the test body rather than restated from the function
   name -- `RpcManager`'s own accept-queue mechanism among them. The two
   `pyproject.toml` per-file-ignore keys these codes occupied are removed
-  outright now that both directories answer zero. Sibling slices of the
-  same issue, covering the rest of `tests/**` and `scripts/**`, remain
-  open.
+  outright now that both directories answer zero. This is one of #373's
+  five parallel `tests/**` slices; the `p2p/` bucket under `tests/unit/`
+  and `tests/functional/`, the `tests/unit/`-root enumeration, and
+  `tests/{__init__,conftest,helpers}.py`, remain. `scripts/**`'s and
+  `tests/unit/chainstate/**`'s own slices already landed.
 
 ### `docs/source/index.rst`'s toctree names `SECURITY.md` and `RELEASE_NOTES.md`
 
