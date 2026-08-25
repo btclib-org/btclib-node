@@ -24,6 +24,17 @@ to check the guess.
   documentation build resolved `README.md`'s own links to either file to
   a plain GitHub blob link rather than to an in-site page.
 
+### `no-hyphen-at-end-of-line`, the organization's other pygrep hook, joins `local-link-prefix`
+
+- **`.pre-commit-config.yaml` carries `no-hyphen-at-end-of-line` beside
+  `local-link-prefix`, matching `bitcoin-core-rpc`'s own pattern and
+  `types: [markdown]` scoping** (closes #392): section 4 of the
+  organization standard lists both pygrep hooks as adopted
+  organization-wide, and this tree carried only the first. The lines
+  elsewhere in this file that the hook would have caught -- a word and
+  an inline code span identifier each wrapped at their own hyphen -- are
+  rewrapped so `--all-files` passes clean.
+
 ### `CLAUDE.md` names Core's own checkout and the coverage floor's load-based flake
 
 - **`CLAUDE.md`'s *Following Bitcoin Core* now says a checkout of Core is
@@ -1395,10 +1406,9 @@ to check the guess.
   endpoint's one row in `PeerDB.active_addresses` rather than adding
   another** (closes #270), the way `add_addresses`'s own `by_endpoint`
   already settles `self.addresses`. `add_active_address` runs once per
-  handshake rather than once per batch, so the lookup is an endpoint-
-  keyed index kept alongside the list rather than a per-call scan of
-  it, which would turn many handshakes against the one peer quadratic
-  overall.
+  handshake rather than once per batch, so the lookup is an endpoint-keyed
+  index kept alongside the list rather than a per-call scan of it, which
+  would turn many handshakes against the one peer quadratic overall.
 
 ### `getaddr` answers from a cached sample, and the active table prunes on its own
 
@@ -2241,14 +2251,14 @@ to check the guess.
   repository-versioned alternative.
 
 - **A local `pre-commit` hook now runs the check by hand instead of
-  requiring somebody to run it by hand** (#199): `changelog-heading-
-  blank-line` fails on any `###` line in `CHANGELOG.md` not preceded by
-  a blank one, which `markdownlint-cli2`'s own MD022 does not catch here
-  since it is disabled for this file. It runs as part of the same `uv
-  run pre-commit run --all-files` a rebase already asks for, not as an
-  installed git hook: `CONTRIBUTING.md`'s *The gate is not installed as
-  a git hook* is why, `.git/hooks` being shared by every worktree of
-  this repository.
+  requiring somebody to run it by hand** (#199):
+  `changelog-heading-blank-line` fails on any `###` line in
+  `CHANGELOG.md` not preceded by a blank one, which `markdownlint-cli2`'s
+  own MD022 does not catch here since it is disabled for this file. It
+  runs as part of the same `uv run pre-commit run --all-files` a rebase
+  already asks for, not as an installed git hook: `CONTRIBUTING.md`'s
+  *The gate is not installed as a git hook* is why, `.git/hooks` being
+  shared by every worktree of this repository.
 
 - **The headings union had already collapsed are restored** (#194): the
   blank line is back before `links.yml`'s own heading and before
