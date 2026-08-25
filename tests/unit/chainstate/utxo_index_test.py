@@ -2,6 +2,14 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""Unit tests for `btclib_node.chainstate.utxo_index`.
+
+Covers `UtxoIndex.add_block` staging spends and creations, its refusals
+on a double spend and a missing prevout, `apply_rev_block` undoing a
+block either still staged or already written, and persistence across a
+restart.
+"""
+
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -24,6 +32,12 @@ if TYPE_CHECKING:
 
 
 def test_long_init(tmp_path: Path) -> None:
+    """A 20000-block UTXO set reloads from disk into the same key-value pairs.
+
+    Every block is added and finalized, the store closed, and a second
+    `Chainstate` opened on the same path reads back the identical
+    `utxo-` records.
+    """
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index
     chain = generate_random_chain(20000, RegTest().genesis.hash)
@@ -40,6 +54,12 @@ def test_long_init(tmp_path: Path) -> None:
 
 
 def test_rev_patch(tmp_path: Path) -> None:
+    """Undoing a 20000-block chain's own patches, in reverse, empties the set.
+
+    Every block's `RevBlock` is applied back to front, the way a reorg
+    would unwind them, and `updated_utxo_set` ends empty rather than
+    holding anything still staged.
+    """
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index
     chain = generate_random_chain(20000, RegTest().genesis.hash)
@@ -55,11 +75,12 @@ def test_rev_patch(tmp_path: Path) -> None:
 
 
 def one_tx_block(txs: list[Tx], block_hash: bytes = b"\x00" * 32) -> Any:
-    """The shape UtxoIndex.add_block reads: a header hash, and txs."""
+    """Build the shape UtxoIndex.add_block reads: a header hash, and txs."""
     return SimpleNamespace(header=SimpleNamespace(hash=block_hash), transactions=txs)
 
 
 def coinbase(tag: bytes) -> Tx:
+    """Build a coinbase transaction paying 50 regtest coins to `tag`."""
     return Tx(
         version=1,
         lock_time=0,
@@ -70,6 +91,7 @@ def coinbase(tag: bytes) -> Tx:
 
 
 def spending(prev_out: OutPoint, tag: bytes) -> Tx:
+    """Build a transaction spending `prev_out`, paying 49 coins to `tag`."""
     return Tx(
         version=1,
         lock_time=0,
@@ -79,9 +101,12 @@ def spending(prev_out: OutPoint, tag: bytes) -> Tx:
 
 
 def test_spending_an_output_the_batch_already_spent_is_refused(tmp_path: Path) -> None:
-    # `removed_utxos` holds what has been taken from the database but
-    # not yet written back, so a second spend of the same outpoint
-    # inside one batch is a double spend the database cannot yet see.
+    """A second block spending what the same batch already spent is refused.
+
+    `removed_utxos` holds what has been taken from the database but
+    not yet written back, so a second spend of the same outpoint
+    inside one batch is a double spend the database cannot yet see.
+    """
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index
 
@@ -101,6 +126,11 @@ def test_spending_an_output_the_batch_already_spent_is_refused(tmp_path: Path) -
 
 
 def test_spending_an_output_nobody_has_is_refused(tmp_path: Path) -> None:
+    """A block spending an outpoint that was never created is refused.
+
+    Neither `updated_utxo_set` nor the database holds it, so
+    add_block raises rather than crediting a spend of nothing.
+    """
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index
     nowhere = OutPoint(b"\x11" * 32, 0)
@@ -112,6 +142,12 @@ def test_spending_an_output_nobody_has_is_refused(tmp_path: Path) -> None:
 
 
 def test_a_rev_block_that_removes_what_is_not_there_is_refused(tmp_path: Path) -> None:
+    """apply_rev_block raises when asked to remove an outpoint nothing holds.
+
+    Neither `updated_utxo_set` nor the database has it, so undoing a
+    creation that never happened is a `ChainstateInconsistencyError`
+    rather than a silent no-op.
+    """
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index
     missing = OutPoint(b"\x11" * 32, 0)
@@ -125,6 +161,12 @@ def test_a_rev_block_that_removes_what_is_not_there_is_refused(tmp_path: Path) -
 def test_a_rev_block_that_removes_a_pending_output_takes_it_back(
     tmp_path: Path,
 ) -> None:
+    """Undoing a still-staged creation simply drops it from updated_utxo_set.
+
+    The output was never finalized, so it is in `updated_utxo_set`
+    rather than the database, and apply_rev_block pops it from there
+    without touching `removed_utxos` at all.
+    """
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index
     funding = coinbase(b"\x05")
@@ -143,6 +185,12 @@ def test_a_rev_block_that_removes_a_pending_output_takes_it_back(
 def test_a_rev_block_that_removes_a_written_output_marks_it_removed(
     tmp_path: Path,
 ) -> None:
+    """Undoing an already-finalized creation stages it in removed_utxos.
+
+    The output is on disk rather than in `updated_utxo_set`, so
+    apply_rev_block cannot simply drop it and instead stages its
+    deletion, for `finalize` to write.
+    """
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index
     funding = coinbase(b"\x06")
@@ -160,9 +208,12 @@ def test_a_rev_block_that_removes_a_written_output_marks_it_removed(
 def test_a_rev_block_that_removes_what_the_batch_already_spent_is_refused(
     tmp_path: Path,
 ) -> None:
-    # the outpoint is in `removed_utxos`: the batch has taken it from
-    # the database and not written back, so removing it again is the
-    # same double spend from the other direction.
+    """Undoing a spend the same batch already staged for removal is refused.
+
+    The outpoint is in `removed_utxos`: the batch has taken it from
+    the database and not written back, so removing it again is the
+    same double spend from the other direction.
+    """
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index
     funding = coinbase(b"\x07")

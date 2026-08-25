@@ -767,16 +767,6 @@ ignore = [
     "D205",
     "D401",
 ]
-"tests/unit/chainstate/**" = [
-    "D100",
-    "D101",
-    "D102",
-    "D103",
-    "D104",
-    "D107",
-    "D205",
-    "D401",
-]
 # every `tests/unit/` file at its own root, not under `p2p/`, `rpc/` or
 # `chainstate/` -- enumerated by name rather than globbed, since a glob
 # here would also catch those three subdirectories (see the comment

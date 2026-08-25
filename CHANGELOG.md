@@ -174,6 +174,27 @@ to check the guess.
   removing each new key in turn and checking that only its own files'
   findings reappear, never a neighbor's.
 
+### `tests/unit/chainstate/` gets real docstrings (issue #373)
+
+- **`tests/unit/chainstate/`'s own per-file-ignore key is removed
+  entirely** (issue #373): every module, class and function under
+  `__init__.py`, `block_index_test.py`, `contextual_test.py`,
+  `filter_index_test.py`, `init_test.py` and `utxo_index_test.py` now
+  carries a docstring, each `test_*` function's own naming the scenario
+  its assertions actually cover rather than restating the function
+  name. One test's own name and comment, `block_index_test.py`'s
+  `test_reject_header_above_the_pow_limit`, described a mechanism the
+  code does not take: mainnet's own proof-of-work limit is harder than
+  regtest's, so a header claiming it never reaches
+  `assert_valid_pow`'s range check at all, and is refused instead
+  because an unmined nonce does not satisfy so hard a target -- renamed
+  to `test_a_header_claiming_a_target_it_was_never_mined_to_is_refused`
+  and its comment corrected to match. This is one of #373's five
+  parallel `tests/**` slices; the `p2p/` and `rpc/` buckets under
+  `tests/unit/` and `tests/functional/`, the `tests/unit/`-root
+  enumeration, and `tests/{__init__,conftest,helpers}.py`, remain.
+  `scripts/**`'s own slice already landed.
+
 ### The docs gate's own remaining gaps close: `[project.urls]`, `local-link-prefix`
 
 - **`conf.py`'s `BLOB` constant reads `pyproject.toml`'s own

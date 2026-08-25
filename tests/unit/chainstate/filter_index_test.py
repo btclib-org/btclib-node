@@ -50,6 +50,7 @@ def offer(node: Node, chain: list[Block]) -> None:
 
 
 def a_chain(node: Node, length: int) -> list[Block]:
+    """Build `length` random blocks off the genesis and connect them all."""
     chain = generate_random_chain(length, GENESIS.hash)
     connect(node, chain)
     return chain
@@ -70,6 +71,12 @@ def recomputed_header(node: Node, block_hash: bytes) -> bytes:
 def test_the_genesis_filter_is_indexed_before_any_block_arrives(
     regtest_node: Callable[[], Node],
 ) -> None:
+    """A fresh node's filter index already holds the genesis block's filter.
+
+    No peer serves the genesis block, so it never reaches this index
+    through the connect path -- `FilterIndex.__init__` builds it
+    itself, the one filter every other test here can chain onto.
+    """
     node = regtest_node()
     filter_index = node.chainstate.filter_index
     # no peer serves the genesis block, so it is not indexed by the
@@ -86,6 +93,7 @@ def test_the_genesis_filter_is_indexed_before_any_block_arrives(
 def test_a_connected_block_is_indexed_as_it_connects(
     regtest_node: Callable[[], Node],
 ) -> None:
+    """Every block of a chain that connects gets its own filter indexed."""
     node = regtest_node()
     chain = a_chain(node, 3)
     filter_index = node.chainstate.filter_index
@@ -96,6 +104,12 @@ def test_a_connected_block_is_indexed_as_it_connects(
 def test_the_filter_holds_what_the_block_pays_to_and_what_it_spends(
     regtest_node: Callable[[], Node],
 ) -> None:
+    """A block's filter matches both its own outputs and the ones it spends.
+
+    The spent output is paid in the block before it, so a filter built
+    from the spending block alone would miss it, and a client watching
+    that address would never be told to fetch the block that emptied it.
+    """
     node = regtest_node()
     chain = a_chain(node, 2)
     spending = chain[1]
@@ -118,6 +132,12 @@ def test_the_filter_holds_what_the_block_pays_to_and_what_it_spends(
 def test_every_header_chains_onto_the_one_before_it(
     regtest_node: Callable[[], Node],
 ) -> None:
+    """Each block's filter header matches the chain a peer would recompute.
+
+    recomputed_header rebuilds it from the genesis forward the way BIP157
+    defines, so a match confirms `get_header`'s stored value is chained
+    correctly rather than merely present.
+    """
     node = regtest_node()
     chain = a_chain(node, 4)
     filter_index = node.chainstate.filter_index
@@ -131,6 +151,11 @@ def test_every_header_chains_onto_the_one_before_it(
 def test_a_block_whose_parent_has_no_filter_is_refused(
     regtest_node: Callable[[], Node],
 ) -> None:
+    """add_block on a block whose parent is not indexed raises.
+
+    The header chain add_block builds needs the parent's own header
+    already stored; a block off an unrelated hash has none.
+    """
     node = regtest_node()
     orphan = generate_random_chain(1, b"\x11" * 32)[0]
     with pytest.raises(
@@ -142,6 +167,12 @@ def test_a_block_whose_parent_has_no_filter_is_refused(
 def test_a_block_already_indexed_is_not_built_twice(
     regtest_node: Callable[[], Node],
 ) -> None:
+    """add_block on an already-indexed block is a no-op, leaving pending empty.
+
+    A second build would use whatever prevouts this second call was
+    given, which could answer a different filter; the stored one is
+    the one that stays.
+    """
     node = regtest_node()
     (block,) = a_chain(node, 1)
     filter_index = node.chainstate.filter_index
@@ -154,9 +185,12 @@ def test_a_block_already_indexed_is_not_built_twice(
 def test_a_block_offered_twice_before_the_batch_is_written_is_built_once(
     regtest_node: Callable[[], Node],
 ) -> None:
-    # blocks connect in one write batch, so what is held for writing is
-    # what a second offer of the same block has to be answered from:
-    # rebuilding it would use whatever prevouts the second caller had
+    """A block offered twice while still only pending keeps its first build.
+
+    Blocks connect in one write batch, so what is held for writing is
+    what a second offer of the same block has to be answered from:
+    rebuilding it would use whatever prevouts the second caller had.
+    """
     node = regtest_node()
     filter_index = node.chainstate.filter_index
     (block,) = generate_random_chain(1, GENESIS.hash)
@@ -169,6 +203,7 @@ def test_a_block_offered_twice_before_the_batch_is_written_is_built_once(
 def test_what_is_pending_is_dropped_on_a_rollback(
     regtest_node: Callable[[], Node],
 ) -> None:
+    """`rollback` discards a pending block's filter, leaving nothing indexed."""
     node = regtest_node()
     filter_index = node.chainstate.filter_index
     (block,) = generate_random_chain(1, GENESIS.hash)
@@ -182,9 +217,12 @@ def test_what_is_pending_is_dropped_on_a_rollback(
 def test_a_block_stepped_over_keeps_the_filter_it_had(
     regtest_node: Callable[[], Node],
 ) -> None:
-    # a filter is a function of its block and its ancestry, neither of
-    # which a reorg changes, so there is nothing here to undo -- and a
-    # branch that comes back is not rebuilt
+    """A reorg leaves a stepped-over branch's own filters untouched.
+
+    A filter is a function of its block and its ancestry, neither of
+    which a reorg changes, so there is nothing here to undo -- and a
+    branch that comes back is not rebuilt.
+    """
     node = regtest_node()
     short = a_chain(node, 2)
     filter_index = node.chainstate.filter_index
@@ -203,6 +241,7 @@ def test_a_block_stepped_over_keeps_the_filter_it_had(
 def test_nothing_is_answered_for_a_block_that_is_not_indexed(
     regtest_node: Callable[[], Node],
 ) -> None:
+    """Every getter answers `None` for a hash the index has never seen."""
     node = regtest_node()
     filter_index = node.chainstate.filter_index
     unknown = b"\x11" * 32
@@ -214,6 +253,13 @@ def test_nothing_is_answered_for_a_block_that_is_not_indexed(
 def test_a_chain_indexed_before_the_index_existed_is_caught_up(
     regtest_node: Callable[[], Node],
 ) -> None:
+    """catch_up rebuilds every filter and header a chain is missing, unchanged.
+
+    With the whole chain's filters and headers deleted, catch_up
+    reports building all of them and writes them rather than only
+    holding them pending, and each rebuilt header matches what was
+    stored the first time.
+    """
     node = regtest_node()
     chain = a_chain(node, 3)
     filter_index = node.chainstate.filter_index
@@ -241,6 +287,7 @@ def test_a_chain_indexed_before_the_index_existed_is_caught_up(
 def test_a_chain_that_is_already_indexed_is_not_rebuilt(
     regtest_node: Callable[[], Node],
 ) -> None:
+    """catch_up on a fully indexed chain builds nothing and returns 0."""
     node = regtest_node()
     a_chain(node, 2)
     assert (
@@ -254,9 +301,12 @@ def test_a_chain_that_is_already_indexed_is_not_rebuilt(
 def test_a_catch_up_that_cannot_reach_a_block_says_so(
     regtest_node: Callable[[], Node],
 ) -> None:
-    # the block is on the active chain and its octets are not on disk,
-    # so no filter can be built for it and none for anything after it:
-    # the next block's header chains onto this one's
+    """catch_up raises when a block on the active chain has no octets stored.
+
+    The block is on the active chain and its octets are not on disk,
+    so no filter can be built for it and none for anything after it:
+    the next block's header chains onto this one's.
+    """
     node = regtest_node()
     (block,) = a_chain(node, 1)
     filter_index = node.chainstate.filter_index
@@ -274,6 +324,7 @@ def test_a_catch_up_that_cannot_reach_a_block_says_so(
 def test_an_index_survives_the_node_being_closed_and_opened(
     regtest_node: Callable[[], Node],
 ) -> None:
+    """A filter header persists across the node closing and reopening."""
     node = regtest_node()
     (block,) = a_chain(node, 1)
     header = node.chainstate.filter_index.get_header(block.header.hash)
@@ -289,9 +340,13 @@ def test_an_index_survives_the_node_being_closed_and_opened(
 def test_a_filter_index_reads_only_its_own_keys(
     regtest_node: Callable[[], Node],
 ) -> None:
-    # BlockIndex.init_from_db walks the whole database and stops at the
-    # first key that is not a `blkinfo-`, so what this writes has to
-    # sort after those or the block index would stop short of its own
+    """The block index still reads its own chain with a filter index present.
+
+    BlockIndex.init_from_db walks the whole database and stops at the
+    first key that is not a `blkinfo-`, so what the filter index writes
+    has to sort after those or the block index would stop short of its
+    own chain.
+    """
     node = regtest_node()
     a_chain(node, 1)
     node.chainstate.close()
@@ -307,9 +362,12 @@ def test_a_filter_index_reads_only_its_own_keys(
 def test_the_index_is_caught_up_before_the_node_is_built(
     regtest_node: Callable[[], Node],
 ) -> None:
-    # Node.__init__ is where the two databases meet, and a node that
-    # advertises the service bit with a half-built index would be
-    # promising filters it cannot serve
+    """Every filter missing at start-up is rebuilt before Node exists.
+
+    Node.__init__ is where the two databases meet, and a node that
+    advertises the service bit with a half-built index would be
+    promising filters it cannot serve.
+    """
     node = regtest_node()
     chain = a_chain(node, 2)
     filter_index = node.chainstate.filter_index
@@ -331,10 +389,13 @@ def test_the_index_is_caught_up_before_the_node_is_built(
 def test_a_block_that_does_not_connect_leaves_no_filter_behind(
     regtest_node: Callable[[], Node],
 ) -> None:
-    # the index is written in the chainstate's own write batch, so a
-    # block that fails validation has to leave it as it was: a filter
-    # held for a block the chain does not have would be answered to a
-    # peer asking about the block that did connect at that height
+    """A block that fails validation leaves no pending or stored filter.
+
+    The index is written in the chainstate's own write batch, so a
+    block that fails validation has to leave it as it was: a filter
+    held for a block the chain does not have would be answered to a
+    peer asking about the block that did connect at that height.
+    """
     node = regtest_node()
     chain = a_chain(node, 2)
     filter_index = node.chainstate.filter_index
@@ -357,12 +418,15 @@ def test_a_block_that_does_not_connect_leaves_no_filter_behind(
 def test_a_batch_that_fails_partway_leaves_nothing_of_the_blocks_before_it(
     regtest_node: Callable[[], Node],
 ) -> None:
-    # Several blocks reach the chainstate in one write batch only as a
-    # fork: a block on the tip is a candidate on its own and connects
-    # by itself. So the node is put on a short chain and offered a
-    # heavier branch whose last block does not validate -- the two
-    # before it are indexed and pending when it raises, and the whole
-    # batch has to go, filters included.
+    """A batch whose last block fails leaves no filter for any block in it.
+
+    Several blocks reach the chainstate in one write batch only as a
+    fork: a block on the tip is a candidate on its own and connects by
+    itself. So the node is put on a short chain and offered a heavier
+    branch whose last block does not validate -- the two before it are
+    indexed and pending when it raises, and the whole batch has to go,
+    filters included.
+    """
     node = regtest_node()
     a_chain(node, 2)
     on_chain = list(node.chainstate.block_index.active_chain)
@@ -483,11 +547,14 @@ def test_the_index_holds_the_filters_this_tree_derived_at_scale(
 
 
 def test_the_testnet_genesis_block_this_node_builds_is_the_one_core_filtered() -> None:
-    # chains.py builds the genesis block out of a coinbase it writes
-    # rather than parsing one, and row 0 of Core's file is that block:
-    # what the filter says is that the transaction this node made is the
-    # transaction the network has. It is the one block a peer never
-    # serves, so nothing else would ever catch it being wrong.
+    """The testnet genesis block this node builds matches Core's, byte for byte.
+
+    chains.py builds the genesis block out of a coinbase it writes
+    rather than parsing one, and row 0 of Core's file is that block:
+    what the filter says is that the transaction this node made is the
+    transaction the network has. It is the one block a peer never
+    serves, so nothing else would ever catch it being wrong.
+    """
     _, block_hash, block_hex, _, previous, expected, header = _CORE_VECTORS[0][:7]
     genesis_block = TestNet().genesis_block
     assert genesis_block.header.hash.hex() == block_hash
@@ -501,11 +568,14 @@ def test_the_testnet_genesis_block_this_node_builds_is_the_one_core_filtered() -
 def test_the_header_is_written_before_the_filter(
     regtest_node: Callable[[], Node],
 ) -> None:
-    # both skip guards ask get_filter, so a filter on disk without its
-    # header is the state nothing repairs: the block is skipped for
-    # ever, its child cannot be indexed, and the datadir will not open.
-    # The pair goes in one atomic write, and the order is what keeps the
-    # survivable half survivable if it ever stops being one.
+    """`_write` puts a block's cfheader key before its cfilter key.
+
+    Both skip guards ask get_filter, so a filter on disk without its
+    header is the state nothing repairs: the block is skipped for
+    ever, its child cannot be indexed, and the datadir will not open.
+    The pair goes in one atomic write, and the order is what keeps the
+    survivable half survivable if it ever stops being one.
+    """
     node = regtest_node()
     filter_index = node.chainstate.filter_index
     (block,) = generate_random_chain(1, GENESIS.hash)
@@ -524,6 +594,7 @@ def test_the_header_is_written_before_the_filter(
 def test_the_pair_reaches_the_database_as_one_write(
     regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """`finalize` reaches the database exactly once for one pending block."""
     node = regtest_node()
     filter_index = node.chainstate.filter_index
     (block,) = generate_random_chain(1, GENESIS.hash)
@@ -554,8 +625,12 @@ def test_the_pair_reaches_the_database_as_one_write(
 def test_a_header_left_without_its_filter_is_simply_rebuilt(
     regtest_node: Callable[[], Node],
 ) -> None:
-    # the survivable half of the pair, and the reason the order above is
-    # the one it is: the block is built again and answers the same
+    """A header left without its filter is rebuilt by catch_up, unchanged.
+
+    The survivable half of the pair, and the reason the write order in
+    finalize is the one it is: the block is built again and answers
+    the same header it had before.
+    """
     node = regtest_node()
     (block,) = a_chain(node, 1)
     filter_index = node.chainstate.filter_index
@@ -571,9 +646,14 @@ def test_a_header_left_without_its_filter_is_simply_rebuilt(
 def test_a_long_catch_up_writes_as_it_goes(
     regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # it runs inside Node.__init__, so holding the whole index in memory
-    # is what a mainnet-sized chain cannot afford, and writing nothing
-    # until the end is what makes an interrupted catch-up start over
+    """catch_up flushes at `_CATCH_UP_BATCH` rather than holding it all pending.
+
+    It runs inside Node.__init__, so holding the whole index in memory
+    is what a mainnet-sized chain cannot afford, and writing nothing
+    until the end is what makes an interrupted catch-up start over.
+    With the batch size patched to 2, `pending` never grows past it,
+    and something is on disk before the whole walk finishes.
+    """
     node = regtest_node()
     chain = a_chain(node, 4)
     filter_index = node.chainstate.filter_index
@@ -603,10 +683,13 @@ def test_a_long_catch_up_writes_as_it_goes(
 def test_the_filters_of_a_connected_batch_go_in_the_chainstate_s_own_write(
     regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # the filters and the chain advance are one fact, so they are one
-    # write: finalized with the batch update_chain opened rather than
-    # straight to the database beside it, where a crash between the two
-    # would leave a chain whose tip has no filter
+    """Connecting a block finalizes its filter into the chainstate's own write.
+
+    The filters and the chain advance are one fact, so they are one
+    write: finalized with the batch update_chain opened rather than
+    straight to the database beside it, where a crash between the two
+    would leave a chain whose tip has no filter.
+    """
     node = regtest_node()
     filter_index = node.chainstate.filter_index
     given: list[KeyValueStore | None] = []

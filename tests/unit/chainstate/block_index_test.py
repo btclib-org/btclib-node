@@ -2,6 +2,14 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""Unit tests for `btclib_node.chainstate.block_index`.
+
+Covers `BlockInfo`'s own serialization, `calculate_work`, and
+`BlockIndex`'s header validation and indexing, its active chain and
+candidates, `invalidate`, persistence across a restart, and the block
+locators it serves.
+"""
+
 import secrets
 from contextlib import ExitStack
 from datetime import UTC, datetime, timedelta
@@ -26,7 +34,7 @@ if TYPE_CHECKING:
 
 @pytest.fixture
 def a_chainstate(tmp_path: Path) -> Iterator[Callable[[Path | None], Chainstate]]:
-    """A factory for `Chainstate`s at `tmp_path`, closed at teardown.
+    """Build a factory for `Chainstate`s under `tmp_path`, closed at teardown.
 
     A test that checks a chainstate survives being closed and reopened
     closes the first itself and builds a second, at the same path;
@@ -46,6 +54,11 @@ def a_chainstate(tmp_path: Path) -> Iterator[Callable[[Path | None], Chainstate]
 
 
 def unmined_header(previous_block_hash: bytes, bits: bytes) -> BlockHeader:
+    """Build a header claiming `bits`, without mining a nonce that meets it.
+
+    Deliberately not brute_force_nonce'd: the point of every caller here
+    is a header carrying a claim its own hash does not back.
+    """
     # Deliberately not brute_force_nonce'd: the point of each caller is a
     # header carrying a claim its hash does not back.
     return BlockHeader(
@@ -60,6 +73,11 @@ def unmined_header(previous_block_hash: bytes, bits: bytes) -> BlockHeader:
 
 
 def test_calculate_work() -> None:
+    """calculate_work on a mined regtest-genesis-target header returns 2.
+
+    2 is Bitcoin Core's own chainwork for the regtest genesis block,
+    whose target this header carries.
+    """
     header = BlockHeader(
         1,
         "00" * 32,
@@ -77,11 +95,14 @@ def test_calculate_work() -> None:
 def test_reject_header_claiming_work_it_did_not_do(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    # bits 0x03000001 is a target of 1: nearly the whole hash space is
-    # above it, so block_work credits ~2^255 -- more than the real chain
-    # has ever accumulated. Nothing mined it, and the hash does not meet
-    # it, which is the only thing standing between a peer and the best
-    # chain.
+    """A header claiming far more chainwork than it ever mined is refused.
+
+    Bits 0x03000001 is a target of 1: nearly the whole hash space is
+    above it, so block_work credits ~2^255 -- more than the real chain
+    has ever accumulated. Nothing mined it, and the hash does not meet
+    it, which is the only thing standing between a peer and the best
+    chain.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     header = unmined_header(RegTest().genesis.hash, b"\x03\x00\x00\x01")
@@ -95,11 +116,20 @@ def test_reject_header_claiming_work_it_did_not_do(
     assert len(block_index.header_dict) == 1
 
 
-def test_reject_header_above_the_pow_limit(
+def test_a_header_claiming_a_target_it_was_never_mined_to_is_refused(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    # Mainnet's target on a regtest index: easier than the network's
-    # easiest, so no regtest peer would ever offer it.
+    """A header naming mainnet's own limit, unmined, is refused for its hash.
+
+    Mainnet's easiest target is still far harder than regtest's own,
+    so this is well inside the range `assert_valid_pow` allows a regtest
+    header to claim -- it fails the other half of that same check
+    instead, `hash > target`, because an unmined nonce practically never
+    satisfies a target this hard.
+    """
+    # mainnet's easiest target is far harder than regtest's own limit,
+    # so this trips the hash-versus-target half of assert_valid_pow
+    # rather than the half bounding a claimed target by the chain's own
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     header = unmined_header(RegTest().genesis.hash, b"\x1d\x00\xff\xff")
@@ -112,9 +142,12 @@ def test_reject_header_above_the_pow_limit(
 def test_reject_header_with_zero_target(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    # A zero target is unsatisfiable, and block_work raises on it rather
-    # than reporting the block as free -- so an unchecked one takes the
-    # node down from the wire instead of merely being wrong.
+    """A header naming a zero target is refused rather than treated as free.
+
+    A zero target is unsatisfiable, and block_work raises on it rather
+    than reporting the block as free -- so an unchecked one takes the
+    node down from the wire instead of merely being wrong.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     header = unmined_header(RegTest().genesis.hash, b"\x01\x00\xff\xff")
@@ -127,8 +160,12 @@ def test_reject_header_with_zero_target(
 def test_one_bad_header_refuses_the_whole_batch(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    # Core takes a headers message as a unit, and so does this: the
-    # valid prefix is not indexed either.
+    """One bad header keeps the whole batch, valid prefix included, out.
+
+    Core takes a headers message as a unit, and so does this: the valid
+    prefix ahead of the bad header is not indexed either, though the
+    same headers sent again on their own are.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     chain = generate_random_header_chain(5, RegTest().genesis.hash)
@@ -145,10 +182,14 @@ def test_one_bad_header_refuses_the_whole_batch(
 def test_a_header_with_valid_pow_but_the_wrong_required_target_is_refused(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    # assert_valid_pow and assert_valid_in_context share one except
-    # clause in add_headers; this header trips only the second, so a
-    # test that only ever builds a header failing the first cannot
-    # tell the two apart
+    """A header solved at the wrong target is refused by the contextual check.
+
+    assert_valid_pow and assert_valid_in_context share one except clause
+    in add_headers; this header trips only the second, mining a target
+    harder than regtest's own limit but not the one the chain requires,
+    so a test that only ever builds a header failing the first check
+    could not tell the two apart.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     genesis = RegTest().genesis
@@ -177,9 +218,13 @@ def test_a_header_with_valid_pow_but_the_wrong_required_target_is_refused(
 def test_a_header_with_valid_pow_but_no_later_than_the_median_is_refused(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    # same wiring question as above, tripped by the other branch of
-    # assert_valid_in_context: this header carries the required target
-    # and a solved nonce, and only its timestamp is wrong
+    """A header solved and correctly targeted, but too early, is refused.
+
+    Same wiring question as above, tripped by the other branch of
+    assert_valid_in_context: this header carries the required target
+    and a solved nonce, and only its timestamp -- the genesis' own, no
+    later than the median of itself alone -- is wrong.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     genesis = RegTest().genesis
@@ -203,6 +248,11 @@ def test_a_header_with_valid_pow_but_no_later_than_the_median_is_refused(
 def test_add_headers_returns_the_batch_s_own_tip(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
+    """add_headers answers with the batch's own tip, new or already known.
+
+    Sending the same batch again, once every header in it is already
+    indexed, answers with the same tip rather than `None`.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     chain = generate_random_header_chain(5, RegTest().genesis.hash)
@@ -214,11 +264,14 @@ def test_add_headers_returns_the_batch_s_own_tip(
 def test_add_headers_resumes_from_a_fork_s_own_tip_not_the_best_chain(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    # header_index only moves for a header extending it or beating its
-    # chainwork, so a fork arriving below the active chain's tip is
-    # indexed without moving it: a caller resuming from header_index's
-    # own locator would ask for this same batch again and never reach
-    # further into the fork. btclib-org/btclib-node#122
+    """A fork below the active chain's own tip does not move header_index.
+
+    header_index only moves for a header extending it or beating its
+    chainwork, so add_headers' own return value -- the fork's own tip,
+    not header_index's -- is what a caller has to resume a locator from,
+    or it would ask for this same batch again and never reach further
+    into the fork. btclib-org/btclib-node#122
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     active = generate_random_header_chain(5, RegTest().genesis.hash)
@@ -232,6 +285,13 @@ def test_add_headers_resumes_from_a_fork_s_own_tip_not_the_best_chain(
 
 
 def test_simple_init(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
+    """A freshly built index matches one reloaded from the same store.
+
+    2000 headers are indexed, the store is closed, and a second
+    `BlockIndex` opened on the same path agrees on every field
+    `init_from_db` rebuilds, chainwork included -- recomputed rather
+    than persisted (btclib-org/btclib-node#201).
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     block_index.add_headers(generate_random_header_chain(2000, RegTest().genesis.hash))
@@ -248,6 +308,13 @@ def test_simple_init(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
 
 
 def test_init_with_fork(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
+    """A reloaded index agrees on a forked chain too, candidates included.
+
+    A 2000-header active chain and a five-header fork off its tenth
+    block from the tip both survive a close and reopen, `header_dict`,
+    `header_index`, `active_chain` and `block_candidates` agreeing
+    between the two.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
@@ -266,6 +333,12 @@ def test_init_with_fork(a_chainstate: Callable[[Path | None], Chainstate]) -> No
 
 
 def test_add_headers_fork(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
+    """header_index grows by the whole batch, chain and fork alike.
+
+    A 2000-header chain and a 200-header fork off its eleventh block
+    from the tip are both indexed, and header_index ends up holding
+    every one of the 2190 distinct headers plus the genesis.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
@@ -278,6 +351,13 @@ def test_add_headers_fork(a_chainstate: Callable[[Path | None], Chainstate]) -> 
 def test_generate_block_candidates(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
+    """Marking a chain in_active_chain leaves only the fork as a candidate.
+
+    Once every header of the 2000-header chain is set
+    `in_active_chain`, a reload's `generate_block_candidates` rebuilds
+    `block_candidates` from what is left: the 200-header fork, minus
+    the ten blocks its own branch point sits before the tip.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
@@ -295,6 +375,13 @@ def test_generate_block_candidates(
 def test_generate_block_candidates_2(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
+    """Marking the fork invalid leaves the whole active chain as candidates.
+
+    With the 200-header fork marked `invalid` instead, a reload's
+    `generate_block_candidates` counts every header of the 2000-header
+    chain: `valid_header` status alone is what qualifies a header, and
+    the active chain never had its own status set to anything else here.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
@@ -312,12 +399,15 @@ def test_generate_block_candidates_2(
 def test_invalidate_marks_every_header_indexed_on_it_not_only_candidates(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    # a header enters header_dict, at valid_header, whenever it merely
-    # arrives -- block_candidates only holds the ones whose own
-    # cumulative chainwork individually cleared the active chain's at
-    # the moment they arrived, so a real descendant that never did is
-    # only reached by walking `children`, not the deque:
-    # btclib-org/btclib-node#125
+    """`invalidate` reaches a whole lineage, not only its block_candidates.
+
+    A header enters header_dict, at valid_header, whenever it merely
+    arrives -- block_candidates only holds the ones whose own
+    cumulative chainwork individually cleared the active chain's at
+    the moment they arrived, so a real descendant that never did is
+    only reached by walking `children`, not the deque:
+    btclib-org/btclib-node#125.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     active = generate_random_header_chain(5, RegTest().genesis.hash)
@@ -349,6 +439,13 @@ def test_invalidate_marks_every_header_indexed_on_it_not_only_candidates(
 def test_a_header_built_on_an_invalid_parent_is_invalid_and_not_a_candidate(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
+    """A header extending an invalidated parent is indexed invalid on arrival.
+
+    Invalidating a chain's first header, then sending a header that
+    extends its second, still succeeds -- add_headers takes the batch --
+    but the new header is filed `invalid` from the start and never
+    enters `block_candidates`.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2, RegTest().genesis.hash)
@@ -367,11 +464,14 @@ def test_a_header_built_on_an_invalid_parent_is_invalid_and_not_a_candidate(
 def test_invalidate_moves_header_index_off_the_chain_it_was_pointing_at(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    # header_index is the best known header chain for locator/announce
-    # purposes, tracked independently of block_candidates and weighed
-    # purely by chainwork -- so invalidating the chain it happened to
-    # end on left it pointing at a chain this node has already refused.
-    # btclib-org/btclib-node#218
+    """Invalidating header_index's own tip moves header_index off that chain.
+
+    header_index is the best known header chain for locator/announce
+    purposes, tracked independently of block_candidates and weighed
+    purely by chainwork -- so invalidating the chain it happened to
+    end on leaves it no longer pointing at a chain this node has
+    refused. btclib-org/btclib-node#218
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     chain = generate_random_header_chain(3, RegTest().genesis.hash)
@@ -388,10 +488,14 @@ def test_invalidate_moves_header_index_off_the_chain_it_was_pointing_at(
 def test_invalidate_recomputes_header_index_onto_the_next_best_surviving_chain(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    # the fallback is not always the active chain: a rescan has to pick
-    # whichever surviving chain now has the most work, the same way
-    # Core's InvalidateBlock (src/validation.cpp) recomputes
-    # m_best_header. btclib-org/btclib-node#218
+    """Invalidating header_index's chain moves it onto the best surviving one.
+
+    The fallback is not always the active chain: a seven-header fork
+    with more work than the five-header active chain is what
+    header_index recomputes onto once the fork itself is invalidated --
+    the same way Core's InvalidateBlock (src/validation.cpp) recomputes
+    m_best_header. btclib-org/btclib-node#218
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     active = generate_random_header_chain(5, RegTest().genesis.hash)
@@ -412,11 +516,13 @@ def test_invalidate_recomputes_header_index_onto_the_next_best_surviving_chain(
 def test_a_batch_extending_an_invalidated_chain_does_not_move_header_index(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    # add_headers's own header_index update has to read the same
-    # invalid flag block_candidates already does, or a peer sending
-    # more of a chain this node has already refused keeps growing what
-    # this index reports as its best known header chain.
-    # btclib-org/btclib-node#218
+    """More headers on an already-invalidated chain never move header_index.
+
+    add_headers' own header_index update has to read the same invalid
+    flag block_candidates already does, or a peer sending more of a
+    chain this node has already refused keeps growing what this index
+    reports as its best known header chain. btclib-org/btclib-node#218
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2, RegTest().genesis.hash)
@@ -433,9 +539,14 @@ def test_a_batch_extending_an_invalidated_chain_does_not_move_header_index(
 def test_invalidated_headers_stay_out_of_header_index_after_a_restart(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    # generate_header_index rebuilds from the persisted BlockStatus on
-    # every start-up, and used to do so without reading it at all.
-    # btclib-org/btclib-node#218
+    """A restart's rebuilt header_index still excludes an invalidated chain.
+
+    generate_header_index rebuilds from the persisted BlockStatus on
+    every start-up, so a chain invalidated before the restart is
+    excluded again rather than reappearing because nothing in the
+    fresh index remembers the earlier invalidate call.
+    btclib-org/btclib-node#218
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     chain = generate_random_header_chain(3, RegTest().genesis.hash)
@@ -453,10 +564,15 @@ def test_invalidated_headers_stay_out_of_header_index_after_a_restart(
 def test_first_candidate_skips_a_hole_behind_a_downloaded_tip(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    # get_first_candidate used to ask only whether a candidate's own tip
-    # had arrived: a branch missing a block behind it passed that check
-    # and update_chain then stalled on the hole every pass, leaving
-    # nothing else able to connect: btclib-org/btclib-node#121
+    """get_first_candidate skips a branch downloaded only at its own tip.
+
+    get_first_candidate used to ask only whether a candidate's own tip
+    had arrived: a branch with a downloaded tip but an undownloaded
+    block behind it passed that check and update_chain then stalled on
+    the hole every pass, leaving nothing else able to connect --
+    btclib-org/btclib-node#121. The complete one-header branch here is
+    what it returns instead.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     hole = generate_random_header_chain(2, RegTest().genesis.hash)
@@ -474,6 +590,12 @@ def test_first_candidate_skips_a_hole_behind_a_downloaded_tip(
 
 
 def test_block_info_serialization() -> None:
+    """A `BlockInfo` round-trips through serialize/deserialize for every status.
+
+    Every `BlockStatus`, both `downloaded` values, and 63 distinct
+    `index` values are each built into a `BlockInfo` and checked against
+    the record `deserialize` parses back from its own `serialize`.
+    """
     header = BlockHeader(
         1,
         "00" * 32,
@@ -497,6 +619,13 @@ def test_block_info_serialization() -> None:
 
 
 def test_add_old_header(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
+    """Re-sending an already-indexed header answers with its own hash.
+
+    add_headers on a single header already inside a 2000-header chain
+    returns that header's own hash -- a real point a caller could
+    resume from -- and leaves `header_dict`, `header_index` and
+    `block_candidates` at the sizes the original batch already set.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
@@ -512,9 +641,13 @@ def test_add_old_header(a_chainstate: Callable[[Path | None], Chainstate]) -> No
 def test_add_headers_connecting_to_nothing_known_is_not_a_refusal(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    # every header here is validly mined; none of them fails on its own
-    # terms, so this is the "connects to nothing" branch and not the
-    # "a header failed a check" one -- it does not raise
+    """A batch connecting to nothing known answers `None` rather than raising.
+
+    Every header here is validly mined; none of them fails on its own
+    terms, so this is the "connects to nothing" branch and not the "a
+    header failed a check" one, and it leaves the existing index
+    untouched.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
@@ -529,9 +662,13 @@ def test_add_headers_connecting_to_nothing_known_is_not_a_refusal(
 def test_a_header_before_its_own_new_parent_in_the_batch_refuses_the_batch(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    # a peer is not required to send a headers message in strict
-    # parent-before-child order, and a compliant one reordering
-    # internally produces exactly this: btclib-org/btclib-node#214
+    """A batch carrying a child before its own new parent is refused whole.
+
+    A peer is not required to send a headers message in strict
+    parent-before-child order, and a compliant one reordering
+    internally produces exactly this: btclib-org/btclib-node#214. Both
+    headers stay out of `header_dict`.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     parent, child = generate_random_header_chain(2, RegTest().genesis.hash)
@@ -544,6 +681,12 @@ def test_a_header_before_its_own_new_parent_in_the_batch_refuses_the_batch(
 
 
 def test_add_headers_short(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
+    """Ten batches of 2000 headers each add up the same as one big one.
+
+    Sent 2000 at a time, a 20000-header chain still leaves
+    `header_dict`, `header_index` and `block_candidates` at the sizes
+    a single batch of the same chain would.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     length = 10
@@ -556,6 +699,7 @@ def test_add_headers_short(a_chainstate: Callable[[Path | None], Chainstate]) ->
 
 
 def test_add_headers_medium(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
+    """The same batching check as above, at 40 batches of 2000 headers."""
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     length = 40  # 400
@@ -568,6 +712,7 @@ def test_add_headers_medium(a_chainstate: Callable[[Path | None], Chainstate]) -
 
 
 def test_add_headers_long(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
+    """The same batching check as above, at 50 batches of 2000 headers."""
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     length = 50  # 2000
@@ -580,6 +725,12 @@ def test_add_headers_long(a_chainstate: Callable[[Path | None], Chainstate]) -> 
 
 
 def test_long_init(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
+    """A 100000-header index reloads from disk agreeing on every field.
+
+    The same close-and-reopen check as test_simple_init, at 50 batches
+    of 2000 headers each, so a start-up rebuild is also exercised at a
+    size closer to what a real sync produces.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     length = 50  # 2000
@@ -599,6 +750,11 @@ def test_long_init(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
 
 
 def test_block_candidates(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
+    """A freshly indexed 512-header chain is entirely its own candidates.
+
+    Nothing on it is downloaded or on the active chain yet, so
+    get_download_candidates returns every one of its headers, in order.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     chain = generate_random_header_chain(512, RegTest().genesis.hash)
@@ -607,6 +763,7 @@ def test_block_candidates(a_chainstate: Callable[[Path | None], Chainstate]) -> 
 
 
 def test_block_candidates_2(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
+    """The same check as above, at exactly MAX_DOWNLOAD_WINDOW headers."""
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     chain = generate_random_header_chain(1024, RegTest().genesis.hash)
@@ -615,6 +772,12 @@ def test_block_candidates_2(a_chainstate: Callable[[Path | None], Chainstate]) -
 
 
 def test_block_candidates_3(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
+    """Once the chain is active, only its fork's headers are candidates.
+
+    With the 2000-header chain marked `in_active_chain` and reloaded,
+    get_download_candidates on the reopened index answers with the
+    200-header fork alone, in order.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
@@ -630,6 +793,12 @@ def test_block_candidates_3(a_chainstate: Callable[[Path | None], Chainstate]) -
 
 
 def test_block_locators(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
+    """A 24-header chain's locator carries 14 entries.
+
+    Ten dense entries near the tip, then a step that doubles each time,
+    reaching back to the genesis in four more -- the shape
+    get_block_locator_hashes' own docstring names.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     chain = generate_random_header_chain(24, RegTest().genesis.hash)
@@ -639,6 +808,7 @@ def test_block_locators(a_chainstate: Callable[[Path | None], Chainstate]) -> No
 
 
 def test_block_locators_2(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
+    """A locator naming only the genesis returns the whole chain after it."""
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
@@ -650,6 +820,11 @@ def test_block_locators_2(a_chainstate: Callable[[Path | None], Chainstate]) -> 
 
 
 def test_block_locators_3(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
+    """get_headers_from_locators stops at the requested `stop` hash.
+
+    Asked for what follows the genesis and to stop at the chain's own
+    1000th header, the answer ends there rather than running to the tip.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
@@ -662,6 +837,12 @@ def test_block_locators_3(a_chainstate: Callable[[Path | None], Chainstate]) -> 
 
 
 def test_block_locators_4(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
+    """The first known locator resumes the answer, whatever order it is in.
+
+    Of the two locators offered, the chain's own unindexed tip and the
+    genesis, only the genesis is known, and the answer resumes from it
+    regardless of its position in the list.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
@@ -675,8 +856,12 @@ def test_block_locators_4(a_chainstate: Callable[[Path | None], Chainstate]) -> 
 def test_only_the_tip_can_leave_the_active_chain(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    # a reorg unwinds from the tip: removing anything else would leave
-    # the chain with a hole nothing else here checks for
+    """remove_from_active_chain refuses anything but the chain's own tip.
+
+    A reorg unwinds from the tip: removing anything else would leave
+    the chain with a hole nothing else here checks for, so it raises
+    `ChainstateInconsistencyError` instead.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     chain = generate_random_header_chain(3, RegTest().genesis.hash)
@@ -696,6 +881,7 @@ def test_only_the_tip_can_leave_the_active_chain(
 def test_nothing_is_offered_when_there_are_no_candidates(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
+    """get_first_candidate answers `None` on a genesis-only index."""
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     assert block_index.get_first_candidate() is None
@@ -705,9 +891,12 @@ def test_nothing_is_offered_when_there_are_no_candidates(
 def test_no_candidate_is_offered_when_none_outweighs_the_chain(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    # a header is a candidate when it arrives and stops being one once
-    # the active chain has caught up to it: equal work is not more work,
-    # or the node would keep offering the block it is already on
+    """get_first_candidate stops offering a chain once caught up to.
+
+    A header is a candidate when it arrives and stops being one once
+    the active chain has caught up to it: equal work is not more work,
+    or the node would keep offering the block it is already on.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     chain = generate_random_header_chain(3, RegTest().genesis.hash)
@@ -723,6 +912,12 @@ def test_no_candidate_is_offered_when_none_outweighs_the_chain(
 def test_headers_from_a_locator_stop_where_asked(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
+    """get_headers_from_locators resumes from the first known locator.
+
+    Stopping at the fifth header of ten answers only those five; an
+    unknown locator ahead of the genesis in the list is skipped rather
+    than failing the call; and no known locator at all answers nothing.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     chain = generate_random_header_chain(10, RegTest().genesis.hash)
@@ -746,9 +941,13 @@ def test_headers_from_a_locator_stop_where_asked(
 def test_a_header_that_does_not_outweigh_the_chain_is_not_a_candidate(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    # a candidate is a chain worth switching to. A fork branching low
-    # carries less accumulated work than the tip, so it is indexed --
-    # it may yet be extended -- without being offered for connection.
+    """A fork with less work than the active chain is indexed but not offered.
+
+    A candidate is a chain worth switching to. A fork branching off the
+    genesis carries less accumulated work than a ten-header active
+    chain, so it is indexed -- it may yet be extended -- without being
+    added to `block_candidates`.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     chain = generate_random_header_chain(10, RegTest().genesis.hash)
@@ -767,9 +966,12 @@ def test_a_header_that_does_not_outweigh_the_chain_is_not_a_candidate(
 def test_a_candidate_the_chain_has_caught_up_with_is_not_downloaded_again(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    # the deque is not emptied when a branch connects, so what keeps a
-    # connected block from being fetched all over again is the work it
-    # is weighed against
+    """A branch the active chain has connected stops appearing as a candidate.
+
+    The deque is not emptied when a branch connects, so what keeps a
+    connected block from being fetched all over again is the work it
+    is weighed against, not its removal from `block_candidates`.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     chain = generate_random_header_chain(3, RegTest().genesis.hash)
@@ -785,9 +987,12 @@ def test_a_candidate_the_chain_has_caught_up_with_is_not_downloaded_again(
 def test_a_block_already_held_is_left_out_of_what_is_asked_for(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    # the walk back from a candidate goes through blocks this node may
-    # already have: they are what it is walking towards, and asking a
-    # peer for them again is the download running twice
+    """get_download_candidates skips a block already marked downloaded.
+
+    The walk back from a candidate goes through blocks this node may
+    already have: they are what it is walking towards, and asking a
+    peer for them again is the download running twice.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     chain = generate_random_header_chain(3, RegTest().genesis.hash)
@@ -801,10 +1006,13 @@ def test_a_block_already_held_is_left_out_of_what_is_asked_for(
 def test_the_locators_of_a_node_that_holds_only_the_genesis_block(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
-    # the list ends at the oldest header this node has, and here the
-    # walk back has already named it, it being the newest as well. What
-    # keeps it off the end a second time -- and the peer from being
-    # asked the same question twice -- is the guard on that last append
+    """get_block_locator_hashes on a genesis-only index names the genesis once.
+
+    The list ends at the oldest header this node has, and here the walk
+    back has already named it, it being the newest as well. What keeps
+    it off the end a second time -- and the peer from being asked the
+    same question twice -- is the guard on that last append.
+    """
     chainstate = a_chainstate(None)
     block_index = chainstate.block_index
     assert block_index.get_block_locator_hashes() == [RegTest().genesis.hash]
