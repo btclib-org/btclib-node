@@ -933,6 +933,11 @@ def test_a_pong_with_the_wrong_nonce_is_a_peer_not_speaking_the_protocol() -> No
 
 
 def test_a_pong_nobody_pinged_for_is_ignored() -> None:
+    """A `pong` with no `ping` outstanding at all is ignored, not discouraged.
+
+    `ping_nonce` starts at zero, so this is the case above with no
+    outstanding round trip to mismatch against.
+    """
     node = a_handshake_node()
     peer = a_peer()
     pong(node, Pong(1234).serialize(), peer)
@@ -942,6 +947,12 @@ def test_a_pong_nobody_pinged_for_is_ignored() -> None:
 
 
 def test_the_addresses_a_peer_sends_are_kept() -> None:
+    """Both `addr` and `addrv2` land the same addresses in the peer database.
+
+    BIP155's record either way, the addr version 1 entry being
+    translated back into one; and without the timestamp the peer
+    quoted, which is `PeerDB.add_addresses`'s own doing.
+    """
     given = [an_address(1), an_address(2)]
     for callback, message in (
         (addr, Addr([addr_entry(address) for address in given])),
@@ -957,6 +968,18 @@ def test_the_addresses_a_peer_sends_are_kept() -> None:
 
 
 def test_an_octet_past_an_addr_or_addrv2_no_longer_costs_the_peer() -> None:
+    """A trailing octet on `addr` or `addrv2` is parsed past, not a disconnect.
+
+    issue #149: btclib's own assert_no_trailing raises out of
+    Addr.parse/AddrV2.parse for exactly this, which main.handle_p2p
+    turns into a disconnect if the callback lets it through. Core does
+    not disconnect here (net_processing.cpp's ProcessMessage reads what
+    it wants out of vRecv and never checks for anything left), and this
+    node now matches that for the two of the three messages issue #149
+    is about where it can without a second copy of btclib's codec --
+    Addr and AddrV2 accept a stream, and btclib's own assert_no_trailing
+    docstring calls a stream "the caller's", nothing past it checked.
+    """
     # issue #149: btclib's own assert_no_trailing raises out of
     # Addr.parse/AddrV2.parse for exactly this, which main.handle_p2p
     # turns into a disconnect if the callback lets it through. Core does
@@ -980,6 +1003,13 @@ def test_an_octet_past_an_addr_or_addrv2_no_longer_costs_the_peer() -> None:
 
 
 def test_an_address_of_a_network_nobody_here_has_heard_of_is_kept() -> None:
+    """An addrv2 network id nobody recognizes is stored rather than rejected.
+
+    What this used to cost: the network id was an enumeration over the
+    ids BIP155 had assigned, so a yggdrasil peer raised out of the
+    parser and p2p.main turned that into a disconnect. The whole point
+    of the format is that a new network needs no new message.
+    """
     # what this used to cost: the network id was an enumeration over the
     # ids BIP155 had assigned, so a yggdrasil peer raised out of the
     # parser and p2p.main turned that into a disconnect. The whole point
@@ -998,6 +1028,7 @@ def test_an_address_of_a_network_nobody_here_has_heard_of_is_kept() -> None:
 
 
 def test_a_notfound_is_logged_rather_than_held_against_the_peer() -> None:
+    """A `notfound` is logged as a warning, and never costs the peer anything."""
     logged, warning = log_recorder()
     node = a_handshake_node()
     node.logger.warning = warning
@@ -1014,6 +1045,14 @@ def test_a_notfound_is_logged_rather_than_held_against_the_peer() -> None:
 def test_a_notfound_frees_the_transaction_it_names_to_be_asked_of_someone_else() -> (
     None
 ):
+    """A `notfound` clears the tx entry it names, but leaves a block entry alone.
+
+    `DownloadManager.tx_download`'s own in-flight table, so an ask this
+    peer will not answer is not held against it forever; a
+    `MSG_BLOCK` item carries no such bookkeeping to clear, blocks never
+    having been requested through a mechanism a `notfound` could
+    complete.
+    """
     # `DownloadManager.tx_download`'s own in-flight table, so an ask
     # this peer will not answer is not held against it forever
     node = a_handshake_node()
@@ -1032,6 +1071,7 @@ def test_a_notfound_frees_the_transaction_it_names_to_be_asked_of_someone_else()
 
 
 def test_a_reject_names_the_transaction_it_is_about() -> None:
+    """A `reject` is logged with its code, its reason and the txid it is about."""
     logged: list[str] = []
     node = a_handshake_node()
     node.logger.warning = logged.append
@@ -1047,6 +1087,12 @@ def test_a_reject_names_the_transaction_it_is_about() -> None:
 
 
 def test_a_reject_survives_the_wire() -> None:
+    """A `Reject` framed onto the wire and parsed back is the same object.
+
+    The hash is what a reject is about, and a symmetric byte-order bug
+    would not notice it coming back reversed -- `bytes(range(32))` has
+    no repeated byte to hide one.
+    """
     # the hash is what a reject is about, and a symmetric one would not
     # notice it coming back reversed
     message = Reject("tx", RejectCode.insufficientfee, "no", bytes(range(32)))
@@ -1054,6 +1100,11 @@ def test_a_reject_survives_the_wire() -> None:
 
 
 def a_transaction() -> Tx:
+    """Build a random transaction carrying a witness.
+
+    With a witness, so that a txid and a wtxid are different bytes and
+    an answer naming the wrong one cannot pass.
+    """
     # with a witness, so that a txid and a wtxid are different bytes and
     # an answer naming the wrong one cannot pass
     transaction = generate_random_transaction()
@@ -1068,6 +1119,11 @@ def a_data_node(
     block_db: Any = None,
     status: NodeStatus = NodeStatus.BlockSynced,
 ) -> Any:
+    """Build a node whose mempool, chain and download manager are real enough to test.
+
+    `BlockSynced` by default, since a transaction callback only accepts
+    once the chain is caught up; `status` moves that to test the gate.
+    """
     node = a_handshake_node(status=status)
     node.mempool = mempool if mempool is not None else Mempool(Logger(debug=True))
     node.chain = RegTest()
@@ -1081,6 +1137,12 @@ def a_data_node(
 def test_a_transaction_that_verifies_is_kept_and_reported(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A transaction `verify_mempool_acceptance` accepts is kept and reported.
+
+    Kept in the mempool, and reported to `download_manager.received_txs`
+    keyed on the sending peer's id, for the download manager's own
+    announce-to-others bookkeeping.
+    """
     monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
     transaction = a_transaction()
     node = a_data_node()
@@ -1093,6 +1155,12 @@ def test_a_transaction_that_verifies_is_kept_and_reported(
 def test_a_transaction_whose_parents_are_missing_is_not_kept(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """`MissingPrevoutError` out of verification drops the transaction quietly.
+
+    This node lacking the parent is not a reason to keep asking or to
+    report anything: it is simply not kept.
+    """
+
     def missing(node: Any, transaction: Any) -> NoReturn:
         raise MissingPrevoutError
 
@@ -1107,6 +1175,16 @@ def test_a_transaction_whose_parents_are_missing_is_not_kept(
 def test_a_transaction_received_before_the_node_is_synced_is_dropped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A transaction arriving before `BlockSynced` is dropped, not the peer.
+
+    #129: a peer's version now always asks for relay, so a
+    transaction sent while this node is still syncing is possible --
+    Core's own reason for the same drop is that the utxo set is not
+    caught up enough to check it, not that the peer misbehaved.
+    verify_mempool_acceptance is patched to accept unconditionally,
+    so the mempool staying empty is the gate firing rather than a
+    coincidental rejection.
+    """
     # #129: a peer's version now always asks for relay, so a
     # transaction sent while this node is still syncing is possible --
     # Core's own reason for the same drop is that the utxo set is not
@@ -1125,6 +1203,12 @@ def test_a_transaction_received_before_the_node_is_synced_is_dropped(
 def test_a_transaction_already_held_is_not_reported_twice(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A transaction already in the mempool is not reported a second time.
+
+    `contains_tx` gates the report ahead of `add_tx`, so a duplicate
+    never reaches `download_manager.received_txs` even though
+    `add_tx` itself would be a harmless no-op for it.
+    """
     monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
     transaction = a_transaction()
     node = a_data_node()
@@ -1136,6 +1220,18 @@ def test_a_transaction_already_held_is_not_reported_twice(
 def test_a_transaction_a_full_mempool_declined_is_not_reported_either(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A transaction the mempool evicts right back out is not reported either.
+
+    add_tx adds this provisionally and evicts it right back out for
+    being the only, and so the worst, transaction held once past
+    bytesize_limit (Mempool._evict_to_limit, btclib-org/btclib-node#294)
+    -- the same transaction the pre-call contains_tx check alone
+    cannot see either way, since it answers False both before the call
+    and after. Reporting it here would queue it for announcement to
+    every other peer, and one that then asks for it gets `notfound`
+    for a transaction this node never actually kept.
+    btclib-org/btclib-node#277
+    """
     # add_tx adds this provisionally and evicts it right back out for
     # being the only, and so the worst, transaction held once past
     # bytesize_limit (Mempool._evict_to_limit, btclib-org/btclib-node#294)
@@ -1155,27 +1251,41 @@ def test_a_transaction_a_full_mempool_declined_is_not_reported_either(
 
 
 class FakeBlockIndex:
+    """A block index stand-in whose answers are fixed and whose calls are recorded."""
+
     def __init__(self, infos: dict[bytes, Any]) -> None:
+        """Answer `get_block_info` from `infos`, and record `marked`/`invalidated` calls."""
         self.infos = infos
         self.marked: list[bytes] = []
         self.invalidated: list[bytes] = []
 
     def get_block_info(self, block_hash: bytes) -> Any:
+        """Return the fixed info this block hash was constructed with."""
         return self.infos[block_hash]
 
     def set_downloaded(self, block_hash: bytes) -> None:
+        """Record that this block hash was marked downloaded."""
         self.marked.append(block_hash)
 
     def invalidate(self, block_hash: bytes) -> None:
+        """Record that this block hash was invalidated."""
         self.invalidated.append(block_hash)
 
 
 def a_block() -> Block:
+    """Build one valid block extending regtest's genesis."""
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     return block
 
 
 def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded() -> None:
+    """A block matching a pending download-queue entry is stored and marked.
+
+    The peer's own bookkeeping clears too: the hash leaves
+    `download_queue`, `last_block_timestamp` advances, and
+    `pending_eviction` drops, since the block this peer was about to be
+    evicted for being slow on has now arrived.
+    """
     block = a_block()
     index = FakeBlockIndex({block.header.hash: SimpleNamespace(downloaded=False)})
     added: list[Block] = []
@@ -1203,6 +1313,7 @@ def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded() -> None:
 
 
 def test_a_block_already_stored_is_not_stored_again() -> None:
+    """A block already marked downloaded is a no-op: not re-added, not re-marked."""
     block = a_block()
     index = FakeBlockIndex({block.header.hash: SimpleNamespace(downloaded=True)})
     added: list[Block] = []
@@ -1221,6 +1332,11 @@ def test_a_block_already_stored_is_not_stored_again() -> None:
 
 
 def a_block_claiming_an_easier_target_than_the_chain_allows(block: Block) -> Block:
+    """Rebuild `block` with `bits` set past regtest's own proof-of-work limit.
+
+    regtest's limit is 7fffff00..., and a target has 32 octets to fit
+    in: 800000... is the next one up that still does.
+    """
     # regtest's limit is 7fffff00..., and a target has 32 octets to fit
     # in: 800000... is the next one up that still does
     header = BlockHeader(
@@ -1236,6 +1352,12 @@ def a_block_claiming_an_easier_target_than_the_chain_allows(block: Block) -> Blo
 
 
 def test_a_block_whose_proof_of_work_does_not_hold_up_is_refused() -> None:
+    """A block whose proof of work fails is invalidated, not stored, and re-raised.
+
+    The raise still reaches main.handle_p2p, which drops the peer;
+    invalidate is what keeps the next one from being asked to send the
+    same block again: btclib-org/btclib-node#77.
+    """
     # the raise still reaches main.handle_p2p, which drops the peer;
     # invalidate is what keeps the next one from being asked to send the
     # same block again: btclib-org/btclib-node#77
@@ -1256,6 +1378,7 @@ def test_a_block_whose_proof_of_work_does_not_hold_up_is_refused() -> None:
 
 
 def test_an_inventory_is_ignored_until_the_blocks_are_synced() -> None:
+    """An `inv` before `BlockSynced` is ignored: nothing is asked for it yet."""
     node = a_data_node(status=NodeStatus.HeaderSynced)
     peer = a_peer()
     inv(node, Inv([Inventory(InventoryType.MSG_BLOCK, b"\x11" * 32)]).serialize(), peer)
@@ -1263,6 +1386,10 @@ def test_an_inventory_is_ignored_until_the_blocks_are_synced() -> None:
 
 
 def test_a_block_announced_is_answered_with_a_getheaders() -> None:
+    """An `inv` naming blocks is answered with `getheaders` stopping at the last one.
+
+    The last one announced: the headers between are what we are after.
+    """
     node = a_data_node()
     peer = a_peer()
     hashes = [b"\x11" * 32, b"\x22" * 32]
@@ -1275,6 +1402,12 @@ def test_a_block_announced_is_answered_with_a_getheaders() -> None:
 
 
 def test_a_transaction_announced_that_we_lack_is_wanted() -> None:
+    """A `wtx` `inv` for a transaction not in the mempool is queued to be asked for.
+
+    Queued onto `download_manager.inv_txs` keyed by the announcing
+    peer's id, and no answer sent directly -- the download manager
+    decides who to ask.
+    """
     transaction = a_transaction()
     node = a_data_node()
     peer = a_peer(id=4)
@@ -1285,6 +1418,7 @@ def test_a_transaction_announced_that_we_lack_is_wanted() -> None:
 
 
 def test_a_transaction_announced_that_we_hold_is_not_wanted() -> None:
+    """A `wtx` `inv` for a transaction already in the mempool is not queued."""
     transaction = a_transaction()
     mempool = Mempool(Logger(debug=True))
     mempool.add_tx(transaction)
@@ -1295,6 +1429,11 @@ def test_a_transaction_announced_that_we_hold_is_not_wanted() -> None:
 
 
 def test_a_transaction_this_node_holds_is_served() -> None:
+    """A `getdata` for a held transaction is served, witness included when asked.
+
+    Which identifier the peer asked by, and whether the answer carries
+    the witness, are two different questions and the codes answer both.
+    """
     transaction = a_transaction()
     mempool = Mempool(Logger(debug=True))
     mempool.add_tx(transaction)
@@ -1315,6 +1454,12 @@ def test_a_transaction_this_node_holds_is_served() -> None:
 
 
 def test_a_transaction_is_not_found_under_the_other_identifier() -> None:
+    """A `getdata` naming the wrong identifier for a held transaction gets `notfound`.
+
+    `MSG_TX` by wtxid, and `MSG_WTX` by txid: the mempool is indexed on
+    the identifier each type actually names, not on either
+    interchangeably.
+    """
     transaction = a_transaction()
     mempool = Mempool(Logger(debug=True))
     mempool.add_tx(transaction)
@@ -1332,6 +1477,11 @@ def test_a_transaction_is_not_found_under_the_other_identifier() -> None:
 
 
 def test_a_transaction_this_node_does_not_hold_gets_a_notfound() -> None:
+    """A `getdata` for a transaction this node never held gets `notfound`.
+
+    Core's own answer to a `getdata` `FindTxForGetData` cannot serve:
+    `vNotFound` in `ProcessGetData`, src/net_processing.cpp.
+    """
     # Core's own answer to a `getdata` `FindTxForGetData` cannot serve:
     # `vNotFound` in `ProcessGetData`, src/net_processing.cpp
     node = a_data_node()
@@ -1344,6 +1494,11 @@ def test_a_transaction_this_node_does_not_hold_gets_a_notfound() -> None:
 
 
 def test_several_misses_batch_into_one_notfound_alongside_the_hits() -> None:
+    """One `getdata` naming a hit and several misses answers both, misses batched.
+
+    The held transaction is sent directly and the misses collect into a
+    single `notfound`, rather than one `notfound` per missing item.
+    """
     transaction = a_transaction()
     mempool = Mempool(Logger(debug=True))
     mempool.add_tx(transaction)
@@ -1363,6 +1518,12 @@ def test_several_misses_batch_into_one_notfound_alongside_the_hits() -> None:
 
 
 def test_a_peer_that_declined_relay_is_not_served_a_transaction_it_asks_for() -> None:
+    """A peer with `relay_tx` false gets no answer to a `getdata` for a transaction.
+
+    Every code it could ask by, because gating one of the three is a
+    peer that gets the same answer by asking a different way -- not
+    even `notfound`, matching Core's own silence on this path.
+    """
     # every code it could ask by, because gating one of the three is a
     # peer that gets the same answer by asking a different way
     transaction = a_transaction()
@@ -1380,6 +1541,12 @@ def test_a_peer_that_declined_relay_is_not_served_a_transaction_it_asks_for() ->
 
 
 def test_a_peer_that_declined_relay_is_still_served_a_block() -> None:
+    """A peer with `relay_tx` false still gets a block it asked for, but no tx.
+
+    One getdata carrying both kinds, so the assertion is that the
+    answer is the block and nothing beside it: relay declined only
+    gates transactions, never blocks.
+    """
     # one getdata carrying both kinds, so the assertion is that the
     # answer is the block and nothing beside it
     block = a_block()
@@ -1401,6 +1568,7 @@ def test_a_peer_that_declined_relay_is_still_served_a_block() -> None:
 
 
 def test_a_block_this_node_holds_is_served() -> None:
+    """A `getdata` for a held block is served, witness included when asked."""
     block = a_block()
     node = a_data_node(block_db=SimpleNamespace(get_block=lambda h: block))
     for type_code, with_witness in (
