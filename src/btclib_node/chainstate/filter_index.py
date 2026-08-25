@@ -57,7 +57,14 @@ _CATCH_UP_BATCH = 500
 
 
 class FilterIndex:
+    """The BIP157/BIP158 filter and header for every connected block.
+
+    The module docstring above is where the keying, the write-batch
+    discipline and the lack of a reorg-time undo are all argued.
+    """
+
     def __init__(self, parent_db: KeyValueStore, chain: Chain, logger: Logger) -> None:
+        """Build the genesis block's own filter, if the store lacks one."""
         self.db = parent_db
         self.logger = logger
 
@@ -186,4 +193,5 @@ class FilterIndex:
         self.pending = {}
 
     def rollback(self) -> None:
+        """Discard whatever `pending` holds, mirroring `finalize`."""
         self.pending = {}

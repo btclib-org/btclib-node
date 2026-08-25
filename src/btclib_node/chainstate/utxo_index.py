@@ -27,7 +27,16 @@ if TYPE_CHECKING:
 
 
 class UtxoIndex:
+    """The set of spendable outputs, staged in memory until `finalize`.
+
+    `removed_utxos` and `updated_utxo_set` hold what a batch of
+    `add_block`/`apply_rev_block` calls has changed since the last
+    `finalize`; the module docstring above is where `add_block`'s own
+    return value is argued.
+    """
+
     def __init__(self, parent_db: KeyValueStore, logger: Logger) -> None:
+        """Start with nothing staged, using `parent_db` for reads and writes."""
         self.db = parent_db
 
         self.removed_utxos: set[bytes] = set()
@@ -36,6 +45,12 @@ class UtxoIndex:
         self.logger = logger
 
     def add_block(self, block: Block) -> tuple[list[tuple[list[TxOut], Tx]], RevBlock]:
+        """Apply `block`'s own spends and creations, staged rather than written.
+
+        Returns each non-coinbase transaction paired with the prevouts
+        its own inputs consumed -- what `interpreter.check_transactions`
+        validates against -- and the `RevBlock` that undoes this call.
+        """
         removed: list[tuple[OutPoint, TxOut]] = []
         added: list[OutPoint] = []
         complete_transactions: list[tuple[list[TxOut], Tx]] = []
@@ -87,6 +102,11 @@ class UtxoIndex:
         return complete_transactions, rev_block
 
     def apply_rev_block(self, rev_block: RevBlock) -> None:
+        """Undo `add_block` for the block `rev_block` was returned for.
+
+        Removes every outpoint it created and restores every prevout it
+        spent, staged the same way `add_block` stages its own changes.
+        """
         for out_point in rev_block.to_remove:
             out_point_bytes = out_point.serialize(check_validity=False)
 
@@ -105,6 +125,7 @@ class UtxoIndex:
             self.updated_utxo_set[out_point.serialize(check_validity=False)] = tx_out
 
     def finalize(self, wb: KeyValueStore | None = None) -> None:
+        """Write every staged change into `wb`, or into `self.db` if none."""
         db = wb or self.db
         for x in self.removed_utxos:
             db.delete(b"utxo-" + x)
@@ -114,5 +135,6 @@ class UtxoIndex:
         self.updated_utxo_set = {}
 
     def rollback(self) -> None:
+        """Discard every staged change, mirroring `finalize`."""
         self.removed_utxos = set()
         self.updated_utxo_set = {}
