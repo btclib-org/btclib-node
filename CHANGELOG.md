@@ -231,6 +231,7 @@ to check the guess.
   per-file-ignore was split into; its own two keys are now removed
   outright rather than narrowed, the family having no finding left
   under either.
+
 ### `tests/unit/p2p/` and `tests/functional/p2p/` get real docstrings (issue #373)
 
 - **Both per-file-ignore keys for the eight-code family are removed
@@ -245,12 +246,10 @@ to check the guess.
   its own scenario with a variable called `pruned` carrying
   `NODE_WITNESS`, where the service `callbacks.version` actually gates
   the drop on is `NODE_NETWORK`; the docstring describes the real gate
-  rather than the variable's own name. This is one of #373's five
-  parallel `tests/**` slices; the
-  `rpc/` bucket under `tests/unit/` and `tests/functional/`, the
-  `tests/unit/`-root enumeration, and `tests/{__init__,conftest,helpers}.py`,
-  remain open at the time of this entry, past what `scripts/**` and
-  `tests/unit/chainstate/` already closed.
+  rather than the variable's own name. This is the last of #373's five
+  parallel `tests/**` slices to close, past `scripts/**`,
+  `tests/unit/chainstate/`, `tests/unit/rpc/`/`tests/functional/rpc/`
+  and `tests/unit/`'s own root-level bucket, all already landed.
 
 ### The docs gate's own remaining gaps close: `[project.urls]`, `local-link-prefix`
 
