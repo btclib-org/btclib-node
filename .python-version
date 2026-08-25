@@ -10,10 +10,11 @@
 # `librt` is a dependency of mypy, a development-only package and not
 # part of the runtime closure at all, and every compiled package in
 # the lock, `librt` included, ships a cp314t wheel too.
-# The pin holds anyway, because nothing here yet spends what free
-# threading buys: that would mean moving Node.worker_pool off
-# multiprocessing and onto threads, a concurrency audit of its own and
-# the open question at btclib-org/btclib-node#306.
+# The pin holds anyway: Node.worker_pool builds a ThreadPool rather
+# than a process Pool where sys._is_gil_enabled() is False
+# (btclib-org/btclib-node#388, building on btclib-org/btclib-node#385),
+# but choosing that at runtime is not the same as switching this
+# interpreter's own default over to 3.14t, which nothing here asks for.
 # btclib-org/btclib-node#112, which asked whether 3.14t was worth it, is
 # answered and closed by this comment.
 # A trailing comment on the version line below would make uv ignore this

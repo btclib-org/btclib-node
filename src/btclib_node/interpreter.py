@@ -7,9 +7,13 @@
 `get_flags` reads which script rules are active at a given height off
 `Config.chain.flags`; `check_transactions` fans a block's inputs out
 across the worker pool and `warm` is what a fresh worker process runs
-once, on `Node.warm_worker_pool`'s dispatch, so the cost of importing
-`btclib.script.engine` is paid before a real check ever needs it
-(btclib-org/btclib-node#262).
+once, under `Node.worker_pool`'s process arm, on `Node.warm_worker_pool`'s
+dispatch, so the cost of importing `btclib.script.engine` is paid before
+a real check ever needs it (btclib-org/btclib-node#262). Under the
+thread arm `_pool_factory` picks on a free-threaded interpreter
+(btclib-org/btclib-node#388), that import is already paid by the time
+this module's own is, so `warm` still runs there but has nothing left to
+pay for.
 """
 
 from typing import TYPE_CHECKING
@@ -47,18 +51,26 @@ def f(
     precomputed: PrecomputedTxData,
 ) -> None:
     """Verify input `i` of `tx` against its own prevout, one `starmap` task."""
-    # no need to deepcopy the values as they are not reused
+    # no need to deepcopy: btclib's script engine never writes to `tx`,
+    # `prevouts` or `precomputed`, established rather than assumed of
+    # every concurrent caller a `ThreadPool` can hand this to
+    # (`_pool_factory`'s own docstring, btclib-org/btclib-node#388) --
+    # not only that a process pool's own copy is not reused, which is
+    # what would have to hold under threads too and does not on its own
     verify_input(prevouts, tx, i, flags, precomputed)
 
 
 def warm() -> None:
-    """Do nothing, once a worker process has imported this module to run it.
+    """Do nothing, once a worker has imported this module to run it.
 
     `Node.warm_worker_pool` dispatches several of these across the pool
-    so that every worker process pays the import of this module -- and
-    of `btclib.script.engine` above, the expensive part of it -- before
+    so that every worker pays the import of this module -- and of
+    `btclib.script.engine` above, the expensive part of it -- before
     `check_transactions` below ever needs one of them for real
-    (btclib-org/btclib-node#262).
+    (btclib-org/btclib-node#262). Only a genuine cost under
+    `Node.worker_pool`'s process arm: a worker thread shares the one
+    import its own process already paid, so the dispatch reaches it too
+    but finds nothing left to do (btclib-org/btclib-node#388).
     """
 
 
@@ -73,24 +85,30 @@ def _tasks(
     `std::vector<PrecomputedTransactionData> txsdata(block.vtx.size())`
     across the threads its `CCheckQueue` runs them on (`validation.cpp`'s
     `ConnectBlock` and `validation.h`'s `CScriptCheck::txdata`,
-    bitcoin/bitcoin@794a753958). `Node.worker_pool` is a process pool
-    rather than threads, so nothing here can be shared by pointer: what
-    a thread reads through `txdata` a process has to receive as its own
-    pickled copy, one per task. That copy is a handful of hashes, cheap
-    next to the whole transaction every task already carries and far
-    cheaper than the re-serialization per input it replaces
-    (btclib-org/btclib-node#385).
+    bitcoin/bitcoin@794a753958). Under `_pool_factory`'s process arm
+    nothing here can be shared by pointer the way Core's threads share
+    `txdata`: what a thread reads through it a process has to receive as
+    its own pickled copy, one per task. That copy is a handful of
+    hashes, cheap next to the whole transaction every task already
+    carries and far cheaper than the re-serialization per input it
+    replaces (btclib-org/btclib-node#385). Under the thread arm, this
+    generator's own `precomputed` is that pointer: every task built from
+    one iteration of the loop below shares the identical object, exactly
+    as Core's `CScriptCheck`s share `txdata[i]` (btclib-org/btclib-node#388).
 
     Built once per transaction and shared, by reference, across that
     transaction's own tasks -- never rebuilt per input, which would be
     the same Θ(N²) this exists to remove. Sharing it this way is sound
-    only because it is pickled untouched into every task from this one
-    snapshot of `tx` and `prevouts`: `sig_hash.from_tx`'s docstring says
-    a precomputed "must describe this very tx, and nothing here can tell
-    whether it does", and `PrecomputedTxData`'s own says why -- a hash
+    whether a task's own copy is pickled from this snapshot or is this
+    snapshot, because nothing between the construction below and the
+    worker that consumes it -- in either arm -- mutates `tx` or
+    `precomputed` to break it: `sig_hash.from_tx`'s docstring says a
+    precomputed "must describe this very tx, and nothing here can tell
+    whether it does", `PrecomputedTxData`'s own says why -- a hash
     computed lazily out of a mutable `Tx` can change under its caller
-    (btclib-org/btclib#140). Nothing between the construction below and the
-    worker that consumes it can mutate `tx` to break that.
+    (btclib-org/btclib#140) -- and `_pool_factory`'s own docstring is
+    where that claim was established for the thread arm rather than
+    assumed of it (btclib-org/btclib-node#388).
     """
     for prevouts, tx in transaction_data:
         precomputed = PrecomputedTxData(tx, prevouts)

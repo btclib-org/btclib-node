@@ -72,6 +72,43 @@ to check the guess.
   configuration; `.python-version` and `requires-python` both stay
   `3.14`.
 
+### `worker_pool` builds a `ThreadPool` under free threading, closing issue #388
+
+- **`Node.worker_pool` builds a `ThreadPool` rather than a process
+  `Pool` where `sys._is_gil_enabled()` answers `False`** (closes #388):
+  a new `_pool_factory(gil_enabled=...)` -- a pure function with the
+  predicate injected, so both arms construct and are asserted on either
+  interpreter -- is what the property calls with that reading, rather
+  than branching inline. Under a GIL build the choice still favours a
+  process pool, `btclib-secp256k1`'s cffi call not releasing the GIL
+  across it, so `Pool` stays the default there.
+- **The `ThreadPool` arm answers the two questions issue #388 raised
+  against it, by reading and by running rather than by trusting a
+  process-era comment**: `btclib`'s script engine
+  (2a93afb3cdfaad5df25d1ec2516f9899e28c5ce2) never writes to the `Tx`,
+  `TxIn` or `PrecomputedTxData` a task is handed, and `btclib-secp256k1`
+  verifies through a single libsecp256k1 context its own "Thread safety"
+  section documents as safe for concurrent calls. Under this arm,
+  `interpreter._tasks`' own `precomputed` is what becomes Core's raw
+  `PrecomputedTransactionData*`, shared by reference across a
+  transaction's own per-input tasks exactly as `CScriptCheck::txdata` is
+  shared across Core's `CCheckQueue` threads (`validation.h`,
+  bitcoin/bitcoin@794a753958), where the process arm still ships each
+  task its own pickled copy.
+- `_WORKER_PROCESSES`/`_default_worker_processes` are renamed
+  `_WORKER_COUNT`/`_default_worker_count`: the size they compute names a
+  thread count on the new arm as much as a process count on the
+  existing one, and the reasoning against `pytest-xdist` (issue #46)
+  that sizes it holds for both, an OS thread competing for a core
+  exactly as an OS process does once the interpreter running it is
+  free-threaded.
+- `.python-version`'s own comment no longer points at issue #306, closed
+  `NOT_PLANNED`, as the open question behind the `3.14` pin: it points at
+  this issue and at issue #385 instead, and says why the pin itself does
+  not move now that `worker_pool` reads `sys._is_gil_enabled()` at
+  runtime -- that is not the same as switching the default interpreter
+  this tree runs under.
+
 ### `scripts/` gets real docstrings, `D100`'s own deferral is gone (issue #373)
 
 - **Every module under `scripts/` -- the three `chains/` launchers, the

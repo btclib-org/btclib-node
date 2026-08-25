@@ -20,6 +20,7 @@ import threading
 import time
 from collections import deque
 from contextlib import contextmanager
+from multiprocessing.pool import Pool, ThreadPool
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast, override
@@ -439,24 +440,53 @@ class APool:
 
 @pytest.fixture
 def pools(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
-    """Patch `btclib_node.Pool` to `APool`; return the list it reports to."""
+    """Patch both `btclib_node.Pool` and `.ThreadPool` to `APool`.
+
+    `_pool_factory` picks one of the two by `sys._is_gil_enabled()`, and
+    that answer is the interpreter running this suite's, not this
+    fixture's to choose (issue #388) -- patching only `Pool` would make
+    every test below pass under a GIL build and fail under a
+    free-threaded one, on an assertion about which pool was built rather
+    than about `worker_pool`'s own behaviour. Both names patched to the
+    same stand-in makes the test interpreter-agnostic instead.
+    """
     built: list[Any] = []
     monkeypatch.setattr(btclib_node, "Pool", lambda processes: APool(built, processes))
+    monkeypatch.setattr(
+        btclib_node, "ThreadPool", lambda processes: APool(built, processes)
+    )
     return built
+
+
+@pytest.mark.parametrize(
+    ("gil_enabled", "expected"),
+    [(True, Pool), (False, ThreadPool)],
+    ids=["gil-enabled", "gil-disabled"],
+)
+def test_pool_factory_picks_by_gil_enabled(
+    *, gil_enabled: bool, expected: type[Pool]
+) -> None:
+    """`_pool_factory` returns `Pool` if the GIL is on, `ThreadPool` if not.
+
+    Both arms constructible and asserted on whichever interpreter runs
+    this: a `ThreadPool` builds as readily as a `Pool` under a GIL
+    build, so this does not need a second interpreter to exercise the
+    branch the free-threaded one would take (issue #388).
+    """
+    assert btclib_node._pool_factory(gil_enabled=gil_enabled) is expected
 
 
 def test_the_worker_pool_is_built_on_first_use_and_only_once(
     tmp_path: Path, pools: list[Any]
 ) -> None:
     """`node.worker_pool` builds nothing until read, then the same pool."""
-    # a pool is interpreters, spawned rather than forked wherever that
-    # is the default, and most of the nodes this suite builds never
-    # validate a script
+    # a pool is interpreters or threads, and most of the nodes this
+    # suite builds never validate a script
     with unstarted_node_context(tmp_path) as node:
         assert not pools
         pool = node.worker_pool
         assert node.worker_pool is pool
-        assert pools == [btclib_node._WORKER_PROCESSES]
+        assert pools == [btclib_node._WORKER_COUNT]
 
 
 def test_a_node_that_used_the_pool_takes_it_down_with_it(
@@ -471,7 +501,7 @@ def test_a_node_that_used_the_pool_takes_it_down_with_it(
     assert node.worker_pool is not None
     node.start()
     node.stop()
-    assert pools == [btclib_node._WORKER_PROCESSES, "terminated", "joined"]
+    assert pools == [btclib_node._WORKER_COUNT, "terminated", "joined"]
     assert node._worker_pool is None
 
 
@@ -500,11 +530,11 @@ def test_del_closes_a_worker_pool_on_a_node_that_was_never_started(
     # replaces that handler.
     with unstarted_node_context(tmp_path) as node:
         assert node.worker_pool is not None
-        assert pools == [btclib_node._WORKER_PROCESSES]
+        assert pools == [btclib_node._WORKER_COUNT]
 
         node.__del__()
 
-        assert pools == [btclib_node._WORKER_PROCESSES, "terminated", "joined"]
+        assert pools == [btclib_node._WORKER_COUNT, "terminated", "joined"]
         assert node._worker_pool is None
 
 
@@ -545,18 +575,22 @@ def test_warm_worker_pool_builds_it_and_warms_it_off_the_calling_thread(
         instances.append(pool)
         return pool
 
+    # both names, for the same reason the `pools` fixture patches both:
+    # which one `_pool_factory` reaches for is the running interpreter's
+    # to decide, not this test's (issue #388)
     monkeypatch.setattr(btclib_node, "Pool", make_pool)
+    monkeypatch.setattr(btclib_node, "ThreadPool", make_pool)
     with unstarted_node_context(tmp_path) as node:
         node.warm_worker_pool()
 
         assert node._worker_pool_warmup is not None
         node._worker_pool_warmup.join(timeout=5)
-        assert built == [btclib_node._WORKER_PROCESSES]
+        assert built == [btclib_node._WORKER_COUNT]
         (pool,) = instances
         (call,) = pool.calls
         fn, args = call
         assert fn is warm
-        assert len(args) == btclib_node._WORKER_PROCESSES * 4
+        assert len(args) == btclib_node._WORKER_COUNT * 4
         assert all(a == () for a in args)
 
 
@@ -569,9 +603,12 @@ def test_a_second_call_to_warm_worker_pool_does_not_start_a_second_thread(
     # used to get for free from headers()'s own status transition now
     # lives here instead: btclib-org/btclib-node#262
     built: list[Any] = []
-    monkeypatch.setattr(
-        btclib_node, "Pool", lambda processes: ARecordingPool(built, processes)
-    )
+
+    def make_pool(processes: int) -> ARecordingPool:
+        return ARecordingPool(built, processes)
+
+    monkeypatch.setattr(btclib_node, "Pool", make_pool)
+    monkeypatch.setattr(btclib_node, "ThreadPool", make_pool)
     with unstarted_node_context(tmp_path) as node:
         node.warm_worker_pool()
         first = node._worker_pool_warmup
@@ -581,7 +618,7 @@ def test_a_second_call_to_warm_worker_pool_does_not_start_a_second_thread(
         node.warm_worker_pool()
 
         assert node._worker_pool_warmup is first
-        assert built == [btclib_node._WORKER_PROCESSES]
+        assert built == [btclib_node._WORKER_COUNT]
 
 
 def test_stopping_the_node_waits_for_an_in_flight_warmup_before_the_pool_comes_down(
@@ -604,9 +641,11 @@ def test_stopping_the_node_waits_for_an_in_flight_warmup_before_the_pool_comes_d
             release.wait(timeout=5)
             super().starmap(fn, args)
 
-    monkeypatch.setattr(
-        btclib_node, "Pool", lambda processes: SlowPool(built, processes)
-    )
+    def make_slow_pool(processes: int) -> SlowPool:
+        return SlowPool(built, processes)
+
+    monkeypatch.setattr(btclib_node, "Pool", make_slow_pool)
+    monkeypatch.setattr(btclib_node, "ThreadPool", make_slow_pool)
     node = a_node(tmp_path)
     node.start()
 
@@ -623,42 +662,42 @@ def test_stopping_the_node_waits_for_an_in_flight_warmup_before_the_pool_comes_d
 
     release.set()
     node.join(timeout=5)
-    assert built == [btclib_node._WORKER_PROCESSES, "terminated", "joined"]
+    assert built == [btclib_node._WORKER_COUNT, "terminated", "joined"]
 
 
-def test_worker_processes_defaults_to_eight_outside_of_xdist(
+def test_worker_count_defaults_to_eight_outside_of_xdist(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With no `PYTEST_XDIST_WORKER_COUNT`, worker processes default to 8."""
+    """With no `PYTEST_XDIST_WORKER_COUNT`, the worker count defaults to 8."""
     monkeypatch.delenv("PYTEST_XDIST_WORKER_COUNT", raising=False)
-    assert btclib_node._default_worker_processes() == 8
+    assert btclib_node._default_worker_count() == 8
 
 
-def test_worker_processes_is_the_machine_split_across_xdist_workers(
+def test_worker_count_is_the_machine_split_across_xdist_workers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Under xdist, worker processes divide the core count across workers."""
-    # ten cores split six ways is one process short of two each: what
+    """Under xdist, the worker count divides the core count across workers."""
+    # ten cores split six ways is one worker short of two each: what
     # matters is that the total the run spawns tracks the core count
     # rather than staying flat at eight regardless of it
     # (btclib-org/btclib-node#46)
     monkeypatch.setattr(os, "cpu_count", lambda: 10)
     monkeypatch.setenv("PYTEST_XDIST_WORKER_COUNT", "6")
-    assert btclib_node._default_worker_processes() == 1
+    assert btclib_node._default_worker_count() == 1
 
 
-def test_worker_processes_under_xdist_never_goes_below_one(
+def test_worker_count_under_xdist_never_goes_below_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """More xdist workers than cores still floors at one process."""
+    """More xdist workers than cores still floors at one worker."""
     # more xdist workers than cores still has to build a pool at all:
-    # `Pool(processes=0)` raises
+    # `Pool(processes=0)` raises, and so does `ThreadPool(processes=0)`
     monkeypatch.setattr(os, "cpu_count", lambda: 4)
     monkeypatch.setenv("PYTEST_XDIST_WORKER_COUNT", "20")
-    assert btclib_node._default_worker_processes() == 1
+    assert btclib_node._default_worker_count() == 1
 
 
-def test_worker_processes_falls_back_to_eight_split_if_the_core_count_is_unknown(
+def test_worker_count_falls_back_to_eight_split_if_the_core_count_is_unknown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A `None` `os.cpu_count()` falls back to eight, split across xdist."""
@@ -666,4 +705,4 @@ def test_worker_processes_falls_back_to_eight_split_if_the_core_count_is_unknown
     # tell
     monkeypatch.setattr(os, "cpu_count", lambda: None)
     monkeypatch.setenv("PYTEST_XDIST_WORKER_COUNT", "4")
-    assert btclib_node._default_worker_processes() == 2
+    assert btclib_node._default_worker_count() == 2
