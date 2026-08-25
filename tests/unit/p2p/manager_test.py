@@ -210,9 +210,7 @@ def test_removing_a_connection_stops_it(a_manager: AManagerFactory) -> None:
 def test_removing_a_connection_still_pending_stops_it_too(
     a_manager: AManagerFactory,
 ) -> None:
-    """`remove_connection` reaches `pending_connections`, not only
-    `connections`.
-    """
+    """`remove_connection` also stops a `pending_connections` entry."""
     conn = a_conn(1, status=P2pConnStatus.Open)
     manager = a_manager()
     manager.pending_connections[conn.id] = conn
@@ -285,9 +283,7 @@ def test_a_promote_racing_remove_connection_waits_for_its_own_two_pops(
 def test_discourage_marks_the_endpoint_dialled_or_accepted(
     a_manager: AManagerFactory,
 ) -> None:
-    """`discourage` files the endpoint under `endpoint_key`, not the raw
-    address.
-    """
+    """`discourage` keys the endpoint by `endpoint_key`, not the raw address."""
     manager = a_manager()
     address = peer_address("1.2.3.4", 18444)
     manager.discourage(address)
@@ -375,8 +371,7 @@ def test_a_peer_that_answered_recently_is_left_alone(
 def test_a_pong_landing_between_the_idle_check_and_its_reread_does_not_drop_the_peer(
     a_manager: AManagerFactory,
 ) -> None:
-    """#357's first interleaving: a `pong` landing between two rereads of
-    `ping_sent`.
+    """#357's first interleaving: a `pong` between two rereads of `ping_sent`.
 
     `_prune_stale_connections` used to read `conn.ping_sent` twice -- once for
     `if not conn.ping_sent` and again for the `elif` right after -- so a
@@ -476,8 +471,7 @@ def test_the_active_table_is_pruned_without_being_asked(
 def test_the_active_table_prune_repeats_once_the_interval_passes(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A second prune runs once `_ACTIVE_PRUNE_INTERVAL` has elapsed, not
-    sooner.
+    """A second prune runs once `_ACTIVE_PRUNE_INTERVAL` elapses, not sooner.
 
     The previous test checks that two passes inside the interval prune only
     once; this pushes the clock forward past the interval between two passes and
@@ -642,8 +636,7 @@ def test_a_pending_connection_s_address_is_not_dialled_again_either(
 def test_a_promote_racing_the_snapshot_still_counts_as_already_connected(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#355: a `promote_connection` racing the connected-peers snapshot is still
-    counted.
+    """#355: a `promote_connection` racing the connected count is still counted.
 
     `_maybe_dial_more_peers` reads `connections` and `pending_connections` under
     `_connections_lock`, so a `promote_connection` racing from a real second
@@ -709,8 +702,7 @@ def test_a_promote_racing_the_snapshot_still_counts_as_already_connected(
 def test_a_promote_racing_the_count_does_not_dial_past_the_target(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#367: a promote racing the connected-peers count must not dial past the
-    target.
+    """#367: a promote racing the peer count must not dial past the target.
 
     `_maybe_dial_more_peers` reads `live` under `_connections_lock` too, not
     only the snapshot below it -- a `promote_connection` racing between two
@@ -788,9 +780,7 @@ def test_a_dial_that_comes_back_with_nothing_adds_no_connection(
 
 
 def refuses_to_be_asked() -> NoReturn:
-    """Stand in for a `random_address`/`get_active_addresses` a test must not
-    reach.
-    """
+    """Stand in for `random_address`/`get_active_addresses`, unreachable."""
     raise RuntimeError("no")
 
 
@@ -873,9 +863,7 @@ def test_a_connection_removed_between_the_check_and_the_send_is_not_a_keyerror(
 def test_a_message_for_a_connection_that_is_gone_is_dropped(
     a_manager: AManagerFactory,
 ) -> None:
-    """`send` to an id nobody holds is dropped; a real one still gets the
-    message.
-    """
+    """`send` to an unknown id is dropped; a real one still gets the message."""
     conn = a_conn(1)
     manager = a_manager([conn])
     manager.send(cast("Payload", "message"), 99)
@@ -914,8 +902,7 @@ def test_every_connection_is_pinged_and_every_connection_is_stopped(
 def test_a_transaction_of_our_own_is_handed_to_the_download_manager(
     a_manager: AManagerFactory,
 ) -> None:
-    """`broadcast_raw_transaction` queues into `download_manager`, sends nothing
-    itself.
+    """`broadcast_raw_transaction` queues into `download_manager`, nothing else.
 
     The RPC's `sendrawtransaction`, which is the other way a transaction leaves
     this node: `DownloadManager.tx_download` is what turns this into an `inv` --
@@ -960,8 +947,7 @@ def test_an_empty_peer_db_is_not_asked_for_an_address(
 def test_a_peer_db_with_nothing_dialable_is_a_pass_that_does_nothing(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A `random_address` of `None`, with `is_empty` false, is a quiet no-op
-    pass.
+    """A `random_address` of `None` with `is_empty` false is a quiet no-op pass.
 
     `is_empty` is false and the draw still comes back with nothing: a table of
     onion and CJDNS addresses answers this way. The pass has to do nothing and
@@ -1198,8 +1184,7 @@ def test_a_manager_dials_the_address_it_is_given(a_manager: AManagerFactory) -> 
 def test_a_message_sent_on_a_running_connection_reaches_the_peer(
     a_manager: AManagerFactory,
 ) -> None:
-    """`Connection.send`, crossing from the node's thread, actually reaches the
-    wire.
+    """`Connection.send`, crossing from the node's thread, reaches the wire.
 
     `Connection.send` is called from the node's thread and hands the write to
     the manager's loop; nothing else in these tests crosses that line, and a
@@ -1247,9 +1232,7 @@ def test_a_manager_left_running_is_stopped_by_whoever_built_it(
 def test_stopping_a_running_manager_stops_the_connections_it_holds(
     a_manager: AManagerFactory,
 ) -> None:
-    """`stop` closes the manager's own connections and its loop, and clears
-    `listening`.
-    """
+    """`stop` closes the manager's connections and loop, clears `listening`."""
     port = get_random_port()
     manager = a_running_manager(a_manager, port)
     wait_until_listening(manager)
@@ -1365,8 +1348,7 @@ def test_stop_closes_the_listening_socket_even_if_the_accept_task_does_not(
 def test_stop_closes_a_connection_that_arrives_while_it_is_draining(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#312: `stop` closes a connection that `server`'s accept loop lands
-    mid-drain.
+    """#312: `stop` closes a connection `server`'s accept loop lands mid-drain.
 
     `run_until_complete` runs the loop, so a task `stop` has not cancelled yet
     goes on working through the drain. `server`'s accept loop is the one that
@@ -1414,8 +1396,7 @@ def test_stop_closes_a_connection_that_arrives_while_it_is_draining(
 def test_stop_closes_a_connection_queued_when_the_drain_begins(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#386: a connection queued the instant `stop`'s drain begins is still
-    closed.
+    """#386: a connection queued as `stop`'s drain begins is still closed.
 
     `server`'s own task is what `stop`'s blanket sweep over `asyncio.all_tasks`
     reaches directly on every pass, `accept` no longer being a task of its own
@@ -1606,8 +1587,7 @@ def test_stop_does_not_raise_where_start_was_called_but_run_never_reached_run_fo
 def test_server_closes_a_connection_queued_in_the_instant_it_is_cancelled(
     a_manager: AManagerFactory,
 ) -> None:
-    """#386: `server` closes a connection queued the instant its own task is
-    cancelled.
+    """#386: `server` closes a connection queued as its own task is cancelled.
 
     A connection can already sit in `server`'s own accept queue when something
     cancels the task waiting on it -- `Queue.get`'s own internal wakeup future
