@@ -274,10 +274,8 @@ only the root prose skips the suite and reports the skip as a pass, which
 is what keeps an aggregate check from blocking on a run that never
 happened. `docs.yml` runs the same build the environment section above
 does, on every pull request the way `lint.yml` and `test.yml` do rather
-than on a schedule -- but it is reporting-only for now:
-`REPOSITORY.md`'s *Required checks on main* names only the two above,
-its job being owed a place beside them once the maintainer's own
-follow-up adds it.
+than on a schedule, and is a required check alongside them:
+`REPOSITORY.md`'s *Required checks on main* names all three.
 
 **Whether any of these can refuse a merge is a repository setting and
 not a file**, and `REPOSITORY.md` reads it back from the endpoint rather
