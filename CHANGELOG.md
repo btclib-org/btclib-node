@@ -14,6 +14,19 @@ to check the guess.
 
 ## Unreleased
 
+### `NodeStatus.Reindexing` goes (closes #445)
+
+- **`NodeStatus` no longer declares a `Reindexing` member** (closes
+  #445): nothing assigned it, and its position between `HeaderSynced`
+  and `BlockSynced` meant every inequality comparison against either end
+  would apply to a reindexing node the moment something did, without
+  anyone having chosen which side of each it belonged on. The issue
+  reserved a decision between naming that ordering explicitly and
+  removing the member until there is a reindex to represent; this takes
+  the removal, matching `get_mempool_info`'s own refusal to answer
+  fields it has no source for (#305). A reindex is represented again by
+  whatever change implements one, together with the code that sets it.
+
 ### The docs gate warns against `--only-group docs` (closes #425)
 
 - **`CONTRIBUTING.md`'s *The environment and the gates* now names
