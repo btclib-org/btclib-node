@@ -40,15 +40,24 @@ if TYPE_CHECKING:
 
 
 class Unserializable:
+    """A payload standing in for one this node has built but cannot send."""
+
     command = "unserializable"
 
     def serialize(self, *, check_validity: bool = True) -> bytes:
+        """Raise, the way a payload that cannot serialize itself would."""
         raise ValueError("no")
 
 
 def a_connection(
     client: socket.socket | None = None,
 ) -> tuple[Connection, list[str]]:
+    """Build a `Connection` over `client`, or a fresh unconnected socket.
+
+    Returns the connection alongside the list its own logger's
+    `warning` calls are recorded into, since several tests here check
+    what got logged rather than only what the connection did.
+    """
     logged, warning = log_recorder()
     node = SimpleNamespace(
         chain=RegTest(),
@@ -68,8 +77,11 @@ def a_connection(
 
 
 def test_a_message_that_will_not_serialize_is_logged_and_dropped() -> None:
-    # the connection stays up: one message this node cannot build is not
-    # a reason to drop a peer that has done nothing wrong
+    """A message that fails to serialize is logged, and the connection stays up.
+
+    The connection stays up: one message this node cannot build is not
+    a reason to drop a peer that has done nothing wrong.
+    """
     connection, logged = a_connection()
     sent: list[bytes] = []
 
@@ -87,6 +99,7 @@ def test_a_message_that_will_not_serialize_is_logged_and_dropped() -> None:
 
 
 def test_a_connection_names_the_peer_it_is_to() -> None:
+    """`repr(connection)` names the real peer address a live socket has."""
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(("127.0.0.1", 0))
     listener.listen(1)
@@ -108,12 +121,23 @@ def test_a_connection_names_the_peer_it_is_to() -> None:
     ids=["v4-mapped", "ipv6"],
 )
 def test_a_connection_brackets_an_ipv6_peer(host: str, endpoint: str) -> None:
+    """`repr(connection)` brackets an IPv6 host, mapped or not, like Core does.
+
+    `getpeername` is faked rather than a real socket bound to either
+    address, since what is under test is `ip_and_port`'s own
+    formatting and not the ability to actually reach these hosts.
+    """
     client = cast("socket.socket", SimpleNamespace(getpeername=lambda: (host, 18444)))
     connection, _ = a_connection(client)
     assert repr(connection) == f"Connection to {endpoint}"
 
 
 def test_a_connection_whose_socket_is_gone_says_so() -> None:
+    """`repr` on a connection whose socket already closed does not raise.
+
+    `getpeername` on a closed socket raises `OSError`; `__repr__`
+    catches it and answers "Broken connection" instead.
+    """
     client = socket.socket()
     client.close()
     connection, _ = a_connection(client)
@@ -123,6 +147,13 @@ def test_a_connection_whose_socket_is_gone_says_so() -> None:
 def a_running_connection(
     loop: asyncio.AbstractEventLoop, client: socket.socket
 ) -> Connection:
+    """Build a `Connection` with enough manager state for `run` to actually run.
+
+    Unlike `a_connection` above, this one carries a real loop, a
+    `nonces` list and a stub `discourage`, which is what the tests
+    below need to drive `Connection.run` end to end rather than only
+    a synchronous method on an idle connection.
+    """
     node = SimpleNamespace(
         chain=RegTest(),
         status=NodeStatus.Starting,
@@ -150,7 +181,7 @@ def a_running_connection(
 
 
 def discouraged_of(connection: Connection) -> list[Any]:
-    """The stub `discourage` list `a_running_connection` built.
+    """Read back the stub `discourage` list `a_running_connection` built.
 
     `connection.manager` is typed `P2pManager`, whose own `discouraged`
     is a `set[bytes]` -- the stub underneath is a `SimpleNamespace`
@@ -161,8 +192,11 @@ def discouraged_of(connection: Connection) -> list[Any]:
 
 
 def a_message_for_another_network() -> bytes:
-    # well formed in every other way: the checksum is right, so what is
-    # left to refuse it on is the network it announces
+    """Build a `verack` whose magic names a network that is not regtest.
+
+    Well formed in every other way: the checksum is right, so what is left to
+    refuse it on is the network it announces.
+    """
     payload = b""
     return (
         b"\x11\x22\x33\x44"
@@ -185,6 +219,15 @@ def a_message_for_another_network() -> bytes:
 def test_a_peer_sending_something_this_node_cannot_read_is_dropped(
     octets: bytes,
 ) -> None:
+    """A peer whose own envelope this node refuses to parse is discouraged.
+
+    Two ways an envelope can be refused before any payload is looked
+    at -- a checksum matching no payload, and a magic naming another
+    network -- and both are #283's own case for discouraging: the
+    refusal is `Message.parse`'s own reading of what the peer sent,
+    not a bug of this node's.
+    """
+
     async def drive() -> Connection:
         loop = asyncio.get_running_loop()
         ours, theirs = socket.socketpair()
@@ -207,6 +250,13 @@ def test_a_peer_sending_something_this_node_cannot_read_is_dropped(
 def test_a_bug_of_this_node_s_own_in_parsing_drops_the_peer_but_not_discouraged() -> (
     None
 ):
+    """A bug in this node's own parsing drops the peer, but is not its fault.
+
+    #283: not every exception out of `parse_messages` is the peer's fault -- a
+    `RuntimeError` is not one btclib raised over the octets it sent, the same
+    distinction `p2p/main.py`'s own `except` draws.
+    """
+
     # #283: not every exception out of parse_messages is the peer's
     # fault -- a RuntimeError is not one btclib raised over the octets
     # it sent, the same distinction p2p/main.py's own except draws
@@ -233,6 +283,14 @@ def test_a_bug_of_this_node_s_own_in_parsing_drops_the_peer_but_not_discouraged(
 
 
 def test_a_connection_closed_before_it_reads_anything_reads_nothing() -> None:
+    """A connection already `Closed` before `run` still sends its version.
+
+    Status set to `Closed` ahead of `run` stands in for a connection
+    dropped between being accepted and being started; the peer still
+    gets a `version` message -- `run` sends it before checking status
+    -- and nothing is read back on this side.
+    """
+
     async def drive() -> bytes:
         loop = asyncio.get_running_loop()
         ours, theirs = socket.socketpair()
@@ -254,6 +312,15 @@ def test_a_connection_closed_before_it_reads_anything_reads_nothing() -> None:
 
 
 def test_a_peer_that_hangs_up_is_dropped() -> None:
+    """A closed socket read as empty drops the connection, not discouraged.
+
+    `theirs.close()` before `run` reads is what makes `sock_recv`
+    answer empty rather than blocking; the read loop's own task is left
+    alone by `stop`, since cancelling it from inside would cancel the
+    coroutine doing the cancelling. A peer that merely hung up has not
+    broken the protocol, so #283 says this is not a discourage either.
+    """
+
     async def drive() -> tuple[Connection, bool]:
         loop = asyncio.get_running_loop()
         ours, theirs = socket.socketpair()
@@ -282,14 +349,18 @@ def test_a_peer_that_hangs_up_is_dropped() -> None:
 
 
 def test_a_connections_own_task_cancelled_directly_still_closes_its_socket() -> None:
-    # #312: P2pManager.stop() closes every connection it already knows
-    # about through Connection.stop() -- but its own final sweep, over
-    # asyncio.all_tasks(self.loop), cancels whatever task is still
-    # pending there directly, the only reach it has left for a
-    # connection accepted or dialled after its dict-based sweep already
-    # ran. That direct task.cancel(), with nothing standing between it
-    # and this coroutine's own suspension in sock_recv, must not be able
-    # to leave self.client open the way going through stop() never does.
+    """A cancelled `run` task still closes `self.client` on the way out.
+
+    #312: `P2pManager.stop()` closes every connection it already knows about
+    through `Connection.stop()` -- but its own final sweep, over
+    `asyncio.all_tasks(self.loop)`, cancels whatever task is still pending there
+    directly, the only reach it has left for a connection accepted or dialled
+    after its dict-based sweep already ran. That direct `task.cancel()`, with
+    nothing standing between it and this coroutine's own suspension in
+    `sock_recv`, must not be able to leave `self.client` open the way going
+    through `stop()` never does.
+    """
+
     async def drive() -> socket.socket:
         loop = asyncio.get_running_loop()
         ours, theirs = socket.socketpair()
@@ -315,6 +386,14 @@ def test_a_connections_own_task_cancelled_directly_still_closes_its_socket() -> 
 
 
 def test_a_peer_already_at_the_send_bound_is_dropped_not_queued_further() -> None:
+    """A send that would exceed `MAX_QUEUED_SEND_BYTES` is refused, not queued.
+
+    `queued_send_bytes` starts already at the bound, whatever filled it,
+    so one more message is refused regardless of its own size; this
+    node's own choice under load and not the peer's doing, so #283 says
+    it is not a discourage.
+    """
+
     async def drive() -> tuple[Connection, list[bytes]]:
         loop = asyncio.get_running_loop()
         connection = a_running_connection(loop, socket.socket())
@@ -340,9 +419,10 @@ def test_a_peer_already_at_the_send_bound_is_dropped_not_queued_further() -> Non
 
 
 def _message_overhead() -> int:
-    """The wire octets `async_send` adds on top of one `cfilter`'s
-    `filter_bytes`: `Message`'s envelope, plus `CFilter`'s own filter
-    type, block hash, and `filter_bytes`'s own `var_int` length prefix.
+    """Measure the wire octets `async_send` adds on top of one `filter_bytes`.
+
+    `Message`'s envelope, plus `CFilter`'s own filter type, block hash,
+    and `filter_bytes`'s own `var_int` length prefix.
 
     Measured, at a size in the range the two bursts below build,
     rather than assumed: `var_int` is five octets only above 65,536,
@@ -359,21 +439,20 @@ def _message_overhead() -> int:
 
 
 def _burst_summing_to(total_wire_bytes: int, count: int) -> list[CFilter]:
-    """`count` `cfilter`-shaped answers whose wire bytes add to
-    `total_wire_bytes` -- what `async_send` actually counts toward
-    `queued_send_bytes`, not merely the `filter_bytes` argument each is
-    built from.
+    """`count` `cfilter` answers whose own wire bytes add to `total_wire_bytes`.
 
-    One `send` per block and nothing between it and the event loop is
-    exactly `get_cfilters`'s own loop over a `getcfilters` request's
-    heights, so a burst is what a single request answers with, not one
-    message of the whole answer's size -- which no message here could
-    be anyway, `Message.serialize` refusing a payload over
-    `MAX_PROTOCOL_MESSAGE_LENGTH` regardless of `check_validity`.
-    `filter_bytes` is not a real Golomb-Rice set: `check_validity=False`
-    on both the object and `async_send`'s own `serialize` call is what
-    lets zeroed octets stand in for one, the way a wrong-shaped block
-    already does elsewhere in this test tree.
+    What `async_send` actually counts toward `queued_send_bytes` is the whole
+    wire message, not merely the `filter_bytes` argument each is built from.
+
+    One `send` per block and nothing between it and the event loop is exactly
+    `get_cfilters`'s own loop over a `getcfilters` request's heights, so a burst
+    is what a single request answers with, not one message of the whole answer's
+    size -- which no message here could be anyway, `Message.serialize` refusing
+    a payload over `MAX_PROTOCOL_MESSAGE_LENGTH` regardless of `check_validity`.
+    `filter_bytes` is not a real Golomb-Rice set: `check_validity=False` on both
+    the object and `async_send`'s own `serialize` call is what lets zeroed
+    octets stand in for one, the way a wrong-shaped block already does elsewhere
+    in this test tree.
     """
     total = total_wire_bytes - count * _message_overhead()
     base = total // count
@@ -490,14 +569,16 @@ def test_a_third_maximal_answer_s_worth_in_flight_drops_the_peer() -> None:
 def test_send_ping_racing_pong_does_not_tear_the_ping_pair(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """#357's second interleaving: `callbacks.pong` clears `ping_sent`
-    then `ping_nonce` as two statements, and `Connection.send_ping`
-    writes both as two statements too. Unlocked, a `send_ping` slipped
-    in between `pong`'s two clears would have its own fresh nonce
-    overwritten by `pong`'s second write, leaving a real outstanding
-    ping under `ping_nonce == 0` -- the sentinel `send_ping`'s own
-    comment is careful never to send -- and the peer discouraged and
-    dropped for a protocol violation this node caused.
+    """#357's second interleaving: a `send_ping` racing `pong`'s own clear.
+
+    `callbacks.pong` clears `ping_sent` then `ping_nonce` as two
+    statements, and `Connection.send_ping` writes both as two
+    statements too. Unlocked, a `send_ping` slipped in between `pong`'s
+    two clears would have its own fresh nonce overwritten by `pong`'s
+    second write, leaving a real outstanding ping under
+    `ping_nonce == 0` -- the sentinel `send_ping`'s own comment is
+    careful never to send -- and the peer discouraged and dropped for a
+    protocol violation this node caused.
 
     Driven deterministically by hooking the exact write `pong` makes
     first, `ping_sent = 0`: a real second thread runs `send_ping` from

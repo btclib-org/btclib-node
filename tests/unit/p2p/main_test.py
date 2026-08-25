@@ -38,6 +38,14 @@ def make_node(
     present: bool = True,
     pending: bool = False,
 ) -> tuple[Any, list[bool]]:
+    """Build a node stand-in, one queued `item` on a `Connection` at `status`.
+
+    `present` files the connection under `connections` or leaves it out entirely
+    (a peer already gone by the time its message is handled); `pending` moves it
+    into `pending_connections` instead, for the handshake's own in-between
+    state. Returns the node alongside the list `conn.stop` was told to record
+    onto.
+    """
     stopped: list[bool] = []
     discouraged: list[Any] = []
     conn = SimpleNamespace(
@@ -64,6 +72,11 @@ def make_node(
 def test_a_handshake_message_reaches_its_callback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A queued handshake message on an `Open` connection reaches its callback.
+
+    `Open` is before the handshake completes, which is exactly where a
+    handshake message is expected and dispatched rather than dropped.
+    """
     seen: list[bytes] = []
 
     def a_callback(node: Node, msg: bytes, conn: Connection) -> None:
@@ -79,6 +92,11 @@ def test_a_handshake_message_reaches_its_callback(
 
 
 def test_a_handshake_message_on_a_closed_connection_is_dropped() -> None:
+    """A handshake message for a `Closed` connection is dropped, not dispatched.
+
+    Nothing to stop twice: `stopped` stays empty rather than recording
+    a second `stop`.
+    """
     node, stopped = make_node(
         "handshake_messages", ("verack", b"", 0), status=P2pConnStatus.Closed
     )
@@ -87,8 +105,11 @@ def test_a_handshake_message_on_a_closed_connection_is_dropped() -> None:
 
 
 def test_a_handshake_message_on_a_connected_one_drops_the_peer() -> None:
-    # the handshake is over: a second version or verack is a peer not
-    # speaking the protocol, and discouraged for it -- #283
+    """A handshake message arriving after `Connected` gets the peer dropped.
+
+    The handshake is over: a second `version` or `verack` is a peer not
+    speaking the protocol, and discouraged for it -- #283.
+    """
     node, stopped = make_node(
         "handshake_messages", ("verack", b"", 0), status=P2pConnStatus.Connected
     )
@@ -100,6 +121,13 @@ def test_a_handshake_message_on_a_connected_one_drops_the_peer() -> None:
 def test_a_handshake_callback_that_raises_drops_the_peer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A handshake callback's own bare exception drops the peer, undiscouraged.
+
+    #283: not every exception is the peer's fault, and a bare `RuntimeError` is
+    not one btclib raised over the peer's own content, so the connection is
+    dropped but the peer is not discouraged for it.
+    """
+
     def boom(node: Node, msg: bytes, conn: Connection) -> None:
         raise RuntimeError("no")
 
@@ -117,6 +145,13 @@ def test_a_handshake_callback_that_raises_drops_the_peer(
 def test_a_handshake_callback_that_raises_a_btclib_exception_costs_the_peer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A handshake callback raising a btclib exception drops and discourages.
+
+    Unlike the bare `RuntimeError` above, `BTClibValueError` is what
+    btclib itself raises over content it refused, so #283 counts this
+    one against the peer.
+    """
+
     def boom(node: Node, msg: bytes, conn: Connection) -> None:
         raise BTClibValueError("no")
 
@@ -130,6 +165,12 @@ def test_a_handshake_callback_that_raises_a_btclib_exception_costs_the_peer(
 
 
 def test_a_handshake_message_for_a_connection_that_is_gone_is_dropped() -> None:
+    """A handshake message naming a connection id nobody holds is dropped.
+
+    `present=False` stands in for a connection that was already closed
+    and removed by the time its queued message is handled; nothing is
+    stopped since nothing is found.
+    """
     node, stopped = make_node(
         "handshake_messages",
         ("verack", b"", 7),
@@ -143,9 +184,12 @@ def test_a_handshake_message_for_a_connection_that_is_gone_is_dropped() -> None:
 def test_a_handshake_message_reaches_a_connection_still_pending(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # every handshake command is answered before `verack` promotes a
-    # connection out of `pending_connections`, so this is where every
-    # one of them, `verack` itself included, is actually found
+    """A handshake message is dispatched for a connection still `pending`.
+
+    Every handshake command is answered before `verack` promotes a
+    connection out of `pending_connections`, so this is where every one
+    of them, `verack` itself included, actually has to be looked up.
+    """
     seen: list[bytes] = []
 
     def a_callback(node: Node, msg: bytes, conn: Connection) -> None:
@@ -164,6 +208,7 @@ def test_a_handshake_message_reaches_a_connection_still_pending(
 
 
 def test_a_message_reaches_its_callback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An ordinary message on a `Connected` connection reaches its callback."""
     seen: list[bytes] = []
 
     def a_callback(node: Node, msg: bytes, conn: Connection) -> None:
@@ -179,6 +224,12 @@ def test_a_message_reaches_its_callback(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_a_message_before_the_handshake_is_over_drops_the_peer() -> None:
+    """An ordinary message arriving on an `Open` connection drops the peer.
+
+    Anything but a handshake command before `Connected` is a protocol
+    violation, discouraged for it -- #283, the mirror of the handshake
+    version above.
+    """
     node, stopped = make_node("messages", ("ping", b"", 0), status=P2pConnStatus.Open)
     handle_p2p(node)
     assert stopped == [True]
@@ -186,12 +237,14 @@ def test_a_message_before_the_handshake_is_over_drops_the_peer() -> None:
 
 
 def test_a_message_on_a_closed_connection_is_dropped() -> None:
+    """An ordinary message for a `Closed` connection is dropped, not run."""
     node, stopped = make_node("messages", ("ping", b"", 0), status=P2pConnStatus.Closed)
     handle_p2p(node)
     assert not stopped
 
 
 def test_a_command_nothing_dispatches_is_ignored() -> None:
+    """A command with no entry in `callbacks` is ignored, not dropped."""
     node, stopped = make_node(
         "messages", ("nosuchcommand", b"", 0), status=P2pConnStatus.Connected
     )
@@ -200,6 +253,12 @@ def test_a_command_nothing_dispatches_is_ignored() -> None:
 
 
 def test_a_callback_that_raises_drops_the_peer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A callback raising a bare exception drops the peer, undiscouraged.
+
+    #283: an internal failure on content that was fine is this node's
+    own bug, not cause to discourage the peer that triggered it.
+    """
+
     def boom(node: Node, msg: bytes, conn: Connection) -> None:
         raise RuntimeError("no")
 
@@ -217,6 +276,8 @@ def test_a_callback_that_raises_drops_the_peer(monkeypatch: pytest.MonkeyPatch) 
 def test_a_callback_that_raises_a_btclib_exception_costs_the_peer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A btclib exception out of a callback drops the peer, discouraged."""
+
     def boom(node: Node, msg: bytes, conn: Connection) -> None:
         raise BTClibValueError("no")
 
@@ -230,6 +291,7 @@ def test_a_callback_that_raises_a_btclib_exception_costs_the_peer(
 
 
 def test_a_message_for_a_connection_that_is_gone_is_dropped() -> None:
+    """A message naming an unknown connection id is dropped, not run."""
     node, stopped = make_node(
         "messages", ("ping", b"", 7), status=P2pConnStatus.Connected, present=False
     )
@@ -238,9 +300,12 @@ def test_a_message_for_a_connection_that_is_gone_is_dropped() -> None:
 
 
 def test_a_message_on_a_connection_still_pending_drops_the_peer() -> None:
-    # anything but the four handshake commands, arriving before verack
-    # promotes the connection: a protocol violation whether the sender
-    # is found in `connections` or still in `pending_connections`
+    """A non-handshake message on a still-`pending` connection drops the peer.
+
+    Anything but the four handshake commands, arriving before `verack`
+    promotes the connection: a protocol violation whether the sender is
+    found in `connections` or still in `pending_connections`.
+    """
     node, stopped = make_node(
         "messages", ("ping", b"", 0), status=P2pConnStatus.Open, pending=True
     )

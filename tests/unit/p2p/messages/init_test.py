@@ -65,6 +65,7 @@ _COMMANDS = {
 
 
 def payload_classes() -> dict[str, type[Payload]]:
+    """Every `Payload` subclass this package defines, keyed by name."""
     found: dict[str, type[Payload]] = {}
     for name in _MESSAGE_MODULES:
         module = importlib.import_module(f"btclib_node.p2p.messages.{name}")
@@ -82,6 +83,13 @@ def payload_classes() -> dict[str, type[Payload]]:
 
 
 def test_every_payload_travels_under_its_specification_s_name() -> None:
+    """Every payload of this package carries the command its own spec gives.
+
+    `_COMMANDS` is read off BIP61, not off this tree's own choice, and
+    the check is two-way: every payload class has an entry here, and
+    every entry names a class that exists, so an addition on either
+    side that forgets the other is caught rather than silently unpaired.
+    """
     classes = payload_classes()
     # no payload without an expected name, and no expected name without
     # a payload: a class added here has to be spelled out above
@@ -91,6 +99,15 @@ def test_every_payload_travels_under_its_specification_s_name() -> None:
 
 
 def test_the_dispatch_tables_key_on_real_commands() -> None:
+    """Every key `callbacks`/`handshake_callbacks` register is a real command.
+
+    Those two tables are hand-written string literals rather than
+    derived from a `Payload` class, so a misspelled key is a handler
+    that is registered and never called -- exactly how "sendcmpt" went
+    unreached on the way out. This checks each key against every
+    command a payload of this package or of `btclib.p2p` actually
+    carries.
+    """
     # The outbound side reads the command off the class; the inbound
     # side is still two hand-written tables of string literals, so a
     # misspelling there is an entry no message ever matches -- silent,
@@ -118,6 +135,13 @@ def test_the_dispatch_tables_key_on_real_commands() -> None:
 
 
 def test_the_command_reaches_the_wire() -> None:
+    """A payload's `command` is what its wire framing actually carries.
+
+    `Payload.command` is a `ClassVar` read by callers, so it only
+    matters if it is also what ends up in the serialized header: this
+    round-trips one of each payload through `Message` and checks the
+    command it comes back with.
+    """
     # the ClassVar is only worth having if it is what gets serialized
     for name, cls in sorted(payload_classes().items()):
         message = Message(MAGIC, cls.command, b"")
@@ -125,6 +149,12 @@ def test_the_command_reaches_the_wire() -> None:
 
 
 def make_connection() -> Connection:
+    """Just enough state on a `Connection` for `parse_messages` to run.
+
+    Built with `__new__` rather than `Connection()`: the real
+    constructor opens a socket, and nothing below exercises anything
+    past framing, buffering and dispatch.
+    """
     manager = SimpleNamespace(
         node=SimpleNamespace(chain=RegTest()),
         loop=None,
@@ -144,10 +174,16 @@ def make_connection() -> Connection:
 
 
 def framed(payload: Payload, magic: bytes = MAGIC) -> bytes:
+    """`payload` serialized whole, header and all, as a peer would send it."""
     return payload.to_message(magic).serialize()
 
 
 def test_one_message_is_dispatched() -> None:
+    """A single, complete message is fully consumed off the buffer.
+
+    Parsed back out of the queue it lands in, its payload comes back
+    with the field it was built with, not just the right command.
+    """
     conn = make_connection()
     conn.buffer = framed(Ping(7))
     conn.parse_messages()
@@ -157,6 +193,12 @@ def test_one_message_is_dispatched() -> None:
 
 
 def test_several_messages_in_one_read() -> None:
+    """One read carrying several messages queues every one of them.
+
+    `ping`/`pong` are pushed to the front of `messages` rather than the
+    back, so a `ping` arriving between two other messages still ends up
+    ahead of the one that arrived before it.
+    """
     conn = make_connection()
     conn.buffer = framed(Ping(1)) + framed(Mempool()) + framed(Ping(2))
     conn.parse_messages()
@@ -166,6 +208,12 @@ def test_several_messages_in_one_read() -> None:
 
 
 def test_a_handshake_message_goes_to_its_own_queue() -> None:
+    """A handshake command lands in `handshake_messages`, not `messages`.
+
+    `verack` is one of `handshake_callbacks`'s own keys, and that
+    membership is what routes it -- `messages`, the ordinary queue,
+    stays empty.
+    """
     conn = make_connection()
     conn.buffer = framed(Verack())
     conn.parse_messages()
@@ -174,6 +222,14 @@ def test_a_handshake_message_goes_to_its_own_queue() -> None:
 
 
 def test_a_partial_message_is_held_whole() -> None:
+    """A message cut anywhere is held back whole, then completed on arrival.
+
+    Tried at five cut points -- inside the 24-byte header (1, 10, 23),
+    exactly at its boundary (24), and inside the payload (`len - 1`) --
+    because `parse_messages` rewinds on `IncompleteMessageError`, and a
+    rewind that lands wrong would only show up at one of those
+    boundaries, not at an arbitrary cut.
+    """
     whole = framed(Ping(1))
     # inside the header, at its boundary, and inside the payload
     for cut in (1, 10, 23, 24, len(whole) - 1):
@@ -190,6 +246,11 @@ def test_a_partial_message_is_held_whole() -> None:
 
 
 def test_a_whole_message_before_a_partial_one_is_still_taken() -> None:
+    """The first of two messages in one read is queued despite the second.
+
+    Stopping to rewind on the trailing partial message must not also
+    undo the complete one already parsed ahead of it.
+    """
     conn = make_connection()
     second = framed(Ping(2))
     conn.buffer = framed(Ping(1)) + second[:8]
@@ -199,6 +260,15 @@ def test_a_whole_message_before_a_partial_one_is_still_taken() -> None:
 
 
 def test_a_bad_checksum_raises_instead_of_spinning() -> None:
+    """A tampered checksum raises rather than retrying the same bytes forever.
+
+    A regression test: recovering from a bad checksum by searching the
+    buffer for the magic spelled as ASCII never matched the binary magic
+    actually there, and the `while` loop retried the same unparsable
+    message without end. Nothing here reaches that recovery any more --
+    the checksum failure raises immediately, and `Connection.run` is
+    what drops a peer whose message does this.
+    """
     # This used to be an infinite loop: the recovery searched the binary
     # buffer for the magic spelled as ASCII text, never matched, and the
     # while loop tried the same message again forever. Core drops such a
@@ -213,6 +283,12 @@ def test_a_bad_checksum_raises_instead_of_spinning() -> None:
 
 
 def test_a_message_for_another_network_is_refused() -> None:
+    """A message stamped with mainnet's magic is refused on regtest.
+
+    `parse_messages` compares the message's own magic against
+    `self.node.chain.magic`, so a peer on the wrong network is caught
+    at that check rather than by a command it happens not to recognise.
+    """
     conn = make_connection()
     conn.buffer = framed(Ping(1), magic=bytes.fromhex("f9beb4d9"))  # mainnet
     with pytest.raises(BTClibValueError):
@@ -221,6 +297,13 @@ def test_a_message_for_another_network_is_refused() -> None:
 
 
 def test_an_oversized_payload_is_refused_before_it_is_allocated() -> None:
+    """A header claiming an implausible payload length is refused up front.
+
+    The length field is forged past `MAX_PROTOCOL_MESSAGE_LENGTH`, with
+    no payload behind it: `Message.parse` checks the field against that
+    bound before it reads the payload, so nothing here ever allocates a
+    buffer sized by whatever a peer chose to put in the header.
+    """
     conn = make_connection()
     header = Message(MAGIC, "ping", b"").serialize()[:24]
     # rewrite the length field with something no peer would honour
@@ -232,6 +315,17 @@ def test_an_oversized_payload_is_refused_before_it_is_allocated() -> None:
 
 
 def test_a_drawn_ping_nonce_is_never_the_sentinel() -> None:
+    """`send_ping`'s nonce is nonzero, varies, and spans the whole field.
+
+    Zero is `ping_nonce`'s own sentinel for "no ping outstanding", so a
+    ping carrying it would make its `pong` indistinguishable from none
+    arriving at all -- checked here and nowhere else, though the
+    functional ping test depends on it and would otherwise fail only
+    intermittently. Fifty draws all landing under `2**48` has
+    probability about `2**-800`, so requiring one draw above it is a
+    check on the width of the draw, not a coincidence a real 64-bit
+    draw could plausibly fail.
+    """
     # btclib's Ping defaults its nonce to zero, and zero is what
     # ping_nonce means "no ping outstanding": a ping carrying it makes
     # the pong that answers it indistinguishable from no pong at all.

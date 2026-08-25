@@ -2,6 +2,7 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""Two real nodes complete a handshake, and a node refuses one with itself."""
 
 from typing import TYPE_CHECKING
 
@@ -15,6 +16,13 @@ if TYPE_CHECKING:
 
 
 def test_simple_connection(tmp_path: Path) -> None:
+    """Two real nodes, connected over a socket, each reach `Connected`.
+
+    Each side's own handshake completes independently -- `connections`
+    on either node only holds the peer once its own `verack` has been
+    processed -- so both are waited for on their own rather than one
+    being assumed once the other is seen.
+    """
     node1 = Node(
         config=Config(
             chain="regtest",
@@ -53,6 +61,17 @@ def test_simple_connection(tmp_path: Path) -> None:
 
 
 def test_connection_to_ourselves(tmp_path: Path) -> None:
+    """A node that dials its own address drops the connection, never adds it.
+
+    `p2p.callbacks.version` recognises its own nonce and stops the
+    connection there, before `verack` could ever promote it into
+    `connections` -- so `pending_connections` emptying out, not
+    `connections` staying at zero, is what proves the drop actually
+    happened rather than the connection never having been attempted.
+    Two nonces are recorded because the loopback dial reaches this same
+    node's listener too, and each side of that pair sends its own
+    version with its own nonce.
+    """
     node = Node(
         config=Config(
             chain="regtest",

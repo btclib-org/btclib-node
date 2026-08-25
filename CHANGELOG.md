@@ -232,6 +232,31 @@ to check the guess.
   outright rather than narrowed, the family having no finding left
   under either.
 
+### `tests/unit/p2p/` and `tests/functional/p2p/` get real docstrings (issue #373)
+
+- **Both per-file-ignore keys for the eight-code family are removed
+  entirely** (issue #373): every module, class, function and `__init__`
+  under `tests/unit/p2p/` and `tests/functional/p2p/` now carries a
+  docstring, each `test_*` function's own naming the scenario its
+  assertions actually cover rather than restating the function name,
+  checked against `src/btclib_node/p2p/callbacks.py` and
+  `src/btclib_node/p2p/connection.py` rather than against the test's own
+  name. `callbacks_test.py`'s
+  `test_a_pruned_peer_is_let_go_only_once_the_blocks_are_synced` names
+  its own scenario with a variable called `pruned` carrying
+  `NODE_WITNESS`, where the service `callbacks.version` actually gates
+  the drop on is `NODE_NETWORK`; the docstring describes the real gate
+  rather than the variable's own name. This is the last of #373's five
+  parallel `tests/**` slices to close, past `scripts/**`,
+  `tests/unit/chainstate/`, `tests/unit/rpc/`/`tests/functional/rpc/`
+  and `tests/unit/`'s own root-level bucket, all already landed. The
+  rpc slice's own landing renamed `tests/functional/rpc/**`'s
+  per-file-ignore key to `tests/unit/chainstate/**` instead of deleting
+  it outright, silently reintroducing a key the chainstate slice had
+  already removed; that key is removed again here, alongside this
+  slice's own two, since the family now has no finding left under any
+  of the three.
+
 ### The docs gate's own remaining gaps close: `[project.urls]`, `local-link-prefix`
 
 - **`conf.py`'s `BLOB` constant reads `pyproject.toml`'s own

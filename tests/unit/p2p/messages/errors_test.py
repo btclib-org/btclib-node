@@ -2,6 +2,8 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""`Reject`, BIP61's message: its own round trip and its hash byte order."""
+
 from btclib.p2p.inventory import Inventory, InventoryType
 from btclib.p2p.message import Message
 
@@ -13,12 +15,21 @@ TXID = bytes(range(32))  # not a palindrome: a symmetric hash tells nothing
 
 
 def test_reject() -> None:
+    """A `Reject` framed onto the wire and parsed back is the same object."""
     msg = Reject("tx", RejectCode(0x42), "", TXID)
     msg_bytes = msg.to_message(MAGIC).serialize()
     assert msg == Reject.parse(Message.parse(msg_bytes).payload)
 
 
 def test_a_reject_puts_a_hash_on_the_wire_the_way_an_inventory_does() -> None:
+    """`Reject.data`'s byte order on the wire matches `Inventory`'s hash.
+
+    Both classes hold their hash displayed, as everywhere else in this
+    tree, and both reverse it on serialization -- checked here by
+    comparing the trailing 32 bytes each puts on the wire for the same
+    transaction, rather than trusting that two independent reversals
+    agree just because each is internally consistent.
+    """
     # a round trip holds whichever way round the two sides agree on;
     # this is which way round that is, and it is the one everything
     # else in the protocol uses

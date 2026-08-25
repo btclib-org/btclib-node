@@ -2,6 +2,7 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""A broadcast transaction reaches a peer's mempool over `inv`/`getdata`."""
 
 from typing import TYPE_CHECKING
 
@@ -26,6 +27,15 @@ if TYPE_CHECKING:
 
 
 def test_send_tx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`broadcast_raw_transaction` gets the tx into a real peer's mempool.
+
+    Both nodes are brought to `BlockSynced` first, since `callbacks.tx`
+    drops a transaction arriving before that regardless of what the
+    sender's own version claimed. The trickle delay is pinned to zero
+    so the announcement is due immediately rather than after a real,
+    randomly drawn wait; without it this test would still pass, only
+    slower and by however long that draw happened to be.
+    """
     # `DownloadManager._send_due_announcements` draws a real, random
     # delay for both nodes' connections the moment each is created
     # (#141), so left undrawn this waits out a mean-2s outbound delay
