@@ -2,6 +2,15 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""`PeerDB`, dialling a socket, and the addr-entry/BIP155 translation.
+
+Three surfaces sharing a module: the table of known and active
+addresses and its own two locks, `dial`'s handling of a peer that
+refuses, hangs or is cancelled on, and the round trip between BIP155's
+`NetworkAddressV2` and the narrower `addr` entry an addrv1 peer is
+sent.
+"""
+
 import asyncio
 import socket
 import threading
@@ -39,21 +48,34 @@ _AN_ONIONCAT_ADDRESS = "fd87:d87e:eb43::1"
 
 
 def a_peer_db(chain: Any = None, data_dir: Path | None = None) -> PeerDB:
+    """Build a `PeerDB`, in memory unless `data_dir` names a store on disk."""
     return PeerDB(cast("Chain", chain), data_dir)
 
 
 def an_onion_address(port: int = 8333) -> NetworkAddressV2:
+    """Build a TORv3 peer: BIP155's own undialable network, for its own tests."""
     return NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, port)
 
 
 def a_cjdns_address(port: int = 8333) -> NetworkAddressV2:
-    # sixteen octets, which is what makes it the interesting one: an
-    # onion address is refused by its length wherever an IP address is
-    # wanted, and this is not
+    """Build a CJDNS peer: sixteen octets, so it is not refused by length alone.
+
+    An onion address is refused wherever an IP address is wanted
+    because its length is wrong; this one is the same length as an
+    IPv6 address, so it is what tells apart a check that reads the
+    network id from one that only checks how many octets there are.
+    """
     return NetworkAddressV2(0, 0, BIP155Network.CJDNS, b"\xfc" + b"\x11" * 15, port)
 
 
 def test_an_address_just_seen_is_active_and_can_be_sent() -> None:
+    """An address just handshaked with is active and round-trips as BIP155.
+
+    The stored timestamp is an `int`, not the `float` `time.time()`
+    gives: the field is four octets on the wire and a `float` has no
+    `to_bytes`, so this is what serving the address over `addr`/`addrv2`
+    actually needs.
+    """
     peer_db = a_peer_db()
     peer_db.add_active_address(peer_address("1.2.3.4", 18444))
     (active,) = peer_db.get_active_addresses()
@@ -64,6 +86,13 @@ def test_an_address_just_seen_is_active_and_can_be_sent() -> None:
 
 
 def test_the_table_of_active_addresses_is_bounded() -> None:
+    """`active_addresses` stops growing past its own cap of distinct endpoints.
+
+    A distinct port each time means every call is a genuinely new
+    endpoint -- the case `test_redialling_the_same_endpoint...` below
+    is not -- so the table's own count runs one step closer to the cap
+    per call rather than settling onto a single row.
+    """
     # #71: the cap is on distinct endpoints, so this many distinct ports
     # each run the table a step closer to it rather than settling onto
     # one row the way redialling the same endpoint does, below
@@ -75,6 +104,14 @@ def test_the_table_of_active_addresses_is_bounded() -> None:
 
 
 def test_redialling_the_same_endpoint_settles_onto_its_one_row() -> None:
+    """Handshaking with the same endpoint three times leaves one active row.
+
+    #270: `add_active_address` used to run once per handshake with no
+    check for an endpoint already held, so a peer redialled inside the
+    three-hour active window grew one row per handshake instead of
+    settling on the latest, the way `add_addresses`'s own `by_endpoint`
+    already did for the known-address table.
+    """
     # #270: add_active_address ran once per handshake, with no check for
     # an endpoint already held, so a peer redialled inside the three-hour
     # window grew one row per handshake instead of settling on the
@@ -87,6 +124,16 @@ def test_redialling_the_same_endpoint_settles_onto_its_one_row() -> None:
 
 
 def test_redialling_the_same_endpoint_many_times_still_holds_one_row() -> None:
+    """Many redials of one endpoint still leave exactly one active row.
+
+    #270: this many calls against the one endpoint is the same shape
+    `test_the_table_of_active_addresses_is_bounded` puts the cap
+    through, without a distinct port spending it each time -- and it is
+    also the fix's own regression guard against a per-call scan of
+    `active_addresses`: `pyproject.toml`'s own per-test `timeout` is
+    what such a scan, repeated this many times, would fail on, not the
+    assertion below.
+    """
     # #270: this many calls against the one endpoint is the same shape
     # `test_the_table_of_active_addresses_is_bounded` puts the cap
     # through, without a distinct port spending it each time. It is also
@@ -103,6 +150,18 @@ def test_redialling_the_same_endpoint_many_times_still_holds_one_row() -> None:
 def test_add_active_address_waits_out_a_prune_already_in_progress(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """`add_active_address` blocks while `get_active_addresses` is mid-prune.
+
+    A review finding on #71's own timer: `add_active_address` reads
+    `_active_index` and then writes into `active_addresses` at the
+    position found, and `get_active_addresses` reassigns the list and
+    then rebuilds the index against it -- both two statements, not one,
+    reachable respectively from `callbacks.verack` on `Node`'s thread
+    and `manage_connections` on `P2pManager`'s. `_reindex_active` is
+    paused here, after the list has already been reassigned but before
+    the index is rebuilt, which is the exact gap the finding traced --
+    a deliberate pause rather than a race against real timing.
+    """
     # A review finding on #71's own timer: add_active_address reads
     # _active_index and then writes into active_addresses at the
     # position found, and get_active_addresses reassigns the list and
@@ -156,6 +215,17 @@ def test_add_active_address_waits_out_a_prune_already_in_progress(
 def test_add_addresses_and_random_address_do_not_interleave(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """`random_address` blocks while a gossiped `add_addresses` is in progress.
+
+    #298: `random_address`'s own dialable-address comprehension walks
+    `addresses` on `P2pManager`'s thread while `add_addresses` (gossip,
+    from `callbacks.addr`/`addrv2`) mutates the same set on `Node`'s --
+    unprotected, CPython raises `RuntimeError: Set changed size during
+    iteration` for that pairing rather than merely losing an update.
+    `_is_embedded_ipv6` is paused here, inside the loop that reads and
+    mutates `addresses` before any entry is added, which is a
+    deliberate pause rather than a race against real timing.
+    """
     # #298: random_address's own dialable-address comprehension walks
     # `addresses` on P2pManager's thread while add_addresses (gossip,
     # from callbacks.addr/addrv2) mutates the same set on Node's --
@@ -201,6 +271,12 @@ def test_add_addresses_and_random_address_do_not_interleave(
 
 
 def test_an_address_not_seen_for_three_hours_stops_being_active() -> None:
+    """A stale active address is dropped by `get_active_addresses`, not just hidden.
+
+    Checked twice: the answer excludes it, and the table itself no
+    longer holds it -- a read that filtered it out without pruning
+    would pass the first assertion and fail the second.
+    """
     peer_db = a_peer_db()
     fresh = peer_address("1.2.3.4", 18444, timestamp=int(time.time()) - 3600)
     stale = peer_address("5.6.7.8", 18444, timestamp=int(time.time()) - 3600 * 4)
@@ -211,6 +287,12 @@ def test_an_address_not_seen_for_three_hours_stops_being_active() -> None:
 
 
 def test_the_two_ip_networks_are_told_apart_by_the_text_of_the_address() -> None:
+    """`peer_address` reads the network id and the field width off the text.
+
+    An IPv4 literal gets `BIP155Network.IPV4` and four address octets;
+    an IPv6 literal gets `IPV6` and sixteen -- BIP155's own split
+    between the two networks, from parsing the string alone.
+    """
     assert peer_address("1.2.3.4", 8333).network_id == BIP155Network.IPV4
     assert peer_address("2001:db8::1", 8333).network_id == BIP155Network.IPV6
     # four octets and sixteen, which is what BIP155 gives the two ids
@@ -220,6 +302,13 @@ def test_the_two_ip_networks_are_told_apart_by_the_text_of_the_address() -> None
 
 
 def test_only_an_ip_address_fits_in_an_addr_version_1() -> None:
+    """`can_addrv1` accepts both IP networks and refuses onion and CJDNS.
+
+    IPv6 is accepted here too, which is the half that says the filter
+    is about the network being an IP one at all, rather than about
+    whether the address is otherwise dialable -- `can_connect` is where
+    that second question is asked.
+    """
     assert can_addrv1(peer_address("1.2.3.4", 8333))
     # the other half of the same question, and the half that says the
     # filter is about the network rather than about being dialable
@@ -229,6 +318,12 @@ def test_only_an_ip_address_fits_in_an_addr_version_1() -> None:
 
 
 def test_an_address_of_no_ip_network_has_no_addr_version_1_form() -> None:
+    """`addr_entry` refuses a non-IP address rather than misreading its octets.
+
+    The refusal is the network id's and not the length's: CJDNS is
+    sixteen octets, so `IPv6Address` would take one for an IP address
+    and answer with a peer nobody gossiped.
+    """
     # the refusal is the network id's and not the length's: cjdns is
     # sixteen octets, so IPv6Address would take one for an IP address
     # and answer with a peer nobody gossiped
@@ -238,6 +333,12 @@ def test_an_address_of_no_ip_network_has_no_addr_version_1_form() -> None:
 
 
 def test_a_v4_peer_survives_the_round_trip_through_an_addr_version_1_entry() -> None:
+    """An IPv4 or IPv6 peer parses back the same after an addrv1 round trip.
+
+    The mapping is where it could not: an entry holds every address in
+    sixteen octets, so what comes back has to be the v4 record again,
+    not the sixteen-octet form IPv6 uses natively.
+    """
     # the mapping is where it could not: an entry holds every address in
     # sixteen octets, so what comes back has to be the v4 record again
     for text in ("1.2.3.4", "2001:db8::1"):
@@ -246,6 +347,12 @@ def test_a_v4_peer_survives_the_round_trip_through_an_addr_version_1_entry() -> 
 
 
 def test_an_address_is_shown_the_way_core_writes_one() -> None:
+    """`ip_and_port` formats like Core's `CService::ToStringAddrPort`.
+
+    Bracketed unless the host is IPv4, so that the host of a v6 peer
+    can be told from its port; a v4-mapped host is shown as plain IPv4,
+    the way Core's own `SetLegacyIPv6` files it under `NET_IPV4`.
+    """
     # `CService::ToStringAddrPort`: bracketed unless the host is IPv4,
     # so that the host of a v6 peer can be told from its port
     assert ip_and_port("1.2.3.4", 8333) == "1.2.3.4:8333"
@@ -257,26 +364,37 @@ def test_an_address_is_shown_the_way_core_writes_one() -> None:
 
 
 def test_a_host_that_is_not_an_ip_address_is_refused() -> None:
-    # nothing reaches `ip_and_port` with one -- a socket answers with an
-    # address and a `NetworkAddress` holds one -- and the refusal is
-    # what says so rather than a hostname being shown with brackets
-    # guessed at
+    """`ip_and_port` refuses a hostname rather than guessing its brackets.
+
+    Nothing in this node reaches `ip_and_port` with one -- a socket
+    answers with an address and a `NetworkAddress` holds one -- so the
+    refusal is a deliberate boundary and not a case worth handling.
+    """
     with pytest.raises(ValueError, match="does not appear to be"):
         ip_and_port("seed.bitcoin.sipa.be", 8333)
 
 
 def test_the_two_ip_networks_are_dialled_and_an_onion_address_is_not() -> None:
+    """`can_connect` accepts both IP networks and refuses an onion address.
+
+    `can_connect` answers a different question from `can_addrv1` above
+    -- whether this node has a dial for the network, not whether the
+    wire format has room for the address -- even though both currently
+    agree on every network this node knows of.
+    """
     assert can_connect(peer_address("1.2.3.4", 8333))
     assert can_connect(peer_address("2001:db8::1", 8333))
     assert not can_connect(an_onion_address())
 
 
 def test_an_address_that_cannot_be_dialled_says_so_rather_than_trying() -> None:
+    """`dial` refuses an onion address up front, without opening a socket."""
     with pytest.raises(ValueError, match="not yet supported"):
         asyncio.run(dial(an_onion_address()))
 
 
 def test_a_peer_that_is_listening_is_connected_to() -> None:
+    """`dial` connects to a real IPv4 listener and hands back that socket."""
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind(("127.0.0.1", 0))
@@ -293,6 +411,7 @@ def test_a_peer_that_is_listening_is_connected_to() -> None:
 
 
 def test_a_v6_peer_that_is_listening_is_connected_to() -> None:
+    """`dial` connects to a real IPv6 listener and hands back that socket."""
     listener = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind(("::1", 0))
@@ -312,6 +431,14 @@ def test_a_v6_peer_that_is_listening_is_connected_to() -> None:
 def test_a_dial_that_is_given_up_on_closes_the_socket_it_opened(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A `dial` that gives up on an unreachable peer still closes its socket.
+
+    Every `socket.socket()` call is recorded, including the event
+    loop's own, so the one this test cares about -- the IPv4 stream
+    socket `dial` opened for the connect attempt -- is picked out by
+    family and type and checked for a closed file descriptor
+    specifically, rather than assuming there is exactly one to check.
+    """
     opened: list[socket.socket] = []
     real_socket = socket.socket
 
@@ -342,14 +469,15 @@ def test_a_dial_that_is_given_up_on_closes_the_socket_it_opened(
 def test_a_dial_cancelled_in_flight_closes_the_socket_it_opened(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """#312: `P2pManager.stop` cancels `manage_connections`, and a dial
-    it is in the middle of is cancelled with it.
+    """#312: cancelling `manage_connections` cancels a dial mid-flight too.
 
-    `CancelledError` is not an `OSError` and not a `TimeoutError`, so
-    the arm that answers a peer which never came up does not see it: the
-    socket opened a few lines earlier is reachable from the frame the
-    cancellation unwinds and from nowhere else, and the caller that
-    would have closed it is never handed it.
+    `P2pManager.stop` cancels `manage_connections`, and a dial it is in
+    the middle of is cancelled with it. `CancelledError` is not an
+    `OSError` and not a `TimeoutError`, so the arm that answers a peer
+    which never came up does not see it: the socket opened a few lines
+    earlier is reachable from the frame the cancellation unwinds and
+    from nowhere else, and the caller that would have closed it is
+    never handed it.
 
     `sock_connect` is replaced with one that never comes back, so the
     dial is certainly still in flight when it is cancelled, rather than
@@ -392,6 +520,12 @@ def test_a_dial_cancelled_in_flight_closes_the_socket_it_opened(
 
 
 def test_a_peer_that_is_not_listening_is_given_up_on() -> None:
+    """`dial` answers `None` for a closed port rather than a dead socket.
+
+    Nothing is bound on the port by the time `dial` is called: the
+    connection never completes, and what comes back is nothing rather
+    than a socket that exists but is not connected.
+    """
     # nothing bound: the connection never completes, and what comes back
     # is nothing rather than a socket that is not connected
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -403,6 +537,15 @@ def test_a_peer_that_is_not_listening_is_given_up_on() -> None:
 
 
 def test_a_refused_dial_does_not_cost_the_old_poll_s_full_second() -> None:
+    """A refused connection comes back well under a second, not after one.
+
+    #90: a poll of ten passes at 0.1s apart cannot tell a refusal from
+    a peer that is merely slow to answer, so it always spent the whole
+    second either way. `SO_ERROR`, read through `loop.sock_connect`, is
+    answered by the kernel as soon as the refusal happens, so this
+    checks the bound the fix gives rather than the microseconds a
+    refusal actually costs.
+    """
     # #90: a poll of ten passes at 0.1s apart cannot tell a refusal from
     # a peer that is merely slow to answer, so it always spent the whole
     # second either way. `SO_ERROR`, read through `loop.sock_connect`,
@@ -421,12 +564,16 @@ def test_a_refused_dial_does_not_cost_the_old_poll_s_full_second() -> None:
 
 
 class FakeLoop:
+    """A `getaddrinfo` stand-in answering fixed hosts without a real DNS query."""
+
     def __init__(self, answers: dict[str, Exception | list[str]]) -> None:
+        """Record what each host name should answer with, or raise."""
         self.answers = answers
 
     async def getaddrinfo(
         self, host: str, port: int
     ) -> list[tuple[None, None, None, None, tuple[str, int]]]:
+        """Answer `host` from `self.answers`, in `getaddrinfo`'s own shape."""
         answer = self.answers[host]
         if isinstance(answer, Exception):
             raise answer
@@ -434,6 +581,7 @@ class FakeLoop:
 
 
 def a_chain(seeds: list[str]) -> Any:
+    """Build a chain stand-in naming `seeds` as its DNS seeds, on regtest's port."""
     # not 8333: the port has to come from the chain, and a default would
     # look the same
     return SimpleNamespace(addresses=list(seeds), port=18444)
@@ -442,6 +590,12 @@ def a_chain(seeds: list[str]) -> Any:
 def test_the_seeds_that_answer_fill_the_table_and_the_rest_are_passed_over(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A seed lookup that fails is skipped; one that answers fills the table.
+
+    `down.example` raises `gaierror` and contributes nothing; every
+    address `up.example` answers with lands in `peer_db.addresses`, on
+    the chain's own port, `18444`, and not `8333`.
+    """
     peer_db = a_peer_db(a_chain(["down.example", "up.example"]))
     loop = FakeLoop(
         {
@@ -460,6 +614,13 @@ def test_the_seeds_that_answer_fill_the_table_and_the_rest_are_passed_over(
 def test_every_seed_that_answers_is_taken_and_a_host_two_of_them_share_is_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The table after a DNS lookup is the union of every seed's answer.
+
+    Two seeds share one address here: the table is the union over all
+    of them and not the last one queried, since a lookup that started
+    over per seed would leave a node with whatever the seed at the end
+    of the list happened to know.
+    """
     # the table is the union over the seeds and not the last answer:
     # a lookup that starts over per seed leaves a node with whatever
     # the seed at the end of the list happened to know
@@ -480,9 +641,12 @@ def test_every_seed_that_answers_is_taken_and_a_host_two_of_them_share_is_one(
 
 
 class FakeIpv6Loop:
+    """A `getaddrinfo` stand-in answering the real shape a AAAA record gives."""
+
     async def getaddrinfo(
         self, host: str, port: int
     ) -> list[tuple[int, int, int, str, tuple[str, int, int, int]]]:
+        """Answer with a sockaddr of four fields, as a real AAAA lookup would."""
         # what a AAAA record resolves to: a sockaddr of four fields
         # rather than two, the flow info and the scope id being the two
         # a peer table has nowhere to put
@@ -494,6 +658,13 @@ class FakeIpv6Loop:
 def test_a_seed_answering_with_ipv6_gives_up_its_host_and_its_port(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A four-field IPv6 sockaddr still yields a usable host and port.
+
+    `FakeIpv6Loop` answers the real, wider tuple `getaddrinfo` gives
+    for an AAAA record, with flow info and scope id fields a peer entry
+    has no room for -- this checks that only the host and the port are
+    kept out of it.
+    """
     peer_db = a_peer_db(a_chain(["v6.example"]))
     monkeypatch.setattr(asyncio, "get_running_loop", FakeIpv6Loop)
     asyncio.run(peer_db.get_addr_from_dns())
@@ -503,6 +674,15 @@ def test_a_seed_answering_with_ipv6_gives_up_its_host_and_its_port(
 def test_a_node_that_already_knows_peers_does_not_ask_the_seeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """`ask_dns_nodes` false skips the DNS lookup, checked at the lookup itself.
+
+    `get_running_loop` is patched to fail the test outright rather than
+    to record that it was called: a flag set from inside an `or`'s
+    right-hand side (`asked.append(True) or FakeLoop({})`) would look
+    equivalent but is not, since `list.append` returns `None` and that
+    branch runs every time regardless of whether the left side already
+    holds a value. Failing where the call would happen has no such gap.
+    """
     peer_db = a_peer_db(a_chain(["up.example"]))
     peer_db.addresses.add(peer_address("1.2.3.4", 8333))
     peer_db.ask_dns_nodes = False
@@ -518,6 +698,12 @@ def test_a_node_that_already_knows_peers_does_not_ask_the_seeds(
 
 
 def test_an_address_is_drawn_from_the_ones_that_can_be_dialled() -> None:
+    """`random_address` only ever draws the one entry it can dial.
+
+    An onion address sits in the same table, undrawable across twenty
+    draws -- enough that a draw not filtering by dialability would
+    almost certainly have returned it at least once.
+    """
     peer_db = a_peer_db()
     dialable = peer_address("1.2.3.4", 8333)
     peer_db.addresses.add(dialable)
@@ -527,6 +713,13 @@ def test_an_address_is_drawn_from_the_ones_that_can_be_dialled() -> None:
 
 
 def test_a_table_holding_nothing_dialable_answers_that_there_is_nothing() -> None:
+    """A table of onion and CJDNS peers alone answers `None`, not forever.
+
+    This is the case a draw-until-one-can-be-dialled would never come
+    back from, and one a node reaches in ordinary operation: onion,
+    i2p and CJDNS peers gossiped without an IP counterpart fill a table
+    with exactly this.
+    """
     # the case a draw-until-one-can-be-dialled never comes back from,
     # and a table a node reaches in ordinary operation: onion, i2p and
     # cjdns peers fill it with exactly this
@@ -537,13 +730,23 @@ def test_a_table_holding_nothing_dialable_answers_that_there_is_nothing() -> Non
 
 
 def test_an_empty_table_answers_that_there_is_nothing() -> None:
-    # the caller guards on `is_empty` before it draws, so this is not a
-    # path the node takes today; drawing from nothing still has to be an
-    # answer rather than an IndexError out of a housekeeping loop
+    """`random_address` on an empty table answers `None`, not `IndexError`.
+
+    The caller guards on `is_empty` before it draws, so this is not a
+    path a node takes today; drawing from nothing still has to be an
+    answer rather than an exception out of a housekeeping loop.
+    """
     assert call_within(a_peer_db().random_address) is None
 
 
 def test_the_draw_reaches_every_address_that_can_be_dialled() -> None:
+    """Enough draws cover every dialable entry, IPv4 and IPv6 alike.
+
+    Over all of them and not just the first one that will do: a node
+    that only ever dials one entry of its table is a node with one
+    peer. Eighty draws over four dialable entries and one onion address
+    is enough that every entry, and only the dialable ones, shows up.
+    """
     # over all of them, not the first one that will do: a node that only
     # ever dials one entry of its table is a node with one peer -- and
     # ipv4 and ipv6 are both dialled, not only the first
@@ -556,6 +759,11 @@ def test_the_draw_reaches_every_address_that_can_be_dialled() -> None:
 
 
 def test_the_table_of_known_addresses_is_bounded() -> None:
+    """`add_addresses` stops growing `addresses` past its own cap.
+
+    Ten more entries than the cap are offered in one call, and the
+    table still holds exactly the cap's worth after it.
+    """
     peer_db = a_peer_db()
     limit = 10000
     peer_db.add_addresses([peer_address("1.2.3.4", port) for port in range(limit + 10)])
@@ -563,6 +771,13 @@ def test_the_table_of_known_addresses_is_bounded() -> None:
 
 
 def test_a_v4_mapped_ipv6_record_is_not_kept() -> None:
+    """A v4-mapped `IPV6` record is dropped by `add_addresses`, not gossiped back.
+
+    BIP155: a client SHOULD ignore an `IPV6` entry whose octets are
+    `::ffff:0:0/96`, the IPv4 mapping. #151: keeping it is an entry
+    that later writes into an addr version 1 message as the same
+    sixteen octets an ordinary IPv4 peer does.
+    """
     # BIP155: a client SHOULD ignore an IPV6 entry whose octets are
     # `::ffff:0:0/96`, the IPv4 mapping -- keeping it is #151, an entry
     # that later writes into an addr version 1 message as the same
@@ -573,6 +788,13 @@ def test_a_v4_mapped_ipv6_record_is_not_kept() -> None:
 
 
 def test_an_onioncat_ipv6_record_is_not_kept() -> None:
+    """An OnionCat-range `IPV6` record is dropped by `add_addresses` too.
+
+    The other half of the same rule: `fd87:d87e:eb43::/48` is the
+    OnionCat range a TORv2 address used to be embedded in as a fake
+    IPv6 one, before BIP155 gave onion addresses a network of their
+    own.
+    """
     # the other half of the same rule: `fd87:d87e:eb43::/48` is where a
     # TORv2 address used to be embedded in a fake IPv6 one
     peer_db = a_peer_db()
@@ -581,6 +803,12 @@ def test_an_onioncat_ipv6_record_is_not_kept() -> None:
 
 
 def test_an_ordinary_ipv6_record_is_kept() -> None:
+    """An `IPV6` address outside both reserved ranges is kept as-is.
+
+    The rule the two tests above check is about the two reserved
+    ranges and not about the network id: an address outside both is an
+    ordinary peer, which this checks is not caught by the same filter.
+    """
     # the rule is about the two reserved ranges and not about the
     # network id: an address outside both is an ordinary peer
     peer_db = a_peer_db()
@@ -590,6 +818,14 @@ def test_an_ordinary_ipv6_record_is_kept() -> None:
 
 
 def test_an_address_a_peer_told_us_about_is_kept_without_its_timestamp() -> None:
+    """A gossiped address is kept, but its own reported timestamp is not.
+
+    A peer's word for when it last saw an address is not evidence, so
+    the entry kept has timestamp `0` rather than either gossiped value
+    -- and keeping the timestamp would also make an endpoint gossiped
+    twice into two different set members rather than one, since it is
+    part of the equality `add_addresses` deduplicates on.
+    """
     # a peer's word for when it last saw an address is not evidence, and
     # keeping it would make the same address several entries
     peer_db = a_peer_db()
@@ -602,6 +838,13 @@ def test_an_address_a_peer_told_us_about_is_kept_without_its_timestamp() -> None
 
 
 def test_two_gossiped_records_for_one_endpoint_settle_on_the_latest_services() -> None:
+    """One endpoint gossiped with two different `services` settles on the last.
+
+    #247: two records for the same network id, address and port but
+    different `services` used to become two members of the table
+    instead of one settling on the endpoint's latest `services`, since
+    `services` too is part of the equality a plain set dedups on.
+    """
     # #247: two records for the same network id, address and port but
     # different `services` used to become two members of the table
     # instead of one settling on the endpoint's latest `services`
@@ -614,6 +857,13 @@ def test_two_gossiped_records_for_one_endpoint_settle_on_the_latest_services() -
 
 
 def test_updating_an_endpoint_already_known_does_not_spend_the_cap() -> None:
+    """Updating an endpoint already at the cap does not push another one out.
+
+    A second gossip for an endpoint the table already holds is not a
+    new endpoint, so it must not be turned away as though the cap had
+    run out on it: the table starts already full, at exactly the cap,
+    and the update still lands.
+    """
     # a second gossip for an endpoint the table already holds is not a
     # new endpoint, so it must not be turned away as though the cap had
     # run out on it
@@ -626,6 +876,14 @@ def test_updating_an_endpoint_already_known_does_not_spend_the_cap() -> None:
 
 
 def test_an_address_that_answered_is_preferred_within_the_same_run() -> None:
+    """`random_address` favours an address already known to have answered.
+
+    #123: dialling should not draw uniformly over a table that already
+    knows which of its entries actually answered, even before any of
+    it is read back from a restart -- so the answered address is drawn
+    every time here, over twenty draws against a table also holding an
+    unconfirmed, merely gossiped one.
+    """
     # #123: dialling should not draw uniformly over a table that already
     # knows which of its entries actually answered, even before any of
     # it is read back from a restart
@@ -642,6 +900,11 @@ def test_an_address_that_answered_is_preferred_within_the_same_run() -> None:
 
 
 def test_a_known_address_survives_a_restart(tmp_path: Path) -> None:
+    """A gossiped address written before `close` is read back after restart.
+
+    A second `PeerDB` opened on the same `data_dir` as the first, once
+    the first has closed, sees exactly the address the first one added.
+    """
     first = a_peer_db(data_dir=tmp_path)
     first.add_addresses([peer_address("1.2.3.4", 8333)])
     first.close()
@@ -654,6 +917,13 @@ def test_a_known_address_survives_a_restart(tmp_path: Path) -> None:
 def test_an_address_that_answered_survives_a_restart_and_is_preferred(
     tmp_path: Path,
 ) -> None:
+    """Which address answered survives a restart, and is still preferred.
+
+    The preference the previous test checks in memory is checked here
+    across a `close` and a fresh `PeerDB` on the same store: the
+    active-address record is durable, not only a hint kept for the run
+    that made it.
+    """
     first = a_peer_db(data_dir=tmp_path)
     answered = peer_address("1.2.3.4", 8333)
     unconfirmed = peer_address("5.6.7.8", 8333)
@@ -671,6 +941,7 @@ def test_an_address_that_answered_survives_a_restart_and_is_preferred(
 
 
 def test_a_fresh_store_asks_the_seeds(tmp_path: Path) -> None:
+    """A brand-new, empty store starts out willing to ask the DNS seeds."""
     peer_db = a_peer_db(data_dir=tmp_path)
     assert peer_db.ask_dns_nodes
     peer_db.close()
@@ -679,6 +950,12 @@ def test_a_fresh_store_asks_the_seeds(tmp_path: Path) -> None:
 def test_a_store_holding_only_unconfirmed_gossip_still_asks_the_seeds(
     tmp_path: Path,
 ) -> None:
+    """A store that only ever heard gossip, none of it confirmed, still asks.
+
+    #89: a table that is not empty but is not dialable either -- a
+    seed that answered with AAAA records alone leaves exactly this --
+    is not a reason to skip the seeds.
+    """
     # #89: a table that is not empty but is not dialable either -- a
     # seed that answered with AAAA records alone leaves exactly this --
     # is not a reason to skip the seeds
@@ -694,6 +971,13 @@ def test_a_store_holding_only_unconfirmed_gossip_still_asks_the_seeds(
 def test_a_store_with_a_recently_answered_address_skips_the_seeds(
     tmp_path: Path,
 ) -> None:
+    """A store restarting with a recently confirmed address skips the seeds.
+
+    `ask_dns_nodes` is decided from `get_active_addresses()` at
+    construction, filtered to what `can_connect` accepts, so a durable
+    active row read back from a fresh store answers the same way a
+    freshly confirmed one in memory would.
+    """
     first = a_peer_db(data_dir=tmp_path)
     answered = peer_address("1.2.3.4", 8333)
     first.add_addresses([answered])
@@ -708,6 +992,13 @@ def test_a_store_with_a_recently_answered_address_skips_the_seeds(
 def test_a_stale_answered_address_no_longer_holds_off_the_seeds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """An active address recorded four hours ago no longer skips the seeds.
+
+    `time.time` is patched to four hours in the past only for the
+    `add_active_address` call, so the row is written stale rather than
+    aged after the fact; a fresh `PeerDB` on the same store reads it
+    back past the three-hour active window and asks the seeds anyway.
+    """
     first = a_peer_db(data_dir=tmp_path)
     stale = peer_address("1.2.3.4", 8333)
     four_hours_ago = time.time() - 3600 * 4
@@ -724,6 +1015,14 @@ def test_a_stale_answered_address_no_longer_holds_off_the_seeds(
 def test_get_active_addresses_deletes_a_stale_row_from_the_store(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """`get_active_addresses` prunes a stale row from the durable store too.
+
+    #253: nothing in `add_active_address` ever bounded the durable
+    `answered-` rows the way `add_addresses`'s 10000-entry cap bounds
+    `known-` ones, so pruning on read is what keeps the store itself
+    from growing without bound -- checked here directly against
+    `peer_db.db`, not only against the in-memory `active_addresses`.
+    """
     # #253: nothing in `add_active_address` ever bounded the durable
     # `answered-` rows the way `add_addresses`'s 10000-entry cap bounds
     # `known-` ones
@@ -743,6 +1042,14 @@ def test_get_active_addresses_deletes_a_stale_row_from_the_store(
 def test_a_stale_answered_row_does_not_survive_a_restart(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A stale active row is gone from the store by the time a restart returns.
+
+    `__init__` already calls `get_active_addresses` once, to decide
+    `ask_dns_nodes`, so the pruning
+    `test_get_active_addresses_deletes_a_stale_row_from_the_store`
+    checks explicitly also happens as a side effect of just opening a
+    second `PeerDB` on the same store.
+    """
     first = a_peer_db(data_dir=tmp_path)
     stale = peer_address("1.2.3.4", 8333)
     four_hours_ago = time.time() - 3600 * 4
@@ -761,10 +1068,18 @@ def test_a_stale_answered_row_does_not_survive_a_restart(
 
 
 def test_closing_a_peer_db_with_no_store_does_nothing() -> None:
+    """`close` on an in-memory `PeerDB`, with no `db`, does not raise."""
     a_peer_db().close()
 
 
 def test_a_key_this_version_does_not_know_is_left_where_it_is(tmp_path: Path) -> None:
+    """A key under neither prefix this version knows is read past, not lost.
+
+    A row is written directly under a key `init_from_db` does not
+    recognise, standing in for one another version of this store might
+    have written; this checks it is stepped over rather than filed
+    under either of the two known prefixes or raising on load.
+    """
     first = a_peer_db(data_dir=tmp_path)
     first.add_addresses([peer_address("1.2.3.4", 8333)])
     assert first.db is not None
