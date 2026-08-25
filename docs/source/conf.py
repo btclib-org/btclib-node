@@ -52,6 +52,7 @@ extensions = [
     "sphinx.ext.doctest",
     "sphinx.ext.coverage",
     "sphinx.ext.githubpages",
+    "sphinx.ext.intersphinx",
     "sphinx.ext.napoleon",
     "sphinx.ext.viewcode",
 ]
@@ -62,6 +63,79 @@ extensions = [
 # into a failed build -- the open questions belong in the issue tracker
 
 source_suffix = [".rst", ".md"]
+
+# -n on the build (docs.yml and .readthedocs.yaml both pass it) turns an
+# unresolved cross-reference into a warning for -W to fail on. Without an
+# inventory to resolve against, a name from outside this tree --
+# collections.abc.Iterable, pathlib.Path, btclib.tx.tx.Tx -- reports as
+# this tree's own broken link; sphinx's own domain answers for the
+# builtins (int, bytes, str), so no mapping is needed for those.
+# btclib is mapped alongside python rather than left to the entries
+# below: this tree's own public surface carries a btclib type in nearly
+# every signature it exports, and btclib publishes its own inventory
+intersphinx_mapping = {
+    "python": ("https://docs.python.org/3", None),
+    "btclib": ("https://btclib.readthedocs.io/en/latest/", None),
+}
+
+# What the mapping above cannot answer for, and each entry below carries
+# its own reason rather than a nitpick_ignore_regex that would give the
+# check up entirely:
+#
+# - a name a signature carries, or carries inside another name's own
+#   subscript, only because ruff's own "TC" family (pyproject.toml's own
+#   comment beside it) moves a typing-only import under
+#   `if TYPE_CHECKING:` on this tree's >=3.14 target -- deliberately: "TC"
+#   is selected because the import costs nothing at runtime there, PEP
+#   649's lazy annotation evaluation being native to that version.
+#   Autodoc reads a signature's annotation by evaluating it and reading
+#   the resulting class's qualified name back off it; that evaluation
+#   fails for a module that only imports the name under TYPE_CHECKING,
+#   so the annotation renders under the bare name the source spells it
+#   with instead, which no inventory -- btclib's or python's -- carries
+#   an unqualified entry for. Tx and TxOut (mempool.py's own get_tx and
+#   add_tx, among others), Block (utxo_index.py's and filter_index.py's
+#   own add_block), NetworkAddressV2 and Payload (p2p/connection.py,
+#   p2p/manager.py), Path (p2p/address.py, chainstate/__init__.py,
+#   log.py) and datetime (contextual.py's assert_valid_in_context) are
+#   this tree's own public API doing exactly what "TC"'s own reason asks
+#   of it. p2p/manager.py's own Tx is besides imported under the alias
+#   BtclibTx, which resolves to nothing under that name for the same
+#   reason even once the alias itself is granted an import.
+#   block_index.py's own add_headers carries BlockHeader unconditionally,
+#   but nested inside `Iterable[BlockHeader]`, and Iterable is what that
+#   file imports under TYPE_CHECKING: one guarded name inside a
+#   subscript is enough to keep autodoc from resolving the whole
+#   annotation, BlockHeader included. __annotationlib_name_1__ is the
+#   same defect once more, surfacing as Python 3.14's own placeholder
+#   for a name a *compound* annotation could not resolve, rather than as
+#   that name itself
+# - asyncio.AbstractEventLoop, spelled that way everywhere this tree
+#   uses it (p2p/manager.py, rpc/manager.py, rpc/connection.py):
+#   autodoc reads the qualified name back off the class itself once
+#   resolved, and the class's own `__module__` is asyncio's private
+#   implementation module, not the public one docs.python.org publishes
+#   an inventory entry under
+# - a name this tree documents nowhere. contextual.py's own ParentOf is
+#   a module-level type alias with no docstring of its own, so
+#   `:members:` renders no page for a signature naming it to link to;
+#   messages/errors.py's BinaryData is btclib's own alias.py type alias,
+#   undocumented there for the same reason
+nitpick_ignore = [
+    ("py:class", "Tx"),
+    ("py:class", "TxOut"),
+    ("py:class", "Block"),
+    ("py:class", "BlockHeader"),
+    ("py:class", "NetworkAddressV2"),
+    ("py:class", "Payload"),
+    ("py:class", "Path"),
+    ("py:class", "datetime"),
+    ("py:class", "BtclibTx"),
+    ("py:class", "__annotationlib_name_1__"),
+    ("py:class", "asyncio.events.AbstractEventLoop"),
+    ("py:class", "ParentOf"),
+    ("py:class", "BinaryData"),
+]
 
 # anchors for h1 to h3, which is what makes a link to a heading of the same
 # markdown file resolve here. Without it myst generates no anchor at all,
@@ -91,7 +165,7 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 # The theme to use for HTML and HTML Help pages.  See the documentation for
 # a list of builtin themes.
-html_theme = "sphinx_rtd_theme"
+html_theme = "furo"
 
 # no html_static_path: this project overrides no stylesheet and ships no
 # image, so the "_static" the sphinx template declares was a directory that

@@ -29,6 +29,32 @@ to check the guess.
   the command; this is that reasoning reaching the file a contributor
   reads before running the gate by hand.
 
+### `docs.yml` earns its place in the release path (closes #264)
+
+- **`release.yml` gains a `docs:` job**, calling `docs.yml` the way
+  `lint:` already calls `lint.yml`, and named in `publish-testpypi`'s
+  and `publish-pypi`'s own `needs:` (closes #264): a tag now publishes
+  only once its own tree's documentation has built, not merely once
+  whichever commit last ran the check on `main` has. `REPOSITORY.md`'s
+  *Required checks on main* names the three contexts branch protection
+  is to require; the `gh api` PATCH that adds the third to the live
+  setting is that section's own follow-up, applied outside this pull
+  request rather than carried by it.
+- **`docs/source/conf.py` sets `html_theme = "furo"`**, replacing
+  `sphinx_rtd_theme`, and `pyproject.toml`'s `docs` dependency group
+  follows (issue #402): section 3 of the organization standard.
+- **The docs build runs `-n` alongside `-W`**, in `docs.yml`,
+  `.readthedocs.yaml`, `RELEASING.md` and `CONTRIBUTING.md` (issue
+  #402): section 5 of the organization standard. `conf.py` gains
+  `sphinx.ext.intersphinx`, mapped against python and btclib, and a
+  `nitpick_ignore` list, each entry reasoned, for the references neither
+  inventory answers -- ruff's own "TC" family moving a typing-only
+  import under `TYPE_CHECKING` on this tree's `>=3.14` target is what
+  blocks autodoc from resolving the annotation it renders in most of
+  them, a python doc-versus-implementation-module mismatch accounts for
+  `asyncio.AbstractEventLoop`, and two local type aliases this tree
+  documents nowhere account for the rest.
+
 ### The py.typed entry's stale test path is corrected here (closes #421)
 
 - **The `py.typed`/`__all__` entry (`btclib-org/.github#239`, further

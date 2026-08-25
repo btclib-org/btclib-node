@@ -44,6 +44,16 @@ on:
     # below groups a pull_request run by the pull request's own number
     # instead, which cannot equal any push's github.ref under any action
     types: [opened, reopened, synchronize, ready_for_review, closed]
+  # allows release.yml to reuse this gate, so a tag push cannot publish
+  # a version whose documentation does not build
+  workflow_call:
+    inputs:
+      concurrency-suffix:
+        description: >
+          Appended to the concurrency group, and release.yml is the only
+          caller that passes one. See the group below.
+        type: string
+        default: ""
   # the escape hatch: a run on demand for a branch whose pull request is
   # not open yet
   workflow_dispatch:
@@ -59,9 +69,13 @@ permissions:
 # pull_request run of any action groups by, so a closed run cannot
 # resolve to the same group as a push to main -- the pull_request
 # trigger's own comment above has the reasoning. A push carries no
-# pull_request context, so github.ref is still what groups it, unchanged
+# pull_request context, so github.ref is still what groups it, unchanged.
+# The suffix is what keeps a release call out of the branch groups: see
+# test.yml's own concurrency block for the fuller reasoning
 concurrency:
-  group: docs-${{ github.event.pull_request.number || github.ref }}
+  group: >-
+    docs-${{ github.event.pull_request.number || github.ref
+    }}${{ inputs.concurrency-suffix }}
   cancel-in-progress: true
 
 jobs:
@@ -100,12 +114,15 @@ jobs:
       # Not --only-group docs: autodoc imports the module it documents,
       # so the project has to be installed -- with sphinx alone the
       # build renders an empty module heading and says nothing about it.
-      # -W makes a failed import a failed build, and --keep-going
-      # reports every problem in one run instead of one per push
+      # -W makes a failed import a failed build, --keep-going reports
+      # every problem in one run instead of one per push, and -n turns
+      # an unresolved cross-reference into a warning for -W to catch --
+      # conf.py's own intersphinx_mapping and nitpick_ignore are what -n
+      # is checked against
       - name: Build the docs
         run: >
           uv run --locked --no-default-groups --group docs
-          sphinx-build -W --keep-going -b html docs/source docs/build/html
+          sphinx-build -W -n --keep-going -b html docs/source docs/build/html
       # the one defect the build above cannot report on itself: a link
       # myst cannot resolve is rendered as an anchor on the page it is
       # already on -- an id nothing has -- so -W passes over a dead
