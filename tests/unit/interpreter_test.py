@@ -18,6 +18,7 @@ import pytest
 from btclib.ecc import dsa, ssa
 from btclib.exceptions import BTClibValueError, ScriptError
 from btclib.script import script, sig_hash
+from btclib.script.engine import verify_input as btclib_verify_input
 from btclib.script.script_pub_key import ScriptPubKey
 from btclib.script.taproot import output_prvkey
 from btclib.script.witness import Witness
@@ -66,16 +67,22 @@ def prevout(script_pub_key: bytes | None = None, value: int = 50 * 10**8) -> TxO
     )
 
 
+def _precomputed_for(prevouts: list[TxOut], tx: Tx) -> sig_hash.PrecomputedTxData:
+    return sig_hash.PrecomputedTxData(tx, prevouts)
+
+
 def test_an_input_that_verifies_returns_quietly() -> None:
-    f([prevout()], spend(script.serialize([b"\x11" * 32])), 0, ())
+    prevouts, tx = [prevout()], spend(script.serialize([b"\x11" * 32]))
+    f(prevouts, tx, 0, (), _precomputed_for(prevouts, tx))
 
 
 def test_an_input_that_does_not_verify_raises() -> None:
     # the property update_chain rests on: this used to be written to
     # errors/ and swallowed, inside a worker pool, so the block was
     # connected anyway
+    prevouts, tx = [prevout(script.serialize(["OP_RETURN"]))], spend(b"")
     with pytest.raises(ScriptError):
-        f([prevout(script.serialize(["OP_RETURN"]))], spend(b""), 0, ())
+        f(prevouts, tx, 0, (), _precomputed_for(prevouts, tx))
 
 
 def test_warm_does_nothing() -> None:
@@ -215,3 +222,111 @@ def test_the_flags_are_the_forks_active_at_that_height() -> None:
     assert get_flags(cast("Config", config), 0) == ("P2SH",)
     assert get_flags(cast("Config", config), 10) == ("P2SH", "WITNESS")
     assert get_flags(cast("Config", config), 25) == ("P2SH", "WITNESS", "TAPROOT")
+
+
+def _multi_input_p2wpkh_spend(n: int) -> tuple[list[TxOut], Tx]:
+    """n independent p2wpkh prevouts, and the transaction spending them."""
+    prevouts = [TxOut(50 * 10**8, ScriptPubKey.p2wpkh(_PUB)) for _ in range(n)]
+    tx = Tx(
+        version=1,
+        lock_time=0,
+        vin=[
+            TxIn(
+                prev_out=OutPoint(bytes([j]) * 32, 0),
+                script_sig=b"",
+                sequence=0xFFFFFFFF,
+            )
+            for j in range(n)
+        ],
+        vout=[TxOut(49 * 10**8 * n, ScriptPubKey.p2wpkh(_PUB))],
+    )
+    for i in range(n):
+        signature = dsa.sign_(sig_hash.from_tx(prevouts, tx, i, 1), _PRV)
+        tx.vin[i].script_witness = Witness([signature.serialize() + b"\x01", _PUB])
+    return prevouts, tx
+
+
+def test_check_transactions_verifies_every_input_of_a_multi_input_transaction() -> None:
+    prevouts, tx = _multi_input_p2wpkh_spend(3)
+    check_transactions([(prevouts, tx)], 1, make_node())
+
+
+def test_check_transactions_still_raises_when_one_input_does_not_verify() -> None:
+    # the same refusal the per-input dispatch gave: a bad input has to
+    # reach main.update_chain whichever input in the transaction it is
+    prevouts, tx = _multi_input_p2wpkh_spend(3)
+    sig, pub = tx.vin[2].script_witness.stack
+    tx.vin[2].script_witness = Witness([bytes([sig[0] ^ 1]) + sig[1:], pub])
+    with pytest.raises(ScriptError):
+        check_transactions([(prevouts, tx)], 1, make_node())
+
+
+def _count_transaction_wide_serializations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Callable[[], int]:
+    """Wrap sig_hash's three transaction-wide serializers and return a counter.
+
+    Not `PrecomputedTxData` construction itself: a per-input dispatch
+    with no `precomputed` never constructs one at all for a segwit v0
+    spend (`segwit_v0` calls these three functions directly in that
+    case), so that counter would answer zero under the very dispatch
+    this measures against and the zero would look like the fix rather
+    than like a counter measuring nothing. These three are called
+    exactly once each by `PrecomputedTxData.__init__` and are the ones
+    `segwit_v0` falls back to per input when handed no `precomputed`, so
+    they see every call either dispatch makes.
+    """
+    calls = [0]
+    for name in (
+        "_serialized_prevouts",
+        "_serialized_sequences",
+        "_serialized_outputs",
+    ):
+        original = getattr(sig_hash, name)
+
+        def counting(
+            *args: object, _original: Callable[..., bytes] = original
+        ) -> bytes:
+            calls[0] += 1
+            return _original(*args)
+
+        monkeypatch.setattr(sig_hash, name, counting)
+    return lambda: calls[0]
+
+
+def test_a_positive_control_proves_the_counter_can_answer_non_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # the old per-input dispatch, reproduced directly: no precomputed, so
+    # every one of the n inputs re-serializes the transaction on its own.
+    # Built before the count starts, so building it -- which signs every
+    # input, itself calling these three functions once per input -- is
+    # not what the counter below is measuring.
+    n = 5
+    prevouts, tx = _multi_input_p2wpkh_spend(n)
+    count = _count_transaction_wide_serializations(monkeypatch)
+    for i in range(n):
+        # WITNESS, or verify_input treats the witness program as the
+        # anyone-can-spend an unenforced BIP141 makes it and never runs
+        # segwit_v0 at all -- the flags check_transactions itself passes
+        btclib_verify_input(prevouts, tx, i, ("WITNESS",))
+    assert count() == n * 3
+
+
+def test_check_transactions_builds_the_precomputed_data_once_per_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # built before the count starts, for the same reason as the positive
+    # control above: building signs every input, and that signing is not
+    # what this measures
+    transaction_data = [
+        _multi_input_p2wpkh_spend(1),
+        _multi_input_p2wpkh_spend(7),
+        _multi_input_p2wpkh_spend(20),
+    ]
+    count = _count_transaction_wide_serializations(monkeypatch)
+    check_transactions(transaction_data, 1, make_node())
+    # three transactions, three serializers each called once per
+    # transaction by PrecomputedTxData.__init__ -- not once per input,
+    # whichever of the 1, 7 or 20 inputs each transaction carries
+    assert count() == len(transaction_data) * 3
