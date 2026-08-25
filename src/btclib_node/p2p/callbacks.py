@@ -153,7 +153,7 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     conn.send(SendHeaders())
     conn.send(SendCmpct(announce=False, version=1))
     # BIP133's own floor is not sent here: DownloadManager._send_due_feefilters
-    # (btclib_node/download.py) reaches every connected connection on the
+    # (src/btclib_node/download.py) reaches every connected connection on the
     # very next step(), Connection.next_feefilter_send_time defaulting to
     # 0.0, "never scheduled", the same convention next_inv_send_time
     # already uses -- so a second, special-cased first send here would

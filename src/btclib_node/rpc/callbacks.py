@@ -346,7 +346,7 @@ def get_mempool_info(node: Node, conn: Connection, _: list[Any]) -> dict[str, An
     # `getmempoolinfo` reads this field expecting BTC/kvB, and Core
     # defines the unit on this particular surface. BIP133's own wire
     # value is unaffected -- `_send_due_feefilters`
-    # (`btclib_node/download.py`) still sends sat/kvB, because BIP133
+    # (`src/btclib_node/download.py`) still sends sat/kvB, because BIP133
     # says so, not because this tree chose a unit. `maxmempool` needs no
     # such divergence: Core's own field is `m_opts.max_size_bytes`,
     # plain bytes with no amount conversion applied to it either.

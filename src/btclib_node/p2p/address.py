@@ -244,7 +244,7 @@ async def dial(address: NetworkAddressV2) -> socket.socket | None:
 
 # Two record kinds share the one store `PeerDB` opens, so `init_from_db`
 # below walks it whole and dispatches on the prefix rather than stopping
-# at the first key without one -- `btclib_node/db.py`'s own docstring
+# at the first key without one -- `src/btclib_node/db.py`'s own docstring
 # names that shape as `BlockDB`'s, next to the other one, `BlockIndex`'s,
 # that a store of one record kind can use instead.
 _KNOWN = b"known-"

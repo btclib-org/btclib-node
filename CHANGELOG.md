@@ -12,6 +12,23 @@ to check the guess.
 
 ## Unreleased
 
+### The importable package sits under `src/`, closing issue #343
+
+- **`btclib_node` moves under `src/btclib_node/`** (closes #343): a
+  package at the repository root is on `sys.path` whenever anything runs
+  from that root, so an import could resolve to the checkout instead of
+  to the installed distribution, which is what section 2 of the
+  organization's standard moves it to avoid. `[tool.uv.build-backend]
+  module-root = ""` is deleted rather than changed: that key existed
+  only to override the backend's own default, which is `src/`. Every
+  path this repository's own configuration and prose named the package
+  by moves with it: `[tool.ruff.lint.per-file-ignores]`'s two keys,
+  `[tool.mypy] files`, and the citations in `CLAUDE.md`, `CONTRIBUTING.md`
+  and `REVIEWING.md`. `[tool.coverage.run] source` keeps naming
+  `btclib_node` unchanged -- an importable name rather than a path,
+  which `coverage` resolves through the installed package wherever it
+  sits.
+
 ### `CHANGELOG.md`'s lint derogation is gone, and `codespell` now fixes
 
 - **The two-comment directive disabling MD022 and MD032 at this file's

@@ -452,10 +452,10 @@ organization; everything below is this one's, and the comparison stops at
 this heading.
 
 This is a node and not a library, so what a diff touches is the
-peer-to-peer protocol under `btclib_node/p2p/`, the chain state under
-`btclib_node/chainstate/` and `btclib_node/block_db/`, the JSON-RPC
-surface under `btclib_node/rpc/`, and the ordered key-value store all of
-them are kept in, `btclib_node/db.py`.
+peer-to-peer protocol under `src/btclib_node/p2p/`, the chain state under
+`src/btclib_node/chainstate/` and `src/btclib_node/block_db/`, the
+JSON-RPC surface under `src/btclib_node/rpc/`, and the ordered key-value
+store all of them are kept in, `src/btclib_node/db.py`.
 
 Each of these is a question, and the document that answers it is named
 because that document, and not this one, is where the rule lives.
@@ -472,9 +472,9 @@ because that document, and not this one, is where the rule lives.
   and that table is where the argument for taking that cost is. A diff
   dropping the table answers the same argument.
 - **Does a diff over the store or an index keep key order?**
-  `btclib_node/db.py` states which readers stop at the first key that
-  does not carry their prefix, and a prefix that sorts before one of
-  those truncates a read with nothing raised.
+  `src/btclib_node/db.py` states which readers stop at the first key
+  that does not carry their prefix, and a prefix that sorts before one
+  of those truncates a read with nothing raised.
 - **Does a new test that builds a node stay bounded?** `timeout` in
   `pyproject.toml` is what turns a node that stops answering into a named
   failure carrying a stack of every thread it left running, instead of a
