@@ -66,6 +66,7 @@ from btclib.p2p.negotiation import FeeFilter, GetAddr, SendHeaders, WtxidRelay
 from btclib.script.witness import Witness
 from btclib.tx.tx import Tx
 
+import btclib_node.p2p.callbacks as cb
 from btclib_node.chains import RegTest
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import BlockStatus
@@ -180,8 +181,6 @@ def test_an_address_addr_version_1_cannot_carry_is_left_out(
     # one of them among the active addresses would cost the whole answer.
     # The sample itself is a different test, below, so this patches it to
     # the identity to isolate the addr-v1 filter it is testing.
-    import btclib_node.p2p.callbacks as cb
-
     monkeypatch.setattr(cb, "_addresses_to_send", lambda active: active)
     onion = an_address(network_id=BIP155Network.TORV3)
     ipv4 = an_address()
@@ -264,8 +263,6 @@ def test_two_connections_close_together_are_answered_the_same_sample(
     # two peers connecting close together compare answers and infer what
     # changed between them, which answering once per connection alone
     # does not stop -- a new connection still draws fresh
-    import btclib_node.p2p.callbacks as cb
-
     draws: list[list[NetworkAddressV2]] = []
 
     def counting_sample(active: list[NetworkAddressV2]) -> list[NetworkAddressV2]:
@@ -285,8 +282,6 @@ def test_two_connections_close_together_are_answered_the_same_sample(
 def test_the_cached_sample_is_redrawn_once_it_expires(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import btclib_node.p2p.callbacks as cb
-
     draws: list[list[NetworkAddressV2]] = []
 
     def counting_sample(active: list[NetworkAddressV2]) -> list[NetworkAddressV2]:
@@ -937,8 +932,6 @@ def a_data_node(
 def test_a_transaction_that_verifies_is_kept_and_reported(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import btclib_node.p2p.callbacks as cb
-
     monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
     transaction = a_transaction()
     node = a_data_node()
@@ -951,8 +944,6 @@ def test_a_transaction_that_verifies_is_kept_and_reported(
 def test_a_transaction_whose_parents_are_missing_is_not_kept(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import btclib_node.p2p.callbacks as cb
-
     def missing(node: Any, transaction: Any) -> NoReturn:
         raise MissingPrevoutError
 
@@ -974,8 +965,6 @@ def test_a_transaction_received_before_the_node_is_synced_is_dropped(
     # verify_mempool_acceptance is patched to accept unconditionally,
     # so the mempool staying empty is the gate firing rather than a
     # coincidental rejection
-    import btclib_node.p2p.callbacks as cb
-
     monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
     transaction = a_transaction()
     node = a_data_node(status=NodeStatus.HeaderSynced)
@@ -987,8 +976,6 @@ def test_a_transaction_received_before_the_node_is_synced_is_dropped(
 def test_a_transaction_already_held_is_not_reported_twice(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import btclib_node.p2p.callbacks as cb
-
     monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
     transaction = a_transaction()
     node = a_data_node()
@@ -1009,8 +996,6 @@ def test_a_transaction_a_full_mempool_declined_is_not_reported_either(
     # every other peer, and one that then asks for it gets `notfound`
     # for a transaction this node never actually kept.
     # btclib-org/btclib-node#277
-    import btclib_node.p2p.callbacks as cb
-
     monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
     transaction = a_transaction()
     node = a_data_node()

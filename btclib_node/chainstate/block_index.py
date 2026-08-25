@@ -21,6 +21,13 @@ from btclib_node.db import KeyValueStore
 from btclib_node.exceptions import ChainstateInconsistencyError
 from btclib_node.log import Logger
 
+# `get_download_candidates`'s own cap on how many hashes it hands back
+# at once, and `download.py`'s `block_download` reads the same number
+# to decide whether the download window has run too far ahead of the
+# active chain to keep extending it -- one bound on how large that
+# window is ever allowed to get, read from both ends of it.
+MAX_DOWNLOAD_WINDOW = 1024
+
 
 def calculate_work(header: BlockHeader) -> int:
     return block_work(header.bits)
@@ -110,10 +117,12 @@ class BlockIndex:
     def init_from_db(self) -> None:
         self.logger.info("Start Index initialization")
         for key, value in self.db:
-            prefix, key = key[:8], key[8:]
+            prefix, block_hash = key[:8], key[8:]
             if prefix != b"blkinfo-":  # utxo_index
                 break
-            self.header_dict[key] = BlockInfo.deserialize(value, check_validity=False)
+            self.header_dict[block_hash] = BlockInfo.deserialize(
+                value, check_validity=False
+            )
 
         self.sorted_header_dict: list[bytes] = sorted(
             self.header_dict, key=lambda x: self.header_dict[x].index
@@ -306,33 +315,30 @@ class BlockIndex:
             raise ChainstateInconsistencyError(err_msg)
         self.active_chain.pop()
 
-    def add_headers(self, headers: Iterable[BlockHeader]) -> bytes | None:
-        # Nothing is indexed until every header has been checked, and the
-        # batch is taken or refused whole: chainwork below is credited
-        # from the header's own `bits`, so a header that keeps a target
-        # the chain does not require becomes the best chain on work
-        # nobody agreed to. A peer that sent one such header is not one
-        # to keep the rest of the batch from either.
-        #
-        # `pending` is what a header brought by this batch is weighed
-        # against, its parent being as likely to be a header two lines
-        # above as one already indexed. A header whose parent is in
-        # neither is left out of it: there is no chain to weigh it
-        # against, and nothing to give it a height -- unless that parent
-        # is itself later in this same batch, in which case there *is* a
-        # chain to weigh it against, just not yet processed, and this is
-        # not the peer's ordinary "connects to nothing I know" case:
-        # refusing the whole batch rather than dropping the one header
-        # silently is what Core's own per-message continuity check
-        # (`CheckHeadersAreContinuous`, `net_processing.cpp`) enforces
-        # unconditionally, whether or not the batch would otherwise
-        # connect to known history. btclib-org/btclib-node#214
-        #
-        # A refusal raises rather than answers False: it is a peer that
-        # sent a header failing on its own terms, not the ordinary end
-        # of a sync, and the caller needs to be able to tell the two
-        # apart. btclib-org/btclib-node#75
-        headers = list(headers)
+    # add_headers' own validation stage: every header in the batch,
+    # checked and weighed against either the index already on disk or a
+    # parent earlier in this same batch, without indexing any of them
+    # yet. `pending` is what a header brought by this batch is weighed
+    # against, its parent being as likely to be a header two lines
+    # above as one already indexed. A header whose parent is in
+    # neither is left out of it: there is no chain to weigh it
+    # against, and nothing to give it a height -- unless that parent
+    # is itself later in this same batch, in which case there *is* a
+    # chain to weigh it against, just not yet processed, and this is
+    # not the peer's ordinary "connects to nothing I know" case:
+    # refusing the whole batch rather than dropping the one header
+    # silently is what Core's own per-message continuity check
+    # (`CheckHeadersAreContinuous`, `net_processing.cpp`) enforces
+    # unconditionally, whether or not the batch would otherwise
+    # connect to known history. btclib-org/btclib-node#214
+    #
+    # A refusal raises rather than answers False: it is a peer that
+    # sent a header failing on its own terms, not the ordinary end
+    # of a sync, and the caller needs to be able to tell the two
+    # apart. btclib-org/btclib-node#75
+    def _validate_header_batch(
+        self, headers: list[BlockHeader]
+    ) -> dict[bytes, tuple[BlockHeader, int]]:
         now = datetime.now(UTC)
         pow_limit_bits = self.chain.pow_limit_bits
         pending: dict[bytes, tuple[BlockHeader, int]] = {}
@@ -381,6 +387,16 @@ class BlockIndex:
                 raise
             pending[header_hash] = (header, parent_height + 1)
 
+        return pending
+
+    # add_headers' own indexing stage, once every header in the batch has
+    # passed `_validate_header_batch` above: nothing here is checked any
+    # more, only written -- to `header_dict`, `chainwork`,
+    # `block_candidates`, and `header_index` where the batch's own work
+    # actually beats what each already holds.
+    def _insert_pending_headers(
+        self, pending: dict[bytes, tuple[BlockHeader, int]]
+    ) -> None:
         current_work = self.chainwork[self.active_chain[-1]]
         for header_hash, (header, height) in pending.items():
             previous_block_info = self.get_block_info(header.previous_block_hash)
@@ -417,6 +433,17 @@ class BlockIndex:
                     add, remove = self.get_fork_details(header_hash, self.header_index)
                     self.header_index = self.header_index[: -len(remove)]
                     self.header_index.extend(add)
+
+    def add_headers(self, headers: Iterable[BlockHeader]) -> bytes | None:
+        # Nothing is indexed until every header has been checked, and the
+        # batch is taken or refused whole: chainwork is credited from the
+        # header's own `bits`, so a header that keeps a target the chain
+        # does not require becomes the best chain on work nobody agreed
+        # to. A peer that sent one such header is not one to keep the
+        # rest of the batch from either.
+        headers = list(headers)
+        pending = self._validate_header_batch(headers)
+        self._insert_pending_headers(pending)
 
         # The header a caller should resume a sync from: the highest one
         # this batch carried that is indexed now, new or already known.
@@ -461,7 +488,7 @@ class BlockIndex:
         candidates: list[bytes] = []
         seen = set()
         i = -1
-        while len(candidates) < 1024:
+        while len(candidates) < MAX_DOWNLOAD_WINDOW:
             i += 1
             if i >= len(self.block_candidates):
                 break
@@ -480,7 +507,7 @@ class BlockIndex:
                 seen.add(candidate_hash)
                 candidate_hash = block_info.header.previous_block_hash
         candidates.sort(key=lambda x: self.get_block_info(x).index)
-        return candidates[:1024]
+        return candidates[:MAX_DOWNLOAD_WINDOW]
 
     # return a list of block hashes looking at the current best chain
     def get_block_locator_hashes(self) -> list[bytes]:
@@ -491,7 +518,11 @@ class BlockIndex:
             if i > len(self.header_index):
                 break
             block_locators.append(self.header_index[-i])
-            if i >= 10:
+            # Core's own LocatorEntries (src/chain.cpp, aed80c7395):
+            # `if (have.size() > 10) step *= 2`, a bare, unnamed 10 there
+            # too -- matched rather than named, since naming it here
+            # would claim a meaning Core's own algorithm never gave it
+            if i >= 10:  # noqa: PLR2004
                 step *= 2
             i += step
         if self.header_index[0] not in block_locators:

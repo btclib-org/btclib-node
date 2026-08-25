@@ -28,6 +28,7 @@ from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
+import btclib_node.rpc.callbacks as cb
 from btclib_node.chains import Main, RegTest
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import P2pConnStatus
@@ -573,10 +574,6 @@ def test_ping_and_stop_answer_without_a_connection() -> None:
 def test_mempool_acceptance_reports_a_reason_for_each_refusal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from btclib.exceptions import BTClibValueError
-
-    import btclib_node.rpc.callbacks as cb
-
     tx = a_tx()
     raw = tx.serialize(True).hex()
 
@@ -610,8 +607,6 @@ def test_an_unparsable_transaction_is_named_as_such() -> None:
 def test_a_relayed_transaction_is_answered_with_its_txid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import btclib_node.rpc.callbacks as cb
-
     monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 1000)
     tx = a_tx()
     mempool = Mempool(Logger(debug=True))
@@ -670,8 +665,6 @@ def test_a_transaction_the_mempool_will_not_have_is_not_reported_relayed(
 ) -> None:
     # a refusal is not answered with the txid of a transaction this node
     # has neither kept nor sent, and names why: issue #83
-    import btclib_node.rpc.callbacks as cb
-
     def missing(node: Any, transaction: Any) -> NoReturn:
         raise MissingPrevoutError
 
@@ -700,8 +693,6 @@ def test_a_transaction_a_full_mempool_cannot_keep_is_refused_not_relayed(
     # Answering with tx.id.hex() regardless would tell the caller this
     # transaction was kept when it was not, the same defect #277 fixed on
     # the peer-to-peer path. btclib-org/btclib-node#293
-    import btclib_node.rpc.callbacks as cb
-
     monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 1000)
     tx = a_tx()
     mempool = Mempool(Logger(debug=True))
@@ -725,8 +716,6 @@ def test_resubmitting_a_transaction_already_held_is_tolerated_even_when_the_memp
     # mempool (node/transaction.cpp, bitcoin/bitcoin@58a7869f86):
     # resubmission is reannounced rather than refused for a fullness
     # this particular submission did not cause
-    import btclib_node.rpc.callbacks as cb
-
     monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 1000)
     tx = a_tx()
     mempool = Mempool(Logger(debug=True))
@@ -752,8 +741,6 @@ def test_a_resubmission_under_a_different_witness_is_also_tolerated_when_full(
     # this transaction." The guard has to be txid-keyed
     # (Mempool.txid_index) to reannounce here instead of refusing a
     # fullness this resubmission did not cause.
-    import btclib_node.rpc.callbacks as cb
-
     monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 1000)
     held = a_tx()
     resubmitted = replace(
@@ -788,8 +775,6 @@ def test_a_resubmission_under_a_different_witness_is_reannounced_by_wtxid_even_w
     # the same substitution, off the full-mempool guard entirely: a
     # resubmission's own wtxid is never what add_tx stored, whether or
     # not the mempool happens to be full
-    import btclib_node.rpc.callbacks as cb
-
     monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 1000)
     held = a_tx()
     resubmitted = replace(
@@ -1205,8 +1190,6 @@ def test_no_height_at_all_is_answered_with_the_usage() -> None:
 def test_a_transaction_whose_scripts_do_not_verify_is_answered_with_the_refusal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import btclib_node.rpc.callbacks as cb
-
     def invalid(node: Any, transaction: Any) -> NoReturn:
         raise BTClibValueError("no")
 

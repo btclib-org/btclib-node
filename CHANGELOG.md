@@ -18,6 +18,101 @@ to check the guess.
 
 ## Unreleased
 
+### `select` gains `PL` and `C90`, closing issue #284
+
+- **`select` gains `PL` (pylint) and `C90` (mccabe)** (closes #284): the
+  last two families of the standard reference selection this issue
+  measured against this tree, `select` now carrying every one of the 13
+  families that reference selection named and this tree did not
+  already have (`A`, `B`, `BLE`, `C90`, `ERA`, `FURB`, `PL`, `PT`,
+  `RET`, `RUF`, `SIM`, `T20`, `TRY`), plus `RUF043` and
+  `unspecified-encoding`, both of which predate this sequence.
+- **`PLR2004` (magic-value-comparison), a named constant where the
+  number is a concept and a decline where it is not**: `block_index.py`
+  and `download.py` share `MAX_DOWNLOAD_WINDOW`, one bound read from
+  both ends of it -- how many candidates `get_download_candidates`
+  hands back, and how far `block_download` lets the download frontier
+  run ahead of the active chain before backing off. `download.py` gains
+  three of its own, `_BLOCK_STALL_EVICTION_TIMEOUT` and
+  `_BLOCK_STALL_DISCONNECT_TIMEOUT` (this tree's own coarser pair, not
+  Core's adaptive `BLOCK_STALLING_TIMEOUT_DEFAULT`/`_MAX`, checked
+  directly against `net_processing.cpp` rather than assumed to match)
+  and `_MAX_CONCURRENT_REQUESTS_PER_BLOCK`; `p2p/manager.py` gains
+  `_IDLE_TIMEOUT` (this tree's own bound too, shorter than Core's
+  `TIMEOUT_INTERVAL`, same check). `p2p/callbacks.py`'s own `2000`
+  becomes `MAX_HEADERS_RESULTS` -- not a new constant of this tree's
+  own, but one `btclib.p2p.limits` already exports, matching Core's own
+  name for it (`net_processing.h`). Three sites decline, each for a
+  reason checked rather than assumed: `block_index.py`'s block-locator
+  step doubling at `10` matches Core's own unnamed literal
+  (`LocatorEntries`, `src/chain.cpp`) -- naming it here would claim a
+  meaning Core's own algorithm never gave it; `p2p/address.py`'s `4` is
+  `ipaddress`'s own IPv4 version number, already named by being IPv4;
+  `rpc/callbacks.py`'s `2` is `getrawtransaction`'s own third
+  positional, already named by the help string raised two lines above
+  it. `tests/**` gains a `PLR2004` per-file-ignore for the rest: a
+  test's own literal expected value is not a magic number needing a
+  name.
+- **`PLC0415` (import-outside-top-level), fixed at every site rather
+  than declined anywhere**: most were a test needing the module object
+  itself, not a name out of it, to `monkeypatch.setattr` against --
+  `import btclib_node.p2p.callbacks as cb` and
+  `import btclib_node.rpc.callbacks as cb`, repeated once per test that
+  needed it where one shared, hoisted import serves every one of them
+  just as well. A few were genuinely redundant: `tests/unit/init_test.py`
+  re-imported `btclib_node` inside three functions when the module was
+  already bound at the top of the file, and
+  `tests/functional/rpc/chain_test.py`/`tx_test.py` each imported
+  `bitcoin_core_rpc`/`btclib.fetch.bitcoin_core` inside their one user
+  apiece for no reason a circular import or an optional dependency
+  gives -- both packages are ordinary, always-installed dependencies,
+  and every other import in both files already lives at the top.
+- **`C901`/`PLR0912`/`PLR0915` (complex-structure, too-many-branches,
+  too-many-statements), read function by function before deciding
+  whether each was refactored or tangled by the problem it solves**.
+  Every flagged production function turned out to be a sequence of
+  distinct stages sharing little state across them, not a single
+  decision tree that would fragment badly -- so each split cleanly into
+  named helpers, the caller left reading as the stages it always was:
+  `main.py`'s `update_chain` into `_ready_fork`, `_blocks_to_add`,
+  `_rev_blocks_to_remove`, `_finalize_fork` and
+  `_reconcile_mempool_for_reorg`; `download.py`'s `tx_download` into
+  `_queue_announcements_for_received_txs` and `_request_wanted_txs`,
+  and its `block_download` into `_refresh_block_window`,
+  `_evict_stalled_connections`, `_pending_and_waiting_blocks` and
+  `_request_new_block_work`; `__init__.py`'s `Node.run` into
+  `_drain_message_queues` and `_step_chain`;
+  `chainstate/block_index.py`'s `add_headers` into
+  `_validate_header_batch` and `_insert_pending_headers`, matching the
+  function's own existing comment about the two stages never
+  interleaving; `config.py`'s `Config.__init__` loses its chain-string
+  resolution to a module-level `_resolve_chain`; `p2p/manager.py`'s
+  `manage_connections` into `_prune_stale_connections`,
+  `_maybe_prune_active_addresses` and `_maybe_dial_more_peers`;
+  `rpc/callbacks.py`'s `get_raw_transaction` into `_parse_txid`,
+  `_parse_optional_block_hash` and `_find_transaction`. None of these
+  changes the behaviour of the function it came out of; the tests that
+  already covered each are what confirm that, unchanged.
+- **`PLR0913`/`PLR0917` (too-many-arguments,
+  too-many-positional-arguments), declined at both of its two
+  production sites, each with a `noqa` and a reason rather than a
+  reshaping that would only rename the same problem**: `Config.__init__`
+  takes eleven parameters because `Config` is eleven independent
+  settings and every call site already reads it by keyword (checked --
+  no call site in this tree passes it positionally); nesting them into
+  sub-objects moves the same count behind an extra name apiece for
+  callers who do not have it today. `contextual.py`'s
+  `assert_valid_in_context` takes six for the same reason, matching
+  Core's own `ContextualCheckBlockHeader`'s parameter set for the same
+  check. `tests/**` gains a `PLR0913` per-file-ignore of its own: every
+  remaining site is a test double's own builder, one keyword-only
+  argument per field of the object it stands in for.
+- **`PLW2901` (redefined-loop-name), fixed**:
+  `block_index.py`'s `init_from_db` reused its own loop variable `key`
+  for the row's suffix after splitting off the row's prefix; the
+  suffix is `block_hash` now, and the loop variable is never
+  reassigned.
+
 ### `select` gains `TRY` and `BLE`, and this tree gets its own exceptions
 
 - **`select` gains `TRY` (tryceratops) and `BLE` (flake8-blind-except)**
@@ -70,10 +165,14 @@ to check the guess.
 - **Seven `except Exception:` sites stay exactly as broad as they were,
   each now with a `noqa: BLE001` and a comment saying why**:
   `p2p/connection.py`'s own two, `rpc/connection.py`'s, and
-  `rpc/callbacks.py`'s (`testmempoolaccept` answering one entry per
-  transaction, Core's own contract for that RPC, so an unexpected
-  failure on one is that entry's own reject-reason rather than the
-  whole batch's answer). The two connections' own read loops
+  `rpc/callbacks.py`'s own two — `get_peer_info`'s (alongside `S112`: a
+  peer disconnecting mid-lookup can surface as more than one socket
+  error depending on timing and platform, and every one of them means
+  the same "skip this peer, ask the next") and `testmempoolaccept`'s
+  (answering one entry per transaction, Core's own contract for that
+  RPC, so an unexpected failure on one is that entry's own
+  reject-reason rather than the whole batch's answer). The two
+  connections' own read loops
   (`p2p/connection.py`, `rpc/connection.py`) are not guarding a shared
   event loop from a crash — both are scheduled through
   `run_coroutine_threadsafe`, and asyncio isolates one scheduled

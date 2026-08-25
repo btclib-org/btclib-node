@@ -398,6 +398,88 @@ def get_raw_mempool(
     return {"txids": txids, "mempool_sequence": node.mempool.sequence}
 
 
+def _parse_txid(params: list[Any]) -> bytes:
+    if not params:
+        # the same shape as getblockheader's own missing-argument case:
+        # RPCMethod::HandleRequest's HelpResult, RPC_MISC_ERROR
+        # (src/rpc/server.cpp:884-886)
+        raise RpcError(
+            RpcErrorCode.MISC_ERROR,
+            'getrawtransaction "txid" ( verbose ) ( "blockhash" )',
+        )
+    if not isinstance(params[0], str):
+        # txid is declared RPCArg::Type::STR_HEX, type-checked before
+        # the handler body runs, same as blockhash below
+        raise RpcError(
+            RpcErrorCode.TYPE_ERROR,
+            f"JSON value of type {json_type_name(params[0])} is "
+            "not of expected type string",
+        )
+    try:
+        return bytes.fromhex(params[0])
+    except ValueError as error:
+        raise RpcError(
+            RpcErrorCode.INVALID_PARAMETER,
+            f"parameter 1 must be hexadecimal string (not '{params[0]}')",
+        ) from error
+
+
+def _parse_optional_block_hash(params: list[Any]) -> bytes | None:
+    # index 2 is this RPC's own third positional, "blockhash" in
+    # get_raw_transaction's own help string -- naming it would give a
+    # second name to what that string already names, tied to this one
+    # method's own argument list and not reusable past it
+    if len(params) <= 2 or params[2] is None:  # noqa: PLR2004
+        return None
+    if not isinstance(params[2], str):
+        raise RpcError(
+            RpcErrorCode.TYPE_ERROR,
+            f"JSON value of type {json_type_name(params[2])} is not of expected type string",
+        )
+    try:
+        return bytes.fromhex(params[2])
+    except ValueError as error:
+        raise RpcError(
+            RpcErrorCode.INVALID_PARAMETER,
+            f"parameter 3 must be hexadecimal string (not '{params[2]}')",
+        ) from error
+
+
+def _find_transaction(
+    node: Node, txid: bytes, block_hash: bytes | None
+) -> tuple[Tx, int | None]:
+    """Return the transaction `txid` names, and its block height if named."""
+    if block_hash is None:
+        tx = node.mempool.get_tx(txid)
+        if tx is None:
+            raise RpcError(
+                RpcErrorCode.INVALID_ADDRESS_OR_KEY,
+                "No such mempool transaction. This node keeps no "
+                "transaction index; name the block it confirmed in to "
+                "look there instead. Use gettransaction for wallet "
+                "transactions.",
+            )
+        return tx, None
+
+    try:
+        block_info = node.chainstate.block_index.get_block_info(block_hash)
+    except KeyError as error:
+        raise RpcError(
+            RpcErrorCode.INVALID_ADDRESS_OR_KEY, "Block hash not found"
+        ) from error
+    block = node.block_db.get_block(block_hash)
+    if block is None:
+        raise RpcError(RpcErrorCode.MISC_ERROR, "Block not available")
+    tx = next((t for t in block.transactions if t.id == txid), None)
+    if tx is None:
+        raise RpcError(
+            RpcErrorCode.INVALID_ADDRESS_OR_KEY,
+            "No such transaction found in the provided block. Use "
+            "gettransaction for wallet transactions.",
+        )
+    return tx, block_info.index
+
+
 def get_raw_transaction(
     node: Node, conn: Connection, params: list[Any]
 ) -> dict[str, Any] | str:
@@ -416,83 +498,15 @@ def get_raw_transaction(
     alone, verbosity 0 being its `_call`'s implicit default -- the
     shape it always gets, unconditionally, below.
     """
-    if not params:
-        # the same shape as getblockheader's own missing-argument case:
-        # RPCMethod::HandleRequest's HelpResult, RPC_MISC_ERROR
-        # (src/rpc/server.cpp:884-886)
-        raise RpcError(
-            RpcErrorCode.MISC_ERROR,
-            'getrawtransaction "txid" ( verbose ) ( "blockhash" )',
-        )
-    if not isinstance(params[0], str):
-        # txid is declared RPCArg::Type::STR_HEX, type-checked before
-        # the handler body runs, same as blockhash above
-        raise RpcError(
-            RpcErrorCode.TYPE_ERROR,
-            f"JSON value of type {json_type_name(params[0])} is "
-            "not of expected type string",
-        )
-    try:
-        txid = bytes.fromhex(params[0])
-    except ValueError as error:
-        raise RpcError(
-            RpcErrorCode.INVALID_PARAMETER,
-            f"parameter 1 must be hexadecimal string (not '{params[0]}')",
-        ) from error
-
+    txid = _parse_txid(params)
     # Core declares this argument NUM with allow_bool=true
     # (src/rpc/rawtransaction.cpp:286); this node answers only the
     # default and the boolean shape every other verbose flag here
     # already takes, and not Core's 2 -- fee and prevout data come from
     # undo data this node does not keep alongside a block
     verbose = bool_param(params, 1, default=False)
-
-    block_hash: bytes | None = None
-    if len(params) > 2 and params[2] is not None:
-        if not isinstance(params[2], str):
-            raise RpcError(
-                RpcErrorCode.TYPE_ERROR,
-                f"JSON value of type {json_type_name(params[2])} is "
-                "not of expected type string",
-            )
-        try:
-            block_hash = bytes.fromhex(params[2])
-        except ValueError as error:
-            raise RpcError(
-                RpcErrorCode.INVALID_PARAMETER,
-                f"parameter 3 must be hexadecimal string (not '{params[2]}')",
-            ) from error
-
-    tx: Tx | None
-    block_height: int | None = None
-    if block_hash is None:
-        tx = node.mempool.get_tx(txid)
-        if tx is None:
-            raise RpcError(
-                RpcErrorCode.INVALID_ADDRESS_OR_KEY,
-                "No such mempool transaction. This node keeps no "
-                "transaction index; name the block it confirmed in to "
-                "look there instead. Use gettransaction for wallet "
-                "transactions.",
-            )
-    else:
-        try:
-            block_info = node.chainstate.block_index.get_block_info(block_hash)
-        except KeyError as error:
-            raise RpcError(
-                RpcErrorCode.INVALID_ADDRESS_OR_KEY, "Block hash not found"
-            ) from error
-        block = node.block_db.get_block(block_hash)
-        if block is None:
-            raise RpcError(RpcErrorCode.MISC_ERROR, "Block not available")
-        tx = next((t for t in block.transactions if t.id == txid), None)
-        if tx is None:
-            raise RpcError(
-                RpcErrorCode.INVALID_ADDRESS_OR_KEY,
-                "No such transaction found in the provided block. Use "
-                "gettransaction for wallet transactions.",
-            )
-        block_height = block_info.index
+    block_hash = _parse_optional_block_hash(params)
+    tx, block_height = _find_transaction(node, txid, block_hash)
 
     if not verbose:
         return tx.serialize(True).hex()

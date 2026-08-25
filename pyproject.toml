@@ -448,6 +448,7 @@ select = [
     "B",    # flake8-bugbear
     "BLE",  # flake8-blind-except
     "C4",   # flake8-comprehensions
+    "C90",  # mccabe (complex-structure)
     "CPY",  # flake8-copyright, replacing the copyright-notice hook below
     "E",    # pycodestyle errors, replacing flake8
     "ERA",  # eradicate (commented-out code)
@@ -460,6 +461,7 @@ select = [
     "ISC",  # flake8-implicit-str-concat
     "PGH",  # pygrep-hooks
     "PIE",  # flake8-pie
+    "PL",   # pylint
     "PT",   # flake8-pytest-style
     "PTH",  # flake8-use-pathlib
     "RET",  # flake8-return
@@ -486,8 +488,12 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "**/__init__.py" = ["F401"] # re-exported imports
 "tests/**" = [
-    "S101", # assert
-    "S311", # non-cryptographic random: fine in tests
+    "PLR0913", # a test double's own builder, one keyword-only arg per
+    #            field of the object it stands in for -- the count is
+    #            the production shape's, not a test helper's overreach
+    "PLR2004", # a test's own literal expected value, not a magic number
+    "S101",    # assert
+    "S311",    # non-cryptographic random: fine in tests
 ]
 # reset_chainstate.py and reset_download.py are each a template edited
 # by hand before a run, not a program run as-is: their reset itself is

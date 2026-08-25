@@ -226,6 +226,40 @@ class Node(threading.Thread):
         self._worker_pool_warmup = threading.Thread(target=build_and_warm, daemon=True)
         self._worker_pool_warmup.start()
 
+    def _drain_message_queues(self) -> bool:
+        """Handle whatever is waiting, and answer whether nothing was.
+
+        One message must not end the node. `handle_p2p` and
+        `handle_p2p_handshake` already answer a bad message by dropping
+        the peer, but what reaches here is whatever they did not expect
+        -- and leaving `run`'s own loop by exception skips every close
+        below it, so the databases would stay open.
+        """
+        wait = True
+        try:
+            while len(self.p2p_manager.handshake_messages):
+                handle_p2p_handshake(self)
+                wait = False
+            for _ in range(int(log2(len(self.rpc_manager.messages) + 1))):
+                handle_rpc(self)
+                wait = False
+            for _ in range(int(log2(len(self.p2p_manager.messages) + 1))):
+                handle_p2p(self)
+                wait = False
+        except Exception:
+            self.logger.exception("Exception occurred handling a message")
+        return wait
+
+    def _step_chain(self) -> bool:
+        """Advance the chain one step, and answer whether `run` should stop."""
+        try:
+            self.download_manager.step()
+            update_chain(self)
+        except Exception:
+            self.logger.exception("Exception occurred")
+            return True
+        return False
+
     @override
     def run(self) -> None:
         self.logger.info("Starting main loop")
@@ -236,31 +270,9 @@ class Node(threading.Thread):
             self.rpc_manager.start()
         self.status = NodeStatus.SyncingHeaders
         while not self.terminate_flag.is_set():
-            wait = True
-            # One message must not end the node. handle_p2p and
-            # handle_p2p_handshake already answer a bad message by
-            # dropping the peer, but what reaches here is whatever they
-            # did not expect -- and leaving the loop by exception skips
-            # every close below it, so the databases would stay open.
-            try:
-                while len(self.p2p_manager.handshake_messages):
-                    handle_p2p_handshake(self)
-                    wait = False
-                for _ in range(int(log2(len(self.rpc_manager.messages) + 1))):
-                    handle_rpc(self)
-                    wait = False
-                for _ in range(int(log2(len(self.p2p_manager.messages) + 1))):
-                    handle_p2p(self)
-                    wait = False
-            except Exception:
-                self.logger.exception("Exception occurred handling a message")
-            if wait:
+            if self._drain_message_queues():
                 time.sleep(0.0001)
-            try:
-                self.download_manager.step()
-                update_chain(self)
-            except Exception:
-                self.logger.exception("Exception occurred")
+            if self._step_chain():
                 break
         self.p2p_manager.stop()
         self.rpc_manager.stop()

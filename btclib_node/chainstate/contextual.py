@@ -133,7 +133,7 @@ def next_bits_required(
     )
 
 
-def assert_valid_in_context(
+def assert_valid_in_context(  # noqa: PLR0913, PLR0917
     chain: Chain,
     header: BlockHeader,
     parent: BlockHeader,
@@ -142,6 +142,15 @@ def assert_valid_in_context(
     now: datetime,
 ) -> None:
     """Assert what the chain before a header requires of it.
+
+    Six parameters and one call site: each is a distinct, independent
+    piece of what Core's own `ContextualCheckBlockHeader` reads too --
+    the chain's own rules, the header, its parent, that parent's height,
+    a way to walk further back for the two checks that need more than
+    one ancestor, and the time to check the header's own against. No
+    subset of them travels together anywhere else in this module, so
+    grouping any of them into a struct of their own would be a wrapper
+    built for this one call rather than a shape the data already has.
 
     Core's `ContextualCheckBlockHeader`, in its order, less the version
     floors a deployment decides: `bad-diffbits`, then `time-too-old`,
