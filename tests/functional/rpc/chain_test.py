@@ -131,7 +131,7 @@ def test_block_count(rpc_node: Node) -> None:
 def test_blockchain_info_names_the_chain_btclib_s_fetcher_checks(
     rpc_node: Node,
 ) -> None:
-    """getblockchaininfo answers the field BitcoinCoreFetcher checks by default.
+    """`getblockchaininfo` answers the field the fetcher checks by default.
 
     `BitcoinCoreFetcher.assert_network` reads this before the fetch it
     was actually asked for -- measured against a real
@@ -227,7 +227,7 @@ def test_block_header_on_the_chain_the_node_validated(rpc_node: Node) -> None:
 
 
 def test_block_header_of_a_block_the_node_has_not_validated(tmp_path: Path) -> None:
-    """getblockheader answers -1 confirmations for a header not yet validated.
+    """`getblockheader` answers -1 confirmations for a header not yet validated.
 
     A node that has taken headers and downloaded nothing has an active
     chain that is the genesis alone, so every one of these is off it and

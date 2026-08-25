@@ -184,7 +184,7 @@ def test_the_transactions_here_tell_a_txid_from_a_wtxid() -> None:
 
 
 def test_the_peer_table_names_a_connected_peer() -> None:
-    """getpeerinfo names a connected peer's address, network and services.
+    """`getpeerinfo` names a connected peer's address, network and services.
 
     Every field comes off the peer's own socket and version message,
     keyed by connection id.
@@ -203,7 +203,7 @@ def test_the_peer_table_names_a_connected_peer() -> None:
 
 
 def test_a_v6_peer_is_named_with_the_brackets_core_writes() -> None:
-    """getpeerinfo brackets every IPv6 address in its answer (issue #147).
+    """`getpeerinfo` brackets every IPv6 address in its answer (issue #147).
 
     Without the brackets, `2001:db8::1` on port 8333 and `2001:db8::1:8333`
     on another port are the same string, and a client splitting on the
@@ -239,7 +239,7 @@ def test_the_services_are_named_the_way_core_names_them() -> None:
 
 
 def test_a_peer_still_handshaking_is_not_in_the_table() -> None:
-    """getpeerinfo leaves out a connection short of `verack`.
+    """`getpeerinfo` leaves out a connection short of `verack`.
 
     Such a connection carries no version message yet for the answer's
     fields to read.
@@ -249,7 +249,7 @@ def test_a_peer_still_handshaking_is_not_in_the_table() -> None:
 
 
 def test_a_peer_that_goes_away_mid_lookup_is_skipped() -> None:
-    """getpeerinfo skips a peer whose socket fails mid-lookup.
+    """`getpeerinfo` skips a peer whose socket fails mid-lookup.
 
     Its own connection state already reports the disconnect; the table
     just carries on rather than failing the whole request.
@@ -260,7 +260,7 @@ def test_a_peer_that_goes_away_mid_lookup_is_skipped() -> None:
 
 
 def test_a_connection_removed_mid_loop_does_not_raise() -> None:
-    """getpeerinfo does not raise when a connection is removed mid-loop.
+    """`getpeerinfo` does not raise when a connection is removed mid-loop.
 
     `get_peer_info` reads `connections.copy()`, so a connection
     `remove_connection` pops mid-loop -- it runs on `P2pManager`'s own
@@ -302,12 +302,12 @@ def test_a_connection_removed_mid_loop_does_not_raise() -> None:
 
 
 def test_the_connection_count_is_every_connection() -> None:
-    """getconnectioncount counts every entry of the peer table."""
+    """`getconnectioncount` counts every entry of the peer table."""
     assert get_connection_count(a_node({1: a_peer(), 2: a_peer()}), _CONN, []) == 2
 
 
 def test_the_connection_count_includes_a_peer_still_mid_handshake() -> None:
-    """getconnectioncount also counts a pending, not yet handshaken, connection.
+    """`getconnectioncount` also counts a pending, not yet handshaken, peer.
 
     Core's own `getconnectioncount` counts every entry of `m_nodes`,
     which holds a socket before its handshake and not only after.
@@ -317,7 +317,7 @@ def test_the_connection_count_includes_a_peer_still_mid_handshake() -> None:
 
 
 def test_the_mempool_reports_its_size_and_bytes() -> None:
-    """getmempoolinfo's size and bytes fields read the mempool's own tally.
+    """`getmempoolinfo`'s size and bytes fields read the mempool's own tally.
 
     `size` is its transaction count and `bytes` its total vsize.
     """
@@ -331,7 +331,7 @@ def test_the_mempool_reports_its_size_and_bytes() -> None:
 
 
 def test_the_mempool_reports_its_own_limit_as_maxmempool() -> None:
-    """getmempoolinfo's maxmempool field is the mempool's own bytesize_limit."""
+    """`getmempoolinfo`'s maxmempool is the mempool's own bytesize_limit."""
     mempool = Mempool(Logger(debug=True))
     mempool.bytesize_limit = 12345
     out = get_mempool_info(a_node(mempool=mempool), _CONN, [])
@@ -339,7 +339,7 @@ def test_the_mempool_reports_its_own_limit_as_maxmempool() -> None:
 
 
 def test_mempoolminfee_floors_at_the_configured_relay_feerate() -> None:
-    """mempoolminfee floors at the configured minimum relay feerate.
+    """`mempoolminfee` floors at the configured minimum relay feerate.
 
     The mempool's own rolling minimum is 0 until something evicts, so the
     configured floor is what answers -- converted to Core's own BTC/kvB
@@ -354,7 +354,7 @@ def test_mempoolminfee_floors_at_the_configured_relay_feerate() -> None:
 
 
 def test_mempoolminfee_rises_with_the_mempools_own_rolling_minimum() -> None:
-    """mempoolminfee follows the mempool's own rolling minimum once it rises.
+    """`mempoolminfee` follows the mempool's own rolling minimum once it rises.
 
     Once the rolling minimum exceeds the configured relay feerate, it is
     what answers instead of the floor.
@@ -371,7 +371,7 @@ def test_mempoolminfee_rises_with_the_mempools_own_rolling_minimum() -> None:
 def test_mempoolminfee_at_a_magnitude_a_float_would_write_in_exponent_notation() -> (
     None
 ):
-    """mempoolminfee at 1 sat/kvB is a plain decimal, not exponent notation.
+    """`mempoolminfee` at 1 sat/kvB is a plain decimal, not exponent notation.
 
     1 sat/kvB is 1e-08 BTC/kvB in a Python float's own repr -- exactly the
     magnitude Core's `%d.%08d` format never produces, and the case
@@ -384,7 +384,7 @@ def test_mempoolminfee_at_a_magnitude_a_float_would_write_in_exponent_notation()
 
 
 def test_the_raw_mempool_is_a_plain_list_of_txids_by_default() -> None:
-    """getrawmempool with no flags, or both false, answers a plain array.
+    """`getrawmempool` with no flags, or both false, answers a plain array.
 
     Matches `MempoolToJSON`'s own default shape (`src/rpc/mempool.cpp`
     :624-634), not the `{"txids": [...]}` object this node used to
@@ -402,7 +402,7 @@ def test_the_raw_mempool_is_a_plain_list_of_txids_by_default() -> None:
 
 
 def test_the_raw_mempool_verbose_table_names_each_transaction() -> None:
-    """getrawmempool verbose answers an object keyed by txid.
+    """`getrawmempool` verbose answers an object keyed by txid.
 
     Each entry names its own wtxid, vsize and weight.
     """
@@ -420,7 +420,7 @@ def test_the_raw_mempool_verbose_table_names_each_transaction() -> None:
 
 
 def test_mempool_sequence_attaches_the_mempool_s_own_counter() -> None:
-    """getrawmempool's mempool_sequence flag attaches the mempool's own counter.
+    """`getrawmempool`'s mempool_sequence flag attaches the mempool's counter.
 
     `mempool_sequence` used to be silently ignored; `MempoolToJSON`'s own
     shape for it is an object carrying both the array and the count
@@ -454,7 +454,7 @@ def test_mempool_sequence_attaches_the_mempool_s_own_counter() -> None:
 
 
 def test_verbose_and_mempool_sequence_together_are_refused() -> None:
-    """getrawmempool refuses verbose and mempool_sequence given together.
+    """`getrawmempool` refuses verbose and mempool_sequence given together.
 
     Matches `MempoolToJSON`'s own refusal (`src/rpc/mempool.cpp`
     :608-611): the combination is refused outright, rather than
@@ -470,7 +470,7 @@ def test_verbose_and_mempool_sequence_together_are_refused() -> None:
 
 
 def test_a_raw_mempool_parameter_of_the_wrong_json_type_is_named() -> None:
-    """getrawmempool names the JSON type of a wrong-typed boolean parameter.
+    """`getrawmempool` names the JSON type of a wrong-typed boolean parameter.
 
     The same check `RPCMethod::HandleRequest` makes (`src/rpc/util.cpp`
     :653-661) against both of `getrawmempool`'s declared
@@ -525,7 +525,7 @@ def a_tx_lookup_node(
 
 
 def test_a_mempool_transaction_answers_the_raw_hex_by_default() -> None:
-    """getrawtransaction for a mempool-held transaction answers the raw hex.
+    """`getrawtransaction` for a mempool-held transaction answers the raw hex.
 
     With no verbose flag, the answer is the serialized transaction, not
     the verbose object.
@@ -539,7 +539,7 @@ def test_a_mempool_transaction_answers_the_raw_hex_by_default() -> None:
 
 
 def test_a_mempool_transaction_verbose_carries_no_block_fields() -> None:
-    """getrawtransaction verbose omits block fields for a mempool-only tx.
+    """`getrawtransaction` verbose omits block fields for a mempool-only tx.
 
     A transaction found only in the mempool, not looked up in any block,
     carries no `blockhash` or `confirmations`.
@@ -555,7 +555,7 @@ def test_a_mempool_transaction_verbose_carries_no_block_fields() -> None:
 
 
 def test_a_transaction_neither_mempool_nor_named_block_is_refused() -> None:
-    """getrawtransaction refuses a txid held neither in the mempool nor a block.
+    """`getrawtransaction` refuses a txid in neither the mempool nor a block.
 
     The message points the caller at `gettransaction` for wallet
     transactions, which this refusal is not answering for.
@@ -568,7 +568,7 @@ def test_a_transaction_neither_mempool_nor_named_block_is_refused() -> None:
 
 
 def test_a_transaction_is_read_out_of_the_block_named() -> None:
-    """getrawtransaction finds a transaction inside a block named explicitly.
+    """`getrawtransaction` finds a transaction inside a block named explicitly.
 
     Verbose reports it confirmed and on the active chain.
     """
@@ -590,7 +590,7 @@ def test_a_transaction_is_read_out_of_the_block_named() -> None:
 
 
 def test_a_transaction_off_the_active_chain_is_named_but_not_confirmed() -> None:
-    """getrawtransaction verbose reports an off-chain transaction unconfirmed.
+    """`getrawtransaction` verbose reports an off-chain transaction unconfirmed.
 
     `in_active_chain` is false and `confirmations` is -1 for a block that
     holds the transaction but is not on the active chain.
@@ -612,7 +612,7 @@ def test_a_transaction_off_the_active_chain_is_named_but_not_confirmed() -> None
 
 
 def test_a_transaction_the_named_block_does_not_hold_is_refused() -> None:
-    """getrawtransaction refuses a txid not actually held by the named block."""
+    """`getrawtransaction` refuses a txid not held by the named block."""
     tx = a_tx()
     other = a_tx(b"\x22")
     header = generate_random_header_chain(1, RegTest().genesis.hash)[0]
@@ -628,7 +628,7 @@ def test_a_transaction_the_named_block_does_not_hold_is_refused() -> None:
 
 
 def test_an_unknown_block_hash_is_refused_by_name() -> None:
-    """getrawtransaction refuses a block hash the index has never indexed."""
+    """`getrawtransaction` refuses a block hash the index has never indexed."""
     node = a_tx_lookup_node()
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, ["11" * 32, False, "22" * 32])
@@ -637,7 +637,7 @@ def test_an_unknown_block_hash_is_refused_by_name() -> None:
 
 
 def test_a_block_the_index_knows_and_the_store_does_not_is_unavailable() -> None:
-    """getrawtransaction answers 'Block not available' for a pruned block.
+    """`getrawtransaction` answers 'Block not available' for a pruned block.
 
     `BlockIndex` and `BlockDb` are two stores; a hash the first carries
     and the second does not is a pruned block, not a wrong request.
@@ -654,7 +654,7 @@ def test_a_block_the_index_knows_and_the_store_does_not_is_unavailable() -> None
 
 
 def test_no_txid_at_all_is_answered_with_the_usage() -> None:
-    """getrawtransaction with no arguments at all is refused with its usage."""
+    """`getrawtransaction` with no arguments is refused with its own usage."""
     node = a_tx_lookup_node()
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, [])
@@ -663,7 +663,7 @@ def test_no_txid_at_all_is_answered_with_the_usage() -> None:
 
 
 def test_a_txid_of_the_wrong_json_type_is_named() -> None:
-    """getrawtransaction's txid of the wrong JSON type is refused by name."""
+    """`getrawtransaction`'s txid of the wrong JSON type is refused by name."""
     node = a_tx_lookup_node()
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, [5])
@@ -675,7 +675,7 @@ def test_a_txid_of_the_wrong_json_type_is_named() -> None:
 
 
 def test_a_txid_that_is_not_hex_is_named_back_to_the_client() -> None:
-    """getrawtransaction's txid that fails to decode as hex is echoed back."""
+    """`getrawtransaction`'s txid that fails to decode as hex is echoed back."""
     node = a_tx_lookup_node()
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, ["zz"])
@@ -684,7 +684,7 @@ def test_a_txid_that_is_not_hex_is_named_back_to_the_client() -> None:
 
 
 def test_a_blockhash_of_the_wrong_json_type_is_named() -> None:
-    """getrawtransaction's blockhash of the wrong JSON type is named."""
+    """`getrawtransaction`'s blockhash of the wrong JSON type is named."""
     node = a_tx_lookup_node()
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, ["11" * 32, False, 5])
@@ -696,7 +696,7 @@ def test_a_blockhash_of_the_wrong_json_type_is_named() -> None:
 
 
 def test_a_blockhash_that_is_not_hex_is_named_back_to_the_client() -> None:
-    """getrawtransaction's blockhash that fails to decode as hex is echoed."""
+    """`getrawtransaction`'s blockhash that fails to decode as hex is echoed."""
     node = a_tx_lookup_node()
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, ["11" * 32, False, "zz"])
@@ -705,7 +705,7 @@ def test_a_blockhash_that_is_not_hex_is_named_back_to_the_client() -> None:
 
 
 def test_a_null_blockhash_is_the_same_as_none_given() -> None:
-    """getrawtransaction treats an explicit null blockhash as omitted."""
+    """`getrawtransaction` treats an explicit null blockhash as omitted."""
     tx = a_tx()
     node = a_tx_lookup_node(mempool_txs=[tx])
     assert (
@@ -715,7 +715,7 @@ def test_a_null_blockhash_is_the_same_as_none_given() -> None:
 
 
 def test_a_verbose_of_the_wrong_json_type_is_named() -> None:
-    """getrawtransaction's verbose of the wrong JSON type is named."""
+    """`getrawtransaction`'s verbose of the wrong JSON type is named."""
     node = a_tx_lookup_node()
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, ["11" * 32, "true"])
@@ -726,7 +726,7 @@ def test_a_verbose_of_the_wrong_json_type_is_named() -> None:
 
 
 def test_ping_and_stop_answer_without_a_connection() -> None:
-    """ping and stop each answer without reading the connection they are handed.
+    """`ping` and `stop` answer without reading the connection they are handed.
 
     `ping` pings every peer through `ping_all`; `stop` answers its own
     fixed message.
@@ -742,7 +742,7 @@ def test_ping_and_stop_answer_without_a_connection() -> None:
 def test_mempool_acceptance_reports_a_reason_for_each_refusal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """testmempoolaccept reports allowed, or each refusal's own reject-reason.
+    """`testmempoolaccept` reports allowed, or each refusal's own reject-reason.
 
     Runs the same transaction against every outcome
     `verify_mempool_acceptance` can produce -- accepted, an invalid
@@ -775,7 +775,7 @@ def test_mempool_acceptance_reports_a_reason_for_each_refusal(
 
 
 def test_an_unparsable_transaction_is_named_as_such() -> None:
-    """testmempoolaccept reports a transaction that fails to parse as invalid.
+    """`testmempoolaccept` reports a transaction that fails to parse as invalid.
 
     'Invalid serialization' is reported rather than raising.
     """
@@ -786,7 +786,7 @@ def test_an_unparsable_transaction_is_named_as_such() -> None:
 def test_a_relayed_transaction_is_answered_with_its_txid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """sendrawtransaction adds an accepted transaction and broadcasts it.
+    """`sendrawtransaction` adds an accepted transaction and broadcasts it.
 
     Answers its own txid, adds it to the mempool, and announces it to
     peers.
@@ -808,7 +808,7 @@ def test_a_relayed_transaction_is_answered_with_its_txid(
 
 
 def test_something_that_is_not_a_transaction_is_refused_rather_than_relayed() -> None:
-    """sendrawtransaction refuses a string that fails to decode as a tx."""
+    """`sendrawtransaction` refuses a string that fails to decode as a tx."""
     with pytest.raises(RpcError) as raised:
         send_raw_transaction(a_node(), _CONN, ["not a transaction"])
     assert raised.value.code == RpcErrorCode.DESERIALIZATION_ERROR
@@ -818,7 +818,7 @@ def test_something_that_is_not_a_transaction_is_refused_rather_than_relayed() ->
 
 
 def test_a_transaction_truncated_inside_a_script_is_the_same_refusal() -> None:
-    """sendrawtransaction refuses a tx truncated mid-script the same way.
+    """`sendrawtransaction` refuses a tx truncated mid-script the same way.
 
     A scriptPubKey whose declared length reaches past the octets that
     follow it makes `Tx.parse` raise `BTClibRuntimeError` rather than the
@@ -842,7 +842,7 @@ def test_a_transaction_truncated_inside_a_script_is_the_same_refusal() -> None:
 
 
 def test_a_rawtx_of_the_wrong_json_type_is_named() -> None:
-    """sendrawtransaction's rawtx of the wrong JSON type is named."""
+    """`sendrawtransaction`'s rawtx of the wrong JSON type is named."""
     with pytest.raises(RpcError) as raised:
         send_raw_transaction(a_node(), _CONN, [5])
     assert raised.value.code == RpcErrorCode.TYPE_ERROR
@@ -855,7 +855,7 @@ def test_a_rawtx_of_the_wrong_json_type_is_named() -> None:
 def test_a_transaction_the_mempool_will_not_have_is_not_reported_relayed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """sendrawtransaction does not report or broadcast a missing-prevouts tx.
+    """`sendrawtransaction` does not report or broadcast a missing-prevouts tx.
 
     A refusal is not answered with the txid of a transaction this node
     has neither kept nor sent (issue #83).
@@ -882,7 +882,7 @@ def test_a_transaction_the_mempool_will_not_have_is_not_reported_relayed(
 def test_a_transaction_a_full_mempool_cannot_keep_is_refused_not_relayed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """sendrawtransaction refuses, and does not broadcast, an evicted tx.
+    """`sendrawtransaction` refuses, and does not broadcast, an evicted tx.
 
     A transaction `add_tx` evicts right back out under a full mempool is
     refused rather than reported kept (issue #293, issue #294).
@@ -913,7 +913,7 @@ def test_a_transaction_a_full_mempool_cannot_keep_is_refused_not_relayed(
 def test_resubmitting_a_transaction_already_held_is_tolerated_even_when_the_mempool_is_full(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """sendrawtransaction reannounces a resubmission even when full.
+    """`sendrawtransaction` reannounces a resubmission even when full.
 
     Matches `BroadcastTransaction`'s own early return for a txid already
     held.
@@ -942,7 +942,7 @@ def test_resubmitting_a_transaction_already_held_is_tolerated_even_when_the_memp
 def test_a_resubmission_under_a_different_witness_is_also_tolerated_when_full(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """sendrawtransaction reannounces the held wtxid, not the resubmitted one.
+    """`sendrawtransaction` reannounces the held wtxid, not the resubmitted one.
 
     `Mempool.contains_tx` is keyed by wtxid, so it does not recognise a
     txid already held under a different witness; the guard has to be
@@ -990,7 +990,7 @@ def test_a_resubmission_under_a_different_witness_is_also_tolerated_when_full(
 def test_a_resubmission_under_a_different_witness_is_reannounced_by_wtxid_even_when_not_full(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """sendrawtransaction makes the same wtxid substitution off the full guard.
+    """`sendrawtransaction` swaps the same wtxid off the full-mempool guard.
 
     A resubmission's own wtxid is never what `add_tx` stored, whether or
     not the mempool happens to be full.
@@ -1073,7 +1073,7 @@ def header_json(node: Any, conn: Connection, params: list[Any]) -> dict[str, Any
 
 
 def test_a_block_header_names_the_ones_either_side_of_it() -> None:
-    """getblockheader verbose names a middle block's neighbours and chainwork.
+    """`getblockheader` verbose names a middle block's neighbours and chainwork.
 
     Height, confirmations, previous and next block hash, and chainwork.
     """
@@ -1092,7 +1092,7 @@ def test_a_block_header_names_the_ones_either_side_of_it() -> None:
 
 
 def test_the_first_header_has_nothing_before_it_and_the_last_nothing_after() -> None:
-    """getblockheader omits previous/next block hash at the chain's own ends."""
+    """`getblockheader` omits previous/next block hash at the chain's ends."""
     chain = generate_random_header_chain(3, RegTest().genesis.hash)
     node = cast(
         "Node",
@@ -1109,7 +1109,7 @@ def test_the_first_header_has_nothing_before_it_and_the_last_nothing_after() -> 
 
 
 def test_verbose_false_answers_the_serialized_header_hex_not_the_object() -> None:
-    """getblockheader verbose false answers the same hex sent to a peer.
+    """`getblockheader` verbose false answers the same hex sent to a peer.
 
     Where this node used to ignore `params[1]` and answer the object
     regardless of what was asked for (issue #215).
@@ -1124,7 +1124,7 @@ def test_verbose_false_answers_the_serialized_header_hex_not_the_object() -> Non
 
 
 def test_verbose_true_and_the_default_answer_the_same_object() -> None:
-    """getblockheader's default, explicit true and null all answer alike.
+    """`getblockheader`'s default, explicit true and null all answer alike.
 
     `verbose`'s Default is true (`src/rpc/blockchain.cpp`:617), and Core
     treats an explicit null the same as an omitted argument.
@@ -1141,7 +1141,7 @@ def test_verbose_true_and_the_default_answer_the_same_object() -> None:
 
 
 def test_a_verbose_of_the_wrong_json_type_is_named_rather_than_coerced() -> None:
-    """getblockheader's verbose of the wrong JSON type is named, not coerced.
+    """`getblockheader`'s verbose of the wrong JSON type is named, not coerced.
 
     The same `RPCMethod::HandleRequest` type check as blockhash's,
     against `verbose`'s own declared `RPCArg::Type::BOOL`.
@@ -1160,7 +1160,7 @@ def test_a_verbose_of_the_wrong_json_type_is_named_rather_than_coerced() -> None
 
 
 def test_a_block_off_the_active_chain_is_described_and_not_refused() -> None:
-    """getblockheader describes a block off the active chain, not refusing it.
+    """`getblockheader` describes a block off the active chain, not refusing it.
 
     Matches what Core's `blockheaderToJSON` answers for one: the height
     the block has on its own fork, confirmations -1 in place of a depth,
@@ -1192,7 +1192,7 @@ def test_a_block_off_the_active_chain_is_described_and_not_refused() -> None:
 
 
 def test_a_fork_reaching_past_the_tip_is_not_read_off_the_end_of_the_chain() -> None:
-    """getblockheader answers a fork past the tip by its own height.
+    """`getblockheader` answers a fork past the tip by its own height.
 
     A fork longer than the active chain is still not it, work and not
     length being what decides -- and the active chain has no position to
@@ -1214,7 +1214,7 @@ def test_a_fork_reaching_past_the_tip_is_not_read_off_the_end_of_the_chain() -> 
 
 
 def test_a_header_whose_block_is_not_validated_is_confirmed_by_nothing() -> None:
-    """getblockheader answers -1 confirmations past the active chain's own tip.
+    """`getblockheader` answers -1 confirmations past the active chain's tip.
 
     A depth is counted from the active chain's tip, so a header this
     node has accepted and not connected is answered -1: during header
@@ -1240,7 +1240,7 @@ def test_a_header_whose_block_is_not_validated_is_confirmed_by_nothing() -> None
 
 
 def test_a_block_hash_nothing_indexed_is_refused_rather_than_raising() -> None:
-    """getblockheader refuses a hash the index never saw (issue #179).
+    """`getblockheader` refuses a hash the index never saw (issue #179).
 
     Refused rather than raised.
     """
@@ -1256,7 +1256,7 @@ def test_a_block_hash_nothing_indexed_is_refused_rather_than_raising() -> None:
 
 
 def test_a_block_hash_that_is_not_hex_is_named_back_to_the_client() -> None:
-    """getblockheader's block hash that fails to decode as hex is echoed."""
+    """`getblockheader`'s block hash that fails to decode as hex is echoed."""
     chain = generate_random_header_chain(1, RegTest().genesis.hash)
     node = cast(
         "Node",
@@ -1269,7 +1269,7 @@ def test_a_block_hash_that_is_not_hex_is_named_back_to_the_client() -> None:
 
 
 def test_a_block_hash_of_the_wrong_json_type_is_named_rather_than_faulted() -> None:
-    """getblockheader's block hash of the wrong JSON type is named, not faulted.
+    """`getblockheader`'s block hash of the wrong type is named, not faulted.
 
     `bytes.fromhex(5)` raises `TypeError`, not the `ValueError` the hex
     check above catches, so a non-string blockhash used to fall through
@@ -1291,7 +1291,7 @@ def test_a_block_hash_of_the_wrong_json_type_is_named_rather_than_faulted() -> N
 
 
 def test_a_null_block_hash_is_the_same_wrong_type_as_any_other() -> None:
-    """getblockheader treats a null block hash as just another wrong JSON type.
+    """`getblockheader` treats a null block hash as just another wrong type.
 
     `blockhash` is a required argument (`RPCArg::Optional::NO`), so a
     null one is not the "argument omitted" case: it is still the wrong
@@ -1311,7 +1311,7 @@ def test_a_null_block_hash_is_the_same_wrong_type_as_any_other() -> None:
 
 
 def test_no_block_hash_at_all_is_answered_with_the_usage() -> None:
-    """getblockheader with no arguments at all is refused with its own usage."""
+    """`getblockheader` with no arguments is refused with its own usage."""
     chain = generate_random_header_chain(1, RegTest().genesis.hash)
     node = cast(
         "Node",
@@ -1324,7 +1324,7 @@ def test_no_block_hash_at_all_is_answered_with_the_usage() -> None:
 
 
 def test_the_tip_and_the_block_at_a_height_are_read_off_the_active_chain() -> None:
-    """getbestblockhash and getblockhash read off the active chain's own list.
+    """`getbestblockhash` and getblockhash read off the active chain's own list.
 
     `getbestblockhash` answers the last entry, `getblockhash` the entry
     at a given height.
@@ -1342,7 +1342,7 @@ def test_the_tip_and_the_block_at_a_height_are_read_off_the_active_chain() -> No
 
 
 def test_block_count_is_the_active_chain_s_own_last_index() -> None:
-    """getblockcount answers the active chain's own last index, not its length.
+    """`getblockcount` answers the active chain's own last index, not length.
 
     The genesis alone is height 0, matching Core's own.
     """
@@ -1368,7 +1368,7 @@ def test_block_count_is_the_active_chain_s_own_last_index() -> None:
 
 
 def test_blockchain_info_names_the_chain_in_core_s_own_vocabulary() -> None:
-    """getblockchaininfo names the chain in Core's own vocabulary (issue #21).
+    """`getblockchaininfo` names the chain in Core's own vocabulary (issue #21).
 
     `BitcoinCoreFetcher.assert_network` reads "chain" alone, and Core's
     own vocabulary for it is not btclib's network name -- `chains.py`'s
@@ -1392,7 +1392,7 @@ def a_chain_index_node(chain: list[bytes]) -> Node:
 
 
 def test_a_negative_height_is_refused_rather_than_read_off_the_chain_s_end() -> None:
-    """getblockhash refuses a negative height, not reading from the chain's end.
+    """`getblockhash` refuses a negative height, not reading from the chain end.
 
     A negative index used to count from the end of `active_chain`,
     Python's own list semantics, silently answering the tip's hash for a
@@ -1407,7 +1407,7 @@ def test_a_negative_height_is_refused_rather_than_read_off_the_chain_s_end() -> 
 
 
 def test_a_height_past_the_tip_is_refused() -> None:
-    """getblockhash refuses a height at or past the active chain's length."""
+    """`getblockhash` refuses a height at or past the active chain's length."""
     node = a_chain_index_node([b"\x11" * 32, b"\x22" * 32])
     with pytest.raises(RpcError) as raised:
         get_block_hash(node, _CONN, [2])
@@ -1416,7 +1416,7 @@ def test_a_height_past_the_tip_is_refused() -> None:
 
 
 def test_a_height_of_the_wrong_json_type_is_named_rather_than_faulted() -> None:
-    """getblockhash's height of any wrong JSON type is named, not faulted.
+    """`getblockhash`'s height of any wrong JSON type is named, not faulted.
 
     `int(None)` raises `TypeError`, `int("x")` raises `ValueError`,
     neither caught before this fix, both reaching -32603 Internal Error
@@ -1438,7 +1438,7 @@ def test_a_height_of_the_wrong_json_type_is_named_rather_than_faulted() -> None:
 
 
 def test_a_fractional_height_is_refused_the_way_core_s_own_parse_refuses_it() -> None:
-    """getblockhash refuses a fractional height with MISC_ERROR, matching Core.
+    """`getblockhash` refuses a fractional height with MISC_ERROR, as Core does.
 
     A JSON number written with a decimal point is still VNUM, so it
     passes the type check the way an int does, but
@@ -1454,7 +1454,7 @@ def test_a_fractional_height_is_refused_the_way_core_s_own_parse_refuses_it() ->
 
 
 def test_no_height_at_all_is_answered_with_the_usage() -> None:
-    """getblockhash with no arguments at all is refused with its own usage.
+    """`getblockhash` with no arguments at all is refused with its own usage.
 
     Unquoted: `RPCArg::ToString(oneline=true)` quotes an argument's name
     only for `Type::STR`/`STR_HEX`, and height is `Type::NUM` -- unlike
@@ -1470,7 +1470,7 @@ def test_no_height_at_all_is_answered_with_the_usage() -> None:
 def test_a_transaction_whose_scripts_do_not_verify_is_answered_with_the_refusal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """sendrawtransaction answers VERIFY_REJECTED for a bad-script transaction.
+    """`sendrawtransaction` answers VERIFY_REJECTED for a bad-script tx.
 
     Does not add it to the mempool or broadcast it.
     """

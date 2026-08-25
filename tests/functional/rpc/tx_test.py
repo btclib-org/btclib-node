@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 
 
 def test_add_tx(rpc_node: Node) -> None:
-    """testmempoolaccept and sendrawtransaction, live, across a dependent chain.
+    """`testmempoolaccept` and `sendrawtransaction`, live, across a tx chain.
 
     An unparsable string, a transaction with no known prevout, and a
     child of an unconfirmed, unheld parent are each refused;

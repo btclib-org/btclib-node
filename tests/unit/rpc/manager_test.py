@@ -227,7 +227,7 @@ def test_a_manager_that_cannot_bind_stops_being_alive(
 def test_stop_closes_the_listening_socket_even_when_the_accept_task_never_ran(
     a_manager: AManagerFactory,
 ) -> None:
-    """stop closes the listening socket even where the accept task never ran.
+    """`stop` closes the listening socket even where the accept task never ran.
 
     `stop()` can cancel `server`'s own task before `run_forever` has
     stepped it even once -- what a manager started and stopped in quick
@@ -260,7 +260,7 @@ def test_stop_closes_the_listening_socket_even_when_the_accept_task_never_ran(
 def test_server_does_not_lose_a_connection_queued_in_the_instant_of_its_own_cancellation(
     a_manager: AManagerFactory,
 ) -> None:
-    """server does not lose a connection queued the instant it is cancelled.
+    """`server` does not lose a connection queued the instant it is cancelled.
 
     Mirrors `P2pManager.server`'s own test of the same shape (issue
     #386). A connection can already sit in `server`'s own accept queue
@@ -303,7 +303,7 @@ def test_server_does_not_lose_a_connection_queued_in_the_instant_of_its_own_canc
 def test_stop_requests_every_tasks_cancellation_before_awaiting_any_one_of_them(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """stop cancels every pending task before awaiting any one of them.
+    """`stop` cancels every pending task before awaiting any one of them.
 
     Mirrors `P2pManager.stop`'s own test of the same name (issue #312,
     issue #323). `run_until_complete(task)`, for any one task, drives the
@@ -369,7 +369,7 @@ def test_stop_requests_every_tasks_cancellation_before_awaiting_any_one_of_them(
 def test_stop_closes_a_connection_queued_when_the_drain_begins(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """stop closes a connection queued right as its own drain begins.
+    """`stop` closes a connection queued right as its own drain begins.
 
     Mirrors `P2pManager.stop`'s own test of the same shape (issue #386,
     issue #391). `server`'s own task is what `stop`'s blanket sweep over
@@ -435,7 +435,7 @@ def test_stop_closes_a_connection_queued_when_the_drain_begins(
 def test_stop_drains_a_task_whose_own_cancellation_needs_a_second_step(
     a_manager: AManagerFactory,
 ) -> None:
-    """stop drains a task whose cancellation needs a second step (issue #377).
+    """`stop` drains a task whose cancellation needs a second step (issue #377).
 
     The unconditional drain below (`for task in pending: ...
     run_until_complete(task)`) is not, on its own, guarded against a
@@ -477,7 +477,7 @@ def test_stop_drains_a_task_whose_own_cancellation_needs_a_second_step(
 def test_stop_does_not_raise_where_start_was_called_but_run_never_reached_run_forever(
     a_manager: AManagerFactory,
 ) -> None:
-    """stop does not raise where start ran but run never reached run_forever.
+    """`stop` does not raise where start ran but run never reached run_forever.
 
     `self.ident is not None` -- issue #362's own guard on a grace step
     this method no longer has -- is true from the moment `start()`

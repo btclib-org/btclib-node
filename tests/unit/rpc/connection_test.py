@@ -314,7 +314,7 @@ def test_a_raw_json_value_does_not_swallow_a_field_containing_its_own_mark() -> 
 
 
 def test_close_cancels_the_task_it_was_given() -> None:
-    """close cancels the running task it was handed."""
+    """`close` cancels the running task it was handed."""
 
     async def main() -> bool:
         ours, theirs = socket.socketpair()
@@ -395,7 +395,7 @@ def test_repr_brackets_an_ipv6_peer(host: str, endpoint: str) -> None:
 
 
 def test_close_without_a_task_closes_the_socket_anyway() -> None:
-    """close still closes the socket for a connection whose task is None."""
+    """`close` still closes the socket for a connection whose task is None."""
     ours, theirs = socket.socketpair()
     conn = Connection(
         cast("asyncio.AbstractEventLoop", None),

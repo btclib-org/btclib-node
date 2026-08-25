@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 
 def test_init(tmp_path: Path) -> None:
-    """stop answers before the node goes down, and the node then stops for real.
+    """`stop` answers before the node goes down, then the node stops for real.
 
     A port of its own; see `tests/functional/p2p/init_test.py`.
     """
