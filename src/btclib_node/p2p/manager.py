@@ -415,6 +415,38 @@ class P2pManager(threading.Thread):
             pending = asyncio.all_tasks(self.loop)
             if not pending:
                 break
+            # `server`'s own `accept` is a task of its own too, and
+            # `pending` above reaches it directly rather than only
+            # through `server`'s task cascading a cancel onto it. The
+            # kernel can have handed a connection to `accept`'s own
+            # future already -- indistinguishable from the ordinary case
+            # once that future is done -- and `Task.cancel` on a task
+            # whose own awaited future is already done cannot cancel
+            # that future either: it forces `CancelledError` into the
+            # task on its next step regardless, discarding a socket nobody
+            # ever gets to close. `server`'s except arm already guards
+            # this for a cancel arriving through its own shield
+            # (btclib-org/btclib-node#312); it cannot guard a cancel that
+            # reaches `accept` directly, which is what happens here on
+            # every pass. One step of the loop first is what a task
+            # sitting on an already-resolved future needs to return
+            # normally instead -- for `accept`, straight into
+            # `create_connection`, which is a task this same loop already
+            # knows how to close, on its next pass -- so `pending` is
+            # taken again below, rather than reused, once that step has
+            # had its chance to change what it names. Guarded on `pending`
+            # already being non-empty, rather than unconditional: a `run`
+            # that raised before ever reaching `run_forever` -- a bind
+            # failure -- leaves the `loop.stop` this method schedules
+            # above undelivered, and asking that idle loop to run even
+            # one more step raises `RuntimeError('Event loop stopped
+            # before Future completed.')` for it, on a loop that was
+            # never going to have an `accept` task to begin with
+            # (btclib-org/btclib-node#353).
+            self.loop.run_until_complete(asyncio.sleep(0))
+            pending = asyncio.all_tasks(self.loop)
+            if not pending:
+                break
             # every one of them before the loop is allowed to run again,
             # rather than cancelling and draining one at a time, which is
             # what leaves the accept loop live for the whole drain

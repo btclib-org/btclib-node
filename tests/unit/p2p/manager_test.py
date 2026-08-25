@@ -1011,6 +1011,78 @@ def test_stop_closes_a_connection_that_arrives_while_it_is_draining(
     assert not asyncio.all_tasks(manager.loop)
 
 
+def test_stop_closes_an_accept_already_landed_when_the_drain_begins(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#353: `accept` is a task of its own, and `all_tasks` below reaches
+    it directly on every pass -- not only through `server`'s own task
+    cascading a cancel onto it, which is what the neighbouring tests
+    above and below this one turn on instead.
+
+    `Task.cancel` on a task whose own awaited future is already done
+    cannot cancel that future either: it forces `CancelledError` into
+    the task's next step regardless, discarding whatever the kernel
+    already handed over with nothing left holding it -- the same fact
+    `test_server_closes_a_connection_accepted_in_the_instant_it_is_cancelled`
+    below turns on for a cancel arriving through `server`'s own shield.
+    That test's own cancel never reaches `accept` directly, only `server`,
+    so it does not cover this: `stop`'s blanket sweep cancels `accept`
+    itself, on every single pass, whether or not `server` is ever
+    cancelled at all.
+
+    A grace step before the sweep -- `run_until_complete(asyncio.sleep(0))`
+    -- is what lets a task sitting on an already-resolved future return
+    normally instead, into `create_connection` and the drain the
+    neighbouring test above already answers.
+
+    `sock_accept` is replaced so its own future is one this test can
+    resolve from outside it, scheduled from the same window
+    `test_stop_closes_a_connection_accepted_in_its_own_race_window`
+    below already uses -- between `stop` scheduling `loop.stop` and
+    waiting for the thread. `call_soon_threadsafe` queues behind that
+    scheduling rather than ahead of it, so the manager's own loop sees
+    `loop.stop` first and stops before ever stepping `accept`'s own
+    wakeup: the future is resolved and the task that owns it is not,
+    which is the same gap a landed kernel accept leaves for real.
+    """
+    port = get_random_port()
+    manager = a_manager(port=port)
+
+    accepts: list[asyncio.Future[tuple[socket.socket, Any]]] = []
+
+    async def sock_accept(sock: socket.socket) -> tuple[socket.socket, Any]:
+        accepts.append(manager.loop.create_future())
+        return await accepts[-1]
+
+    monkeypatch.setattr(manager.loop, "sock_accept", sock_accept)
+    manager.start()
+    wait_until_listening(manager)
+    wait_until(lambda: accepts)
+
+    ours, theirs = socket.socketpair()
+    real_is_alive = manager.is_alive
+    landed: list[bool] = []
+
+    def is_alive_after_landing_the_accept() -> bool:
+        landed.append(True)
+        manager.loop.call_soon_threadsafe(
+            accepts[0].set_result, (ours, ("127.0.0.1", 18444))
+        )
+        return real_is_alive()
+
+    monkeypatch.setattr(manager, "is_alive", is_alive_after_landing_the_accept)
+    try:
+        manager.stop()
+    finally:
+        theirs.close()
+    # exactly once, asserted rather than guarded against: `stop()` asks
+    # this one question, and `monkeypatch` has put the real one back
+    # before the fixture asks its own
+    assert landed == [True]
+    # a closed socket's own fileno is -1; still >= 0 is still open
+    assert ours.fileno() == -1
+
+
 def test_server_closes_a_connection_accepted_in_the_instant_it_is_cancelled(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
