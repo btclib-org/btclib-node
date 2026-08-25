@@ -29,6 +29,23 @@ to check the guess.
   which `coverage` resolves through the installed package wherever it
   sits.
 
+### `stop()` gives `accept` a step before cancelling it, closing issue #353
+
+- **`stop()` runs the loop one step before gathering the tasks it is
+  about to cancel** (closes #353): `server()`'s own `accept` is a task
+  of its own, reached by `stop()`'s blanket sweep directly and not only
+  through `server`'s task cascading a cancel onto it. `Task.cancel` on a
+  task whose own awaited future is already resolved still forces
+  `CancelledError` into it on the next step, discarding a socket the
+  kernel had already handed over with nothing left to close it —
+  `server`'s own except arm already guards this for a cancel arriving
+  through its shield (#312), and could not guard a cancel that reaches
+  `accept` directly, which is what `stop()`'s own sweep did on every
+  pass. One `run_until_complete(asyncio.sleep(0))` before the sweep, run
+  only where there is a task to give it to, lets `accept` return
+  normally into `create_connection` instead — a task the same loop
+  already knows how to close, on its next pass.
+
 ### `CHANGELOG.md`'s lint derogation is gone, and `codespell` now fixes
 
 - **The two-comment directive disabling MD022 and MD032 at this file's
