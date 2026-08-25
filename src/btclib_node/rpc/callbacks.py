@@ -236,7 +236,15 @@ def service_names(services: int) -> list[str]:
 
 def get_peer_info(node: Node, conn: Connection, _: list[Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
-    for connection_id, p2p_conn in node.p2p_manager.connections.items():
+    # `.copy()`, not the live dict: this runs on `Node`'s own loop,
+    # under `handle_rpc`, while `P2pManager.remove_connection` pops
+    # from this same dict on the manager's own loop, off
+    # `_prune_stale_connections`, every pass of `manage_connections` --
+    # a pop mid-iteration here is `RuntimeError: dictionary changed
+    # size during iteration`, the same failure mode every other
+    # iteration of `connections` in the tree already snapshots against.
+    # btclib-org/btclib-node#356
+    for connection_id, p2p_conn in node.p2p_manager.connections.copy().items():
         if p2p_conn.status == P2pConnStatus.Connected:
             try:
                 addr = p2p_conn.client.getpeername()

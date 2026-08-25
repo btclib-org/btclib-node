@@ -14,7 +14,7 @@ the mempool refuses.
 import time
 from dataclasses import replace
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, NoReturn, cast
+from typing import TYPE_CHECKING, Any, NoReturn, cast, override
 
 import pytest
 from btclib.exceptions import BTClibValueError
@@ -214,6 +214,46 @@ def test_a_peer_that_goes_away_mid_lookup_is_skipped() -> None:
     node = a_node({7: a_peer(gone=True), 8: a_peer()})
     (info,) = get_peer_info(node, _CONN, [])
     assert info["id"] == 8
+
+
+def test_a_connection_removed_mid_loop_does_not_raise() -> None:
+    """#356: `get_peer_info` reads `connections.copy()`, so a connection
+    `remove_connection` pops mid-loop -- it runs on `P2pManager`'s own
+    loop, this on `Node`'s, every pass of `manage_connections` -- does
+    not raise `RuntimeError: dictionary changed size during iteration`
+    out of a live dict's iterator noticing the pop instead.
+    """
+    connections: dict[int, Any] = {}
+
+    class PoppingOnCompare:
+        """`p2p_conn.status == P2pConnStatus.Connected`'s own left side.
+
+        Standing in for whatever this node's loop is doing when
+        `remove_connection` reaches in: the pop happens as a side
+        effect of evaluating peer 7's status, between the iterator's
+        own `next()` for peer 7 and its `next()` for peer 8 -- mid-loop
+        on a live dict, and not reachable at all once the fix's
+        `.copy()` hands the loop its own dict to iterate instead.
+        """
+
+        @override
+        def __eq__(self, other: object) -> bool:
+            connections.pop(8, None)
+            return False
+
+        # never put in a dict or a set, only compared -- explicit
+        # rather than the implicit None a bare `__eq__` override
+        # already gets, which the object being unhashable does not
+        # itself demonstrate
+        __hash__ = None  # type: ignore[assignment]
+
+    connections[7] = a_peer(status=cast("P2pConnStatus", PoppingOnCompare()))
+    connections[8] = a_peer()
+    node = a_node(connections)
+    # peer 8 is popped from the live `connections` above, not from the
+    # copy this call iterates -- so the copy still answers for it,
+    # unaffected by a pop reaching the dict it was taken from
+    assert [info["id"] for info in get_peer_info(node, _CONN, [])] == [8]
 
 
 def test_the_connection_count_is_every_connection() -> None:
