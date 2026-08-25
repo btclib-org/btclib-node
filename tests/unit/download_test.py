@@ -90,7 +90,7 @@ def make_manager(
     warm_worker_pool: Any = None,
     min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
 ) -> DownloadManager:
-    """Build a `DownloadManager` over a fake node holding the given connections."""
+    """Build a `DownloadManager` over a fake node with the given connections."""
     node = SimpleNamespace(
         status=status,
         p2p_manager=SimpleNamespace(connections={conn.id: conn for conn in conns}),
@@ -206,7 +206,7 @@ def test_a_single_transaction_is_announced_rather_than_held_back() -> None:
 
 
 def test_a_peer_that_already_has_all_of_them_is_told_nothing() -> None:
-    """A peer that sent every received wtxid gets no `inv` at all, not an empty one."""
+    """A peer that sent every wtxid gets no `inv`, not an empty one."""
     # and not told with an empty inv, which is a message with nothing in
     # it for the peer to do
     sender = a_conn(1)
@@ -217,7 +217,7 @@ def test_a_peer_that_already_has_all_of_them_is_told_nothing() -> None:
 
 
 def test_a_peer_that_asked_for_no_transactions_is_sent_none() -> None:
-    """A peer with `relay_tx` false gets no `Inv`, unlike a peer that wants some."""
+    """A peer with `relay_tx` false gets no `Inv`, unlike one that wants it."""
     # BIP37's fRelay, which the version callback puts on the connection:
     # a peer that declined is not sent a shorter inv, it is not sent one
     # at all. With a peer that did ask, so the assertion is about the
@@ -233,7 +233,7 @@ def test_a_peer_that_asked_for_no_transactions_is_sent_none() -> None:
 
 
 def test_a_peer_that_declined_relay_is_still_answered_about_what_it_wants() -> None:
-    """`relay_tx` false only withholds unsolicited sends, not answers to `inv`."""
+    """`relay_tx` false withholds unsolicited sends, not answers to `inv`."""
     # declining transactions is about what it is sent unasked; a peer
     # that announced one is still asked for it
     declined = a_conn(1, relay_tx=False)
@@ -245,7 +245,7 @@ def test_a_peer_that_declined_relay_is_still_answered_about_what_it_wants() -> N
 
 
 def test_a_transaction_is_announced_to_the_peers_that_do_not_have_it() -> None:
-    """Only the peer that neither sent nor announced a wtxid is told about it."""
+    """Only the peer that neither sent nor announced a wtxid is told of it."""
     sender, announcer, other = a_conn(1), a_conn(2), a_conn(3)
     manager = make_manager([sender, announcer, other])
     received = [a_hash(n) for n in range(1, 7)]
@@ -275,7 +275,7 @@ def test_a_peer_s_feefilter_withholds_a_transaction_below_its_rate() -> None:
 
 
 def test_a_peer_s_feefilter_still_announces_a_transaction_at_its_rate() -> None:
-    """A transaction paying exactly a peer's `feefilter` is still queued to it."""
+    """A transaction exactly at a peer's `feefilter` is still queued to it."""
     sender, wants = a_conn(1), a_conn(2, feefilter=1000)
     mempool = Mempool(Logger(debug=True))
     tx = generate_random_transaction()
@@ -303,7 +303,7 @@ def test_a_wtxid_the_mempool_does_not_hold_is_never_announced() -> None:
 
 
 def test_a_peer_still_wanting_something_else_is_asked_for_it() -> None:
-    """A wtxid this node received drops from `GetData`, another still goes out."""
+    """A received wtxid drops from `GetData`; another is still asked for."""
     sender, wanter = a_conn(1), a_conn(2)
     manager = make_manager([sender, wanter])
     manager.received_txs = [(1, a_hash(1))]
@@ -315,7 +315,7 @@ def test_a_peer_still_wanting_something_else_is_asked_for_it() -> None:
 
 
 def test_a_queue_past_max_inv_sz_is_sent_as_several_invs() -> None:
-    """A queue one over `MAX_INV_SZ` is sent as a full `Inv` plus a one-item one."""
+    """A queue one over `MAX_INV_SZ` is sent as a full `Inv` plus one more."""
     # Inv.assert_valid (btclib.p2p.inventory) refuses more than
     # MAX_INV_SZ entries in one message. btclib-org/btclib-node#282
     other = a_conn(1)
@@ -359,7 +359,7 @@ def test_a_queued_announcement_evicted_before_its_own_schedule_is_not_sent() -> 
 
 
 def test_a_queue_left_with_nothing_still_held_sends_no_inv() -> None:
-    """A queue whose only entry was evicted sends no `Inv`, only clears itself."""
+    """A queue whose only entry was evicted sends no `Inv`, only clears."""
     other = a_conn(1)
     manager = make_manager([other])
     other.tx_announce_queue = [a_hash(1)]
@@ -409,7 +409,7 @@ def test_a_wtxid_already_queued_for_a_peer_is_not_queued_twice() -> None:
 
 
 def test_a_queued_announcement_is_sent_once_its_own_schedule_is_due() -> None:
-    """A queued wtxid is sent once its peer's own `next_inv_send_time` passes."""
+    """A queued wtxid is sent once the peer's `next_inv_send_time` passes."""
     other = a_conn(1)
     manager = make_manager([other])
     hold(manager, a_hash(1), a_hash(2))
@@ -502,7 +502,7 @@ def test_a_transaction_this_node_originated_is_announced_like_any_other() -> Non
 
 
 def test_an_outstanding_ask_is_not_repeated_before_it_is_answered() -> None:
-    """A second `inv` for a wtxid already asked for draws no second `GetData`."""
+    """A second `inv` for an already-asked wtxid draws no second `GetData`."""
     conn = a_conn(1)
     manager = make_manager([conn])
     manager.inv_txs = [(1, a_hash(1))]
@@ -513,7 +513,7 @@ def test_an_outstanding_ask_is_not_repeated_before_it_is_answered() -> None:
 
 
 def test_a_notfound_response_frees_the_wtxid_to_be_asked_for_again() -> None:
-    """Clearing `tx_requested` (as a `notfound` would) lets the wtxid be re-asked."""
+    """Clearing `tx_requested`, as a `notfound` would, lets a re-ask happen."""
     conn = a_conn(1)
     manager = make_manager([conn])
     manager.inv_txs = [(1, a_hash(1))]
@@ -536,7 +536,7 @@ def test_an_ask_still_within_the_timeout_is_not_repeated() -> None:
 
 
 def test_an_ask_a_peer_never_answered_is_asked_again_once_it_expires() -> None:
-    """Past `_TX_REQUEST_TIMEOUT`, an unanswered ask is re-sent, not stuck forever."""
+    """Past `_TX_REQUEST_TIMEOUT`, an unanswered ask is re-sent, not stuck."""
     # a peer that neither sends the transaction nor answers `notfound`
     # otherwise blocks every future request to it for this wtxid,
     # permanently: btclib-org/btclib-node#289
@@ -560,7 +560,7 @@ def test_an_expired_asks_entry_is_dropped_even_when_nothing_is_re_announced() ->
 
 
 def test_receiving_a_transaction_frees_every_peers_outstanding_ask_for_it() -> None:
-    """A wtxid arriving clears `tx_requested` even for a peer that never sent it."""
+    """Receiving a wtxid clears `tx_requested` for a peer that never asked."""
     asked = a_conn(1)
     asked.tx_requested[a_hash(1)] = time.time()
     manager = make_manager([asked])
@@ -588,7 +588,7 @@ def test_the_fee_filter_bucket_set_starts_at_zero_and_half_the_floor() -> None:
 
 
 def test_the_fee_filter_bucket_set_never_drops_below_one_sat_per_kvb() -> None:
-    """A configured floor of 0 or 1 still gets a real, non-zero second bucket."""
+    """A floor of 0 or 1 still gets a real, non-zero second bucket."""
     # Core's own MakeFeeSet: max(CAmount(1), min_incremental_fee/2) --
     # a floor configured at 1 or 0 still gets a real second bucket
     buckets = download_module._fee_filter_buckets(1)
@@ -596,7 +596,7 @@ def test_the_fee_filter_bucket_set_never_drops_below_one_sat_per_kvb() -> None:
 
 
 def test_the_fee_filter_bucket_set_is_sorted_and_caps_near_the_ceiling() -> None:
-    """The bucket set is sorted and its top sits just under `_MAX_FILTER_FEERATE`."""
+    """The bucket set is sorted, its top just under `_MAX_FILTER_FEERATE`."""
     buckets = download_module._fee_filter_buckets(100)
     assert buckets == sorted(buckets)
     assert buckets[-1] <= download_module._MAX_FILTER_FEERATE
@@ -622,7 +622,7 @@ def test_rounding_above_the_last_bucket_always_gives_the_top_one() -> None:
 def test_rounding_truncates_the_selected_boundary_rather_than_the_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A non-integer boundary is truncated only once `_round_fee_filter` picks it."""
+    """A non-integer boundary truncates only once it is picked."""
     # Core's own MakeFeeSet keeps every boundary as a raw double and
     # truncates only the value FeeFilterRounder::round finally selects
     # (static_cast<CAmount>) -- so a boundary this set built that is not
@@ -640,7 +640,7 @@ def test_rounding_truncates_the_selected_boundary_rather_than_the_set(
 def test_rounding_at_a_bucket_boundary_can_go_either_way(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A rate landing exactly on a bucket can still round down, by the coin flip."""
+    """A rate exactly on a bucket can still round down, by the coin flip."""
     # FeeFilterRounder::round: a 2-in-3 draw rounds down to the bucket
     # below even when the rate lands exactly on one, so this node's own
     # rolling minimum is not readable exactly from what it tells a peer
@@ -663,7 +663,7 @@ def test_a_connection_still_mid_handshake_is_sent_no_feefilter() -> None:
 
 
 def test_a_fresh_connections_first_feefilter_is_sent_immediately() -> None:
-    """A never-scheduled connection is sent its `feefilter` on the first pass."""
+    """A never-scheduled connection is sent `feefilter` on the first pass."""
     # next_feefilter_send_time defaults to 0.0, "never scheduled", the
     # same convention next_inv_send_time already uses
     conn = a_conn(1)
@@ -684,7 +684,7 @@ def test_a_connection_not_yet_due_is_sent_nothing_again() -> None:
 
 
 def test_an_unchanged_rate_is_not_resent_once_its_own_schedule_comes_due() -> None:
-    """A rate unchanged since last sent is not resent, but its timer still moves."""
+    """An unchanged rate is not resent, but its own timer still moves on."""
     conn = a_conn(1, feefilter_sent=100, next_feefilter_send_time=0.0)
     manager = make_manager([conn], min_relay_feerate=FeeRate(sats_per_kvbyte=100))
     manager._send_due_feefilters()
@@ -694,7 +694,7 @@ def test_an_unchanged_rate_is_not_resent_once_its_own_schedule_comes_due() -> No
 
 
 def test_the_floor_is_never_undercut_even_by_an_empty_mempools_own_zero() -> None:
-    """The rolling minimum's own zero never sends a filter below the configured floor."""
+    """The rolling minimum's zero never sends a filter below the floor."""
     conn = a_conn(1)
     manager = make_manager([conn], min_relay_feerate=FeeRate(sats_per_kvbyte=500))
     manager._send_due_feefilters()
@@ -712,7 +712,7 @@ def test_ibd_sends_every_connected_peer_the_top_bucket() -> None:
 
 
 def test_leaving_ibd_forces_an_immediate_resend_off_the_top_bucket() -> None:
-    """Leaving sync forces an immediate resend, off the stale top-bucket filter."""
+    """Leaving sync forces an immediate resend, off the stale top bucket."""
     conn = a_conn(1)
     manager = make_manager([conn], status=NodeStatus.SyncingHeaders)
     manager._send_due_feefilters()
@@ -729,7 +729,7 @@ def test_leaving_ibd_forces_an_immediate_resend_off_the_top_bucket() -> None:
 def test_a_large_enough_move_pulls_the_next_send_forward(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A rate risen by more than a third pulls the resend forward, unsent yet."""
+    """A rate risen by over a third pulls the resend forward, unsent yet."""
     # currentFilter > 4 * peer.m_fee_filter_sent / 3: a rate that has
     # risen by more than a third is not left on the peer's own several-
     # minutes-average schedule
@@ -763,7 +763,7 @@ def test_a_small_move_does_not_pull_the_next_send_forward() -> None:
 
 
 def test_a_move_close_to_its_own_schedule_already_is_not_pulled_forward() -> None:
-    """A schedule already due soon is left alone, whatever the rate has moved."""
+    """A schedule already due soon is left alone, however far the rate moved."""
     mempool = Mempool(Logger(debug=True))
     mempool._rolling_min_fee_rate = 1000.0
     mempool._block_since_last_rolling_fee_bump = True
@@ -847,6 +847,7 @@ def test_asking_for_a_block_warms_the_worker_pool() -> None:
 
 
 def test_a_header_only_node_with_nothing_to_download_never_warms_the_pool() -> None:
+    """A node with no download candidate at all never builds the worker pool."""
     warmed = []
     conn = a_conn(1)
     manager = make_manager(
@@ -860,6 +861,7 @@ def test_a_header_only_node_with_nothing_to_download_never_warms_the_pool() -> N
 
 
 def test_a_node_with_no_peer_to_ask_never_warms_the_pool() -> None:
+    """Candidates with no connection to ask never trigger `warm_worker_pool`."""
     warmed = []
     manager = make_manager(
         [],
@@ -871,6 +873,7 @@ def test_a_node_with_no_peer_to_ask_never_warms_the_pool() -> None:
 
 
 def test_a_block_that_arrived_while_the_window_was_held_is_not_asked_for() -> None:
+    """A block downloaded since the window was built is filtered from it."""
     # get_download_candidates never offers a block already stored, so
     # the filter below it is about the window this manager is holding
     # from an earlier pass, across which a block can have arrived
@@ -886,6 +889,7 @@ def test_a_block_that_arrived_while_the_window_was_held_is_not_asked_for() -> No
 
 
 def test_nothing_left_to_download_asks_for_nothing() -> None:
+    """Once its only candidate downloads, the window empties, asking nothing."""
     conn = a_conn(1)
     manager = make_manager(
         [conn], block_index=FakeBlockIndex([a_hash(1)], downloaded=[a_hash(1)])
@@ -897,6 +901,7 @@ def test_nothing_left_to_download_asks_for_nothing() -> None:
 
 
 def test_a_download_too_far_ahead_of_the_chain_waits() -> None:
+    """Past `MAX_DOWNLOAD_WINDOW` ahead of the chain, no request is sent."""
     # the window is filled from the headers, which run far ahead of the
     # blocks; fetching all of them at once is what the bound is for
     conn = a_conn(1)
@@ -908,6 +913,7 @@ def test_a_download_too_far_ahead_of_the_chain_waits() -> None:
 
 
 def test_a_peer_that_is_already_busy_is_not_asked_again() -> None:
+    """A peer with a non-empty queue is left alone, given no more work."""
     busy = a_conn(1, queue=[a_hash(1)])
     manager = make_manager([busy], block_index=FakeBlockIndex([a_hash(1), a_hash(2)]))
     manager.block_download()
@@ -916,6 +922,7 @@ def test_a_peer_that_is_already_busy_is_not_asked_again() -> None:
 
 
 def test_a_block_that_arrived_leaves_the_queue_it_was_asked_in() -> None:
+    """A downloaded block leaves the queue of the peer it was asked of."""
     conn = a_conn(1, queue=[a_hash(1)])
     manager = make_manager(
         [conn],
@@ -926,6 +933,7 @@ def test_a_block_that_arrived_leaves_the_queue_it_was_asked_in() -> None:
 
 
 def test_a_peer_that_stopped_sending_blocks_is_marked_and_then_dropped() -> None:
+    """A quiet peer is marked for eviction, then dropped past a harder bound."""
     # only while still syncing blocks: a peer with nothing to send is not
     # a peer that has stalled
     quiet = a_conn(1, last_block=time.time() - 200)
@@ -943,6 +951,7 @@ def test_a_peer_that_stopped_sending_blocks_is_marked_and_then_dropped() -> None
 
 
 def test_a_block_only_one_peer_was_asked_for_is_asked_of_a_second() -> None:
+    """An idle peer is given a block another peer already carries too."""
     # nothing left in the window that nobody is fetching, and a peer
     # sitting idle: it is given what somebody else is already carrying,
     # which is how a block a peer never sends stops holding the chain up
@@ -959,6 +968,7 @@ def test_a_block_only_one_peer_was_asked_for_is_asked_of_a_second() -> None:
 
 
 def test_a_stalled_peers_own_blocks_are_not_handed_straight_back_to_it() -> None:
+    """A stalled peer's emptied queue goes to a healthy peer, not back to it."""
     # the queue emptied for stalling past the 120s mark is not read as
     # "ready for more work": the blocks it was holding go to the healthy
     # peer instead, and the stalled one is asked for nothing at all
@@ -977,6 +987,7 @@ def test_a_stalled_peers_own_blocks_are_not_handed_straight_back_to_it() -> None
 
 
 def test_a_peer_that_is_already_pending_eviction_is_left_alone() -> None:
+    """A peer already marked `pending_eviction` keeps its queue, asked none."""
     quiet = a_conn(1, last_block=time.time() - 200, queue=[a_hash(1)])
     quiet.pending_eviction = True
     manager = make_manager(
@@ -992,6 +1003,7 @@ def test_a_peer_that_is_already_pending_eviction_is_left_alone() -> None:
 
 
 def test_an_idle_peer_is_asked_for_nothing_once_every_block_has_three_takers() -> None:
+    """A fourth, idle peer is asked nothing once every block has 3 takers."""
     # three peers already hold the window's one block between them, which
     # is what Counter's `x[1] < 3` reads as fully requested: the fourth,
     # idle peer's own turn in the loop finds neither `waiting` nor
