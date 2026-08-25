@@ -39,6 +39,7 @@ if TYPE_CHECKING:
 
 
 def a_node(tmp_path: Path) -> Node:
+    """Return a regtest `Node`, neither p2p nor RPC enabled, never started."""
     return Node(
         config=Config(
             chain="regtest",
@@ -54,6 +55,7 @@ class AManager:
     """What `Node.run` asks of a manager, and nothing else."""
 
     def __init__(self) -> None:
+        """Build empty queues and connections, started/stopped both false."""
         # a stand-in for both P2pManager and RpcManager, whose queues
         # carry different shapes -- (command, payload, id) for one,
         # (batch, id) for the other -- so this is Any rather than either
@@ -68,15 +70,17 @@ class AManager:
         self.peer_db = SimpleNamespace(close=lambda: None)
 
     def start(self) -> None:
+        """Record that `run`'s own start branch reached this stand-in."""
         self.started = True
 
     def stop(self) -> None:
+        """Record that `run`'s own teardown reached this stand-in."""
         self.stopped = True
 
 
 @pytest.fixture
 def a_networked_node(tmp_path: Path) -> Iterator[Node]:
-    """A node whose ports are set and whose managers are stand-ins.
+    """Give a node whose ports are set and whose managers are stand-ins.
 
     The ports are what `run` reads to decide whether to start a manager;
     nothing binds them, because the managers built from them are thrown
@@ -113,6 +117,7 @@ def a_networked_node(tmp_path: Path) -> Iterator[Node]:
 
 
 def test_init(tmp_path: Path) -> None:
+    """A node built, started and stopped raises nothing."""
     node = a_node(tmp_path)
     node.start()
     node.stop()
@@ -121,6 +126,7 @@ def test_init(tmp_path: Path) -> None:
 def test_a_config_omitted_is_constructed_rather_than_shared(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """`Node()` with no config gets a fresh `Config()`, field for field."""
     # `Node`'s own `config` used to default to `Config()`, built once at
     # `def`-time and handed to every caller that left it out (B008) --
     # nothing here relied on that sharing, so `None` plus a construction
@@ -148,6 +154,7 @@ def test_a_config_omitted_is_constructed_rather_than_shared(
 
 
 def test_stop_does_not_return_until_the_node_has_stopped(tmp_path: Path) -> None:
+    """`stop` returns only once the loop exits and every database closes."""
     # what this pins is not a failure but a hang: a caller that goes on
     # while the node is still running leaves a thread logging into a
     # harness that has moved on, and, when the loop cannot come back at
@@ -165,6 +172,7 @@ def test_stop_does_not_return_until_the_node_has_stopped(tmp_path: Path) -> None
 
 
 def test_stopping_a_node_that_never_started_is_not_an_error(tmp_path: Path) -> None:
+    """`stop` on a node that was never `start()`ed raises nothing."""
     # __init__ registers the signal handlers, so a node can be asked to
     # stop before it is running and there is nothing to wait for. `stop`
     # itself has nothing to close: `run`'s teardown is what closes the
@@ -178,6 +186,7 @@ def test_stopping_a_node_that_never_started_is_not_an_error(tmp_path: Path) -> N
 def test_the_node_asking_itself_to_stop_does_not_wait_for_itself(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """`stop` on the node's own thread signals and returns without joining."""
     # the `stop` RPC is handled inside the loop it stops, so the caller
     # there is the node's own thread, and a thread that joins itself
     # raises instead of waiting
@@ -197,6 +206,7 @@ def test_the_node_asking_itself_to_stop_does_not_wait_for_itself(
 def test_a_signal_asks_the_node_to_stop(
     tmp_path: Path, signal_number: signal.Signals
 ) -> None:
+    """`SIGTERM`/`SIGINT` both reach a handler that stops the node."""
     # both are registered on the process, and stopping is what they are
     # for: a node killed without it leaves its databases open
     node = a_node(tmp_path)
@@ -215,6 +225,8 @@ def test_a_signal_asks_the_node_to_stop(
 def test_a_step_that_raises_brings_the_node_down_rather_than_spinning(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A `update_chain` that raises stops the loop and closes both databases."""
+
     # the loop cannot recover from a chainstate it could not advance, so
     # it stops -- and stopping means closing the databases, which is
     # what makes this different from an exception escaping run()
@@ -241,7 +253,7 @@ WEDGE_LIMIT = 30
 
 @contextmanager
 def a_wedged_node(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Node]:
-    """A started node whose loop will not come back, and lets go anyway."""
+    """Start a node whose loop will not come back, and let go anyway."""
     wedged = threading.Event()
     released = threading.Event()
 
@@ -269,6 +281,7 @@ def a_wedged_node(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[N
 def test_the_bound_is_under_the_limit_that_would_otherwise_expire_first(
     pytestconfig: pytest.Config,
 ) -> None:
+    """`STOP_TIMEOUT` is well under `pytest-timeout`'s own per-test limit."""
     # the claim the constant's comment makes, asserted rather than
     # written: a node that will not stop has to be reported by name,
     # and it is only reported at all if this wait ends before the
@@ -309,6 +322,7 @@ def test_a_node_that_will_not_stop_is_reported_rather_than_waited_for(
 def test_the_node_that_will_not_stop_is_named(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """`NodeShutdownTimeoutError` names the wedged node's own data dir."""
     # several nodes are running in any functional test, and a message
     # that does not say which one leaves the reader to guess
     with (
@@ -321,6 +335,7 @@ def test_the_node_that_will_not_stop_is_named(
 def test_a_port_configured_is_a_manager_started_and_stopped(
     tmp_path: Path, a_networked_node: Node
 ) -> None:
+    """`run` starts and stops only the manager whose port was set."""
     # the ports decide it: a node given neither starts neither, which is
     # every other node in this file
     node = a_networked_node
@@ -347,6 +362,7 @@ def test_a_port_configured_is_a_manager_started_and_stopped(
 def test_every_message_waiting_is_taken_before_the_loop_waits(
     a_networked_node: Node,
 ) -> None:
+    """`run` drains all three queues in one pass, not a sleep between them."""
     # all three queues, drained in one pass: what each handler does with
     # a message it can deliver is tests/unit/p2p/main.py's and
     # tests/unit/rpc/main.py's. These are addressed to connections that
@@ -373,6 +389,7 @@ def test_every_message_waiting_is_taken_before_the_loop_waits(
 def test_a_message_the_handlers_did_not_expect_does_not_end_the_loop(
     a_networked_node: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A queued entry of the wrong shape is logged; the loop keeps answering."""
     # #97's line. This test's own trigger used to be a method that is
     # not a string: `request["method"] not in callbacks` raised
     # TypeError: unhashable, outside handle_rpc's own try. #63 makes
@@ -407,18 +424,22 @@ class APool:
     """A worker pool that costs nothing to build, and says it was."""
 
     def __init__(self, built: list[Any], processes: int) -> None:
+        """Record `processes` into `built`, this stand-in's own report list."""
         self.built = built
         built.append(processes)
 
     def terminate(self) -> None:
+        """Record that `_close_worker_pool` called `terminate` before `join`."""
         self.built.append("terminated")
 
     def join(self) -> None:
+        """Record that `_close_worker_pool` called `join` after `terminate`."""
         self.built.append("joined")
 
 
 @pytest.fixture
 def pools(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    """Patch `btclib_node.Pool` to `APool`; return the list it reports to."""
     built: list[Any] = []
     monkeypatch.setattr(btclib_node, "Pool", lambda processes: APool(built, processes))
     return built
@@ -427,6 +448,7 @@ def pools(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
 def test_the_worker_pool_is_built_on_first_use_and_only_once(
     tmp_path: Path, pools: list[Any]
 ) -> None:
+    """`node.worker_pool` builds nothing until read, then the same pool."""
     # a pool is interpreters, spawned rather than forked wherever that
     # is the default, and most of the nodes this suite builds never
     # validate a script
@@ -440,6 +462,7 @@ def test_the_worker_pool_is_built_on_first_use_and_only_once(
 def test_a_node_that_used_the_pool_takes_it_down_with_it(
     tmp_path: Path, pools: list[Any]
 ) -> None:
+    """`run`'s teardown terminates and joins a built pool, then drops it."""
     # terminate() alone leaves the pool referenced by a Node that a
     # test can go on holding well past its own worker processes exiting
     # (btclib-org/btclib-node#195): join() has to follow it, and the
@@ -455,6 +478,7 @@ def test_a_node_that_used_the_pool_takes_it_down_with_it(
 def test_a_node_that_never_used_the_pool_does_not_build_one_to_stop_it(
     tmp_path: Path, pools: list[Any]
 ) -> None:
+    """A node that never reads `worker_pool` builds no pool over its life."""
     node = a_node(tmp_path)
     node.start()
     node.stop()
@@ -464,6 +488,7 @@ def test_a_node_that_never_used_the_pool_does_not_build_one_to_stop_it(
 def test_del_closes_a_worker_pool_on_a_node_that_was_never_started(
     tmp_path: Path, pools: list[Any]
 ) -> None:
+    """`__del__` terminates and joins a pool `run`'s teardown never reached."""
     # tests/unit/main_test.py calls update_chain directly against a
     # Node built and never start()ed, which is the shape this guards:
     # run()'s own teardown never runs for one, so nothing but __del__
@@ -486,6 +511,7 @@ def test_del_closes_a_worker_pool_on_a_node_that_was_never_started(
 def test_del_on_a_node_that_never_built_a_pool_does_nothing(
     tmp_path: Path, pools: list[Any]
 ) -> None:
+    """`__del__` on a node that never read `worker_pool` closes nothing."""
     with unstarted_node_context(tmp_path) as node:
         node.__del__()
 
@@ -496,18 +522,21 @@ class ARecordingPool(APool):
     """A worker pool that also remembers what it was asked to run."""
 
     def __init__(self, built: list[Any], processes: int) -> None:
+        """Build like `APool`, and start `calls` empty."""
         super().__init__(built, processes)
         self.calls: list[tuple[Any, list[Any]]] = []
 
     def starmap(
         self, fn: Callable[..., object], args: Iterable[Iterable[object]]
     ) -> None:
+        """Record `fn` and the whole of `args`, without calling `fn` at all."""
         self.calls.append((fn, list(args)))
 
 
 def test_warm_worker_pool_builds_it_and_warms_it_off_the_calling_thread(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """`warm_worker_pool` builds the pool and dispatches `warm` many times."""
     built: list[Any] = []
     instances: list[ARecordingPool] = []
 
@@ -534,6 +563,7 @@ def test_warm_worker_pool_builds_it_and_warms_it_off_the_calling_thread(
 def test_a_second_call_to_warm_worker_pool_does_not_start_a_second_thread(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A second `warm_worker_pool` call is a no-op once the pool is built."""
     # download_manager.block_download calls this once per dispatched
     # batch of blocks, not once per node, so the guard the call site
     # used to get for free from headers()'s own status transition now
@@ -557,6 +587,7 @@ def test_a_second_call_to_warm_worker_pool_does_not_start_a_second_thread(
 def test_stopping_the_node_waits_for_an_in_flight_warmup_before_the_pool_comes_down(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """`run`'s teardown joins the warm-up before the pool terminates."""
     # a warm-up still building or warming the pool when the loop stops
     # races the `is not None` check `run`'s teardown does before
     # `terminate` -- the pool it eventually builds would never be
@@ -598,6 +629,7 @@ def test_stopping_the_node_waits_for_an_in_flight_warmup_before_the_pool_comes_d
 def test_worker_processes_defaults_to_eight_outside_of_xdist(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """With no `PYTEST_XDIST_WORKER_COUNT`, worker processes default to 8."""
     monkeypatch.delenv("PYTEST_XDIST_WORKER_COUNT", raising=False)
     assert btclib_node._default_worker_processes() == 8
 
@@ -605,6 +637,7 @@ def test_worker_processes_defaults_to_eight_outside_of_xdist(
 def test_worker_processes_is_the_machine_split_across_xdist_workers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Under xdist, worker processes divide the core count across workers."""
     # ten cores split six ways is one process short of two each: what
     # matters is that the total the run spawns tracks the core count
     # rather than staying flat at eight regardless of it
@@ -617,6 +650,7 @@ def test_worker_processes_is_the_machine_split_across_xdist_workers(
 def test_worker_processes_under_xdist_never_goes_below_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """More xdist workers than cores still floors at one process."""
     # more xdist workers than cores still has to build a pool at all:
     # `Pool(processes=0)` raises
     monkeypatch.setattr(os, "cpu_count", lambda: 4)
@@ -627,6 +661,7 @@ def test_worker_processes_under_xdist_never_goes_below_one(
 def test_worker_processes_falls_back_to_eight_split_if_the_core_count_is_unknown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A `None` `os.cpu_count()` falls back to eight, split across xdist."""
     # `os.cpu_count()` is documented to return `None` where it cannot
     # tell
     monkeypatch.setattr(os, "cpu_count", lambda: None)

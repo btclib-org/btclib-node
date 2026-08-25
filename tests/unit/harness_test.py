@@ -18,6 +18,14 @@ if TYPE_CHECKING:
 
 
 def test_every_test_is_bounded(pytestconfig: pytest.Config) -> None:
+    """Confirm `pytest-timeout` is loaded and `timeout` is a positive bound.
+
+    Neither is enforced by this suite failing loudly if it is dropped:
+    a run missing the plugin, or carrying a `timeout` of `0`, still
+    passes every test that itself passes, and only shows the gap the
+    day a hung test sits until CI's own job-level limit kills it,
+    naming no test. This is what would have caught either loss.
+    """
     # the value is measured and reasoned about where it is set,
     # pyproject.toml; what matters here is that a bound exists at all,
     # which it does not if the plugin is dropped from the dependency

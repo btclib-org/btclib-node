@@ -46,6 +46,7 @@ if TYPE_CHECKING:
 
 
 def spend(script_sig: bytes, value: int = 49 * 10**8) -> Tx:
+    """Return a one-input, one-output transaction spending `prevout`."""
     return Tx(
         version=1,
         lock_time=0,
@@ -61,6 +62,7 @@ def spend(script_sig: bytes, value: int = 49 * 10**8) -> Tx:
 
 
 def prevout(script_pub_key: bytes | None = None, value: int = 50 * 10**8) -> TxOut:
+    """Return the prevout `spend`'s default transaction is built to spend."""
     return TxOut(
         value=value,
         script_pub_key=script_pub_key or script.serialize([b"\x33" * 32]),
@@ -68,15 +70,18 @@ def prevout(script_pub_key: bytes | None = None, value: int = 50 * 10**8) -> TxO
 
 
 def _precomputed_for(prevouts: list[TxOut], tx: Tx) -> sig_hash.PrecomputedTxData:
+    """Return the `PrecomputedTxData` `f` needs, for `tx` and `prevouts`."""
     return sig_hash.PrecomputedTxData(tx, prevouts)
 
 
 def test_an_input_that_verifies_returns_quietly() -> None:
+    """`f` returns `None` and raises nothing for an input that verifies."""
     prevouts, tx = [prevout()], spend(script.serialize([b"\x11" * 32]))
     f(prevouts, tx, 0, (), _precomputed_for(prevouts, tx))
 
 
 def test_an_input_that_does_not_verify_raises() -> None:
+    """`f` raises `ScriptError` for an input that does not verify."""
     # the property update_chain rests on: this used to be written to
     # errors/ and swallowed, inside a worker pool, so the block was
     # connected anyway
@@ -86,6 +91,7 @@ def test_an_input_that_does_not_verify_raises() -> None:
 
 
 def test_warm_does_nothing() -> None:
+    """Calling `warm` directly raises nothing, imports included."""
     # dispatched through Pool.starmap in a worker process, so what
     # matters is only that a worker importing this module to run it
     # does not itself raise; called directly here for the same reason
@@ -94,6 +100,13 @@ def test_warm_does_nothing() -> None:
 
 
 def make_node() -> Any:
+    """Return a `Node` stand-in whose `worker_pool.starmap` runs in-process.
+
+    Running them synchronously rather than through a real `Pool` is
+    what lets `check_transactions`'s raise reach the caller directly,
+    and what lets `monkeypatch` see calls a real process pool would
+    hide inside a worker.
+    """
     return SimpleNamespace(
         config=SimpleNamespace(chain=RegTest()),
         worker_pool=SimpleNamespace(starmap=lambda fn, args: [fn(*a) for a in args]),
@@ -101,10 +114,12 @@ def make_node() -> Any:
 
 
 def test_nothing_to_check_is_not_an_error() -> None:
+    """An empty transaction list returns without touching the pool."""
     check_transactions([], 1, make_node())
 
 
 def test_a_prevout_count_that_does_not_match_the_inputs_is_refused() -> None:
+    """More inputs than prevouts raises `PrevoutCountMismatchError`."""
     # one input, no prevout for it: the caller built the pair wrong, and
     # verifying nothing would look like verifying everything
     with pytest.raises(ValueError, match="prevout count does not match input count"):
@@ -112,6 +127,7 @@ def test_a_prevout_count_that_does_not_match_the_inputs_is_refused() -> None:
 
 
 def test_a_transaction_that_prints_money_is_refused() -> None:
+    """An output worth more than its prevout raises before script checks run."""
     tx = spend(script.serialize([b"\x11" * 32]), value=51 * 10**8)
     with pytest.raises(BTClibValueError, match="Invalid transaction amounts"):
         check_transactions([([prevout()], tx)], 1, make_node())
@@ -203,6 +219,7 @@ _SPENDS = [
 def test_the_transaction_checked_is_left_as_it_was(
     build: Callable[[int], tuple[list[TxOut], Tx]], hash_type: int
 ) -> None:
+    """`check_transaction` leaves a signed transaction byte-identical."""
     # what the deepcopy here used to be for, and it was for a defect
     # btclib does not have: sig_hash builds the blanked transaction each
     # preimage commits to rather than editing the one it is handed.
@@ -216,6 +233,7 @@ def test_the_transaction_checked_is_left_as_it_was(
 
 
 def test_the_flags_are_the_forks_active_at_that_height() -> None:
+    """`get_flags` returns flags activated at or before the given height."""
     config = SimpleNamespace(
         chain=SimpleNamespace(flags=[(0, "P2SH"), (10, "WITNESS"), (20, "TAPROOT")])
     )
@@ -247,11 +265,13 @@ def _multi_input_p2wpkh_spend(n: int) -> tuple[list[TxOut], Tx]:
 
 
 def test_check_transactions_verifies_every_input_of_a_multi_input_transaction() -> None:
+    """`check_transactions` raises nothing when every input verifies."""
     prevouts, tx = _multi_input_p2wpkh_spend(3)
     check_transactions([(prevouts, tx)], 1, make_node())
 
 
 def test_check_transactions_still_raises_when_one_input_does_not_verify() -> None:
+    """One tampered signature among several inputs raises `ScriptError`."""
     # the same refusal the per-input dispatch gave: a bad input has to
     # reach main.update_chain whichever input in the transaction it is
     prevouts, tx = _multi_input_p2wpkh_spend(3)
@@ -297,6 +317,7 @@ def _count_transaction_wide_serializations(
 def test_a_positive_control_proves_the_counter_can_answer_non_zero(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Per-input `verify_input` with no `precomputed` re-serializes 3n times."""
     # the old per-input dispatch, reproduced directly: no precomputed, so
     # every one of the n inputs re-serializes the transaction on its own.
     # Built before the count starts, so building it -- which signs every
@@ -316,6 +337,7 @@ def test_a_positive_control_proves_the_counter_can_answer_non_zero(
 def test_check_transactions_builds_the_precomputed_data_once_per_transaction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """`check_transactions` re-serializes three times per tx, not per input."""
     # built before the count starts, for the same reason as the positive
     # control above: building signs every input, and that signing is not
     # what this measures

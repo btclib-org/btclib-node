@@ -2,6 +2,8 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""`update_chain`/`verify_mempool_acceptance`: connect, reorg, reject."""
+
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -39,6 +41,7 @@ if TYPE_CHECKING:
 
 @pytest.fixture
 def node(regtest_node: Callable[[], Node]) -> Node:
+    """Give one header-synced regtest node, built fresh for the test."""
     return regtest_node()
 
 
@@ -56,6 +59,7 @@ def connect(node: Node, chain: list[Block]) -> BlockIndex:
 
 
 def test_chain(node: Node) -> None:
+    """A chain of headers added in batches of at most 2000 all connect."""
     length = 2000 * 1  # 2000
     chain = generate_random_chain(length, RegTest().genesis.hash)
     headers = [block.header for block in chain]
@@ -72,6 +76,7 @@ def test_chain(node: Node) -> None:
 
 
 def spend(prevout_tx: Tx, value: int, script_sig: bytes | None = None) -> Tx:
+    """Return a transaction spending `prevout_tx`'s first output for `value`."""
     return Tx(
         version=1,
         lock_time=0,
@@ -91,6 +96,7 @@ def spend(prevout_tx: Tx, value: int, script_sig: bytes | None = None) -> Tx:
 
 
 def test_reject_block_that_prints_money(node: Node) -> None:
+    """A block whose output exceeds its input's value fails to connect."""
     # Script validation never reads the amounts except through the
     # sig_hash, so nothing in the engine notices an output larger than
     # the input it spends.
@@ -111,6 +117,7 @@ def test_reject_block_that_prints_money(node: Node) -> None:
 
 
 def test_reject_block_with_a_failing_script(node: Node) -> None:
+    """A block with an input that fails script validation fails to connect."""
     # An input that does not verify has to fail the block. It used to be
     # written to errors/ and swallowed, inside a worker pool, so nothing
     # reached update_chain and the block was connected anyway.
@@ -134,6 +141,7 @@ def test_reject_block_with_a_failing_script(node: Node) -> None:
 
 
 def test_add_tx(node: Node) -> None:
+    """`verify_mempool_acceptance` accepts a prevout from chain or mempool."""
     chain = generate_random_chain(10, RegTest().genesis.hash)
     headers = [block.header for block in chain]
     block_index = node.chainstate.block_index
@@ -166,6 +174,7 @@ def test_add_tx(node: Node) -> None:
 def test_a_candidate_whose_block_has_not_arrived_is_not_connected(
     node: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """`update_chain` declines a candidate without asking `block_db` a thing."""
     # headers run ahead of blocks for the whole of a sync, so the
     # commonest state of a candidate is one whose block is still being
     # fetched. It is declined before block_db is asked for anything:
@@ -186,6 +195,7 @@ def test_a_candidate_whose_block_has_not_arrived_is_not_connected(
 def test_a_hole_behind_a_downloaded_tip_does_not_block_a_complete_branch(
     node: Node,
 ) -> None:
+    """A complete branch connects while a separate, incomplete one is queued."""
     # get_first_candidate used to ask only whether a candidate's own tip
     # had arrived, so a branch missing a block *behind* its downloaded
     # tip still passed it -- and then update_chain found the hole and
@@ -212,6 +222,7 @@ def test_a_hole_behind_a_downloaded_tip_does_not_block_a_complete_branch(
 def test_update_chain_refuses_a_block_marked_downloaded_but_missing(
     node: Node,
 ) -> None:
+    """`update_chain` raises on a downloaded-but-missing block."""
     # the download manager and block_db agree by construction; this is
     # the state they would be in if they did not
     chain = generate_random_chain(1, RegTest().genesis.hash)
@@ -227,10 +238,12 @@ def test_update_chain_refuses_a_block_marked_downloaded_but_missing(
 
 
 def hashes(chain: list[Block]) -> list[bytes]:
+    """Return every block's own header hash, in the chain's own order."""
     return [block.header.hash for block in chain]
 
 
 def settle(node: Node) -> None:
+    """Drive `update_chain` until nothing outweighs the active chain further."""
     # get_first_candidate offers the shallowest block that already
     # outweighs active, not necessarily a longer fork's own tip, so one
     # call connects only as far as that block; this drives update_chain
@@ -242,6 +255,7 @@ def settle(node: Node) -> None:
 
 
 def test_a_heavier_fork_replaces_the_chain_the_node_was_on(node: Node) -> None:
+    """A heavier fork replaces every block of the chain it outweighs."""
     # more than one block on the branch being left, because that is the
     # shallowest branch whose blocks have to be undone in an order: an
     # output block N created and block N+1 spent is gone from the utxo
@@ -258,6 +272,7 @@ def test_a_heavier_fork_replaces_the_chain_the_node_was_on(node: Node) -> None:
 
 
 def test_a_reorg_refuses_a_missing_reverse_patch(node: Node) -> None:
+    """A missing reverse patch raises `ChainstateInconsistencyError`."""
     # every block on the active chain has one, by construction; this is
     # the state block_db would be in if it did not
     first = generate_random_chain(2, RegTest().genesis.hash)
@@ -270,6 +285,7 @@ def test_a_reorg_refuses_a_missing_reverse_patch(node: Node) -> None:
 
 
 def test_a_reorg_refuses_a_missing_removed_block(node: Node) -> None:
+    """A missing removed block raises `ChainstateInconsistencyError`."""
     # the reverse patch of the block being undone is enough to roll the
     # chainstate back; giving the transactions of that same block back
     # to the mempool needs the block itself, which is the gap this pins
@@ -287,6 +303,7 @@ def test_a_reorg_refuses_a_missing_removed_block(node: Node) -> None:
 def test_a_reorg_evicts_a_transaction_the_reorg_itself_invalidated(
     node: Node,
 ) -> None:
+    """A reorg does not re-add a tx whose own coinbase it just abandoned."""
     # only once the node is synced: while it is still catching up, a
     # transaction from a block it steps off is not worth relaying
     first = generate_random_chain(2, RegTest().genesis.hash)
@@ -317,6 +334,7 @@ def test_a_reorg_evicts_a_transaction_the_reorg_itself_invalidated(
 
 
 def test_a_connected_block_restarts_the_mempool_s_decay_clock(node: Node) -> None:
+    """Connecting a block restarts the mempool's rolling-minimum decay clock."""
     # note_block_connected runs once per block update_chain connects to the
     # active chain, restarting Mempool.get_min_fee_rate's own decay clock --
     # Core's own removeForBlock (src/txmempool.cpp:405-427,
@@ -354,6 +372,7 @@ def _extend(previous_hash: bytes, start_height: int, count: int) -> list[Block]:
 def test_a_reorg_still_resurrects_a_transaction_its_prevout_survives(
     node: Node,
 ) -> None:
+    """A confirmed tx whose prevout survives the reorg re-enters the mempool."""
     # #85's fix checks every re-added transaction rather than trusting
     # it: this is the other side of that, a transaction that spent an
     # output the reorg does not touch and is still good on the chain
@@ -387,6 +406,7 @@ def test_a_reorg_still_resurrects_a_transaction_its_prevout_survives(
 def test_a_reorg_re_adds_abandoned_transactions_parent_first(
     node: Node,
 ) -> None:
+    """A reorg re-adds an abandoned parent before the child that spends it."""
     # a chain of two transactions confirmed only on the branch being
     # abandoned: the second spends the first's own output, which exists
     # nowhere but the mempool once the reorg undoes both blocks, so it
@@ -426,6 +446,7 @@ def test_a_reorg_re_adds_abandoned_transactions_parent_first(
 def test_a_reorg_before_the_node_is_synced_leaves_the_mempool_alone(
     node: Node,
 ) -> None:
+    """A reorg while still syncing does not reconcile the mempool at all."""
     first = generate_random_chain(2, RegTest().genesis.hash)
     connect(node, first)
     node.status = NodeStatus.HeaderSynced
@@ -440,6 +461,7 @@ def test_a_reorg_before_the_node_is_synced_leaves_the_mempool_alone(
 def test_a_newly_connected_block_is_announced_to_every_connected_peer(
     node: Node,
 ) -> None:
+    """A connected block reaches every peer, by header or inventory."""
     # only once the node is synced, the same gate the mempool bookkeeping
     # above already uses: an accepted block used to reach nobody, by
     # either shape. btclib-org/btclib-node#202
@@ -471,6 +493,7 @@ def test_a_newly_connected_block_is_announced_to_every_connected_peer(
 
 
 def test_a_reorg_before_the_node_is_synced_announces_nothing(node: Node) -> None:
+    """A reorg while still syncing sends no connected peer anything."""
     first = generate_random_chain(2, RegTest().genesis.hash)
     connect(node, first)
     node.status = NodeStatus.HeaderSynced
@@ -489,6 +512,7 @@ def test_a_reorg_before_the_node_is_synced_announces_nothing(node: Node) -> None
 def test_a_refused_branch_invalidates_only_the_block_that_failed(
     node: Node,
 ) -> None:
+    """A failing tip is marked invalid; blocks under it stay `valid_header`."""
     # the branch is tried as a unit: its tip is what get_first_candidate
     # offers, so the blocks under it connect in the same pass the tip is
     # refused in, and the utxo set and the filter index are rolled back.
@@ -545,6 +569,7 @@ def test_a_refused_branch_invalidates_only_the_block_that_failed(
 def test_a_refused_branch_leaves_no_reverse_patches_in_the_block_store(
     node: Node,
 ) -> None:
+    """A rolled-back trial leaves no reverse patch behind for any block."""
     # active outweighs below's own two blocks individually, so only
     # prints_money -- the fork's tip -- is its own candidate and the
     # whole fork connects in one trial. below's two blocks validate and
@@ -584,6 +609,7 @@ def test_a_refused_branch_leaves_no_reverse_patches_in_the_block_store(
 def test_a_refused_branch_invalidates_headers_that_were_never_candidates(
     node: Node,
 ) -> None:
+    """Invalidation cascades to blocks that never outweighed active alone."""
     # neither the block that fails nor a sibling built on it has to have
     # individually outweighed the active chain to be real: only the
     # branch's own tip does, for update_chain to try connecting it at
@@ -646,6 +672,7 @@ def test_a_refused_branch_invalidates_headers_that_were_never_candidates(
 def test_a_stop_mid_reorg_rolls_the_trial_back_without_invalidating_it(
     node: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A shutdown mid-trial rolls back cleanly, marking nothing invalid."""
     # `terminate_flag` is read between the blocks of `to_add`, so a
     # shutdown requested during a reorg is noticed after the block being
     # validated when it arrived rather than after the whole fork:

@@ -2,6 +2,8 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""`Mempool`'s bookkeeping, eviction and its rolling minimum feerate."""
+
 import secrets
 import time
 from fractions import Fraction
@@ -19,6 +21,7 @@ if TYPE_CHECKING:
 
 
 def a_witness_transaction() -> Tx:
+    """Return a random transaction whose txid and wtxid actually differ."""
     # a txid and a wtxid are the same bytes until there is a witness, and
     # an assertion about one would then pass by naming the other
     tx = generate_random_transaction()
@@ -27,10 +30,12 @@ def a_witness_transaction() -> Tx:
 
 
 def test_init() -> None:
+    """`Mempool()` constructs without raising."""
     Mempool(Logger(debug=True))
 
 
 def test_workflow() -> None:
+    """Add, remove, size/bytesize accounting and eviction together."""
     mempool = Mempool(Logger(debug=True))
 
     tx = generate_random_transaction()
@@ -77,6 +82,7 @@ def test_workflow() -> None:
 
 
 def test_a_bytesize_limit_of_zero_evicts_every_add_right_back_out() -> None:
+    """At `bytesize_limit=0`, `add_tx` evicts its own add; returns `False`."""
     # bytesize_limit at zero means every add is immediately the only, and so
     # the worst, entry held: `_evict_to_limit` takes it right back out,
     # giving the same outcome the old `is_full()` outright refusal gave,
@@ -99,6 +105,7 @@ def test_a_bytesize_limit_of_zero_evicts_every_add_right_back_out() -> None:
 
 
 def test_add_tx_reports_a_full_mempool_added_nothing() -> None:
+    """`add_tx` on a mempool with no room left returns `False`."""
     # what p2p/callbacks.py's `tx` handler gates queuing an announcement
     # on: a full mempool's silent no-op has to be visible to the caller,
     # or a transaction this node declined to keep is still announced to
@@ -109,6 +116,7 @@ def test_add_tx_reports_a_full_mempool_added_nothing() -> None:
 
 
 def test_add_tx_reports_what_it_added_and_declined() -> None:
+    """`add_tx` returns `True` for a new tx, `False` for the same twice."""
     mempool = Mempool(Logger(debug=True))
     tx = generate_random_transaction()
     assert mempool.add_tx(tx) is True
@@ -117,6 +125,7 @@ def test_add_tx_reports_what_it_added_and_declined() -> None:
 
 
 def test_the_same_transaction_twice_is_counted_once() -> None:
+    """Adding the same transaction twice leaves size/bytesize unchanged."""
     mempool = Mempool(Logger(debug=True))
     tx = generate_random_transaction()
     mempool.add_tx(tx)
@@ -126,6 +135,7 @@ def test_the_same_transaction_twice_is_counted_once() -> None:
 
 
 def test_removing_what_was_never_there_changes_nothing() -> None:
+    """`remove_tx` on a txid this mempool never held is a no-op."""
     mempool = Mempool(Logger(debug=True))
     mempool.remove_tx(generate_random_transaction())
     assert mempool.size == 0
@@ -133,6 +143,7 @@ def test_removing_what_was_never_there_changes_nothing() -> None:
 
 
 def test_the_sequence_starts_at_one_and_counts_every_real_add_and_remove_once() -> None:
+    """`sequence` starts at 1, bumping once per real add/remove, not a no-op."""
     # Core's own semantics, `CTxMemPool::m_sequence_number`
     # (src/txmempool.h:200-202): "incremented once every time a
     # transaction is added or removed from the mempool for any
@@ -161,6 +172,7 @@ def test_the_sequence_starts_at_one_and_counts_every_real_add_and_remove_once() 
 
 
 def test_nothing_is_missing_when_everything_is_held() -> None:
+    """`get_missing` answers empty by txid and wtxid, not by the other's id."""
     mempool = Mempool(Logger(debug=True))
     txs = [a_witness_transaction() for _ in range(3)]
     for tx in txs:
@@ -173,6 +185,7 @@ def test_nothing_is_missing_when_everything_is_held() -> None:
 
 
 def test_a_transaction_is_found_by_either_of_its_identifiers() -> None:
+    """`get_tx` finds a stored tx by txid or wtxid, never by the other index."""
     mempool = Mempool(Logger(debug=True))
     tx = a_witness_transaction()
     assert tx.id != tx.hash  # what the two lookups below are about
@@ -186,6 +199,7 @@ def test_a_transaction_is_found_by_either_of_its_identifiers() -> None:
 
 
 def test_a_fee_is_kept_and_dropped_with_its_transaction() -> None:
+    """`fees` records what `add_tx` was told a tx paid, dropped on removal."""
     mempool = Mempool(Logger(debug=True))
     tx = generate_random_transaction()
     mempool.add_tx(tx, 1000)
@@ -195,6 +209,7 @@ def test_a_fee_is_kept_and_dropped_with_its_transaction() -> None:
 
 
 def test_a_transaction_added_without_a_fee_is_recorded_at_zero() -> None:
+    """`add_tx`'s `fee` argument defaults to 0, not to a missing entry."""
     mempool = Mempool(Logger(debug=True))
     tx = generate_random_transaction()
     mempool.add_tx(tx)
@@ -202,6 +217,7 @@ def test_a_transaction_added_without_a_fee_is_recorded_at_zero() -> None:
 
 
 def test_a_zero_min_fee_rate_is_no_filter_and_clears_everything() -> None:
+    """`meets_fee_rate` with `min_fee_rate=0` always answers `True`."""
     # BIP133's and Connection.feefilter's own "no filter" value
     mempool = Mempool(Logger(debug=True))
     tx = generate_random_transaction()
@@ -210,6 +226,7 @@ def test_a_zero_min_fee_rate_is_no_filter_and_clears_everything() -> None:
 
 
 def test_a_wtxid_the_mempool_holds_no_fee_for_clears_every_rate() -> None:
+    """`meets_fee_rate` on a wtxid this mempool does not hold answers `True`."""
     # gone already, or never held: there is nothing here to withhold it
     # for, so the filter does not withhold it
     mempool = Mempool(Logger(debug=True))
@@ -217,6 +234,7 @@ def test_a_wtxid_the_mempool_holds_no_fee_for_clears_every_rate() -> None:
 
 
 def test_a_fee_below_the_rate_is_withheld_and_at_or_above_it_clears() -> None:
+    """`meets_fee_rate` compares the stored fee against BIP133's boundary."""
     mempool = Mempool(Logger(debug=True))
     tx = generate_random_transaction()
     required = fee_from_vsize(tx.vsize, FeeRate(sats_per_kvbyte=1000))
@@ -229,6 +247,7 @@ def test_a_fee_below_the_rate_is_withheld_and_at_or_above_it_clears() -> None:
 
 
 def test_eviction_takes_the_worst_feerate_and_keeps_the_rest() -> None:
+    """`_evict_to_limit` removes the lowest-feerate entry, not just any."""
     mempool = Mempool(Logger(debug=True))
     cheap = generate_random_transaction()
     rich = generate_random_transaction()
@@ -241,6 +260,7 @@ def test_eviction_takes_the_worst_feerate_and_keeps_the_rest() -> None:
 
 
 def test_eviction_of_the_worst_parent_takes_its_descendant_with_it() -> None:
+    """Evicting the worst-feerate parent evicts the child that spends it too."""
     # verify_mempool_acceptance (main.py) admits a child whose parent is
     # only in the mempool, so evicting the parent alone would leave the
     # child's own prevout resolving nowhere -- _descendants is what keeps
@@ -259,6 +279,7 @@ def test_eviction_of_the_worst_parent_takes_its_descendant_with_it() -> None:
 
 
 def test_eviction_runs_multiple_rounds_when_one_is_not_enough() -> None:
+    """`_evict_to_limit` loops, evicting more than one entry to reach limit."""
     mempool = Mempool(Logger(debug=True))
     worst = generate_random_transaction()
     middle = generate_random_transaction()
@@ -274,6 +295,7 @@ def test_eviction_runs_multiple_rounds_when_one_is_not_enough() -> None:
 
 
 def test_eviction_raises_the_rolling_minimum_above_what_it_evicted() -> None:
+    """Evicting a free tx sets the rolling minimum to the incremental fee."""
     mempool = Mempool(Logger(debug=True))
     victim = generate_random_transaction()
     keeper = generate_random_transaction()
@@ -287,6 +309,7 @@ def test_eviction_raises_the_rolling_minimum_above_what_it_evicted() -> None:
 
 
 def test_eviction_bumps_the_rolling_minimum_by_the_whole_package_it_evicts() -> None:
+    """A CPFP-evicted package bumps the rolling minimum by its combined rate."""
     # Core's own TrimToSize (src/txmempool.cpp:917-925,
     # bitcoin/bitcoin@58a7869f86) bumps the rolling minimum from the
     # removed chunk's own aggregate feerate, not from the worst entry's
@@ -314,6 +337,7 @@ def test_eviction_bumps_the_rolling_minimum_by_the_whole_package_it_evicts() -> 
 
 
 def test_a_lower_rate_eviction_does_not_lower_the_rolling_minimum() -> None:
+    """`_track_package_removed` only ever raises the rolling minimum."""
     mempool = Mempool(Logger(debug=True))
     mempool._rolling_min_fee_rate = 5000.0
     mempool._block_since_last_rolling_fee_bump = True
@@ -323,6 +347,7 @@ def test_a_lower_rate_eviction_does_not_lower_the_rolling_minimum() -> None:
 
 
 def test_a_higher_rate_eviction_raises_the_rolling_minimum_and_restarts_decay() -> None:
+    """A higher eviction rate raises the minimum and clears the decay flag."""
     mempool = Mempool(Logger(debug=True))
     mempool._rolling_min_fee_rate = 1000.0
     mempool._block_since_last_rolling_fee_bump = True
@@ -332,6 +357,7 @@ def test_a_higher_rate_eviction_raises_the_rolling_minimum_and_restarts_decay() 
 
 
 def test_note_block_connected_restarts_the_decay_clock() -> None:
+    """`note_block_connected` sets the decay flag and the last-update time."""
     mempool = Mempool(Logger(debug=True))
     mempool._block_since_last_rolling_fee_bump = False
     before = time.time()
@@ -341,17 +367,20 @@ def test_note_block_connected_restarts_the_decay_clock() -> None:
 
 
 def test_get_min_fee_rate_is_zero_before_anything_is_ever_evicted() -> None:
+    """A fresh mempool's rolling minimum feerate is zero."""
     mempool = Mempool(Logger(debug=True))
     assert mempool.get_min_fee_rate() == FeeRate(sats_per_kvbyte=0)
 
 
 def test_get_min_fee_rate_is_zero_after_a_block_but_no_bump_yet() -> None:
+    """A connected block alone, with no eviction ever, still answers zero."""
     mempool = Mempool(Logger(debug=True))
     mempool.note_block_connected()
     assert mempool.get_min_fee_rate() == FeeRate(sats_per_kvbyte=0)
 
 
 def test_get_min_fee_rate_does_not_decay_before_a_block_has_connected() -> None:
+    """With no block connected since the last rise, the minimum stays put."""
     # _track_package_removed's own guard: a run of evictions with no block
     # in between only ever raises the rolling minimum, never decays it
     mempool = Mempool(Logger(debug=True))
@@ -362,6 +391,7 @@ def test_get_min_fee_rate_does_not_decay_before_a_block_has_connected() -> None:
 
 
 def test_get_min_fee_rate_does_not_decay_within_ten_seconds_of_its_last_move() -> None:
+    """Inside the ten-second guard, the rolling minimum reads back unchanged."""
     mempool = Mempool(Logger(debug=True))
     mempool._rolling_min_fee_rate = 5000.0
     mempool._block_since_last_rolling_fee_bump = True
@@ -370,6 +400,7 @@ def test_get_min_fee_rate_does_not_decay_within_ten_seconds_of_its_last_move() -
 
 
 def test_get_min_fee_rate_decays_by_half_after_one_full_halflife() -> None:
+    """A full 12-hour halflife, over half full, halves the rolling minimum."""
     # bytesize at least half of bytesize_limit: no halflife shortening
     mempool = Mempool(Logger(debug=True))
     mempool.bytesize_limit = 1000
@@ -381,6 +412,7 @@ def test_get_min_fee_rate_decays_by_half_after_one_full_halflife() -> None:
 
 
 def test_get_min_fee_rate_decays_twice_as_fast_under_half_full() -> None:
+    """Under half full, the halflife is shortened to six hours."""
     mempool = Mempool(Logger(debug=True))
     mempool.bytesize_limit = 1000
     mempool.bytesize = 400  # limit/4 <= bytesize < limit/2
@@ -391,6 +423,7 @@ def test_get_min_fee_rate_decays_twice_as_fast_under_half_full() -> None:
 
 
 def test_get_min_fee_rate_decays_four_times_as_fast_near_empty() -> None:
+    """Under a quarter full, the halflife is shortened to three hours."""
     mempool = Mempool(Logger(debug=True))
     mempool.bytesize_limit = 1000
     mempool.bytesize = 100  # < limit/4
@@ -401,6 +434,7 @@ def test_get_min_fee_rate_decays_four_times_as_fast_near_empty() -> None:
 
 
 def test_get_min_fee_rate_floors_at_the_incremental_fee_once_decayed() -> None:
+    """A decay under the incremental relay fee floors there instead."""
     mempool = Mempool(Logger(debug=True))
     mempool.bytesize_limit = 1000
     mempool.bytesize = 999
@@ -411,6 +445,7 @@ def test_get_min_fee_rate_floors_at_the_incremental_fee_once_decayed() -> None:
 
 
 def test_get_min_fee_rate_zeroes_out_below_half_the_incremental_fee() -> None:
+    """Enough halvings under half the incremental fee zero it out instead."""
     mempool = Mempool(Logger(debug=True))
     mempool.bytesize_limit = 1000
     mempool.bytesize = 999

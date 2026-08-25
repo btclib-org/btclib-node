@@ -34,6 +34,7 @@ MAX_FILE_SIZE = 128 * 1000**2
 
 
 def a_rev_block(tag: int = 1, block_hash: bytes | None = None) -> RevBlock:
+    """Build a `RevBlock` adding one prevout and removing another."""
     out_point = OutPoint(bytes([tag]) * 32, tag)
     tx_out = TxOut(value=tag * 10**8, script_pub_key=script.serialize([bytes([tag])]))
     return RevBlock(
@@ -45,7 +46,7 @@ def a_rev_block(tag: int = 1, block_hash: bytes | None = None) -> RevBlock:
 
 @pytest.fixture
 def a_db(tmp_path: Path) -> Iterator[Callable[[Path | None], BlockDB]]:
-    """A factory for `BlockDB`s at `tmp_path`, closed at teardown.
+    """Give a factory for `BlockDB`s at `tmp_path`, closed at teardown.
 
     A test that checks a store survives being closed and reopened
     closes the first itself and builds a second, at the same path or at
@@ -64,10 +65,12 @@ def a_db(tmp_path: Path) -> Iterator[Callable[[Path | None], BlockDB]]:
 
 
 def test_init(a_db: Callable[[Path | None], BlockDB]) -> None:
+    """Opening a `BlockDB` on an empty directory does not raise."""
     a_db(None)
 
 
 def test_blocks(a_db: Callable[[Path | None], BlockDB], tmp_path: Path) -> None:
+    """Every block of a long chain is read back, across ten fresh stores."""
     chain = generate_random_chain(2000, RegTest().genesis.hash)
     for x in range(10):
         block_db = a_db(tmp_path / f"{x}")
@@ -78,6 +81,7 @@ def test_blocks(a_db: Callable[[Path | None], BlockDB], tmp_path: Path) -> None:
 
 
 def test_a_rev_patch_survives_the_wire() -> None:
+    """`RevBlock.deserialize` undoes `RevBlock.serialize` exactly."""
     rev_block = a_rev_block()
     assert RevBlock.deserialize(rev_block.serialize()) == rev_block
 
@@ -85,6 +89,7 @@ def test_a_rev_patch_survives_the_wire() -> None:
 def test_a_rev_patch_is_read_back_from_the_file_it_went_into(
     a_db: Callable[[Path | None], BlockDB],
 ) -> None:
+    """A patch buffered, then `finalize`d, is returned by `get_rev_block`."""
     block_db = a_db(None)
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     block_db.add_block(block)
@@ -97,6 +102,7 @@ def test_a_rev_patch_is_read_back_from_the_file_it_went_into(
 def test_what_was_never_stored_is_not_found(
     a_db: Callable[[Path | None], BlockDB],
 ) -> None:
+    """`get_block` and `get_rev_block` answer `None` for an unknown hash."""
     block_db = a_db(None)
     assert block_db.get_block(b"\x11" * 32) is None
     assert block_db.get_rev_block(b"\x11" * 32) is None
@@ -105,6 +111,7 @@ def test_what_was_never_stored_is_not_found(
 def test_storing_the_same_block_twice_writes_it_once(
     a_db: Callable[[Path | None], BlockDB],
 ) -> None:
+    """`add_block` is a no-op the second time it holds the same hash."""
     block_db = a_db(None)
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     block_db.add_block(block)
@@ -117,6 +124,7 @@ def test_storing_the_same_block_twice_writes_it_once(
 def test_storing_the_same_rev_patch_twice_writes_it_once(
     a_db: Callable[[Path | None], BlockDB],
 ) -> None:
+    """`add_rev_block` drops a patch already on disk, without writing again."""
     block_db = a_db(None)
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     block_db.add_block(block)
@@ -136,6 +144,7 @@ def test_storing_the_same_rev_patch_twice_writes_it_once(
 def test_a_file_that_has_filled_up_is_left_behind(
     a_db: Callable[[Path | None], BlockDB],
 ) -> None:
+    """Past the size bound, `add_block` rotates to a new file to stay in."""
     block_db = a_db(None)
     chain = generate_random_chain(2, RegTest().genesis.hash)
     block_db.add_block(chain[0])
@@ -156,6 +165,7 @@ def test_a_file_that_has_filled_up_is_left_behind(
 def test_a_file_exactly_at_the_bound_is_not_yet_full(
     a_db: Callable[[Path | None], BlockDB],
 ) -> None:
+    """A file exactly at the size bound has not yet rolled over."""
     # the bound is what the size is compared against, so which side of
     # it is exclusive is a real question. Only where the block lands is
     # asserted here: the size set below is a fiction the file on disk
@@ -173,6 +183,7 @@ def test_a_file_exactly_at_the_bound_is_not_yet_full(
 def test_a_rev_patch_goes_in_the_file_named_for_its_own_block(
     a_db: Callable[[Path | None], BlockDB],
 ) -> None:
+    """A patch lands in its own block's `.rev` file, not the open one."""
     # the first block's own patch is written only after the block file
     # has rolled over to a second one: were the rev file still named for
     # whichever block file happens to be open (btclib-org/btclib-node#116),
@@ -204,6 +215,7 @@ def test_a_rev_patch_goes_in_the_file_named_for_its_own_block(
 def test_two_rev_patches_share_the_file_named_for_the_block_file(
     a_db: Callable[[Path | None], BlockDB],
 ) -> None:
+    """Two patches for a block file share one `.rev` file at distinct spots."""
     block_db = a_db(None)
     chain = generate_random_chain(2, RegTest().genesis.hash)
     for block in chain:
@@ -223,6 +235,7 @@ def test_two_rev_patches_share_the_file_named_for_the_block_file(
 def test_a_pending_rev_patch_is_not_yet_on_disk(
     a_db: Callable[[Path | None], BlockDB],
 ) -> None:
+    """A patch only buffered by `add_rev_block` is not yet in `rev_patches`."""
     block_db = a_db(None)
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     block_db.add_block(block)
@@ -235,6 +248,7 @@ def test_a_pending_rev_patch_is_not_yet_on_disk(
 def test_rollback_discards_every_pending_rev_patch(
     a_db: Callable[[Path | None], BlockDB],
 ) -> None:
+    """`rollback` clears buffered patches; buffering again works afterward."""
     block_db = a_db(None)
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     block_db.add_block(block)
@@ -254,6 +268,7 @@ def test_rollback_discards_every_pending_rev_patch(
 def test_finalize_refuses_a_patch_for_a_block_never_stored(
     a_db: Callable[[Path | None], BlockDB],
 ) -> None:
+    """`finalize` raises rather than filing a patch for an unknown block."""
     block_db = a_db(None)
     rev_block = a_rev_block()
     block_db.add_rev_block(rev_block)
@@ -262,6 +277,7 @@ def test_finalize_refuses_a_patch_for_a_block_never_stored(
 
 
 def test_a_filename_past_ten_characters_survives_the_wire() -> None:
+    """An eleven-character filename round-trips through the wire format."""
     # ten octets was a fixed width assumed for `{index:06d}.blk`; past
     # the millionth file the name is eleven characters
     # (btclib-org/btclib-node#78)
@@ -273,6 +289,7 @@ def test_a_filename_past_ten_characters_survives_the_wire() -> None:
 
 
 def test_an_offset_past_var_ints_default_parse_cap_survives_the_wire() -> None:
+    """A byte offset past `var_int.parse`'s default cap still round-trips."""
     # BlockLocation.index/size measure a position inside a still-open
     # 128MB block file, well past var_int.parse's default max_size
     # (0x02000000, Bitcoin Core's ReadCompactSize guard against an
@@ -287,6 +304,7 @@ def test_an_offset_past_var_ints_default_parse_cap_survives_the_wire() -> None:
 def test_the_file_rotation_counter_passes_the_old_two_octet_ceiling(
     a_db: Callable[[Path | None], BlockDB],
 ) -> None:
+    """`file_index` rotates past 65535 and the store reopens at that value."""
     # a fixed two-octet field overflows encoding 65536
     # (btclib-org/btclib-node#78); var_int has no ceiling below its own
     # 8-byte encoding limit
@@ -308,6 +326,7 @@ def test_the_file_rotation_counter_passes_the_old_two_octet_ceiling(
 def test_a_block_file_is_matched_by_its_resolved_path_not_its_basename(
     a_db: Callable[[Path | None], BlockDB], tmp_path: Path
 ) -> None:
+    """A same-named file under another directory is not this store's own."""
     # a handle open on a same-named file under a different directory is
     # not the file this store means: matching by a basename or a suffix
     # (btclib-org/btclib-node#79) would accept it anyway
@@ -331,6 +350,7 @@ def test_a_block_file_is_matched_by_its_resolved_path_not_its_basename(
 def test_closing_a_store_that_wrote_nothing(
     a_db: Callable[[Path | None], BlockDB],
 ) -> None:
+    """`close` does not raise when no file was ever opened for writing."""
     # nothing was written, so there is no file to close: only the
     # database itself
     a_db(None).close()
@@ -339,6 +359,7 @@ def test_closing_a_store_that_wrote_nothing(
 def test_a_key_this_version_does_not_know_is_left_where_it_is(
     a_db: Callable[[Path | None], BlockDB],
 ) -> None:
+    """`init_from_db` steps over a key under none of its four known prefixes."""
     block_db = a_db(None)
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     block_db.add_block(block)
@@ -357,6 +378,7 @@ def test_a_key_this_version_does_not_know_is_left_where_it_is(
 
 
 def test_the_store_comes_back_from_disk(a_db: Callable[[Path | None], BlockDB]) -> None:
+    """A closed store's whole index -- files, blocks, patches -- comes back."""
     block_db = a_db(None)
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     block_db.add_block(block)

@@ -58,6 +58,14 @@ def a_config(
     testpaths: list[str] | None = None,
     rootpath: Path | None = None,
 ) -> tuple[Any, SimpleNamespace]:
+    """Build a `pytest.Config` stand-in and the `pytest-cov` options it exposes.
+
+    Only the attributes `asks_for_everything` and `relax_coverage_floor`
+    actually read are here, named after the command-line options they
+    come from; the second element returned is the `SimpleNamespace` the
+    fake `_cov` plugin holds, so a test can read `cov_fail_under` back
+    off it after calling one of the two functions on the first element.
+    """
     options = SimpleNamespace(cov_fail_under=FLOOR)
     return SimpleNamespace(
         option=SimpleNamespace(
@@ -93,6 +101,7 @@ def a_config(
 
 @pytest.mark.parametrize("paths", WHOLE_SUITE, ids=lambda p: " ".join(p) or "(bare)")
 def test_naming_the_whole_suite_holds_the_floor(paths: list[str]) -> None:
+    """Every spelling in `WHOLE_SUITE` leaves the floor at 100."""
     # a directory above testpaths collects it too, so what decides this
     # is containment: read as strings, the everyday `pytest tests/`
     # would count as a subset and lose the gate
@@ -103,6 +112,7 @@ def test_naming_the_whole_suite_holds_the_floor(paths: list[str]) -> None:
 
 
 def test_the_help_path_names_no_paths_at_all() -> None:
+    """`file_or_dir=None`, `--help`'s case, still reads as the whole suite."""
     # Why --help reaches the hook with file_or_dir None is
     # asks_for_everything's docstring. What is here is the cover: the
     # guard it describes adds no branch for the floor to miss, so
@@ -117,12 +127,20 @@ def test_the_help_path_names_no_paths_at_all() -> None:
 def test_asking_for_less_than_the_suite_stands_the_floor_down(
     narrowing: dict[str, Any],
 ) -> None:
+    """Every narrowing in `NARROWINGS` drops `cov_fail_under` to 0."""
     config, options = a_config(**narrowing)
     assert relax_coverage_floor(config) is True
     assert options.cov_fail_under == 0
 
 
 def test_testpaths_are_read_against_the_rootdir_and_not_the_working_directory() -> None:
+    """`testpaths` is joined onto a fictitious `rootpath`, not the real cwd.
+
+    Naming that `rootpath` itself still reads as the whole suite, and
+    naming one of its subdirectories does not -- proof that the
+    containment check above is computed off `rootpath` and never off
+    wherever this process actually runs.
+    """
     # the paths a run names are the shell's and testpaths is the
     # configuration file's; reading the second against the working
     # directory answers about a tree that is not the one being tested
@@ -136,6 +154,7 @@ def test_testpaths_are_read_against_the_rootdir_and_not_the_working_directory() 
 
 
 def test_a_suite_that_names_no_paths_of_its_own() -> None:
+    """With `testpaths` unset, one named file is narrower; the floor drops."""
     # with testpaths unset a bare run collects the rootdir, so anything
     # named is less than the suite. `all` over an empty sequence is
     # true, which would answer the opposite of that.
@@ -146,6 +165,7 @@ def test_a_suite_that_names_no_paths_of_its_own() -> None:
 
 
 def test_a_floor_asked_for_explicitly_is_left_alone() -> None:
+    """A narrowed run leaves an explicit `cov_fail_under` alone."""
     # `option.cov_fail_under` is argparse's parsed result, which reads
     # the same whether the flag arrived on the command line or through
     # PYTEST_ADDOPTS -- the two are not distinguishable past this point,
@@ -159,12 +179,14 @@ def test_a_floor_asked_for_explicitly_is_left_alone() -> None:
 
 
 def test_there_is_nothing_to_lower_when_coverage_is_not_running() -> None:
+    """With no `_cov` plugin, a narrowed run leaves the floor untouched."""
     config, options = a_config(file_or_dir=["tests/unit/mempool_test.py"], plugin=False)
     assert relax_coverage_floor(config) is False
     assert options.cov_fail_under == FLOOR
 
 
 def test_a_run_without_the_cache_plugin_has_no_last_failed_to_read() -> None:
+    """A run narrowed by nothing else still reads a missing `lf` safely."""
     # -p no:cacheprovider leaves `lf` off the namespace altogether, and
     # reading it as an attribute raises out of pytest_configure. Nothing
     # else about this run narrows it, which is what makes the chain of
@@ -177,6 +199,7 @@ def test_a_run_without_the_cache_plugin_has_no_last_failed_to_read() -> None:
 
 
 def test_the_hook_is_wired_to_the_decision() -> None:
+    """`pytest_configure` calls `relax_coverage_floor` on the real config."""
     # the function is what is tested above; this is that pytest calls it
     config, options = a_config(keyword="mempool")
     pytest_configure(config)

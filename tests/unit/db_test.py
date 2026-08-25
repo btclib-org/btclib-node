@@ -26,10 +26,12 @@ if TYPE_CHECKING:
 
 
 def a_store(tmp_path: Path, name: str = "store") -> KeyValueStore:
+    """Open a `KeyValueStore` in its own subdirectory of `tmp_path`."""
     return KeyValueStore(tmp_path / name)
 
 
 def test_what_is_put_comes_back(tmp_path: Path) -> None:
+    """`get` returns exactly what `put` stored under the same key."""
     store = a_store(tmp_path)
     store.put(b"k", b"v")
     assert store.get(b"k") == b"v"
@@ -37,12 +39,14 @@ def test_what_is_put_comes_back(tmp_path: Path) -> None:
 
 
 def test_a_key_nobody_wrote_is_answered_with_nothing(tmp_path: Path) -> None:
+    """`get` on a key that was never `put` returns `None`, not an error."""
     store = a_store(tmp_path)
     assert store.get(b"absent") is None
     store.close()
 
 
 def test_writing_a_key_twice_keeps_the_second(tmp_path: Path) -> None:
+    """`put` on an existing key replaces its value, not adding a second row."""
     store = a_store(tmp_path)
     store.put(b"k", b"first")
     store.put(b"k", b"second")
@@ -51,6 +55,7 @@ def test_writing_a_key_twice_keeps_the_second(tmp_path: Path) -> None:
 
 
 def test_a_key_deleted_is_gone_and_deleting_it_again_is_nothing(tmp_path: Path) -> None:
+    """`delete` removes a key, and deleting an absent key raises nothing."""
     store = a_store(tmp_path)
     store.put(b"k", b"v")
     store.delete(b"k")
@@ -60,6 +65,7 @@ def test_a_key_deleted_is_gone_and_deleting_it_again_is_nothing(tmp_path: Path) 
 
 
 def test_the_walk_is_in_key_order(tmp_path: Path) -> None:
+    """Iterating the store yields keys sorted, not in insertion order."""
     # load-bearing, and not only for the walk: both `init_from_db`
     # methods read until the first key that is not theirs, so a store
     # that answered in insertion order would stop them early or late
@@ -77,6 +83,7 @@ def test_the_walk_is_in_key_order(tmp_path: Path) -> None:
 
 
 def test_a_batch_is_written_whole(tmp_path: Path) -> None:
+    """Every `put` inside a `write_batch` block is visible once it exits."""
     store = a_store(tmp_path)
     with store.write_batch() as batch:
         batch.put(b"a", b"1")
@@ -87,6 +94,7 @@ def test_a_batch_is_written_whole(tmp_path: Path) -> None:
 
 
 def test_a_batch_that_raises_leaves_nothing_behind(tmp_path: Path) -> None:
+    """An exception inside `write_batch` rolls back every write it made."""
     # what the chainstate needs of it: a block that fails validation
     # partway through a branch must not leave the writes before it
     store = a_store(tmp_path)
@@ -106,6 +114,7 @@ def test_a_batch_that_raises_leaves_nothing_behind(tmp_path: Path) -> None:
 
 
 def test_a_datadir_from_before_this_store_is_refused(tmp_path: Path) -> None:
+    """A directory with LevelDB's own `CURRENT` marker raises, not opens."""
     # a LevelDB directory, which this store cannot read. Starting an
     # empty chain over the top of one is the wrong failure: it looks
     # like a node that has never synced rather than one that cannot
@@ -117,6 +126,7 @@ def test_a_datadir_from_before_this_store_is_refused(tmp_path: Path) -> None:
 
 
 def test_a_closed_store_refuses_to_be_used(tmp_path: Path) -> None:
+    """A closed store reports `closed`; `get` raises `StoreClosedError`."""
     # the flag alone is what a close that closed nothing would also set.
     # The connections are asserted separately, below: here it is the
     # store's own answer, which is what every caller meets first.
@@ -131,6 +141,7 @@ def test_a_closed_store_refuses_to_be_used(tmp_path: Path) -> None:
 def test_a_thread_that_never_used_the_store_is_refused_after_it_closes(
     tmp_path: Path,
 ) -> None:
+    """A thread with no connection is refused once the store closes."""
     # what `closed` has to mean for the store and not only for the
     # connections it happened to be holding: a thread with none of its
     # own would otherwise be handed a working one and write through a
@@ -154,6 +165,7 @@ def test_a_thread_that_never_used_the_store_is_refused_after_it_closes(
 
 
 def test_closing_twice_is_closing_once(tmp_path: Path) -> None:
+    """A second `close` is a no-op, not an error on a closed connection."""
     store = a_store(tmp_path)
     store.close()
     store.close()
@@ -161,6 +173,7 @@ def test_closing_twice_is_closing_once(tmp_path: Path) -> None:
 
 
 def test_a_store_is_read_and_written_from_more_than_one_thread(tmp_path: Path) -> None:
+    """A second thread's `get`, `put` and `write_batch` reach the same store."""
     # the node opens its databases in the thread that builds it and uses
     # them in the thread that runs it, and the tests write from both
     store = a_store(tmp_path)
@@ -228,6 +241,7 @@ def test_closing_while_another_thread_reads_does_not_take_the_process_down(
 
 
 def test_what_is_written_is_still_there_when_it_is_opened_again(tmp_path: Path) -> None:
+    """A value survives closing the store and reopening on the same path."""
     store = a_store(tmp_path)
     store.put(b"k", b"v")
     store.close()
@@ -238,6 +252,7 @@ def test_what_is_written_is_still_there_when_it_is_opened_again(tmp_path: Path) 
 
 
 def test_close_waits_for_whoever_is_using_the_connection(tmp_path: Path) -> None:
+    """`close` blocks on the same lock a caller elsewhere already holds."""
     # the guard the segfault above is prevented by, pinned rather than
     # raced for: with the lock held, `close` has to wait, because
     # closing a connection out from under a statement is what CPython's
@@ -261,6 +276,7 @@ def test_close_waits_for_whoever_is_using_the_connection(tmp_path: Path) -> None
 
 
 def test_a_batch_rolls_back_on_what_is_not_an_exception_either(tmp_path: Path) -> None:
+    """A `KeyboardInterrupt` mid-batch rolls back, leaving the store usable."""
     # BaseException and not Exception: a KeyboardInterrupt or a
     # cancelled task through an open batch would otherwise leave the
     # transaction open and the connection unusable for everything after
@@ -281,6 +297,7 @@ def test_a_batch_rolls_back_on_what_is_not_an_exception_either(tmp_path: Path) -
 
 
 def test_a_batch_takes_the_write_lock_when_it_opens(tmp_path: Path) -> None:
+    """`write_batch` locks out another writer before its own first write."""
     # BEGIN IMMEDIATE and not a plain BEGIN. With one connection it is
     # another process that this is about -- a second node on the same
     # datadir -- so the second writer is a second connection here.
@@ -302,6 +319,7 @@ def test_a_batch_takes_the_write_lock_when_it_opens(tmp_path: Path) -> None:
 
 
 def test_a_commit_does_not_wait_for_the_disk(tmp_path: Path) -> None:
+    """The store runs WAL journalling with `synchronous=NORMAL`, not `FULL`."""
     # synchronous=NORMAL, which is what LevelDB gives by default too: a
     # kill loses the last transactions rather than corrupting the store,
     # and the alternative costs an fsync per block connected
@@ -314,6 +332,7 @@ def test_a_commit_does_not_wait_for_the_disk(tmp_path: Path) -> None:
 
 
 def test_the_table_is_the_key_s_own_b_tree(tmp_path: Path) -> None:
+    """The `kv` table's schema declares `WITHOUT ROWID` and a non-null value."""
     # WITHOUT ROWID is what makes the ordered walk the table's own order
     # rather than a sort, and it is not visible from any of the six
     # operations -- so it is read off the schema

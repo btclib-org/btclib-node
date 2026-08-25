@@ -2,6 +2,15 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""Chain, transaction and wait builders shared by unit and functional tests.
+
+Nothing here is a fixture: a `conftest.py` fixture is process-wide and
+built once per test, where a header chain or a transaction has to be
+built fresh, sized and shaped differently, by whichever test needs one
+-- so these are plain functions the tests import directly, in both
+`tests/unit/` and `tests/functional/`.
+"""
+
 import json
 import secrets
 import socket
@@ -43,6 +52,7 @@ class WaitTimeoutError(TimeoutError):
     """
 
     def __init__(self, message: str) -> None:
+        """Build the error around the caller's own account of the deadline."""
         super().__init__(message)
 
 
@@ -108,6 +118,13 @@ def generate_random_header_chain(
 
 
 def generate_random_transaction(prevouthash: bytes | None = None) -> Tx:
+    """Return a one-input, one-output transaction spending `prevouthash`.
+
+    `prevouthash` names the outpoint being spent, defaulting to a random
+    one where the caller only needs a transaction that is structurally
+    valid rather than one that actually spends something built earlier
+    in the same test.
+    """
     prevouthash = prevouthash or secrets.token_bytes(32)
     tx_in = TxIn(
         prev_out=OutPoint(prevouthash, 0),
@@ -127,6 +144,13 @@ def generate_random_transaction(prevouthash: bytes | None = None) -> Tx:
 
 
 def generate_coinbase(value: int = 50 * 10**8) -> Tx:
+    """Return a coinbase transaction paying `value`, the subsidy by default.
+
+    A null-outpoint input marks it as a coinbase; `value` lets a test
+    fund an output with an exact, known amount rather than the subsidy,
+    where what it is checking is the amount rather than the block being
+    otherwise ordinary.
+    """
     return Tx(
         version=1,
         lock_time=0,
@@ -149,6 +173,14 @@ def generate_coinbase(value: int = 50 * 10**8) -> Tx:
 def build_block(
     previous_block_hash: bytes, transactions: list[Tx], height: int
 ) -> Block:
+    """Return a solved regtest block extending `previous_block_hash`.
+
+    `height` only dates the header -- one second past genesis per
+    height, matching `generate_random_header_chain`'s own spacing -- so
+    two blocks built at the same height carry the same timestamp, which
+    is fine for a caller building disjoint forks but not for one
+    building a single chain out of order.
+    """
     header = BlockHeader(
         version=70015,
         previous_block_hash=previous_block_hash,
@@ -166,6 +198,13 @@ def build_block(
 
 
 def generate_random_chain(length: int, start: bytes) -> list[Block]:
+    """Return `length` solved blocks extending `start`, each spending the last.
+
+    Every block after the first carries a second transaction spending
+    its predecessor's coinbase, so the chain is not just height -- a
+    reader can also walk it as a spend history, which is what
+    `block_db_test.py`'s undo-data tests need it for.
+    """
     chain: list[Block] = []
     for x in range(length):
         previous_block_hash = chain[-1].header.hash if chain else start
@@ -178,8 +217,14 @@ def generate_random_chain(length: int, start: bytes) -> list[Block]:
 
 
 def get_random_port() -> int:
-    # port 0 is the operating system being asked for one that is free,
-    # which is what a caller about to bind it wants to know
+    """Return a TCP port the operating system currently reports as free.
+
+    Binding to port 0 and reading back the port the kernel picked is
+    the same trick `conftest.py`'s node fixtures rely on to give every
+    node its own p2p and RPC port, so parallel tests never contend for
+    one -- the port is free at the moment this returns, not reserved,
+    so a caller has to bind it before another process can.
+    """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("", 0))
         port = sock.getsockname()[1]
@@ -188,6 +233,7 @@ def get_random_port() -> int:
 
 
 def wait_until(func: Callable[[], object], timeout: float = 60) -> None:
+    """Poll `func` until truthy, or raise `WaitTimeoutError` after `timeout`."""
     # The timeout bounds a failure, not a success: the loop returns as
     # soon as func() holds, so a generous limit costs a passing run
     # nothing and only delays one that was going to fail. Almost every
@@ -258,6 +304,13 @@ def wait_until_listening(manager: _ListensOnAPort, timeout: float = 20) -> None:
 
 
 def post(node: Node, payload: Any, timeout: float = 5) -> str:
+    """POST `payload` as JSON to `node`'s RPC port; return the raw body.
+
+    The body comes back as text, not parsed: every caller runs
+    `json.loads` on it itself, most often to reach into the JSON-RPC
+    envelope's own `"error"` field rather than to get an object back
+    directly.
+    """
     return requests.post(
         url=f"http://127.0.0.1:{node.rpc_port}",
         data=json.dumps(payload).encode(),
@@ -266,6 +319,7 @@ def post(node: Node, payload: Any, timeout: float = 5) -> str:
 
 
 def call_within[T](func: Callable[[], T], timeout: float = 5) -> T:
+    """Call `func` on a daemon thread; return its result, or its exception."""
     # For a call whose way of being wrong is never coming back. A test
     # that asserts on the answer hangs the whole suite when there is no
     # answer (btclib-org/btclib-node#98); one that calls through here
@@ -332,8 +386,14 @@ def brute_force_nonce(header: BlockHeader) -> None:
 def local_addr(
     port: int | None, timestamp: int = 0, services: int = 0
 ) -> NetworkAddressV2:
-    # A test helper building an unroutable placeholder address, not a
-    # socket bind.
+    """Return a `NetworkAddressV2` naming `0.0.0.0` and `port`, to dial locally.
+
+    A test helper building an address to hand `P2pManager.connect`, not
+    a socket bind: a client socket connecting to `0.0.0.0` reaches
+    whatever is listening on that port on the same host, which is what
+    lets a test dial a node it started locally without hardcoding
+    `127.0.0.1`.
+    """
     assert port is not None
     addr = "0.0.0.0"  # noqa: S104
     return peer_address(addr, port, timestamp, services)
