@@ -28,6 +28,7 @@ to check the guess.
   directory it deferred is clean. `tests/**`'s own seven per-subdirectory
   keys for the same eight codes are unaffected and remain #373's
   outstanding scope.
+
 ### `tests/unit/rpc/` and `tests/functional/rpc/` get real docstrings (issue #373)
 
 - **`D100`/`D104`/`D101`/`D102`/`D103`/`D107`/`D205`/`D401` are selected
