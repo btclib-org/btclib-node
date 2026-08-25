@@ -226,6 +226,7 @@ def test_a_step_that_raises_brings_the_node_down_rather_than_spinning(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A `update_chain` that raises stops the loop and closes both databases."""
+
     # the loop cannot recover from a chainstate it could not advance, so
     # it stops -- and stopping means closing the databases, which is
     # what makes this different from an exception escaping run()

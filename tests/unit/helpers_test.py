@@ -97,6 +97,7 @@ def test_a_bounded_call_hands_back_what_it_returned() -> None:
 
 def test_a_bounded_call_that_raises_raises_where_it_was_called() -> None:
     """`call_within` re-raises the call's exception, on the caller's thread."""
+
     # and not on the thread it ran on, where the caller would see a
     # printed traceback and an error about the answer being missing
     def refuses() -> None:

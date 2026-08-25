@@ -210,6 +210,28 @@ to check the guess.
   enumeration, and `tests/{__init__,conftest,helpers}.py`, remain.
   `scripts/**`'s own slice already landed.
 
+### `tests/unit/`'s own root-level files get real docstrings (issue #373)
+
+- **`D100`/`D104`/`D101`/`D102`/`D103`/`D107`/`D205`/`D401` are selected
+  for every `.py` file directly in `tests/unit/` -- not its `p2p/`,
+  `rpc/` or `chainstate/` subpackages, each its own slice -- plus
+  `tests/__init__.py`, `tests/conftest.py` and `tests/helpers.py`**
+  (issue #373): every module, class, fixture and test function across
+  these files now carries a docstring, including every `test_*`
+  function, none left to a per-file suppression. A test's own docstring
+  says what scenario it verifies and why, read from what its body
+  actually asserts rather than restated from its own name --
+  `coverage_floor_test.py`'s test for a run with no `lf` cache plugin is
+  the sharpest case, its own docstring turning on
+  `relax_coverage_floor`'s short-circuiting `or` chain only reaching
+  `option.lf` once every other narrowing option is already falsy.
+  `block_db_test.py`'s docstrings are cross-checked against `BlockDB`
+  itself, already documented from this issue's own second slice. This
+  is the root-level bucket of the five parallel slices `tests/**`'s own
+  per-file-ignore was split into; its own two keys are now removed
+  outright rather than narrowed, the family having no finding left
+  under either.
+
 ### The docs gate's own remaining gaps close: `[project.urls]`, `local-link-prefix`
 
 - **`conf.py`'s `BLOB` constant reads `pyproject.toml`'s own
