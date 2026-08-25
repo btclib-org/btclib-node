@@ -117,6 +117,9 @@ class BlockIndex:
     that might still beat it once downloaded; `header_index` is the
     best known header chain, tracked separately since a header being
     known does not make its own block downloaded, let alone valid.
+    `header_index_pos` is `header_index`'s own hash -> position, kept
+    beside it the same way `chainwork` is kept beside `header_dict`
+    (issue #439).
     """
 
     def __init__(self, parent_db: KeyValueStore, chain: Chain, logger: Logger) -> None:
@@ -153,6 +156,25 @@ class BlockIndex:
         # list all header hashes, even if not already checked, needed for
         # the block locators
         self.header_index: list[bytes] = []
+
+        # header_index's own hash -> position, kept beside it rather
+        # than computed from it: get_headers_from_locators resolves a
+        # peer's locator against this index once per message, and
+        # header_index holds one entry per header this node has ever
+        # indexed -- the whole known chain -- so a membership test or a
+        # position lookup done against the list itself is an O(n) scan
+        # repeated for every entry of the locator.
+        # btclib-org/btclib-node#439, following chainwork (#201) and
+        # children (#125) in keeping a derived index beside the primary
+        # structure rather than recomputing it on every read. Maintained
+        # incrementally at the same three sites that mutate header_index
+        # -- generate_header_index, _extend_header_index and
+        # _insert_pending_headers -- rather than rebuilt whole after each:
+        # the append case those sites share is the ordinary one, one new
+        # block at a time, and rebuilding a dict the size of the whole
+        # chain for that would trade the scan this fixes for a
+        # dict-construction of the same size on every block.
+        self.header_index_pos: dict[bytes, int] = {}
 
         # the reverse of previous_block_hash, kept so invalidate can walk
         # forward from a bad block to what is really built on it instead
@@ -239,6 +261,7 @@ class BlockIndex:
     def generate_header_index(self) -> None:
         """Rebuild `header_index`, seeded from `active_chain` then extended."""
         self.header_index = self.active_chain[:]
+        self.header_index_pos = {h: i for i, h in enumerate(self.header_index)}
         self._extend_header_index(self.sorted_header_dict)
 
     # extends self.header_index, already seeded by the caller, with
@@ -250,6 +273,11 @@ class BlockIndex:
     # header's own parent before the header itself.
     # btclib-org/btclib-node#218
     def _extend_header_index(self, candidates: Iterable[bytes]) -> None:
+        # tracks the same membership header_index_pos's own keys do,
+        # kept separate rather than reusing it here: the two move
+        # together at every append and every fork rewrite below, and a
+        # future mutation site that updates one without the other is
+        # what to guard against, not a rewrite of either alone.
         header_index_set = set(self.header_index)
         for block_hash in candidates:
             if block_hash in header_index_set:
@@ -261,11 +289,17 @@ class BlockIndex:
             best_header = self.header_index[-1]
             if header.previous_block_hash == best_header:
                 self.header_index.append(block_hash)
+                self.header_index_pos[block_hash] = len(self.header_index) - 1
                 header_index_set.add(block_hash)
             elif self.chainwork[block_hash] > self.chainwork[best_header]:
                 add, remove = self.get_fork_details(block_hash, self.header_index)
+                for removed_hash in remove:
+                    del self.header_index_pos[removed_hash]
                 self.header_index = self.header_index[: -len(remove)]
+                base = len(self.header_index)
                 self.header_index.extend(add)
+                for offset, added_hash in enumerate(add):
+                    self.header_index_pos[added_hash] = base + offset
                 header_index_set = set(self.header_index)
 
     # `wb` is a write batch: given one, the database moves when that
@@ -349,6 +383,7 @@ class BlockIndex:
         # lineage. btclib-org/btclib-node#218
         if invalidated.intersection(self.header_index):
             self.header_index = self.active_chain[:]
+            self.header_index_pos = {h: i for i, h in enumerate(self.header_index)}
             self._extend_header_index(
                 sorted(self.header_dict, key=lambda h: self.header_dict[h].index)
             )
@@ -512,10 +547,16 @@ class BlockIndex:
                 best_header = self.header_index[-1]
                 if header.previous_block_hash == best_header:
                     self.header_index.append(header_hash)
+                    self.header_index_pos[header_hash] = len(self.header_index) - 1
                 elif new_work > self.chainwork[best_header]:
                     add, remove = self.get_fork_details(header_hash, self.header_index)
+                    for removed_hash in remove:
+                        del self.header_index_pos[removed_hash]
                     self.header_index = self.header_index[: -len(remove)]
+                    base = len(self.header_index)
                     self.header_index.extend(add)
+                    for offset, added_hash in enumerate(add):
+                        self.header_index_pos[added_hash] = base + offset
 
     def add_headers(self, headers: Iterable[BlockHeader]) -> bytes | None:
         """Validate `headers` as one batch, then index every one of them.
@@ -648,16 +689,26 @@ class BlockIndex:
         first one found in `header_index` is where the answer resumes
         from. Stops at `stop` if reached first, and returns nothing if
         none of `block_locators` is known.
+
+        Membership and position both come from `header_index_pos`
+        rather than a scan of `header_index` itself
+        (btclib-org/btclib-node#439). The slice is capped at 2000
+        before `stop` is looked for, rather than after: `stop` is
+        looked for inside the capped slice, not the whole of
+        `header_index`, which is what btclib-org/btclib-node#434 raised
+        `ValueError` on -- a `stop` at or below `block_locator`'s own
+        height is never in the slice taken after it, so it is simply
+        not found rather than raising, and the answer is the slice
+        unchanged: empty where the locator is already this index's own
+        tip, Core's own "nothing to send" for the same request.
         """
         output: list[bytes] = []
         for block_locator in block_locators:
-            if block_locator not in self.header_index:
+            start = self.header_index_pos.get(block_locator)
+            if start is None:
                 continue
-            start = self.header_index.index(block_locator)
-            output = self.header_index[start + 1 :]
-            if stop in self.header_index:
-                end = output.index(stop)
-                output = output[: end + 1]
-            output = output[:2000]
+            output = self.header_index[start + 1 : start + 1 + 2000]
+            if stop in output:
+                output = output[: output.index(stop) + 1]
             break
         return [self.get_block_info(x).header for x in output]
