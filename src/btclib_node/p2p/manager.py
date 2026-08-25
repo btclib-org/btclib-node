@@ -474,38 +474,60 @@ class P2pManager(threading.Thread):
             pending = asyncio.all_tasks(self.loop)
             if not pending:
                 break
-            # `server`'s own `accept` is a task of its own too, and
-            # `pending` above reaches it directly rather than only
-            # through `server`'s task cascading a cancel onto it. The
-            # kernel can have handed a connection to `accept`'s own
-            # future already -- indistinguishable from the ordinary case
-            # once that future is done -- and `Task.cancel` on a task
-            # whose own awaited future is already done cannot cancel
-            # that future either: it forces `CancelledError` into the
-            # task on its next step regardless, discarding a socket nobody
-            # ever gets to close. `server`'s except arm already guards
-            # this for a cancel arriving through its own shield
-            # (btclib-org/btclib-node#312); it cannot guard a cancel that
-            # reaches `accept` directly, which is what happens here on
-            # every pass. One step of the loop first is what a task
-            # sitting on an already-resolved future needs to return
-            # normally instead -- for `accept`, straight into
-            # `create_connection`, which is a task this same loop already
-            # knows how to close, on its next pass -- so `pending` is
-            # taken again below, rather than reused, once that step has
-            # had its chance to change what it names. Guarded on `pending`
-            # already being non-empty, rather than unconditional: a `run`
-            # that raised before ever reaching `run_forever` -- a bind
-            # failure -- leaves the `loop.stop` this method schedules
-            # above undelivered, and asking that idle loop to run even
-            # one more step raises `RuntimeError('Event loop stopped
-            # before Future completed.')` for it, on a loop that was
-            # never going to have an `accept` task to begin with
-            # (btclib-org/btclib-node#353).
-            self.loop.run_until_complete(asyncio.sleep(0))
-            pending = asyncio.all_tasks(self.loop)
-            if not pending:
-                break
+            if self.ident is not None:
+                # `server`'s own `accept` is a task of its own too, and
+                # `pending` above reaches it directly rather than only
+                # through `server`'s task cascading a cancel onto it. The
+                # kernel can have handed a connection to `accept`'s own
+                # future already -- indistinguishable from the ordinary
+                # case once that future is done -- and `Task.cancel` on a
+                # task whose own awaited future is already done cannot
+                # cancel that future either: it forces `CancelledError`
+                # into the task on its next step regardless, discarding a
+                # socket nobody ever gets to close. `server`'s except arm
+                # already guards this for a cancel arriving through its
+                # own shield (btclib-org/btclib-node#312); it cannot guard
+                # a cancel that reaches `accept` directly, which is what
+                # happens here on every pass. One step of the loop first
+                # is what a task sitting on an already-resolved future
+                # needs to return normally instead -- for `accept`,
+                # straight into `create_connection`, which is a task this
+                # same loop already knows how to close, on its next pass
+                # -- so `pending` is taken again below, rather than
+                # reused, once that step has had its chance to change
+                # what it names.
+                #
+                # Guarded on `self.ident`, not on `pending` being
+                # non-empty: a caller can hand this loop real tasks of
+                # its own -- directly, via `loop.create_task` -- without
+                # ever calling `start()`, and `pending` above reads
+                # non-empty despite `run_forever` never having run. This
+                # method's own `call_soon_threadsafe(self.loop.stop)`
+                # above only schedules `loop.stop`; where `start()` was
+                # never called, nothing has stepped the loop since, so
+                # asking it to run even one more step here is the first
+                # time it runs since that scheduling -- whether or not a
+                # caller stepped it earlier for some unrelated reason --
+                # and that raises `RuntimeError('Event loop stopped
+                # before Future completed.')` the same way a `run` that
+                # raised before ever reaching `run_forever` -- a bind
+                # failure -- already did (btclib-org/btclib-node#353). A
+                # thread that was never started never scheduled `server`
+                # either, so there is no `accept` task this step could
+                # still be owed for; skipping straight to the cancel
+                # below is correct for it, not merely safe. `self.ident`
+                # is `None` only where `start` was never called at all
+                # and stays set for the rest of this object's life once
+                # it was, which is the question this guard needs to ask
+                # -- `is_alive()` is false both before `start` and after
+                # `run` has already returned, so it cannot tell those two
+                # apart. `RpcManager.stop` carries the identical guard,
+                # for the identical reason (btclib-org/btclib-node#362,
+                # btclib-org/btclib-node#368).
+                self.loop.run_until_complete(asyncio.sleep(0))
+                pending = asyncio.all_tasks(self.loop)
+                if not pending:
+                    break
             # every one of them before the loop is allowed to run again,
             # rather than cancelling and draining one at a time, which is
             # what leaves the accept loop live for the whole drain
