@@ -73,6 +73,11 @@ if TYPE_CHECKING:
 
 
 def version(node: Node, msg: bytes, conn: Connection) -> None:
+    """Handle a peer's `version`: refuse an incompatible peer, else continue.
+
+    Continuing means answering `wtxidrelay`, `sendaddrv2` and `verack`,
+    and recording whether the peer asked to have transactions relayed.
+    """
     version_msg = Version.parse(msg)
 
     conn.version_message = version_msg
@@ -119,6 +124,12 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 def verack(node: Node, msg: bytes, conn: Connection) -> None:
+    """Complete a peer's handshake: promote it and send the follow-up messages.
+
+    Refuses a `verack` ahead of its own `version`/`wtxidrelay`, and
+    records the peer's own address as reachable once promoted -- the
+    comment below is where that recording is argued.
+    """
     if not conn.version_message or not conn.wtxidrelay_received:
         # a `verack` ahead of the `version`/`wtxidrelay` it depends on:
         # out of handshake order, and discouraged for it (#283)
@@ -182,14 +193,17 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 def wtxidrelay(node: Node, msg: bytes, conn: Connection) -> None:
+    """Record that the peer relays transactions by wtxid (BIP339)."""
     conn.wtxidrelay_received = True
 
 
 def sendaddrv2(node: Node, msg: bytes, conn: Connection) -> None:
+    """Record that the peer wants `addrv2` gossip rather than `addr`."""
     conn.prefer_addressv2 = True
 
 
 def sendheaders(node: Node, msg: bytes, conn: Connection) -> None:
+    """Record that the peer wants new blocks announced as headers (BIP130)."""
     # BIP130: an empty payload, so nothing to parse -- the message
     # itself is the request. Core's own handler does the same one
     # thing and nothing else (net_processing.cpp). btclib-org/btclib-node#202
@@ -197,11 +211,17 @@ def sendheaders(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 def ping(node: Node, msg: bytes, conn: Connection) -> None:
+    """Answer a `ping` with a `pong` carrying the same nonce."""
     nonce = Ping.parse(msg).nonce
     conn.send(Pong(nonce))
 
 
 def pong(node: Node, msg: bytes, conn: Connection) -> None:
+    """Match a `pong` to the outstanding `ping` and record the round trip.
+
+    A nonce that does not match the one this node last sent is a
+    protocol violation, discouraged and dropped rather than matched.
+    """
     nonce = Pong.parse(msg).nonce
     # The read that decides which of ping_sent/ping_nonce apply and the
     # clear that answers it are one step under conn._ping_lock, against
@@ -263,6 +283,11 @@ _ADDR_SAMPLE_JITTER = 3600 * 6
 
 
 def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
+    """Answer a peer's `getaddr` with a sample of known addresses, once.
+
+    The sample itself is a cache, shared and redrawn only once its own
+    lifetime and jitter expire -- the comment below argues why.
+    """
     # Once per connection, matching the flag's own docstring
     # (connection.py): a peer asking in a loop is served the table once
     # rather than once per ask. btclib-org/btclib-node#71
@@ -305,6 +330,7 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 def addr(node: Node, msg: bytes, conn: Connection) -> None:
+    """Merge the addr-version-1 entries a peer gossiped into the table."""
     # Addr.parse(msg) would refuse an octet past the last address
     # (btclib's own assert_no_trailing, a malleability guard that holds
     # across the library) by raising out of this callback, which
@@ -327,6 +353,7 @@ def addr(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 def addrv2(node: Node, msg: bytes, conn: Connection) -> None:
+    """Merge the BIP155 entries a peer gossiped into the address table."""
     # the same leniency as addr above, and the same reason: BIP155
     # entries fully read, anything past them left unchecked rather than
     # costing the peer its connection. btclib-org/btclib-node#149
@@ -335,6 +362,7 @@ def addrv2(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 def feefilter(node: Node, msg: bytes, conn: Connection) -> None:
+    """Record the peer's own BIP133 minimum feerate, or none if invalid."""
     # BIP133: a peer asking not to be told about a transaction paying
     # less. Stored on the connection, the same shape relay_tx above
     # already is; read by DownloadManager.tx_download, through
@@ -357,6 +385,11 @@ def feefilter(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 def tx(node: Node, msg: bytes, conn: Connection) -> None:
+    """Validate an unsolicited transaction and queue it for announcement.
+
+    A no-op before this node's own chain is synced, or if the mempool
+    already holds it, or if `add_tx` itself declines to keep it.
+    """
     # Core's own reason for the same early return, before it even
     # parses the payload: "we don't have enough information to validate
     # it yet" (net_processing.cpp, MSG_TX) -- the utxo set is still
@@ -386,6 +419,12 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 def block(node: Node, msg: bytes, conn: Connection) -> None:
+    """Store a requested block once its proof of work checks out.
+
+    A no-op if this block is already marked downloaded. Invalidates it
+    first and re-raises on a failed check, so the next peer offering
+    the same block is refused before being asked for it.
+    """
     # btclib's BlockPayload validates against mainnet's pow limit by
     # default, which no regtest or signet block meets. Its own docstring
     # names the shape: build unchecked and ask afterwards, which is what
@@ -417,6 +456,10 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 def inv(node: Node, msg: bytes, conn: Connection) -> None:
+    """Ask for headers behind an announced block, queue missing transactions.
+
+    A no-op before this node's own chain is synced.
+    """
     if node.status < NodeStatus.BlockSynced:
         return
     inv = Inv.parse(msg)
@@ -433,6 +476,12 @@ def inv(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 def getdata(node: Node, msg: bytes, conn: Connection) -> None:
+    """Answer a peer's request for the transactions and blocks it named.
+
+    Transactions are served from the mempool only if the peer wants
+    them relayed, answered `notfound` on a miss; a requested block not
+    held is silent, matching Core -- the comments below argue both.
+    """
     getdata = GetData.parse(msg)
 
     tx_types = (
@@ -498,6 +547,13 @@ def getdata(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 def headers(node: Node, msg: bytes, conn: Connection) -> None:
+    """Index a batch of headers, ask for more, or mark header sync finished.
+
+    A batch connecting to nothing known asks again from what this node
+    already has; a full-sized batch asks for the next one; a shorter
+    batch that still connected means the peer has nothing more to give,
+    which is what finishes header sync.
+    """
     headers = Headers.parse(msg).headers
     # add_headers raises on a batch it refuses -- a header failing its
     # own proof of work or context check -- and the raise is left to
@@ -543,6 +599,11 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 def getheaders(node: Node, msg: bytes, conn: Connection) -> None:
+    """Answer a peer's `getheaders` with what its own locator resolves to.
+
+    Silent where the locator names nothing this node's own `header_index`
+    holds -- there is nothing to answer with, not a refusal.
+    """
     getheaders = GetHeaders.parse(msg)
     headers = node.chainstate.block_index.get_headers_from_locators(
         getheaders.locator, getheaders.hash_stop
@@ -612,6 +673,12 @@ def _filter_range(
 
 
 def get_cfilters(node: Node, msg: bytes, conn: Connection) -> None:
+    """Answer a BIP157 `getcfilters` with one `cfilter` per requested height.
+
+    Silent on a request `_filter_range` refuses; stops mid-answer,
+    without raising, if this connection is closed by the time it gets
+    there -- the comment below is where that check is argued.
+    """
     request = GetCFilters.parse(msg)
     heights = _filter_range(
         node,
@@ -654,6 +721,10 @@ def get_cfilters(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 def get_cfheaders(node: Node, msg: bytes, conn: Connection) -> None:
+    """Answer a BIP157 `getcfheaders` with the requested range's filter headers.
+
+    Silent on a request `_filter_range` refuses.
+    """
     request = GetCFHeaders.parse(msg)
     heights = _filter_range(
         node,
@@ -700,6 +771,10 @@ def get_cfheaders(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 def get_cfcheckpt(node: Node, msg: bytes, conn: Connection) -> None:
+    """Answer a BIP157 `getcfcheckpt` with one filter header per checkpoint.
+
+    Silent for an unsupported filter type or an unknown stop hash.
+    """
     request = GetCFCheckpt.parse(msg)
     # not _filter_range: this request carries no start height, a
     # checkpoint chain always beginning at the genesis block, so the two
@@ -738,6 +813,11 @@ def get_cfcheckpt(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 def not_found(node: Node, msg: bytes, conn: Connection) -> None:
+    """Clear the in-flight record for a transaction the peer could not answer.
+
+    A block item carries no such bookkeeping to clear -- the comment
+    below argues why.
+    """
     missing = NotFound.parse(msg)
     # `TxDownloadManagerImpl::ReceivedNotFound`, net_processing.cpp
     # (bitcoin/bitcoin@58a7869f86): a `notfound` for a transaction this
@@ -761,6 +841,7 @@ def not_found(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 def reject(node: Node, msg: bytes, conn: Connection) -> None:
+    """Log a peer's `reject` message."""
     reject = Reject.parse(msg)
     err_msg = (
         f"Reject received: {reject.code.name}, {reject.reason}, {reject.data.hex()}"

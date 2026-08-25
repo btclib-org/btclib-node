@@ -110,6 +110,21 @@ to check the guess.
   still deferred the way #264's own `D100`/`D104` split deferred
   `tests/**` and `scripts/**`.
 
+### `src/btclib_node/p2p/` gets real docstrings (issue #373)
+
+- **`D101`/`D102`/`D103`/`D107` are selected for `src/btclib_node/p2p/`**
+  (issue #373, slice 4): every class, method, function and `__init__`
+  across `__init__.py`, `address.py`, `callbacks.py`, `connection.py`,
+  `main.py`, `manager.py` and `messages/errors.py` now carries a
+  docstring grounded in what it does and, where the code's own
+  cross-thread behavior is what a docstring would otherwise get wrong,
+  checked against every real call site rather than assumed -- caught
+  this way before landing: `Connection.send` and `Connection.send_ping`
+  are each reachable from `Node`'s own thread and from `P2pManager`'s
+  alike, not from one alone. `rpc/` is the remaining slice, still
+  deferred the way #264's own `D100`/`D104` split deferred `tests/**`
+  and `scripts/**`.
+
 ### The docs gate's own remaining gaps close: `[project.urls]`, `local-link-prefix`
 
 - **`conf.py`'s `BLOB` constant reads `pyproject.toml`'s own

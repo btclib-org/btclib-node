@@ -25,6 +25,12 @@ if TYPE_CHECKING:
 
 
 def handle_p2p_handshake(node: Node) -> None:
+    """Pop one queued handshake message and dispatch it, or drop the peer.
+
+    A message out of handshake order gets the connection discouraged
+    and stopped rather than dispatched; a callback that raises stops it
+    too, discouraged only where the exception is a `BTClibException`.
+    """
     msg_type, msg, conn_id = node.p2p_manager.handshake_messages.popleft()
     manager = node.p2p_manager
     # a connection still finishing its handshake, which is where every
@@ -53,6 +59,13 @@ def handle_p2p_handshake(node: Node) -> None:
 
 
 def handle_p2p(node: Node) -> None:
+    """Pop one queued message and dispatch it, once its handshake is done.
+
+    A message ahead of `verack`, or one arriving out of order otherwise,
+    gets the connection discouraged and stopped rather than dispatched;
+    a callback that raises stops it too, discouraged only for a
+    `BTClibException` (the comment below argues why that split matters).
+    """
     msg_type, msg, conn_id = node.p2p_manager.messages.popleft()
     manager = node.p2p_manager
     # a connection still pending is still found here, so that anything

@@ -100,6 +100,13 @@ MAX_QUEUED_SEND_BYTES = int(
 
 
 class Connection:
+    """One peer-to-peer socket and everything owed to or by it.
+
+    The module docstring above is where its own three jobs -- framing,
+    writing what `Node`'s thread queues, and bounding what it buffers --
+    are argued.
+    """
+
     def __init__(
         self,
         manager: P2pManager,
@@ -109,6 +116,7 @@ class Connection:
         *,
         inbound: bool,
     ) -> None:
+        """Set every field a fresh connection starts with, before `run`."""
         super().__init__()
 
         self.id = connection_id
@@ -216,6 +224,11 @@ class Connection:
         self.send_lock = asyncio.Lock()
 
     def stop(self, *, cancel_task: bool = True) -> None:
+        """Close the socket and cancel `task`, idempotent on a repeat call.
+
+        Called from `Node`'s own thread and from `P2pManager`'s alike;
+        the comment below is where that and its own safety are argued.
+        """
         if self.status == P2pConnStatus.Closed:
             # Already stopped: a peer over the send-buffer bound can
             # have several queued messages each independently discover
@@ -260,6 +273,12 @@ class Connection:
         self.client.close()
 
     async def run(self) -> None:
+        """Send `version`, then read and dispatch messages until `stop`.
+
+        Always ends in `stop`, whether by a graceful `return`, a caught
+        exception, or the `finally` below catching a cancellation from
+        outside this loop -- the comment above this method argues why.
+        """
         # self.client is this coroutine's own resource, the same
         # guarantee P2pManager.server's own `with server_socket:` gives
         # its listening socket -- so a finally here, not only the
@@ -313,6 +332,13 @@ class Connection:
             await self.loop.sock_sendall(self.client, data)
 
     async def async_send(self, payload: Payload) -> None:
+        """Frame `payload` and send it, dropping the connection past the bound.
+
+        Counts what it queues into `queued_send_bytes` before awaiting
+        the write, and refuses to queue at all -- stopping the
+        connection instead -- once that plus this message would exceed
+        `MAX_QUEUED_SEND_BYTES`.
+        """
         self.node.logger.debug("Sending message: %s", payload.command)
 
         try:
@@ -365,9 +391,17 @@ class Connection:
         self.last_send = time.time()
 
     def send(self, msg: Payload) -> None:
+        """Schedule `async_send(msg)` onto this connection's own loop.
+
+        The synchronous entry point, safe to call from any thread:
+        `run_coroutine_threadsafe` is what lets both `Node`'s own thread
+        (through the `p2p.callbacks` handlers) and `P2pManager`'s own
+        (through `send_ping`) reach it without ever awaiting directly.
+        """
         asyncio.run_coroutine_threadsafe(self.async_send(msg), self.loop)
 
     async def send_version(self) -> None:
+        """Build and send this node's own `version` message."""
         # compact_filters is BIP157's NODE_COMPACT_FILTERS, and saying
         # it promises an answer to getcfilters, getcfheaders and
         # getcfcheckpt for every block of the chain. The filter index is
@@ -425,6 +459,14 @@ class Connection:
         await self.async_send(version)
 
     def send_ping(self) -> None:
+        """Send a `ping` with a fresh nonzero nonce, recording it under lock.
+
+        Called from `Node`'s own thread, twice over (`callbacks.verack`
+        once a handshake completes, and `rpc.callbacks.ping` through
+        `ping_all`), and from `P2pManager`'s own thread once
+        (`manage_connections`); `_ping_lock` is what keeps its own two
+        writes one step against `callbacks.pong`'s read and clear.
+        """
         # The nonce is the sender's to choose, and btclib's Ping defaults
         # it to zero rather than drawing one. Zero is also what
         # ping_nonce means "no ping outstanding", so it is drawn here and
@@ -437,6 +479,12 @@ class Connection:
         self.send(ping_msg)
 
     def parse_messages(self) -> None:
+        """Parse every whole message in `buffer`, queueing each on the manager.
+
+        Leaves a trailing partial message in `buffer` for the next
+        read, and routes each parsed one to `handshake_messages` or
+        `messages` -- `ping`/`pong` pushed to the front of the latter.
+        """
         # A stream and not the bytes: Message.parse consumes one message
         # and leaves the position after it, so several whole messages in
         # one read are taken one at a time, and a partial one rewinds.
