@@ -80,6 +80,7 @@ class RecordingDeque(deque[Message]):
     """
 
     def __init__(self) -> None:
+        """Start empty: nothing has been seen before the first message."""
         super().__init__()
         self.seen: list[Message] = []
 
@@ -166,6 +167,7 @@ def mark(peers: Peers) -> int:
 def received[M: _ParsablePayload](
     client: Node, message_type: type[M], mark: int = 0
 ) -> list[M]:
+    """Every `message_type` the client has seen from `mark` on, parsed."""
     seen = cast("RecordingDeque", client.p2p_manager.messages).seen
     return [
         message_type.parse(payload)
@@ -183,12 +185,20 @@ def answers[M: _ParsablePayload](
 
 
 def ask(client: Node, message: Payload) -> None:
+    """Send `message` to the server over the client's own connection."""
     client.p2p_manager.connections[0].send(message)
 
 
 def test_a_peer_is_told_this_node_serves_compact_filters(
     peers: Peers, mark: int
 ) -> None:
+    """The client's version message is how the server learns it may ask.
+
+    `NODE_COMPACT_FILTERS` is a service bit of the version handshake, not
+    of these messages themselves, so a peer that wants filters has to
+    read it off the version the other side sent during the handshake --
+    checked here from the server's side, against the client's.
+    """
     server, _, _ = peers
     version = server.p2p_manager.connections[0].version_message
     assert version is not None
@@ -200,6 +210,13 @@ def test_a_peer_is_told_this_node_serves_compact_filters(
 def test_the_filters_a_peer_is_sent_are_the_ones_it_asked_for(
     peers: Peers, mark: int
 ) -> None:
+    """A `GetCFilters` range answers with exactly that range, in order.
+
+    Each `CFilter` is also checked against the block it claims to be
+    for: parsed back into a `BasicBlockFilter` and matched against the
+    script the block's own coinbase output pays to, which is the
+    property a filter is for and not merely a count of messages.
+    """
     _, client, chain = peers
     ask(
         client,
@@ -220,6 +237,15 @@ def test_the_filters_a_peer_is_sent_are_the_ones_it_asked_for(
 def test_a_client_can_build_the_header_chain_from_what_it_is_sent(
     peers: Peers, mark: int
 ) -> None:
+    """A `CFHeaders` answer carries enough for the client to derive it.
+
+    The message itself carries filter hashes, not headers: the client
+    chains them onto `previous_filter_header` the way BIP157 defines a
+    filter header, and what it derives has to equal the header the
+    server stores for the same block. The header just before the range
+    is checked too, and has to be the genesis block's, since the range
+    asked for starts at height one.
+    """
     server, client, chain = peers
     ask(client, GetCFHeaders(BlockFilterType.BASIC, 1, chain[-1].header.hash))
     (headers_message,) = answers(client, CFHeaders, mark)
@@ -243,6 +269,13 @@ def test_a_client_can_build_the_header_chain_from_what_it_is_sent(
 def test_the_checkpoints_of_a_chain_shorter_than_the_interval(
     peers: Peers, mark: int
 ) -> None:
+    """A chain with no block at a checkpoint height answers with none.
+
+    `CFCheckpt` reports one header per multiple of the checkpoint
+    interval up to the stop hash; a chain shorter than the interval has
+    no such block, so the answer is a `CFCheckpt` with an empty list
+    rather than a refusal or a message with a filler entry.
+    """
     _, client, chain = peers
     ask(client, GetCFCheckpt(BlockFilterType.BASIC, chain[-1].header.hash))
     (checkpoints,) = answers(client, CFCheckpt, mark)
@@ -255,6 +288,15 @@ def test_the_checkpoints_of_a_chain_shorter_than_the_interval(
 def test_a_filter_type_this_node_does_not_serve_gets_no_answer(
     peers: Peers, mark: int
 ) -> None:
+    """A `GetCFilters` naming an unserved filter type is silently dropped.
+
+    `1` is not `BlockFilterType.BASIC`, the only type this node indexes,
+    so the request gets no `CFilter` at all -- not an error, nothing.
+    Absence is checked by waiting for a second, servable request to be
+    answered first: only once that answer has arrived can "no `CFilter`
+    showed up" mean the first request was refused rather than merely
+    still pending.
+    """
     _, client, chain = peers
     ask(client, GetCFilters(1, 1, chain[-1].header.hash))
     # and then something it does answer, so this waits on an event
@@ -268,6 +310,15 @@ def test_a_filter_type_this_node_does_not_serve_gets_no_answer(
 def test_the_header_a_peer_derives_is_the_one_a_client_computes(
     peers: Peers, mark: int
 ) -> None:
+    """The server's stored filter headers match an independent BIP157 chain.
+
+    No message crosses the wire here: the block filters are rebuilt from
+    what `filter_index` stores, chained by hand from the genesis header
+    with `filter_header`, and compared against what `filter_index.
+    get_header` answers for each block -- so this test would catch a
+    stored header wrong at its source, which the request/answer tests
+    above cannot: they only compare the server against itself.
+    """
     # the cross-check that does not go through the node at all: the
     # filters of the blocks, chained from the genesis block the way
     # BIP157 defines it, are what the server says they are

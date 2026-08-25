@@ -727,7 +727,7 @@ ignore = [
 # `tests/unit/p2p/messages/` too -- so the root-level bucket below is an
 # explicit enumeration, not a glob that would also silently catch the
 # four subdirectories split out beside it.
-"tests/unit/p2p/**" = [
+"tests/unit/rpc/**" = [
     "D100",
     "D101",
     "D102",
@@ -737,7 +737,7 @@ ignore = [
     "D205",
     "D401",
 ]
-"tests/functional/p2p/**" = [
+"tests/functional/rpc/**" = [
     "D100",
     "D101",
     "D102",
@@ -747,7 +747,21 @@ ignore = [
     "D205",
     "D401",
 ]
-"tests/unit/chainstate/**" = [
+# every `tests/unit/` file at its own root, not under `p2p/`, `rpc/` or
+# `chainstate/` -- enumerated by name rather than globbed, since a glob
+# here would also catch those three subdirectories (see the comment
+# above)
+"tests/unit/{__init__,block_db_test,chains_test,config_test,coverage_floor_test,db_test,docs_test,download_test,harness_test,helpers_test,init_test,interpreter_test,log_test,main_test,mempool_test}.py" = [
+    "D100",
+    "D101",
+    "D102",
+    "D103",
+    "D104",
+    "D107",
+    "D205",
+    "D401",
+]
+"tests/{__init__,conftest,helpers}.py" = [
     "D100",
     "D101",
     "D102",
