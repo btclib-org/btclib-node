@@ -2,6 +2,7 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""`Chainstate` opens its store and closes it again with nothing on disk yet."""
 
 from typing import TYPE_CHECKING
 
@@ -14,4 +15,5 @@ if TYPE_CHECKING:
 
 
 def test_init(tmp_path: Path) -> None:
+    """Building `Chainstate` on a fresh, empty datadir and closing it works."""
     Chainstate(tmp_path, RegTest(), Logger(debug=True)).close()
