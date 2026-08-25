@@ -54,6 +54,18 @@ to check the guess.
   the command; this is that reasoning reaching the file a contributor
   reads before running the gate by hand.
 
+### `docs.yml`'s job is a required check on `main`
+
+- **Branch protection's `required_status_checks` now names three
+  contexts** instead of two: `Lint and type-check`, `test: every job
+  passed`, and `Build the documentation` -- the follow-up
+  `REPOSITORY.md`'s *Required checks on main* names beside the entry
+  below, applied once that job had a green run on `main`.
+  `REPOSITORY.md` is updated to match, and its documented `gh api`
+  PATCH now reads `-F strict=true` rather than `-f strict=true`: the
+  latter sends the JSON string `"true"`, which the API refuses for a
+  boolean field.
+
 ### `docs.yml` earns its place in the release path (closes #264)
 
 - **`release.yml` gains a `docs:` job**, calling `docs.yml` the way

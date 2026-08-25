@@ -16,49 +16,49 @@ Set through classic branch protection; no ruleset on `main` carries a
 ```shell
 gh api repos/btclib-org/btclib-node/branches/main/protection \
   --jq '.required_status_checks.contexts'
-# ["Lint and type-check","test: every job passed"]
+# ["Lint and type-check","test: every job passed","Build the documentation"]
 gh api repos/btclib-org/btclib-node/rulesets --jq '.[].id' \
   | xargs -I{} gh api repos/btclib-org/btclib-node/rulesets/{} \
     --jq '.rules[] | select(.type=="required_status_checks")'
 # (nothing)
 ```
 
-A red run on either blocks the merge. Both are produced by the workflows
-that answer for them:
+A red run on any of the three blocks the merge. Each is produced by the
+workflow that answers for it:
 
 | Check | Produced by |
 | --- | --- |
 | `Lint and type-check` | `lint.yml`'s only job |
 | `test: every job passed` | `test.yml`'s aggregate job |
+| `Build the documentation` | `docs.yml`'s only job |
 
-`lint.yml` has one job, so that job is the context; an aggregate over a
-single cell would be a job whose whole purpose is to repeat another's
-answer. `test.yml` has more than one and is therefore named through its
-aggregate, so that a job added to that workflow is gated on by being
-added rather than by somebody editing a rule stored outside the tree.
-Both jobs carry the reasoning in their own headers.
+`lint.yml` and `docs.yml` each have one job, so that job is the context;
+an aggregate over a single cell would be a job whose whole purpose is to
+repeat another's answer. `test.yml` has more than one and is therefore
+named through its aggregate, so that a job added to that workflow is
+gated on by being added rather than by somebody editing a rule stored
+outside the tree. All three jobs carry the reasoning in their own
+headers.
 
-**A third context is owed and not yet live.** `docs.yml`'s only job,
-"Build the documentation," reports on every pull request already
-(*What gates a merge, and what only reports* in `CONTRIBUTING.md`), and
-`release.yml` now calls it too (btclib-org/btclib-node#264), but
-reporting is not requiring: the `gh api` answer above stays two
-contexts until it is added, which is a repository setting no pull
-request carries (this section's own opening sentence) and is therefore
-the maintainer's own `gh api` PATCH, run once that job has a green run
-on `main`:
+`docs.yml`'s "Build the documentation" runs on every pull request
+already, the way `lint.yml` and `test.yml` do (*What gates a merge, and
+what only reports* in `CONTRIBUTING.md`), and `release.yml` calls it too
+(btclib-org/btclib-node#264); its presence in the `contexts` array above
+is what makes a red run on it block a merge into `main`, a repository
+setting no pull request carries (this section's own opening sentence).
+Adding a context to that array is a `gh api` PATCH:
 
 ```shell
 gh api -X PATCH \
   repos/btclib-org/btclib-node/branches/main/protection/required_status_checks \
-  -f strict=true \
+  -F strict=true \
   -f 'contexts[]=Lint and type-check' \
   -f 'contexts[]=test: every job passed' \
   -f 'contexts[]=Build the documentation'
 ```
 
-Re-run the first command above to tell whether that has happened yet —
-its answer, not this paragraph, is what is true today.
+Re-run the first command above to confirm the three contexts still hold
+— its answer, not this paragraph, is what is true today.
 
 **`links.yml`, `codeql.yml`, `os-macos.yml` and `bootstrap-dns.yml` must
 not become required checks**, and neither must `claude-review.yml`. The
