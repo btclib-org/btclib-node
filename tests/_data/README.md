@@ -34,6 +34,13 @@ path=src/test/data/blockfilters.json
 gh api "repos/bitcoin/bitcoin/commits?path=$path&per_page=1" --jq '.[0].sha'
 ```
 
+`.github/workflows/vendored-vectors.yml` runs both commands weekly, over
+every heading below carrying a full `repo`/`path`/`commit`/`blob`
+quadruple, and fails where either has moved. `pulled` and `behind` stay
+manual: refreshing a drifted pin is a decision the workflow does not get
+to make, so a red run is answered by hand, and `pulled` is updated to
+the date that answer was reached.
+
 ## `tests/unit/chainstate/_data/blockfilters.json`
 
 ```text
@@ -41,7 +48,7 @@ repo    bitcoin/bitcoin
 path    src/test/data/blockfilters.json
 commit  c7efb652f3543b001b4dd22186a354605b14f47e  2019-04-06
 blob    8945296a079b984d65b0aeb4a3e9b0798df075e0
-pulled  2026-08-22
+pulled  2026-08-25
 behind  0 revisions; that commit is the tip of the path
 ```
 

@@ -27,6 +27,23 @@ to check the guess.
   and `typos` as hooks that fix in place instead of only reporting;
   `yamllint` has no fix mode and stays check-only.
 
+### The vendored blockfilters.json pin is re-checked weekly, closing issue #327
+
+- **`vendored-vectors.yml` re-checks the vendored pin weekly** (closes
+  #327): `tests/_data/README.md` pinned
+  `tests/unit/chainstate/_data/blockfilters.json` to a Bitcoin Core
+  commit and blob by hand, with a documented procedure and nothing
+  running it without being asked. `.github/scripts/check_vendored_pin.py`
+  runs that procedure -- `git hash-object` against the recorded `blob`,
+  a `commits?path=` query against the recorded `commit` -- and the
+  workflow fails where either has moved. It carries no issue-tracking
+  machinery of its own and no `issues: write`: unlike btclib's
+  `check_vendored_vectors.py`, which serves a README with dozens of
+  vendored headings, this tree's one entry is answered by the same
+  contents-read, fail-on-drift shape `links.yml` and `bootstrap-dns.yml`
+  already use for a scheduled report on something outside this tree's
+  own commits.
+
 ### `select` gains `FBT`, closing issue #341
 
 - **`select` gains `FBT` (flake8-boolean-trap)** (closes #341): the
