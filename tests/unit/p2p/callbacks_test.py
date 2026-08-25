@@ -866,8 +866,7 @@ def test_a_feefilter_lands_on_the_connection() -> None:
 def test_a_feefilter_outside_the_money_range_is_read_as_no_filter(
     feerate: int,
 ) -> None:
-    """A `feefilter` naming a rate outside MoneyRange is read as no filter at
-    all.
+    """A `feefilter` naming a rate outside MoneyRange reads as no filter.
 
     Core acts on a received rate only within MoneyRange -- 0 to MAX_MONEY
     inclusive (net_processing.cpp's NetMsgType::FEEFILTER, consensus/amount.h's
@@ -1048,8 +1047,7 @@ def test_a_notfound_is_logged_rather_than_held_against_the_peer() -> None:
 def test_a_notfound_frees_the_transaction_it_names_to_be_asked_of_someone_else() -> (
     None
 ):
-    """A `notfound` clears the tx entry it names, but leaves a block entry
-    alone.
+    """A `notfound` clears the tx entry named, leaving a block entry alone.
 
     `DownloadManager.tx_download`'s own in-flight table, so an ask this peer
     will not answer is not held against it forever; a `MSG_BLOCK` item carries
@@ -1123,8 +1121,7 @@ def a_data_node(
     block_db: Any = None,
     status: NodeStatus = NodeStatus.BlockSynced,
 ) -> Any:
-    """Build a node whose mempool, chain and download manager are real enough to
-    test.
+    """Build a node whose mempool, chain and download manager are real enough.
 
     `BlockSynced` by default, since a transaction callback only accepts once the
     chain is caught up; `status` moves that to test the gate.
@@ -1256,14 +1253,10 @@ def test_a_transaction_a_full_mempool_declined_is_not_reported_either(
 
 
 class FakeBlockIndex:
-    """A block index stand-in whose answers are fixed and whose calls are
-    recorded.
-    """
+    """A block index stand-in with fixed answers and recorded calls."""
 
     def __init__(self, infos: dict[bytes, Any]) -> None:
-        """Answer `get_block_info` from `infos`, and record
-        `marked`/`invalidated` calls.
-        """
+        """Answer `get_block_info`, record `marked`/`invalidated` calls."""
         self.infos = infos
         self.marked: list[bytes] = []
         self.invalidated: list[bytes] = []
@@ -1322,9 +1315,7 @@ def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded() -> None:
 
 
 def test_a_block_already_stored_is_not_stored_again() -> None:
-    """A block already marked downloaded is a no-op: not re-added, not
-    re-marked.
-    """
+    """A block already downloaded is a no-op: not re-added, not re-marked."""
     block = a_block()
     index = FakeBlockIndex({block.header.hash: SimpleNamespace(downloaded=True)})
     added: list[Block] = []
@@ -1363,8 +1354,7 @@ def a_block_claiming_an_easier_target_than_the_chain_allows(block: Block) -> Blo
 
 
 def test_a_block_whose_proof_of_work_does_not_hold_up_is_refused() -> None:
-    """A block whose proof of work fails is invalidated, not stored, and
-    re-raised.
+    """A block failing proof of work is invalidated, not stored, and re-raised.
 
     The raise still reaches main.handle_p2p, which drops the peer; invalidate is
     what keeps the next one from being asked to send the same block again:
@@ -1398,8 +1388,7 @@ def test_an_inventory_is_ignored_until_the_blocks_are_synced() -> None:
 
 
 def test_a_block_announced_is_answered_with_a_getheaders() -> None:
-    """An `inv` naming blocks is answered with `getheaders` stopping at the last
-    one.
+    """An `inv` naming blocks gets `getheaders` stopping at the last one.
 
     The last one announced: the headers between are what we are after.
     """
@@ -1415,8 +1404,7 @@ def test_a_block_announced_is_answered_with_a_getheaders() -> None:
 
 
 def test_a_transaction_announced_that_we_lack_is_wanted() -> None:
-    """A `wtx` `inv` for a transaction not in the mempool is queued to be asked
-    for.
+    """A `wtx` `inv` for a transaction not held is queued to be asked for.
 
     Queued onto `download_manager.inv_txs` keyed by the announcing peer's id,
     and no answer sent directly -- the download manager decides who to ask.
@@ -1442,8 +1430,7 @@ def test_a_transaction_announced_that_we_hold_is_not_wanted() -> None:
 
 
 def test_a_transaction_this_node_holds_is_served() -> None:
-    """A `getdata` for a held transaction is served, witness included when
-    asked.
+    """A `getdata` for a held transaction is served, witness included as asked.
 
     Which identifier the peer asked by, and whether the answer carries the
     witness, are two different questions and the codes answer both.
@@ -1468,8 +1455,7 @@ def test_a_transaction_this_node_holds_is_served() -> None:
 
 
 def test_a_transaction_is_not_found_under_the_other_identifier() -> None:
-    """A `getdata` naming the wrong identifier for a held transaction gets
-    `notfound`.
+    """A `getdata` naming the wrong identifier for a held tx gets `notfound`.
 
     `MSG_TX` by wtxid, and `MSG_WTX` by txid: the mempool is indexed on the
     identifier each type actually names, not on either interchangeably.
@@ -1508,8 +1494,7 @@ def test_a_transaction_this_node_does_not_hold_gets_a_notfound() -> None:
 
 
 def test_several_misses_batch_into_one_notfound_alongside_the_hits() -> None:
-    """One `getdata` naming a hit and several misses answers both, misses
-    batched.
+    """One `getdata` naming a hit and misses answers both, misses batched.
 
     The held transaction is sent directly and the misses collect into a single
     `notfound`, rather than one `notfound` per missing item.
@@ -1533,8 +1518,7 @@ def test_several_misses_batch_into_one_notfound_alongside_the_hits() -> None:
 
 
 def test_a_peer_that_declined_relay_is_not_served_a_transaction_it_asks_for() -> None:
-    """A peer with `relay_tx` false gets no answer to a `getdata` for a
-    transaction.
+    """A peer with `relay_tx` false gets no answer to a `getdata` for a tx.
 
     Every code it could ask by, because gating one of the three is a peer that
     gets the same answer by asking a different way -- not even `notfound`,
