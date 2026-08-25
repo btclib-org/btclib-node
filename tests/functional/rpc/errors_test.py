@@ -196,3 +196,36 @@ def test_a_request_the_node_can_refuse_is_not_answered_internal_error(
     assert refusal([])["code"] == -1
 
     assert node.is_alive()
+
+
+def test_a_missing_argument_is_not_answered_internal_error(rpc_node: Node) -> None:
+    """`testmempoolaccept` and `sendrawtransaction` short of an argument, live.
+
+    Both used to reach `params[0]` unguarded, raising `IndexError` for an
+    empty `params` -- caught only by `handle_rpc`'s own catch-all, which
+    answers `-32603 Internal Error`, the code this node owes its own
+    fault rather than a call short of a required argument (issue #443).
+    """
+    node = rpc_node
+    wait_until_listening(node.rpc_manager)
+
+    def refusal(method: str, params: list[Any]) -> Any:
+        request = {"jsonrpc": "2.0", "id": "a", "method": method, "params": params}
+        answer = json.loads(post(node, request))
+        assert answer["id"] == "a"
+        return answer["error"]
+
+    assert refusal("testmempoolaccept", []) == {
+        "code": -1,
+        "message": 'testmempoolaccept ["rawtx",...] ( maxfeerate )',
+    }
+    assert refusal("testmempoolaccept", ["not an array"]) == {
+        "code": -3,
+        "message": "JSON value of type string is not of expected type array",
+    }
+    assert refusal("sendrawtransaction", []) == {
+        "code": -1,
+        "message": 'sendrawtransaction "hexstring" ( maxfeerate maxburnamount )',
+    }
+
+    assert node.is_alive()

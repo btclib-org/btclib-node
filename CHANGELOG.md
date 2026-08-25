@@ -71,6 +71,27 @@ to check the guess.
   the order between them either way. Moving the write earlier
   therefore changes no behaviour other than closing the window.
 
+### A missing argument to `testmempoolaccept`/`sendrawtransaction` (closes #443)
+
+- **An empty `params` no longer reaches `params[0]` unguarded.** Both
+  callbacks used to raise `IndexError` on it, which `handle_rpc` answers
+  `INTERNAL_ERROR` / "Internal Error" -- the code this node owes its own
+  fault, for a call that was merely short of a required argument. Each
+  now raises `RpcError(MISC_ERROR, ...)` carrying the method's own
+  oneline usage, the same shape `get_block_hash`, `get_block_header` and
+  `get_raw_transaction` already answer this with, derived from
+  `RPCArg::ToString(oneline=true)` over `sendrawtransaction`'s and
+  `testmempoolaccept`'s own declared arguments
+  (`src/rpc/mempool.cpp:72-77` and `:291-298`, read at
+  `bitcoin/bitcoin@b91d983f66`).
+- **`testmempoolaccept`'s `rawtxs` is now type-checked before the loop
+  that reads it.** A JSON string is itself iterable in Python, so a
+  non-list `rawtxs` used to be walked one character at a time rather
+  than refused; Core declares this argument `RPCArg::Type::ARR`,
+  type-checked before the handler body runs, the same mechanism
+  `blockhash` and `txid` are already checked against elsewhere in this
+  file.
+
 ### The docs gate warns against `--only-group docs` (closes #425)
 
 - **`CONTRIBUTING.md`'s *The environment and the gates* now names
