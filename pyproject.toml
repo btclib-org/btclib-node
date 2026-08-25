@@ -747,17 +747,7 @@ ignore = [
     "D205",
     "D401",
 ]
-"tests/unit/rpc/**" = [
-    "D100",
-    "D101",
-    "D102",
-    "D103",
-    "D104",
-    "D107",
-    "D205",
-    "D401",
-]
-"tests/functional/rpc/**" = [
+"tests/unit/chainstate/**" = [
     "D100",
     "D101",
     "D102",

@@ -2,6 +2,12 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""getconnectioncount and getpeerinfo, over two real nodes dialled together.
+
+Each test connects two live nodes over p2p and asks one of them, over
+its own RPC socket, what its p2p side reports about the other.
+"""
+
 import json
 from typing import TYPE_CHECKING
 
@@ -17,6 +23,7 @@ if TYPE_CHECKING:
 
 
 def test_get_connection_count(tmp_path: Path) -> None:
+    """getconnectioncount, live, counts a peer dialled and handshaken."""
     node1 = Node(
         config=Config(
             chain="regtest",
@@ -80,6 +87,13 @@ def test_get_connection_count(tmp_path: Path) -> None:
 
 
 def test_get_peer_info(tmp_path: Path) -> None:
+    """getpeerinfo, live, names each side's own view of the other peer.
+
+    Checked from both ends of one connection: the dialling node's own
+    answer names the peer inbound `False`, and the accepting node's
+    names it `True`, with `addr`/`addrbind`/`addrlocal` swapped between
+    the two views of the same socket pair.
+    """
     node1 = Node(
         config=Config(
             chain="regtest",

@@ -2,6 +2,14 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""testmempoolaccept, sendrawtransaction and getrawtransaction, live.
+
+Drives a chain of dependent transactions through the mempool -- missing
+prevouts, an accepted parent, a child that only accepts once its parent
+is held in the mempool -- and checks `BitcoinCoreFetcher.get_tx` against
+this node unchanged.
+"""
+
 import json
 from typing import TYPE_CHECKING
 
@@ -23,6 +31,14 @@ if TYPE_CHECKING:
 
 
 def test_add_tx(rpc_node: Node) -> None:
+    """`testmempoolaccept` and `sendrawtransaction`, live, across a tx chain.
+
+    An unparsable string, a transaction with no known prevout, and a
+    child of an unconfirmed, unheld parent are each refused;
+    `sendrawtransaction` accepts the parent, `testmempoolaccept` then
+    accepts the child once its parent is held, and `getmempoolinfo`
+    reports the parent's own presence.
+    """
     node = rpc_node
 
     wait_until_listening(node.rpc_manager)
