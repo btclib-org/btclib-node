@@ -1,0 +1,134 @@
+---
+name: docs
+
+# the third gate, and a question of its own: does the documentation build.
+# Without it nothing in CI builds it, only read the docs does once a
+# project is connected there, with -W -- so invalid reStructuredText in a
+# docstring fails after the merge on a service whose failure is not a
+# check on the pull request.
+#
+# No hook can take this over: markdownlint does not read .rst, and
+# ruff's pydocstyle rules check the form of a docstring rather than
+# whether its body is valid rst.
+#
+# A workflow of its own rather than a job in lint.yml: a failed docs
+# build and a failed hook are two different verdicts about two
+# different things, and one badge and one line in the checks list each
+# is what says so. It also installs a different dependency group and
+# needs no pre-commit cache, so the two share nothing but the checkout
+
+on:
+  push:
+    # main only, for the reason lint.yml gives at the same key: a push to
+    # a branch with an open pull request would run this twice, in two
+    # concurrency groups that do not cancel each other for every
+    # pull_request action except closed on a merge -- see that trigger's
+    # own comment below -- and the pull_request run is the one worth
+    # keeping
+    branches: [main]
+  pull_request:
+    # ready_for_review, so a pull request marked ready gets the run the
+    # draft condition below withheld while it was a draft.
+    # closed too, though the job below declines the real work on it: a
+    # merge or a close is neither a push nor a synchronize, so a run
+    # this pull request's own concurrency group is still holding
+    # survives either unless the closed event lands in that same group
+    # -- which this type is what makes it do, cancel-in-progress below
+    # turning the landing into the cancellation. That was meant to be
+    # *this* pull request's own group and nothing else's: github.ref for
+    # a closed, merged pull request resolves to the base branch's ref
+    # rather than refs/pull/N/merge, so grouping by github.ref alone put
+    # the closed run in the push trigger's own group instead, which
+    # would cancel the run building the actual merge commit's
+    # documentation moments after every merge. The concurrency block
+    # below groups a pull_request run by the pull request's own number
+    # instead, which cannot equal any push's github.ref under any action
+    types: [opened, reopened, synchronize, ready_for_review, closed]
+  # the escape hatch: a run on demand for a branch whose pull request is
+  # not open yet
+  workflow_dispatch:
+
+# least privilege for the GITHUB_TOKEN: everything running in a job
+# (actions, dependencies) can read the token, so it must not be able to
+# write to the repository
+permissions:
+  contents: read
+
+# cancel superseded runs on the same branch/PR.
+# github.event.pull_request.number, not github.ref alone, is what a
+# pull_request run of any action groups by, so a closed run cannot
+# resolve to the same group as a push to main -- the pull_request
+# trigger's own comment above has the reasoning. A push carries no
+# pull_request context, so github.ref is still what groups it, unchanged
+concurrency:
+  group: docs-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs:
+    # the name is the required check on main once REPOSITORY.md's
+    # required-checks table names it
+    name: Build the documentation
+    # a draft pull request is work in progress: every push to one would
+    # build the documentation of a tree its author is not asking anyone
+    # to read yet. A run on the merge result still happens the moment
+    # the pull request is marked ready, which is why ready_for_review is
+    # a trigger type above.
+    # A closed pull request spends none either -- the trigger above
+    # takes the closed event only to supersede a run this ref's group is
+    # still holding
+    if: ${{ !github.event.pull_request.draft && github.event.action != 'closed' }}
+    runs-on: ubuntu-latest
+    # about ten seconds of sphinx over this tree's own package; a job
+    # that takes minutes is hung
+    timeout-minutes: 20
+    steps:
+      # every action is pinned to a commit SHA, the tag in the comment: a
+      # tag, let alone a branch, is a name its owner can move, and these
+      # run in a job that can read the workflow token
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # see the checkout of the coverage job in test.yml
+          persist-credentials: false
+      - name: Setup uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+      # the same command .readthedocs.yaml runs and CONTRIBUTING.md
+      # documents, so what CI checks is what gets published.
+      # Not --only-group docs: autodoc imports the module it documents,
+      # so the project has to be installed -- with sphinx alone the
+      # build renders an empty module heading and says nothing about it.
+      # -W makes a failed import a failed build, and --keep-going
+      # reports every problem in one run instead of one per push
+      - name: Build the docs
+        run: >
+          uv run --locked --no-default-groups --group docs
+          sphinx-build -W --keep-going -b html docs/source docs/build/html
+      # the one defect the build above cannot report on itself: a link
+      # myst cannot resolve is rendered as an anchor on the page it is
+      # already on -- an id nothing has -- so -W passes over a dead
+      # link. conf.py resolves every link the included root files carry
+      # and suppresses no myst warning, which makes the build fail on
+      # the one myst still cannot place; this step is the same claim
+      # made about the artifact rather than about the configuration, and
+      # it is what would catch a suppression added back.
+      #
+      # One grep, because there is one spelling to look for. myst's
+      # fallback renders the destination verbatim, so what this can
+      # match is decided upstream of here, in how the link was written.
+      # Every destination the included root files carry therefore
+      # renders href="#./<destination>" when it breaks, anchor,
+      # extension and nested path alike (issue btclib-org/.github#20).
+      #
+      # Not lychee: links.yml reads the sources, where "./CONTRIBUTING.md"
+      # is a correct path, and pointing it at docs/build/html would mean
+      # building the documentation inside a workflow that gates nothing
+      # and re-requesting every external url these pages carry.
+      - name: Check the built pages for unresolved links
+        run: |
+          if grep -rn 'href="#\./' docs/build/html --include='*.html'; then
+            echo "::error::the links above resolve to no page (unresolved relative path)"
+            exit 1
+          fi

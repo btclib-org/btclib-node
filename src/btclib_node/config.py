@@ -2,6 +2,15 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""`Config`, the settings one `Node` is built from.
+
+Which chain to join, where its data lives, which listeners to start and
+on which interfaces, whether it prunes, and the feerate floor it tells a
+peer about in `feefilter` -- `DEFAULT_MIN_RELAY_FEERATE` below, Core's
+own `DEFAULT_MIN_RELAY_TX_FEE`. `_resolve_chain` is what turns a chain
+already built, or a network's name, into the `Chain` a `Config` carries.
+"""
+
 from dataclasses import dataclass
 from pathlib import Path
 

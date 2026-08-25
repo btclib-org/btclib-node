@@ -2,6 +2,15 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""`RpcManager`, the thread listening for JSON-RPC connections.
+
+Runs its own asyncio loop, accepting a `Connection` per request and
+queuing what each one parses onto `messages` for `Node`'s own thread to
+read in `rpc.main.handle_rpc`. `listening` is set once `run` has
+actually bound the socket, which is what a caller waits on rather than
+`is_alive()` alone -- that flag is true before anything is bound.
+"""
+
 import asyncio
 import socket
 import threading

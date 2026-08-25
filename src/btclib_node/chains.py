@@ -2,6 +2,16 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""The networks this node can join, and the genesis block of each.
+
+`Chain` and its four leaves -- `Main`, `TestNet`, `SigNet`, `RegTest` --
+carry a network's magic, its seed addresses, its script-flag activation
+heights and its own genesis block, built once by `create_genesis` below
+from the constants each leaf supplies. `config.py`'s `_resolve_chain` is
+what turns a chain's name, read from the command line or a functional
+test, into one of these.
+"""
+
 from dataclasses import dataclass
 from datetime import UTC, datetime
 

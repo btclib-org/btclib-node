@@ -24,6 +24,7 @@ to check the guess.
   `RuntimeError('Event loop stopped before Future completed.')`
   precisely where `start()` was never called at all. `RpcManager.stop()`
   carries the identical guard, for the identical reason (issue #362).
+
 ### `deps-latest.yml` and `mutation.yml` join this repository's weekly sentinels
 
 - **`deps-latest.yml` upgrades every dependency `uv lock --upgrade`
@@ -45,6 +46,19 @@ to check the guess.
   measurement on the issue itself, `pypi-install` waits on issue #286's
   release workflow, and `integration-bitcoind`'s own design is issue
   #374.
+
+### `docs/source/` exists, hand-written, with a gate that builds it
+
+- **`docs/source/` documents this package** (issue #264): one Sphinx
+  page per package directory, `tests/unit/docs_test.py` failing where a
+  shipped module gains no automodule stanza or a stanza names a module
+  the tree has lost. `.readthedocs.yaml` and `.github/workflows/docs.yml`
+  build it with `-W --keep-going`, joining `test` and `lint` as a gate.
+- **Every module and package under `src/btclib_node/` carries a
+  docstring** (issue #264): `D100`/`D104` are selected in
+  `pyproject.toml` for the shipped package, at zero findings.
+  `D101`/`D102`/`D103`/`D107` -- the class, method, function and
+  `__init__` narration this pass did not attempt -- are issue #373's.
 
 ### `Connection`'s ping state is one step against the two threads that touch it
 

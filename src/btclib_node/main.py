@@ -2,6 +2,16 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""`update_chain`, called once per pass of `Node`'s own loop.
+
+Builds a fork's contextual detail, validates it block by block through
+`interpreter.check_transactions`, reconciles the mempool across
+whatever it adds and removes, and announces every added block to every
+connected peer. `verify_mempool_acceptance` is the same validation path
+entered from a single transaction instead, for the RPC and p2p callbacks
+that relay one.
+"""
+
 from typing import TYPE_CHECKING
 
 from btclib.exceptions import BTClibValueError

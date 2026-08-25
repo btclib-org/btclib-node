@@ -2,6 +2,16 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""One handler per JSON-RPC method, and `callbacks`, the table dispatching them.
+
+Every handler shares the signature `(node, conn, params)` that
+`rpc.main.handle_rpc` calls each one with, whether or not its own body
+reads every argument -- the same shared-signature reasoning `p2p.callbacks`
+carries for its own two tables. `README.md`'s own limitation applies to
+every entry here: this table is served over a listener that
+authenticates nothing.
+"""
+
 from typing import TYPE_CHECKING, Any, cast
 
 from btclib.exceptions import BTClibException, BTClibValueError
@@ -213,7 +223,7 @@ def service_names(services: int) -> list[str]:
 
     `serviceFlagsToStr`, which is a walk over the set bits from the
     least significant up rather than over the names: a bit a member
-    names contributes that name without the NODE_ prefix Core's own
+    names contributes that name without the ``NODE_`` prefix Core's own
     enum carries, and a bit none names contributes "UNKNOWN[2^n]"
     rather than nothing. Core reserves a range of bits for temporary
     experiments and sends everything else through the BIP process, so a

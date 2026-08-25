@@ -2,6 +2,15 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""`Connection`, one peer-to-peer socket and the messages framed over it.
+
+Reads `btclib.p2p.message.Message`s off the wire and hands each one to
+`P2pManager`, writes what `Node`'s own thread queues back out, and
+bounds what it will buffer in either direction -- `MAX_GETCFILTERS_SIZE`
+on a request it parses, and a send buffer capped the way Core's own
+`-maxsendbuffer` caps one, per the comment beside that cap below.
+"""
+
 import asyncio
 import contextlib
 import secrets

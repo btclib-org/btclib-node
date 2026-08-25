@@ -2,6 +2,16 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""`Connection`, one HTTP socket carrying a JSON-RPC request and reply.
+
+Parses the header section off the wire, bounded by `MAX_HEADER_BYTES`
+and `MAX_BODY_BYTES` since the listener this serves is bound to every
+interface, and decodes the JSON-RPC batch `rpc.manager.RpcManager.messages`
+queues for `rpc.main.handle_rpc`. `RawJSON` is a JSON number written
+back out exactly as given, the way Core's own `UniValue` writes one
+built from a string rather than from a `float`.
+"""
+
 import asyncio
 import contextlib
 import json

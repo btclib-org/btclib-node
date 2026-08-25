@@ -2,6 +2,13 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""`Logger`, a `logging.Logger` writing to a file or to a stream.
+
+A file handler where a caller names a path -- `Node.__init__` resolves
+one under `Config.data_dir` when `Config.log_path` is set -- a stream
+handler otherwise, and `close` to release whichever one it opened.
+"""
+
 import logging
 from typing import TYPE_CHECKING
 

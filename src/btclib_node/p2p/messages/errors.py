@@ -2,6 +2,12 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""`Reject`, BIP61's message, and the codes it carries.
+
+`p2p.callbacks.reject` is the only handler that reads one, logging what
+a peer sent; this node never constructs or sends one of its own.
+"""
+
 import enum
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, override

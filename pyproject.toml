@@ -144,10 +144,18 @@ lint = [
 # consumer, and it asks for --group test as well, cosmic-ray shelling
 # out to pytest.
 mutation = ["cosmic-ray"]
+# what `docs.yml` and `.readthedocs.yaml` both build `docs/source` with,
+# the same three packages the organization's other Sphinx-built
+# repositories install (btclib, btclib-secp256k1, bitcoin-core-rpc):
+# myst-parser for the root markdown files pulled into the toctree,
+# sphinx itself, and the theme `docs/source/conf.py` sets as
+# `html_theme`.
+docs = ["myst-parser", "sphinx", "sphinx_rtd_theme"]
 dev = [
     { include-group = "test" },
     { include-group = "lint" },
     { include-group = "mutation" },
+    { include-group = "docs" },
 ]
 
 [tool.uv]
@@ -274,6 +282,7 @@ source-include = [
     ".python-version",
     ".secrets.baseline",
     "uv.lock",
+    "docs/**",
     "scripts/**",
     "tests/**",
 ]
@@ -303,6 +312,12 @@ source-include = [
 # pattern here takes out is not reported as one the sdist is missing, and
 # does not have to be named again in [tool.check-sdist] below
 source-exclude = [
+    # where sphinx-build writes, CONTRIBUTING.md's docs command and
+    # docs.yml both naming docs/build/html: "docs/**" above reaches it,
+    # so an sdist built after a local docs build would otherwise carry
+    # the whole rendered site. Anchored, nothing else here being called
+    # build.
+    "/docs/build",
     ".mypy_cache",
     ".pytest_cache",
     ".ruff_cache",
@@ -460,10 +475,18 @@ explicit-preview-rules = true
 # now costs nothing, and what is left is the rest of that select list,
 # one rule family (or a handful of related ones) at a time, per issue
 # #284's own suggested shape.
-# "D" (pydocstyle) is not selected either, and for the same reason at a
-# larger scale: measured, almost every module under `src/btclib_node/`
-# carries no docstring at all, so turning it on is a documentation pass
-# across the whole package, tracked in #285.
+# "D" (pydocstyle) is not selected whole either, and for the same reason
+# at a larger scale: measured, almost every module under
+# `src/btclib_node/` carried no docstring at all, so turning it on is a
+# documentation pass across the whole package. `D100`/`D104`
+# (undocumented-public-module, undocumented-public-package) are below
+# instead, on their own: issue #264 added the module and package
+# docstrings `docs/source/`'s own coverage test needed, which closes
+# those two codes for `src/btclib_node/` -- the per-file-ignores further
+# down defer them for `tests/**` and `scripts/**`, neither being part of
+# the shipped package. `D101`/`D102`/`D103`/`D107`, the bulk of the
+# family (the class, method, function and `__init__` narration #264 did
+# not attempt), are issue #373's, one package directory at a time.
 #
 # Issue #284 closed that reference selection; ruff's own catalogue is
 # larger still, and issues #340/#341 are a further sweep of every
@@ -514,6 +537,8 @@ select = [
     "C4",   # flake8-comprehensions
     "C90",  # mccabe (complex-structure)
     "CPY",  # flake8-copyright, replacing the copyright-notice hook below
+    "D100", # pydocstyle: undocumented-public-module (issue #264)
+    "D104", # pydocstyle: undocumented-public-package (issue #264)
     "E",    # pycodestyle errors, replacing flake8
     "ERA",  # eradicate (commented-out code)
     "F",    # pyflakes, replacing autoflake and most of yesqa
@@ -557,6 +582,14 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "**/__init__.py" = ["F401"] # re-exported imports
 "tests/**" = [
+    "D100", # a test module narrates itself through its own test names,
+    #          not through a module docstring naming what `src/
+    #          btclib_node/` ships -- issue #373 is where every
+    #          directory's own D100/D104 (this file's package
+    #          equivalent, on tests/**/__init__.py) is read individually
+    #          rather than assumed, alongside the rest of the D family
+    #          this tree has not yet turned on for tests/
+    "D104",
     "ANN401", # a test double's own SimpleNamespace, standing in for a
     #            production type across every field a scenario needs
     #            and none it does not -- Any is what lets it satisfy
@@ -623,6 +656,19 @@ ignore = [
 # Connection under test.
 "tests/unit/p2p/connection_test.py" = ["FBT003"]
 "tests/unit/rpc/connection_test.py" = ["FBT003"]
+# A script here is a template edited by hand, a manual diagnostic, or a
+# helper a workflow shells out to -- read individually against `D100`
+# under issue #373 rather than assumed. None ships as part of the
+# package `docs/source/`'s coverage test reads (`module-root` names
+# `src/btclib_node/` alone), which is what issue #264 turned that rule
+# on for.
+"scripts/**" = ["D100"]
+# SphinxPostTransform.run itself is typed `(self, **kwargs: Any) -> None`
+# (sphinx.transforms.post_transforms, read directly from the installed
+# package rather than assumed) -- an override matching the base class's
+# own signature is not a choice this file made, so ANN401 is not a
+# per-site decision the way it is where this tree picks its own `Any`.
+"docs/source/conf.py" = ["ANN401"]
 # reset_chainstate.py and reset_download.py are each a template edited
 # by hand before a run, not a program run as-is: their reset itself is
 # commented out on purpose, one block per operation, so whoever runs
