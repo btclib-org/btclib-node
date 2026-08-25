@@ -30,10 +30,9 @@ class P2pConnStatus(enum.IntEnum):
 
 
 class NodeStatus(enum.IntEnum):
-    """Which stage of startup, sync or reindex a `Node` as a whole is in."""
+    """Which stage of startup or sync a `Node` as a whole is in."""
 
     Starting = 1
     SyncingHeaders = 2
     HeaderSynced = 3
-    Reindexing = 4
     BlockSynced = 5
