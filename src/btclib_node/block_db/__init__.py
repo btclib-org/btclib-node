@@ -12,6 +12,7 @@ own block only once that block's branch connects, `pending_rev_blocks`
 holding one generated for a branch `update_chain` may still refuse.
 """
 
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO
@@ -159,11 +160,36 @@ class BlockDB:
     such file's own size for `__find_block_file`'s rotation check.
     `_LOCAL_BOOKKEEPING_MAX` above is where that layout's own bookkeeping
     fields are argued against Bitcoin Core's.
+
+    Unlike `Mempool` (`mempool.py:7-10`), this is reached from more than
+    one thread already: `update_chain`, on `Node`'s own thread, is every
+    production caller of every method here, but the suite calls
+    `add_block` directly from a test's own thread while `Node`'s thread
+    is concurrently inside `update_chain` reading earlier blocks back
+    through `get_block` -- and `get_raw_transaction`
+    (`rpc/callbacks.py:535`) is one call away from doing the same for
+    real, the moment a handler is added that is not routed through
+    `Node`'s own loop. `open_block_file` and `open_rev_file` are each one
+    `BinaryIO` handle with one file position shared by every `seek`,
+    `read` and `write` that reaches it, so a write landing between a
+    reader's `seek` and its `read` moves the position out from under the
+    read and hands it back whatever is there instead
+    (btclib-org/btclib-node#432). `_lock` -- one `RLock` for the whole
+    instance, matching `KeyValueStore`'s own "one connection, and a lock
+    around every use of it" (`db.py:58-73`) -- is held for the whole of
+    every public method below, the write path included: the race is
+    symmetric, and a write left unlocked could still move a reader's
+    position it does not itself take. One lock rather than one per
+    handle, because `__add_data_to_file` updates `files` -- shared by
+    both the `.blk` and the `.rev` sides -- regardless of which handle it
+    is writing through, and a second lock would only ever be taken
+    together with the first, never instead of it.
     """
 
     def __init__(self, data_dir: Path, logger: Logger) -> None:
         """Open the key-value store under `data_dir` and load its own index."""
         self.logger = logger
+        self._lock = threading.RLock()
 
         self.data_dir = data_dir / "blocks"
         self.data_dir.mkdir(exist_ok=True, parents=True)
@@ -201,12 +227,13 @@ class BlockDB:
 
     def close(self) -> None:
         """Close the key-value store and any file still open for writing."""
-        self.db.close()
-        if self.open_block_file:
-            self.open_block_file.close()
-        if self.open_rev_file:
-            self.open_rev_file.close()
-        self.logger.info("Closing Block Database")
+        with self._lock:
+            self.db.close()
+            if self.open_block_file:
+                self.open_block_file.close()
+            if self.open_rev_file:
+                self.open_rev_file.close()
+            self.logger.info("Closing Block Database")
 
     def __find_block_file(self) -> BinaryIO:
         # the name is bound before the test rather than inside one
@@ -275,15 +302,16 @@ class BlockDB:
 
     def add_block(self, block: Block) -> None:
         """Append `block` to the current `.blk` file; a no-op if held."""
-        block_hash = block.header.hash
-        if block_hash in self.blocks:
-            return
-        data = block.serialize(check_validity=False)
-        file = self.__find_block_file()
-        index, block_size = self.__add_data_to_file(file, data)
-        block_location = BlockLocation(Path(file.name).name, index, block_size)
-        self.blocks[block_hash] = block_location
-        self.db.put(b"b" + block_hash, block_location.serialize())
+        with self._lock:
+            block_hash = block.header.hash
+            if block_hash in self.blocks:
+                return
+            data = block.serialize(check_validity=False)
+            file = self.__find_block_file()
+            index, block_size = self.__add_data_to_file(file, data)
+            block_location = BlockLocation(Path(file.name).name, index, block_size)
+            self.blocks[block_hash] = block_location
+            self.db.put(b"b" + block_hash, block_location.serialize())
 
     def add_rev_block(self, rev_block: RevBlock) -> None:
         """Buffer `rev_block` for `finalize` to write out.
@@ -292,14 +320,15 @@ class BlockDB:
         still pending -- `update_chain` can generate the same patch more
         than once for a branch it has not yet committed to.
         """
-        rev_block_hash = rev_block.hash
-        already_held = (
-            rev_block_hash in self.rev_patches
-            or rev_block_hash in self.pending_rev_blocks
-        )
-        if already_held:
-            return
-        self.pending_rev_blocks[rev_block_hash] = rev_block
+        with self._lock:
+            rev_block_hash = rev_block.hash
+            already_held = (
+                rev_block_hash in self.rev_patches
+                or rev_block_hash in self.pending_rev_blocks
+            )
+            if already_held:
+                return
+            self.pending_rev_blocks[rev_block_hash] = rev_block
 
     def finalize(self) -> None:
         """Write every reverse patch buffered since the last finalize.
@@ -309,42 +338,46 @@ class BlockDB:
         `add_rev_block` time since that is a pure buffer and this is
         where the write happens.
         """
-        for rev_block_hash, rev_block in self.pending_rev_blocks.items():
-            if rev_block_hash not in self.blocks:
-                err_msg = "reverse patch for a block not stored: "
-                err_msg += rev_block_hash.hex()
-                raise ChainstateInconsistencyError(err_msg)
-            file_index = int(Path(self.blocks[rev_block_hash].filename).stem)
-            data = rev_block.serialize()
-            file = self.__find_rev_file(file_index)
-            index, block_size = self.__add_data_to_file(file, data)
-            block_location = BlockLocation(Path(file.name).name, index, block_size)
-            self.rev_patches[rev_block_hash] = block_location
-            self.db.put(b"r" + rev_block_hash, block_location.serialize())
-        self.pending_rev_blocks = {}
+        with self._lock:
+            for rev_block_hash, rev_block in self.pending_rev_blocks.items():
+                if rev_block_hash not in self.blocks:
+                    err_msg = "reverse patch for a block not stored: "
+                    err_msg += rev_block_hash.hex()
+                    raise ChainstateInconsistencyError(err_msg)
+                file_index = int(Path(self.blocks[rev_block_hash].filename).stem)
+                data = rev_block.serialize()
+                file = self.__find_rev_file(file_index)
+                index, block_size = self.__add_data_to_file(file, data)
+                block_location = BlockLocation(Path(file.name).name, index, block_size)
+                self.rev_patches[rev_block_hash] = block_location
+                self.db.put(b"r" + rev_block_hash, block_location.serialize())
+            self.pending_rev_blocks = {}
 
     def rollback(self) -> None:
         """Discard every reverse patch buffered since the last finalize."""
-        self.pending_rev_blocks = {}
+        with self._lock:
+            self.pending_rev_blocks = {}
 
     def get_block(self, block_hash: bytes) -> Block | None:
         """Return the block stored under `block_hash`, or `None` if not held."""
-        if block_hash not in self.blocks:
-            return None
-        block_location = self.blocks[block_hash]
-        file = self.__get_block_file(block_location.filename)
-        block_data = self.__get_data_from_file(
-            file, block_location.index, block_location.size
-        )
+        with self._lock:
+            if block_hash not in self.blocks:
+                return None
+            block_location = self.blocks[block_hash]
+            file = self.__get_block_file(block_location.filename)
+            block_data = self.__get_data_from_file(
+                file, block_location.index, block_location.size
+            )
         return Block.parse(block_data, check_validity=False)
 
     def get_rev_block(self, block_hash: bytes) -> RevBlock | None:
         """Return the reverse patch for `block_hash`, or `None` if not held."""
-        if block_hash not in self.rev_patches:
-            return None
-        rev_patch_location = self.rev_patches[block_hash]
-        file = self.__get_rev_file(rev_patch_location.filename)
-        rev_patch_data = self.__get_data_from_file(
-            file, rev_patch_location.index, rev_patch_location.size
-        )
+        with self._lock:
+            if block_hash not in self.rev_patches:
+                return None
+            rev_patch_location = self.rev_patches[block_hash]
+            file = self.__get_rev_file(rev_patch_location.filename)
+            rev_patch_data = self.__get_data_from_file(
+                file, rev_patch_location.index, rev_patch_location.size
+            )
         return RevBlock.deserialize(rev_patch_data)
