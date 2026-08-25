@@ -44,12 +44,22 @@ _LOCAL_BOOKKEEPING_MAX = 0xFFFF_FFFF_FFFF_FFFF
 
 @dataclass
 class RevBlock:
+    """Undo data for one block, filed once its own branch connects.
+
+    `to_add` is the prevout each spent input consumed, restored on
+    reversal; `to_remove` is every outpoint the block itself created,
+    dropped on reversal. `UtxoIndex.add_block` builds one alongside the
+    block it applies, and `UtxoIndex.apply_rev_block` is what walks it
+    back.
+    """
+
     hash: bytes
     to_add: list[tuple[OutPoint, TxOut]]
     to_remove: list[OutPoint]
 
     @classmethod
     def deserialize(cls, data: bytes, *, check_validity: bool = False) -> RevBlock:
+        """Parse a `RevBlock` from the bytes `serialize` produced."""
         stream = bytesio_from_binarydata(data)
         block_hash = stream.read(32)
         to_add: list[tuple[OutPoint, TxOut]] = []
@@ -64,6 +74,7 @@ class RevBlock:
         return cls(block_hash, to_add, to_remove)
 
     def serialize(self, *, check_validity: bool = False) -> bytes:
+        """Serialize this reverse patch to the bytes stored in a `.rev` file."""
         out = self.hash
         out += var_int.serialize(len(self.to_add))
         for out_point, tx_out in self.to_add:
@@ -77,12 +88,21 @@ class RevBlock:
 
 @dataclass
 class BlockLocation:
+    """Where one block or reverse patch sits inside its own flat file.
+
+    `filename` names the `.blk` or `.rev` file it was appended to,
+    `index` is the byte offset `__add_data_to_file` returned for it, and
+    `size` is its length -- together enough for `__get_data_from_file`
+    to seek straight to it rather than scan the file.
+    """
+
     filename: str
     index: int
     size: int
 
     @classmethod
     def deserialize(cls, data: bytes) -> BlockLocation:
+        """Parse a `BlockLocation` from the bytes `serialize` produced."""
         stream = bytesio_from_binarydata(data)
         filename_length = var_int.parse(stream)
         filename = stream.read(filename_length).decode()
@@ -91,6 +111,7 @@ class BlockLocation:
         return cls(filename, index, size)
 
     def serialize(self) -> bytes:
+        """Serialize this location to the bytes kept in the key-value store."""
         filename_bytes = self.filename.encode()
         out = var_int.serialize(len(filename_bytes))
         out += filename_bytes
@@ -101,11 +122,20 @@ class BlockLocation:
 
 @dataclass
 class FileMetadata:
+    """Bookkeeping for one flat file this store has written to.
+
+    `filename` is the `.blk` or `.rev` file, and `size` is how many
+    bytes have been appended to it so far -- both the next write's own
+    offset and, for a `.blk` file, what `__find_block_file` checks
+    against the rotation threshold.
+    """
+
     filename: str
     size: int
 
     @classmethod
     def deserialize(cls, data: bytes) -> FileMetadata:
+        """Parse a `FileMetadata` from the bytes `serialize` produced."""
         stream = bytesio_from_binarydata(data)
         filename_length = var_int.parse(stream)
         filename = stream.read(filename_length).decode()
@@ -113,6 +143,7 @@ class FileMetadata:
         return cls(filename, size)
 
     def serialize(self) -> bytes:
+        """Serialize this metadata to the bytes kept in the key-value store."""
         filename_bytes = self.filename.encode()
         out = var_int.serialize(len(filename_bytes))
         out += filename_bytes
@@ -121,7 +152,17 @@ class FileMetadata:
 
 
 class BlockDB:
+    """Blocks and their undo data, appended to rotating flat files on disk.
+
+    `blocks` and `rev_patches` map a block hash to the `BlockLocation`
+    that finds it inside a `.blk` or `.rev` file; `files` tracks every
+    such file's own size for `__find_block_file`'s rotation check.
+    `_LOCAL_BOOKKEEPING_MAX` above is where that layout's own bookkeeping
+    fields are argued against Bitcoin Core's.
+    """
+
     def __init__(self, data_dir: Path, logger: Logger) -> None:
+        """Open the key-value store under `data_dir` and load its own index."""
         self.logger = logger
 
         self.data_dir = data_dir / "blocks"
@@ -145,6 +186,7 @@ class BlockDB:
         self.init_from_db()
 
     def init_from_db(self) -> None:
+        """Rebuild the in-memory index from what the store already holds."""
         self.logger.info("Start Block database initialization")
         for key, value in self.db:
             if key[:1] == b"f":
@@ -158,6 +200,7 @@ class BlockDB:
         self.logger.info("Finished Block database initialization")
 
     def close(self) -> None:
+        """Close the key-value store and any file still open for writing."""
         self.db.close()
         if self.open_block_file:
             self.open_block_file.close()
@@ -231,6 +274,7 @@ class BlockDB:
         return file.read(size)
 
     def add_block(self, block: Block) -> None:
+        """Append `block` to the current `.blk` file; a no-op if held."""
         block_hash = block.header.hash
         if block_hash in self.blocks:
             return
@@ -242,6 +286,12 @@ class BlockDB:
         self.db.put(b"b" + block_hash, block_location.serialize())
 
     def add_rev_block(self, rev_block: RevBlock) -> None:
+        """Buffer `rev_block` for `finalize` to write out.
+
+        A no-op if `rev_block`'s own hash is already held, on disk or
+        still pending -- `update_chain` can generate the same patch more
+        than once for a branch it has not yet committed to.
+        """
         rev_block_hash = rev_block.hash
         already_held = (
             rev_block_hash in self.rev_patches
@@ -274,9 +324,11 @@ class BlockDB:
         self.pending_rev_blocks = {}
 
     def rollback(self) -> None:
+        """Discard every reverse patch buffered since the last finalize."""
         self.pending_rev_blocks = {}
 
     def get_block(self, block_hash: bytes) -> Block | None:
+        """Return the block stored under `block_hash`, or `None` if not held."""
         if block_hash not in self.blocks:
             return None
         block_location = self.blocks[block_hash]
@@ -287,6 +339,7 @@ class BlockDB:
         return Block.parse(block_data, check_validity=False)
 
     def get_rev_block(self, block_hash: bytes) -> RevBlock | None:
+        """Return the reverse patch for `block_hash`, or `None` if not held."""
         if block_hash not in self.rev_patches:
             return None
         rev_patch_location = self.rev_patches[block_hash]

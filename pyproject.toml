@@ -551,21 +551,21 @@ explicit-preview-rules = true
 # the shipped package. `D101`/`D102`/`D103`/`D107`, the bulk of the
 # family (the class, method, function and `__init__` narration #264 did
 # not attempt), are issue #373's, one package directory at a time: slice
-# 1 is `src/btclib_node/`'s own root-level modules, clean as of this
-# round, with the per-file-ignores further down deferring the four
-# subpackages slices 2-5 have not yet reached, and `tests/**`/
-# `scripts/**` again. `D205`/`D401`/`D403`/`D404`/`D105` (a summary not
-# on one physical line, a docstring not in the imperative mood, an
-# uncapitalized first word, one starting with "This", an undocumented
-# magic method) are turned on tree-wide already: issue #373 asked for
-# them to fold into whichever slice landed first rather than be split
-# five ways, and slice 1's own sweep found a handful of stray findings
-# outside `src/btclib_node/`'s root, in `rpc/` and `p2p/` -- fixed
-# directly rather than deferred, since nothing about them is tied to a
-# directory's own D101-D107 sweep still being incomplete. `tests/**` is
-# the one place they are deferred, in the per-file-ignore below,
-# alongside the rest of the family that directory has not yet had a
-# pass.
+# 1 is `src/btclib_node/`'s own root-level modules and slice 2 is
+# `block_db/`, both clean as of this round, with the per-file-ignores
+# further down deferring the three subpackages slices 3-5 have not yet
+# reached, and `tests/**`/`scripts/**` again. `D205`/`D401`/`D403`/`D404`/
+# `D105` (a summary not on one physical line, a docstring not in the
+# imperative mood, an uncapitalized first word, one starting with
+# "This", an undocumented magic method) are turned on tree-wide
+# already: issue #373 asked for them to fold into whichever slice
+# landed first rather than be split five ways, and slice 1's own sweep
+# found a handful of stray findings outside `src/btclib_node/`'s root,
+# in `rpc/` and `p2p/` -- fixed directly rather than deferred, since
+# nothing about them is tied to a directory's own D101-D107 sweep still
+# being incomplete. `tests/**` is the one place they are deferred, in
+# the per-file-ignore below, alongside the rest of the family that
+# directory has not yet had a pass.
 #
 # Issue #284 closed that reference selection; ruff's own catalogue is
 # larger still, and issues #340/#341 are a further sweep of every
@@ -768,11 +768,11 @@ ignore = [
 # on for.
 "scripts/**" = ["D100"]
 # `D101`/`D102`/`D103`/`D107` closed for `src/btclib_node/`'s own
-# root-level modules this round (issue #373, slice 1); these four are
-# the package directories its own suggested split leaves for slices
-# 2-5, each read on its own rather than swept together, the same
-# one-directory-at-a-time shape slice 1 itself used.
-"src/btclib_node/block_db/**" = ["D101", "D102", "D103", "D107"]
+# root-level modules (issue #373, slice 1) and for `block_db/` (slice
+# 2); these three are the package directories its own suggested split
+# leaves for slices 3-5, each read on its own rather than swept
+# together, the same one-directory-at-a-time shape slices 1 and 2
+# themselves used.
 "src/btclib_node/chainstate/**" = ["D101", "D102", "D103", "D107"]
 "src/btclib_node/p2p/**" = ["D101", "D102", "D103", "D107"]
 "src/btclib_node/rpc/**" = ["D101", "D102", "D103", "D107"]

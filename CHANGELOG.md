@@ -81,6 +81,20 @@ to check the guess.
   otherwise, deferred with `tests/**`, which carries findings of its own
   for `D205` and `D401` and is deferred the same way.
 
+### `src/btclib_node/block_db/` gets real docstrings (issue #373)
+
+- **`D101`/`D102`/`D103`/`D107` are selected for
+  `src/btclib_node/block_db/`** (issue #373, slice 2): every class,
+  method and `__init__` under `block_db/__init__.py` -- `RevBlock`,
+  `BlockLocation`, `FileMetadata` and `BlockDB` themselves, and their
+  public methods -- now carries a docstring grounded in what it does.
+  `block_db/`'s own private helpers (the double-underscore file lookups
+  `BlockDB` keeps for itself) stay undocumented, a leading underscore
+  already keeping a method outside every one of those four codes.
+  `chainstate/`, `p2p/` and `rpc/` are the remaining three slices, each
+  still deferred the way #264's own `D100`/`D104` split deferred
+  `tests/**` and `scripts/**`.
+
 ### The docs gate's own remaining gaps close: `[project.urls]`, `local-link-prefix`
 
 - **`conf.py`'s `BLOB` constant reads `pyproject.toml`'s own
