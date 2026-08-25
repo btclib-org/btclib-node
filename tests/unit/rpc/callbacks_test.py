@@ -1324,7 +1324,7 @@ def test_no_block_hash_at_all_is_answered_with_the_usage() -> None:
 
 
 def test_the_tip_and_the_block_at_a_height_are_read_off_the_active_chain() -> None:
-    """`getbestblockhash` and getblockhash read off the active chain's own list.
+    """`getbestblockhash`/`getblockhash` read off the active chain's list.
 
     `getbestblockhash` answers the last entry, `getblockhash` the entry
     at a given height.
