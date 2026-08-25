@@ -264,7 +264,7 @@ def test_a_bad_checksum_raises_instead_of_spinning() -> None:
 
     A regression test: recovering from a bad checksum by searching the
     buffer for the magic spelled as ASCII never matched the binary magic
-    actually there, and the `while` loop retried the same unparseable
+    actually there, and the `while` loop retried the same unparsable
     message without end. Nothing here reaches that recovery any more --
     the checksum failure raises immediately, and `Connection.run` is
     what drops a peer whose message does this.

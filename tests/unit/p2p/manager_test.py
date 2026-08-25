@@ -785,7 +785,7 @@ def refuses_to_be_asked() -> NoReturn:
 
 async def asks_no_dns_server() -> None:
     """Stand in for a `get_addr_from_dns` that never touches a real server."""
-    return None
+    return
 
 
 def test_a_peer_db_that_raises_does_not_stop_the_housekeeping(
