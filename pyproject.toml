@@ -757,30 +757,6 @@ ignore = [
     "D205",
     "D401",
 ]
-# every `tests/unit/` file at its own root, not under `p2p/`, `rpc/` or
-# `chainstate/` -- enumerated by name rather than globbed, since a glob
-# here would also catch those three subdirectories (see the comment
-# above)
-"tests/unit/{__init__,block_db_test,chains_test,config_test,coverage_floor_test,db_test,docs_test,download_test,harness_test,helpers_test,init_test,interpreter_test,log_test,main_test,mempool_test}.py" = [
-    "D100",
-    "D101",
-    "D102",
-    "D103",
-    "D104",
-    "D107",
-    "D205",
-    "D401",
-]
-"tests/{__init__,conftest,helpers}.py" = [
-    "D100",
-    "D101",
-    "D102",
-    "D103",
-    "D104",
-    "D107",
-    "D205",
-    "D401",
-]
 # Every handler in p2p.callbacks.callbacks/handshake_callbacks is called
 # uniformly (node, msg, conn) by p2p.main's handle_p2p/
 # handle_p2p_handshake, and every one in rpc.callbacks.callbacks is

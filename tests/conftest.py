@@ -2,6 +2,13 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""Suite-wide pytest hooks and node fixtures used across the tests.
+
+The hooks keep the coverage floor from firing on a run that could not
+have crossed it; the fixtures start and stop real `Node` instances,
+on their own ports, for the functional and unit tests that need one.
+"""
+
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -97,6 +104,7 @@ def relax_coverage_floor(config: pytest.Config) -> bool:
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    """Relax the coverage floor for a run `relax_coverage_floor` clears."""
     relax_coverage_floor(config)
 
 
@@ -104,6 +112,13 @@ def pytest_configure(config: pytest.Config) -> None:
 def node_context(
     tmp_path: Path, *, allow_p2p: bool = True, allow_rpc: bool = True
 ) -> Iterator[Node]:
+    """Start a regtest node with each enabled server on a random port.
+
+    `allow_p2p` and `allow_rpc` toggle which of the two servers actually
+    binds one; `rpc_node` below is this with `allow_p2p=False`, for a
+    test that only ever talks to the node over RPC. `node.stop()` runs
+    once the caller's `with` block exits, whichever way it exits.
+    """
     node = Node(
         config=Config(
             chain="regtest",
@@ -124,13 +139,14 @@ def node_context(
 
 @pytest.fixture
 def rpc_node(tmp_path: Path) -> Iterator[Node]:
+    """Give an RPC-only, started regtest node for the functional RPC tests."""
     with node_context(tmp_path, allow_p2p=False) as node:
         yield node
 
 
 @contextmanager
 def unstarted_node_context(tmp_path: Path) -> Iterator[Node]:
-    """A node built and driven directly, never `start()`ed, closed on exit.
+    """Build and drive a node directly, never `start()`ed; close it on exit.
 
     `run`'s own teardown -- `peer_db.close()`, `chainstate.close()`,
     `block_db.close()`, both managers' event loops and `logger.close()`
@@ -174,7 +190,7 @@ def unstarted_node_context(tmp_path: Path) -> Iterator[Node]:
 
 @pytest.fixture
 def regtest_node(tmp_path: Path) -> Iterator[Callable[[], Node]]:
-    """A factory for header-synced regtest nodes, closed at teardown.
+    """Give out header-synced regtest nodes, each closed at teardown.
 
     Every node it hands out shares `tmp_path`: a test that checks a
     chainstate or a header chain survives being closed and reopened
