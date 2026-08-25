@@ -102,7 +102,7 @@ def pytest_configure(config: pytest.Config) -> None:
 
 @contextmanager
 def node_context(
-    tmp_path: Path, allow_p2p: bool = True, allow_rpc: bool = True
+    tmp_path: Path, *, allow_p2p: bool = True, allow_rpc: bool = True
 ) -> Iterator[Node]:
     node = Node(
         config=Config(

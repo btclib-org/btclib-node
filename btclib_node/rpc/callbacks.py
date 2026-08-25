@@ -510,14 +510,14 @@ def get_raw_transaction(
     tx, block_height = _find_transaction(node, txid, block_hash)
 
     if not verbose:
-        return tx.serialize(True).hex()
+        return tx.serialize(include_witness=True).hex()
 
     # to_dict()'s own keys are Core's decoderawtransaction ones (its own
     # docstring), str | int | list -- narrower than this callback's
     # declared return, so the three below need the wider type spelled
     # out, the same as get_block_header's out: dict[str, Any] above it
     out: dict[str, Any] = tx.to_dict()
-    out["hex"] = tx.serialize(True).hex()
+    out["hex"] = tx.serialize(include_witness=True).hex()
     if block_hash is not None and block_height is not None:
         active_chain = node.chainstate.block_index.active_chain
         on_active_chain = (

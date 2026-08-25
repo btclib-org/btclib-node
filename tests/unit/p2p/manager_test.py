@@ -910,7 +910,7 @@ def test_stop_closes_a_connection_accepted_in_its_own_race_window(
 
     def is_alive_after_landing_one_more() -> bool:
         landed.append(True)
-        manager.create_connection(ours, address, True)
+        manager.create_connection(ours, address, inbound=True)
         return real_is_alive()
 
     monkeypatch.setattr(manager, "is_alive", is_alive_after_landing_one_more)
@@ -995,7 +995,7 @@ def test_stop_closes_a_connection_that_arrives_while_it_is_draining(
     def draining_run_until_complete(future: Any) -> Any:
         if not arrived:
             arrived.append(True)
-            manager.create_connection(ours, address, True)
+            manager.create_connection(ours, address, inbound=True)
         return real_run_until_complete(future)
 
     monkeypatch.setattr(manager.loop, "run_until_complete", draining_run_until_complete)

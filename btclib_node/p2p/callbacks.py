@@ -151,7 +151,7 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
         node.p2p_manager.peer_db.add_active_address(address)
 
     conn.send(SendHeaders())
-    conn.send(SendCmpct(False, 1))
+    conn.send(SendCmpct(announce=False, version=1))
     # BIP133's own floor is not sent here: DownloadManager._send_due_feefilters
     # (btclib_node/download.py) reaches every connected connection on the
     # very next step(), Connection.next_feefilter_send_time defaulting to

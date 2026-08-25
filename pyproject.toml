@@ -497,6 +497,7 @@ select = [
     "ERA",  # eradicate (commented-out code)
     "F",    # pyflakes, replacing autoflake and most of yesqa
     "FA",   # flake8-future-annotations
+    "FBT",  # flake8-boolean-trap
     "FIX",  # flake8-fixme
     "FLY",  # flynt
     "FURB", # refurb
@@ -588,6 +589,19 @@ ignore = [
 # registered handlers, none a free helper mistaken for one.
 "btclib_node/p2p/callbacks.py" = ["ARG001"]
 "btclib_node/rpc/callbacks.py" = ["ARG001"]
+# socket.socket.setblocking is a C-level method taking no keyword
+# arguments at all (verified directly: socket().setblocking(flag=False)
+# raises "takes no keyword arguments"), so the every-call-site half of
+# FBT003's own fix -- rewrite the call to name the argument -- is not
+# available here, and there is no wrapper of this tree's own to make
+# keyword-only either, socket.socket being the standard library's own
+# class. Every FBT003 finding in each of these two files is one of its
+# own `.setblocking(False)` calls (16 total, checked by hand rather
+# than assumed): p2p/connection_test.py and rpc/connection_test.py each
+# put a socketpair into non-blocking mode before handing one end to the
+# Connection under test.
+"tests/unit/p2p/connection_test.py" = ["FBT003"]
+"tests/unit/rpc/connection_test.py" = ["FBT003"]
 # reset_chainstate.py and reset_download.py are each a template edited
 # by hand before a run, not a program run as-is: their reset itself is
 # commented out on purpose, one block per operation, so whoever runs

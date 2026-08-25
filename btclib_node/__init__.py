@@ -105,7 +105,7 @@ class Node(threading.Thread):
 
         self.terminate_flag = threading.Event()
         log_path = self.data_dir / config.log_path if config.log_path else None
-        self.logger = Logger(log_path, config.debug)
+        self.logger = Logger(log_path, debug=config.debug)
 
         self.chainstate = Chainstate(self.data_dir, self.chain, self.logger)
         self.block_db = BlockDB(self.data_dir, self.logger)

@@ -103,11 +103,13 @@ class P2pManager(threading.Thread):
         self._server_sockets: list[socket.socket] = []
 
     def create_connection(
-        self, client: socket.socket, address: NetworkAddressV2, inbound: bool
+        self, client: socket.socket, address: NetworkAddressV2, *, inbound: bool
     ) -> None:
         client.settimeout(0.0)
         self.last_connection_id += 1
-        conn = Connection(self, client, address, self.last_connection_id, inbound)
+        conn = Connection(
+            self, client, address, self.last_connection_id, inbound=inbound
+        )
         self.pending_connections[self.last_connection_id] = conn
         task = asyncio.run_coroutine_threadsafe(conn.run(), self.loop)
         conn.task = task
@@ -146,7 +148,7 @@ class P2pManager(threading.Thread):
     async def async_connect(self, address: NetworkAddressV2) -> None:
         client = await dial(address)
         if client:
-            self.create_connection(client, address, False)
+            self.create_connection(client, address, inbound=False)
 
     def connect(self, address: NetworkAddressV2) -> None:
         asyncio.run_coroutine_threadsafe(self.async_connect(address), self.loop)
@@ -238,7 +240,7 @@ class P2pManager(threading.Thread):
             ):
                 sock = await dial(address)
                 if sock:
-                    self.create_connection(sock, address, False)
+                    self.create_connection(sock, address, inbound=False)
         except Exception:
             self.logger.exception("Exception occurred")
 
@@ -343,7 +345,7 @@ class P2pManager(threading.Thread):
                 # nowhere to carry either, `get_addr_from_dns`'s own
                 # sockaddr comment being where that is argued
                 address = peer_address(*sockaddr[:2])
-                self.create_connection(sock, address, True)
+                self.create_connection(sock, address, inbound=True)
 
     @override
     def run(self) -> None:

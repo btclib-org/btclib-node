@@ -59,7 +59,7 @@ def a_connection(
         client if client is not None else socket.socket(),
         peer_address("1.2.3.4", 18444),
         0,
-        False,
+        inbound=False,
     )
     return connection, logged
 
@@ -138,7 +138,11 @@ def a_running_connection(
         discouraged=discouraged,
     )
     return Connection(
-        cast("P2pManager", manager), client, peer_address("127.0.0.1", 18444), 0, False
+        cast("P2pManager", manager),
+        client,
+        peer_address("127.0.0.1", 18444),
+        0,
+        inbound=False,
     )
 
 

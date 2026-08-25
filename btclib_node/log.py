@@ -13,6 +13,7 @@ class Logger(logging.Logger):
     def __init__(
         self,
         log_path: str | Path | None = None,
+        *,
         debug: bool = False,
     ) -> None:
         level = logging.DEBUG if debug else logging.INFO

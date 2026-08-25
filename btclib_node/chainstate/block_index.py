@@ -61,7 +61,7 @@ class BlockInfo:
     downloaded: bool = False
 
     @classmethod
-    def deserialize(cls, data: bytes, check_validity: bool = True) -> BlockInfo:
+    def deserialize(cls, data: bytes, *, check_validity: bool = True) -> BlockInfo:
         stream = bytesio_from_binarydata(data)
         header = BlockHeader.parse(stream, check_validity=check_validity)
         index = var_int.parse(stream)
@@ -89,7 +89,9 @@ class BlockIndex:
         self.chain = chain
 
         genesis = chain.genesis
-        genesis_info = BlockInfo(genesis, 0, BlockStatus.in_active_chain, True)
+        genesis_info = BlockInfo(
+            genesis, 0, BlockStatus.in_active_chain, downloaded=True
+        )
 
         self.header_dict: dict[bytes, BlockInfo] = {genesis.hash: genesis_info}
 
@@ -239,7 +241,7 @@ class BlockIndex:
             replace(self.get_block_info(block_hash), status=status), wb
         )
 
-    def set_downloaded(self, block_hash: bytes, downloaded: bool = True) -> None:
+    def set_downloaded(self, block_hash: bytes, *, downloaded: bool = True) -> None:
         block_info = self.get_block_info(block_hash)
         self._insert_block_info(replace(block_info, downloaded=downloaded))
 
@@ -416,7 +418,7 @@ class BlockIndex:
                 header,
                 height,
                 status,
-                False,
+                downloaded=False,
             )
             self._insert_block_info(block_info)
             self.chainwork[header_hash] = new_work

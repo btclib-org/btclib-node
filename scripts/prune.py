@@ -10,7 +10,7 @@ from btclib_node.log import Logger
 config = Config(
     chain="mainnet", data_dir=".btclib", p2p_port=30000, rpc_port=30001, debug=True
 )
-logger = Logger(config.data_dir / "history.log", config.debug)
+logger = Logger(config.data_dir / "history.log", debug=config.debug)
 blockdb = BlockDB(config.data_dir, logger)
 # BlockIndex takes the chainstate's open database, not a directory, so it
 # is reached through Chainstate rather than built beside it
