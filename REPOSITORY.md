@@ -296,9 +296,16 @@ gh api orgs/btclib-org --jq '{plan: .plan.name}'
 The concurrent-job limit GitHub documents for that plan belongs to the
 organization and not to this repository: every repository in it draws on
 the same allowance. So a matrix on every commit here is a slot a reviewer
-in a sibling repository waits behind, which is the argument for a merge
-that waits on one cell and a sweep that runs weekly
-([btclib-org/.github#85](https://github.com/btclib-org/.github/issues/85)).
+in a sibling repository waits behind, which is the argument for keeping
+most of a matrix out of the merge gate and into a weekly sweep instead
+([btclib-org/.github#85](https://github.com/btclib-org/.github/issues/85))
+-- the platform axis `os-macos.yml` covers, among them.
+
+`test.yml`'s own interpreter axis is the row this repository gates
+instead of sweeping, and that file's own header carries the argument
+rather than this section repeating it: the two cells run as parallel
+jobs, so the second costs one more slot at the ceiling and no additional
+wait, against a review that costs more than the wait regardless.
 
 ## What is not configured, and why
 
