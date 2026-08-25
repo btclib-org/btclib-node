@@ -282,8 +282,8 @@ class Connection:
             )
             data = message.serialize()
         # deliberately blind (BLE001): this is called for every message
-        # this node ever sends, callers throughout btclib_node/p2p and
-        # btclib_node/download.py among them, so a bug serializing one
+        # this node ever sends, callers throughout src/btclib_node/p2p and
+        # src/btclib_node/download.py among them, so a bug serializing one
         # payload logs and drops that one send rather than propagating
         # into an arbitrary caller's own control flow
         except Exception as e:  # noqa: BLE001

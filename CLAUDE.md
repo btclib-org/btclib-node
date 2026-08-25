@@ -20,26 +20,26 @@ A bitcoin full node whose consensus and network code is Python, over
 objects on the wire and their serialization come from. What is here is
 the loop that drives them, and its state.
 
-`Node` in `btclib_node/__init__.py` is a thread running one loop: it
+`Node` in `src/btclib_node/__init__.py` is a thread running one loop: it
 drains the handshake queue, then a share of the RPC queue and a share of
 the peer-to-peer queue, then steps the download manager and extends the
 chain. A message that raises is logged and the loop continues; a failure
 under `update_chain` leaves it, because the databases below have to be
 closed on the way out.
 
-- `btclib_node/p2p/` is the protocol — the connections, the peer
+- `src/btclib_node/p2p/` is the protocol — the connections, the peer
   manager, the address book and the message handlers the loop calls.
-- `btclib_node/rpc/` is the JSON-RPC surface, on the same shape of
+- `src/btclib_node/rpc/` is the JSON-RPC surface, on the same shape of
   manager and handler.
-- `btclib_node/chainstate/` is the block index, the UTXO set and the
-  compact filter index; `btclib_node/block_db/` is the blocks and their
-  undo data.
-- `btclib_node/db.py` is the ordered key-value store all of those are
-  kept in. Its docstring is where the implementation is argued, and
+- `src/btclib_node/chainstate/` is the block index, the UTXO set and the
+  compact filter index; `src/btclib_node/block_db/` is the blocks and
+  their undo data.
+- `src/btclib_node/db.py` is the ordered key-value store all of those
+  are kept in. Its docstring is where the implementation is argued, and
   **key order is load-bearing**: a reader that stops at the first key
   without its prefix is truncated by a prefix that sorts before it.
-- `btclib_node/interpreter.py` validates, and `Node.worker_pool` is what
-  it validates a fork across.
+- `src/btclib_node/interpreter.py` validates, and `Node.worker_pool` is
+  what it validates a fork across.
 
 `P2pManager` and `RpcManager` are each a thread of their own, running an
 asyncio loop, and a coroutine enters that loop only through
@@ -72,7 +72,7 @@ at. What differs from Core in consensus or in relay is a difference the
 network sees, so the default is not a matter of taste.
 
 Not always, though. This tree has constraints Core does not share, and a
-divergence one of those forces is legitimate: `btclib_node/db.py`'s
+divergence one of those forces is legitimate: `src/btclib_node/db.py`'s
 docstring is the worked example, arguing its store against Core's.
 
 **A convention of this tree is not one of those constraints.** Where
@@ -216,8 +216,8 @@ Do not use Fable unless explicitly instructed.
   a real regression and is not one: btclib-org/btclib-node#191.
 - **The store is `sqlite3` from the standard library**, since
   btclib-org/btclib-node#107. A datadir written by the LevelDB this
-  replaced cannot be read; `btclib_node/db.py` is where that is handled
-  and where the choice is argued against Bitcoin Core's.
+  replaced cannot be read; `src/btclib_node/db.py` is where that is
+  handled and where the choice is argued against Bitcoin Core's.
 
 ## Conventions to match
 

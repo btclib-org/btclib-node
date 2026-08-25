@@ -2,12 +2,12 @@
 name: bootstrap-dns
 
 # Whether a fresh node still has a way onto the network. `PeerDB.
-# get_addr_from_dns` (btclib_node/p2p/address.py) is what a node with an
-# empty table calls, and `btclib_node/chains.py`'s `Main`, `TestNet` and
-# `SigNet` are what it calls it with: a DNS seed going away, or the
-# resolver on this runner failing, is the kind of thing that happens to
-# seeds and to networks, on nobody's schedule and for no reason this
-# tree's own commits control.
+# get_addr_from_dns` (src/btclib_node/p2p/address.py) is what a node
+# with an empty table calls, and `src/btclib_node/chains.py`'s `Main`,
+# `TestNet` and `SigNet` are what it calls it with: a DNS seed going
+# away, or the resolver on this runner failing, is the kind of thing
+# that happens to seeds and to networks, on nobody's schedule and for
+# no reason this tree's own commits control.
 #
 # Not a merge gate, for exactly links.yml's own reason: a host having a
 # bad afternoon would turn a red merge into a thing to re-run rather than
@@ -33,7 +33,7 @@ on:
     # the way in
     - cron: "20 5 * * 4"
   # the escape hatch, and the way to check a branch before changing the
-  # seed lists in btclib_node/chains.py
+  # seed lists in src/btclib_node/chains.py
   workflow_dispatch:
   # so a change to this file is checked by the thing it configures, for
   # the same reason and with the same caveat as links.yml's own entry

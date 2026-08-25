@@ -75,7 +75,7 @@ class Config:
     # them into sub-objects would only move each still-independent knob
     # behind one more name for every caller, all of which already read
     # this constructor by keyword (`grep -rn "Config(" tests/
-    # btclib_node/` finds no positional call). PLR0913/PLR0917 measure a
+    # src/btclib_node/` finds no positional call). PLR0913/PLR0917 measure a
     # count this object's whole purpose is to be flat, not a shape it
     # backed into. Keyword-only throughout (issue #341's own FBT round)
     # for the same reason: `allow_p2p`/`allow_rpc`/`pruned`/`debug` are

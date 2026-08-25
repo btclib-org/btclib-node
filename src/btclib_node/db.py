@@ -7,7 +7,7 @@
 Read a key, write one, delete one, write several as one, walk the whole
 store in key order, and close: that is everything any index here asks
 of it. They are behind one class so that what implements them is one
-decision in one file -- `btclib_node/db.py` -- rather than a library
+decision in one file -- `src/btclib_node/db.py` -- rather than a library
 named in as many modules as import it.
 
 The implementation is SQLite, and the reason is not speed. It is the

@@ -59,7 +59,7 @@ keywords = [
 # claim of support nothing checks, and a classifier is that claim made
 # to an index.
 #
-# `Typing :: Typed` is below, and only because `btclib_node/py.typed`
+# `Typing :: Typed` is below, and only because `src/btclib_node/py.typed`
 # now ships: the classifier is machine-readable and a downstream type
 # checker acts on it, so it is not declared ahead of the marker it
 # reports on (btclib-org/.github#239).
@@ -197,11 +197,10 @@ requires = ["uv_build>=0.12.5,<0.13"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
-# btclib_node/ sits at the root of the repository, where the backend looks
-# under src/ by default. `module-name` is not written beside this: it
-# defaults to `project.name` normalized, which is this name already, and a
-# second declaration is a second thing to keep in agreement
-module-root = ""
+# `module-name` is not written beside this: it defaults to `project.name`
+# normalized, which is this name already, and a second declaration is a
+# second thing to keep in agreement
+#
 # What the sdist carries beyond what the backend puts there by itself --
 # pyproject.toml, the module under `module-root`, and the files
 # `project.readme` and `project.license-files` name. Patterns are anchored,
@@ -380,7 +379,7 @@ timeout = 120
 # suite.
 filterwarnings = [
     "error",
-    # `TestNet` (`btclib_node/chains.py`) is a chain, not a test: pytest
+    # `TestNet` (`src/btclib_node/chains.py`) is a chain, not a test: pytest
     # collects any class whose name matches `Test*` and warns where it
     # cannot, `__init__` being what stops it here. Named to that one
     # class rather than to every class the blanket entry above used to
@@ -439,14 +438,14 @@ explicit-preview-rules = true
 # -- and every family that reported a finding needs a per-site decision
 # (a refactor, a suppression, or a behaviour change) on consensus- and
 # network-facing code: not a config change, and out of scope for a
-# bundle that touches no `btclib_node/` runtime code. What moved here
+# bundle that touches no `src/btclib_node/` runtime code. What moved here
 # instead is the families the same command reports nothing for: C4, FA,
 # FIX, FLY, ISC, PGH, PIE, PTH, RSE, SLOT, T10 and TID. Adopting those
 # now costs nothing, and what is left is the rest of that select list,
 # one rule family (or a handful of related ones) at a time, per issue
 # #284's own suggested shape.
 # "D" (pydocstyle) is not selected either, and for the same reason at a
-# larger scale: measured, almost every module under `btclib_node/`
+# larger scale: measured, almost every module under `src/btclib_node/`
 # carries no docstring at all, so turning it on is a documentation pass
 # across the whole package, tracked in #285.
 #
@@ -481,7 +480,7 @@ explicit-preview-rules = true
 # already normalises every string's own quote character, so there is
 # nothing left for the rule to find. "EM" (flake8-errmsg) and "SLF"
 # (flake8-self) are, measured, entirely inside `tests/` -- 13 and 140
-# findings, zero of either in `btclib_node/` -- a test double raising
+# findings, zero of either in `src/btclib_node/` -- a test double raising
 # with a raw string, a test reading a fixture's own private attribute:
 # whitebox-test idiom, not a defect, and a blanket per-file-ignore
 # would cover every one of them and leave nothing behind to answer
@@ -593,8 +592,8 @@ ignore = [
 # against both dispatch tables before this ignore was added (issue
 # #341) -- every ARG001 finding in each file is one of its own
 # registered handlers, none a free helper mistaken for one.
-"btclib_node/p2p/callbacks.py" = ["ARG001"]
-"btclib_node/rpc/callbacks.py" = ["ARG001"]
+"src/btclib_node/p2p/callbacks.py" = ["ARG001"]
+"src/btclib_node/rpc/callbacks.py" = ["ARG001"]
 # socket.socket.setblocking is a C-level method taking no keyword
 # arguments at all (verified directly: socket().setblocking(flag=False)
 # raises "takes no keyword arguments"), so the every-call-site half of
@@ -684,7 +683,7 @@ extend-exclude = [
 # reads: the hook in .pre-commit-config.yaml passes no paths of its own,
 # for the reason given there. Section 6 of btclib-org/.github's README
 # states the scope as the package, the tests and .github/scripts.
-files = ["btclib_node", "tests", "scripts", ".github/scripts"]
+files = ["src/btclib_node", "tests", "scripts", ".github/scripts"]
 # the floor `project.requires-python` declares, and not the interpreter
 # that happens to be running: a name added to the standard library
 # later passes here and fails for whoever is on the oldest version this

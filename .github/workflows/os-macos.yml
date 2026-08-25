@@ -9,7 +9,7 @@ name: os-macos
 # is a claim about where this runs, and nothing here had run it there.
 #
 # What differs beneath the suite is how a worker process comes into
-# being. `btclib_node/__init__.py` builds a `multiprocessing.pool.Pool`
+# being. `src/btclib_node/__init__.py` builds a `multiprocessing.pool.Pool`
 # with no context, so it takes the platform's default start method:
 #
 #     uv run --locked --no-default-groups python -c \
@@ -26,8 +26,8 @@ name: os-macos
 #
 # The store is no argument for this file. It is `sqlite3` from the
 # standard library since btclib-org/btclib-node#107 -- no wheel to be
-# missing, no compiler to be present -- and `btclib_node/db.py` says so
-# at length.
+# missing, no compiler to be present -- and `src/btclib_node/db.py` says
+# so at length.
 #
 # What this runs is the gate's own job on the other image: the same
 # interpreter, the same lock, the same coverage floor. The variable is
