@@ -354,11 +354,16 @@ class Node(threading.Thread):
     def run(self) -> None:
         self.logger.info("Starting main loop")
 
+        # Set before either manager starts, on this thread rather than
+        # a manager's own: `listening` is set on a manager's thread, so
+        # a caller whose wait ends there learns nothing about whether
+        # this assignment has run yet, and a write racing it here can
+        # put `status` back below `HeaderSynced` for good (#398).
+        self.status = NodeStatus.SyncingHeaders
         if self.p2p_port:
             self.p2p_manager.start()
         if self.rpc_port:
             self.rpc_manager.start()
-        self.status = NodeStatus.SyncingHeaders
         while not self.terminate_flag.is_set():
             if self._drain_message_queues():
                 time.sleep(0.0001)

@@ -50,6 +50,27 @@ to check the guess.
   connection still in flight. `[-10:]` keeps the ten most recently
   sent, the ring `manager.nonces` was written to be.
 
+### `Node.run` sets `status` before starting either manager (closes #398)
+
+- **`Node.run` now assigns `self.status = NodeStatus.SyncingHeaders`
+  before `p2p_manager.start()` and `rpc_manager.start()` rather than
+  after both** (closes #398): `listening` is set on a manager's own
+  thread, so a caller whose `wait_until_listening` returns learns
+  nothing about whether `Node`'s own thread has reached that assignment
+  yet. A test writing `node.status = NodeStatus.HeaderSynced` right
+  after `wait_until_listening` could race it, and a late write from
+  `Node`'s own thread landing after the test's put `status` back below
+  `HeaderSynced` for the life of the node -- `_ready_fork` never returns
+  past that again, so the chain never extends and a functional test
+  waiting on it times out at 60 seconds, on a machine loaded enough to
+  deschedule `Node`'s thread in that window. Every reader outside
+  `Node`'s own loop compares `status` against `HeaderSynced` or
+  `BlockSynced`; the one that names `SyncingHeaders` itself, `headers`
+  in `p2p/callbacks.py`, is reached only from inside that loop, which
+  both statements precede on that same thread, so it cannot observe
+  the order between them either way. Moving the write earlier
+  therefore changes no behaviour other than closing the window.
+
 ### The docs gate warns against `--only-group docs` (closes #425)
 
 - **`CONTRIBUTING.md`'s *The environment and the gates* now names
