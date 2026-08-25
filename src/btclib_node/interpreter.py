@@ -12,14 +12,16 @@ once, on `Node.warm_worker_pool`'s dispatch, so the cost of importing
 (btclib-org/btclib-node#262).
 """
 
-from itertools import chain
 from typing import TYPE_CHECKING
 
 from btclib.script.engine import verify_amounts, verify_input, verify_transaction
+from btclib.script.sig_hash import PrecomputedTxData
 
 from btclib_node.exceptions import PrevoutCountMismatchError
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from btclib.tx.tx import Tx
     from btclib.tx.tx_out import TxOut
 
@@ -31,9 +33,15 @@ def get_flags(config: Config, index: int) -> tuple[str, ...]:
     return tuple(f for (i, f) in config.chain.flags if index >= i)
 
 
-def f(prevouts: list[TxOut], tx: Tx, i: int, flags: tuple[str, ...]) -> None:
+def f(
+    prevouts: list[TxOut],
+    tx: Tx,
+    i: int,
+    flags: tuple[str, ...],
+    precomputed: PrecomputedTxData,
+) -> None:
     # no need to deepcopy the values as they are not reused
-    verify_input(prevouts, tx, i, flags)
+    verify_input(prevouts, tx, i, flags, precomputed)
 
 
 def warm() -> None:
@@ -45,6 +53,41 @@ def warm() -> None:
     `check_transactions` below ever needs one of them for real
     (btclib-org/btclib-node#262).
     """
+
+
+def _tasks(
+    transaction_data: list[tuple[list[TxOut], Tx]], flags: tuple[str, ...]
+) -> Iterator[tuple[list[TxOut], Tx, int, tuple[str, ...], PrecomputedTxData]]:
+    """One `f` task per input, carrying its own transaction's precomputed data.
+
+    Core keeps this same pair of properties -- per-input granularity and
+    one precomputation per transaction -- because its checks share a raw
+    `PrecomputedTransactionData*` into a per-block
+    `std::vector<PrecomputedTransactionData> txsdata(block.vtx.size())`
+    across the threads its `CCheckQueue` runs them on (`validation.cpp`'s
+    `ConnectBlock` and `validation.h`'s `CScriptCheck::txdata`,
+    bitcoin/bitcoin@794a753958). `Node.worker_pool` is a process pool
+    rather than threads, so nothing here can be shared by pointer: what
+    a thread reads through `txdata` a process has to receive as its own
+    pickled copy, one per task. That copy is a handful of hashes, cheap
+    next to the whole transaction every task already carries and far
+    cheaper than the re-serialization per input it replaces
+    (btclib-org/btclib-node#385).
+
+    Built once per transaction and shared, by reference, across that
+    transaction's own tasks -- never rebuilt per input, which would be
+    the same Θ(N²) this exists to remove. Sharing it this way is sound
+    only because it is pickled untouched into every task from this one
+    snapshot of `tx` and `prevouts`: `sig_hash.from_tx`'s docstring says
+    a precomputed "must describe this very tx, and nothing here can tell
+    whether it does", and `PrecomputedTxData`'s own says why -- a hash
+    computed lazily out of a mutable `Tx` can change under its caller
+    (btclib-org/btclib#140). Nothing between the construction below and the
+    worker that consumes it can mutate `tx` to break that.
+    """
+    for prevouts, tx in transaction_data:
+        precomputed = PrecomputedTxData(tx, prevouts)
+        yield from ((prevouts, tx, i, flags, precomputed) for i in range(len(prevouts)))
 
 
 def check_transactions(
@@ -67,12 +110,7 @@ def check_transactions(
     # Raising is the point: an input that does not verify has to reach
     # main.update_chain, which rolls the chainstate back and leaves the
     # block off the active chain.
-    node.worker_pool.starmap(
-        f,
-        chain.from_iterable(
-            ((x[0], x[1], i, flags) for i in range(len(x[0]))) for x in transaction_data
-        ),
-    )
+    node.worker_pool.starmap(f, _tasks(transaction_data, flags))
 
 
 def check_transaction(prevouts: list[TxOut], tx: Tx, index: int, node: Node) -> None:

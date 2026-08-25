@@ -33,6 +33,25 @@ to check the guess.
   said outright why it was left out, a sentence issue #264 made false
   the day `.readthedocs.yaml` landed.
 
+### `check_transactions`'s tasks share a `PrecomputedTxData`, closing issue #385
+
+- **Every `f` task `check_transactions` dispatches now carries a
+  `PrecomputedTxData` built once for its own transaction, where it
+  carried none at all** (closes #385): handed `None`, `sig_hash.segwit_v0`
+  re-serialized and re-hashed a transaction's prevouts, sequences and
+  outputs for every one of its inputs, the quadratic `PrecomputedTxData`'s
+  own docstring names (btclib-org/btclib#164). The unit of work stays
+  the input and `Node.worker_pool` stays a process pool: Core keeps the
+  same pair of properties -- per-input granularity and one
+  precomputation per transaction -- by sharing one
+  `PrecomputedTransactionData` through a raw pointer across the threads
+  its `CCheckQueue` runs (`validation.cpp`'s `ConnectBlock`,
+  `validation.h`'s `CScriptCheck::txdata`, read at
+  bitcoin/bitcoin@794a753958). A process pool cannot share a pointer, so
+  each task is pickled its own copy of the same object instead -- a
+  handful of hashes, cheap next to the whole transaction every task
+  already carries.
+
 ### `P2pManager.stop()`'s grace step is guarded on `self.ident`, closing issue #368
 
 - **`stop()`'s grace step -- `run_until_complete(asyncio.sleep(0))`,
