@@ -2,6 +2,13 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""A node fetches a whole chain from several real peers at once.
+
+`DownloadManager`'s own unit tests cover which candidate a block is
+requested from; what this checks is that the requests it schedules
+across many connections actually land a complete, synced chain.
+"""
+
 import shutil
 import time
 from typing import TYPE_CHECKING
@@ -27,6 +34,15 @@ if TYPE_CHECKING:
 
 @pytest.mark.order(1)
 def test_download(tmp_path: Path) -> None:
+    """A fresh node reaches `BlockSynced` downloading from ten full peers.
+
+    One bootstrap node is fully synced by hand -- headers added and
+    every block marked downloaded -- and copied ten times so every peer
+    already has the whole chain; a fresh `main_node` is then connected
+    to all ten at once, which is what exercises spreading the download
+    across several connections rather than one. `pytest.mark.order(1)`
+    runs it first because it is the slowest test in the suite.
+    """
     length = 3000
     chain = generate_random_chain(length, RegTest().genesis.hash)
     headers = [block.header for block in chain]

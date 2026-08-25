@@ -2,6 +2,8 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""A `pong` matching its `ping` is recorded, one that does not drops the peer."""
+
 import time
 from typing import TYPE_CHECKING
 
@@ -17,6 +19,13 @@ if TYPE_CHECKING:
 
 
 def test_correct_ping(tmp_path: Path) -> None:
+    """A `ping` sent to a real peer comes back as a `pong` that sets latency.
+
+    `ping_nonce` and `ping_sent` are set by hand rather than through
+    `send_ping`, so the nonce matched against the peer's `pong` is
+    known in advance; `conn.latency` going from unset to a value is
+    what `p2p.callbacks.pong` does once it matches that nonce.
+    """
     node1 = Node(
         config=Config(
             chain="regtest",
@@ -64,6 +73,17 @@ def test_correct_ping(tmp_path: Path) -> None:
 
 
 def test_wrong_ping(tmp_path: Path) -> None:
+    """A `pong` whose nonce does not match the pending `ping` drops the peer.
+
+    `node1` is made to expect nonce `1` (`ping_nonce` set by hand) and
+    then sends a `Ping(2)`; node2's `ping` handler echoes `2` back in
+    its `pong`, which cannot match what `node1` is holding, so
+    `p2p.callbacks.pong` discourages and drops the connection on both
+    ends. The check is by connection id and not by an empty
+    `connections`, because a peer whose address is already known to the
+    other side is redialled the moment the drop lowers the live count,
+    which this test is not about.
+    """
     node1 = Node(
         config=Config(
             chain="regtest",
