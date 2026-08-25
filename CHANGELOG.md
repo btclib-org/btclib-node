@@ -55,6 +55,28 @@ to check the guess.
   not one, and a connection popped between them raised `KeyError` out
   of the send.
 
+### `RpcManager.stop()` gives `accept` a step first, closing issue #362
+
+- **`stop()` runs the loop one step before gathering the tasks it is
+  about to cancel** (closes #362): the same gap issue #353 closed in
+  `P2pManager.stop()`, in `RpcManager.stop()` instead. `server()`'s own
+  `accept` is a task of its own, reached by `stop()`'s sweep directly and
+  not only through `server`'s task cascading a cancel onto it.
+  `Task.cancel` on a task whose own awaited future is already resolved
+  still forces `CancelledError` into it on the next step, discarding a
+  socket the kernel had already handed over with nothing left to close
+  it — `server`'s own except arm already guards this for a cancel
+  arriving through its shield (#323), and could not guard a cancel that
+  reaches `accept` directly, which is what `stop()`'s own sweep did on
+  every call. `run_until_complete(asyncio.sleep(0))` before the sweep,
+  repeated until a step changes nothing and run only where this
+  manager's thread was ever started, lets `accept` return normally into
+  `create_connection` instead. The step is repeated rather than run
+  once: the future it waits on is resolved from another thread with no
+  guarantee its own delivery lands within a single step, `asyncio.shield`
+  adding a callback hop of its own between `accept` completing and
+  `server` resuming with its result.
+
 ### The importable package sits under `src/`, closing issue #343
 
 - **`btclib_node` moves under `src/btclib_node/`** (closes #343): a
