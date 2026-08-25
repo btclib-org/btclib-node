@@ -172,7 +172,16 @@ def _inbound_net_class(address: NetworkAddressV2) -> BIP155Network | int:
 
 
 class DownloadManager:
+    """What decides what this node asks its peers for, one `step` at a time.
+
+    Block download candidates and stall detection, transaction
+    announcement and request tracking, and the `feefilter` trickle: the
+    module docstring above is where the constants each of those follows
+    are argued against Core's own.
+    """
+
     def __init__(self, node: Node, logger: Logger) -> None:
+        """Build the schedules and fee-filter buckets `step` reads from."""
         self.node = node
         self.logger = logger
 
@@ -221,11 +230,19 @@ class DownloadManager:
         self._max_feefilter = int(self._fee_filter_buckets[-1])
 
     def step(self) -> None:
+        """Run one pass: block download, tx download, then feefilter resends."""
         self.block_download()
         self.tx_download()
         self._send_due_feefilters()
 
     def tx_download(self) -> None:
+        """Announce what this node received, and request what it still wants.
+
+        A no-op until the chain itself is synced: a peer's `inv` for a
+        transaction is only worth requesting once this node has a
+        mempool to check it against, and until then everything received
+        here is a block's own, not a loose transaction.
+        """
         if self.node.status < NodeStatus.BlockSynced:
             return
 
@@ -513,6 +530,13 @@ class DownloadManager:
         return due
 
     def block_download(self) -> None:
+        """Refresh the block window, evict stalled peers, and request new work.
+
+        A no-op before headers are synced -- there is nothing to
+        request candidates against yet -- and stall eviction only runs
+        during IBD, once the chain is synced a slow peer costing this
+        node latency rather than a stalled sync.
+        """
         node = self.node
         if node.status < NodeStatus.HeaderSynced:
             return

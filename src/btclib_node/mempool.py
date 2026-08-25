@@ -46,7 +46,16 @@ _ROLLING_FEE_HALFLIFE = 60 * 60 * 12
 
 
 class Mempool:
+    """The node's set of transactions not yet in a block, keyed both ways.
+
+    `transactions` is by wtxid, `txid_index` maps a txid to the wtxid
+    that holds it, and `fees` carries what each entry paid -- the module
+    docstring above is where the single-thread invariant that lets this
+    class carry no lock of its own is argued.
+    """
+
     def __init__(self, logger: Logger) -> None:
+        """Start empty, with the rolling minimum feerate at zero, undecayed."""
         self.logger = logger
 
         self.transactions: dict[bytes, Tx] = {}
@@ -101,11 +110,13 @@ class Mempool:
         self._block_since_last_rolling_fee_bump: bool = False
 
     def is_full(self) -> bool:
+        """Whether `bytesize` has already reached `bytesize_limit`."""
         return self.bytesize >= self.bytesize_limit
 
     def get_missing(
         self, transactions: Iterable[bytes], *, wtxid: bool = False
     ) -> list[bytes]:
+        """Return every id in `transactions` this mempool does not hold."""
         # No `is_full` guard: that used to answer every request with
         # nothing at all once past the limit, which was the wall
         # `_evict_to_limit` now removes -- Core's own request tracking
@@ -115,6 +126,7 @@ class Mempool:
         return [tx_id for tx_id in transactions if tx_id not in index]
 
     def get_tx(self, txid: bytes, *, wtxid: bool = False) -> Tx | None:
+        """Return the transaction stored under `txid` (or wtxid), or `None`."""
         key = txid if wtxid else self.txid_index.get(txid)
         if key is None:
             return None
@@ -122,6 +134,14 @@ class Mempool:
 
     # Don't need lock because handled in same thread
     def add_tx(self, tx: Tx, fee: int = 0) -> bool:
+        """Add `tx`, evict past the limit, and say whether it stuck.
+
+        A no-op, returning `False`, for a txid already held. Otherwise
+        added provisionally and run through `_evict_to_limit`, which
+        takes it right back out if it is itself the worst entry left
+        once trimming is done -- so the return value is `False` there
+        too, exactly as it would be for an outright refusal.
+        """
         # `fee` defaults to 0 rather than being required, for the
         # callers -- mostly in tests -- that add a transaction without
         # ever asking what it pays; every production caller has just
@@ -161,11 +181,13 @@ class Mempool:
         return wtxid in self.transactions
 
     def remove_tx(self, tx: Tx) -> None:
+        """Remove `tx` by txid, a no-op if this mempool does not hold it."""
         txid = tx.id
         if txid in self.txid_index:
             self._pop(self.txid_index[txid])
 
     def contains_tx(self, tx: Tx) -> bool:
+        """Whether `tx`'s own wtxid is currently held."""
         return tx.hash in self.transactions
 
     def meets_fee_rate(self, wtxid: bytes, min_fee_rate: int) -> bool:

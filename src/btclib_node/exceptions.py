@@ -32,11 +32,18 @@ from btclib.exceptions import BTClibValueError
 
 
 class MissingPrevoutError(ValueError):
-    pass
+    """A transaction's input spends an output this node cannot find.
+
+    Raised only by `verify_mempool_acceptance` (`main.py`), while it
+    walks a candidate mempool transaction's own inputs against the UTXO
+    set and the mempool together and neither has the prevout --
+    `InvalidBlockInputError` below is the same check, made instead while
+    a freshly-downloaded candidate block is first connected.
+    """
 
 
 class ChainstateInconsistencyError(RuntimeError):
-    """This node's own index promised something its data does not have.
+    """The node's own index promised something its data does not have.
 
     Raised only where an earlier check already established the
     invariant this violates -- a block marked downloaded that

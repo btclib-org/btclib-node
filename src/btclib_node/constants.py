@@ -22,12 +22,16 @@ ProtocolVersion = 70016
 
 
 class P2pConnStatus(enum.IntEnum):
+    """One peer connection's own handshake state, from accept to `verack`."""
+
     Open = 1
     Connected = 2
     Closed = 3
 
 
 class NodeStatus(enum.IntEnum):
+    """Which stage of startup, sync or reindex a `Node` as a whole is in."""
+
     Starting = 1
     SyncingHeaders = 2
     HeaderSynced = 3

@@ -30,6 +30,12 @@ if TYPE_CHECKING:
 
 
 def get_flags(config: Config, index: int) -> tuple[str, ...]:
+    """Return every script flag already active at block height `index`.
+
+    `config.chain.flags` is a chain's own `(height, name)` pairs,
+    ordered by activation height; a flag activated at or before `index`
+    is one that applies to a block at that height and every one after.
+    """
     return tuple(f for (i, f) in config.chain.flags if index >= i)
 
 
@@ -40,6 +46,7 @@ def f(
     flags: tuple[str, ...],
     precomputed: PrecomputedTxData,
 ) -> None:
+    """Verify input `i` of `tx` against its own prevout, one `starmap` task."""
     # no need to deepcopy the values as they are not reused
     verify_input(prevouts, tx, i, flags, precomputed)
 
@@ -93,6 +100,14 @@ def _tasks(
 def check_transactions(
     transaction_data: list[tuple[list[TxOut], Tx]], index: int, node: Node
 ) -> None:
+    """Verify a candidate block's own transactions, fanned out across the pool.
+
+    Raises on the first bad input `node.worker_pool.starmap` reaches --
+    `main.update_chain`'s own caller is what rolls the chainstate back
+    and leaves the block off the active chain once this does. Amounts
+    are checked here, per transaction and outside the pool, since
+    script validation alone never reads them.
+    """
     if not transaction_data:
         return
     if any(len(x[0]) != len(x[1].vin) for x in transaction_data):
@@ -114,6 +129,13 @@ def check_transactions(
 
 
 def check_transaction(prevouts: list[TxOut], tx: Tx, index: int, node: Node) -> None:
+    """Verify one transaction against its prevouts, on the caller's own thread.
+
+    Not routed through `Node.worker_pool`, unlike `check_transactions`
+    above: this runs once per mempool acceptance rather than once per
+    block's worth of inputs, so the pool's own process-pickling cost
+    would outweigh what it buys here.
+    """
     # No copy: btclib's engine leaves the transaction alone -- sig_hash
     # builds the blanked transaction each preimage commits to rather
     # than editing the one it was handed. What the copy paid for was a
