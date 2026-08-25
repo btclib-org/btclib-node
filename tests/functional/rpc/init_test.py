@@ -2,6 +2,8 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""The stop RPC, and a node's own shutdown through it, over a real node."""
+
 import json
 from typing import TYPE_CHECKING
 
@@ -16,7 +18,10 @@ if TYPE_CHECKING:
 
 
 def test_init(tmp_path: Path) -> None:
-    # a port of its own; see tests/functional/p2p/init_test.py
+    """stop answers before the node goes down, and the node then stops for real.
+
+    A port of its own; see `tests/functional/p2p/init_test.py`.
+    """
     node = Node(
         config=Config(
             chain="regtest",
