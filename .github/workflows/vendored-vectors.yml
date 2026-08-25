@@ -1,0 +1,82 @@
+---
+name: vendored-vectors
+
+# tests/_data/README.md pins tests/unit/chainstate/_data/blockfilters.json
+# to a Bitcoin Core commit and a git blob SHA-1, with a documented manual
+# procedure to re-check it -- last done by hand on the date the file
+# itself records. This runs that procedure once a week instead, and fails
+# where either has moved.
+#
+# Not the machinery btclib carries under this same name. That script
+# parses a README with dozens of headings, skips entries already
+# documented as behind so a human's own decision is not re-reported as
+# noise, and opens or updates a tracking issue on drift -- generality
+# this tree's one entry does not call for, and issues: write beside it,
+# which no other scheduled workflow here carries. links.yml's own
+# comment says why: an automatic issue is the usual next step a failed
+# run's own notification already covers, and it would make this the only
+# workflow here that can write anything. bootstrap-dns.yml, checking a
+# different kind of drift on the same weekly cadence, is this file's own
+# shape instead: contents: read, and a red run in the Actions tab.
+
+on:
+  schedule:
+    # section 10 of btclib-org/.github's README.md is the calendar, and
+    # this line is not the place to restate it: one grid, in one file,
+    # naming the day and the hour for the workflow and the minute for
+    # the repository. Only the default branch schedules anything, so on
+    # any other branch the dispatch below is the way in
+    - cron: "20 5 * * 1"
+  workflow_dispatch:
+  # so a change to this file, to the script it runs, or to the README it
+  # reads is checked by the thing it configures, for the same reason and
+  # with the same caveat as links.yml's own entry
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, closed]
+    paths:
+      - .github/workflows/vendored-vectors.yml
+      - .github/scripts/check_vendored_pin.py
+      - tests/_data/README.md
+
+# least privilege for the GITHUB_TOKEN: the script reads this repository
+# and Bitcoin Core's, both public, and writes nothing anywhere
+permissions:
+  contents: read
+
+# cancel superseded runs. Named literally rather than through
+# github.workflow, and by the pull request's number where there is one,
+# for the reason test.yml's own group gives: neither the schedule nor a
+# dispatch carries pull_request context, so github.ref still groups
+# either of those, and a closed pull request cannot land in their group
+concurrency:
+  group: vendored-vectors-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vendored-vectors:
+    name: Check the vendored pin against upstream
+    # a draft pull request is work its author is not asking anyone to
+    # read yet, and spends no runner here either. A closed one spends
+    # none: the trigger above takes that event only so the landing
+    # supersedes a run this ref's group is still holding
+    if: ${{ !github.event.pull_request.draft && github.event.action != 'closed' }}
+    runs-on: ubuntu-latest
+    # a handful of gh api calls against two repositories; a job past
+    # this is hung on the API rather than working through the rest
+    timeout-minutes: 10
+    steps:
+      # every action pinned to a commit SHA with the tag in the comment:
+      # a tag, let alone a branch, is a name its owner can move
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # see the checkout of the coverage job in test.yml
+          persist-credentials: false
+      # no interpreter setup: the script imports only the standard
+      # library and shells out to git and gh, both already on the image,
+      # and ubuntu-latest ships a python3 nothing here has a reason to
+      # pin more tightly than that
+      - name: Re-check the pin against upstream
+        run: python3 .github/scripts/check_vendored_pin.py tests/_data/README.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

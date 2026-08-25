@@ -614,6 +614,11 @@ ignore = [
 # a manual diagnostic run over local error test vectors: the `print`s
 # are its progress and its result, not debug residue left behind.
 "scripts/test_errors.py" = ["T20"]
+# the same reason, for a script a workflow runs rather than a person: a
+# GitHub Actions step reads its result from stdout, not from a return
+# value, so `check_vendored_pin.py`'s prints are its report and not
+# debug residue either.
+".github/scripts/check_vendored_pin.py" = ["T20"]
 
 [tool.ruff.lint.pycodestyle]
 max-doc-length = 80
@@ -665,12 +670,15 @@ extend-exclude = [
 ]
 
 [tool.mypy]
-# scripts/ with them: a script that no longer imports is a script
-# nobody runs, and it is the one directory here that nothing else
-# checks. This is the list the lint gate runs on and not only the one a
-# bare `mypy` reads: the hook in .pre-commit-config.yaml passes no
-# paths of its own, for the reason given there.
-files = ["btclib_node", "tests", "scripts"]
+# scripts/ and .github/scripts/ are here for the same reason: a script
+# that no longer imports is a script nobody runs, and neither directory
+# has anything else that reads it -- .github/scripts/ least of all,
+# invoked only by a scheduled workflow and collected by no test. This is
+# the list the lint gate runs on and not only the one a bare `mypy`
+# reads: the hook in .pre-commit-config.yaml passes no paths of its own,
+# for the reason given there. Section 6 of btclib-org/.github's README
+# states the scope as the package, the tests and .github/scripts.
+files = ["btclib_node", "tests", "scripts", ".github/scripts"]
 # the floor `project.requires-python` declares, and not the interpreter
 # that happens to be running: a name added to the standard library
 # later passes here and fails for whoever is on the oldest version this
