@@ -35,7 +35,20 @@ class Reject(Payload):
     data: bytes
 
     @classmethod
-    def parse(cls, data: BinaryData, *, check_validity: bool = True) -> Reject:
+    def parse(
+        cls,
+        data: BinaryData,
+        *,
+        check_validity: bool = True,  # noqa: ARG003
+    ) -> Reject:
+        # every btclib Payload's own parse/serialize pair takes
+        # check_validity, called polymorphically (Connection.py's own
+        # payload.serialize(check_validity=False) among them) without a
+        # caller knowing which subclass is on the other end -- kept
+        # here for that shared shape even though Reject's own wire
+        # format has nothing check_validity would gate. serialize
+        # below carries the same parameter, unread the same way, but
+        # is @override and so is not itself one of ARG's own findings.
         stream = bytesio_from_binarydata(data)
         message = stream.read(var_int.parse(stream)).decode()
         code = RejectCode.from_bytes(stream.read(1), "little")

@@ -242,7 +242,7 @@ class P2pManager(threading.Thread):
         except Exception:
             self.logger.exception("Exception occurred")
 
-    async def manage_connections(self, loop: asyncio.AbstractEventLoop) -> None:
+    async def manage_connections(self) -> None:
         while True:
             now = time.time()
             self._prune_stale_connections(now)
@@ -359,7 +359,7 @@ class P2pManager(threading.Thread):
         asyncio.run_coroutine_threadsafe(self.peer_db.get_addr_from_dns(), loop)
         for server_socket in server_sockets:
             asyncio.run_coroutine_threadsafe(self.server(loop, server_socket), loop)
-        asyncio.run_coroutine_threadsafe(self.manage_connections(loop), loop)
+        asyncio.run_coroutine_threadsafe(self.manage_connections(), loop)
         loop.run_forever()
 
     def stop(self) -> None:
@@ -443,7 +443,7 @@ class P2pManager(threading.Thread):
         if connection_id in self.connections:
             self.connections[connection_id].send(msg)
 
-    def broadcast_raw_transaction(self, tx: BtclibTx, fee: int) -> None:
+    def broadcast_raw_transaction(self, tx: BtclibTx, fee: int) -> None:  # noqa: ARG002
         # `DownloadManager.tx_download`'s own queue, with no peer to
         # exclude as already holding it, rather than a push of its own:
         # a direct, unsolicited `Tx` to every peer the instant this

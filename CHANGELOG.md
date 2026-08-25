@@ -69,6 +69,54 @@ to check the guess.
   so the function's own declared return type could simply be `Node`
   rather than repeating `Any` one line later.
 
+### `select` gains `ARG`, issue #341's second real-judgment round
+
+- **`select` gains `ARG` (flake8-unused-arguments)** (issue #341): 138
+  findings, read individually rather than assumed to be the same shape
+  as each other -- 33 in `btclib_node/`, 105 in `tests/`/`scripts/`.
+- **`btclib_node/__init__.py`'s `stop_handler`**: `signal`/`frame`
+  renamed `_signum`/`_frame`, `signal.signal`'s own calling convention
+  being the reason both are unread, and the renamed pair no longer
+  shadows the `signal` module this file also imports.
+- **`p2p/callbacks.py` (13 findings) and `rpc/callbacks.py` (15
+  findings)**: every one read against its own dispatch table
+  (`callbacks`/`handshake_callbacks` in each file, called uniformly by
+  `p2p.main`'s `handle_p2p`/`handle_p2p_handshake` and by `rpc.main`'s
+  `handle_rpc`) -- an argument one handler does not read is required by
+  the table's own shared signature, not a mistake, and renaming it to
+  `_` would lose that signature's own documentation for a table that
+  calls every handler the same way. Declined together, in a new
+  `pyproject.toml` per-file-ignore for each of the two files, rather
+  than 28 near-identical `noqa` comments.
+- **`p2p/manager.py`'s `manage_connections`**: its own `loop` parameter
+  was read nowhere in the body -- `asyncio.run_coroutine_threadsafe`
+  takes the loop as its own second argument, not through the coroutine
+  it schedules -- and was removed outright, at its one call site and in
+  the one test that drove it directly.
+- **`p2p/manager.py`'s `broadcast_raw_transaction`**: `fee` stays,
+  declined with a `noqa` next to the comment already there explaining
+  why -- the same caller already recorded it in `Mempool.add_tx`, which
+  is where the BIP133 feefilter check reads it from.
+- **`p2p/messages/errors.py`'s `Reject.parse`**: `check_validity` stays
+  for the same reason `serialize` beside it does (exempt from this rule
+  as an `@override`) -- every btclib `Payload`'s own parse/serialize
+  pair takes it, called polymorphically without a caller knowing which
+  subclass is on the other end, even though `Reject`'s own wire format
+  has nothing it would gate.
+- **`tests/`/`scripts/` (105 findings)**: read individually rather than
+  swallowed as a family. 103 are monkeypatch replacements or fakes
+  matching the real callable's own signature they stand in for -- a
+  dispatch handler swapped into a `callbacks` dict the same way
+  production's own are, `Connection.send`, `update_chain`,
+  `Loop.getaddrinfo`/`sock_accept`, `random.expovariate`, and the like.
+  The other 2, both in `tests/functional/p2p/block_filters_test.py`: a
+  pytest fixture (`mark`) requested by two tests only for its own
+  construction's side effect, not for a value either test reads. All
+  105 declined together in the existing `"tests/**"` per-file-ignore
+  (`ARG001`/`ARG002`/`ARG005` added alongside the entries already
+  there, the comment naming both reasons rather than only the larger
+  one).
+
 ### `select` gains `TC`, the first family beyond issue #284's own reference selection
 
 - **`select` gains `TC` (flake8-type-checking)** (issue #340): the

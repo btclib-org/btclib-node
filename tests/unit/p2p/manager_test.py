@@ -166,9 +166,7 @@ async def one_pass(manager: P2pManager) -> bool:
     passes is this twice, rather than a sleep long enough for the loop's
     own -- which is a wait on the scheduler, and #46's shape.
     """
-    task = asyncio.ensure_future(
-        manager.manage_connections(cast("asyncio.AbstractEventLoop", None))
-    )
+    task = asyncio.ensure_future(manager.manage_connections())
     await asyncio.sleep(0.05)
     still_running = not task.done()
     task.cancel()
