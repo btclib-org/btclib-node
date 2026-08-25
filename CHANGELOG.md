@@ -12,6 +12,19 @@ to check the guess.
 
 ## Unreleased
 
+### This node depends on btclib's libsecp256k1 bindings, closing issue #361
+
+- **`btclib`'s dependency line carries the `secp256k1` extra** (closes
+  #361): signature verification runs through btclib's libsecp256k1
+  bindings instead of the pure-Python elliptic-curve path, a
+  single-thread speedup. `CLAUDE.md`'s *Following Bitcoin Core* is why
+  this is a dependency of this package rather than an extra of it: Core
+  does not treat its own libsecp256k1 as optional, and this is
+  consensus-critical arithmetic rather than a convenience. The bindings
+  do not make threads run in parallel under the GIL, so nothing about
+  how this node is concurrent changes. This package's dependency tree
+  now carries compiled, per-platform extensions, where it carried none.
+
 ### The importable package sits under `src/`, closing issue #343
 
 - **`btclib_node` moves under `src/btclib_node/`** (closes #343): a

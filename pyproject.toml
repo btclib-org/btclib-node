@@ -22,7 +22,10 @@ requires-python = ">=3.14"
 # tree is actually built and tested against is not that release but
 # btclib's `main`: [tool.uv.sources] below says so, and says why.
 dependencies = [
-    "btclib>=2026.8.21",
+    # The `secp256k1` extra, not an optional-dependencies table of this
+    # package's own: btclib-org/btclib-node#361 is where dependency
+    # versus extra was decided, and why.
+    "btclib[secp256k1]>=2026.8.21",
 ]
 # What this repository is about, in the order a reader ranks them:
 # PyPI shows keywords as the metadata gives them, and GitHub sorts its
@@ -73,7 +76,9 @@ keywords = [
 #
 # No `OS Independent` either, and nothing in the dependencies argues
 # against it any more: what this installs is btclib and what btclib
-# pulls in, all pure-Python wheels, over a store that is now the
+# pulls in, `btclib-secp256k1` and `cffi` among them now compiled
+# rather than pure Python, but wheeled for macOS, Linux and Windows
+# alike and carrying an sdist besides, over a store that is now the
 # standard library's `sqlite3`. Nothing here is known to need a POSIX
 # system. What is missing is not a reason to think it does, it is a run
 # on the platforms this does not name: the suite runs on `ubuntu-latest`
