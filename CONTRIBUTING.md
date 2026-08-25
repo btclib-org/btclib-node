@@ -222,6 +222,18 @@ docstring docutils cannot parse fails it with every hook green -- a name
 ending in an underscore is a reference to a link target, which is what
 the double backticks around a literal like ``NODE_`` are for.
 
+**Not `--only-group docs` in place of the last command's own
+`--no-default-groups --group docs`.** The two read like the same request
+and are not: `--only-group` excludes the project along with every other
+group, so autodoc's own import of `btclib_node` raises
+`ModuleNotFoundError` under `-W` on a `.venv` that does not already have
+it installed. Where the same `.venv` was synced earlier in the session
+by `uv sync` or `uv run pytest`, the project is already there and the
+build succeeds without `--only-group` ever having installed it, so the
+command's outcome tracks the `.venv`'s own history rather than the tree
+it is meant to check. `docs.yml` runs the form above for the same
+reason, next to the same warning.
+
 The last command is worth running before pushing a change to the hook
 config: it catches what a wrong `types_or` tag or a malformed entry would
 otherwise turn into a red lint job.

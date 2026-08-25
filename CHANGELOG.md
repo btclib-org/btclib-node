@@ -14,6 +14,21 @@ to check the guess.
 
 ## Unreleased
 
+### The docs gate warns against `--only-group docs` (closes #425)
+
+- **`CONTRIBUTING.md`'s *The environment and the gates* now names
+  `--only-group docs` as the wrong substitute for the docs-gate
+  command's own `--no-default-groups --group docs`** (closes #425):
+  `--only-group` excludes the project along with every other group, so
+  autodoc's own import of `btclib_node` raises `ModuleNotFoundError`
+  under `-W` on a `.venv` that does not already have it installed, and
+  says nothing on one that does from an earlier `uv sync` or
+  `uv run pytest` in the same session -- an outcome that tracks the
+  `.venv`'s history rather than the tree the command is meant to check.
+  `docs.yml` already carries the same warning beside its own copy of
+  the command; this is that reasoning reaching the file a contributor
+  reads before running the gate by hand.
+
 ### The py.typed entry's stale test path is corrected here (closes #421)
 
 - **The `py.typed`/`__all__` entry (`btclib-org/.github#239`, further
