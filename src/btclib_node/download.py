@@ -171,6 +171,30 @@ def _inbound_net_class(address: NetworkAddressV2) -> BIP155Network | int:
     return address.network_id
 
 
+def _extend_tx_announce_queue(conn: Connection, new_for_conn: list[bytes]) -> None:
+    """Append `new_for_conn`'s own wtxids not already in `conn`'s queue.
+
+    `tx_announce_queue` stays the `list[bytes]` `connection.py` declares
+    it and `_send_due_announcements` drains in the order it is appended
+    in; `queued` is local and rebuilt on every call, only so that
+    membership below is not a scan of the whole queue for every wtxid a
+    connection is newly offered. btclib-org/btclib-node#444
+
+    `queued.add(wtxid)` keeps `queued` correct for the rest of this call
+    even though `new_for_conn` cannot itself repeat a wtxid today -- its
+    caller builds it from `received`, deduplicated further up -- so this
+    loop stays right if that upstream guarantee ever stops holding,
+    rather than depending on it silently.
+    """
+    if not new_for_conn:
+        return
+    queued = set(conn.tx_announce_queue)
+    for wtxid in new_for_conn:
+        if wtxid not in queued:
+            conn.tx_announce_queue.append(wtxid)
+            queued.add(wtxid)
+
+
 class DownloadManager:
     """What decides what this node asks its peers for, one `step` at a time.
 
@@ -257,6 +281,12 @@ class DownloadManager:
         received = list(dict.fromkeys(wtxid for _, wtxid in self.received_txs))
         if not received:
             return
+        # `received` itself stays a list, for the order `_send_due_
+        # announcements` sends in; membership below is against this set
+        # instead, so a peer with many wtxids still outstanding does not
+        # turn one `inv_txs` pass into a full scan of `received` per
+        # entry. btclib-org/btclib-node#444
+        received_set = set(received)
         # a peer that announced a transaction we now hold, or sent it
         # to us, already has it: it is the others that are told. A
         # locally originated transaction's conn_id is `None`, which
@@ -269,7 +299,7 @@ class DownloadManager:
             has_it.setdefault(conn_id, set()).add(wtxid)
         still_wanted: list[tuple[int, bytes]] = []
         for conn_id, wtxid in self.inv_txs:
-            if wtxid in received:
+            if wtxid in received_set:
                 has_it.setdefault(conn_id, set()).add(wtxid)
             else:
                 still_wanted.append((conn_id, wtxid))
@@ -323,9 +353,7 @@ class DownloadManager:
                 and wtxid in self.node.mempool.transactions
                 and self.node.mempool.meets_fee_rate(wtxid, conn.feefilter)
             ]
-            for wtxid in new_for_conn:
-                if wtxid not in conn.tx_announce_queue:
-                    conn.tx_announce_queue.append(wtxid)
+            _extend_tx_announce_queue(conn, new_for_conn)
 
     def _request_wanted_txs(self) -> None:
         if not self.inv_txs:
