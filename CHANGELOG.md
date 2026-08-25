@@ -14,6 +14,25 @@ to check the guess.
 
 ## Unreleased
 
+### `CLAUDE.md` names Core's own checkout and the coverage floor's load-based flake
+
+- **`CLAUDE.md`'s *Following Bitcoin Core* now says a checkout of Core is
+  kept beside the primary checkout of this repository, not beside
+  whichever worktree a session is working in, and names the
+  `git worktree list --porcelain` recipe that finds the primary
+  checkout's sibling from any worktree** (closes #396): a plain
+  `../bitcoin` resolves only from the primary checkout, and a raw
+  network fetch of one file is no substitute for the local checkout
+  either, since it can come back truncated with nothing to say so,
+  missing the very function a divergence question is about.
+- **`CLAUDE.md`'s *Non-obvious facts* now names the coverage floor's
+  other flake, beside the `COVERAGE_FILE` one already there**:
+  [ISS 372](https://github.com/btclib-org/btclib-node/issues/372)
+  measured a run reporting `99.98%` and missing the 100% floor on a
+  branch inside `P2pManager`'s own background thread while every test
+  passed, distinguished from a real regression only by the load average
+  `uptime` gave at that run.
+
 ### The docs gate's own remaining gaps close: `[project.urls]`, `local-link-prefix`
 
 - **`conf.py`'s `BLOB` constant reads `pyproject.toml`'s own
