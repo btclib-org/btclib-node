@@ -26,6 +26,16 @@ on:
     # held in this pull request's own concurrency group is superseded
     # rather than left to finish on a branch nobody will look at again
     types: [opened, reopened, synchronize, ready_for_review, closed]
+  # allows release.yml to reuse this gate, so a tag push cannot publish
+  # code the pre-commit hooks would reject
+  workflow_call:
+    inputs:
+      concurrency-suffix:
+        description: >
+          Appended to the concurrency group, and release.yml is the only
+          caller that passes one. See the group below.
+        type: string
+        default: ""
   # the escape hatch, for a branch whose pull request is not open yet
   workflow_dispatch:
 
@@ -35,12 +45,19 @@ permissions:
   contents: read
 
 # cancel superseded runs: the subject is the commit, which a newer one
-# supersedes. Named literally rather than through github.workflow, and
-# by the pull request's own number rather than by github.ref, which for
-# a closed, merged pull request resolves to the base branch's ref and
-# would put that run in the push trigger's group
+# supersedes. Named literally rather than through github.workflow, which
+# in a called workflow is the caller's name -- release.yml calls both
+# this and test.yml, and with that expression the two would share a
+# group and cancel each other. By the pull request's own number rather
+# than by github.ref, which for a closed, merged pull request resolves
+# to the base branch's ref and would put that run in the push trigger's
+# group. The suffix is what keeps a release call out of the branch
+# groups: see test.yml's own concurrency block for the fuller reasoning,
+# which applies here unchanged
 concurrency:
-  group: lint-${{ github.event.pull_request.number || github.ref }}
+  group: >-
+    lint-${{ github.event.pull_request.number || github.ref
+    }}${{ inputs.concurrency-suffix }}
   cancel-in-progress: true
 
 jobs:
