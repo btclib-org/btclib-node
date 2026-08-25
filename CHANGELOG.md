@@ -249,7 +249,13 @@ to check the guess.
   rather than the variable's own name. This is the last of #373's five
   parallel `tests/**` slices to close, past `scripts/**`,
   `tests/unit/chainstate/`, `tests/unit/rpc/`/`tests/functional/rpc/`
-  and `tests/unit/`'s own root-level bucket, all already landed.
+  and `tests/unit/`'s own root-level bucket, all already landed. The
+  rpc slice's own landing renamed `tests/functional/rpc/**`'s
+  per-file-ignore key to `tests/unit/chainstate/**` instead of deleting
+  it outright, silently reintroducing a key the chainstate slice had
+  already removed; that key is removed again here, alongside this
+  slice's own two, since the family now has no finding left under any
+  of the three.
 
 ### The docs gate's own remaining gaps close: `[project.urls]`, `local-link-prefix`
 

@@ -713,64 +713,6 @@ ignore = [
     "S101",    # assert
     "S311",    # non-cryptographic random: fine in tests
 ]
-# `D100`/`D104`/`D101`/`D102`/`D103`/`D107`/`D205`/`D401`, the family's
-# own remaining scope past issue #373's five `src/btclib_node/` package
-# slices (886 real findings, measured directly rather than assumed, once
-# the per-file-ignores below are read individually) -- split one key per
-# subdirectory below, mirroring `tests/unit/`'s own package layout, so
-# five parallel slices can each remove their own key without touching
-# the other four's lines or this file's own `tests/**` entry above.
-# Verified before this split landed, not assumed: no two keys below
-# match the same file, and every file matched before the split still
-# matches after it. `ruff`'s own glob crosses a `/` even for a bare `*`
-# -- confirmed directly, `"tests/unit/p2p/*.py"` reaches
-# `tests/unit/p2p/messages/` too -- so the root-level bucket below is an
-# explicit enumeration, not a glob that would also silently catch the
-# four subdirectories split out beside it.
-"tests/unit/rpc/**" = [
-    "D100",
-    "D101",
-    "D102",
-    "D103",
-    "D104",
-    "D107",
-    "D205",
-    "D401",
-]
-"tests/functional/rpc/**" = [
-    "D100",
-    "D101",
-    "D102",
-    "D103",
-    "D104",
-    "D107",
-    "D205",
-    "D401",
-]
-# every `tests/unit/` file at its own root, not under `p2p/`, `rpc/` or
-# `chainstate/` -- enumerated by name rather than globbed, since a glob
-# here would also catch those three subdirectories (see the comment
-# above)
-"tests/unit/{__init__,block_db_test,chains_test,config_test,coverage_floor_test,db_test,docs_test,download_test,harness_test,helpers_test,init_test,interpreter_test,log_test,main_test,mempool_test}.py" = [
-    "D100",
-    "D101",
-    "D102",
-    "D103",
-    "D104",
-    "D107",
-    "D205",
-    "D401",
-]
-"tests/{__init__,conftest,helpers}.py" = [
-    "D100",
-    "D101",
-    "D102",
-    "D103",
-    "D104",
-    "D107",
-    "D205",
-    "D401",
-]
 # Every handler in p2p.callbacks.callbacks/handshake_callbacks is called
 # uniformly (node, msg, conn) by p2p.main's handle_p2p/
 # handle_p2p_handshake, and every one in rpc.callbacks.callbacks is
