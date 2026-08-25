@@ -31,6 +31,25 @@ to check the guess.
   exist -- every test module in this tree ends in `_test.py`, per
   #26/#268.
 
+### `rpc.connection`'s `Connection` becomes `RpcConnection` (closes #417)
+
+- **`src/btclib_node/rpc/connection.py`'s `Connection` is renamed
+  `RpcConnection`**, along with every annotation, import and docstring
+  mention across `rpc/callbacks.py`, `rpc/main.py`, `rpc/manager.py` and
+  their tests (closes #417): it shared its bare name with
+  `p2p/connection.py`'s own unrelated `Connection`, and the docs build's
+  `-W` fails on Sphinx's "more than one target found for cross-reference
+  'Connection'" wherever autodoc renders one as a type hint. Both
+  classes reach every annotation that names them only through a
+  `TYPE_CHECKING`-only import, so autodoc can never introspect the real
+  class behind either annotation and falls back to the bare word
+  written in the source -- `autodoc_typehints_format`, which only
+  reformats a type hint autodoc *did* resolve, has nothing to qualify in
+  that fallback and leaves the warning unchanged. Renaming one of the
+  two removes the ambiguity from the word itself, with no
+  `docs/source/conf.py` change and no quoted or dotted annotation
+  needed at any call site.
+
 ### `tests/unit/init_test.py`'s comment names the right test modules (closes #415)
 
 - **The comment above

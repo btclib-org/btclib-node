@@ -62,10 +62,10 @@ if TYPE_CHECKING:
     from btclib.block import BlockHeader
 
     from btclib_node import Node
-    from btclib_node.rpc.connection import Connection
+    from btclib_node.rpc.connection import RpcConnection
 
 # none of these callbacks reads the connection it is handed
-_CONN = cast("Connection", None)
+_CONN = cast("RpcConnection", None)
 
 
 def a_tx(tag: bytes = b"\x11") -> Tx:
@@ -1059,7 +1059,7 @@ def a_block_index(
     )
 
 
-def header_json(node: Any, conn: Connection, params: list[Any]) -> dict[str, Any]:
+def header_json(node: Any, conn: RpcConnection, params: list[Any]) -> dict[str, Any]:
     """`get_block_header`'s object answer, narrowed for a test that indexes it.
 
     `get_block_header` also answers a plain hex string where verbose is

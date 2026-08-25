@@ -4,7 +4,7 @@
 
 """`RpcManager`, the thread listening for JSON-RPC connections.
 
-Runs its own asyncio loop, accepting a `Connection` per request and
+Runs its own asyncio loop, accepting a `RpcConnection` per request and
 queuing what each one parses onto `messages` for `Node`'s own thread to
 read in `rpc.main.handle_rpc`. `listening` is set once `run` has
 actually bound the socket, which is what a caller waits on rather than
@@ -18,7 +18,7 @@ from collections import deque
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, override
 
-from btclib_node.rpc.connection import Connection
+from btclib_node.rpc.connection import RpcConnection
 
 if TYPE_CHECKING:
     from concurrent.futures import Future
@@ -41,7 +41,7 @@ class RpcManager(threading.Thread):
         self.node = node
         self.logger = node.logger
         self.chain = node.chain
-        self.connections: dict[int, Connection] = {}
+        self.connections: dict[int, RpcConnection] = {}
         # what a connection parses out of one request: the JSON-RPC
         # batch -- a list even where the client sent a lone object --
         # and the connection id handle_rpc answers on
@@ -79,10 +79,10 @@ class RpcManager(threading.Thread):
 
     def create_connection(
         self, loop: asyncio.AbstractEventLoop, client: socket.socket
-    ) -> Connection:
-        """Wrap `client` in a `Connection` and register it under a new id."""
+    ) -> RpcConnection:
+        """Wrap `client` in a `RpcConnection` and register it under a new id."""
         client.settimeout(0.0)
-        new_connection = Connection(loop, client, self, self.last_connection_id)
+        new_connection = RpcConnection(loop, client, self, self.last_connection_id)
         self.connections[self.last_connection_id] = new_connection
         return new_connection
 
@@ -135,7 +135,7 @@ class RpcManager(threading.Thread):
         """Accept connections off `server_socket` until cancelled by `stop`.
 
         Registers `_accept_one` as `server_socket`'s own reader callback
-        and awaits `_accept_queue` for what it accepts, one `Connection`
+        and awaits `_accept_queue` for what it accepts, one `RpcConnection`
         and one `conn.run` task per socket -- the queue, not a bare
         `loop.sock_accept`, being what keeps a socket already accepted
         from being discarded by a cancel landing between the accept and
