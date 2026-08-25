@@ -53,8 +53,7 @@ def a_peer_db(chain: Any = None, data_dir: Path | None = None) -> PeerDB:
 
 
 def an_onion_address(port: int = 8333) -> NetworkAddressV2:
-    """Build a TORv3 peer: BIP155's own undialable network, for its own tests.
-    """
+    """Build a TORv3 peer: BIP155's undialable network, for its own tests."""
     return NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, port)
 
 
@@ -565,8 +564,7 @@ def test_a_refused_dial_does_not_cost_the_old_poll_s_full_second() -> None:
 
 
 class FakeLoop:
-    """A `getaddrinfo` stand-in answering fixed hosts without a real DNS query.
-    """
+    """A `getaddrinfo` stand-in answering fixed hosts, no real DNS query."""
 
     def __init__(self, answers: dict[str, Exception | list[str]]) -> None:
         """Record what each host name should answer with, or raise."""
@@ -650,8 +648,7 @@ class FakeIpv6Loop:
     async def getaddrinfo(
         self, host: str, port: int
     ) -> list[tuple[int, int, int, str, tuple[str, int, int, int]]]:
-        """Answer with a sockaddr of four fields, as a real AAAA lookup would.
-        """
+        """Answer with a sockaddr of four fields, as a real AAAA lookup does."""
         # what a AAAA record resolves to: a sockaddr of four fields
         # rather than two, the flow info and the scope id being the two
         # a peer table has nowhere to put

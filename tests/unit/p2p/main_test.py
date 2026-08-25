@@ -237,16 +237,14 @@ def test_a_message_before_the_handshake_is_over_drops_the_peer() -> None:
 
 
 def test_a_message_on_a_closed_connection_is_dropped() -> None:
-    """An ordinary message for a `Closed` connection is dropped, not dispatched.
-    """
+    """An ordinary message for a `Closed` connection is dropped, not run."""
     node, stopped = make_node("messages", ("ping", b"", 0), status=P2pConnStatus.Closed)
     handle_p2p(node)
     assert not stopped
 
 
 def test_a_command_nothing_dispatches_is_ignored() -> None:
-    """A command with no entry in `callbacks` is silently ignored, not dropped.
-    """
+    """A command with no entry in `callbacks` is ignored, not dropped."""
     node, stopped = make_node(
         "messages", ("nosuchcommand", b"", 0), status=P2pConnStatus.Connected
     )
@@ -278,8 +276,7 @@ def test_a_callback_that_raises_drops_the_peer(monkeypatch: pytest.MonkeyPatch) 
 def test_a_callback_that_raises_a_btclib_exception_costs_the_peer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A callback raising a btclib exception drops the peer and discourages it.
-    """
+    """A btclib exception out of a callback drops the peer, discouraged."""
 
     def boom(node: Node, msg: bytes, conn: Connection) -> None:
         raise BTClibValueError("no")
@@ -294,8 +291,7 @@ def test_a_callback_that_raises_a_btclib_exception_costs_the_peer(
 
 
 def test_a_message_for_a_connection_that_is_gone_is_dropped() -> None:
-    """A message naming a connection id nobody holds is dropped, not dispatched.
-    """
+    """A message naming an unknown connection id is dropped, not run."""
     node, stopped = make_node(
         "messages", ("ping", b"", 7), status=P2pConnStatus.Connected, present=False
     )

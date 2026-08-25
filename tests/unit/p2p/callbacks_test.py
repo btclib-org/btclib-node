@@ -427,8 +427,7 @@ def a_handshake_node(
     promote_connection: Any = None,
     min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
 ) -> Any:
-    """Build a node double with just what the handshake callbacks read or write.
-    """
+    """Build a node double with just what handshake callbacks read or write."""
     discouraged: list[Any] = []
     return SimpleNamespace(
         status=status,
@@ -458,8 +457,7 @@ def commands(peer: Any) -> list[str]:
 
 
 def test_a_version_is_answered_with_what_this_node_speaks() -> None:
-    """A compatible `version` is answered with this node's own handshake trio.
-    """
+    """A compatible `version` gets this node's own handshake trio in reply."""
     node = a_handshake_node()
     peer = a_peer()
     version(node, a_version(), peer)
@@ -488,8 +486,7 @@ def test_a_version_carrying_our_own_nonce_is_this_node_calling_itself() -> None:
 
 
 def test_a_peer_speaking_an_older_protocol_is_let_go() -> None:
-    """A `version` below `ProtocolVersion` is refused and the peer discouraged.
-    """
+    """A `version` below `ProtocolVersion` is refused, the peer discouraged."""
     node = a_handshake_node()
     peer = a_peer()
     version(node, a_version(protocol=ProtocolVersion - 1), peer)
@@ -498,8 +495,7 @@ def test_a_peer_speaking_an_older_protocol_is_let_go() -> None:
 
 
 def test_a_peer_without_the_witness_service_is_let_go() -> None:
-    """A peer that never advertised `NODE_WITNESS` is refused and discouraged.
-    """
+    """A peer never advertising `NODE_WITNESS` is refused and discouraged."""
     node = a_handshake_node()
     peer = a_peer()
     version(node, a_version(services=ServiceFlags.NODE_NETWORK), peer)
@@ -885,8 +881,7 @@ def test_a_feefilter_outside_the_money_range_is_read_as_no_filter(
 
 
 def test_a_feefilter_at_the_edge_of_the_money_range_is_kept() -> None:
-    """A `feefilter` naming exactly MAX_MONEY is kept: the bound is inclusive.
-    """
+    """A `feefilter` naming exactly MAX_MONEY is kept, the bound inclusive."""
     # the bound is inclusive, so exactly MAX_MONEY is still a filter
     peer = a_peer()
     at_the_edge = sats_from_btc(Decimal(21_000_000))
@@ -1029,8 +1024,7 @@ def test_an_address_of_a_network_nobody_here_has_heard_of_is_kept() -> None:
 
 
 def test_a_notfound_is_logged_rather_than_held_against_the_peer() -> None:
-    """A `notfound` is logged as a warning, and never costs the peer anything.
-    """
+    """A `notfound` is logged as a warning, costing the peer nothing."""
     logged, warning = log_recorder()
     node = a_handshake_node()
     node.logger.warning = warning
@@ -1072,8 +1066,7 @@ def test_a_notfound_frees_the_transaction_it_names_to_be_asked_of_someone_else()
 
 
 def test_a_reject_names_the_transaction_it_is_about() -> None:
-    """A `reject` is logged with its code, its reason and the txid it is about.
-    """
+    """A `reject` is logged with its code, reason and the txid it is about."""
     logged: list[str] = []
     node = a_handshake_node()
     node.logger.warning = logged.append
@@ -1594,8 +1587,7 @@ def test_a_block_this_node_does_not_hold_is_not_answered() -> None:
 
 
 def test_an_inventory_of_neither_kind_is_skipped() -> None:
-    """A `getdata` item that is neither a tx type nor a block type is skipped.
-    """
+    """A `getdata` item neither a tx type nor a block type is skipped."""
     node = a_data_node(block_db=SimpleNamespace(get_block=lambda h: None))
     peer = a_peer()
     items = [Inventory(InventoryType.MSG_FILTERED_BLOCK, b"\x11" * 32)]
@@ -2069,9 +2061,7 @@ def test_a_stop_hash_off_the_active_chain_is_not_answered() -> None:
 
 
 def test_a_stop_hash_at_a_height_the_chain_has_not_reached_is_not_answered() -> None:
-    """A `getcfilters` naming a stop hash at a height past the chain's own tip
-    is not answered.
-    """
+    """A `getcfilters` naming a stop past the chain's tip is not answered."""
     node = a_filters_node(length=4, stale={b"\x33" * 32: SimpleNamespace(index=9)})
     peer = a_peer()
     get_cfilters(
@@ -2081,8 +2071,7 @@ def test_a_stop_hash_at_a_height_the_chain_has_not_reached_is_not_answered() -> 
 
 
 def test_a_range_that_runs_backwards_is_not_answered() -> None:
-    """A range whose start is past its stop is answered with nothing, either
-    message.
+    """A range whose start is past its stop gets nothing, from either message.
 
     And the same range asked of getcfheaders, which is the half that can tell:
     an empty range sends no cfilter either way, where a cfheaders of no hashes
@@ -2139,8 +2128,7 @@ def test_a_range_is_bounded_strictly_below_the_limit(ask: Any, limit: int) -> No
 
 
 def test_the_filter_hashes_of_a_range_are_answered_with_the_header_before_it() -> None:
-    """A `getcfheaders` answer carries the range's own hashes plus the header
-    before it.
+    """A `getcfheaders` answer carries the range's hashes plus one header.
 
     The header of the block before the range: what the hashes below chain onto,
     and without it a client could check nothing.
@@ -2161,8 +2149,7 @@ def test_the_filter_hashes_of_a_range_are_answered_with_the_header_before_it() -
 
 
 def test_a_range_that_starts_at_the_genesis_block_has_no_header_before_it() -> None:
-    """A `getcfheaders` range starting at genesis answers thirty-two zero
-    octets.
+    """A `getcfheaders` range at genesis answers thirty-two zero octets.
 
     BIP157 defines the header before the genesis block's filter as thirty-two
     zero octets, and there is no block to read one off.
@@ -2192,9 +2179,7 @@ def test_a_getcfheaders_this_node_cannot_answer_is_not_answered() -> None:
 
 
 def test_get_cfheaders_refuses_a_gap_in_the_header_before_the_range() -> None:
-    """A missing filter header for the block just before the range raises, not
-    `notfound`.
-    """
+    """A missing filter header before the range raises, not `notfound`."""
     node = a_filters_node()
     node.chainstate.filter_index.get_header = lambda h: None
     peer = a_peer()
@@ -2209,9 +2194,7 @@ def test_get_cfheaders_refuses_a_gap_in_the_header_before_the_range() -> None:
 
 
 def test_get_cfheaders_refuses_a_gap_in_a_promised_index() -> None:
-    """A missing filter hash somewhere in the range raises, not answered with
-    `notfound`.
-    """
+    """A missing filter hash in the range raises, not a `notfound`."""
     node = a_filters_node()
     node.chainstate.filter_index.get_filter_hash = lambda h: None
     peer = a_peer()
@@ -2224,8 +2207,7 @@ def test_get_cfheaders_refuses_a_gap_in_a_promised_index() -> None:
 
 
 def test_the_checkpoints_are_every_thousandth_block_and_not_the_first() -> None:
-    """`getcfcheckpt` answers with the filter header at every interval up to the
-    stop.
+    """`getcfcheckpt` answers with the header at every interval to the stop.
 
     "a multiple of 1,000 greater than 0": the genesis block is not a checkpoint,
     and the stop block is one only if it falls on the interval itself.
@@ -2250,8 +2232,7 @@ def test_the_checkpoints_are_every_thousandth_block_and_not_the_first() -> None:
 
 
 def test_the_stop_block_is_a_checkpoint_when_its_own_height_is_one() -> None:
-    """A stop block whose own height falls on the interval is itself a
-    checkpoint.
+    """A stop block whose height falls on the interval is itself a checkpoint.
 
     The boundary the rule is most specific about: "each block ... where the
     block height is a multiple of 1,000 greater than 0" includes the block the
@@ -2271,8 +2252,7 @@ def test_the_stop_block_is_a_checkpoint_when_its_own_height_is_one() -> None:
 
 
 def test_a_chain_shorter_than_the_interval_has_no_checkpoints() -> None:
-    """A chain shorter than the checkpoint interval answers with an empty
-    message.
+    """A chain shorter than the interval answers with an empty message.
 
     An answer, and an empty one: a client that asked has been told there is
     nothing to check against, which is not the same as having been ignored.
@@ -2292,9 +2272,7 @@ def test_a_chain_shorter_than_the_interval_has_no_checkpoints() -> None:
 
 
 def test_get_cfcheckpt_refuses_a_gap_in_a_promised_index() -> None:
-    """A missing filter header at a checkpoint height raises, not answered with
-    `notfound`.
-    """
+    """A missing filter header at a checkpoint raises, not `notfound`."""
     node = a_filters_node(length=CFCHECKPT_INTERVAL + 1)
     node.chainstate.filter_index.get_header = lambda h: None
     peer = a_peer()

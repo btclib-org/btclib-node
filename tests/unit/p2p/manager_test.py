@@ -437,8 +437,7 @@ def test_a_pending_connection_gone_quiet_is_dropped_without_a_ping(
 
 
 def a_counting_prune() -> tuple[list[None], Any]:
-    """Build a `get_active_addresses` stub that records every call it answers.
-    """
+    """Build a `get_active_addresses` stub recording every call it answers."""
     calls: list[None] = []
 
     def get_active_addresses() -> list[Any]:
@@ -513,8 +512,7 @@ def test_a_peer_db_that_raises_pruning_does_not_stop_the_housekeeping(
 def test_a_pending_connection_still_within_the_window_is_left_alone(
     a_manager: AManagerFactory,
 ) -> None:
-    """A pending connection heard from recently is neither pinged nor dropped.
-    """
+    """A pending connection heard from recently is neither pinged nor cut."""
     conn = a_conn(1, status=P2pConnStatus.Open)
     manager = a_manager()
     manager.pending_connections[conn.id] = conn
@@ -762,8 +760,7 @@ def test_a_promote_racing_the_count_does_not_dial_past_the_target(
 def test_a_dial_that_comes_back_with_nothing_adds_no_connection(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A dial reached from the housekeeping loop that fails adds no connection.
-    """
+    """A dial from the housekeeping loop that fails adds no connection."""
 
     async def comes_back_with_nothing(address: NetworkAddressV2) -> None:
         return None
@@ -792,8 +789,7 @@ async def asks_no_dns_server() -> None:
 def test_a_peer_db_that_raises_does_not_stop_the_housekeeping(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A `random_address` that raises logs and lets the housekeeping loop go on.
-    """
+    """A `random_address` that raises logs and lets housekeeping go on."""
     logged: list[str] = []
     peer_db = a_peer_db_stub(is_empty=False, random_address=refuses_to_be_asked)
     manager = a_manager(peer_db=peer_db)
@@ -966,8 +962,7 @@ def test_a_peer_db_with_nothing_dialable_is_a_pass_that_does_nothing(
 def test_a_peer_that_answers_the_dial_becomes_a_connection(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A successful dial lands a pending, outbound connection with its socket.
-    """
+    """A successful dial lands a pending outbound connection with its socket."""
     ours, theirs = socket.socketpair()
 
     async def answers(address: NetworkAddressV2) -> socket.socket:
@@ -999,8 +994,7 @@ def test_a_peer_that_answers_the_dial_becomes_a_connection(
 
 
 def a_running_manager(a_manager: AManagerFactory, port: int) -> P2pManager:
-    """Build and start a `P2pManager`, without waiting for it to be listening.
-    """
+    """Build and start a `P2pManager` without waiting for it to listen."""
     manager = a_manager(port=port)
     manager.start()
     return manager
@@ -1044,8 +1038,7 @@ def test_a_manager_says_when_it_is_listening_and_not_before(
 
 
 def test_a_manager_accepts_an_ipv6_peer_too(a_manager: AManagerFactory) -> None:
-    """A manager also binds IPv6, and accepts a peer that dials it over `::1`.
-    """
+    """A manager also binds IPv6, accepting a peer that dials it over `::1`."""
     port = get_random_port()
     manager = a_running_manager(a_manager, port)
     wait_until_listening(manager)
