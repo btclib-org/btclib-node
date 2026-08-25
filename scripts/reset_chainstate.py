@@ -2,6 +2,15 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""A hand-edited template for repairing a mainnet chainstate in place.
+
+Opens the chainstate and leaves two commented-out blocks below --
+resetting a range of the active chain back to `valid_header` status, and
+deleting every `utxo-` entry -- for whoever is repairing a corrupted
+chainstate to uncomment and run, one block at a time, rather than a
+program meant to run as it stands.
+"""
+
 from btclib_node.chainstate import Chainstate
 from btclib_node.config import Config
 from btclib_node.log import Logger

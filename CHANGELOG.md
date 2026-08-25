@@ -14,6 +14,21 @@ to check the guess.
 
 ## Unreleased
 
+### `scripts/` gets real docstrings, `D100`'s own deferral is gone (issue #373)
+
+- **Every module under `scripts/` -- the three `chains/` launchers, the
+  two hand-edited reset templates, `prune.py`, `test_errors.py` and
+  `testnet_test.py` -- carries a module docstring grounded in what it
+  does and how it is meant to be run** (issue #373): a one-off template
+  edited by hand before each use, a manual diagnostic run directly
+  against local fixtures, or a launcher invoked as a plain script, each
+  said which. `pyproject.toml`'s own `"scripts/**" = ["D100"]`
+  per-file-ignore, left in place by issue #264 and split out untouched
+  by #373's own `tests/**` restructuring, is removed now that the
+  directory it deferred is clean. `tests/**`'s own seven per-subdirectory
+  keys for the same eight codes are unaffected and remain #373's
+  outstanding scope.
+
 ### `docs/source/index.rst`'s toctree names `SECURITY.md` and `RELEASE_NOTES.md`
 
 - **`docs/source/security_link.md` and `docs/source/release_notes_link.md`
