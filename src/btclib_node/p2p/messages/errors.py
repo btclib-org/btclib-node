@@ -21,6 +21,8 @@ if TYPE_CHECKING:
 
 
 class RejectCode(enum.IntEnum):
+    """BIP61's own reject codes, as `Reject.code` carries them on the wire."""
+
     malformed = 0x01
     invalid = 0x10
     obsolete = 0x11
@@ -33,6 +35,11 @@ class RejectCode(enum.IntEnum):
 
 @dataclass
 class Reject(Payload):
+    """BIP61's `reject` message: what a peer refused, and why.
+
+    The module docstring above is where its one reader is named.
+    """
+
     command = "reject"
 
     message: str
@@ -47,6 +54,7 @@ class Reject(Payload):
         *,
         check_validity: bool = True,  # noqa: ARG003
     ) -> Reject:
+        """Parse a `Reject` from the bytes a peer sent."""
         # every btclib Payload's own parse/serialize pair takes
         # check_validity, called polymorphically (Connection.py's own
         # payload.serialize(check_validity=False) among them) without a

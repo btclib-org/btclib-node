@@ -51,7 +51,16 @@ _IDLE_TIMEOUT = 120
 
 
 class P2pManager(threading.Thread):
+    """The thread listening for and dialling peer connections.
+
+    The module docstring above is where its own loop, its two message
+    queues and the boundary with `Node`'s thread are argued;
+    `connections`/`pending_connections` and the lock that guards moving
+    a connection between them are this class's own state for that.
+    """
+
     def __init__(self, node: Node, port: int | None, peer_db: PeerDB) -> None:
+        """Set up empty connection tables and queues, and a fresh event loop."""
         super().__init__()
         self.node = node
         self.logger = node.logger
@@ -157,6 +166,7 @@ class P2pManager(threading.Thread):
     def create_connection(
         self, client: socket.socket, address: NetworkAddressV2, *, inbound: bool
     ) -> None:
+        """Build a `Connection` for `client`, hold it pending, and start it."""
         client.settimeout(0.0)
         self.last_connection_id += 1
         conn = Connection(
@@ -183,6 +193,11 @@ class P2pManager(threading.Thread):
                 self.connections[connection_id] = conn
 
     def remove_connection(self, connection_id: int) -> None:
+        """Drop `connection_id` from either table and stop it, if it was held.
+
+        `_connections_lock` (`__init__`) is what makes the two pops one
+        step, against `promote_connection`'s own pop-then-write.
+        """
         with self._connections_lock:
             conn = self.connections.pop(
                 connection_id, None
@@ -203,11 +218,13 @@ class P2pManager(threading.Thread):
         self.discouraged.add(endpoint_key(address))
 
     async def async_connect(self, address: NetworkAddressV2) -> None:
+        """Dial `address` and, if it comes up, register the connection."""
         client = await dial(address)
         if client:
             self.create_connection(client, address, inbound=False)
 
     def connect(self, address: NetworkAddressV2) -> None:
+        """Schedule `async_connect(address)` onto this manager's own loop."""
         asyncio.run_coroutine_threadsafe(self.async_connect(address), self.loop)
 
     def _prune_stale_connections(self, now: float) -> None:
@@ -328,6 +345,13 @@ class P2pManager(threading.Thread):
             self.logger.exception("Exception occurred")
 
     async def manage_connections(self) -> None:
+        """Prune, prune some more, maybe dial, sleep -- forever, every 0.1s.
+
+        `_prune_stale_connections` pings or drops an idle peer every
+        pass; `_maybe_prune_active_addresses` runs far less often; and
+        `_maybe_dial_more_peers` dials one more only if this node still
+        has room for it.
+        """
         while True:
             now = time.time()
             self._prune_stale_connections(now)
@@ -417,6 +441,14 @@ class P2pManager(threading.Thread):
     async def server(
         self, loop: asyncio.AbstractEventLoop, server_socket: socket.socket
     ) -> None:
+        """Accept connections off `server_socket`, one `create_connection` each.
+
+        Reads through `accepted`, an `asyncio.Queue` the plain reader
+        callback `_accept_one` fills, rather than a bare
+        `await loop.sock_accept` -- the comment below argues why that
+        queue is what keeps a shutdown from discarding an already
+        accepted socket.
+        """
         with server_socket:
             # A plain reader callback stores what it accepts in a
             # queue: the socket sits in a plain deque the instant
@@ -488,6 +520,12 @@ class P2pManager(threading.Thread):
         loop.run_forever()
 
     def stop(self) -> None:
+        """Stop this manager's own loop, then every connection and task on it.
+
+        The comment below is the whole of what makes `stop_handle`
+        itself safe to cancel unconditionally, on any of the three ways
+        `run` above can have left this loop by the time `join` returns.
+        """
         stop_handle = self.loop.call_soon_threadsafe(self.loop.stop)
         # `join` blocks this thread without spinning it, the way
         # `Node.stop` already waits on itself with `self.join`. Guarded
@@ -631,6 +669,7 @@ class P2pManager(threading.Thread):
         self.logger.info("Stopping P2P Manager")
 
     def send(self, msg: Payload, connection_id: int) -> None:
+        """Send `msg` on `connection_id`, a no-op if that connection is gone."""
         # `.get()`, not `in` then `[...]`: `remove_connection` pops
         # from `connections` on this manager's own loop, off
         # `_prune_stale_connections`, every pass of `manage_connections`
@@ -646,6 +685,11 @@ class P2pManager(threading.Thread):
             conn.send(msg)
 
     def broadcast_raw_transaction(self, tx: BtclibTx, fee: int) -> None:  # noqa: ARG002
+        """Queue `tx` for the inv/getdata round trip, not a direct send.
+
+        The comment below is where this, and `fee` going unread here,
+        are argued.
+        """
         # `DownloadManager.tx_download`'s own queue, with no peer to
         # exclude as already holding it, rather than a push of its own:
         # a direct, unsolicited `Tx` to every peer the instant this
@@ -668,10 +712,12 @@ class P2pManager(threading.Thread):
         self.node.download_manager.received_txs.append((None, tx.hash))
 
     def ping_all(self) -> None:
+        """Send every connected peer a fresh `ping`."""
         for conn in self.connections.copy().values():
             conn.send_ping()
 
     def stop_all(self) -> None:
+        """Stop every connection this manager holds, per the comment below."""
         # every socket this manager holds, handshake finished or not:
         # a peer mid-`verack` is still a peer to close on shutdown
         for conn in (

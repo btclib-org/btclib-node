@@ -273,7 +273,17 @@ def endpoint_key(address: NetworkAddressV2) -> bytes:
 
 
 class PeerDB:
+    """The table of addresses this node knows of, gossiped and self-confirmed.
+
+    `addresses` is every address heard about; `active_addresses` is the
+    subset this node has itself dialled and heard back from recently.
+    Each is behind its own lock, taken separately and never nested --
+    the comment beside each lock's own field says which thread reaches
+    it and why sharing the other lock was declined.
+    """
+
     def __init__(self, chain: Chain, data_dir: Path | None) -> None:
+        """Load the durable tables, then decide whether DNS is still needed."""
         self.chain = chain
         self.data_dir = data_dir
         self.addresses: set[NetworkAddressV2] = set()
@@ -348,6 +358,13 @@ class PeerDB:
         )
 
     def init_from_db(self) -> None:
+        """Load every stored address into `addresses` or `active_addresses`.
+
+        One store keyed by two prefixes (the comment on `_KNOWN` and
+        `_ANSWERED` above argues why), so this walks it whole and
+        dispatches on the prefix rather than stopping at the first key
+        without one.
+        """
         if self.db is None:
             return
         for key, value in self.db:
@@ -388,10 +405,16 @@ class PeerDB:
             yield wb
 
     def close(self) -> None:
+        """Close the durable store, if this table has one."""
         if self.db is not None:
             self.db.close()
 
     async def get_addr_from_dns(self) -> None:
+        """Resolve every chain DNS seed and feed the answers to `add_addresses`.
+
+        A no-op unless `ask_dns_nodes` said, at construction time, that
+        the durable table came back with nothing dialable.
+        """
         if not self.ask_dns_nodes:
             return
         chain = self.chain
@@ -422,6 +445,7 @@ class PeerDB:
 
     @property
     def is_empty(self) -> bool:
+        """Whether `addresses` holds nothing at all, read without a lock."""
         # Unlocked on purpose: `len` on a set is one step, not a walk of
         # it, so there is nothing here for another thread's `add`/
         # `discard` to catch mid-stride -- the answer is at worst one
@@ -432,6 +456,11 @@ class PeerDB:
         return not len(self.addresses)
 
     def random_address(self) -> NetworkAddressV2 | None:
+        """Return a random dialable address, or `None` if there is none.
+
+        Preferred from `get_active_addresses`'s own dialable subset;
+        falls back to `addresses` whole, locked, only if that is empty.
+        """
         # Preferred: an address this node has itself dialled and heard
         # back from recently, over one merely gossiped -- #123, so that
         # a run draws on what it already knows works rather than on the
@@ -459,6 +488,13 @@ class PeerDB:
         return secrets.choice(dialable)
 
     def add_addresses(self, addresses: Iterable[NetworkAddressV2]) -> None:
+        """Merge `addresses` into `self.addresses`, checked and deduplicated.
+
+        BIP155's embedded-IPv6 records are dropped; every other address
+        settles onto its own `endpoint_key` row, up to `_MAX_ADDRESSES`
+        distinct endpoints, past which a genuinely new one is dropped
+        too. Locked with `_addresses_lock`.
+        """
         # a peer's word for when it last saw an address is not evidence,
         # and keeping it would make the one address several entries
         with self._addresses_lock, self._write_batch() as wb:
@@ -497,6 +533,11 @@ class PeerDB:
                     wb.put(_KNOWN + key, value)
 
     def get_active_addresses(self) -> list[NetworkAddressV2]:
+        """Return `active_addresses`, pruned of every entry older than 3 hours.
+
+        A pruned entry's durable `answered-` row is deleted too. Locked
+        with `_active_lock`.
+        """
         now = time.time()
         with self._active_lock:
             # active if seen within the last three hours; an entry that
@@ -515,6 +556,12 @@ class PeerDB:
             return self.active_addresses
 
     def add_active_address(self, addr: NetworkAddressV2) -> None:
+        """Record `addr` as dialled and answered, just now.
+
+        A repeat handshake with an already-held endpoint settles onto
+        its one row rather than growing the table. Locked with
+        `_active_lock`.
+        """
         # a whole second: the field is four octets on the wire
         answered = replace(addr, timestamp=int(time.time()))
         key = endpoint_key(answered)
