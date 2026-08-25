@@ -1604,9 +1604,7 @@ def test_an_inventory_of_neither_kind_is_skipped() -> None:
 
 
 class FakeHeaderIndex:
-    """A block index stand-in whose `add_headers` answer and tip status are
-    fixed.
-    """
+    """A block index stand-in with fixed `add_headers` answer and tip status."""
 
     def __init__(
         self,
@@ -1616,9 +1614,7 @@ class FakeHeaderIndex:
         header_index_tip: bytes = b"\xff" * 32,
         tip_status: BlockStatus = BlockStatus.valid_header,
     ) -> None:
-        """Fix `add_headers`'s own return, whether it raises, and the tip it
-        reports.
-        """
+        """Fix `add_headers`'s return, whether it raises, and the tip."""
         self.tip = tip
         self.refuse = refuse
         self.header_index = [header_index_tip]
@@ -1643,8 +1639,7 @@ class FakeHeaderIndex:
 
 
 def test_a_full_batch_extending_the_best_chain_uses_the_usual_locator() -> None:
-    """A full, best-chain-extending batch is followed up with the ordinary
-    locator.
+    """A full batch extending the best chain gets the ordinary locator.
 
     header_index already reaches an ordinary batch's own tip -- #122 is about a
     fork below it, not this case -- so nothing here should narrow the richer,
@@ -1667,8 +1662,7 @@ def test_a_full_batch_extending_the_best_chain_uses_the_usual_locator() -> None:
 
 
 def test_a_full_batch_on_a_live_fork_asks_from_the_fork_s_own_tip() -> None:
-    """A full batch on a fork below `header_index`'s own tip asks from the
-    fork's tip.
+    """A full batch on a fork below `header_index`'s tip asks from that tip.
 
     header_index does not move for a fork arriving below its own tip, so its own
     locator would ask for this same batch again: btclib-org/btclib-node#122.
@@ -1689,8 +1683,7 @@ def test_a_full_batch_on_a_live_fork_asks_from_the_fork_s_own_tip() -> None:
 
 
 def test_a_full_batch_on_an_invalid_fork_uses_the_usual_locator_instead() -> None:
-    """A full batch on a fork already proved invalid falls back to the usual
-    locator.
+    """A full batch on an already-invalid fork falls back to the usual locator.
 
     A batch built on a parent this node already proved invalid is a fork by the
     header_index test above, but not one worth asking a peer for more of:
@@ -1719,8 +1712,7 @@ def test_a_full_batch_on_an_invalid_fork_uses_the_usual_locator_instead() -> Non
 
 
 def test_a_full_batch_from_nowhere_known_asks_from_what_this_node_knows() -> None:
-    """A full batch connecting to nothing known asks again from what this node
-    has.
+    """A full batch connecting to nothing known asks from what this node has.
 
     `add_headers` answers `tip=None` for a batch with no known ancestor, which
     asks with the ordinary locator rather than one built from a tip that was
@@ -1739,8 +1731,7 @@ def test_a_full_batch_from_nowhere_known_asks_from_what_this_node_knows() -> Non
 
 
 def test_a_short_batch_from_nowhere_known_asks_from_what_this_node_knows() -> None:
-    """A short, unconnecting batch still gets a `getheaders`, not silent
-    dropping.
+    """A short, unconnecting batch still gets a `getheaders`, not silence.
 
     A short batch is the ordinary shape of a BIP130 announcement, and unlike the
     full-batch case above the pre-existing code never sent anything for it: the
@@ -1768,8 +1759,7 @@ def test_a_short_batch_from_nowhere_known_asks_from_what_this_node_knows() -> No
 def test_a_batch_on_an_already_invalid_parent_is_not_asked_for_again(
     tmp_path: Path,
 ) -> None:
-    """A batch extending an already-invalidated header falls back to the usual
-    locator.
+    """A batch on an already-invalid parent falls back to the usual locator.
 
     add_headers has no reason to refuse this batch -- every header in it still
     passes its own checks on its own terms, invalid parent or not -- so avoiding
