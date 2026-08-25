@@ -458,6 +458,7 @@ explicit-preview-rules = true
 select = [
     "A",    # flake8-builtins
     "ANN",  # flake8-annotations
+    "ARG",  # flake8-unused-arguments
     "B",    # flake8-bugbear
     "BLE",  # flake8-blind-except
     "C4",   # flake8-comprehensions
@@ -515,6 +516,26 @@ ignore = [
     #            (`AbstractContextManager[KeyValueStore]`,
     #            `Callable[..., object]`, `Iterable[Iterable[object]]`,
     #            a `Node` already built by an internal `cast`)
+    "ARG001", # a monkeypatch replacement or a fake matching the real
+    #           callable's own signature it stands in for -- a dispatch
+    #           handler swapped into callbacks/handshake_callbacks the
+    #           same way production's own handlers are (p2p/callbacks.py
+    #           and rpc/callbacks.py above), Connection.send,
+    #           update_chain, Loop.getaddrinfo/sock_accept, and the
+    #           like -- unused by one stand-in for the reason it is
+    #           unused by one production handler: the interface the
+    #           real thing is called through is shared, not the fake's
+    #           own choice. A second, smaller reason (2 sites, both
+    #           tests/functional/p2p/block_filters_test.py): a pytest
+    #           fixture requested only for its own construction's side
+    #           effect (`mark`'s own docstring says which), not for a
+    #           value the test reads. Read individually (issue #341)
+    #           before this ignore was added, not assumed.
+    "ARG002", # the method-argument shape of the same two reasons above
+    "ARG005", # the lambda-argument shape of the same reasons -- most of
+    #           this rule's own 63 findings, a `lambda *a: None` or
+    #           `lambda node, tx: 0` standing in for a real callback of
+    #           fixed arity
     "PLR0913", # a test double's own builder, one keyword-only arg per
     #            field of the object it stands in for -- the count is
     #            the production shape's, not a test helper's overreach
@@ -522,6 +543,19 @@ ignore = [
     "S101",    # assert
     "S311",    # non-cryptographic random: fine in tests
 ]
+# Every handler in p2p.callbacks.callbacks/handshake_callbacks is called
+# uniformly (node, msg, conn) by p2p.main's handle_p2p/
+# handle_p2p_handshake, and every one in rpc.callbacks.callbacks is
+# called uniformly (node, conn, params) by rpc.main's handle_rpc: an
+# argument one handler does not read is required by the dispatch
+# table's own shared signature, not a mistake naming it would hide, and
+# renaming it to `_` would lose that signature's own documentation for
+# a table that calls every handler the same way. Read individually
+# against both dispatch tables before this ignore was added (issue
+# #341) -- every ARG001 finding in each file is one of its own
+# registered handlers, none a free helper mistaken for one.
+"btclib_node/p2p/callbacks.py" = ["ARG001"]
+"btclib_node/rpc/callbacks.py" = ["ARG001"]
 # reset_chainstate.py and reset_download.py are each a template edited
 # by hand before a run, not a program run as-is: their reset itself is
 # commented out on purpose, one block per operation, so whoever runs

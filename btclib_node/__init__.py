@@ -86,7 +86,11 @@ class Node(threading.Thread):
         if config is None:
             config = Config()
 
-        def stop_handler(signal: int, frame: FrameType | None) -> None:
+        # signal.signal's own calling convention, POSIX's SIG_DFL/SIG_IGN
+        # only alternative being no handler object at all: every handler
+        # is called with (signum, frame), unread here since the three
+        # signals below share this one and stop() takes neither.
+        def stop_handler(_signum: int, _frame: FrameType | None) -> None:
             self.stop()
 
         signal.signal(signal.SIGINT, stop_handler)
