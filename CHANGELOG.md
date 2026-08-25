@@ -14,6 +14,16 @@ to check the guess.
 
 ## Unreleased
 
+### The py.typed entry's stale test path is corrected here (closes #421)
+
+- **The `py.typed`/`__all__` entry (`btclib-org/.github#239`, further
+  down this file) still cites `tests/unit/main.py` for `from btclib_node
+  import Node, main`: that file is `tests/unit/main_test.py`** (closes
+  #421). The citation was accurate when written and went stale under
+  #26/#268's later rename; the entry it sits in already landed, so it
+  stands uncorrected and this entry is the correction instead of a
+  rewrite of it.
+
 ### `tests/unit/rpc/manager_test.py` cites the right test module (closes #419)
 
 - **The module docstring now cites `tests/unit/rpc/main_test.py`**
