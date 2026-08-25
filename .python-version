@@ -1,12 +1,21 @@
 # The newest interpreter every dependency supports, and the version
-# requires-python names. Not 3.14t, and no longer for the reason this
-# comment used to give: plyvel's Cython source would not compile against
-# the free-threaded build, and plyvel is gone. What is left is that
-# `librt` arrives under btclib with compiled modules of its own, and an
-# extension that does not declare Py_mod_gil re-enables the GIL at
-# import -- so the free-threaded build would carry the risk and buy
-# nothing until somebody checks. btclib-org/btclib-node#112 is that
-# question, asked now that the answer could have changed.
+# requires-python names. Not 3.14t, and not for the reason this comment
+# used to give: plyvel's Cython source would not compile against the
+# free-threaded build, and plyvel is gone. This tree's runtime closure
+# does carry a compiled extension now: btclib depends on the
+# `secp256k1` extra, pulling in `btclib-secp256k1` and, under it,
+# `cffi`. Neither re-enables the GIL -- btclib-org/btclib-node#361
+# measured `sys._is_gil_enabled()` still False after importing both
+# under 3.14.6+freethreaded, and both ship paired cp314/cp314t wheels.
+# `librt` is a dependency of mypy, a development-only package and not
+# part of the runtime closure at all, and every compiled package in
+# the lock, `librt` included, ships a cp314t wheel too.
+# The pin holds anyway, because nothing here yet spends what free
+# threading buys: that would mean moving Node.worker_pool off
+# multiprocessing and onto threads, a concurrency audit of its own and
+# the open question at btclib-org/btclib-node#306.
+# btclib-org/btclib-node#112, which asked whether 3.14t was worth it, is
+# answered and closed by this comment.
 # A trailing comment on the version line below would make uv ignore this
 # file, so the explanation stays up here instead.
 3.14
