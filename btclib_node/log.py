@@ -3,8 +3,10 @@
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
 import logging
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class Logger(logging.Logger):

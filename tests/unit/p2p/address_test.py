@@ -6,16 +6,14 @@ import asyncio
 import socket
 import threading
 import time
-from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from btclib.p2p.address import NetworkAddress
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 
 import btclib_node.p2p.address as address_module
-from btclib_node.chains import Chain
 from btclib_node.p2p.address import (
     PeerDB,
     addr_entry,
@@ -28,6 +26,11 @@ from btclib_node.p2p.address import (
 )
 from tests.helpers import call_within
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from btclib_node.chains import Chain
+
 # BIP155's own examples: an IPv6-mapped IPv4 host, and an address under
 # OnionCat's `fd87:d87e:eb43::/48`, once how a TORv2 address was carried
 # inside a fake IPv6 one.
@@ -36,7 +39,7 @@ _AN_ONIONCAT_ADDRESS = "fd87:d87e:eb43::1"
 
 
 def a_peer_db(chain: Any = None, data_dir: Path | None = None) -> PeerDB:
-    return PeerDB(cast(Chain, chain), data_dir)
+    return PeerDB(cast("Chain", chain), data_dir)
 
 
 def an_onion_address(port: int = 8333) -> NetworkAddressV2:

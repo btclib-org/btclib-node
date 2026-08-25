@@ -4,7 +4,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
 from btclib import var_int
 from btclib.block import Block
@@ -14,7 +14,9 @@ from btclib.utils import bytesio_from_binarydata
 
 from btclib_node.db import KeyValueStore
 from btclib_node.exceptions import ChainstateInconsistencyError
-from btclib_node.log import Logger
+
+if TYPE_CHECKING:
+    from btclib_node.log import Logger
 
 # A file's byte offset or length, and the store's own file-rotation
 # counter, are this store's bookkeeping about itself, not a count of

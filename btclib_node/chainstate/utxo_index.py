@@ -2,15 +2,20 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-from btclib.block import Block
+from typing import TYPE_CHECKING
+
 from btclib.tx.out_point import OutPoint
-from btclib.tx.tx import Tx
 from btclib.tx.tx_out import TxOut
 
 from btclib_node.block_db import RevBlock
-from btclib_node.db import KeyValueStore
 from btclib_node.exceptions import ChainstateInconsistencyError, InvalidBlockInputError
-from btclib_node.log import Logger
+
+if TYPE_CHECKING:
+    from btclib.block import Block
+    from btclib.tx.tx import Tx
+
+    from btclib_node.db import KeyValueStore
+    from btclib_node.log import Logger
 
 
 class UtxoIndex:

@@ -8,8 +8,7 @@ import threading
 import time
 from math import log2
 from multiprocessing.pool import Pool
-from types import FrameType
-from typing import override
+from typing import TYPE_CHECKING, override
 
 from btclib_node.block_db import BlockDB
 from btclib_node.chainstate import Chainstate
@@ -26,6 +25,9 @@ from btclib_node.p2p.main import handle_p2p, handle_p2p_handshake
 from btclib_node.p2p.manager import P2pManager
 from btclib_node.rpc.main import handle_rpc
 from btclib_node.rpc.manager import RpcManager
+
+if TYPE_CHECKING:
+    from types import FrameType
 
 # Everything above this line is imported for `Node` to build on, not to
 # be handed to a caller: `handle_p2p`, `RpcManager` and the rest are

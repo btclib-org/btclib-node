@@ -5,14 +5,17 @@
 import secrets
 import time
 from fractions import Fraction
+from typing import TYPE_CHECKING
 
 from btclib.fee import FeeRate, fee_from_vsize
 from btclib.script.witness import Witness
-from btclib.tx.tx import Tx
 
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from tests.helpers import generate_random_transaction
+
+if TYPE_CHECKING:
+    from btclib.tx.tx import Tx
 
 
 def a_witness_transaction() -> Tx:

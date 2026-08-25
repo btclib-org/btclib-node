@@ -4,10 +4,9 @@
 
 import enum
 from collections import deque
-from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from btclib import var_int
 from btclib.block import BlockHeader
@@ -15,11 +14,15 @@ from btclib.block.proof_of_work import block_work
 from btclib.exceptions import BTClibValueError
 from btclib.utils import bytesio_from_binarydata
 
-from btclib_node.chains import Chain
 from btclib_node.chainstate.contextual import assert_valid_in_context
-from btclib_node.db import KeyValueStore
 from btclib_node.exceptions import ChainstateInconsistencyError
-from btclib_node.log import Logger
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
+
+    from btclib_node.chains import Chain
+    from btclib_node.db import KeyValueStore
+    from btclib_node.log import Logger
 
 # `get_download_candidates`'s own cap on how many hashes it hands back
 # at once, and `download.py`'s `block_download` reads the same number

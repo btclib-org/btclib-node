@@ -3,10 +3,9 @@
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
 import secrets
-from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 from btclib.block import BlockHeader
@@ -18,6 +17,10 @@ from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import BlockInfo, BlockStatus, calculate_work
 from btclib_node.log import Logger
 from tests.helpers import brute_force_nonce, generate_random_header_chain
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
+    from pathlib import Path
 
 
 @pytest.fixture

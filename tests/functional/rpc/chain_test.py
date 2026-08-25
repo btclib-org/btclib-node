@@ -3,8 +3,7 @@
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
 import json
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import requests
 from bitcoin_core_rpc import BitcoinCoreRpcClient
@@ -22,6 +21,9 @@ from tests.helpers import (
     wait_until,
     wait_until_listening,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_best_block_hash(rpc_node: Node) -> None:

@@ -6,13 +6,14 @@ import asyncio
 import socket
 import threading
 from collections import deque
-from concurrent.futures import Future
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, override
 
 from btclib_node.rpc.connection import Connection
 
 if TYPE_CHECKING:
+    from concurrent.futures import Future
+
     from btclib_node import Node
 
 

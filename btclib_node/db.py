@@ -33,12 +33,14 @@ is not one Core has.
 
 import sqlite3
 import threading
-from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from btclib_node.exceptions import IncompatibleStoreError, StoreClosedError
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 # What a LevelDB directory always holds, and this one never will. A
 # datadir written before this store existed cannot be read by it, and
@@ -124,7 +126,7 @@ class KeyValueStore:
     def get(self, key: bytes) -> bytes | None:
         """Return the value stored under a key, or None."""
         rows = self._rows("SELECT v FROM kv WHERE k = ?", (key,))
-        return cast(bytes, rows[0][0]) if rows else None
+        return cast("bytes", rows[0][0]) if rows else None
 
     def put(self, key: bytes, value: bytes) -> None:
         """Store a value under a key, replacing what was there."""

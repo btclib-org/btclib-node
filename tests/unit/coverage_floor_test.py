@@ -9,14 +9,16 @@ run the floor is never lowered on -- so the decision is a function, and
 this is what asks it the questions the command line otherwise would.
 """
 
-from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from tests.conftest import asks_for_everything, pytest_configure, relax_coverage_floor
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 FLOOR = 100
 

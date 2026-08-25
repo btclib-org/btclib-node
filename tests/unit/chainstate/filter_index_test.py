@@ -11,9 +11,8 @@ that the header chain a peer would check against is the one BIP157
 defines.
 """
 
-from collections.abc import Callable
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from btclib.block import Block
@@ -22,13 +21,17 @@ from btclib.script import script
 
 import btclib_node.chainstate.filter_index as filter_index_module
 from btclib_node import Node
-from btclib_node.block_db import RevBlock
 from btclib_node.chains import RegTest, TestNet
-from btclib_node.db import KeyValueStore
 from btclib_node.main import update_chain
 from tests import load, vector_id
 from tests.helpers import build_block, generate_coinbase, generate_random_chain
 from tests.unit.main_test import connect, spend
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from btclib_node.block_db import RevBlock
+    from btclib_node.db import KeyValueStore
 
 GENESIS = RegTest().genesis
 NO_PREVIOUS = b"\x00" * 32
@@ -505,7 +508,7 @@ def test_the_header_is_written_before_the_filter(
     written: list[bytes] = []
     filter_index._write(
         cast(
-            KeyValueStore,
+            "KeyValueStore",
             SimpleNamespace(put=lambda key, _: written.append(key[:-32])),
         )
     )

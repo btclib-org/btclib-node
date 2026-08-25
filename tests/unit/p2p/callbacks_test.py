@@ -13,10 +13,8 @@ is the path where every message is welcome; these are the rest.
 
 import socket
 import time
-from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from decimal import Decimal
-from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
@@ -24,7 +22,6 @@ import pytest
 from btclib.amount import sats_from_btc
 from btclib.block import Block, BlockHeader
 from btclib.exceptions import BTClibValueError
-from btclib.fee import FeeRate
 from btclib.hashes import hash256
 from btclib.p2p.address import Addr, NetworkAddress, ServiceFlags
 from btclib.p2p.addrv2 import (
@@ -64,7 +61,6 @@ from btclib.p2p.limits import (
 )
 from btclib.p2p.negotiation import FeeFilter, GetAddr, SendHeaders, WtxidRelay
 from btclib.script.witness import Witness
-from btclib.tx.tx import Tx
 
 import btclib_node.p2p.callbacks as cb
 from btclib_node.chains import RegTest
@@ -101,7 +97,6 @@ from btclib_node.p2p.callbacks import (
 )
 from btclib_node.p2p.callbacks import block as block_callback
 from btclib_node.p2p.connection import Connection
-from btclib_node.p2p.manager import P2pManager
 from btclib_node.p2p.messages.errors import Reject, RejectCode
 from tests.helpers import (
     generate_random_chain,
@@ -110,7 +105,14 @@ from tests.helpers import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping, Sequence
+    from pathlib import Path
+
+    from btclib.fee import FeeRate
+    from btclib.tx.tx import Tx
+
     from btclib_node.chains import Chain
+    from btclib_node.p2p.manager import P2pManager
 
 # BIP155's table, for the networks these tests build an address of
 _ADDRESS_SIZE = {
@@ -143,7 +145,7 @@ def a_version_address(services: int = 0) -> NetworkAddress:
 def make_node(
     addresses: Sequence[NetworkAddressV2], *, prefer_addressv2: bool = False
 ) -> tuple[Any, Any, list[Any]]:
-    peer_db = PeerDB(cast("Chain", None), cast(Path, None))
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
     for address in addresses:
         peer_db.active_addresses.append(address)
     sent: list[Any] = []
@@ -562,7 +564,7 @@ def test_what_a_peer_said_about_relay_lands_on_the_connection(
 def test_a_verack_completes_the_handshake() -> None:
     promoted: list[int] = []
     peer = a_peer(id=9, version_message=a_parsed_version(), wtxidrelay_received=True)
-    peer_db = PeerDB(cast("Chain", None), cast(Path, None))
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
     node = a_handshake_node(promote_connection=promoted.append, peer_db=peer_db)
     verack(node, b"", peer)
     assert peer.status == P2pConnStatus.Connected
@@ -600,7 +602,7 @@ def test_an_outbound_handshake_records_the_address_dialled() -> None:
         inbound=False,
         address=dialled,
     )
-    peer_db = PeerDB(cast("Chain", None), cast(Path, None))
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
     verack(a_handshake_node(peer_db=peer_db), b"", peer)
     (recorded,) = peer_db.active_addresses
     assert recorded.address == dialled.address
@@ -626,7 +628,7 @@ def test_an_inbound_handshake_records_the_peers_announced_port() -> None:
         inbound=True,
         address=accepted,
     )
-    peer_db = PeerDB(cast("Chain", None), cast(Path, None))
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
     verack(a_handshake_node(peer_db=peer_db), b"", peer)
     (recorded,) = peer_db.active_addresses
     # the accepted connection's own address, proven reachable by the TCP
@@ -644,7 +646,7 @@ def test_an_inbound_peer_naming_no_port_is_not_recorded() -> None:
         wtxidrelay_received=True,
         inbound=True,
     )
-    peer_db = PeerDB(cast("Chain", None), cast(Path, None))
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
     verack(a_handshake_node(peer_db=peer_db), b"", peer)
     assert peer_db.active_addresses == []
 
@@ -662,7 +664,7 @@ def test_the_handshake_logs_the_endpoint_getpeerinfo_answers_with(
     host: str, endpoint: str
 ) -> None:
     logged: list[str] = []
-    node = a_handshake_node(peer_db=PeerDB(cast("Chain", None), cast(Path, None)))
+    node = a_handshake_node(peer_db=PeerDB(cast("Chain", None), cast("Path", None)))
     node.logger.info = logged.append
     peer = a_peer(
         version_message=a_parsed_version(),
@@ -688,7 +690,7 @@ def test_the_handshake_asks_the_socket_for_the_peer_once() -> None:
         wtxidrelay_received=True,
         client=SimpleNamespace(getpeername=getpeername),
     )
-    peer_db = PeerDB(cast("Chain", None), cast(Path, None))
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
     verack(a_handshake_node(peer_db=peer_db), b"", peer)
     assert lookups == [sockaddr]
 
@@ -798,7 +800,7 @@ def test_the_addresses_a_peer_sends_are_kept() -> None:
         (addr, Addr([addr_entry(address) for address in given])),
         (addrv2, AddrV2(given)),
     ):
-        peer_db = PeerDB(cast("Chain", None), cast(Path, None))
+        peer_db = PeerDB(cast("Chain", None), cast("Path", None))
         node = a_handshake_node(peer_db=peer_db)
         callback(node, message.serialize(), a_peer())
         # BIP155's record either way, the addr version 1 entry being
@@ -822,7 +824,7 @@ def test_an_octet_past_an_addr_or_addrv2_no_longer_costs_the_peer() -> None:
         (addr, Addr([addr_entry(address) for address in given])),
         (addrv2, AddrV2(given)),
     ):
-        peer_db = PeerDB(cast("Chain", None), cast(Path, None))
+        peer_db = PeerDB(cast("Chain", None), cast("Path", None))
         node = a_handshake_node(peer_db=peer_db)
         peer = a_peer()
         callback(node, message.serialize() + b"\x00", peer)
@@ -837,7 +839,7 @@ def test_an_address_of_a_network_nobody_here_has_heard_of_is_kept() -> None:
     # of the format is that a new network needs no new message.
     yggdrasil = NetworkAddressV2(0, 0, 7, b"\x02" + b"\x22" * 15, 18444)
     unassigned = NetworkAddressV2(0, 0, 250, b"\x33" * 8, 18444)
-    peer_db = PeerDB(cast("Chain", None), cast(Path, None))
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
     node = a_handshake_node(peer_db=peer_db)
     peer = a_peer()
     addrv2(node, AddrV2([yggdrasil, unassigned]).serialize(), peer)
@@ -1622,7 +1624,7 @@ def test_a_filter_type_this_node_does_not_serve_is_not_answered() -> None:
     # code is a type no node has; BIP157 says answer with nothing
     node = a_filters_node()
     peer = a_peer()
-    a_getcfilters(node, peer, 0, 1, filter_type=cast(BlockFilterType, 1))
+    a_getcfilters(node, peer, 0, 1, filter_type=cast("BlockFilterType", 1))
     assert not peer.sent
 
 

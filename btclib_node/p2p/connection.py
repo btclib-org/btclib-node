@@ -5,20 +5,16 @@
 import asyncio
 import contextlib
 import secrets
-import socket
 import time
-from concurrent.futures import Future
 from io import BytesIO
 from typing import TYPE_CHECKING, cast, override
 
 from btclib.exceptions import BTClibException, IncompleteMessageError
 from btclib.p2p.address import NetworkAddress, ServiceFlags
-from btclib.p2p.addrv2 import NetworkAddressV2
 from btclib.p2p.handshake import Version
 from btclib.p2p.keepalive import Ping
 from btclib.p2p.limits import MAX_GETCFILTERS_SIZE
 from btclib.p2p.message import Message
-from btclib.p2p.payload import Payload
 
 from btclib_node.constants import P2pConnStatus, ProtocolVersion
 from btclib_node.exceptions import WrongNetworkMagicError
@@ -26,6 +22,12 @@ from btclib_node.p2p.address import ip_and_port, network_address
 from btclib_node.p2p.callbacks import handshake_callbacks
 
 if TYPE_CHECKING:
+    import socket
+    from concurrent.futures import Future
+
+    from btclib.p2p.addrv2 import NetworkAddressV2
+    from btclib.p2p.payload import Payload
+
     from btclib_node import Node
     from btclib_node.p2p.manager import P2pManager
 
@@ -334,7 +336,7 @@ class Connection:
         # it on self.p2p_port): the type is wider than the invariant,
         # so this is a cast rather than a check that would be dead code
         # on every path that reaches here.
-        port = cast(int, self.manager.port)
+        port = cast("int", self.manager.port)
         version = Version(
             version=ProtocolVersion,
             services=services,

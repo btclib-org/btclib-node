@@ -18,6 +18,44 @@ to check the guess.
 
 ## Unreleased
 
+### `select` gains `TC`, the first family beyond issue #284's own reference selection
+
+- **`select` gains `TC` (flake8-type-checking)** (issue #340): the
+  largest and most mechanical family of a further sweep past issue
+  #284's own reference selection, every rule ruff ships rather than
+  only the standard's own list. A typing-only import moved under `if
+  TYPE_CHECKING:` costs nothing at runtime on this tree's `>=3.14`
+  target -- PEP 649's lazy annotation evaluation is native there, and
+  `FA` (already selected) confirms it: only one file in the whole tree
+  still needs `from __future__ import annotations`, not every module a
+  typing-only import would otherwise reach.
+- **`TC006` (a `typing.cast()` call's own type argument, quoted)**: 46
+  sites, `btclib_node/` and `tests/` alike, `ruff`'s own safe fix
+  applied after reading every site for the one thing that fix is not
+  safe for -- a type expression spanning more than one line, or
+  carrying a comment on any line but its last. None did.
+- **`TC001`/`TC002`/`TC003` (an application, third-party or standard
+  library import moved under `TYPE_CHECKING`)**: 109 sites, 57 of them
+  in `btclib_node/`. `ruff`'s own static check is what decides an
+  import is typing-only, and the risk worth checking by hand rather
+  than trusting it is a name that check missed at runtime -- an
+  `isinstance`, a decorator, a default value. Read individually before
+  the fix: `socket` (`p2p/connection.py`, `rpc/connection.py`),
+  `pathlib.Path` (`chainstate/__init__.py`, `log.py`, `p2p/address.py`)
+  and `concurrent.futures.Future`/`collections.abc.Callable`
+  (`p2p/connection.py`, `rpc/connection.py`, `rpc/manager.py`) are each
+  the kind of name that is often both a type and a runtime constructor
+  or protocol elsewhere, and each is confirmed, by reading every one of
+  its own uses in the file that flagged it, to appear only in an
+  annotation there. `uv run ruff check --unsafe-fixes` applied to the
+  rest without a per-site read of every one of the 109 -- the real
+  check is not a grep's own guess at completeness but the tree actually
+  running: `mypy` (which would refuse a name it cannot resolve inside
+  an annotation) and the full suite (which would raise `NameError` the
+  moment a runtime use reached a name that no longer exists outside
+  `TYPE_CHECKING`) both ran clean afterward, unchanged in count from
+  before this round.
+
 ### `select` gains `PL` and `C90`, closing issue #284
 
 - **`select` gains `PL` (pylint) and `C90` (mccabe)** (closes #284): the

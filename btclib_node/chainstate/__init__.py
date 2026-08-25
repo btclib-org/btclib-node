@@ -2,15 +2,20 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-from pathlib import Path
 
-from btclib_node.chains import Chain
+from typing import TYPE_CHECKING
+
 from btclib_node.db import KeyValueStore
-from btclib_node.log import Logger
 
 from .block_index import BlockIndex
 from .filter_index import FilterIndex
 from .utxo_index import UtxoIndex
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from btclib_node.chains import Chain
+    from btclib_node.log import Logger
 
 
 class Chainstate:

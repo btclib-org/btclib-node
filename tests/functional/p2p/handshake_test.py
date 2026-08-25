@@ -2,12 +2,16 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-from pathlib import Path
+
+from typing import TYPE_CHECKING
 
 from btclib_node import Node
 from btclib_node.config import Config
 from btclib_node.constants import P2pConnStatus
 from tests.helpers import get_random_port, local_addr, wait_until, wait_until_listening
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_simple_connection(tmp_path: Path) -> None:

@@ -6,14 +6,15 @@ from itertools import chain
 from typing import TYPE_CHECKING
 
 from btclib.script.engine import verify_amounts, verify_input, verify_transaction
-from btclib.tx.tx import Tx
-from btclib.tx.tx_out import TxOut
 
-from btclib_node.config import Config
 from btclib_node.exceptions import PrevoutCountMismatchError
 
 if TYPE_CHECKING:
+    from btclib.tx.tx import Tx
+    from btclib.tx.tx_out import TxOut
+
     from btclib_node import Node
+    from btclib_node.config import Config
 
 
 def get_flags(config: Config, index: int) -> tuple[str, ...]:

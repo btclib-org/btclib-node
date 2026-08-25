@@ -13,7 +13,6 @@ of both -- and until now only a functional test reached any of it.
 import asyncio
 import json
 import socket
-from collections.abc import Iterator, Mapping
 from contextlib import suppress
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Protocol, cast
@@ -27,6 +26,8 @@ from btclib_node.rpc.manager import RpcManager
 from tests.helpers import get_random_port, wait_until, wait_until_listening
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator, Mapping
+
     from btclib_node import Node
 
 REQUEST = {"jsonrpc": "2.0", "id": "a", "method": "getbestblockhash"}

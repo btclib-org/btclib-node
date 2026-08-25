@@ -13,7 +13,6 @@ messages addressed to a connection that is no longer there.
 import asyncio
 import socket
 import time
-from collections.abc import Iterator, Sequence
 from contextlib import closing, suppress
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast
@@ -21,7 +20,6 @@ from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast
 import pytest
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 from btclib.p2p.keepalive import Ping
-from btclib.p2p.payload import Payload
 
 from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus, P2pConnStatus
@@ -30,6 +28,10 @@ from btclib_node.p2p.address import PeerDB, endpoint_key, peer_address
 from btclib_node.p2p.manager import P2pManager
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator, Sequence
+
+    from btclib.p2p.payload import Payload
+
     from btclib_node import Node
 from tests.helpers import (
     generate_random_transaction,
@@ -524,9 +526,9 @@ def test_a_message_for_a_connection_that_is_gone_is_dropped(
 ) -> None:
     conn = a_conn(1)
     manager = a_manager([conn])
-    manager.send(cast(Payload, "message"), 99)
+    manager.send(cast("Payload", "message"), 99)
     assert conn.sent == []
-    manager.send(cast(Payload, "message"), 1)
+    manager.send(cast("Payload", "message"), 1)
     assert conn.sent == ["message"]
 
 

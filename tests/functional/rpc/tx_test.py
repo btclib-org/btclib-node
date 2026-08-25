@@ -3,12 +3,12 @@
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
 import json
+from typing import TYPE_CHECKING
 
 import requests
 from bitcoin_core_rpc import BitcoinCoreRpcClient
 from btclib.fetch.bitcoin_core import BitcoinCoreFetcher
 
-from btclib_node import Node
 from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus
 from tests.helpers import (
@@ -17,6 +17,9 @@ from tests.helpers import (
     wait_until,
     wait_until_listening,
 )
+
+if TYPE_CHECKING:
+    from btclib_node import Node
 
 
 def test_add_tx(rpc_node: Node) -> None:

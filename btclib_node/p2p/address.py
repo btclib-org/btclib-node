@@ -23,19 +23,22 @@ import secrets
 import socket
 import threading
 import time
-from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
 from ipaddress import IPv4Address, IPv6Address, ip_address
-from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from btclib.p2p.address import NetworkAddress, ServiceFlags, TimestampedNetworkAddress
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 
-from btclib_node.chains import Chain
 from btclib_node.db import KeyValueStore
 from btclib_node.exceptions import UnsupportedAddressTypeError
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Iterator
+    from pathlib import Path
+
+    from btclib_node.chains import Chain
 
 # the two ids whose address field is an IP address, which is the whole
 # of what an addr version 1 entry can carry, and the whole of what

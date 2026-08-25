@@ -17,7 +17,7 @@ import json
 import socket
 import time
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -28,7 +28,9 @@ from btclib_node.rpc.connection import (
     JSONEncoder,
     RawJSON,
 )
-from btclib_node.rpc.manager import RpcManager
+
+if TYPE_CHECKING:
+    from btclib_node.rpc.manager import RpcManager
 
 BODY = b'{"jsonrpc":"2.0","id":"x","method":"getbestblockhash"}'
 
@@ -58,7 +60,7 @@ def drive(
         theirs.setblocking(False)
         loop = asyncio.get_running_loop()
         manager = SimpleNamespace(messages=[])
-        conn = Connection(loop, ours, cast(RpcManager, manager), 0)
+        conn = Connection(loop, ours, cast("RpcManager", manager), 0)
 
         async def send() -> None:
             for chunk in chunks:
@@ -170,7 +172,9 @@ def test_the_response_is_crlf_framed_and_the_socket_closed() -> None:
         ours.setblocking(False)
         theirs.setblocking(False)
         loop = asyncio.get_running_loop()
-        conn = Connection(loop, ours, cast(RpcManager, SimpleNamespace(messages=[])), 0)
+        conn = Connection(
+            loop, ours, cast("RpcManager", SimpleNamespace(messages=[])), 0
+        )
         await conn.async_send([{"result": b"\xff", "id": "x"}])
         data = await loop.sock_recv(theirs, 4096)
         theirs.close()
@@ -191,7 +195,9 @@ def test_a_response_of_several_stays_a_list() -> None:
         ours.setblocking(False)
         theirs.setblocking(False)
         loop = asyncio.get_running_loop()
-        conn = Connection(loop, ours, cast(RpcManager, SimpleNamespace(messages=[])), 0)
+        conn = Connection(
+            loop, ours, cast("RpcManager", SimpleNamespace(messages=[])), 0
+        )
         await conn.async_send([{"id": "a"}, {"id": "b"}])
         data = await loop.sock_recv(theirs, 4096)
         theirs.close()
@@ -228,7 +234,9 @@ def test_a_raw_json_value_is_written_unquoted_and_verbatim() -> None:
         ours.setblocking(False)
         theirs.setblocking(False)
         loop = asyncio.get_running_loop()
-        conn = Connection(loop, ours, cast(RpcManager, SimpleNamespace(messages=[])), 0)
+        conn = Connection(
+            loop, ours, cast("RpcManager", SimpleNamespace(messages=[])), 0
+        )
         await conn.async_send([{"result": RawJSON("0.00000001"), "id": "x"}])
         data = await loop.sock_recv(theirs, 4096)
         theirs.close()
@@ -249,7 +257,9 @@ def test_a_raw_json_value_does_not_swallow_a_field_containing_its_own_mark() -> 
         ours.setblocking(False)
         theirs.setblocking(False)
         loop = asyncio.get_running_loop()
-        conn = Connection(loop, ours, cast(RpcManager, SimpleNamespace(messages=[])), 0)
+        conn = Connection(
+            loop, ours, cast("RpcManager", SimpleNamespace(messages=[])), 0
+        )
         await conn.async_send(
             [{"result": "RawJSONx", "extra": RawJSON("1.00000000"), "id": "x"}]
         )
@@ -266,7 +276,9 @@ def test_close_cancels_the_task_it_was_given() -> None:
         ours, theirs = socket.socketpair()
         ours.setblocking(False)
         loop = asyncio.get_running_loop()
-        conn = Connection(loop, ours, cast(RpcManager, SimpleNamespace(messages=[])), 0)
+        conn = Connection(
+            loop, ours, cast("RpcManager", SimpleNamespace(messages=[])), 0
+        )
 
         async def forever() -> None:
             await asyncio.sleep(60)
@@ -297,7 +309,7 @@ def test_repr_names_the_peer_and_says_so_when_there_is_none() -> None:
     conn = Connection(
         cast("asyncio.AbstractEventLoop", None),
         client,
-        cast(RpcManager, SimpleNamespace(messages=[])),
+        cast("RpcManager", SimpleNamespace(messages=[])),
         0,
     )
     host, port = listener.getsockname()
@@ -321,11 +333,11 @@ def test_repr_brackets_an_ipv6_peer(host: str, endpoint: str) -> None:
     # the RPC listener's own socket is AF_INET (rpc.manager.RpcManager.server),
     # so no live peer reaches this today -- exercised through a mocked
     # getpeername the way ip_and_port itself is, per #209.
-    client = cast(socket.socket, SimpleNamespace(getpeername=lambda: (host, 8332)))
+    client = cast("socket.socket", SimpleNamespace(getpeername=lambda: (host, 8332)))
     conn = Connection(
         cast("asyncio.AbstractEventLoop", None),
         client,
-        cast(RpcManager, SimpleNamespace(messages=[])),
+        cast("RpcManager", SimpleNamespace(messages=[])),
         0,
     )
     assert repr(conn) == f"Connection to {endpoint}"
@@ -336,7 +348,7 @@ def test_close_without_a_task_closes_the_socket_anyway() -> None:
     conn = Connection(
         cast("asyncio.AbstractEventLoop", None),
         ours,
-        cast(RpcManager, SimpleNamespace(messages=[])),
+        cast("RpcManager", SimpleNamespace(messages=[])),
         0,
     )
     assert conn.task is None
@@ -364,7 +376,7 @@ def test_send_and_wait_gives_up_rather_than_blocking_forever() -> None:
     # ordinarily, and exactly the state this test asks for on purpose.
     ours, theirs = socket.socketpair()
     loop = asyncio.new_event_loop()
-    conn = Connection(loop, ours, cast(RpcManager, SimpleNamespace(messages=[])), 0)
+    conn = Connection(loop, ours, cast("RpcManager", SimpleNamespace(messages=[])), 0)
     started = time.monotonic()
     conn.send_and_wait([{"id": "x"}])  # returns, does not raise
     waited = time.monotonic() - started

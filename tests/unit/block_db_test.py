@@ -12,9 +12,8 @@ and reopened, and does it come back after the file it was written to is
 no longer the file being written to.
 """
 
-from collections.abc import Callable, Iterator
 from contextlib import ExitStack
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 from btclib.script import script
@@ -25,6 +24,10 @@ from btclib_node.block_db import BlockDB, BlockLocation, FileMetadata, RevBlock
 from btclib_node.chains import RegTest
 from btclib_node.log import Logger
 from tests.helpers import generate_random_chain
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
+    from pathlib import Path
 
 MAX_FILE_SIZE = 128 * 1000**2
 

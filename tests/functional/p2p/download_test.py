@@ -4,7 +4,7 @@
 
 import shutil
 import time
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -20,6 +20,9 @@ from tests.helpers import (
     wait_until,
     wait_until_listening,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.mark.order(1)
