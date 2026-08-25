@@ -12,11 +12,9 @@ filter to decide whether a block is worth fetching.
 """
 
 from collections import deque
-from collections.abc import Iterator
-from typing import ClassVar, Protocol, Self, cast, override
+from typing import TYPE_CHECKING, ClassVar, Protocol, Self, cast, override
 
 import pytest
-from btclib.alias import BinaryData
 from btclib.block import Block
 from btclib.block.block_filter import BasicBlockFilter, filter_header
 from btclib.p2p.address import ServiceFlags
@@ -29,7 +27,6 @@ from btclib.p2p.block_filters import (
     GetCFHeaders,
     GetCFilters,
 )
-from btclib.p2p.payload import Payload
 
 from btclib_node import Node
 from btclib_node.chains import RegTest
@@ -42,6 +39,12 @@ from tests.helpers import (
     wait_until,
     wait_until_listening,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from btclib.alias import BinaryData
+    from btclib.p2p.payload import Payload
 
 CHAIN_LENGTH = 3
 

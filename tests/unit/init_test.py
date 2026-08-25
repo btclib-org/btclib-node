@@ -19,11 +19,10 @@ import signal
 import threading
 import time
 from collections import deque
-from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast, override
+from typing import TYPE_CHECKING, Any, cast, override
 
 import pytest
 
@@ -34,6 +33,9 @@ from btclib_node.exceptions import NodeShutdownTimeoutError
 from btclib_node.interpreter import warm
 from tests.conftest import unstarted_node_context
 from tests.helpers import wait_until
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 def a_node(tmp_path: Path) -> Node:
@@ -322,8 +324,8 @@ def test_a_port_configured_is_a_manager_started_and_stopped(
     # the ports decide it: a node given neither starts neither, which is
     # every other node in this file
     node = a_networked_node
-    p2p_manager = cast(AManager, node.p2p_manager)
-    rpc_manager = cast(AManager, node.rpc_manager)
+    p2p_manager = cast("AManager", node.p2p_manager)
+    rpc_manager = cast("AManager", node.rpc_manager)
     assert (node.p2p_port, node.rpc_port) == (18444, 18445)
     node.start()
     wait_until(lambda: p2p_manager.started and rpc_manager.started)
@@ -351,8 +353,8 @@ def test_every_message_waiting_is_taken_before_the_loop_waits(
     # are not there, so the answer is to drop them -- and dropping them
     # is what the loop has to do rather than sleep on them.
     node = a_networked_node
-    p2p_manager = cast(AManager, node.p2p_manager)
-    rpc_manager = cast(AManager, node.rpc_manager)
+    p2p_manager = cast("AManager", node.p2p_manager)
+    rpc_manager = cast("AManager", node.rpc_manager)
     p2p_manager.handshake_messages.append(("version", None, 99))
     p2p_manager.messages.append(("ping", None, 99))
     rpc_manager.messages.append(([], 99))
@@ -381,7 +383,7 @@ def test_a_message_the_handlers_did_not_expect_does_not_end_the_loop(
     # wrong shape unpacks nowhere handle_rpc's own try reaches,
     # `data, conn_id = ...popleft()` being the function's first line.
     node = a_networked_node
-    rpc_manager = cast(AManager, node.rpc_manager)
+    rpc_manager = cast("AManager", node.rpc_manager)
     answered: list[Any] = []
     rpc_manager.connections[0] = SimpleNamespace(
         send=answered.append, send_and_wait=answered.append

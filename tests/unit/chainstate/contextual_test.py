@@ -11,8 +11,8 @@ that would take a mainnet miner an hour is one line here.
 """
 
 import secrets
-from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
 import pytest
 from btclib.block import BlockHeader
@@ -28,6 +28,9 @@ from btclib_node.chainstate.contextual import (
     median_time_past,
     next_bits_required,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 # the mainnet genesis' timestamp, so that every header below is one
 # `BlockHeader.assert_valid` accepts

@@ -443,6 +443,18 @@ explicit-preview-rules = true
 # larger scale: measured, almost every module under `btclib_node/`
 # carries no docstring at all, so turning it on is a documentation pass
 # across the whole package, tracked in #285.
+#
+# Issue #284 closed that reference selection; ruff's own catalogue is
+# larger still, and issues #340/#341 are a further sweep of every
+# family the reference selection did not name, `uv run ruff linter`
+# against `uv run ruff check --preview --extend-select <family>
+# --statistics .` one family at a time. "TC" (flake8-type-checking) is
+# the first of those: a typing-only import moved under `if
+# TYPE_CHECKING:` costs nothing at runtime on this tree's `>=3.14`
+# target, PEP 649's lazy annotation evaluation being native there --
+# confirmed by "FA" above already finding that only one file in the
+# whole tree still needs `from __future__ import annotations`, not
+# every module a typing-only import would otherwise touch.
 select = [
     "A",    # flake8-builtins
     "B",    # flake8-bugbear
@@ -472,6 +484,7 @@ select = [
     "SLOT", # flake8-slots
     "T10",  # flake8-debugger
     "T20",  # flake8-print
+    "TC",   # flake8-type-checking
     "TID",  # flake8-tidy-imports
     "TRY",  # tryceratops
     "UP",   # pyupgrade, replacing the pyupgrade hook below

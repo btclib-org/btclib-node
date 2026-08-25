@@ -4,14 +4,16 @@
 
 import contextlib
 import json
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import requests
 
 from btclib_node import Node
 from btclib_node.config import Config
 from tests.helpers import get_random_port, post, wait_until_listening
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_no_method(tmp_path: Path) -> None:

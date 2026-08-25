@@ -11,12 +11,10 @@ plainly that it raises rather than swallowing -- the property
 main.update_chain depends on to roll a block back.
 """
 
-from collections.abc import Callable
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
-from btclib.alias import Octets
 from btclib.ecc import dsa, ssa
 from btclib.exceptions import BTClibValueError, ScriptError
 from btclib.script import script, sig_hash
@@ -30,7 +28,6 @@ from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
 from btclib_node.chains import RegTest
-from btclib_node.config import Config
 from btclib_node.interpreter import (
     check_transaction,
     check_transactions,
@@ -38,6 +35,13 @@ from btclib_node.interpreter import (
     get_flags,
     warm,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from btclib.alias import Octets
+
+    from btclib_node.config import Config
 
 
 def spend(script_sig: bytes, value: int = 49 * 10**8) -> Tx:
@@ -208,6 +212,6 @@ def test_the_flags_are_the_forks_active_at_that_height() -> None:
     config = SimpleNamespace(
         chain=SimpleNamespace(flags=[(0, "P2SH"), (10, "WITNESS"), (20, "TAPROOT")])
     )
-    assert get_flags(cast(Config, config), 0) == ("P2SH",)
-    assert get_flags(cast(Config, config), 10) == ("P2SH", "WITNESS")
-    assert get_flags(cast(Config, config), 25) == ("P2SH", "WITNESS", "TAPROOT")
+    assert get_flags(cast("Config", config), 0) == ("P2SH",)
+    assert get_flags(cast("Config", config), 10) == ("P2SH", "WITNESS")
+    assert get_flags(cast("Config", config), 25) == ("P2SH", "WITNESS", "TAPROOT")

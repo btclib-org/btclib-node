@@ -11,7 +11,10 @@ said about which test it was. So the bound is part of the harness, and
 this is what asks whether it is still there.
 """
 
-import pytest
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def test_every_test_is_bounded(pytestconfig: pytest.Config) -> None:

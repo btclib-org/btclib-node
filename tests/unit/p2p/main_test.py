@@ -13,7 +13,6 @@ from collections import deque
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
-import pytest
 from btclib.exceptions import BTClibValueError
 from btclib.p2p.addrv2 import NetworkAddressV2
 
@@ -22,6 +21,8 @@ from btclib_node.p2p.callbacks import callbacks, handshake_callbacks
 from btclib_node.p2p.main import handle_p2p, handle_p2p_handshake
 
 if TYPE_CHECKING:
+    import pytest
+
     from btclib_node import Node
     from btclib_node.p2p.connection import Connection
 

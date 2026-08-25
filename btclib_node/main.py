@@ -4,20 +4,21 @@
 
 from typing import TYPE_CHECKING
 
-from btclib.block import Block
 from btclib.exceptions import BTClibValueError
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
 from btclib.tx import TxOut
-from btclib.tx.tx import Tx
 
-from btclib_node.block_db import RevBlock
 from btclib_node.chainstate.block_index import BlockIndex, BlockStatus
 from btclib_node.constants import NodeStatus
 from btclib_node.exceptions import ChainstateInconsistencyError, MissingPrevoutError
 from btclib_node.interpreter import check_transaction, check_transactions
 
 if TYPE_CHECKING:
+    from btclib.block import Block
+    from btclib.tx.tx import Tx
+
     from btclib_node import Node
+    from btclib_node.block_db import RevBlock
 
 
 # update_chain calls this on the failure path, naming the block whose

@@ -3,7 +3,7 @@
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
 import time
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from btclib.p2p.keepalive import Ping
 
@@ -11,6 +11,9 @@ from btclib_node import Node
 from btclib_node.config import Config
 from btclib_node.constants import P2pConnStatus
 from tests.helpers import get_random_port, local_addr, wait_until, wait_until_listening
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_correct_ping(tmp_path: Path) -> None:

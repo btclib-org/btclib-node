@@ -2,9 +2,8 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-from pathlib import Path
 
-import pytest
+from typing import TYPE_CHECKING
 
 import btclib_node.download as download_module
 from btclib_node import Node
@@ -19,6 +18,11 @@ from tests.helpers import (
     wait_until,
     wait_until_listening,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import pytest
 
 
 def test_send_tx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

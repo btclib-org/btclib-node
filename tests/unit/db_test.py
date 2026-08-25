@@ -14,12 +14,15 @@ raises, and a second thread.
 
 import sqlite3
 import threading
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from btclib_node.db import KeyValueStore
 from btclib_node.exceptions import IncompatibleStoreError, StoreClosedError
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def a_store(tmp_path: Path, name: str = "store") -> KeyValueStore:

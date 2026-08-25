@@ -10,15 +10,15 @@ from collections import deque
 from contextlib import suppress
 from typing import TYPE_CHECKING, override
 
-from btclib.p2p.addrv2 import NetworkAddressV2
-from btclib.p2p.payload import Payload
-from btclib.tx.tx import Tx as BtclibTx
-
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.p2p.address import PeerDB, dial, endpoint_key, peer_address
 from btclib_node.p2p.connection import Connection
 
 if TYPE_CHECKING:
+    from btclib.p2p.addrv2 import NetworkAddressV2
+    from btclib.p2p.payload import Payload
+    from btclib.tx.tx import Tx as BtclibTx
+
     from btclib_node import Node
 
 # How often `manage_connections`' own loop prunes the active-address

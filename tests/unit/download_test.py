@@ -13,13 +13,11 @@ has stopped sending blocks is let go.
 """
 
 import time
-from collections.abc import Sequence
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from btclib.fee import FeeRate, fee_from_vsize
-from btclib.p2p.addrv2 import NetworkAddressV2
 from btclib.p2p.inventory import GetData, Inv
 from btclib.p2p.limits import MAX_INV_SZ
 from btclib.p2p.negotiation import FeeFilter
@@ -34,6 +32,10 @@ from btclib_node.p2p.address import peer_address
 from tests.helpers import generate_random_transaction
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from btclib.p2p.addrv2 import NetworkAddressV2
+
     from btclib_node import Node
 
 

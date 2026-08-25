@@ -7,9 +7,6 @@ import contextlib
 import json
 import re
 import secrets
-import socket
-from collections.abc import Callable
-from concurrent.futures import Future
 from http.client import parse_headers
 from io import BytesIO
 from typing import TYPE_CHECKING, Any, override
@@ -18,6 +15,10 @@ from btclib_node.p2p.address import ip_and_port
 from btclib_node.rpc.errors import RpcErrorCode, error_msg
 
 if TYPE_CHECKING:
+    import socket
+    from collections.abc import Callable
+    from concurrent.futures import Future
+
     from btclib_node.rpc.manager import RpcManager
 
 HEADER_TERMINATOR = b"\r\n\r\n"

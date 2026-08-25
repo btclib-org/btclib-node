@@ -17,7 +17,6 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import pytest
-from btclib.block import BlockHeader
 from btclib.exceptions import BTClibValueError
 from btclib.fee import FeeRate
 from btclib.p2p.address import NetworkAddress, ServiceFlags
@@ -60,6 +59,8 @@ from btclib_node.rpc.errors import RpcError, RpcErrorCode
 from tests.helpers import generate_random_header_chain
 
 if TYPE_CHECKING:
+    from btclib.block import BlockHeader
+
     from btclib_node import Node
     from btclib_node.rpc.connection import Connection
 

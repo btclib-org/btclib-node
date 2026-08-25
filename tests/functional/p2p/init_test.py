@@ -2,11 +2,15 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-from pathlib import Path
+
+from typing import TYPE_CHECKING
 
 from btclib_node import Node
 from btclib_node.config import Config
 from tests.helpers import get_random_port, wait_until_listening
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_init(tmp_path: Path) -> None:

@@ -14,7 +14,7 @@ import importlib
 import inspect
 from collections import deque
 from types import SimpleNamespace
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from btclib.exceptions import BTClibValueError
@@ -28,7 +28,9 @@ from btclib_node.chains import RegTest
 from btclib_node.constants import P2pConnStatus
 from btclib_node.p2p.callbacks import callbacks, handshake_callbacks
 from btclib_node.p2p.connection import Connection
-from btclib_node.p2p.manager import P2pManager
+
+if TYPE_CHECKING:
+    from btclib_node.p2p.manager import P2pManager
 
 MAGIC = RegTest().magic
 
@@ -129,7 +131,7 @@ def make_connection() -> Connection:
     )
     conn = Connection.__new__(Connection)
     conn.id = 0
-    conn.manager = cast(P2pManager, manager)
+    conn.manager = cast("P2pManager", manager)
     conn.node = manager.node
     conn.buffer = b""
     conn.status = P2pConnStatus.Open

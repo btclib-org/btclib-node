@@ -8,17 +8,18 @@ from collections import Counter
 from random import SystemRandom
 from typing import TYPE_CHECKING
 
-from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 from btclib.p2p.inventory import GetData, Inv, Inventory, InventoryType
 from btclib.p2p.limits import MAX_INV_SZ
 from btclib.p2p.negotiation import FeeFilter
 
 from btclib_node.chainstate.block_index import MAX_DOWNLOAD_WINDOW
 from btclib_node.constants import NodeStatus, P2pConnStatus
-from btclib_node.log import Logger
 
 if TYPE_CHECKING:
+    from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
+
     from btclib_node import Node
+    from btclib_node.log import Logger
     from btclib_node.p2p.connection import Connection
 
 # net_processing.cpp's INBOUND_INVENTORY_BROADCAST_INTERVAL and

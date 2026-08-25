@@ -2,9 +2,9 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -12,6 +12,9 @@ from btclib_node import Node
 from btclib_node.config import Config
 from btclib_node.constants import NodeStatus
 from tests.helpers import get_random_port
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
 
 
 def asks_for_everything(config: pytest.Config) -> bool:

@@ -2,12 +2,10 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-from collections.abc import Callable
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
-from btclib.block import Block
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
 from btclib.script import script
 from btclib.tx.out_point import OutPoint
@@ -32,6 +30,10 @@ from tests.helpers import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from btclib.block import Block
+
     from btclib_node.p2p.connection import Connection
 
 

@@ -4,13 +4,17 @@
 
 
 import time
-from collections.abc import Iterable
 from fractions import Fraction
+from typing import TYPE_CHECKING
 
 from btclib.fee import FeeRate, fee_from_vsize
-from btclib.tx.tx import Tx
 
-from btclib_node.log import Logger
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from btclib.tx.tx import Tx
+
+    from btclib_node.log import Logger
 
 # Core's own `DEFAULT_INCREMENTAL_RELAY_FEE` (`src/policy/policy.h`,
 # bitcoin/bitcoin@58a7869f86): what an eviction round bumps the rolling

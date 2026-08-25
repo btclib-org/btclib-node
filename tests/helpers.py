@@ -7,25 +7,29 @@ import secrets
 import socket
 import threading
 import time
-from collections.abc import Callable
 from datetime import datetime, timedelta
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import requests
 from btclib.block import Block, BlockHeader, merkle_root_and_mutated_from_transactions
 from btclib.block.mining import mine
 from btclib.block.proof_of_work import REGTEST_POW_LIMIT_BITS
 from btclib.exceptions import BTClibValueError
-from btclib.p2p.addrv2 import NetworkAddressV2
 from btclib.script import script
 from btclib.tx.out_point import OutPoint
 from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
-from btclib_node import Node
 from btclib_node.chains import RegTest
 from btclib_node.p2p.address import peer_address
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from btclib.p2p.addrv2 import NetworkAddressV2
+
+    from btclib_node import Node
 
 
 class WaitTimeoutError(TimeoutError):

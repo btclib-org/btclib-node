@@ -4,12 +4,14 @@
 
 import enum
 from dataclasses import dataclass
-from typing import override
+from typing import TYPE_CHECKING, override
 
 from btclib import var_int
-from btclib.alias import BinaryData
 from btclib.p2p.payload import Payload
 from btclib.utils import bytesio_from_binarydata
+
+if TYPE_CHECKING:
+    from btclib.alias import BinaryData
 
 
 class RejectCode(enum.IntEnum):

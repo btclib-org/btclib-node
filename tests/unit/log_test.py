@@ -3,9 +3,12 @@
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
 import logging
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from btclib_node.log import Logger
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_a_log_path_is_a_file_the_lines_end_up_in(tmp_path: Path) -> None:

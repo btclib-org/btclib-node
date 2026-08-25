@@ -14,7 +14,7 @@ import asyncio
 import socket
 from contextlib import suppress
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from btclib.hashes import hash256
@@ -22,14 +22,17 @@ from btclib.p2p.block_filters import BlockFilterType, CFilter
 from btclib.p2p.keepalive import Ping
 from btclib.p2p.limits import MAX_GETCFILTERS_SIZE
 from btclib.p2p.message import Message
-from btclib.p2p.payload import Payload
 
 from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.p2p import connection as connection_module
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.connection import Connection
-from btclib_node.p2p.manager import P2pManager
+
+if TYPE_CHECKING:
+    from btclib.p2p.payload import Payload
+
+    from btclib_node.p2p.manager import P2pManager
 
 
 class Unserializable:
@@ -51,7 +54,7 @@ def a_connection(
     )
     manager = SimpleNamespace(node=node, loop=None, peer_db=None)
     connection = Connection(
-        cast(P2pManager, manager),
+        cast("P2pManager", manager),
         client if client is not None else socket.socket(),
         peer_address("1.2.3.4", 18444),
         0,
@@ -73,7 +76,7 @@ def test_a_message_that_will_not_serialize_is_logged_and_dropped() -> None:
 
     connection._send = _send  # type: ignore[method-assign]
     with connection.client:
-        asyncio.run(connection.async_send(cast(Payload, Unserializable())))
+        asyncio.run(connection.async_send(cast("Payload", Unserializable())))
     assert not sent
     (line,) = logged
     assert "error in serializing message" in line
@@ -101,7 +104,7 @@ def test_a_connection_names_the_peer_it_is_to() -> None:
     ids=["v4-mapped", "ipv6"],
 )
 def test_a_connection_brackets_an_ipv6_peer(host: str, endpoint: str) -> None:
-    client = cast(socket.socket, SimpleNamespace(getpeername=lambda: (host, 18444)))
+    client = cast("socket.socket", SimpleNamespace(getpeername=lambda: (host, 18444)))
     connection, _ = a_connection(client)
     assert repr(connection) == f"Connection to {endpoint}"
 
@@ -134,7 +137,7 @@ def a_running_connection(
         discouraged=discouraged,
     )
     return Connection(
-        cast(P2pManager, manager), client, peer_address("127.0.0.1", 18444), 0, False
+        cast("P2pManager", manager), client, peer_address("127.0.0.1", 18444), 0, False
     )
 
 
@@ -146,7 +149,7 @@ def discouraged_of(connection: Connection) -> list[Any]:
     carrying a `list` instead, so a caller comparing it against what was
     passed to `discourage` needs its own, unstatic view of the attribute.
     """
-    return cast("list[Any]", cast(Any, connection.manager).discouraged)
+    return cast("list[Any]", cast("Any", connection.manager).discouraged)
 
 
 def a_message_for_another_network() -> bytes:

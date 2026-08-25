@@ -27,14 +27,19 @@ dynamically on request, as malicious peers may be able to perform DoS
 attacks by requesting small filters derived from large blocks."
 """
 
-from btclib.block import Block
+from typing import TYPE_CHECKING
+
 from btclib.block.block_filter import BasicBlockFilter, prevout_scripts_from_utxos
 
-from btclib_node.block_db import BlockDB, RevBlock
-from btclib_node.chains import Chain
-from btclib_node.db import KeyValueStore
 from btclib_node.exceptions import ChainstateInconsistencyError
-from btclib_node.log import Logger
+
+if TYPE_CHECKING:
+    from btclib.block import Block
+
+    from btclib_node.block_db import BlockDB, RevBlock
+    from btclib_node.chains import Chain
+    from btclib_node.db import KeyValueStore
+    from btclib_node.log import Logger
 
 _FILTER = b"cfilter-"
 _HEADER = b"cfheader-"

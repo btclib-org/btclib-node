@@ -11,9 +11,7 @@ these are mostly about.
 
 from collections import deque
 from types import SimpleNamespace
-from typing import Any, NoReturn, cast
-
-import pytest
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 from btclib_node.rpc.callbacks import callbacks
 from btclib_node.rpc.errors import RpcError, RpcErrorCode, error_msg
@@ -22,7 +20,11 @@ from btclib_node.rpc.main import (
     handle_rpc,
     is_valid_rpc,
 )
-from btclib_node.rpc.manager import RpcManager
+
+if TYPE_CHECKING:
+    import pytest
+
+    from btclib_node.rpc.manager import RpcManager
 
 PING = {"jsonrpc": "2.0", "id": "a", "method": "ping"}
 
@@ -175,7 +177,7 @@ def test_a_message_for_a_connection_that_is_gone_is_dropped() -> None:
 
 
 def test_get_connection_answers_none_rather_than_raising() -> None:
-    manager = cast(RpcManager, SimpleNamespace(connections={}))
+    manager = cast("RpcManager", SimpleNamespace(connections={}))
     assert get_connection(manager, 0) is None
 
 

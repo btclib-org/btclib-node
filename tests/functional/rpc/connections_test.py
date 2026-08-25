@@ -3,9 +3,12 @@
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
 import json
+from typing import TYPE_CHECKING
 
-from btclib_node import Node
 from tests.helpers import post, wait_until, wait_until_listening
+
+if TYPE_CHECKING:
+    from btclib_node import Node
 
 
 def test_connections_do_not_outlive_the_answer_they_carried(rpc_node: Node) -> None:

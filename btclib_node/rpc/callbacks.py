@@ -6,8 +6,6 @@ from typing import TYPE_CHECKING, Any, cast
 
 from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.p2p.address import ServiceFlags
-from btclib.p2p.addrv2 import BIP155Network
-from btclib.p2p.handshake import Version
 from btclib.tx import Tx
 
 from btclib_node.constants import P2pConnStatus
@@ -18,6 +16,9 @@ from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import RpcError, RpcErrorCode, bool_param, json_type_name
 
 if TYPE_CHECKING:
+    from btclib.p2p.addrv2 import BIP155Network
+    from btclib.p2p.handshake import Version
+
     from btclib_node import Node
     from btclib_node.rpc.connection import Connection
 
@@ -253,7 +254,7 @@ def get_peer_info(node: Node, conn: Connection, _: list[Any]) -> list[dict[str, 
             # which refuses to advance without a version already parsed;
             # cast rather than checked, since nothing here can repair a
             # connection that reached Connected without one
-            version_message = cast(Version, p2p_conn.version_message)
+            version_message = cast("Version", p2p_conn.version_message)
             services = version_message.services
             addr_recv = version_message.addr_recv
 
@@ -276,7 +277,7 @@ def get_peer_info(node: Node, conn: Connection, _: list[Any]) -> list[dict[str, 
             # come through here, which is where that is noticed. Cast
             # rather than asserted: a test double stands in for the
             # enum member here without being one.
-            network_id = cast(BIP155Network, p2p_conn.address.network_id)
+            network_id = cast("BIP155Network", p2p_conn.address.network_id)
             conn_dict["network"] = network_id.name.lower()
             conn_dict["lastsend"] = p2p_conn.last_send
             conn_dict["lastrecv"] = p2p_conn.last_receive
@@ -654,7 +655,7 @@ def send_raw_transaction(node: Node, conn: Connection, params: list[Any]) -> str
         # rather than a check dead on every path that reaches it,
         # matching `Connection.send_version`'s own `self.manager.port`.
         # btclib-org/btclib-node#293
-        to_announce = cast(Tx, node.mempool.get_tx(tx.id))
+        to_announce = cast("Tx", node.mempool.get_tx(tx.id))
     else:
         # Neither already held nor kept: `Mempool._evict_to_limit` ran
         # and took this transaction right back out for being the worst

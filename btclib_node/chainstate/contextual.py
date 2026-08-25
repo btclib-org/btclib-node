@@ -21,7 +21,7 @@ is checked against.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
+from typing import TYPE_CHECKING
 
 from btclib.block import BlockHeader
 from btclib.block.proof_of_work import (
@@ -32,7 +32,10 @@ from btclib.block.proof_of_work import (
 )
 from btclib.exceptions import BTClibValueError
 
-from btclib_node.chains import Chain
+if TYPE_CHECKING:
+    from datetime import datetime
+
+    from btclib_node.chains import Chain
 
 # Core's CBlockIndex::nMedianTimeSpan
 MEDIAN_TIME_SPAN = 11
