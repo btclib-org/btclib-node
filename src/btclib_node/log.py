@@ -17,12 +17,15 @@ if TYPE_CHECKING:
 
 
 class Logger(logging.Logger):
+    """A `logging.Logger` writing to `log_path`, or a stream if unset."""
+
     def __init__(
         self,
         log_path: str | Path | None = None,
         *,
         debug: bool = False,
     ) -> None:
+        """Attach a file or stream handler, at `DEBUG` or `INFO` per `debug`."""
         level = logging.DEBUG if debug else logging.INFO
         super().__init__(name="Logger", level=level)
         # `logging.Handler`, which is the type the two branches share:
@@ -37,6 +40,7 @@ class Logger(logging.Logger):
         self.addHandler(handler)
 
     def close(self) -> None:
+        """Close and detach every handler `__init__` attached."""
         for handler in self.handlers:
             handler.close()
             self.removeHandler(handler)

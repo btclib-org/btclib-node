@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 # already built on top of it; this is the one caller of it that has a
 # freshly-failed hash to hand it. btclib-org/btclib-node#120
 def update_header_index(index: BlockIndex, invalid_hash: bytes) -> None:
+    """Invalidate the block `update_chain`'s own trial loop just failed on."""
     index.invalidate(invalid_hash)
 
 
@@ -63,6 +64,12 @@ def _announce_added_blocks(node: Node, blocks: list[Block]) -> None:
 
 
 def finish_sync(node: Node) -> None:
+    """Mark the node `BlockSynced`, once there is no candidate left to try.
+
+    A no-op past the first call: nothing here needs undoing if a later
+    reorg leaves the chain with a candidate again, `NodeStatus` having
+    no state to walk back to from `BlockSynced`.
+    """
     if node.status == NodeStatus.BlockSynced:
         return
     node.status = NodeStatus.BlockSynced
@@ -211,6 +218,17 @@ def _ready_fork(node: Node) -> tuple[list[bytes], list[bytes]] | None:
 
 
 def update_chain(node: Node) -> None:
+    """Try the best ready fork block by block, and commit or roll it back.
+
+    Called once per pass of `Node`'s own loop. `_ready_fork` answers
+    whether there is a fork worth trying at all; if there is, every
+    block on it is applied to the UTXO set and validated in turn, a
+    shutdown between two blocks stopping the trial without failing it,
+    and any other exception rolling every index back to where it stood
+    before this call. Once a trial succeeds, `_finalize_fork` commits
+    it, the mempool is reconciled against whatever it added and
+    removed, and `_announce_added_blocks` tells every connected peer.
+    """
     fork = _ready_fork(node)
     if fork is None:
         return None

@@ -93,7 +93,16 @@ _WORKER_PROCESSES = _default_worker_processes()
 
 
 class Node(threading.Thread):
+    """A bitcoin full node, and the thread that runs its main loop.
+
+    `config` (or a default `Config` when none is given) is what says
+    which chain, which data directory and which ports; `__init__` opens
+    every database under that directory and wires the p2p and RPC
+    managers to this node before `start()` ever runs `run`'s loop.
+    """
+
     def __init__(self, config: Config | None = None) -> None:
+        """Open every database `config` names, and wire the two managers up."""
         super().__init__()
 
         if config is None:
@@ -169,9 +178,12 @@ class Node(threading.Thread):
 
     @property
     def worker_pool(self) -> Pool:
-        # under the lock, so that two callers get one pool: the second
-        # would otherwise leave a pool with nothing holding it and
-        # nothing to terminate it
+        """The pool `interpreter.py` validates a script in, built on first use.
+
+        Under the lock, so that two callers building it at once get one
+        pool between them: the second would otherwise leave a pool with
+        nothing holding it and nothing to terminate it.
+        """
         with self._worker_pool_lock:
             if self._worker_pool is None:
                 self._worker_pool = Pool(processes=_WORKER_PROCESSES)
@@ -190,19 +202,21 @@ class Node(threading.Thread):
             self._worker_pool = None
 
     def __del__(self) -> None:
-        # a backstop for a `Node` built and used without ever being
-        # `start()`ed -- `tests/unit/main_test.py` calls `update_chain`
-        # against one directly, on the thread that built it, to reach a
-        # block's own validation without a loop around it, and that
-        # builds a real `worker_pool` that `run`'s own teardown below
-        # never runs to take back down. Without this, that pool is
-        # still in `Pool.RUN` state whenever something finally collects
-        # it, which is what made `Pool.__del__` warn and reach for a
-        # queue of its own on an xdist worker's stderr, reported
-        # against btclib-org/btclib-node#195. `getattr` rather than the
-        # attribute itself: `__init__` can raise before `_worker_pool`
-        # is set, and a constructor's exception should not come back
-        # paired with a second one out of here.
+        """Terminate the worker pool if `run` never got to, as a backstop.
+
+        For a `Node` built and used without ever being `start()`ed --
+        `tests/unit/main_test.py` calls `update_chain` against one
+        directly, on the thread that built it, to reach a block's own
+        validation without a loop around it, and that builds a real
+        `worker_pool` that `run`'s own teardown below never runs to take
+        back down. Without this, that pool is still in `Pool.RUN` state
+        whenever something finally collects it, which is what made
+        `Pool.__del__` warn and reach for a queue of its own on an xdist
+        worker's stderr, reported against btclib-org/btclib-node#195.
+        `getattr` rather than the attribute itself: `__init__` can raise
+        before `_worker_pool` is set, and a constructor's exception
+        should not come back paired with a second one out of here.
+        """
         if getattr(self, "_worker_pool", None) is not None:
             self._close_worker_pool()
 

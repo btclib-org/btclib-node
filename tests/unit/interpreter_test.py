@@ -225,7 +225,7 @@ def test_the_flags_are_the_forks_active_at_that_height() -> None:
 
 
 def _multi_input_p2wpkh_spend(n: int) -> tuple[list[TxOut], Tx]:
-    """n independent p2wpkh prevouts, and the transaction spending them."""
+    """N independent p2wpkh prevouts, and the transaction spending them."""
     prevouts = [TxOut(50 * 10**8, ScriptPubKey.p2wpkh(_PUB)) for _ in range(n)]
     tx = Tx(
         version=1,

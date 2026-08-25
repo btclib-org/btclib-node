@@ -32,6 +32,32 @@ to check the guess.
   branch inside `P2pManager`'s own background thread while every test
   passed, distinguished from a real regression only by the load average
   `uptime` gave at that run.
+### `src/btclib_node/`'s own root modules get real docstrings (issue #373)
+
+- **`D101`/`D102`/`D103`/`D105`/`D107` are selected for `src/btclib_node/`'s
+  own root-level modules** (issue #373): every class, method, function,
+  `__init__` and magic method under `__init__.py`, `chains.py`,
+  `config.py`, `constants.py`, `db.py`, `download.py`, `exceptions.py`,
+  `interpreter.py`, `log.py`, `main.py` and `mempool.py` now carries a
+  docstring grounded in what it does, or a reasoned per-file suppression
+  where one would only repeat its class's own -- `exceptions.py`'s own
+  trivial `__init__`s, deferred to `pyproject.toml`'s own per-file-ignore
+  rather than a near-identical one-liner apiece. `block_db/`, `chainstate/`,
+  `p2p/` and `rpc/` are the remaining four slices, each deferred the same
+  way #264's own `D100`/`D104` split already deferred `tests/**` and
+  `scripts/**`.
+- **`D205`/`D401`/`D403`/`D404`/`D105`, the small style codes issue #373
+  asked to fold into whichever slice landed first, are selected
+  tree-wide for `src/btclib_node/`, `scripts/` and `.github/scripts/`**:
+  stray findings outside this slice's own root modules -- `D205` and
+  `D401` in `rpc/`, `D205` in `p2p/`, `D401` and `D403` in
+  `.github/scripts/check_vendored_pin.py` -- are fixed directly, since
+  none is tied to a directory's own D101-D107 sweep still being
+  incomplete. `scripts/test_errors.py`'s own finding is a `D103`
+  instead, picked up alongside them since it was one function;
+  `D101`/`D102`/`D103`/`D107` stay unselected for `scripts/**`
+  otherwise, deferred with `tests/**`, which carries findings of its own
+  for `D205` and `D401` and is deferred the same way.
 
 ### The docs gate's own remaining gaps close: `[project.urls]`, `local-link-prefix`
 

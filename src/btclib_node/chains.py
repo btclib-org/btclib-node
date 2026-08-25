@@ -27,6 +27,14 @@ from btclib.tx.tx_out import TxOut
 def create_genesis(
     time: int, nonce: int, difficulty: int, version: int, reward: int
 ) -> Block:
+    """Build a network's genesis block from its own header fields and reward.
+
+    The same coinbase text and public key on every network -- Bitcoin's
+    own genesis message and Satoshi's pubkey -- since what makes one
+    network's genesis differ from another's is the header alone: its
+    time, nonce, starting difficulty and version, plus how much the one
+    coinbase output pays.
+    """
     script_sig = script.serialize(
         [
             "FFFF001D",
@@ -77,6 +85,14 @@ def create_genesis(
 
 @dataclass
 class Chain:
+    """A network this node can join: its magic, its seeds and its genesis.
+
+    `Main`, `TestNet`, `SigNet` and `RegTest` below are its four leaves,
+    each hardcoding one network's own constants in its `__init__` rather
+    than taking them as arguments, since there is exactly one of each
+    and nothing else ever builds one.
+    """
+
     name: str
     port: int
     addresses: list[str]
@@ -100,6 +116,7 @@ class Chain:
 
     @property
     def magic(self) -> bytes:
+        """The network's four-byte magic, the octets a message starts with."""
         # bytes, and the four octets that go on the wire: a hex string
         # here is what made the resynchronisation in
         # p2p.connection.Connection.parse_messages hunt for ASCII inside
@@ -112,6 +129,7 @@ class Chain:
 
     @property
     def pow_limit_bits(self) -> bytes:
+        """The network's easiest target, as its genesis block's own bits."""
         # A genesis block is mined at its network's easiest target, so
         # the limit is already stated once, in create_genesis' argument.
         # btclib's validation defaults to mainnet's, which would reject
@@ -121,7 +139,12 @@ class Chain:
 
 @dataclass
 class Main(Chain):
-    def __init__(self) -> None:
+    """Mainnet: the chain real bitcoin moves on."""
+
+    # the class docstring above already says which network this is; the
+    # fields below are literal constants, not a decision this __init__
+    # makes that a docstring would need to explain
+    def __init__(self) -> None:  # noqa: D107
         self.name = "mainnet"
         self.port = 8333
         self.addresses = [
@@ -153,7 +176,12 @@ class Main(Chain):
 
 @dataclass
 class TestNet(Chain):
-    def __init__(self) -> None:
+    """Testnet3: the long-running public test chain."""
+
+    # the class docstring above already says which network this is; the
+    # fields below are literal constants, not a decision this __init__
+    # makes that a docstring would need to explain
+    def __init__(self) -> None:  # noqa: D107
         self.name = "testnet"
         self.port = 18333
         self.addresses = [
@@ -180,7 +208,16 @@ class TestNet(Chain):
 
 @dataclass
 class SigNet(Chain):
-    def __init__(self) -> None:
+    """The default public signet, not a custom one built from its own challenge.
+
+    Every flag activates at height 0, since signet is a fresh chain each
+    time it is reset rather than one carrying mainnet's own history.
+    """
+
+    # the class docstring above already says which network this is; the
+    # fields below are literal constants, not a decision this __init__
+    # makes that a docstring would need to explain
+    def __init__(self) -> None:  # noqa: D107
         self.name = "signet"
         self.port = 38333
         self.addresses = ["178.128.221.177"]
@@ -202,7 +239,17 @@ class SigNet(Chain):
 
 @dataclass
 class RegTest(Chain):
-    def __init__(self) -> None:
+    """A local, disposable chain: no seeds, an easy target, no retargeting.
+
+    Every flag activates at height 0 and the difficulty never moves off
+    the genesis's own, so a functional test can mine past any of them
+    in as many blocks as it needs, on demand.
+    """
+
+    # the class docstring above already says which network this is; the
+    # fields below are literal constants, not a decision this __init__
+    # makes that a docstring would need to explain
+    def __init__(self) -> None:  # noqa: D107
         self.name = "regtest"
         self.port = 18444
         self.addresses = []

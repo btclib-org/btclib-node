@@ -53,6 +53,14 @@ def _resolve_chain(chain: Chain | str) -> Chain:
 
 @dataclass
 class Config:
+    """Every setting one `Node` is built from, flat and keyword-only.
+
+    Built by `__init__` below rather than by the fields' own defaults,
+    since a chain given as a name has to resolve to a `Chain` first, and
+    a port left unset by `allow_p2p=False`/`allow_rpc=False` has to
+    become `None` rather than the class's own declared `int`.
+    """
+
     chain: Chain
     # a Path, which is what __init__ below stores and what every reader
     # of it does path arithmetic on
@@ -110,6 +118,7 @@ class Config:
         log_path: str | None = "history.log",
         min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
     ) -> None:
+        """Resolve `chain`, and `allow_p2p`/`allow_rpc` to a port or `None`."""
         self.chain = _resolve_chain(chain)
 
         data_dir = Path(data_dir) if data_dir else Path.home() / ".btclib"

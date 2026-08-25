@@ -398,10 +398,11 @@ class P2pManager(threading.Thread):
             tuple[socket.socket, tuple[str, int] | tuple[str, int, int, int]]
         ],
     ) -> None:
-        """`server`'s own reader callback, a method rather than a
-        closure so a unit test can call it directly against a socket of
-        its own -- real, or one that only duck-types `.accept()` -- to
-        cover the two exception arms without a live listener.
+        """`server`'s own reader callback, a method rather than a closure.
+
+        A unit test can call it directly against a socket of its own --
+        real, or one that only duck-types `.accept()` -- to cover the
+        two exception arms without a live listener.
         """
         try:
             sock, sockaddr = server_socket.accept()

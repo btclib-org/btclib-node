@@ -550,7 +550,22 @@ explicit-preview-rules = true
 # down defer them for `tests/**` and `scripts/**`, neither being part of
 # the shipped package. `D101`/`D102`/`D103`/`D107`, the bulk of the
 # family (the class, method, function and `__init__` narration #264 did
-# not attempt), are issue #373's, one package directory at a time.
+# not attempt), are issue #373's, one package directory at a time: slice
+# 1 is `src/btclib_node/`'s own root-level modules, clean as of this
+# round, with the per-file-ignores further down deferring the four
+# subpackages slices 2-5 have not yet reached, and `tests/**`/
+# `scripts/**` again. `D205`/`D401`/`D403`/`D404`/`D105` (a summary not
+# on one physical line, a docstring not in the imperative mood, an
+# uncapitalized first word, one starting with "This", an undocumented
+# magic method) are turned on tree-wide already: issue #373 asked for
+# them to fold into whichever slice landed first rather than be split
+# five ways, and slice 1's own sweep found a handful of stray findings
+# outside `src/btclib_node/`'s root, in `rpc/` and `p2p/` -- fixed
+# directly rather than deferred, since nothing about them is tied to a
+# directory's own D101-D107 sweep still being incomplete. `tests/**` is
+# the one place they are deferred, in the per-file-ignore below,
+# alongside the rest of the family that directory has not yet had a
+# pass.
 #
 # Issue #284 closed that reference selection; ruff's own catalogue is
 # larger still, and issues #340/#341 are a further sweep of every
@@ -602,7 +617,16 @@ select = [
     "C90",  # mccabe (complex-structure)
     "CPY",  # flake8-copyright, replacing the copyright-notice hook below
     "D100", # pydocstyle: undocumented-public-module (issue #264)
+    "D101", # pydocstyle: undocumented-public-class (issue #373, slice 1)
+    "D102", # pydocstyle: undocumented-public-method (issue #373, slice 1)
+    "D103", # pydocstyle: undocumented-public-function (issue #373, slice 1)
     "D104", # pydocstyle: undocumented-public-package (issue #264)
+    "D105", # pydocstyle: undocumented-magic-method (issue #373, slice 1)
+    "D107", # pydocstyle: undocumented-public-init (issue #373, slice 1)
+    "D205", # pydocstyle: missing-blank-line-after-summary (issue #373)
+    "D401", # pydocstyle: non-imperative-mood (issue #373)
+    "D403", # pydocstyle: first-word-uncapitalized (issue #373)
+    "D404", # pydocstyle: docstring-starts-with-this (issue #373)
     "E",    # pycodestyle errors, replacing flake8
     "ERA",  # eradicate (commented-out code)
     "F",    # pyflakes, replacing autoflake and most of yesqa
@@ -654,6 +678,22 @@ ignore = [
     #          rather than assumed, alongside the rest of the D family
     #          this tree has not yet turned on for tests/
     "D104",
+    "D101", # the class/method/function/__init__ narration issue #373's
+    #          own five package-directory slices are, one at a time --
+    #          `tests/**` is not one of those five and is read on its
+    #          own once they land, not assumed to inherit whichever
+    #          slice happens to be first, the way #264's own D100/D104
+    #          split already treats it
+    "D102",
+    "D103",
+    "D107",
+    "D205", # the two style codes issue #373 asked to fold into
+    #          whichever slice landed first rather than split five ways
+    #          -- folded for `src/btclib_node/` itself (zero findings
+    #          left there as of slice 1), not for `tests/**`, which
+    #          carries findings of its own for both and is not part of
+    #          any of the five slices those two codes rode in on
+    "D401",
     "ANN401", # a test double's own SimpleNamespace, standing in for a
     #            production type across every field a scenario needs
     #            and none it does not -- Any is what lets it satisfy
@@ -727,6 +767,15 @@ ignore = [
 # `src/btclib_node/` alone), which is what issue #264 turned that rule
 # on for.
 "scripts/**" = ["D100"]
+# `D101`/`D102`/`D103`/`D107` closed for `src/btclib_node/`'s own
+# root-level modules this round (issue #373, slice 1); these four are
+# the package directories its own suggested split leaves for slices
+# 2-5, each read on its own rather than swept together, the same
+# one-directory-at-a-time shape slice 1 itself used.
+"src/btclib_node/block_db/**" = ["D101", "D102", "D103", "D107"]
+"src/btclib_node/chainstate/**" = ["D101", "D102", "D103", "D107"]
+"src/btclib_node/p2p/**" = ["D101", "D102", "D103", "D107"]
+"src/btclib_node/rpc/**" = ["D101", "D102", "D103", "D107"]
 # SphinxPostTransform.run itself is typed `(self, **kwargs: Any) -> None`
 # (sphinx.transforms.post_transforms, read directly from the installed
 # package rather than assumed) -- an override matching the base class's
@@ -750,6 +799,12 @@ ignore = [
 # value, so `check_vendored_pin.py`'s prints are its report and not
 # debug residue either.
 ".github/scripts/check_vendored_pin.py" = ["T20"]
+# every __init__ in this file is one line, super().__init__(message) or
+# a formatted message built from its own arguments -- what it does is
+# already the whole of what the class's own docstring says, so a
+# docstring on the __init__ too would repeat it rather than add
+# anything a reader does not already have (issue #373).
+"src/btclib_node/exceptions.py" = ["D107"]
 
 [tool.ruff.lint.pycodestyle]
 max-doc-length = 80

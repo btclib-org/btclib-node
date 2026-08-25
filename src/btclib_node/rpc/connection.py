@@ -43,8 +43,7 @@ MAX_BODY_BYTES = 32 * 1024 * 1024
 
 
 class RawJSON:
-    """A JSON number written to the wire exactly as given, not derived
-    from a `float`.
+    """A JSON number written to the wire exactly as given, not from a `float`.
 
     Core's own `UniValue(UniValue::VNUM, "<string>")` does the same:
     the value is built from a string and written out verbatim, whatever

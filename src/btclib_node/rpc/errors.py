@@ -78,7 +78,7 @@ def json_type_name(value: object) -> str:
 def error_msg(
     code: RpcErrorCode, message: str, request_id: object = None
 ) -> dict[str, Any]:
-    """The error response of JSON-RPC 2.0's section 5, code and message given.
+    """Build the error response of JSON-RPC 2.0's section 5, code and message.
 
     The specification requires the answer to carry the id of the request
     it answers, and reserves null for a request whose id could not be

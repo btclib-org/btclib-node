@@ -12,6 +12,7 @@ from btclib.utils import bytesio_from_binarydata
 
 
 def get_error_data(txid: str, i: str) -> tuple[list[TxOut], Tx, tuple[str, ...]]:
+    """Read one saved failure's flags, transaction and prevouts."""
     err_dir = Path("errors", txid, str(i))
     with Path(err_dir / "flags").open(encoding="utf-8") as f:
         flags = tuple(

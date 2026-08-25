@@ -73,6 +73,7 @@ class KeyValueStore:
     """
 
     def __init__(self, path: str | Path) -> None:
+        """Open (or create) the store at `path`, refusing a LevelDB one."""
         self.path = Path(path)
         self.path.mkdir(exist_ok=True, parents=True)
         if (self.path / _LEVELDB_MARKER).exists():
@@ -183,4 +184,5 @@ class KeyValueStore:
 
     @property
     def closed(self) -> bool:
+        """Whether `close` has already been called."""
         return self._closed

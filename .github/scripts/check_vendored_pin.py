@@ -93,17 +93,17 @@ def _run(*args: str) -> str:
 
 
 def _local_blob(path: str) -> str:
-    """The git blob SHA-1 of the file this tree carries at path."""
+    """Return the git blob SHA-1 of the file this tree carries at path."""
     return _run(_GIT, "hash-object", path)
 
 
 def _default_branch(repo: str) -> str:
-    """repo's default branch, upstream's own tip rather than a guess."""
+    """Return repo's default branch, upstream's own tip rather than a guess."""
     return _run(_GH, "api", f"repos/{repo}", "--jq", ".default_branch")
 
 
 def _upstream_blob(repo: str, path: str, ref: str) -> str | None:
-    """The blob SHA-1 of path in repo at ref, or None where it is gone."""
+    """Return the blob SHA-1 of path in repo at ref, or None if it is gone."""
     directory, _, name = path.rpartition("/")
     sha = _run(
         _GH,
@@ -116,7 +116,7 @@ def _upstream_blob(repo: str, path: str, ref: str) -> str | None:
 
 
 def _latest_commit(repo: str, path: str) -> str | None:
-    """The sha of the most recent commit touching path, or None."""
+    """Return the sha of the most recent commit touching path, or None."""
     sha = _run(
         _GH,
         "api",
