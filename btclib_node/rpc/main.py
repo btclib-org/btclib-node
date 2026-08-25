@@ -42,7 +42,7 @@ def handle_rpc(node: Node) -> None:
     if not conn:
         return
 
-    node.logger.debug(f"Received rpc message: {conn_id}")
+    node.logger.debug("Received rpc message: %s", conn_id)
 
     response: list[dict[str, Any]] = []
     # JSON-RPC 2.0: an empty batch is itself an invalid request, and

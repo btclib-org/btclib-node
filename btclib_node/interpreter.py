@@ -45,7 +45,7 @@ def check_transactions(
     if any(len(x[0]) != len(x[1].vin) for x in transaction_data):
         raise PrevoutCountMismatchError
 
-    FLAGS = get_flags(node.config, index)
+    flags = get_flags(node.config, index)
 
     # Script validation never reads the amounts except through the
     # sig_hash, so a block's transactions have to be checked against
@@ -60,7 +60,7 @@ def check_transactions(
     node.worker_pool.starmap(
         f,
         chain.from_iterable(
-            ((x[0], x[1], i, FLAGS) for i in range(len(x[0]))) for x in transaction_data
+            ((x[0], x[1], i, flags) for i in range(len(x[0]))) for x in transaction_data
         ),
     )
 

@@ -156,12 +156,12 @@ def _finalize_fork(node: Node, to_add: list[Block], to_remove: list[RevBlock]) -
         for rev_block in to_remove:
             block_index.remove_from_active_chain(rev_block.hash)
             block_index.set_status(rev_block.hash, BlockStatus.valid, wb)
-            node.logger.debug(f"Removed block {rev_block.hash.hex()}")
+            node.logger.debug("Removed block %s", rev_block.hash.hex())
         for block in to_add:
             block_hash = block.header.hash
             block_index.add_to_active_chain(block_hash)
             block_index.set_status(block_hash, BlockStatus.in_active_chain, wb)
-            node.logger.info(f"Added block {block_hash.hex()}")
+            node.logger.info("Added block %s", block_hash.hex())
         utxo_index.finalize(wb)
         filter_index.finalize(wb)
     node.logger.debug("End chainstate finalize")

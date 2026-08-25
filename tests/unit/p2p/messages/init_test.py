@@ -67,14 +67,16 @@ def payload_classes() -> dict[str, type[Payload]]:
     found: dict[str, type[Payload]] = {}
     for name in _MESSAGE_MODULES:
         module = importlib.import_module(f"btclib_node.p2p.messages.{name}")
-        for attr, obj in vars(module).items():
-            if (
-                inspect.isclass(obj)
+        found.update(
+            {
+                attr: obj
+                for attr, obj in vars(module).items()
+                if inspect.isclass(obj)
                 and issubclass(obj, Payload)
                 and obj is not Payload
                 and getattr(obj, "command", None)
-            ):
-                found[attr] = obj
+            }
+        )
     return found
 
 

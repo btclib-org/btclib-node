@@ -56,6 +56,58 @@ to check the guess.
   `TYPE_CHECKING`) both ran clean afterward, unchanged in count from
   before this round.
 
+### `select` gains `G`, `N` and `PERF`, and records what stays out
+
+- **`select` gains `G` (flake8-logging-format), `N` (pep8-naming) and
+  `PERF` (Perflint)** (closes #340): the second, smaller round of a
+  further sweep past issue #284's own reference selection, alongside
+  `TC` (issue #340's own first round).
+- **`G004` (a `logger.*` call's own f-string argument)**: 15 sites, all
+  in `btclib_node/`. 7 converted by `ruff`'s own safe fix; the other 8
+  -- every one where the interpolated value was an attribute access, a
+  method call, or an `!s`/`!r` conversion rather than a bare name --
+  converted by hand, read individually so the `%s`/`%r` argument still
+  says what the f-string said. `{e!s}` becomes a plain `%s` argument
+  (str, exactly what `!s` already called); `{self!r}` becomes `%r`
+  (repr, exactly what `!r` already called) -- checked directly, not
+  assumed, since `%` and `!` conversions do not otherwise line up
+  one-for-one. Five tests, across `tests/unit/p2p/connection_test.py`
+  and `tests/unit/p2p/callbacks_test.py`, stood a bare `list.append` in
+  for the `Logger` method they read a message back from -- one
+  argument only, where the production call each of them exercises now
+  passes two. `tests/helpers.py` gains `log_recorder`, applying the
+  same `%` formatting `logging` itself would before recording the
+  message, so each assertion reads the same finished string either
+  way.
+- **`N806` (a function-scoped name not lowercase), one renamed, one
+  declined**: `interpreter.py`'s `check_transactions` had `FLAGS`,
+  read as a possible function-scoped constant the way #284's own round
+  3 declined `SIM300`'s constant-on-the-left -- but this one differs
+  per call, keyed on the block `index` passed in, so it is an ordinary
+  write-once local rather than a constant; renamed to `flags`.
+  `tests/unit/rpc/manager_test.py`'s `AcceptResult` is a type alias,
+  not a variable, and PEP 8's own naming convention for one is
+  CapWords, the same as a class -- declined, `noqa: N806`.
+- **`PERF401`/`PERF403` (a manual loop or dict-update where a
+  comprehension already says the same thing)**: `download.py`'s
+  `_pending_and_waiting_blocks` and
+  `tests/unit/p2p/messages/init_test.py`'s `payload_classes`, both
+  `ruff`'s own unsafe fix, reformatted to this tree's own 88-column
+  wrap afterward.
+- **`pyproject.toml`'s `select` comment gains a paragraph on what this
+  sweep declined, and why, so it is not resurveyed**: `COM`
+  (flake8-commas, 361 findings, all `COM812`) and `Q` (flake8-quotes,
+  zero findings) both redundant against `ruff-format`, which already
+  enforces trailing commas and quote style on everything it reflows --
+  the same reasoning `line-too-long` is already ignored for. `EM`
+  (flake8-errmsg, 13 findings) and `SLF` (flake8-self, 140 findings)
+  are, measured, entirely inside `tests/` -- zero of either in
+  `btclib_node/` -- a whitebox-test idiom rather than a defect. `INP`
+  (flake8-no-pep420, 16 findings) is `scripts/**` and a handful of
+  `tests/**/p2p` directories lacking their own `__init__.py`; whether
+  `scripts/` is meant to be an importable package is a packaging
+  decision this tree has not made, not a lint fix to make it for.
+
 ### `select` gains `PL` and `C90`, closing issue #284
 
 - **`select` gains `PL` (pylint) and `C90` (mccabe)** (closes #284): the

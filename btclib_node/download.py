@@ -557,10 +557,11 @@ class DownloadManager:
         skip = True
         for conn in connections:
             conn_queue = conn.download_queue
-            new_queue: list[bytes] = []
-            for header in conn_queue:
-                if not block_index.get_block_info(header).downloaded:
-                    new_queue.append(header)
+            new_queue: list[bytes] = [
+                header
+                for header in conn_queue
+                if not block_index.get_block_info(header).downloaded
+            ]
             conn.download_queue = new_queue
             pending.extend(new_queue)
             if not new_queue:

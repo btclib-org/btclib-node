@@ -156,10 +156,10 @@ class FilterIndex:
                 # said as it goes, not at the end: this runs inside
                 # Node.__init__, so on a long chain it is the only thing
                 # between starting the node and the node appearing hung
-                self.logger.info(f"Building block filters: {built} so far")
+                self.logger.info("Building block filters: %s so far", built)
                 self.finalize()
         if built:
-            self.logger.info(f"Built {built} missing block filters")
+            self.logger.info("Built %s missing block filters", built)
         self.finalize()
         return built
 

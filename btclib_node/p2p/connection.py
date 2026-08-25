@@ -258,7 +258,7 @@ class Connection:
             await self.loop.sock_sendall(self.client, data)
 
     async def async_send(self, payload: Payload) -> None:
-        self.node.logger.debug(f"Sending message: {payload.command}")
+        self.node.logger.debug("Sending message: %s", payload.command)
 
         try:
             # The payload names its own command, and this is the only
@@ -286,7 +286,7 @@ class Connection:
         # payload logs and drops that one send rather than propagating
         # into an arbitrary caller's own control flow
         except Exception as e:  # noqa: BLE001
-            self.node.logger.warning(f"error in serializing message: {e!s}")
+            self.node.logger.warning("error in serializing message: %s", e)
             return
 
         if self.queued_send_bytes + len(data) > MAX_QUEUED_SEND_BYTES:
@@ -296,7 +296,7 @@ class Connection:
             # cancels `self.task`, the recv loop, so nothing more is
             # read from this peer either.
             self.node.logger.warning(
-                f"send buffer bound exceeded, dropping connection: {self!r}"
+                "send buffer bound exceeded, dropping connection: %r", self
             )
             self.stop()
             return

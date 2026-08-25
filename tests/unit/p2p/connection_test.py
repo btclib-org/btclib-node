@@ -28,6 +28,7 @@ from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.p2p import connection as connection_module
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.connection import Connection
+from tests.helpers import log_recorder
 
 if TYPE_CHECKING:
     from btclib.p2p.payload import Payload
@@ -45,11 +46,11 @@ class Unserializable:
 def a_connection(
     client: socket.socket | None = None,
 ) -> tuple[Connection, list[str]]:
-    logged: list[str] = []
+    logged, warning = log_recorder()
     node = SimpleNamespace(
         chain=RegTest(),
         logger=SimpleNamespace(
-            warning=logged.append, info=lambda *a: None, debug=lambda *a: None
+            warning=warning, info=lambda *a: None, debug=lambda *a: None
         ),
     )
     manager = SimpleNamespace(node=node, loop=None, peer_db=None)

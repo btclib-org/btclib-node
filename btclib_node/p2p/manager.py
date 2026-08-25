@@ -302,7 +302,7 @@ class P2pManager(threading.Thread):
         try:
             sockets.append(self._bind_one(socket.AF_INET6, "::"))
         except OSError:
-            self.logger.info(f"No IPv6 P2P listener on port {self.port}")
+            self.logger.info("No IPv6 P2P listener on port %s", self.port)
         self.listening.set()
         return sockets
 

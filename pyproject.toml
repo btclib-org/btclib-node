@@ -447,14 +447,43 @@ explicit-preview-rules = true
 # Issue #284 closed that reference selection; ruff's own catalogue is
 # larger still, and issues #340/#341 are a further sweep of every
 # family the reference selection did not name, `uv run ruff linter`
-# against `uv run ruff check --preview --extend-select <family>
-# --statistics .` one family at a time. "TC" (flake8-type-checking) is
-# the first of those: a typing-only import moved under `if
+# measured one family at a time against `uv run ruff check --preview
+# --extend-select <family> --statistics .`. "TC" (flake8-type-checking)
+# is the first of those: a typing-only import moved under `if
 # TYPE_CHECKING:` costs nothing at runtime on this tree's `>=3.14`
 # target, PEP 649's lazy annotation evaluation being native there --
 # confirmed by "FA" above already finding that only one file in the
 # whole tree still needs `from __future__ import annotations`, not
-# every module a typing-only import would otherwise touch.
+# every module a typing-only import would otherwise touch. "G"
+# (flake8-logging-format) is a `logger.*` call's own f-string argument,
+# built whether or not that level is enabled, deferred to only when the
+# message is actually emitted by the `%`-style form `logging` itself
+# already supports. "N" (pep8-naming) is PEP 8's own casing convention,
+# checked rather than renamed where a flagged name already follows a
+# different convention PEP 8 also names -- a type alias in CapWords,
+# the same as a class. "PERF" (Perflint) is a manual accumulation loop
+# where a comprehension already says the same thing.
+#
+# Considered and declined, for reasons this comment records so the
+# survey is not repeated: "COM" (flake8-commas) reports 361 findings,
+# all `COM812` (missing-trailing-comma) -- redundant against
+# `ruff-format`, which already places one on every multi-line
+# construct it reflows; ruff's own documentation recommends against
+# enabling it alongside the formatter, the same reasoning
+# "line-too-long" is ignored for below. "Q" (flake8-quotes) reports
+# zero for the identical reason one layer earlier: `ruff-format`
+# already normalises every string's own quote character, so there is
+# nothing left for the rule to find. "EM" (flake8-errmsg) and "SLF"
+# (flake8-self) are, measured, entirely inside `tests/` -- 13 and 140
+# findings, zero of either in `btclib_node/` -- a test double raising
+# with a raw string, a test reading a fixture's own private attribute:
+# whitebox-test idiom, not a defect, and a blanket per-file-ignore
+# would cover every one of them and leave nothing behind to answer
+# for. "INP" (flake8-no-pep420) reports 16, `scripts/**` and a
+# handful of `tests/**/p2p` directories lacking their own
+# `__init__.py`; whether `scripts/` is meant to be an importable
+# package is a packaging decision this tree has not made, not a lint
+# fix to make it for.
 select = [
     "A",    # flake8-builtins
     "B",    # flake8-bugbear
@@ -469,8 +498,11 @@ select = [
     "FIX",  # flake8-fixme
     "FLY",  # flynt
     "FURB", # refurb
+    "G",    # flake8-logging-format
     "I",    # isort
     "ISC",  # flake8-implicit-str-concat
+    "N",    # pep8-naming
+    "PERF", # Perflint
     "PGH",  # pygrep-hooks
     "PIE",  # flake8-pie
     "PL",   # pylint
