@@ -1,0 +1,466 @@
+---
+name: release
+
+# one pipeline, two targets:
+# - pushing a v<version> tag runs the test and lint workflows, builds and
+#   checks the distribution files, publishes them to PyPI, and turns the
+#   tag into a GitHub release whose notes come from RELEASE_NOTES.md
+# - workflow_dispatch is the rehearsal: the same pipeline from any
+#   branch, publishing to TestPyPI under a unique .dev<N> version. A
+#   rehearsal is never tagged
+# Both indices trust this workflow directly (PyPI Trusted Publishing,
+# see RELEASING.md): there is no API token to store or leak.
+#
+# No `docs:` job: docs.yml (btclib-org/btclib-node#264) exists on
+# origin/main, but it is reporting-only -- REPOSITORY.md's *Required
+# checks on main* names only "Lint and type-check" and
+# "test: every job passed" -- and this workflow calls the checks that
+# already gate a merge, no more. That is the same reason os-macos.yml is
+# not called below, stated once rather than twice. The day docs.yml
+# becomes a required check is the day it earns a `docs:` job here and a
+# place in publish-testpypi's and publish-pypi's own `needs:`, so a tag
+# publishes the docstrings a reader follows into docs/ only after the
+# build that would fail there already has -- not the day the file merely
+# exists, which this comment used to say before docs.yml landed and this
+# one replaced it.
+#
+# What else this does not call, unlike a sibling repository's own
+# release.yml: os-macos.yml, this tree's only platform sentinel, gates
+# no commit and no merge today (its own header has why -- a platform row
+# earns a place before a review only where waiting for it costs less
+# than the review does), and a release is not carved out as the one
+# place that changes. There is no os-ubuntu.yml, os-windows.yml or
+# integration-bitcoind.yml here either, test.yml's own header naming
+# what would ask nothing this tree does not already ask elsewhere.
+# There is no ReadTheDocs project connected yet either -- REPOSITORY.md's
+# "No Pages, and no Read the Docs project connected" -- so there is no
+# sentinel here waiting on one the way bitcoin-core-rpc's `documented`
+# job does; that job is what connecting one would add.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# never two runs of this workflow at once, and never a cancellation: the
+# other workflows cancel a superseded run because their subject is the
+# commit, and a newer commit supersedes the answer. Here the subject is a
+# publication -- a version on an index, an attestation, a release -- so a
+# second run is a second attempt at the same side effects, and cancelling
+# one halfway is how a version reaches PyPI with no release cut for it.
+# Named literally, as everywhere else: github.workflow in a called
+# workflow is the caller's name, and this one calls several --
+# `grep -n 'uses: \./\.github/workflows' .github/workflows/release.yml`
+# is which, in the tree that is asking, rather than a number here that
+# the next reusable workflow added below makes wrong
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # what a version cannot survive being wrong about, checked before
+  # anything is built and long before anything is uploaded: a version is
+  # consumed by the upload that carries it, and can then only be yanked.
+  # A minute of checking, ahead of an hour of building.
+  # The rehearsal runs this too, so a mismatch cannot wait for release day
+  # to surface; only the tag comparison is release-only, there being no
+  # tag to compare against otherwise
+  version-check:
+    name: Check the declared versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version-suffix: ${{ steps.suffix.outputs.version-suffix }}
+    steps:
+      # every action is pinned to a commit SHA, the tag in the comment: a
+      # tag, let alone a branch, is a name its owner can move, and these
+      # run in a job that can read the workflow token. It matters most in
+      # this workflow, where a job holds an OIDC token PyPI accepts
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # the whole history, where every other checkout in these
+          # workflows takes the default single commit: the ancestry check
+          # below has nothing to answer with otherwise, and it is also
+          # what puts origin/<default branch> in this checkout at all
+          fetch-depth: 0
+      # a tag is a name that can point anywhere, and nothing else in this
+      # workflow asks where: every check below reads the tree the tag
+      # names rather than where that tree came from. So a tag pushed from
+      # a stale worktree, or from a branch whose pull request is still
+      # open, or from a commit squashed away on its way into the default
+      # branch, would publish code no review ever approved and no branch
+      # contains. `git merge-base --is-ancestor` is the whole of the
+      # question. Release-only, like the two checks below and for the
+      # same reason: a rehearsal is dispatched from a branch on purpose,
+      # that being what it is for.
+      - name: Check that the tag is merged into the default branch (release only)
+        if: github.event_name == 'push'
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if ! git rev-parse --verify --quiet "origin/$DEFAULT_BRANCH" >/dev/null; then
+            msg="fetch-depth: 0 on the checkout above is what puts it there"
+            echo "::error::origin/$DEFAULT_BRANCH is not in this checkout; $msg"
+            exit 1
+          fi
+          commit=$(git rev-parse HEAD)
+          if ! git merge-base --is-ancestor "$commit" "origin/$DEFAULT_BRANCH"; then
+            msg="a release is tagged on a commit that branch contains"
+            echo "::error::$commit is not an ancestor of $DEFAULT_BRANCH; $msg"
+            exit 1
+          fi
+          echo "$commit is an ancestor of $DEFAULT_BRANCH"
+      # caching off in this job, unlike every other in these workflows: a
+      # cache entry is written by whichever run populated it, and read
+      # here through the scoping that gives a tag push the caches of the
+      # default branch. This is the workflow whose jobs hold an OIDC
+      # token PyPI accepts, so this one downloads its dependencies afresh
+      # every time. It costs seconds, once per release.
+      - name: Setup uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: false
+      # every other uv command in these workflows passes --locked, which
+      # asserts the same thing, so this is the named early gate rather
+      # than the only one
+      - name: Check that uv.lock is up to date
+        run: uv lock --check
+      # one comparison: pyproject.toml is the only place the version is
+      # declared, and uv.lock carries the project version too, which is
+      # what the check above covers
+      - name: Check that the tag matches the declared version (release only)
+        if: github.event_name == 'push'
+        run: |
+          version=$(uv version --short)
+          echo "pyproject.toml declares $version"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the declared version $version"
+            exit 1
+          fi
+          # the trigger decides the index, so a tagged pre-release goes to
+          # PyPI itself. RELEASING.md sends a trial run to TestPyPI
+          # through workflow_dispatch and says never to tag one; this is
+          # the check for it. Digits and dots only, and nothing PEP 440
+          # reads as a pre-release, a dev build or a post release
+          if ! echo "$version" | grep -Eq '^[0-9]+(\.[0-9]+)*$'; then
+            msg="rehearse on TestPyPI via workflow_dispatch instead"
+            echo "::error::$version is not a final version; $msg"
+            exit 1
+          fi
+          # three components at least: the day is not optional on
+          # anything this pushes to PyPI, only on the placeholder "Open
+          # the next cycle" sets between releases -- which is never
+          # tagged, so this check never sees it
+          if ! echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
+            msg="a release is YYYY.M.D, optionally YYYY.M.D.N for a patch"
+            echo "::error::$version has no day; $msg"
+            exit 1
+          fi
+      # the release notes are RELEASE_NOTES.md's section for the tag,
+      # lifted by the github-release job below, and its fallback fires
+      # only on an *empty* section: a forgotten retitle publishes the
+      # work-in-progress text as the release notes, silently. This is the
+      # check for it, and it belongs here rather than in github-release
+      # because that job runs after PyPI has accepted the files, and a
+      # version cannot be unpublished.
+      # CHANGELOG.md is checked too: RELEASING.md retitles the two
+      # together, RELEASE_NOTES.md's section points at CHANGELOG.md's for
+      # the detail, and a heading left as "work in progress" makes that a
+      # link into nothing
+      - name: Check that the release notes are retitled for the tag (release only)
+        if: github.event_name == 'push'
+        run: |
+          version=$(uv version --short)
+          for file in RELEASE_NOTES.md CHANGELOG.md; do
+            awk -v tag="v$version" -v file="$file" '
+              $0 == "## " tag {heading = NR; next}
+              index($0, "## " tag " ") == 1 {heading = NR; extra = $0; next}
+              /^## / && heading {exit}
+              heading && NF {body = 1}
+              END {
+                if (!heading) {
+                  printf "::error::%s has no \"## %s\" section\n", file, tag
+                  exit 1
+                }
+                if (extra) {
+                  printf "::error::%s:%d is \"%s\"; the heading must be \"## %s\" alone\n",
+                    file, heading, extra, tag
+                  exit 1
+                }
+                if (!body) {
+                  printf "::error::%s section \"## %s\" is empty\n", file, tag
+                  exit 1
+                }
+                printf "%s has a non-empty \"## %s\" section\n", file, tag
+              }
+            ' "$file"
+          done
+      # TestPyPI refuses a version it has already seen: the rehearsal
+      # appends .dev<run number * 100 + attempt>, unique per dispatch and
+      # per re-run of one, and sorted before the release it rehearses
+      # (PEP 440). Computed here rather than inside test.yml's `dist`
+      # job: every job this workflow dispatches during one run has to
+      # agree on the same suffix, and this is the one job every one of
+      # them already depends on, directly or through `test`
+      - name: Compute the rehearsal version suffix
+        id: suffix
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [ "$GITHUB_RUN_ATTEMPT" -gt 99 ]; then
+            echo "::error::attempt $GITHUB_RUN_ATTEMPT exceeds the two digits reserved for it"
+            exit 1
+          fi
+          suffix=".dev$((GITHUB_RUN_NUMBER * 100 + GITHUB_RUN_ATTEMPT))"
+          echo "run $GITHUB_RUN_NUMBER attempt $GITHUB_RUN_ATTEMPT: $suffix"
+          echo "version-suffix=$suffix" >> "$GITHUB_OUTPUT"
+
+  # the whole test/lint gate, exactly as a pull request runs it, and the
+  # distribution files besides: test.yml's `dist` job builds them, checks
+  # them and uploads them, so this call is what makes them exist for the
+  # publish jobs below to download.
+  # REPOSITORY.md's "Token permissions" section has why this job names a
+  # `permissions:` block of its own -- the `changes` job inside test.yml
+  # reads a pull request's files, which contents: read does not carry
+  test:
+    name: Run the test workflow
+    needs: version-check
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/test.yml
+    with:
+      # what keeps this run out of the branch concurrency groups: see the
+      # group in test.yml
+      concurrency-suffix: "-release"
+      # empty on the tag path, where the step above is skipped and a
+      # skipped step's output is the empty string: a release ships the
+      # version the tree declares
+      version-suffix: ${{ needs.version-check.outputs.version-suffix }}
+      # only this call sets it too: this is the run whose dist job builds
+      # what a tag or a rehearsal actually publishes, so its Setup uv
+      # step must not trust a cache another run wrote
+      disable-dist-cache: true
+
+  # and the same checks a pull request lints with: without this, a tag
+  # push could publish code the pre-commit hooks reject. Not gated on
+  # version-check: this is the cheap one, and it runs in parallel with it
+  lint:
+    name: Run the lint workflow
+    uses: ./.github/workflows/lint.yml
+    with:
+      concurrency-suffix: "-release"
+
+  # no `docs:` job here -- this file's own header comment, at the top,
+  # says why and what makes it earn one
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    needs: [test, lint]
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'btclib-org/btclib-node'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/btclib-node/
+    permissions:
+      # OIDC: this is what lets TestPyPI trust the workflow itself
+      id-token: write
+    steps:
+      - name: Download the distribution files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist/
+      # generates PEP 740 attestations by default
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          repository-url: https://test.pypi.org/legacy/
+      # the smoke test runs again here, without constraints, after the
+      # upload rather than before: installing a dependency executes its
+      # code, and a compromised one must not reach a dist/ still to be
+      # handed on. test.yml's own smoke test installs the wheel this job
+      # just uploaded, --no-deps and metadata-only for the reason beside
+      # it (issue #381: PyPI's own btclib does not satisfy this tree's
+      # floor yet); this one resolves the real dependency graph from the
+      # index, which is why it is not run there -- it will fail exactly
+      # as a real install would until #381 closes, and closing #381 is
+      # what makes this step meaningful rather than what makes it exist
+      - name: Install from TestPyPI and use it
+        run: |
+          # read off the wheel this job just published rather than
+          # redeclared: neither this job nor the download step above
+          # ever checked pyproject.toml out, and the wheel's own name is
+          # {distribution}-{version}-... regardless
+          wheel=$(basename dist/*.whl)
+          version=$(echo "$wheel" | cut -d- -f2)
+          uv run --isolated --no-project \
+            --index https://test.pypi.org/simple/ \
+            --index-strategy unsafe-best-match \
+            --with "btclib-node==$version" \
+            python -c "from btclib_node import Node; print(Node)"
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [test, lint]
+    if: >-
+      github.event_name == 'push' &&
+      github.repository == 'btclib-org/btclib-node'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # deployment gate: configure required reviewers on the "pypi"
+    # environment to require a manual approval before publishing
+    environment:
+      name: pypi
+      url: https://pypi.org/project/btclib-node/
+    permissions:
+      # OIDC: this is what lets PyPI trust the workflow itself
+      id-token: write
+    steps:
+      - name: Download the distribution files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist/
+      # generates PEP 740 attestations by default
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+      # the same reason as the TestPyPI job's own step above: this
+      # asserts against the index rather than against a wheel this job
+      # already trusted. A scheduled sentinel that asks the same
+      # question on its own cadence is left to btclib-org/btclib-node#287
+      - name: Install from PyPI and use it
+        run: |
+          wheel=$(basename dist/*.whl)
+          version=$(echo "$wheel" | cut -d- -f2)
+          uv run --isolated --no-project --with "btclib-node==$version" \
+            python -c "from btclib_node import Node; print(Node)"
+
+  # the same files reach users by two routes and only one of them carried
+  # provenance: the publish action above generates PEP 740 attestations
+  # for the copies on the index, while the copies attached to the GitHub
+  # release below carry nothing. This job signs them, and the digests are
+  # the index's own, the dist artifact being downloaded here rather than
+  # rebuilt.
+  # After a publish and not after the build, so that a run reaching here
+  # is a run the environment approval already let through
+  attest:
+    name: Attest the distribution files
+    needs: [publish-pypi, publish-testpypi]
+    # always(), the other publish job being skipped rather than run, and
+    # a skipped job is one `needs` treats as failed
+    if: >-
+      always() && (needs.publish-pypi.result == 'success' ||
+      needs.publish-testpypi.result == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # OIDC for the short-lived Sigstore signing certificate, and the
+      # write that persists the attestation against the repository
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download the distribution files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist/
+      - name: Download the bill of materials
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sbom
+          path: dist/
+      # actions/attest and not the attest-build-provenance wrapper around
+      # it: as of v4 the wrapper is a composite that does nothing but
+      # call this, and its own README sends new callers here.
+      # One attestation, all three files: the statement carries every
+      # subject the glob matched, so verifying the wheel, the sdist or
+      # the bill of materials against the bundle below works
+      - name: Attest the distribution files
+        id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*
+      - name: Collect the attestation bundle
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: cp "$BUNDLE_PATH" attestation.jsonl
+      - name: Upload the attestation bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: attestation
+          path: attestation.jsonl
+
+  # only after PyPI has accepted the files: a GitHub release announces
+  # what users can already install. See bitcoin-core-rpc's RELEASING.md
+  # for the failure modes always() and the two .result checks below are
+  # written against -- publish-testpypi being skipped on a tag push is
+  # what would otherwise skip this job through attest as well
+  github-release:
+    name: Attach the files to the GitHub release
+    needs: [publish-pypi, attest]
+    if: >-
+      always() && needs.publish-pypi.result == 'success' &&
+      needs.attest.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # the one job that writes to the repository through its token, and
+      # what it writes is a release; the attestation the job above
+      # signed went to the attestations API under a permission of its own
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download the distribution files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist/
+      - name: Download the bill of materials
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sbom
+          path: dist/
+      # into a directory of its own, so that the dist/* glob below stays
+      # the distribution files and nothing else
+      - name: Download the attestation bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: attestation
+          path: attestation/
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # the release notes are the tag's own section of
+        # RELEASE_NOTES.md; if the section is missing the release still
+        # happens, with notes generated from the merged pull requests
+        # instead. The fallback is the safety net for a tag pushed past
+        # a red version-check, not the check itself
+        run: |
+          awk -v tag="$GITHUB_REF_NAME" '
+            $0 ~ "^## " tag "( |$)" {found=1; next}
+            /^## / && found {exit}
+            found {print}
+          ' RELEASE_NOTES.md > "$RUNNER_TEMP/notes.md"
+          # named for the tag only here, where the ref is one: nothing
+          # inside the bundle says which release it belongs to, the way
+          # the distribution files' own names do
+          bundle="$GITHUB_REF_NAME.attestation.jsonl"
+          cp attestation/attestation.jsonl "$bundle"
+          if [ -s "$RUNNER_TEMP/notes.md" ]; then
+            gh release create "$GITHUB_REF_NAME" dist/* "$bundle" \
+              --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md"
+          else
+            echo "::warning::RELEASE_NOTES.md has no $GITHUB_REF_NAME section"
+            gh release create "$GITHUB_REF_NAME" dist/* "$bundle" \
+              --title "$GITHUB_REF_NAME" --generate-notes
+          fi

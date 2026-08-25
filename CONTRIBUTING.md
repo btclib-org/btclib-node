@@ -317,47 +317,54 @@ point CLAUDE.md's architecture section names as what validates — and a
 second scope is a second `.toml` beside it, the way
 `btclib-org/btclib`'s own `.github/mutation/` holds one per profile.
 
-### A version, and no release
+### A release path, and nothing published on it yet
 
-There is no release, and no machinery for one: nothing is on an index,
-`.github/workflows/` holds no `release.yml`, and `REPOSITORY.md`'s *What
-is not configured, and why* has the call that answers `0` environments.
-So this tree carries no `RELEASING.md` and no `RELEASE_NOTES.md` —
-section 2 of [btclib-org/.github's
-README](https://github.com/btclib-org/.github/blob/main/README.md) has
-why a tier-2 repository carries neither — and a file whose content is its
-own absence is this section instead. What anybody runs is a checkout of
-`main`, and a fix reaches them when they pull it.
+`.github/workflows/release.yml` exists and section 2 of
+[btclib-org/.github's
+README](https://github.com/btclib-org/.github/blob/main/README.md)
+measures a repository's tier from that file and `pyproject.toml` alone,
+so this tree is tier 1 — the decision
+[ISS btclib-org/btclib-node#286](https://github.com/btclib-org/btclib-node/issues/286)
+records, superseding the tier-2 state
+[PR btclib-org/btclib-node#171](https://github.com/btclib-org/btclib-node/pull/171)
+had landed one day before that issue was filed. `RELEASING.md` and
+`RELEASE_NOTES.md` are the two files section 2 gives a tier-1 repository
+that #171 had removed, back under this section's own heading.
+
+Nothing has been published, though: `REPOSITORY.md`'s *What is not
+configured, and why* still answers `0` environments, the `pypi` and
+`testpypi` pair `RELEASING.md`'s *One-time setup* describes not existing
+yet, and `project.version` is still `0.1.0`, static, the placeholder from
+before this tree carried a release path at all.
 
 ```shell
 curl -s -o /dev/null -w '%{http_code}\n' https://pypi.org/pypi/btclib-node/json
 # 404
 ```
 
-`project.version` is `0.1.0` and static, and `v0.1.0` is the one tag: a
-lightweight one from 2023, with a release page and no artifact on it,
-which btclib-org/.github#105 measures against the rule below — a ref with
-no object of its own has nothing on it to sign. `CHANGELOG.md` opens
-under `## Unreleased` and starts after that tag, for the reason its own
-introduction gives.
+`v0.1.0` is the one tag: a lightweight one from 2023, with a release page
+and no artifact on it, which btclib-org/.github#105 measures against the
+rule below — a ref with no object of its own has nothing on it to sign,
+and `version-check`'s own ancestry check would refuse it regardless,
+`git merge-base --is-ancestor` finding no commit it names. `CHANGELOG.md`
+opens under `## Unreleased` and starts after that tag, for the reason its
+own introduction gives; `RELEASING.md` has where that heading, and the
+version, leave the placeholder on the day a release is actually cut.
 
 Cutting a tag, the day there is something to tag, is signed and not by
 convention: the `tag-integrity` ruleset requires a signature on
 `refs/tags/v*` and has no bypass actor, so a tag made without `-s` is
 refused at the push rather than noticed afterwards. `REPOSITORY.md`
-carries the call that reads that rule back.
+carries the call that reads that rule back, and that rule is the whole
+of what `tag-integrity` holds — `required_signatures`, and neither
+`non_fast_forward` nor `deletion` — so a tag here can still be deleted
+and cut again while nothing has been published: an index refuses a
+version that has been uploaded once, whatever a tag does. The day a
+distribution is published is the day a bad release stops being
+recoverable and becomes a new version instead.
 
-```shell
-git tag -s v<version> -m "v<version>"
-git push origin v<version>
-```
-
-`CHANGELOG.md`'s `## Unreleased` heading becomes the version. That rule
-is the whole of what `tag-integrity` holds — `required_signatures`, and
-neither `non_fast_forward` nor `deletion` — so a tag here can still be
-deleted and cut again, which is a property of having published nothing:
-an index refuses a version that has been uploaded once, whatever a tag
-does. The day a distribution is published is the day a bad release stops
-being recoverable and becomes a new version, and it is also the day
-`release.yml` arrives and with it the two files above, which is what
-section 2 calls tier 1.
+`RELEASING.md` is the whole of the procedure, from the one-time
+publisher registration through the tag command itself — naming the
+release commit explicitly, which the argumentless `git tag -s v<version>`
+this paragraph could show instead does not — through what to do if a
+release goes wrong; it is not repeated here.

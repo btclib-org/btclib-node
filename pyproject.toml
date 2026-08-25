@@ -106,6 +106,27 @@ classifiers = [
     "Topic :: Security :: Cryptography",
 ]
 
+# the seven links section 3 of btclib-org/.github names, keyed as
+# btclib, btclib-secp256k1 and bitcoin-core-rpc key them, so the index
+# reports the same spelling across every published sibling.
+# `documentation` follows the same `<repository>.readthedocs.io` pattern
+# those three already answer to rather than a guess: it is not connected
+# yet -- REPOSITORY.md's "No Pages and no Read the Docs" -- and the link
+# 404s until it is, docs/ (issue #264) being what a project has to exist
+# before one can be connected to it.
+[project.urls]
+homepage = "https://btclib.org"
+documentation = "https://btclib-node.readthedocs.io"
+download = "https://github.com/btclib-org/btclib-node/releases"
+# RELEASE_NOTES.md and not CHANGELOG.md: this url is what an index puts
+# behind "Changelog", and what a user following it wants is the release
+# notes, not the record behind them. CHANGELOG.md is linked from the
+# first lines of that file
+changelog = "https://github.com/btclib-org/btclib-node/blob/main/RELEASE_NOTES.md"
+repository = "https://github.com/btclib-org/btclib-node"
+issues = "https://github.com/btclib-org/btclib-node/issues"
+pull_requests = "https://github.com/btclib-org/btclib-node/pulls"
+
 [dependency-groups]
 # The test runner and its plugins, nothing else.
 harness = [
@@ -151,11 +172,19 @@ mutation = ["cosmic-ray"]
 # sphinx itself, and the theme `docs/source/conf.py` sets as
 # `html_theme`.
 docs = ["myst-parser", "sphinx", "sphinx_rtd_theme"]
+# the distribution files are built and published by uv itself; what this
+# group holds is what inspects them, before an upload consumes the
+# version release.yml's `dist` job checks. Named check, not build, for
+# the reason bitcoin-core-rpc's own pyproject.toml gives: `--only-group
+# build` would mean one thing here and a wheel-building group in a
+# repository that compiles one
+check = ["check-sdist", "check-wheel-contents", "pyroma", "twine"]
 dev = [
     { include-group = "test" },
     { include-group = "lint" },
     { include-group = "mutation" },
     { include-group = "docs" },
+    { include-group = "check" },
 ]
 
 [tool.uv]
@@ -351,6 +380,41 @@ git-only = [
     ".vscode/",
     "COPYRIGHT",
 ]
+
+[tool.check-wheel-contents]
+# a wheel that ships the directory `package` names, and an unrelated
+# top-level file or an empty library needs no configuration to catch,
+# check-wheel-contents' own defaults already flagging either. What
+# defaults do not catch is a file the tree has and the wheel does not --
+# `py.typed` dropped by a pattern that stopped reaching it, say --
+# because with no `package` given check-wheel-contents reads the wheel's
+# own RECORD and asks nothing about the source tree the wheel was
+# supposed to carry. Naming it diffs the wheel's `btclib_node/` against
+# this checkout's, file for file, in both directions (W101 missing, W102
+# extra).
+#
+# `check-sdist` above already gates the sdist against this same tree (a
+# pre-commit hook, gated by the lint workflow), so together the two
+# amount to `git tree == sdist == wheel`, verified in one hop each
+# rather than through a third script comparing the sdist to the wheel --
+# a comparison a single-module package with no data directory has
+# nothing to add to.
+#
+# W002 is the one default this tree does trip, and by content rather
+# than by path: `p2p/__init__.py` and `rpc/__init__.py` are each three
+# lines of the copyright notice and nothing else, so the two are
+# byte-identical, and check-wheel-contents flags any two wheel members
+# that are. Every other `__init__.py` under `src/btclib_node/` carries a
+# module docstring beyond the notice and is not part of the pair --
+# measured by hashing each one (`find src/btclib_node -name __init__.py
+# -exec shasum -a 256 {} +`), rather than assumed from the rule firing.
+# Two empty package markers sharing the same three lines is what an
+# empty package looks like, not a build artifact duplicated by mistake,
+# so the check is disabled rather than the coincidence chased away by
+# giving one of the two files a docstring it has no other reason to
+# carry.
+ignore = ["W002"]
+package = ["src/btclib_node"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/unit", "tests/functional"]

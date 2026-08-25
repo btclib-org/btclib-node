@@ -1,9 +1,11 @@
 # Changelog
 
-What a reader of this repository would notice, in the group it belongs
-to: what changed, why, and what it cost. There are no release notes for
-this file to be the record behind: `CONTRIBUTING.md`'s *A version, and
-no release* has why, and what the `## Unreleased` heading becomes.
+Every change of a release, in full: what changed, why, and what it cost.
+[RELEASE_NOTES.md](./RELEASE_NOTES.md) has the release notes, which say
+what a user has to act on; this file is the record behind them, and is
+where a claim in those notes can be checked. No release has shipped yet
+— `RELEASING.md` has why the `## Unreleased` heading here still names no
+version — so `RELEASE_NOTES.md` opens the same way.
 
 The record starts here. `v0.1.0` was tagged before this file existed and
 nothing is reconstructed for it: a changelog written backwards from a git
@@ -59,6 +61,53 @@ to check the guess.
   `pyproject.toml` for the shipped package, at zero findings.
   `D101`/`D102`/`D103`/`D107` -- the class, method, function and
   `__init__` narration this pass did not attempt -- are issue #373's.
+
+### This repository is tier 1: a release path exists, published on nothing yet
+
+- **`.github/workflows/release.yml`, tag-triggered, calls `test` and
+  `lint` before publishing to PyPI** (closes #286): the maintainer's
+  decision to promote this repository to tier 1 supersedes the tier-2
+  state PR #171 landed one day before this issue was filed, and section
+  2 of btclib-org/.github's README measures the tier from
+  `pyproject.toml` and this file alone. It does not call `docs`:
+  `.github/workflows/docs.yml` (issue #264) is reporting-only, not a
+  required check, and this workflow calls only what already gates a
+  merge — the same reason it does not call `os-macos.yml` either, both
+  argued in `release.yml`'s own header comment, which names what would
+  make `docs` earn a job here. `test.yml`'s new `dist` job builds
+  the sdist and the wheel, normalizes the sdist's member metadata
+  (`.github/scripts/normalize_sdist.py`), writes a CycloneDX bill of
+  materials over the two files (`.github/scripts/generate_sbom.py`),
+  and checks them with `twine check --strict`, `check-wheel-contents`
+  (`[tool.check-wheel-contents]`'s own `package` diffing the wheel
+  against `src/btclib_node` in both directions) and `pyroma --min 10` —
+  on every pull request, not only at a release, so a defect a release
+  would hit is one a review already has. `check-sdist` diffing the
+  sdist against git is unchanged, already running as a pre-commit hook
+  since PR #265.
+- **The packaging smoke test installs the wheel with `--no-deps` and
+  checks only its metadata** (issue #381): PyPI's own btclib has no
+  release carrying `btclib.p2p.negotiation`, which
+  `src/btclib_node/download.py` imports unconditionally, so an ordinary
+  `pip install btclib-node` cannot resolve today whatever floor
+  `pyproject.toml` declares. Filed rather than fixed here, no floor
+  this bundle could declare making PyPI satisfy it.
+- **`RELEASING.md` and `RELEASE_NOTES.md` return** (closes #286): the
+  two files PR #171 removed under the tier-2 decision, back under the
+  shape section 2 gives a tier-1 repository. `CONTRIBUTING.md`'s *A
+  version, and no release* becomes *A release path, and nothing
+  published on it yet* to match: `pyproject.toml` still declares
+  `0.1.0`, and the `pypi`/`testpypi` environments `RELEASING.md`'s
+  *One-time setup* describes do not exist yet, so nothing here changes
+  what a checkout runs or how a caller reaches this code — no version is
+  published, no tag is cut.
+- **`SECURITY.md` carries this node's own policy, not the organization's
+  shared one** (closes #286): the file section 2 of btclib-org/.github's
+  README owes a tier-1 repository. `README.md`'s *Limitations, not
+  vulnerabilities* moves there, its own reason for holding them —
+  publishing nothing for a policy of its own to travel with — no longer
+  holding; `README.md` ends with the "actively supported by" line
+  section 2 gives every publishing repository's own instead.
 
 ### `Connection`'s ping state is one step against the two threads that touch it
 

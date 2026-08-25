@@ -53,6 +53,45 @@ on:
     # landing rather than left to finish on a branch nobody will look at
     # again -- the same reasoning, and the same list, as lint.yml
     types: [opened, reopened, synchronize, ready_for_review, closed]
+  # allows release.yml to reuse the whole build/test pipeline, so a tag
+  # or a rehearsal runs the identical suite and dist build rather than a
+  # second copy of either
+  workflow_call:
+    inputs:
+      concurrency-suffix:
+        description: >
+          Appended to the concurrency group, and release.yml is the only
+          caller that passes one. See the group below.
+        type: string
+        default: ""
+      version-suffix:
+        description: >
+          Appended to the version in pyproject.toml before the `dist`
+          job builds anything, by the dev-version composite action --
+          this is what lets that job's own build be the one a rehearsal
+          publishes, rather than a second build checked separately. A
+          release passes nothing and ships the version the tree
+          declares; a rehearsal passes a .dev suffix, which is how it
+          reaches TestPyPI with a version that index has not already
+          consumed.
+        type: string
+        default: ""
+      disable-dist-cache:
+        description: >
+          Whether the `dist` job's own Setup uv step fetches its
+          dependencies afresh instead of from cache. Only release.yml's
+          call sets this: a cache entry written by one run is read by
+          another through GitHub's branch/PR cache scoping, so the job
+          whose output actually reaches an index -- a tag's upload or a
+          rehearsal's TestPyPI one, both routed through this same call --
+          is the one build that must not risk a poisoned cache reaching
+          the wheel it ships. An ordinary pull request or push to main
+          builds a copy this job throws away, so caching it is harmless,
+          and a flat `enable-cache: false` here would only
+          cache-penalize every one of them for a property only
+          release.yml's call needs.
+        type: boolean
+        default: false
   # the escape hatch, for a branch whose pull request is not open yet
   workflow_dispatch:
 
@@ -63,12 +102,22 @@ permissions:
   contents: read
 
 # cancel superseded runs: the subject is the commit, which a newer one
-# supersedes. Named literally rather than through github.workflow, and by
-# the pull request's own number rather than by github.ref, which for a
-# closed, merged pull request resolves to the base branch's ref and would
-# put that run in the push trigger's group
+# supersedes. Named literally rather than through github.workflow, which
+# in a called workflow is the caller's name -- release.yml calls both
+# this and lint.yml, and with that expression the two would share a
+# group and cancel each other. By the pull request's own number rather
+# than by github.ref, which for a closed, merged pull request resolves
+# to the base branch's ref and would put that run in the push trigger's
+# group. The suffix is a second, independent problem with github.ref:
+# inside a called workflow that context is the caller's ref, so a
+# rehearsal -- a workflow_dispatch of release.yml on a branch -- would
+# otherwise compute the very group a push to that branch computes, and
+# one run would cancel the other. release.yml passes a suffix of its
+# own, which keeps the release path out of the branch groups
 concurrency:
-  group: test-${{ github.event.pull_request.number || github.ref }}
+  group: >-
+    test-${{ github.event.pull_request.number || github.ref
+    }}${{ inputs.concurrency-suffix }}
   cancel-in-progress: true
 
 jobs:
@@ -103,8 +152,12 @@ jobs:
           REPO: ${{ github.repository }}
           NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          # a push to main and a dispatch run everything: only a pull
-          # request has a base to be a diff against
+          # a push to main, a release call and a dispatch run everything:
+          # only a pull request has a base to be a diff against. A
+          # release call's own event_name is release.yml's triggering
+          # event -- push (a tag) or workflow_dispatch (a rehearsal) --
+          # a called workflow reading github.event_name from the run
+          # that invoked it rather than getting one of its own
           if [ "$EVENT" != pull_request ]; then
             echo "code=true" >> "$GITHUB_OUTPUT"
             echo "$EVENT is not a pull request: the suite runs"
@@ -184,6 +237,159 @@ jobs:
         run: >
           uv run --locked --no-default-groups --group test pytest
 
+  # the packaging metadata is checked on every pull request, not only on
+  # the tag that ships it: a release is the one place where finding a
+  # problem is too late, a version being consumed by the upload that
+  # carries it and then only yankable. This job is also what
+  # release.yml's publish jobs download from: they build nothing of
+  # their own, so a tag and a rehearsal both publish exactly the files
+  # checked here, `version-suffix` being how a rehearsal's build carries
+  # the version it publishes under
+  dist:
+    name: Build the distribution files, check them, install one
+    if: >-
+      ${{ !github.event.pull_request.draft
+      && github.event.action != 'closed'
+      && needs.changes.outputs.code == 'true' }}
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # caching off only when release.yml calls this workflow: see
+      # disable-dist-cache's own description above
+      - name: Setup uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: ${{ !inputs.disable-dist-cache }}
+      # what the sdist normalizer and the bill-of-materials generator
+      # below read. uv_build itself ignores it and stamps a fixed
+      # timestamp into both archives, so nothing in this job is
+      # unreproducible without it; what the export and the two scripts
+      # together buy is that the answer is this repository's rather than
+      # the backend's. The commit date, not the tag's: `git log -1` on a
+      # shallow clone reads the tip, which is the commit the tag points
+      # at, and a lightweight tag has no date of its own to prefer
+      - name: Pin the build timestamp to the commit
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "$GITHUB_ENV"
+      # empty on every trigger but a release rehearsal: `inputs` is unset
+      # outside a workflow_call, so a direct run of this workflow --
+      # a pull request or a push to main -- skips this and ships the
+      # version the tree declares, same as a real release does.
+      # TestPyPI refuses a version it has already seen, which is what
+      # the suffix is for; release.yml's version-check job computes it
+      # once and passes it down, so every job this workflow runs during
+      # one dispatch agrees on it
+      - name: Make the version unique for TestPyPI (rehearsal only)
+        if: inputs.version-suffix != ''
+        uses: ./.github/actions/dev-version
+        with:
+          suffix: ${{ inputs.version-suffix }}
+      # uv build builds the sdist first and then the wheel from it, not
+      # both from the source tree, so what is checked below is what a
+      # user installing from source would get, and what a rehearsal
+      # ships is built from the tree the step above just re-locked.
+      # That the sdist is complete in the first place is check-sdist's
+      # job, a pre-commit hook, gated by the lint workflow
+      - name: Build the distribution files
+        run: uv build
+      # the member metadata of the sdist, rewritten to the epoch above
+      # so that a rebuild of this commit answers with these bytes
+      # whatever backend it runs. --no-project, so this runs on the
+      # interpreter uv already fetched and installs nothing into the
+      # tree it is about to publish
+      - name: Make the sdist's determinism this tree's
+        run: |
+          uv run --no-project --python 3.14 \
+            .github/scripts/normalize_sdist.py dist/
+      # a CycloneDX bill of materials naming the distribution, its
+      # licence and every dependency the wheel's own metadata declares
+      # -- what an attestation vouches for the bytes of and says nothing
+      # about the contents of. After the sdist normalizer, whose rewrite
+      # changes the digest this script records into the document
+      - name: Write the bill of materials
+        run: |
+          uv run --no-project --python 3.14 \
+            .github/scripts/generate_sbom.py dist/ sbom/
+      - name: Checksum the distribution files
+        run: sha256sum dist/* sbom/*
+      # before anything is installed, and that ordering is the point: a
+      # step below runs third-party code -- twine, check-wheel-contents
+      # and pyroma come from a group uv installs, and a `.pth` file in a
+      # dependency executes at interpreter startup, before the first
+      # import -- while dist/ is a writable directory on the same
+      # runner. Uploading first freezes what release.yml's publish jobs
+      # will download, so the worst a compromised dependency can do here
+      # is fail this job, which stops them from ever seeing what it built
+      - name: Upload the distribution files
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist
+          path: dist/
+      - name: Upload the bill of materials
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom
+          path: sbom/
+      # the same validation PyPI applies on upload: broken metadata, or a
+      # README that does not render, cannot be fixed by reuploading.
+      # After the upload above rather than before it, for the reason
+      # given there
+      - name: Check the metadata and the long description
+        run: uv run --locked --only-group check twine check --strict dist/*
+      # what twine does not look at: where the files land once
+      # installed, a test package shipped by accident, a stray top-level
+      # module. [tool.check-wheel-contents]'s own `package` names
+      # src/btclib_node, so this also diffs the wheel's btclib_node/
+      # against this checkout's, file for file, in both directions
+      - name: Check the wheel contents
+        run: uv run --locked --only-group check check-wheel-contents dist/*.whl
+      # and what twine cannot see either: metadata that is valid but
+      # poor, a missing classifier or url, a version PyPI would sort in
+      # a way nobody meant. --min 10 is a ratchet, the score being 10
+      # today
+      - name: Rate the packaging metadata
+        run: uv run --locked --only-group check pyroma --min 10 dist/*.tar.gz
+      # what none of the three above does: install the wheel, alone,
+      # from an empty directory. `importlib.metadata.requires` reads the
+      # `Requires-Dist` the wheel carries, so a dependency this checkout
+      # resolves through [tool.uv.sources] -- btclib off its `main`
+      # branch -- is what the published wheel has to declare as an
+      # ordinary floor instead, PyPI refusing a direct reference in
+      # metadata; this is the check for it, since nothing before
+      # `publish-pypi` in release.yml otherwise reads the built wheel's
+      # own metadata rather than pyproject.toml's.
+      # --no-deps, and no import of btclib_node beyond this: PyPI's own
+      # btclib has no release carrying `btclib.p2p.negotiation`, which
+      # `src/btclib_node/download.py` imports unconditionally, so an
+      # ordinary `pip install btclib-node` cannot resolve today whatever
+      # floor is declared here -- issue #381 is that gap, filed rather
+      # than closed by this job, since no floor this table could name
+      # would make PyPI satisfy it. What this step still asserts is the
+      # wheel's own packaging: it installs on its own and its metadata
+      # names a real dependency rather than the git reference this
+      # checkout resolves through
+      # After the upload too, for the reason its own comment gives:
+      # installing a dependency executes its code, and a compromised one
+      # must not reach a `dist/` that still has to be handed on
+      - name: Smoke-test the wheel's metadata, installed on its own
+        run: |
+          cd "$RUNNER_TEMP"
+          uv venv
+          uv pip install --no-deps "$GITHUB_WORKSPACE"/dist/*.whl
+          .venv/bin/python -c "
+          from importlib.metadata import requires, version
+
+          name = 'btclib-node'
+          print(version(name))
+          reqs = requires(name) or []
+          assert any(req.startswith('btclib') for req in reqs), reqs
+          assert not any('@' in req for req in reqs), reqs
+          "
+
   # the one name main's ruleset should have to name to require this
   # workflow, and it exists because such a rule names its checks as
   # literal strings, stored outside the repository: a job named there is
@@ -207,7 +413,7 @@ jobs:
     # job -- the job is the check there -- and the day it grows a second
     # one, this pattern and a change to the rule are what that costs
     name: "test: every job passed"
-    needs: [changes, coverage]
+    needs: [changes, coverage, dist]
     # not success(): a job whose dependencies failed is skipped, and a
     # skipped check reports "skipped", which a ruleset counts as
     # satisfied. The gate has to run to be able to fail.

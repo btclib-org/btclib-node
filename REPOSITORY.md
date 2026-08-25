@@ -257,10 +257,11 @@ gh api repos/btclib-org/btclib-node/dependabot/alerts --jq 'length'
 
 **Private vulnerability reporting is on**, so *Report a vulnerability* on
 this repository's Security tab opens an advisory only the maintainers
-see. The organization's security policy — the one shown here, this tree
-keeping none — states the call above rather than the answer, the route
-being a setting and not a file. `.github/ISSUE_TEMPLATE/config.yml`'s
-Security vulnerability entry links straight to that advisory form.
+see. `SECURITY.md` states the call above rather than the answer, the
+route being a setting and not a file — true of every repository whether
+or not it keeps a policy of its own, this one now doing so as a tier-1
+repository. `.github/ISSUE_TEMPLATE/config.yml`'s Security vulnerability
+entry links straight to that advisory form.
 
 The second command is what the open alerts are. Every one of them today
 answers `poetry.lock` for its `dependency.manifest_path`, which is a file
@@ -301,9 +302,11 @@ that waits on one cell and a sweep that runs weekly
 
 ## What is not configured, and why
 
-- **No publishing, and no release workflow.** `CONTRIBUTING.md`'s *A
-  version, and no release* is the whole of that answer and carries the
-  commands behind it. There is no `pypi` environment:
+- **A release workflow, and no publishing yet.** `.github/workflows/release.yml`
+  exists and `CONTRIBUTING.md`'s *A release path, and nothing published
+  on it yet* is the whole of that answer and carries the commands
+  behind it. There is still no `pypi` environment, `RELEASING.md`'s
+  *One-time setup* not having been done:
   `gh api repos/btclib-org/btclib-node/environments --jq .total_count`
   answers `0`. There is a `v0.1.0` tag and a GitHub release with no
   artifact attached to it, and `tag-integrity` already holds the
