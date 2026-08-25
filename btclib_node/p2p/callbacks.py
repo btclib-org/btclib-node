@@ -40,6 +40,7 @@ from btclib.p2p.limits import (
     MAX_ADDR_TO_SEND,
     MAX_GETCFHEADERS_SIZE,
     MAX_GETCFILTERS_SIZE,
+    MAX_HEADERS_RESULTS,
 )
 from btclib.p2p.negotiation import FeeFilter, GetAddr, SendHeaders, WtxidRelay
 
@@ -494,7 +495,7 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
         # ancestors. btclib-org/btclib-node#233
         block_locators = block_index.get_block_locator_hashes()
         conn.send(GetHeaders(ProtocolVersion, block_locators, b"\x00" * 32))
-    elif len(headers) == 2000:  # the peer may have more to give us
+    elif len(headers) == MAX_HEADERS_RESULTS:  # the peer may have more to give us
         # [tip] only for a live fork below header_index's own tip: that
         # is the one case get_block_locator_hashes cannot reach on its
         # own, since header_index only moves for a header extending it

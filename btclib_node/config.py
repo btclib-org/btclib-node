@@ -26,6 +26,22 @@ DEFAULT_MIN_RELAY_FEERATE = FeeRate(sats_per_kvbyte=100)
 DEFAULT_CHAIN = Main()
 
 
+def _resolve_chain(chain: Chain | str) -> Chain:
+    if isinstance(chain, Chain):
+        return chain
+    if not isinstance(chain, str):
+        raise InvalidChainTypeError(chain)
+    if chain == "mainnet":
+        return Main()
+    if chain == "testnet":
+        return TestNet()
+    if chain == "signet":
+        return SigNet()
+    if chain == "regtest":
+        return RegTest()
+    raise UnknownChainError(chain)
+
+
 @dataclass
 class Config:
     chain: Chain
@@ -53,7 +69,16 @@ class Config:
     debug: bool
     min_relay_feerate: FeeRate
 
-    def __init__(
+    # every parameter here is one independent setting, not a group of
+    # related ones this signature happens to expose together: `chain` is
+    # not `data_dir`'s business, `pruned` is not `debug`'s, and nesting
+    # them into sub-objects would only move each still-independent knob
+    # behind one more name for every caller, all of which already read
+    # this constructor by keyword (`grep -rn "Config(" tests/
+    # btclib_node/` finds no positional call). PLR0913/PLR0917 measure a
+    # count this object's whole purpose is to be flat, not a shape it
+    # backed into.
+    def __init__(  # noqa: PLR0913, PLR0917
         self,
         chain: Chain | str = DEFAULT_CHAIN,
         data_dir: str | Path | None = None,
@@ -67,21 +92,7 @@ class Config:
         log_path: str | None = "history.log",
         min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
     ) -> None:
-        if isinstance(chain, Chain):
-            self.chain = chain
-        elif isinstance(chain, str):
-            if chain == "mainnet":
-                self.chain = Main()
-            elif chain == "testnet":
-                self.chain = TestNet()
-            elif chain == "signet":
-                self.chain = SigNet()
-            elif chain == "regtest":
-                self.chain = RegTest()
-            else:
-                raise UnknownChainError(chain)
-        else:
-            raise InvalidChainTypeError(chain)
+        self.chain = _resolve_chain(chain)
 
         data_dir = Path(data_dir) if data_dir else Path.home() / ".btclib"
         self.data_dir = data_dir.absolute() / self.chain.name

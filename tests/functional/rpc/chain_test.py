@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 import requests
+from bitcoin_core_rpc import BitcoinCoreRpcClient
+from btclib.fetch.bitcoin_core import BitcoinCoreFetcher
 
 from btclib_node import Node
 from btclib_node.chains import RegTest
@@ -139,9 +141,6 @@ def test_bitcoin_core_fetcher_works_against_this_node_unchanged(
     `getblockchaininfo` is exercised here too, not only the two methods
     the issue names.
     """
-    from bitcoin_core_rpc import BitcoinCoreRpcClient
-    from btclib.fetch.bitcoin_core import BitcoinCoreFetcher
-
     node = rpc_node
     wait_until_listening(node.rpc_manager)
 

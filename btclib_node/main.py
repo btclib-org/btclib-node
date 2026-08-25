@@ -57,17 +57,131 @@ def finish_sync(node: Node) -> None:
     node.status = NodeStatus.BlockSynced
 
 
-def update_chain(node: Node) -> None:
+# every hash here was just checked downloaded, or was on the active
+# chain this is replacing, so block_db holds it; the type is wider than
+# that invariant
+def _blocks_to_add(node: Node, to_add_hash: list[bytes]) -> list[Block]:
+    to_add: list[Block] = []
+    for block_hash in to_add_hash:
+        block = node.block_db.get_block(block_hash)
+        if block is None:
+            err_msg = f"block just checked downloaded is missing: {block_hash.hex()}"
+            raise ChainstateInconsistencyError(err_msg)
+        to_add.append(block)
+    return to_add
+
+
+# tip first: an output the branch created may have been spent again
+# further along it, and the block that spent it has to be undone before
+# the block that made it. `remove_from_active_chain` asks for the same
+# order, and refuses anything but the tip
+def _rev_blocks_to_remove(node: Node, to_remove_hash: list[bytes]) -> list[RevBlock]:
+    to_remove: list[RevBlock] = []
+    for block_hash in reversed(to_remove_hash):
+        rev_block = node.block_db.get_rev_block(block_hash)
+        if rev_block is None:
+            err_msg = (
+                f"no reverse patch for a block on the active chain: {block_hash.hex()}"
+            )
+            raise ChainstateInconsistencyError(err_msg)
+        to_remove.append(rev_block)
+    return to_remove
+
+
+# update_chain's own post-commit step, once a fork has actually
+# connected: every abandoned block's own transactions rejoin the
+# mempool where they still verify, and every newly-connected block's
+# own transactions leave it, mirroring what connecting them to the
+# chain already made true of the UTXO set they are checked against.
+def _reconcile_mempool_for_reorg(
+    node: Node, to_remove: list[RevBlock], to_add: list[Block]
+) -> None:
+    # oldest-abandoned-block first, the opposite of to_remove's own
+    # tip-first order above: a transaction from a later abandoned
+    # block may spend an output only an earlier abandoned block's
+    # transaction created, and verify_mempool_acceptance below has
+    # to find that parent already back in the mempool or it reads
+    # as one more permanently invalid transaction. Core re-adds the
+    # same way, walking its disconnectpool "in reverse, so that we
+    # add transactions back to the mempool starting with the
+    # earliest transaction that had been previously seen in a
+    # block" (MaybeUpdateMempoolForReorg, src/validation.cpp).
+    for rev_block in reversed(to_remove):
+        removed_block = node.block_db.get_block(rev_block.hash)
+        if removed_block is None:
+            err_msg = f"block just removed is missing: {rev_block.hash.hex()}"
+            raise ChainstateInconsistencyError(err_msg)
+        for tx in removed_block.transactions[1:]:
+            # a coinbase is never a mempool entrant on any path
+            # into it, and one that is only valid on the branch
+            # just abandoned is never valid again: the output it
+            # spent no longer exists on any chain. Every other
+            # entrant is checked before it is trusted, and this is
+            # the one path into the mempool that skipped that.
+            # btclib-org/btclib-node#85
+            try:
+                fee = verify_mempool_acceptance(node, tx)
+            except MissingPrevoutError, BTClibValueError:
+                continue
+            node.mempool.add_tx(tx, fee)
+    for block in to_add:
+        for tx in block.transactions[1:]:
+            node.mempool.remove_tx(tx)
+        # Core's own `removeForBlock` (`src/txmempool.cpp:405-427`,
+        # bitcoin/bitcoin@58a7869f86): once per block connected,
+        # whether or not it held anything this mempool was also
+        # holding, restarting `Mempool.get_min_fee_rate`'s own decay
+        # clock -- not folded into `remove_tx` above, which already
+        # runs once per transaction rather than once per block.
+        # btclib-org/btclib-node#294
+        node.mempool.note_block_connected()
+    _announce_added_blocks(node, to_add)
+
+
+# update_chain's own commit step, once the trial loop above has gone
+# through every block in the fork without raising or being asked to
+# stop: block_db is its own KeyValueStore, on its own datadir file, so
+# it cannot share chainstate's write_batch here -- but it gets the same
+# held-until-known-good treatment: the reverse patches add_rev_block
+# buffered during the trial only reach disk once the branch they belong
+# to is the one that connected. btclib-org/btclib-node#200
+def _finalize_fork(node: Node, to_add: list[Block], to_remove: list[RevBlock]) -> None:
+    block_index = node.chainstate.block_index
+    utxo_index = node.chainstate.utxo_index
+    filter_index = node.chainstate.filter_index
+    node.logger.debug("Start chainstate finalize")
+    node.block_db.finalize()
+    with node.chainstate.db.write_batch() as wb:
+        for rev_block in to_remove:
+            block_index.remove_from_active_chain(rev_block.hash)
+            block_index.set_status(rev_block.hash, BlockStatus.valid, wb)
+            node.logger.debug(f"Removed block {rev_block.hash.hex()}")
+        for block in to_add:
+            block_hash = block.header.hash
+            block_index.add_to_active_chain(block_hash)
+            block_index.set_status(block_hash, BlockStatus.in_active_chain, wb)
+            node.logger.info(f"Added block {block_hash.hex()}")
+        utxo_index.finalize(wb)
+        filter_index.finalize(wb)
+    node.logger.debug("End chainstate finalize")
+
+
+# update_chain's own leading gate: whether there is a fork to try at
+# all, and whether every block it would need has actually arrived.
+# `finish_sync` is called here rather than merely signalled, since a
+# missing candidate and a candidate not yet fully downloaded mean
+# different things to update_chain's own caller but the same thing to
+# this one -- "nothing to do yet" -- and only the first of them is also
+# "nothing left to ever do until a new header arrives".
+def _ready_fork(node: Node) -> tuple[list[bytes], list[bytes]] | None:
     if node.status < NodeStatus.HeaderSynced:
         return None
 
     block_index = node.chainstate.block_index
-    utxo_index = node.chainstate.utxo_index
-    filter_index = node.chainstate.filter_index
-
     first_candidate = block_index.get_first_candidate()
     if not first_candidate:
-        return finish_sync(node)
+        finish_sync(node)
+        return None
 
     to_add_hash, to_remove_hash = block_index.get_fork_details(
         first_candidate.header.hash
@@ -82,32 +196,24 @@ def update_chain(node: Node) -> None:
             # however complete: btclib-org/btclib-node#121
             return None
 
+    return to_add_hash, to_remove_hash
+
+
+def update_chain(node: Node) -> None:
+    fork = _ready_fork(node)
+    if fork is None:
+        return None
+    to_add_hash, to_remove_hash = fork
+
+    block_index = node.chainstate.block_index
+    utxo_index = node.chainstate.utxo_index
+    filter_index = node.chainstate.filter_index
+
     node.logger.info("Start block validation")
 
     node.logger.debug("Start getting blocks")
-    # every hash here was just checked downloaded, or was on the active
-    # chain this is replacing, so block_db holds it; the type is wider
-    # than that invariant
-    to_add: list[Block] = []
-    for block_hash in to_add_hash:
-        block = node.block_db.get_block(block_hash)
-        if block is None:
-            err_msg = f"block just checked downloaded is missing: {block_hash.hex()}"
-            raise ChainstateInconsistencyError(err_msg)
-        to_add.append(block)
-    # tip first: an output the branch created may have been spent again
-    # further along it, and the block that spent it has to be undone
-    # before the block that made it. `remove_from_active_chain` asks for
-    # the same order, and refuses anything but the tip
-    to_remove: list[RevBlock] = []
-    for block_hash in reversed(to_remove_hash):
-        rev_block = node.block_db.get_rev_block(block_hash)
-        if rev_block is None:
-            err_msg = (
-                f"no reverse patch for a block on the active chain: {block_hash.hex()}"
-            )
-            raise ChainstateInconsistencyError(err_msg)
-        to_remove.append(rev_block)
+    to_add = _blocks_to_add(node, to_add_hash)
+    to_remove = _rev_blocks_to_remove(node, to_remove_hash)
     node.logger.debug("Got all blocks")
 
     node.logger.debug("Start chainstate test")
@@ -159,27 +265,7 @@ def update_chain(node: Node) -> None:
         success = False
     finally:
         if success:
-            node.logger.debug("Start chainstate finalize")
-            # block_db is its own KeyValueStore, on its own datadir file,
-            # so it cannot share chainstate's write_batch below -- but it
-            # gets the same held-until-known-good treatment: the reverse
-            # patches add_rev_block buffered during the trial only reach
-            # disk once the branch they belong to is the one that
-            # connected. btclib-org/btclib-node#200
-            node.block_db.finalize()
-            with node.chainstate.db.write_batch() as wb:
-                for rev_block in to_remove:
-                    block_index.remove_from_active_chain(rev_block.hash)
-                    block_index.set_status(rev_block.hash, BlockStatus.valid, wb)
-                    node.logger.debug(f"Removed block {rev_block.hash.hex()}")
-                for block in to_add:
-                    block_hash = block.header.hash
-                    block_index.add_to_active_chain(block_hash)
-                    block_index.set_status(block_hash, BlockStatus.in_active_chain, wb)
-                    node.logger.info(f"Added block {block_hash.hex()}")
-                utxo_index.finalize(wb)
-                filter_index.finalize(wb)
-            node.logger.debug("End chainstate finalize")
+            _finalize_fork(node, to_add, to_remove)
         else:
             node.logger.debug("Start chainstate rollback")
             node.block_db.rollback()
@@ -194,46 +280,7 @@ def update_chain(node: Node) -> None:
         update_header_index(block_index, failed_hash)
 
     if success and node.status == NodeStatus.BlockSynced:
-        # oldest-abandoned-block first, the opposite of to_remove's own
-        # tip-first order above: a transaction from a later abandoned
-        # block may spend an output only an earlier abandoned block's
-        # transaction created, and verify_mempool_acceptance below has
-        # to find that parent already back in the mempool or it reads
-        # as one more permanently invalid transaction. Core re-adds the
-        # same way, walking its disconnectpool "in reverse, so that we
-        # add transactions back to the mempool starting with the
-        # earliest transaction that had been previously seen in a
-        # block" (MaybeUpdateMempoolForReorg, src/validation.cpp).
-        for rev_block in reversed(to_remove):
-            removed_block = node.block_db.get_block(rev_block.hash)
-            if removed_block is None:
-                err_msg = f"block just removed is missing: {rev_block.hash.hex()}"
-                raise ChainstateInconsistencyError(err_msg)
-            for tx in removed_block.transactions[1:]:
-                # a coinbase is never a mempool entrant on any path
-                # into it, and one that is only valid on the branch
-                # just abandoned is never valid again: the output it
-                # spent no longer exists on any chain. Every other
-                # entrant is checked before it is trusted, and this is
-                # the one path into the mempool that skipped that.
-                # btclib-org/btclib-node#85
-                try:
-                    fee = verify_mempool_acceptance(node, tx)
-                except MissingPrevoutError, BTClibValueError:
-                    continue
-                node.mempool.add_tx(tx, fee)
-        for block in to_add:
-            for tx in block.transactions[1:]:
-                node.mempool.remove_tx(tx)
-            # Core's own `removeForBlock` (`src/txmempool.cpp:405-427`,
-            # bitcoin/bitcoin@58a7869f86): once per block connected,
-            # whether or not it held anything this mempool was also
-            # holding, restarting `Mempool.get_min_fee_rate`'s own decay
-            # clock -- not folded into `remove_tx` above, which already
-            # runs once per transaction rather than once per block.
-            # btclib-org/btclib-node#294
-            node.mempool.note_block_connected()
-        _announce_added_blocks(node, to_add)
+        _reconcile_mempool_for_reorg(node, to_remove, to_add)
 
     node.logger.debug("Finished main\n")
 

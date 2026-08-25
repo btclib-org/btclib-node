@@ -5,6 +5,8 @@
 import json
 
 import requests
+from bitcoin_core_rpc import BitcoinCoreRpcClient
+from btclib.fetch.bitcoin_core import BitcoinCoreFetcher
 
 from btclib_node import Node
 from btclib_node.chains import RegTest
@@ -189,9 +191,6 @@ def test_get_raw_transaction_is_what_btclib_s_fetcher_gets(rpc_node: Node) -> No
     asks for, and not the wider `getrawtransaction` this file's own raw
     requests already cover through `params`.
     """
-    from bitcoin_core_rpc import BitcoinCoreRpcClient
-    from btclib.fetch.bitcoin_core import BitcoinCoreFetcher
-
     node = rpc_node
     wait_until_listening(node.rpc_manager)
 

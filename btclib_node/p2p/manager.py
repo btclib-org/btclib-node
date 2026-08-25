@@ -31,6 +31,13 @@ if TYPE_CHECKING:
 # btclib-org/btclib-node#71
 _ACTIVE_PRUNE_INTERVAL = 300
 
+# `manage_connections`'s own idle bound, not Core's `TIMEOUT_INTERVAL`
+# (20 minutes, `net.h`, aed80c7395) -- a shorter one of this tree's own:
+# a connection quiet this long is sent a `ping`, and one still quiet
+# this long again after that, or a pending connection stuck short of
+# `verack` this long with no `ping` to wait on at all, is dropped.
+_IDLE_TIMEOUT = 120
+
 
 class P2pManager(threading.Thread):
     def __init__(self, node: Node, port: int | None, peer_db: PeerDB) -> None:
@@ -144,89 +151,103 @@ class P2pManager(threading.Thread):
     def connect(self, address: NetworkAddressV2) -> None:
         asyncio.run_coroutine_threadsafe(self.async_connect(address), self.loop)
 
+    def _prune_stale_connections(self, now: float) -> None:
+        for conn in self.connections.copy().values():
+            if conn.status == P2pConnStatus.Closed:
+                self.remove_connection(conn.id)
+            if now - conn.last_receive > _IDLE_TIMEOUT:
+                if not conn.ping_sent:
+                    conn.send_ping()
+                elif now - conn.ping_sent > _IDLE_TIMEOUT:
+                    self.remove_connection(conn.id)
+        for conn in self.pending_connections.copy().values():
+            # The same idle bound, but no ping in between: `ping` is
+            # as much a message the handshake has to clear before it
+            # is sent as `inv` or `tx` is, so a connection stuck
+            # short of `verack` is dropped once it goes quiet rather
+            # than kept a second `_IDLE_TIMEOUT` waiting on an answer
+            # to something #131 forbids sending it.
+            if (
+                conn.status == P2pConnStatus.Closed
+                or now - conn.last_receive > _IDLE_TIMEOUT
+            ):
+                self.remove_connection(conn.id)
+
+    def _maybe_prune_active_addresses(self, now: float) -> None:
+        if now - self._last_active_prune < _ACTIVE_PRUNE_INTERVAL:
+            return
+        # The only other callers of `get_active_addresses` are
+        # `random_address`, which this loop stops reaching for
+        # once it has enough connections, and `getaddr`, answered
+        # once per connection and never again -- so a node with
+        # enough peers that nobody asks a `getaddr` would
+        # otherwise never prune a stale row. btclib-org/btclib-node#71
+        self._last_active_prune = now
+        try:
+            # get_active_addresses deletes every aged-out row
+            # from the store, real I/O and not a pure read, and
+            # this coroutine's own future is never awaited
+            # (`run`, below) -- the same failure mode
+            # `_bind_one`'s own docstring names for a coroutine
+            # scheduled that way. Unguarded, whatever `db.delete`
+            # ever raised would end this loop's pinging, eviction
+            # and dialling for the rest of this node's life
+            # rather than only this one prune, the same reason
+            # the dial below is already inside a `try` of its
+            # own.
+            self.peer_db.get_active_addresses()
+        except Exception:
+            self.logger.exception("Exception occurred")
+
+    async def _maybe_dial_more_peers(self) -> None:
+        connection_num = 1 if self.node.status < NodeStatus.HeaderSynced else 10
+        live = len(self.connections) + len(self.pending_connections)
+        if live >= connection_num or self.peer_db.is_empty:
+            return
+        # By endpoint_key, not raw equality: a drawn address
+        # carries whatever timestamp and services callbacks.verack
+        # or a gossiping peer last recorded it with, which is
+        # never the pair an existing Connection's own address was
+        # constructed with, so comparing the dataclasses
+        # themselves never matches the peer this node is already
+        # holding a connection with and dials it a second time.
+        already_connected = {
+            endpoint_key(conn.address)
+            for conn in (
+                *self.connections.values(),
+                *self.pending_connections.values(),
+            )
+        }
+        try:
+            address = self.peer_db.random_address()
+            # `is_empty` answers whether the table holds
+            # anything, not whether it holds anything this node
+            # can dial, so the guard above lets a table of ipv6
+            # and onion addresses through. The draw is what
+            # knows, and it answers with nothing: this pass has
+            # nothing to do, and the sleep below is what keeps
+            # that from being a spin. `discouraged` is the same
+            # kind of refusal as `already_connected`, against a
+            # peer this node has already dialled or accepted and
+            # dropped for cause rather than one it already holds.
+            # btclib-org/btclib-node#283
+            if (
+                address is not None
+                and endpoint_key(address) not in already_connected
+                and endpoint_key(address) not in self.discouraged
+            ):
+                sock = await dial(address)
+                if sock:
+                    self.create_connection(sock, address, False)
+        except Exception:
+            self.logger.exception("Exception occurred")
+
     async def manage_connections(self, loop: asyncio.AbstractEventLoop) -> None:
         while True:
             now = time.time()
-            for conn in self.connections.copy().values():
-                if conn.status == P2pConnStatus.Closed:
-                    self.remove_connection(conn.id)
-                if now - conn.last_receive > 120:
-                    if not conn.ping_sent:
-                        conn.send_ping()
-                    elif now - conn.ping_sent > 120:
-                        self.remove_connection(conn.id)
-            for conn in self.pending_connections.copy().values():
-                # The same idle bound, but no ping in between: `ping` is
-                # as much a message the handshake has to clear before it
-                # is sent as `inv` or `tx` is, so a connection stuck
-                # short of `verack` is dropped once it goes quiet rather
-                # than kept a second 120s waiting on an answer to
-                # something #131 forbids sending it.
-                if conn.status == P2pConnStatus.Closed or now - conn.last_receive > 120:
-                    self.remove_connection(conn.id)
-            if now - self._last_active_prune >= _ACTIVE_PRUNE_INTERVAL:
-                # The only other callers of `get_active_addresses` are
-                # `random_address`, which this loop stops reaching for
-                # once it has enough connections, and `getaddr`, answered
-                # once per connection and never again -- so a node with
-                # enough peers that nobody asks a `getaddr` would
-                # otherwise never prune a stale row. btclib-org/btclib-node#71
-                self._last_active_prune = now
-                try:
-                    # get_active_addresses deletes every aged-out row
-                    # from the store, real I/O and not a pure read, and
-                    # this coroutine's own future is never awaited
-                    # (`run`, below) -- the same failure mode
-                    # `_bind_one`'s own docstring names for a coroutine
-                    # scheduled that way. Unguarded, whatever `db.delete`
-                    # ever raised would end this loop's pinging, eviction
-                    # and dialling for the rest of this node's life
-                    # rather than only this one prune, the same reason
-                    # the dial below is already inside a `try` of its
-                    # own.
-                    self.peer_db.get_active_addresses()
-                except Exception:
-                    self.logger.exception("Exception occurred")
-            connection_num = 1 if self.node.status < NodeStatus.HeaderSynced else 10
-            live = len(self.connections) + len(self.pending_connections)
-            if live < connection_num and not self.peer_db.is_empty:
-                # By endpoint_key, not raw equality: a drawn address
-                # carries whatever timestamp and services callbacks.verack
-                # or a gossiping peer last recorded it with, which is
-                # never the pair an existing Connection's own address was
-                # constructed with, so comparing the dataclasses
-                # themselves never matches the peer this node is already
-                # holding a connection with and dials it a second time.
-                already_connected = {
-                    endpoint_key(conn.address)
-                    for conn in (
-                        *self.connections.values(),
-                        *self.pending_connections.values(),
-                    )
-                }
-                try:
-                    address = self.peer_db.random_address()
-                    # `is_empty` answers whether the table holds
-                    # anything, not whether it holds anything this node
-                    # can dial, so the guard above lets a table of ipv6
-                    # and onion addresses through. The draw is what
-                    # knows, and it answers with nothing: this pass has
-                    # nothing to do, and the sleep below is what keeps
-                    # that from being a spin. `discouraged` is the same
-                    # kind of refusal as `already_connected`, against a
-                    # peer this node has already dialled or accepted and
-                    # dropped for cause rather than one it already holds.
-                    # btclib-org/btclib-node#283
-                    if (
-                        address is not None
-                        and endpoint_key(address) not in already_connected
-                        and endpoint_key(address) not in self.discouraged
-                    ):
-                        sock = await dial(address)
-                        if sock:
-                            self.create_connection(sock, address, False)
-                except Exception:
-                    self.logger.exception("Exception occurred")
+            self._prune_stale_connections(now)
+            self._maybe_prune_active_addresses(now)
+            await self._maybe_dial_more_peers()
             await asyncio.sleep(0.1)
 
     def _bind_one(self, family: socket.AddressFamily, host: str) -> socket.socket:

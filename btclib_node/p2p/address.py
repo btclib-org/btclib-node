@@ -63,7 +63,13 @@ def peer_address(
     mapped into sixteen.
     """
     parsed = ip_address(ip)
-    network_id = BIP155Network.IPV4 if parsed.version == 4 else BIP155Network.IPV6
+    # `ip_address(...).version` is the stdlib's own name for this, not
+    # this tree's: it is only ever 4 or 6, and naming the 4 here would
+    # give a second name to something `ipaddress` already names by being
+    # IPv4 itself
+    network_id = (
+        BIP155Network.IPV4 if parsed.version == 4 else BIP155Network.IPV6  # noqa: PLR2004
+    )
     return NetworkAddressV2(timestamp, services, network_id, parsed.packed, port)
 
 

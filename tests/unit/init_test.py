@@ -179,8 +179,6 @@ def test_the_node_asking_itself_to_stop_does_not_wait_for_itself(
     # the `stop` RPC is handled inside the loop it stops, so the caller
     # there is the node's own thread, and a thread that joins itself
     # raises instead of waiting
-    import btclib_node
-
     node = a_node(tmp_path)
     exceptions = []
     monkeypatch.setattr(node.logger, "exception", lambda *args: exceptions.append(args))
@@ -218,8 +216,6 @@ def test_a_step_that_raises_brings_the_node_down_rather_than_spinning(
     # the loop cannot recover from a chainstate it could not advance, so
     # it stops -- and stopping means closing the databases, which is
     # what makes this different from an exception escaping run()
-    import btclib_node
-
     def boom(node: Node) -> None:
         raise RuntimeError("no")
 
@@ -421,8 +417,6 @@ class APool:
 
 @pytest.fixture
 def pools(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
-    import btclib_node
-
     built: list[Any] = []
     monkeypatch.setattr(btclib_node, "Pool", lambda processes: APool(built, processes))
     return built
