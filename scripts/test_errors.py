@@ -2,6 +2,16 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""Replay every saved script-verification failure under `errors/`, by hand.
+
+Each `errors/<txid>/<i>/` directory holds one previously failing input's
+flags, transaction and prevouts; this walks all of them, calls btclib's
+`verify_transaction` again and prints which ones still fail. Run
+directly (`python scripts/test_errors.py`) from wherever `errors/` sits,
+never collected by pytest: it lives under `scripts/`, outside
+`testpaths`.
+"""
+
 from pathlib import Path
 
 from btclib.exceptions import BTClibException

@@ -2,6 +2,16 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""A hand-edited template for re-downloading blocks from a given height.
+
+Opens the mainnet block store and chainstate and sets `fix_idx` to the
+first index to redo, then leaves two commented-out blocks below: a
+check that every block from `fix_idx` on is still only a downloaded
+header, and the reset that marks each of them not-downloaded and drops
+its stored block from `BlockDB`. Both stay commented until whoever is
+recovering from a bad download uncomments and runs them.
+"""
+
 from btclib_node.block_db import BlockDB
 from btclib_node.chainstate import Chainstate
 from btclib_node.config import Config

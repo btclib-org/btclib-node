@@ -2,6 +2,15 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""Build mainnet's block store and index, for pruning by hand.
+
+Opens `BlockDB` and `Chainstate` (and, through it, `BlockIndex`) against
+a mainnet data directory and stops: neither class has a `prune` method
+of its own, so this is meant to be run under `python -i` and whatever
+deletion a session needs is typed at the resulting prompt against
+`blockdb` and `blockindex`.
+"""
+
 from btclib_node.block_db import BlockDB
 from btclib_node.chainstate import Chainstate
 from btclib_node.config import Config

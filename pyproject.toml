@@ -827,13 +827,6 @@ ignore = [
 # Connection under test.
 "tests/unit/p2p/connection_test.py" = ["FBT003"]
 "tests/unit/rpc/connection_test.py" = ["FBT003"]
-# A script here is a template edited by hand, a manual diagnostic, or a
-# helper a workflow shells out to -- read individually against `D100`
-# under issue #373 rather than assumed. None ships as part of the
-# package `docs/source/`'s coverage test reads (`module-root` names
-# `src/btclib_node/` alone), which is what issue #264 turned that rule
-# on for.
-"scripts/**" = ["D100"]
 # `D101`/`D102`/`D103`/`D107` closed for `src/btclib_node/`'s own
 # root-level modules and for `block_db/`, `chainstate/`, `p2p/` and
 # `rpc/` in turn -- issue #373's own five-slice split, one package
