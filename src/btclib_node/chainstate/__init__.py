@@ -4,12 +4,13 @@
 
 """`Chainstate`: the block index, the UTXO set and the compact filter index.
 
-Each is kept in its own `db.KeyValueStore`. `block_index.BlockIndex`
-tracks headers and which chain is active, `utxo_index.UtxoIndex` the
-spendable outputs on it, and `filter_index.FilterIndex` the
-BIP157/BIP158 filters served over p2p; `contextual.py` is the height-
-and time-dependent validation the first of those calls before
-extending the active chain.
+All three share the one `db.KeyValueStore` `Chainstate` opens, told apart
+by each's own key prefix -- `db.py`'s own docstring is where that shared
+store's key order is argued. `block_index.BlockIndex` tracks headers and
+which chain is active, `utxo_index.UtxoIndex` the spendable outputs on
+it, and `filter_index.FilterIndex` the BIP157/BIP158 filters served over
+p2p; `contextual.py` is the height- and time-dependent validation the
+first of those calls before extending the active chain.
 """
 
 from typing import TYPE_CHECKING
@@ -28,7 +29,14 @@ if TYPE_CHECKING:
 
 
 class Chainstate:
+    """The block index, the UTXO set and the compact filter index, together.
+
+    The module docstring above is where the three, and the one
+    `KeyValueStore` they share, are argued.
+    """
+
     def __init__(self, data_dir: Path, chain: Chain, logger: Logger) -> None:
+        """Open the store under `data_dir` and build all three indexes on it."""
         data_dir = data_dir / "chainstate"
         data_dir.mkdir(exist_ok=True, parents=True)
         self.db = KeyValueStore(data_dir)
@@ -44,5 +52,6 @@ class Chainstate:
         self.logger = logger
 
     def close(self) -> None:
+        """Close the shared store, for all three indexes at once."""
         self.logger.info("Closing Chainstate db")
         self.db.close()

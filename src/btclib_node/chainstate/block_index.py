@@ -43,10 +43,21 @@ MAX_DOWNLOAD_WINDOW = 1024
 
 
 def calculate_work(header: BlockHeader) -> int:
+    """Return the work `header`'s own target represents."""
     return block_work(header.bits)
 
 
 class BlockStatus(enum.IntEnum):
+    """Where a block stands relative to the active chain.
+
+    `valid_header` is a header on its own, content not yet checked;
+    `in_active_chain` is on the active chain now; `valid` is a block
+    whose content passed validation but that a reorg has since removed
+    from the active chain (`_finalize_fork`'s own `to_remove` loop is
+    the only place that sets it). `invalid` is terminal, set on a block
+    itself or on any block built on one already marked `invalid`.
+    """
+
     valid_header = 1
     invalid = 2
     valid = 3
@@ -65,6 +76,13 @@ class BlockStatus(enum.IntEnum):
 # btclib-org/btclib-node#201
 @dataclass(frozen=True)
 class BlockInfo:
+    """One header this index has indexed: its height, status and download state.
+
+    `header` is the parsed header; `index` is its height; `status` and
+    `downloaded` are this index's own bookkeeping about it. `chainwork`
+    is deliberately not a field here -- the comment above argues why.
+    """
+
     header: BlockHeader
     index: int
     status: BlockStatus = BlockStatus.valid_header
@@ -72,6 +90,7 @@ class BlockInfo:
 
     @classmethod
     def deserialize(cls, data: bytes, *, check_validity: bool = True) -> BlockInfo:
+        """Parse a `BlockInfo` from the bytes `serialize` produced."""
         stream = bytesio_from_binarydata(data)
         header = BlockHeader.parse(stream, check_validity=check_validity)
         index = var_int.parse(stream)
@@ -80,6 +99,7 @@ class BlockInfo:
         return cls(header, index, status, downloaded)
 
     def serialize(self) -> bytes:
+        """Serialize this record to the bytes stored under `blkinfo-<hash>`."""
         out = self.header.serialize()
         out += var_int.serialize(self.index)
         out += self.status.to_bytes(1, "little")
@@ -88,7 +108,19 @@ class BlockInfo:
 
 
 class BlockIndex:
+    """Every header this node has seen, and which chain among them is active.
+
+    `header_dict` maps a hash to its `BlockInfo`; `chainwork` holds each
+    one's cumulative work, kept apart from the record itself since it is
+    derived rather than stored (issue #201). `active_chain` is the
+    current best chain by hash; `block_candidates` is every other header
+    that might still beat it once downloaded; `header_index` is the
+    best known header chain, tracked separately since a header being
+    known does not make its own block downloaded, let alone valid.
+    """
+
     def __init__(self, parent_db: KeyValueStore, chain: Chain, logger: Logger) -> None:
+        """Seed the index with `chain`'s own genesis, then load the store."""
         self.logger = logger
 
         self.db = parent_db
@@ -130,6 +162,13 @@ class BlockIndex:
         self.init_from_db()
 
     def init_from_db(self) -> None:
+        """Load every stored header into `header_dict`, then derive the rest.
+
+        Stops at the first key that is not a `blkinfo-` record: the
+        shared store's own key order (`db.py`'s docstring) sorts this
+        index's own keys ahead of the filter and UTXO indexes sharing
+        the same store.
+        """
         self.logger.info("Start Index initialization")
         for key, value in self.db:
             prefix, block_hash = key[:8], key[8:]
@@ -156,6 +195,10 @@ class BlockIndex:
         self.sorted_header_dict = []
 
     def calculate_chainwork(self) -> None:
+        """Compute every header's cumulative work into `chainwork`.
+
+        Backfills `children` along the way, one entry per header visited.
+        """
         for block_hash in self.sorted_header_dict:
             block_info = self.get_block_info(block_hash)
             if block_info.index == 0:  # genesis
@@ -171,6 +214,7 @@ class BlockIndex:
             self.chainwork[block_hash] = old_work + calculate_work(block_info.header)
 
     def generate_active_chain(self) -> None:
+        """Rebuild `active_chain` from every header marked `in_active_chain`."""
         chain_dict: dict[int, bytes] = {}
         for block_hash, block_info in self.header_dict.items():
             if block_info.status == BlockStatus.in_active_chain:
@@ -179,6 +223,7 @@ class BlockIndex:
             self.active_chain.append(chain_dict[index])
 
     def generate_block_candidates(self) -> None:
+        """Rebuild `block_candidates` from every `valid_header` past the tip."""
         active_chain_set = set(self.active_chain)
         current_work = self.chainwork[self.active_chain[-1]]
         for block_hash in self.sorted_header_dict:
@@ -192,6 +237,7 @@ class BlockIndex:
                 self.block_candidates.append([block_hash, work])
 
     def generate_header_index(self) -> None:
+        """Rebuild `header_index`, seeded from `active_chain` then extended."""
         self.header_index = self.active_chain[:]
         self._extend_header_index(self.sorted_header_dict)
 
@@ -247,15 +293,18 @@ class BlockIndex:
     def set_status(
         self, block_hash: bytes, status: BlockStatus, wb: KeyValueStore | None = None
     ) -> None:
+        """Set `block_hash`'s own status, replacing its stored `BlockInfo`."""
         self._insert_block_info(
             replace(self.get_block_info(block_hash), status=status), wb
         )
 
     def set_downloaded(self, block_hash: bytes, *, downloaded: bool = True) -> None:
+        """Set `block_hash`'s `downloaded` flag, replacing its `BlockInfo`."""
         block_info = self.get_block_info(block_hash)
         self._insert_block_info(replace(block_info, downloaded=downloaded))
 
     def get_block_info(self, block_hash: bytes) -> BlockInfo:
+        """Return the `BlockInfo` stored for `block_hash`."""
         return self.header_dict[block_hash]
 
     # what a block failing validation costs: itself, and every header
@@ -272,6 +321,13 @@ class BlockIndex:
     # over the whole deque, not the bad lineage.
     # btclib-org/btclib-node#77, #120, #125
     def invalidate(self, block_hash: bytes) -> None:
+        """Mark `block_hash` invalid, and everything indexed on top of it.
+
+        Walks `children` rather than `header_dict`, so the cost is the
+        size of the bad lineage rather than of the whole index. Every
+        invalidated hash is dropped from `block_candidates`; `header_index`
+        is rebuilt from `active_chain` only if it held one of them.
+        """
         to_invalidate = [block_hash]
         invalidated: set[bytes] = set()
         while to_invalidate:
@@ -301,6 +357,12 @@ class BlockIndex:
     def get_fork_details(
         self, header_hash: bytes, chain: list[bytes] | None = None
     ) -> tuple[list[bytes], list[bytes]]:
+        """Split `chain` at its common ancestor with `header_hash`.
+
+        `chain` defaults to `active_chain`. Returns the branch from that
+        ancestor up to `header_hash` (ancestor excluded, oldest first)
+        and the tail of `chain` that branch would replace.
+        """
         if not chain:
             chain = self.active_chain
         fork: list[bytes] = [header_hash]
@@ -322,9 +384,15 @@ class BlockIndex:
 
     # unsafe: doesn't perform any check
     def add_to_active_chain(self, block_hash: bytes) -> None:
+        """Append `block_hash` to `active_chain`, with no check it connects."""
         self.active_chain.append(block_hash)
 
     def remove_from_active_chain(self, block_hash: bytes) -> None:
+        """Pop `active_chain`'s tip if it is `block_hash`, else raise.
+
+        `ChainstateInconsistencyError`, since a caller removing anything
+        else is reorganizing the chain out of order.
+        """
         if block_hash != self.active_chain[-1]:
             err_msg = "block_hash is not the active chain's tip"
             raise ChainstateInconsistencyError(err_msg)
@@ -450,6 +518,12 @@ class BlockIndex:
                     self.header_index.extend(add)
 
     def add_headers(self, headers: Iterable[BlockHeader]) -> bytes | None:
+        """Validate `headers` as one batch, then index every one of them.
+
+        Returns the highest header this batch carried that is indexed
+        now (new or already known), or `None` if the batch connects to
+        nothing this index knows at all.
+        """
         # Nothing is indexed until every header has been checked, and the
         # batch is taken or refused whole: chainwork is credited from the
         # header's own `bits`, so a header that keeps a target the chain
@@ -481,6 +555,14 @@ class BlockIndex:
         return all(self.get_block_info(h).downloaded for h in to_add)
 
     def get_first_candidate(self) -> BlockInfo | None:
+        """Return the first downloaded candidate outweighing the active chain.
+
+        Pops every stale entry (work below the active chain's own) off
+        the front of `block_candidates`, then scans up to the 100 left:
+        among those still ahead on work, the first whose whole branch is
+        downloaded is returned, or the very first of them if none is,
+        or `None` if there is no candidate ahead at all.
+        """
         chainwork = self.chainwork[self.active_chain[-1]]
         while self.block_candidates and self.block_candidates[0][1] < chainwork:
             self.block_candidates.popleft()
@@ -499,6 +581,13 @@ class BlockIndex:
 
     # return a list of blocks that have to be downloaded
     def get_download_candidates(self) -> list[bytes]:
+        """Return every undownloaded block a candidate branch still needs.
+
+        Walks each entry of `block_candidates` back from its own tip,
+        collecting every not-yet-downloaded hash until it reaches one
+        already seen or already on the active chain, then returns the
+        union in height order, capped at `MAX_DOWNLOAD_WINDOW`.
+        """
         chainwork = self.chainwork[self.active_chain[-1]]
         candidates: list[bytes] = []
         seen = set()
@@ -526,6 +615,12 @@ class BlockIndex:
 
     # return a list of block hashes looking at the current best chain
     def get_block_locator_hashes(self) -> list[bytes]:
+        """Return a block locator over `header_index`, its own best known chain.
+
+        Exponentially sparser going back from its own tip, always
+        including its genesis -- the shape Core's own `LocatorEntries`
+        builds, cited in the comment below.
+        """
         i = 1
         step = 1
         block_locators: list[bytes] = []
@@ -547,6 +642,13 @@ class BlockIndex:
     def get_headers_from_locators(
         self, block_locators: Sequence[bytes], stop: bytes
     ) -> list[BlockHeader]:
+        """Return up to 2000 headers after the first locator this index knows.
+
+        `block_locators` is read in the caller's own order, so the
+        first one found in `header_index` is where the answer resumes
+        from. Stops at `stop` if reached first, and returns nothing if
+        none of `block_locators` is known.
+        """
         output: list[bytes] = []
         for block_locator in block_locators:
             if block_locator not in self.header_index:

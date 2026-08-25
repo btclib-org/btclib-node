@@ -95,6 +95,21 @@ to check the guess.
   still deferred the way #264's own `D100`/`D104` split deferred
   `tests/**` and `scripts/**`.
 
+### `src/btclib_node/chainstate/` gets real docstrings (issue #373)
+
+- **`D101`/`D102`/`D103`/`D107` are selected for
+  `src/btclib_node/chainstate/`** (issue #373, slice 3): every class,
+  method and `__init__` across `__init__.py`, `block_index.py`,
+  `filter_index.py` and `utxo_index.py` now carries a docstring grounded
+  in what it does -- `contextual.py` already had one for everything it
+  defines. `chainstate/__init__.py`'s own module docstring is corrected
+  alongside its new `Chainstate` docstring: it claimed each of the three
+  indexes is kept in its own `KeyValueStore`, where `Chainstate.__init__`
+  opens one store and hands the same object to all three, told apart by
+  key prefix alone. `p2p/` and `rpc/` are the remaining two slices, each
+  still deferred the way #264's own `D100`/`D104` split deferred
+  `tests/**` and `scripts/**`.
+
 ### The docs gate's own remaining gaps close: `[project.urls]`, `local-link-prefix`
 
 - **`conf.py`'s `BLOB` constant reads `pyproject.toml`'s own
