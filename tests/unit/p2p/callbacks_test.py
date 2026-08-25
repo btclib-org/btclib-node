@@ -142,8 +142,7 @@ def an_address(
 
 
 def a_version_address(services: int = 0) -> NetworkAddress:
-    """Build an unroutable `NetworkAddress`, the narrowest shape a `version`
-    carries.
+    """Build an unroutable `NetworkAddress`, the shape a `version` carries.
 
     A `version` message's own address field has no timestamp, unlike
     `NetworkAddressV2`.
@@ -154,9 +153,7 @@ def a_version_address(services: int = 0) -> NetworkAddress:
 def make_node(
     addresses: Sequence[NetworkAddressV2], *, prefer_addressv2: bool = False
 ) -> tuple[Any, Any, list[Any]]:
-    """Build a node whose `peer_db` already holds `addresses` as active, and a
-    peer stand-in.
-    """
+    """Build a node with `peer_db` addresses active, and a peer stand-in."""
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
     for address in addresses:
         peer_db.active_addresses.append(address)
@@ -282,9 +279,7 @@ def test_a_second_getaddr_on_the_same_connection_is_ignored() -> None:
 
 
 def another_conn(sent: list[Any]) -> Any:
-    """Build a second peer stand-in sharing `sent` with the one `make_node`
-    built.
-    """
+    """Build a second peer stand-in sharing `sent` with `make_node`'s own."""
     return SimpleNamespace(
         prefer_addressv2=False, send=sent.append, answered_getaddr=False
     )
@@ -351,9 +346,7 @@ def a_version(
     relay: bool | None = True,
     addr_from_port: int = 18444,
 ) -> bytes:
-    """Build a serialized `version` message, as the `version` callback receives
-    one.
-    """
+    """Build a serialized `version`, as the `version` callback receives one."""
     return a_parsed_version(
         protocol=protocol,
         services=services,
@@ -374,9 +367,7 @@ def a_parsed_version(
     # and not the address -- btclib-org/btclib-node#70
     addr_from_port: int = 18444,
 ) -> Version:
-    """Return the parsed `Version` `a_version` serializes, for tests that read
-    fields.
-    """
+    """Return the parsed `Version` `a_version` serializes, for field reads."""
     return Version(
         version=protocol,
         services=services,
@@ -391,8 +382,7 @@ def a_parsed_version(
 
 
 def a_peer(**attributes: Any) -> Any:
-    """Build a `Connection` double at every field a callback might read or
-    write.
+    """Build a `Connection` double at every field a callback may read or write.
 
     `**attributes` overrides any default, for the one or two fields a given test
     needs to start from something other than the ordinary just-connected shape.
@@ -460,9 +450,7 @@ def a_handshake_node(
 
 
 def commands(peer: Any) -> list[str]:
-    """Return the command each message on `peer.sent` travels under, or itself
-    if a string.
-    """
+    """Return the command a message travels under, or itself if a string."""
     return [
         message if isinstance(message, str) else type(message).__name__
         for message in peer.sent
@@ -485,8 +473,7 @@ def test_a_version_is_answered_with_what_this_node_speaks() -> None:
 
 
 def test_a_version_carrying_our_own_nonce_is_this_node_calling_itself() -> None:
-    """A `version` carrying a nonce this node sent is a self-connection,
-    dropped.
+    """A `version` carrying this node's own nonce is a self-connection, dropped.
 
     #283: an incompatibility, not a protocol violation, and still cause to
     discourage.
@@ -543,8 +530,7 @@ def test_a_pruned_peer_is_let_go_only_once_the_blocks_are_synced() -> None:
 
 
 def test_a_version_that_says_it_relays_nothing_is_taken_at_its_word() -> None:
-    """A `version` with `relay=False` sets `relay_tx` false, on the right
-    attribute.
+    """A `version` with `relay=False` sets `relay_tx` false, right attribute.
 
     The flag went to the attribute `Connection` defines, and nowhere else: the
     near miss that dropped it before was one letter long, `relay_txs` rather
@@ -559,8 +545,7 @@ def test_a_version_that_says_it_relays_nothing_is_taken_at_its_word() -> None:
 
 
 def test_a_version_without_the_relay_flag_is_a_peer_asking_for_relay() -> None:
-    """A `version` with no relay flag at all is read as BIP37's own default:
-    true.
+    """A `version` with no relay flag is read as BIP37's own default: true.
 
     BIP37's default is what a peer older than the flag relies on: read as a
     false, it would be recorded as asking for the opposite.
@@ -571,8 +556,7 @@ def test_a_version_without_the_relay_flag_is_a_peer_asking_for_relay() -> None:
 
 
 def test_a_version_with_a_trailing_octet_still_costs_the_peer() -> None:
-    """A `version` with a stray trailing octet still raises, unlike
-    `addr`/`addrv2`.
+    """A `version` with a stray octet still raises, unlike `addr`/`addrv2`.
 
     Issue #149 leaves this one asymmetric on purpose: addr and addrv2 (below)
     accept a BinaryData stream, and btclib's own assert_no_trailing treats one
@@ -619,8 +603,7 @@ def test_a_relay_octet_that_is_neither_0_nor_1_still_costs_the_peer() -> None:
 
 
 def a_real_connection() -> Connection:
-    """Build a real `Connection`, not a stand-in, for a defect a double cannot
-    catch.
+    """Build a real `Connection`, not a stand-in, for a defect a double misses.
 
     Not a stand-in: the defect this is about was a callback writing an attribute
     no `Connection` has, which a `SimpleNamespace` peer takes without a word and
@@ -647,9 +630,7 @@ def a_real_connection() -> Connection:
 def test_what_a_peer_said_about_relay_lands_on_the_connection(
     *, relay: bool | None, wanted: bool
 ) -> None:
-    """`version`'s relay flag lands on a real `Connection.relay_tx`, every
-    value.
-    """
+    """`version`'s relay flag lands on `Connection.relay_tx` at every value."""
     connection = a_real_connection()
     with connection.client:
         assert connection.relay_tx is True  # BIP37's default until told
