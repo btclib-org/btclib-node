@@ -46,6 +46,27 @@ class WaitTimeoutError(TimeoutError):
         super().__init__(message)
 
 
+def log_recorder() -> tuple[list[str], Callable[..., None]]:
+    """Return a list and a stand-in for a `Logger` method that fills it.
+
+    `G004` moved every production `logger.*` call this tree makes off
+    an f-string and onto the `%`-style form `logging` itself defers
+    formatting for, so a call like `logger.warning("...: %s", value)`
+    reaches whatever `warning` is bound to as two arguments, not one
+    already-formatted string. A stand-in of `list.append` alone -- one
+    argument only -- broke the moment the call it captured carried a
+    second one; this applies the same `%` formatting the real
+    `logging.Logger` would, so a test asserting on the finished message
+    reads the same string either way.
+    """
+    entries: list[str] = []
+
+    def record(msg: str, *args: object) -> None:
+        entries.append(msg % args if args else msg)
+
+    return entries, record
+
+
 class _ListensOnAPort(Protocol):
     # what wait_until_listening needs: a manager, or a stand-in for one
     listening: threading.Event

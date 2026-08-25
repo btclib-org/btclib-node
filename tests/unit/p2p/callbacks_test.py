@@ -102,6 +102,7 @@ from tests.helpers import (
     generate_random_chain,
     generate_random_header_chain,
     generate_random_transaction,
+    log_recorder,
 )
 
 if TYPE_CHECKING:
@@ -663,9 +664,9 @@ def test_an_inbound_peer_naming_no_port_is_not_recorded() -> None:
 def test_the_handshake_logs_the_endpoint_getpeerinfo_answers_with(
     host: str, endpoint: str
 ) -> None:
-    logged: list[str] = []
+    logged, info = log_recorder()
     node = a_handshake_node(peer_db=PeerDB(cast("Chain", None), cast("Path", None)))
-    node.logger.info = logged.append
+    node.logger.info = info
     peer = a_peer(
         version_message=a_parsed_version(),
         wtxidrelay_received=True,
@@ -851,9 +852,9 @@ def test_an_address_of_a_network_nobody_here_has_heard_of_is_kept() -> None:
 
 
 def test_a_notfound_is_logged_rather_than_held_against_the_peer() -> None:
-    logged: list[str] = []
+    logged, warning = log_recorder()
     node = a_handshake_node()
-    node.logger.warning = logged.append
+    node.logger.warning = warning
     peer = a_peer()
     not_found(
         node,

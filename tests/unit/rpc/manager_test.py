@@ -265,7 +265,10 @@ def test_server_does_not_lose_a_connection_accepted_in_the_instant_of_its_own_ca
     loop = manager.loop
     listening_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     accepted, theirs = socket.socketpair()
-    AcceptResult = tuple[socket.socket, tuple[str, int]]
+    # a type alias, not a variable: PEP 8's own naming convention for
+    # one is CapWords, the same as a class, not the lowercase this rule
+    # otherwise asks a function-scoped name for
+    AcceptResult = tuple[socket.socket, tuple[str, int]]  # noqa: N806
     fut_holder: dict[str, asyncio.Future[AcceptResult]] = {}
 
     async def fake_sock_accept(sock: socket.socket) -> AcceptResult:

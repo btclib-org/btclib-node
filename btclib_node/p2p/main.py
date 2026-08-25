@@ -21,7 +21,7 @@ def handle_p2p_handshake(node: Node) -> None:
     # that a peer sent a second version/verack/wtxidrelay/sendaddrv2 to
     conn = manager.pending_connections.get(conn_id) or manager.connections.get(conn_id)
     if conn is not None:
-        node.logger.info(f"Received p2p message: {msg_type}, {conn_id}")
+        node.logger.info("Received p2p message: %s, %s", msg_type, conn_id)
         try:
             if conn.status == P2pConnStatus.Open:
                 handshake_callbacks[msg_type](node, msg, conn)
@@ -50,7 +50,7 @@ def handle_p2p(node: Node) -> None:
     # below, rather than being silently dropped along with the lookup
     conn = manager.connections.get(conn_id) or manager.pending_connections.get(conn_id)
     if conn is not None:
-        node.logger.info(f"Received p2p message: {msg_type}, {conn_id}")
+        node.logger.info("Received p2p message: %s, %s", msg_type, conn_id)
         try:
             if msg_type in callbacks:
                 if conn.status == P2pConnStatus.Connected:

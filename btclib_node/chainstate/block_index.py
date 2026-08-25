@@ -386,7 +386,7 @@ class BlockIndex:
                     self.chain, header, parent, parent_height, parent_of, now
                 )
             except BTClibValueError as e:
-                self.logger.warning(f"Refused a header batch: {e}")
+                self.logger.warning("Refused a header batch: %s", e)
                 raise
             pending[header_hash] = (header, parent_height + 1)
 

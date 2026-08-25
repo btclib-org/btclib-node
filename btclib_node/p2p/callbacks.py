@@ -168,7 +168,7 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     block_locators = node.chainstate.block_index.get_block_locator_hashes()
     conn.send(GetHeaders(ProtocolVersion, block_locators, b"\x00" * 32))
     sockaddr = conn.client.getpeername()
-    node.logger.info(f"Connected to {ip_and_port(sockaddr[0], sockaddr[1])}")
+    node.logger.info("Connected to %s", ip_and_port(sockaddr[0], sockaddr[1]))
 
 
 def wtxidrelay(node: Node, msg: bytes, conn: Connection) -> None:
@@ -390,7 +390,7 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
             node.chainstate.block_index.invalidate(block_hash)
             raise
         node.block_db.add_block(block)
-        node.logger.info(f"Received new block with hash:{block_hash.hex()}")
+        node.logger.info("Received new block with hash:%s", block_hash.hex())
         node.chainstate.block_index.set_downloaded(block_hash)
 
 
@@ -735,7 +735,7 @@ def not_found(node: Node, msg: bytes, conn: Connection) -> None:
             InventoryType.MSG_WITNESS_TX,
         ):
             conn.tx_requested.pop(item.hash, None)
-    node.logger.warning(f"Missing objects:{missing}")
+    node.logger.warning("Missing objects:%s", missing)
 
 
 def reject(node: Node, msg: bytes, conn: Connection) -> None:
