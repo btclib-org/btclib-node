@@ -32,6 +32,36 @@ to check the guess.
   hook existed and this repository's own `.pre-commit-config.yaml`
   said outright why it was left out, a sentence issue #264 made false
   the day `.readthedocs.yaml` landed.
+### `stop()`'s own leftover `loop.stop` is cancelled, closing issues #377 and #380
+
+- **`stop()`'s own first line, `self.loop.call_soon_threadsafe(self.loop.stop)`,
+  now keeps the `Handle` it returns and cancels it once `join()` above
+  has returned** (closes #377, closes #380): that call only *schedules*
+  `loop.stop`, delivered only once something drives the loop's
+  `run_forever` far enough to reach it, and nothing does where the
+  manager's own thread was never started or where `run()` raised before
+  ever reaching `run_forever` -- a bind failure being the ordinary way.
+  Every `run_until_complete` `stop()` goes on to call, this method's own
+  thread now driving the loop instead, used to be primed to collide with
+  that leftover callback and raise `RuntimeError('Event loop stopped
+  before Future completed.')`: the grace step guard issues #368 and #362
+  each added answered "was `start()` called", true from the moment of
+  that call and well before `run_forever`, not "did `run_forever` ever
+  deliver this method's own scheduled stop" (issue #380); and the
+  unconditional drain loop beneath the grace step carried no guard of
+  its own at all, for a task whose cancellation-unwind needs a second
+  real step to finish (issue #377). `Handle.cancel()` on a handle
+  already delivered by the manager's own thread is a no-op, so
+  cancelling it unconditionally here is correct for the ordinary case
+  and removes the leftover callback outright for the other two, on both
+  methods alike.
+- **The grace step itself is now guarded on `self._server_sockets`
+  (`P2pManager`) and `self._server_socket is not None` (`RpcManager`)**,
+  set only once `run` has bound successfully and is about to schedule
+  `server`'s own accept task: not for safety, which the cancelled handle
+  above already covers unconditionally, but because a manager whose
+  `server` was never scheduled has no accept task the step could be
+  owed to.
 
 ### `P2pManager.stop()`'s grace step is guarded on `self.ident`, closing issue #368
 
