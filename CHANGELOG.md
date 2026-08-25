@@ -14,6 +14,13 @@ to check the guess.
 
 ## Unreleased
 
+### `tests/unit/rpc/manager_test.py` cites the right test module (closes #419)
+
+- **The module docstring now cites `tests/unit/rpc/main_test.py`**
+  (closes #419): it named `tests/unit/rpc/main.py`, which does not
+  exist -- every test module in this tree ends in `_test.py`, per
+  #26/#268.
+
 ### `tests/unit/init_test.py`'s comment names the right test modules (closes #415)
 
 - **The comment above
