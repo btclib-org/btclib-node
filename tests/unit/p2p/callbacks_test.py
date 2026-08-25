@@ -1802,8 +1802,7 @@ def test_a_batch_on_an_already_invalid_parent_is_not_asked_for_again(
 
 
 def test_a_refused_batch_is_not_the_end_of_a_sync() -> None:
-    """A batch `add_headers` refuses re-raises rather than marking sync
-    finished.
+    """A batch `add_headers` refuses re-raises, not the ordinary end of a sync.
 
     A batch refused for a bad proof of work is a misbehaving peer, not the
     ordinary end of a sync: the raise reaches handle_p2p, which drops the
@@ -1825,8 +1824,7 @@ def test_a_refused_batch_is_not_the_end_of_a_sync() -> None:
 
 
 def test_a_short_batch_means_the_headers_are_synced() -> None:
-    """A connecting batch shorter than a full one moves `SyncingHeaders` to
-    `HeaderSynced`.
+    """A connecting batch shorter than a full one moves sync to `HeaderSynced`.
 
     Shorter than `MAX_HEADERS_RESULTS` and still connecting is the peer
     signalling it has nothing more to give.
@@ -1841,8 +1839,7 @@ def test_a_short_batch_means_the_headers_are_synced() -> None:
 
 
 def test_a_short_batch_when_the_headers_are_already_synced_changes_nothing() -> None:
-    """A connecting short batch after headers are already synced leaves status
-    alone.
+    """A short connecting batch once headers are already synced changes nothing.
 
     Only `SyncingHeaders` moves to `HeaderSynced`; a batch arriving once the
     node is already past that is not a status change.
@@ -1857,8 +1854,7 @@ def test_a_short_batch_when_the_headers_are_already_synced_changes_nothing() -> 
 
 
 def test_this_node_answers_a_getheaders_from_what_it_knows() -> None:
-    """A `getheaders` reaches `get_headers_from_locators` unchanged, and the
-    answer is sent back.
+    """A `getheaders` reaches `get_headers_from_locators` unchanged.
 
     The peer's question reaches the index as the peer asked it, which a locator
     and a stop of the same value could not tell apart.
@@ -1886,9 +1882,7 @@ def test_this_node_answers_a_getheaders_from_what_it_knows() -> None:
 
 
 def test_a_getheaders_this_node_cannot_answer_is_not_answered() -> None:
-    """A `getheaders` whose locator resolves to nothing gets no answer, not a
-    refusal.
-    """
+    """A `getheaders` resolving to nothing gets no answer, not a refusal."""
     node = a_data_node()
     node.chainstate.block_index = SimpleNamespace(
         get_headers_from_locators=lambda locator, stop: []
@@ -1903,9 +1897,7 @@ def test_a_getheaders_this_node_cannot_answer_is_not_answered() -> None:
 
 
 def a_filter_hash(height: int) -> bytes:
-    """Return the made-up filter hash `a_filters_node`'s stand-in answers for
-    `height`.
-    """
+    """Return the made-up filter hash the stand-in answers for `height`."""
     return (height + 1).to_bytes(32, "big")
 
 
@@ -1955,9 +1947,7 @@ def a_getcfilters(
     stop_height: int,
     filter_type: BlockFilterType = BlockFilterType.BASIC,
 ) -> None:
-    """Drive `get_cfilters` for the range `[start, stop_height]` on `node`'s
-    active chain.
-    """
+    """Drive `get_cfilters` for a height range on `node`'s active chain."""
     stop_hash = node.chainstate.block_index.active_chain[stop_height]
     get_cfilters(node, GetCFilters(filter_type, start, stop_hash).serialize(), peer)
 
@@ -1984,9 +1974,7 @@ def test_a_range_of_filters_is_answered_one_message_per_block() -> None:
 
 
 def test_one_block_is_a_range_of_one() -> None:
-    """A `getcfilters` naming the same block at both ends answers with one
-    filter.
-    """
+    """A `getcfilters` naming one block at both ends answers with one filter."""
     node = a_filters_node()
     peer = a_peer()
     a_getcfilters(node, peer, 3, 3)
@@ -2021,8 +2009,7 @@ def test_get_cfilters_stops_once_the_connection_closes_mid_answer() -> None:
 
 
 def test_get_cfilters_refuses_a_gap_in_a_promised_index() -> None:
-    """A missing filter mid-range raises `ChainstateInconsistencyError`, not
-    `notfound`.
+    """A missing filter mid-range raises, rather than answering `notfound`.
 
     BIP157's service bit promises a filter for every block of the active chain;
     a gap here is the index breaking that promise rather than a request this
@@ -2039,8 +2026,7 @@ def test_get_cfilters_refuses_a_gap_in_a_promised_index() -> None:
 
 
 def test_a_filter_type_this_node_does_not_serve_is_not_answered() -> None:
-    """A `getcfilters` naming a filter type this node does not serve gets no
-    answer.
+    """A `getcfilters` naming an unserved filter type gets no answer.
 
     BIP158 defines the basic filter and nothing else, so any other code is a
     type no node has; BIP157 says answer with nothing.
