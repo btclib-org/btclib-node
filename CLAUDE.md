@@ -102,6 +102,28 @@ guess. Reading Core's own source is part of writing the divergence and
 not only part of matching it, because what gets reproduced is what Core
 does rather than what a report said it does.
 
+A checkout of Core is kept beside the primary checkout of this
+repository, and is where Core is read rather than fetched a file at a
+time over the network: a raw fetch can come back truncated with nothing
+to say so, missing the very function a divergence question is about and
+answering confidently from what is left, where the local checkout
+answers the same question with one `grep`. It is brought forward with a
+fetch and a fast-forward on a clean `master`, never written to, the same
+way the primary checkout below is kept current; the sha it lands on
+afterward is what the comment beside a divergence cites, in place of
+"master, some time today".
+
+It sits at `../bitcoin` from there, not from whichever worktree a
+session is working in — every session works in one, by the rule below —
+so a plain `../bitcoin` typed from a worktree resolves to nothing. The
+primary checkout is always `git worktree list`'s own first entry, from
+any worktree of this repository, so its sibling is reached from
+anywhere with
+
+```shell
+git worktree list --porcelain | awk '/^worktree /{print $2; exit}'
+```
+
 ## The primary checkout is the maintainer's
 
 **Never work in it.** No edit, no `git add`, no commit, no branch
@@ -214,6 +236,18 @@ Do not use Fable unless explicitly instructed.
   the directory removes the file from that glob's reach. Left unset, the
   run reports a coverage number with every test passing, which reads as
   a real regression and is not one: btclib-org/btclib-node#191.
+- **The coverage floor can fail under a loaded machine with every test
+  passing.** This is a different way the number lies from the one above:
+  the miss is a branch inside `P2pManager`'s own background thread, on a
+  line no test asserts anything about directly, and the run reports
+  under the 100% floor — `99.98%` in the run
+  [ISS 372](https://github.com/btclib-org/btclib-node/issues/372)
+  measured — with every test green and no `F` among the progress marks.
+  That is the discriminator: a run failing only the coverage line, with
+  the rest of it clean, is not evidence the branch under test caused it.
+  The load average `uptime` gives at the run, not read back afterward, is
+  the number ISS 372 records beside each of its runs, and the one worth
+  recording here too.
 - **The store is `sqlite3` from the standard library**, since
   btclib-org/btclib-node#107. A datadir written by the LevelDB this
   replaced cannot be read; `src/btclib_node/db.py` is where that is
