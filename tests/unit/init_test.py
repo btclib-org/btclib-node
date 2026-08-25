@@ -364,8 +364,8 @@ def test_every_message_waiting_is_taken_before_the_loop_waits(
 ) -> None:
     """`run` drains all three queues in one pass, not a sleep between them."""
     # all three queues, drained in one pass: what each handler does with
-    # a message it can deliver is tests/unit/p2p/main.py's and
-    # tests/unit/rpc/main.py's. These are addressed to connections that
+    # a message it can deliver is tests/unit/p2p/main_test.py's and
+    # tests/unit/rpc/main_test.py's. These are addressed to connections that
     # are not there, so the answer is to drop them -- and dropping them
     # is what the loop has to do rather than sleep on them.
     node = a_networked_node

@@ -14,6 +14,15 @@ to check the guess.
 
 ## Unreleased
 
+### `tests/unit/init_test.py`'s comment names the right test modules (closes #415)
+
+- **The comment above
+  `test_every_message_waiting_is_taken_before_the_loop_waits` now cites
+  `tests/unit/p2p/main_test.py` and `tests/unit/rpc/main_test.py`**
+  (closes #415): it named `tests/unit/p2p/main.py` and
+  `tests/unit/rpc/main.py`, which do not exist -- every test module in
+  this tree ends in `_test.py`, per #26/#268.
+
 ### `scripts/` gets real docstrings, `D100`'s own deferral is gone (issue #373)
 
 - **Every module under `scripts/` -- the three `chains/` launchers, the
