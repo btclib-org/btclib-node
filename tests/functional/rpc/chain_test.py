@@ -2,6 +2,13 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""The chain-reading RPC methods, over a real node: hashes, headers, count.
+
+`getbestblockhash`, `getblockhash`, `getblockcount`, `getblockheader`
+and `getblockchaininfo`, each driven against a node that has actually
+validated and connected the chain it is asked about.
+"""
+
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -27,6 +34,7 @@ if TYPE_CHECKING:
 
 
 def test_best_block_hash(rpc_node: Node) -> None:
+    """getbestblockhash, live, answers the connected chain's own tip."""
     node = rpc_node
 
     wait_until_listening(node.rpc_manager)
@@ -62,6 +70,7 @@ def test_best_block_hash(rpc_node: Node) -> None:
 
 
 def test_block_hash(rpc_node: Node) -> None:
+    """getblockhash, over a real socket, answers the hash at a given height."""
     node = rpc_node
 
     wait_until_listening(node.rpc_manager)
@@ -97,6 +106,7 @@ def test_block_hash(rpc_node: Node) -> None:
 
 
 def test_block_count(rpc_node: Node) -> None:
+    """getblockcount, live, answers the connected chain's own height."""
     node = rpc_node
 
     wait_until_listening(node.rpc_manager)
@@ -121,9 +131,12 @@ def test_block_count(rpc_node: Node) -> None:
 def test_blockchain_info_names_the_chain_btclib_s_fetcher_checks(
     rpc_node: Node,
 ) -> None:
-    # btclib-org/btclib-node#21: BitcoinCoreFetcher.assert_network reads
-    # this by default, before the fetch it was actually asked for --
-    # measured against a real BitcoinCoreFetcher, not asserted
+    """getblockchaininfo answers the field BitcoinCoreFetcher checks by default.
+
+    `BitcoinCoreFetcher.assert_network` reads this before the fetch it
+    was actually asked for -- measured against a real
+    `BitcoinCoreFetcher`, not asserted (issue #21).
+    """
     node = rpc_node
     wait_until_listening(node.rpc_manager)
 
@@ -170,6 +183,7 @@ def test_bitcoin_core_fetcher_works_against_this_node_unchanged(
 
 
 def get_block_header(node: Node, block_hash: str) -> Any:
+    """Call getblockheader on `block_hash`, verbose by default."""
     request = {
         "jsonrpc": "1.0",
         "id": "pytest",
@@ -180,6 +194,7 @@ def get_block_header(node: Node, block_hash: str) -> Any:
 
 
 def test_block_header_on_the_chain_the_node_validated(rpc_node: Node) -> None:
+    """getblockheader, live, names a validated block's own neighbours."""
     node = rpc_node
 
     wait_until_listening(node.rpc_manager)
@@ -212,9 +227,12 @@ def test_block_header_on_the_chain_the_node_validated(rpc_node: Node) -> None:
 
 
 def test_block_header_of_a_block_the_node_has_not_validated(tmp_path: Path) -> None:
-    # a node that has taken headers and downloaded nothing: its active
-    # chain is the genesis alone, so every one of these is off it and
-    # none of them is confirmed by anything
+    """getblockheader answers -1 confirmations for a header not yet validated.
+
+    A node that has taken headers and downloaded nothing has an active
+    chain that is the genesis alone, so every one of these is off it and
+    none of them is confirmed by anything.
+    """
     node = Node(
         config=Config(
             chain="regtest",

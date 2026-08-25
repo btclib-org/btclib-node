@@ -2,6 +2,14 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""What a malformed or refused JSON-RPC request answers with, over a real node.
+
+A missing method or id, an unknown method, an empty batch, a method
+name of the wrong JSON type, and a refusal a callback raises on
+purpose -- each checked to answer the client without ending the node's
+own loop.
+"""
+
 import contextlib
 import json
 from typing import TYPE_CHECKING, Any
@@ -17,6 +25,7 @@ if TYPE_CHECKING:
 
 
 def test_no_method(tmp_path: Path) -> None:
+    """A request with no method is answered Invalid request, live."""
     node = Node(
         config=Config(
             chain="regtest",
@@ -49,6 +58,7 @@ def test_no_method(tmp_path: Path) -> None:
 
 
 def test_no_id(tmp_path: Path) -> None:
+    """A request with no id is answered Invalid request, live."""
     node = Node(
         config=Config(
             chain="regtest",
@@ -81,6 +91,7 @@ def test_no_id(tmp_path: Path) -> None:
 
 
 def test_invalid_method(tmp_path: Path) -> None:
+    """A request naming an unknown method is answered Method not found, live."""
     node = Node(
         config=Config(
             chain="regtest",
@@ -114,10 +125,13 @@ def test_invalid_method(tmp_path: Path) -> None:
 
 
 def test_an_empty_batch_does_not_end_the_node(rpc_node: Node) -> None:
-    # This is the whole of #55: `[]` is legal JSON and legal JSON-RPC,
-    # and it used to leave Node.run by exception -- ending the thread
-    # and skipping every close after the loop. The node answering the
-    # request after it is what says the loop survived.
+    """An empty batch is answered Invalid request, and the node's loop survives.
+
+    `[]` is legal JSON and legal JSON-RPC, and it used to leave
+    `Node.run` by exception -- ending the thread and skipping every
+    close after the loop. The node answering the request after it is
+    what says the loop survived (issue #55).
+    """
     node = rpc_node
     wait_until_listening(node.rpc_manager)
 
@@ -134,11 +148,14 @@ def test_an_empty_batch_does_not_end_the_node(rpc_node: Node) -> None:
 def test_a_request_the_handler_cannot_read_does_not_end_the_node(
     rpc_node: Node,
 ) -> None:
-    # A method that is not a string reaches `request["method"] not in
-    # callbacks` and raises TypeError: unhashable. Node.run's guard is
-    # what keeps that to one logged line. It gets no answer, which is
-    # its own defect and its own issue -- what is asserted here is only
-    # that the node is still there afterwards.
+    """A request whose method raises inside the dispatch does not end the node.
+
+    A method that is not a string reaches `request["method"] not in
+    callbacks` and raises `TypeError: unhashable`. `Node.run`'s guard is
+    what keeps that to one logged line. It gets no answer, which is its
+    own defect and its own issue -- what is asserted here is only that
+    the node is still there afterwards.
+    """
     node = rpc_node
     wait_until_listening(node.rpc_manager)
 
@@ -153,11 +170,13 @@ def test_a_request_the_handler_cannot_read_does_not_end_the_node(
 def test_a_request_the_node_can_refuse_is_not_answered_internal_error(
     rpc_node: Node,
 ) -> None:
-    # btclib-org/btclib-node#179: a hash nothing indexed, a parameter
-    # that is not hex and no parameter at all are the client being
-    # wrong, and each carries the code Bitcoin Core gives it. -32603 is
-    # what this node owes a fault of its own, so a client can still tell
-    # a typo from a broken node.
+    """A request the node itself refuses carries Core's code, not -32603.
+
+    A hash nothing indexed, a parameter that is not hex and no parameter
+    at all are the client being wrong, and each carries the code Bitcoin
+    Core gives it. -32603 is what this node owes a fault of its own, so
+    a client can still tell a typo from a broken node (issue #179).
+    """
     node = rpc_node
     wait_until_listening(node.rpc_manager)
 
