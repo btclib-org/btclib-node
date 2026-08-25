@@ -32,6 +32,7 @@ to check the guess.
   hook existed and this repository's own `.pre-commit-config.yaml`
   said outright why it was left out, a sentence issue #264 made false
   the day `.readthedocs.yaml` landed.
+
 ### `stop()`'s own leftover `loop.stop` is cancelled, closing issues #377 and #380
 
 - **`stop()`'s own first line, `self.loop.call_soon_threadsafe(self.loop.stop)`,
@@ -62,6 +63,35 @@ to check the guess.
   above already covers unconditionally, but because a manager whose
   `server` was never scheduled has no accept task the step could be
   owed to.
+
+### `P2pManager.server` stops discarding an accepted socket, closing issue #386
+
+- **`server` stores what it accepts in a queue, from a plain reader
+  callback registered with `loop.add_reader`, rather than awaiting
+  `loop.sock_accept` inside a task of its own** (closes #386): that
+  task's own future could already carry a connection when `stop`'s own
+  blanket sweep over `asyncio.all_tasks` cancelled it directly, and
+  `Task.cancel` on a task whose own awaited future is already done
+  discards it -- forcing `CancelledError` in on the next step regardless
+  of what the future already held, with nothing left holding the
+  accepted socket. Measured against a live listener under load, not
+  only the deterministic race the existing regression tests construct:
+  an instrumented copy of `stop()` traced the exact cancel discarding an
+  already-resolved `sock_accept` future on a manager fielding real
+  connections. The accepted socket now sits in the queue's own deque
+  the instant the callback runs, immune to that discard regardless of
+  when a cancel reaches the task waiting on the queue, and `server`'s
+  own `finally` closes whatever a cancellation leaves there.
+- **`P2pManager.stop`'s own grace step is removed rather than given a new
+  guard**:
+  it existed only to let a task sitting on an already-resolved future --
+  `server`'s own former `accept` task -- return normally into
+  `create_connection` before a direct cancel discarded it, which
+  `server`'s new queue makes unnecessary, and to avoid asking a loop
+  for one more step past its own scheduled `loop.stop` before that
+  stop was ever delivered, which `stop_handle.cancel()` (issue #377,
+  issue #380) already answers unconditionally. Neither reason applies
+  any longer.
 
 ### `check_transactions`'s tasks share a `PrecomputedTxData`, closing issue #385
 
