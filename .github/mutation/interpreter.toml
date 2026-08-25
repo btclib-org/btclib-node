@@ -1,0 +1,40 @@
+# The consensus entry point, mutated: src/btclib_node/interpreter.py is
+# where a block's transactions are checked, and CLAUDE.md's own
+# architecture section names it as what validates. Nothing bigger is in
+# scope yet -- this is a first profile, the way btclib-org/btclib's own
+# curve_group.toml calls itself one, and a second is a toml beside this
+# one, not a rewrite of it.
+
+[cosmic-ray]
+module-path = "src/btclib_node/interpreter.py"
+
+# Measured on the checkout that introduced this profile: 29 mutants
+# enumerate and all 29 run, in under half a minute of wall clock -- which
+# is what the wide budget in mutation.yml is for, a runner being slower
+# than that machine but not by an order of magnitude. The suite kills 21.
+#
+# The eight survivors are two kinds of gap. `check_transactions`' own
+# `len(x[0]) != len(x[1].vin)` survives as `<`, because every test that
+# reaches it passes fewer prevouts than inputs and none passes more; and
+# as `is not`, which small-int identity happens to leave equivalent to
+# `!=` on every value the suite tries. The other six are `NumberReplacer`
+# mutants on the tuple indices `check_transactions` builds its worker
+# arguments from (`x[0]`, `x[1]`), surviving because every test that
+# reaches that line hands it exactly one transaction with exactly one
+# input, where `x[0]` and `x[1]` name the only prevout list and the only
+# transaction there are, and `[0]` and `[-1]` on a one-input `range` name
+# the only index either. None of the eight is a test to write in this
+# pull request, itself being infrastructure rather than a fix -- they are
+# what the first scheduled run reports.
+test-command = """python -m pytest -x -q -n0 --no-cov \
+  tests/unit/interpreter_test.py"""
+
+# The unmutated command is a couple of seconds on the measured checkout.
+# The per-mutant ceiling is wide even so: a timeout is reported as KILLED
+# by Cosmic Ray, so a tight bound turns runner load into a false kill.
+timeout = 60
+
+excluded-modules = []
+
+[cosmic-ray.distributor]
+name = "local"

@@ -137,7 +137,18 @@ lint = [
     "mypy>=1.18.2",
     "types-requests>=2.32",
 ]
-dev = [{ include-group = "test" }, { include-group = "lint" }]
+# mutation testing, which asks the question coverage cannot: a line the
+# suite executes is not a line the suite checks. Its own group and not
+# part of test, because every cell of the gate installs that one and
+# none of them runs this -- the scheduled mutation workflow is the only
+# consumer, and it asks for --group test as well, cosmic-ray shelling
+# out to pytest.
+mutation = ["cosmic-ray"]
+dev = [
+    { include-group = "test" },
+    { include-group = "lint" },
+    { include-group = "mutation" },
+]
 
 [tool.uv]
 # the oldest uv that may read uv.lock, at the ceiling rather than below
