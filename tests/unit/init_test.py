@@ -35,7 +35,7 @@ from tests.conftest import unstarted_node_context
 from tests.helpers import wait_until
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterable, Iterator
 
 
 def a_node(tmp_path: Path) -> Node:
@@ -499,7 +499,9 @@ class ARecordingPool(APool):
         super().__init__(built, processes)
         self.calls: list[tuple[Any, list[Any]]] = []
 
-    def starmap(self, fn: Any, args: Any) -> None:
+    def starmap(
+        self, fn: Callable[..., object], args: Iterable[Iterable[object]]
+    ) -> None:
         self.calls.append((fn, list(args)))
 
 

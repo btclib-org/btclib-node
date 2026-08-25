@@ -18,6 +18,57 @@ to check the guess.
 
 ## Unreleased
 
+### `select` gains `ANN`, the first of issue #341's own three real-judgment rounds
+
+- **`select` gains `ANN` (flake8-annotations)** (issue #341): the
+  first of a further three rounds past issue #340's own mechanical
+  sweep, each needing a per-site read rather than a rule's own safe
+  fix. `ANN001`/`ANN201` and the rest of the family that names a
+  missing annotation report zero -- issue #166 already annotated every
+  signature in `btclib_node`, `tests` and `scripts` -- so `ANN401`
+  (`Any` disallowed as a parameter or return annotation) is the whole
+  of what this round found and the whole of what it is about.
+- **`ANN401`, `btclib_node/` (6 of 77)**: read individually rather than
+  bulk-suppressed, since a placeholder `Any` and a genuine escape hatch
+  look the same to the rule. Two were dead code, not merely
+  under-annotated: `log.Logger.__init__`'s `**kwargs` forwarded to
+  `logging.Logger.__init__`, whose own signature (`name`, `level`) both
+  arrive already named, and no caller in this tree ever supplied a
+  third; `rpc.connection.JSONEncoder.__init__`'s `*args` forwarded to
+  `json.JSONEncoder.__init__`, which is keyword-only and never receives
+  a positional argument from `json.dumps`'s own construction of it.
+  Both parameters removed. Two narrowed to `object`, since nothing at
+  either site does more than store or type-dispatch on the value:
+  `rpc.errors.json_type_name`'s `value` (looked up in a `dict[type,
+  str]` by `type(value)` alone) and `rpc.main.is_valid_rpc`'s `request`
+  (narrowed by `isinstance` before anything else touches it) --
+  `rpc.errors.error_msg`'s `request_id` the same way, echoed into the
+  response unread. The one genuine escape hatch left, `JSONEncoder`'s
+  own `**kwargs`, keeps `Any` with a `noqa` and a comment: it forwards
+  to `json.JSONEncoder.__init__`'s own heterogeneous keyword arguments
+  (`bool`, `int | None`, `tuple[str, str] | None`, a callable), not one
+  type to narrow to.
+- **`ANN401`, `tests/` (71 of 77)**: read individually rather than
+  swallowed as a family. 67 of the 71 are one idiom, run throughout the
+  whole suite -- a `SimpleNamespace` standing in for a production type
+  across the fields one scenario needs and none it does not, or a spy
+  forwarding blindly to the real callable it wraps (`socket.socket`,
+  `asyncio.Task.cancel`, `Loop.run_until_complete`) -- and are declined
+  together, in a new `pyproject.toml` `"tests/**"` per-file-ignore
+  entry that names the idiom and the 4 exceptions rather than the rule
+  wholesale, following the existing entries for `PLR0913`/`PLR2004`/
+  `S101`/`S311`. The 4 exceptions are narrowed rather than declined:
+  `filter_index_test.py`'s `CountingDb.write_batch` returns exactly
+  what `KeyValueStore.write_batch` returns
+  (`AbstractContextManager[KeyValueStore]`), not an unrelated `Any`;
+  `init_test.py`'s `ARecordingPool.starmap` stores its arguments
+  without calling them, so `Callable[..., object]` and
+  `Iterable[Iterable[object]]` say what the real ones would without
+  claiming more; `rpc/callbacks_test.py`'s `a_chain_index_node` already
+  built its return value with `cast("Node", ...)` before returning it,
+  so the function's own declared return type could simply be `Node`
+  rather than repeating `Any` one line later.
+
 ### `select` gains `TC`, the first family beyond issue #284's own reference selection
 
 - **`select` gains `TC` (flake8-type-checking)** (issue #340): the

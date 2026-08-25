@@ -62,18 +62,21 @@ _JSON_TYPE_NAMES: dict[type, str] = {
 }
 
 
-def json_type_name(value: Any) -> str:
+def json_type_name(value: object) -> str:
     """Name a decoded JSON value the way Core's RPC_TYPE_ERROR names it.
 
     `value` is always one of the six JSON types here: `connection.py`
     decodes every request with the standard library's `json.loads`,
-    which produces no other Python type.
+    which produces no other Python type. Named that narrowly in the
+    docstring rather than in the signature: `_JSON_TYPE_NAMES` is
+    keyed on `type(value)` alone, so nothing this function does needs
+    `value` to be any narrower than `object`.
     """
     return _JSON_TYPE_NAMES[type(value)]
 
 
 def error_msg(
-    code: RpcErrorCode, message: str, request_id: Any = None
+    code: RpcErrorCode, message: str, request_id: object = None
 ) -> dict[str, Any]:
     """The error response of JSON-RPC 2.0's section 5, code and message given.
 
@@ -83,7 +86,11 @@ def error_msg(
     request object shows. So a caller passes the id wherever
     `is_valid_rpc` has already found one, and leaves it out where the
     request -- or, for `PARSE_ERROR`, the body before it was even a
-    request -- is what was wrong.
+    request -- is what was wrong. Nothing here reads `request_id` beyond
+    embedding it in the response unchanged, so `object` is as much as
+    the signature needs -- the specification lets a request's `id` be
+    any JSON scalar, and this node does not itself validate the field
+    before echoing it back.
     """
     return {
         "jsonrpc": "2.0",

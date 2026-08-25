@@ -20,7 +20,7 @@ def get_connection(manager: RpcManager, connection_id: int) -> Connection | None
         return None
 
 
-def is_valid_rpc(request: Any) -> bool:
+def is_valid_rpc(request: object) -> bool:
     if not isinstance(request, dict):
         return False
     if "method" not in request:

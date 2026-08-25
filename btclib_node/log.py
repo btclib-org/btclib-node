@@ -3,7 +3,7 @@
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -14,10 +14,9 @@ class Logger(logging.Logger):
         self,
         log_path: str | Path | None = None,
         debug: bool = False,
-        **kwargs: Any,
     ) -> None:
         level = logging.DEBUG if debug else logging.INFO
-        super().__init__(name="Logger", level=level, **kwargs)
+        super().__init__(name="Logger", level=level)
         # `logging.Handler`, which is the type the two branches share:
         # inferred from the first of them instead, the second is a
         # StreamHandler assigned to a name holding a FileHandler. What

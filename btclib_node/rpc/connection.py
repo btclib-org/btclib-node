@@ -72,8 +72,21 @@ class RawJSON:
 
 
 class JSONEncoder(json.JSONEncoder):
-    def __init__(self, *args: Any, mark: str = "", **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        mark: str = "",
+        # json.dumps(cls=JSONEncoder, **kw) is the only caller (see
+        # below), and it always calls this keyword-only -- json's own
+        # dumps builds every argument by name, skipkeys through
+        # sort_keys, never positionally -- so there is no *args to
+        # accept here. **kwargs is still Any and stays that way: it
+        # forwards blindly to json.JSONEncoder.__init__, whose own
+        # keyword arguments are a heterogeneous mix (bool, int | None,
+        # tuple[str, str] | None, a callable), not one type to narrow
+        # to.
+        **kwargs: Any,  # noqa: ANN401
+    ) -> None:
+        super().__init__(**kwargs)
         self._mark = mark
 
     @override

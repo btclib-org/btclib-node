@@ -12,7 +12,7 @@ defines.
 """
 
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from btclib.block import Block
@@ -29,6 +29,7 @@ from tests.unit.main_test import connect, spend
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from contextlib import AbstractContextManager
 
     from btclib_node.block_db import RevBlock
     from btclib_node.db import KeyValueStore
@@ -529,7 +530,7 @@ def test_the_pair_reaches_the_database_as_one_write(
     class CountingDb:
         """The chainstate database, counting the batches asked of it."""
 
-        def write_batch(self) -> Any:
+        def write_batch(self) -> AbstractContextManager[KeyValueStore]:
             batches.append(True)
             return real.write_batch()
 
