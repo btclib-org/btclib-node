@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 
 def get_connection(manager: RpcManager, connection_id: int) -> Connection | None:
+    """Look up `connection_id` in `manager.connections`, or `None`."""
     try:
         return manager.connections[connection_id]
     except KeyError:
@@ -30,6 +31,7 @@ def get_connection(manager: RpcManager, connection_id: int) -> Connection | None
 
 
 def is_valid_rpc(request: object) -> bool:
+    """Check `request` for JSON-RPC 2.0's own required `method` and `id`."""
     if not isinstance(request, dict):
         return False
     if "method" not in request:
@@ -46,6 +48,17 @@ def is_valid_rpc(request: object) -> bool:
 
 
 def handle_rpc(node: Node) -> None:
+    """Pop one request batch off `node.rpc_manager.messages` and answer it.
+
+    Validates each request in the batch with `is_valid_rpc`, dispatches
+    a valid one by method name through `rpc.callbacks.callbacks`, and
+    answers an unknown method, an invalid request or a raising callback
+    with a JSON-RPC error rather than raising past `Node`'s own loop --
+    except a `stop` request, whose own reply is waited on before
+    `node.stop()` runs, so the client sees it before the loop it arrived
+    on is torn down. `conn_id` is popped off `manager.connections`
+    either way, once answered.
+    """
     data, conn_id = node.rpc_manager.messages.popleft()
     conn = get_connection(node.rpc_manager, conn_id)
     if not conn:

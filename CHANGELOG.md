@@ -125,6 +125,22 @@ to check the guess.
   deferred the way #264's own `D100`/`D104` split deferred `tests/**`
   and `scripts/**`.
 
+### `src/btclib_node/rpc/` gets real docstrings (issue #373)
+
+- **`D101`/`D102`/`D103`/`D107` are selected for `src/btclib_node/rpc/`**
+  (issue #373, slice 5): every class, method, function and `__init__`
+  across `callbacks.py`, `connection.py`, `errors.py`, `main.py` and
+  `manager.py` now carries a docstring grounded in what it does, several
+  cited against Bitcoin Core's own source at the commit each was read
+  at. This is the fifth and last of #373's own package-directory
+  slices: no directory under `src/btclib_node/` defers any of the four
+  any longer. Left open, unchanged from #264's own
+  scope and not part of the five-slice split: `D100`/`D104` for
+  `tests/**` and `scripts/**`, and `D205`/`D401` for `tests/**`, both
+  still deferred by their own per-file-ignore rather than read
+  individually. `D403`/`D404`/`D105` are clean tree-wide, `tests/**`
+  and `scripts/**` included.
+
 ### The docs gate's own remaining gaps close: `[project.urls]`, `local-link-prefix`
 
 - **`conf.py`'s `BLOB` constant reads `pyproject.toml`'s own

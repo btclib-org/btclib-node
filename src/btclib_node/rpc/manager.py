@@ -27,7 +27,16 @@ if TYPE_CHECKING:
 
 
 class RpcManager(threading.Thread):
+    """The thread listening for JSON-RPC connections.
+
+    The module docstring above is where its own loop and the boundary
+    with `Node`'s thread are argued; `connections` and `messages` are
+    this class's own state for that, and `_accept_queue` is `server`'s
+    own, kept here only so a test can reach it directly.
+    """
+
     def __init__(self, node: Node, port: int | None) -> None:
+        """Set up empty connection and message tables, and a fresh loop."""
         super().__init__()
         self.node = node
         self.logger = node.logger
@@ -71,6 +80,7 @@ class RpcManager(threading.Thread):
     def create_connection(
         self, loop: asyncio.AbstractEventLoop, client: socket.socket
     ) -> Connection:
+        """Wrap `client` in a `Connection` and register it under a new id."""
         client.settimeout(0.0)
         new_connection = Connection(loop, client, self, self.last_connection_id)
         self.connections[self.last_connection_id] = new_connection
@@ -122,6 +132,16 @@ class RpcManager(threading.Thread):
     async def server(
         self, loop: asyncio.AbstractEventLoop, server_socket: socket.socket
     ) -> None:
+        """Accept connections off `server_socket` until cancelled by `stop`.
+
+        Registers `_accept_one` as `server_socket`'s own reader callback
+        and awaits `_accept_queue` for what it accepts, one `Connection`
+        and one `conn.run` task per socket -- the queue, not a bare
+        `loop.sock_accept`, being what keeps a socket already accepted
+        from being discarded by a cancel landing between the accept and
+        this coroutine's own next step; see `_accept_queue`'s own
+        comment above for the history that forced it.
+        """
         with server_socket:
             # A plain reader callback stores what it accepts in a
             # queue: the socket sits in a plain deque the instant
@@ -190,6 +210,15 @@ class RpcManager(threading.Thread):
         loop.run_forever()
 
     def stop(self) -> None:
+        """Stop this manager's loop, join its thread, and close every socket.
+
+        Guarded on `is_alive` for the node that never started this
+        thread at all; the long comments below argue why the handle
+        this schedules is cancelled unconditionally afterward, why the
+        pending-task sweep runs as its own pass rather than folded into
+        one combined loop, and why closing `_server_socket` here does
+        not race `server`'s own `with server_socket:`.
+        """
         stop_handle = self.loop.call_soon_threadsafe(self.loop.stop)
         # `join` blocks this thread without spinning it, the way
         # `Node.stop` already waits on itself with `self.join`. Guarded

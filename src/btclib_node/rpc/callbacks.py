@@ -34,10 +34,12 @@ if TYPE_CHECKING:
 
 
 def get_best_block_hash(node: Node, conn: Connection, _: list[Any]) -> bytes:
+    """Answer `getbestblockhash` with the active chain's own tip."""
     return node.chainstate.block_index.active_chain[-1]
 
 
 def get_block_count(node: Node, conn: Connection, _: list[Any]) -> int:
+    """Answer `getblockcount` with the active chain's own height."""
     # the genesis block is active_chain[0] and Core's own height for it
     # is 0 (src/validation.h's nHeight on the genesis CBlockIndex), so
     # the count is the list's own last index, not its length
@@ -77,6 +79,13 @@ def get_blockchain_info(node: Node, conn: Connection, _: list[Any]) -> dict[str,
 
 
 def get_block_hash(node: Node, conn: Connection, params: list[Any]) -> bytes:
+    """Answer `getblockhash`, Core's own checks on `height` in Core's order.
+
+    A missing, wrongly typed, non-integral or out-of-range `height` is
+    each refused the way `RPCMethod::HandleRequest` and
+    `src/rpc/blockchain.cpp:585-601` refuse it, cited beside each check
+    below; a height in range answers `active_chain[height]`.
+    """
     active_chain = node.chainstate.block_index.active_chain
 
     if not params:
@@ -130,6 +139,14 @@ def get_block_hash(node: Node, conn: Connection, params: list[Any]) -> bytes:
 def get_block_header(
     node: Node, conn: Connection, params: list[Any]
 ) -> dict[str, Any] | str:
+    """Answer `getblockheader` for `params[0]`, verbose by Core's own default.
+
+    Not verbose, answers the same eighty bytes a peer is sent on the
+    wire, hex-encoded; verbose, answers the object `blockheaderToJSON`
+    does, height and confirmations included for a header off the active
+    chain as much as for one on it -- each field's own Core citation is
+    beside where it is built, below.
+    """
     block_index = node.chainstate.block_index
 
     if not params:
@@ -245,6 +262,14 @@ def service_names(services: int) -> list[str]:
 
 
 def get_peer_info(node: Node, conn: Connection, _: list[Any]) -> list[dict[str, Any]]:
+    """Answer `getpeerinfo`, one entry per handshake-complete peer.
+
+    A pending connection -- accepted or dialled but short of `verack` --
+    is left out: it carries no `version_message` yet for the fields
+    below to read. Each field matches one `getpeerinfo` answers with its
+    own `CNode::CopyStats` (`src/net.cpp`, bitcoin/bitcoin@58a7869f86),
+    cited beside where it is built.
+    """
     out: list[dict[str, Any]] = []
     # `.copy()`, not the live dict: this runs on `Node`'s own loop,
     # under `handle_rpc`, while `P2pManager.remove_connection` pops
@@ -312,9 +337,12 @@ def get_peer_info(node: Node, conn: Connection, _: list[Any]) -> list[dict[str, 
 
 
 def get_connection_count(node: Node, conn: Connection, _: list[Any]) -> int:
-    # Core's own `getconnectioncount` counts every entry of `m_nodes`
-    # (`CConnman::GetNodeCount`), which holds a socket from the moment
-    # it is accepted or dialled -- before its handshake, not only after
+    """Answer `getconnectioncount`, a pending connection counted too.
+
+    Core's own `getconnectioncount` counts every entry of `m_nodes`
+    (`CConnman::GetNodeCount`), which holds a socket from the moment
+    it is accepted or dialled -- before its handshake, not only after.
+    """
     manager = node.p2p_manager
     return len(manager.connections) + len(manager.pending_connections)
 
@@ -338,6 +366,13 @@ def _btc_amount(sats: int) -> RawJSON:
 
 
 def get_mempool_info(node: Node, conn: Connection, _: list[Any]) -> dict[str, Any]:
+    """Answer `getmempoolinfo` with the fields this tree backs for real.
+
+    The comment below argues, field by field, why Core's own several
+    others are left out rather than answered with a placeholder, and
+    why `mempoolminfee` alone among them is BTC/kvB rather than this
+    tree's own sat/kvB.
+    """
     mempool = node.mempool
     # Core's own MempoolInfoToJSON (`src/rpc/mempool.cpp:1075-1086`,
     # bitcoin/bitcoin@58a7869f86) answers several fields beyond these
@@ -384,6 +419,13 @@ def get_mempool_info(node: Node, conn: Connection, _: list[Any]) -> dict[str, An
 def get_raw_mempool(
     node: Node, conn: Connection, params: list[Any]
 ) -> dict[str, Any] | list[str]:
+    """Answer `getrawmempool`, Core's own three shapes by `params`.
+
+    `verbose` alone answers one object per mempool transaction; neither
+    flag answers a plain array of txids; `mempool_sequence` alone adds
+    `node.mempool.sequence` beside that array. The two together are
+    refused outright, matching `MempoolToJSON`'s own combination check.
+    """
     # verbose and mempool_sequence, both RPCArg::Type::BOOL,
     # RPCArg::Default{false}: src/rpc/mempool.cpp:694-695
     verbose = bool_param(params, 0, default=False)
@@ -573,6 +615,13 @@ _MEMPOOL_FULL_REASON = "Mempool is full"
 def test_mempool_accept(
     node: Node, conn: Connection, params: list[Any]
 ) -> list[dict[str, Any]]:
+    """Answer `testmempoolaccept`, one verdict per raw tx in `params[0]`.
+
+    Runs `verify_mempool_acceptance` without calling `Mempool.add_tx`,
+    so a transaction it verifies is reported allowed without being
+    added -- the same reject reasons `send_raw_transaction` raises are
+    reported here per entry instead, and never end the whole batch.
+    """
     rawtxs = params[0]
     out: list[dict[str, Any]] = []
     for rawtx in rawtxs:
@@ -607,6 +656,14 @@ def test_mempool_accept(
 
 
 def send_raw_transaction(node: Node, conn: Connection, params: list[Any]) -> str:
+    """Answer `sendrawtransaction`: verify, add to the mempool, announce.
+
+    A transaction that fails to decode, that `verify_mempool_acceptance`
+    refuses, or that `Mempool.add_tx` evicts right back out under its
+    own size limit is each refused with the reject reason and code
+    cited beside its own raise, below; one kept is broadcast to peers
+    and its txid answered.
+    """
     rawtx = params[0]
     if not isinstance(rawtx, str):
         # hexstring is declared RPCArg::Type::STR_HEX
@@ -686,10 +743,18 @@ def send_raw_transaction(node: Node, conn: Connection, params: list[Any]) -> str
 
 
 def ping(node: Node, conn: Connection, _: list[Any]) -> None:
+    """Answer `ping` by sending every peer a fresh one, via `ping_all`.
+
+    Called on `Node`'s own thread, `handle_rpc`'s the same as every
+    handler here; `ping_all` is defined on `P2pManager` but reaches this
+    one call site as a plain method call, not a coroutine scheduled on
+    that manager's own loop.
+    """
     node.p2p_manager.ping_all()
 
 
 def stop(node: Node, conn: Connection, _: list[Any]) -> str:
+    """Answer `stop`; `handle_rpc` waits for this reply before stopping."""
     return "Btclib node stopping"
 
 
