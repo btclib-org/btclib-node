@@ -127,8 +127,11 @@ _ADDRESS_SIZE = {
 def an_address(
     n: int = 0, network_id: BIP155Network = BIP155Network.IPV4
 ) -> NetworkAddressV2:
-    # seen just now: an address the node would not serve is a different
-    # test, in tests/unit/p2p/address.py
+    """Build an active address of `network_id`, distinguished by `n`.
+
+    Seen just now: an address the node would not serve is a different
+    test, in tests/unit/p2p/address_test.py.
+    """
     return NetworkAddressV2(
         timestamp=int(time.time()),
         services=0,
@@ -139,14 +142,18 @@ def an_address(
 
 
 def a_version_address(services: int = 0) -> NetworkAddress:
-    # unroutable, and a `version` message's address, which carries no
-    # timestamp: the narrowest of btclib's address types
+    """Build an unroutable `NetworkAddress`, the narrowest shape a `version` carries.
+
+    A `version` message's own address field has no timestamp, unlike
+    `NetworkAddressV2`.
+    """
     return NetworkAddress(services, "0.0.0.0", 18444)  # noqa: S104
 
 
 def make_node(
     addresses: Sequence[NetworkAddressV2], *, prefer_addressv2: bool = False
 ) -> tuple[Any, Any, list[Any]]:
+    """Build a node whose `peer_db` already holds `addresses` as active, and a peer stand-in."""
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
     for address in addresses:
         peer_db.active_addresses.append(address)
@@ -159,6 +166,7 @@ def make_node(
 
 
 def test_an_ipv4_address_is_answered_in_an_addr() -> None:
+    """A `getaddr` from a peer that has not asked for addrv2 gets an `Addr`."""
     address = an_address()
     node, conn, sent = make_node([address])
     getaddr(node, b"", conn)
@@ -170,6 +178,7 @@ def test_an_ipv4_address_is_answered_in_an_addr() -> None:
 
 
 def test_a_peer_that_asked_for_addrv2_gets_addrv2() -> None:
+    """A `getaddr` from a peer with `prefer_addressv2` gets an `AddrV2`."""
     address = an_address()
     node, conn, sent = make_node([address], prefer_addressv2=True)
     getaddr(node, b"", conn)
@@ -181,10 +190,13 @@ def test_a_peer_that_asked_for_addrv2_gets_addrv2() -> None:
 def test_an_address_addr_version_1_cannot_carry_is_left_out(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # an onion address has no addr version 1 entry to be built into, so
-    # one of them among the active addresses would cost the whole answer.
-    # The sample itself is a different test, below, so this patches it to
-    # the identity to isolate the addr-v1 filter it is testing.
+    """An `Addr` answer to an addrv1 peer leaves out an address it cannot carry.
+
+    An onion address has no addr version 1 entry to be built into, so
+    one of them among the active addresses would cost the whole answer.
+    The sample itself is a different test, below, so this patches it to
+    the identity to isolate the addr-v1 filter it is testing.
+    """
     monkeypatch.setattr(cb, "_addresses_to_send", lambda active: active)
     onion = an_address(network_id=BIP155Network.TORV3)
     ipv4 = an_address()
@@ -198,6 +210,7 @@ def test_an_address_addr_version_1_cannot_carry_is_left_out(
 
 
 def test_the_same_address_reaches_a_peer_that_can_take_it() -> None:
+    """An address addrv1 could not carry still reaches an addrv2 peer."""
     onion = an_address(network_id=BIP155Network.TORV3)
     node, conn, sent = make_node([onion], prefer_addressv2=True)
     getaddr(node, b"", conn)
@@ -206,23 +219,28 @@ def test_the_same_address_reaches_a_peer_that_can_take_it() -> None:
 
 
 def test_nothing_active_is_answered_with_nothing() -> None:
+    """A `getaddr` against an empty active table gets no answer at all."""
     node, conn, sent = make_node([])
     getaddr(node, b"", conn)
     assert not sent
 
 
 def test_nothing_active_is_answered_with_nothing_over_addrv2_either() -> None:
+    """The same silence holds for an addrv2 peer, not only an addrv1 one."""
     node, conn, sent = make_node([], prefer_addressv2=True)
     getaddr(node, b"", conn)
     assert not sent
 
 
 def test_a_getaddr_answer_is_a_sample_not_the_whole_table() -> None:
-    # #71: Core's own reason for not serving the live table is that doing
-    # so tells anyone who asks the complete set of peers this node knows
-    # of. 500 addresses, 23% rounded up is 115 -- under MAX_ADDR_TO_SEND,
-    # so this also proves one sample answers in one message rather than
-    # several.
+    """A `getaddr` answer is a 23% sample of the active table, not all of it.
+
+    #71: Core's own reason for not serving the live table is that doing
+    so tells anyone who asks the complete set of peers this node knows
+    of. 500 addresses, 23% rounded up is 115 -- under MAX_ADDR_TO_SEND,
+    so this also proves one sample answers in one message rather than
+    several.
+    """
     addresses = [an_address(n) for n in range(500)]
     node, conn, sent = make_node(addresses)
     getaddr(node, b"", conn)
@@ -235,9 +253,12 @@ def test_a_getaddr_answer_is_a_sample_not_the_whole_table() -> None:
 
 
 def test_a_getaddr_answer_is_capped_at_max_addr_to_send() -> None:
-    # #71: the chunking Core itself misbehaves a peer over is right at
-    # 1000 -- 23% of 10000 is 2300, so the cap and not the percentage is
-    # what bounds this answer
+    """A large active table is answered up to `MAX_ADDR_TO_SEND`, not 23% of it.
+
+    #71: the chunking Core itself misbehaves a peer over is right at
+    1000 -- 23% of 10000 is 2300, so the cap and not the percentage is
+    what bounds this answer.
+    """
     addresses = [an_address(n) for n in range(10000)]
     node, conn, sent = make_node(addresses, prefer_addressv2=True)
     getaddr(node, b"", conn)
@@ -246,7 +267,10 @@ def test_a_getaddr_answer_is_capped_at_max_addr_to_send() -> None:
 
 
 def test_a_second_getaddr_on_the_same_connection_is_ignored() -> None:
-    # #71: a peer asking in a loop is served the table once
+    """A peer asking `getaddr` twice on one connection is served the table once.
+
+    #71: a peer asking in a loop is served the table once.
+    """
     address = an_address()
     node, conn, sent = make_node([address])
     getaddr(node, b"", conn)
@@ -255,6 +279,7 @@ def test_a_second_getaddr_on_the_same_connection_is_ignored() -> None:
 
 
 def another_conn(sent: list[Any]) -> Any:
+    """Build a second peer stand-in sharing `sent` with the one `make_node` built."""
     return SimpleNamespace(
         prefer_addressv2=False, send=sent.append, answered_getaddr=False
     )
@@ -263,10 +288,13 @@ def another_conn(sent: list[Any]) -> Any:
 def test_two_connections_close_together_are_answered_the_same_sample(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # #71: a fresh secrets.SystemRandom().sample per connection would let
-    # two peers connecting close together compare answers and infer what
-    # changed between them, which answering once per connection alone
-    # does not stop -- a new connection still draws fresh
+    """Two peers asking `getaddr` close together get the identical sample.
+
+    #71: a fresh `secrets.SystemRandom().sample` per connection would
+    let two peers connecting close together compare answers and infer
+    what changed between them, which answering once per connection
+    alone does not stop -- a new connection still draws fresh.
+    """
     draws: list[list[NetworkAddressV2]] = []
 
     def counting_sample(active: list[NetworkAddressV2]) -> list[NetworkAddressV2]:
@@ -286,6 +314,7 @@ def test_two_connections_close_together_are_answered_the_same_sample(
 def test_the_cached_sample_is_redrawn_once_it_expires(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Past `_ADDR_SAMPLE_LIFETIME` plus jitter, a new `getaddr` draws fresh."""
     draws: list[list[NetworkAddressV2]] = []
 
     def counting_sample(active: list[NetworkAddressV2]) -> list[NetworkAddressV2]:
@@ -317,6 +346,7 @@ def a_version(
     relay: bool | None = True,
     addr_from_port: int = 18444,
 ) -> bytes:
+    """Build a serialized `version` message, as the `version` callback receives one."""
     return a_parsed_version(
         protocol=protocol,
         services=services,
@@ -337,6 +367,7 @@ def a_parsed_version(
     # and not the address -- btclib-org/btclib-node#70
     addr_from_port: int = 18444,
 ) -> Version:
+    """Return the parsed `Version` `a_version` serializes, for tests that read fields."""
     return Version(
         version=protocol,
         services=services,
@@ -351,6 +382,12 @@ def a_parsed_version(
 
 
 def a_peer(**attributes: Any) -> Any:
+    """Build a `Connection` double at every field a callback might read or write.
+
+    `**attributes` overrides any default, for the one or two fields a
+    given test needs to start from something other than the ordinary
+    just-connected shape.
+    """
     sent: list[Any] = []
     stopped = []
     peer = SimpleNamespace(
@@ -391,6 +428,7 @@ def a_handshake_node(
     promote_connection: Any = None,
     min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
 ) -> Any:
+    """Build a node double with just what the handshake callbacks read or write."""
     discouraged: list[Any] = []
     return SimpleNamespace(
         status=status,
@@ -412,6 +450,7 @@ def a_handshake_node(
 
 
 def commands(peer: Any) -> list[str]:
+    """Return the command each message on `peer.sent` travels under, or itself if a string."""
     return [
         message if isinstance(message, str) else type(message).__name__
         for message in peer.sent
@@ -419,6 +458,7 @@ def commands(peer: Any) -> list[str]:
 
 
 def test_a_version_is_answered_with_what_this_node_speaks() -> None:
+    """A compatible `version` is answered with this node's own handshake trio."""
     node = a_handshake_node()
     peer = a_peer()
     version(node, a_version(), peer)
@@ -432,6 +472,11 @@ def test_a_version_is_answered_with_what_this_node_speaks() -> None:
 
 
 def test_a_version_carrying_our_own_nonce_is_this_node_calling_itself() -> None:
+    """A `version` carrying a nonce this node sent is a self-connection, dropped.
+
+    #283: an incompatibility, not a protocol violation, and still cause
+    to discourage.
+    """
     node = a_handshake_node(nonces=[7])
     peer = a_peer()
     version(node, a_version(nonce=7), peer)
@@ -442,6 +487,7 @@ def test_a_version_carrying_our_own_nonce_is_this_node_calling_itself() -> None:
 
 
 def test_a_peer_speaking_an_older_protocol_is_let_go() -> None:
+    """A `version` below `ProtocolVersion` is refused and the peer discouraged."""
     node = a_handshake_node()
     peer = a_peer()
     version(node, a_version(protocol=ProtocolVersion - 1), peer)
@@ -450,6 +496,7 @@ def test_a_peer_speaking_an_older_protocol_is_let_go() -> None:
 
 
 def test_a_peer_without_the_witness_service_is_let_go() -> None:
+    """A peer that never advertised `NODE_WITNESS` is refused and discouraged."""
     node = a_handshake_node()
     peer = a_peer()
     version(node, a_version(services=ServiceFlags.NODE_NETWORK), peer)
@@ -458,6 +505,13 @@ def test_a_peer_without_the_witness_service_is_let_go() -> None:
 
 
 def test_a_pruned_peer_is_let_go_only_once_the_blocks_are_synced() -> None:
+    """A peer missing `NODE_NETWORK` is tolerated until this node needs blocks.
+
+    Before `BlockSynced`, a peer that carries `NODE_WITNESS` alone can
+    still serve this node headers, so it is kept; once blocks are
+    wanted, the same peer is refused and discouraged for lacking the
+    full-history service this node now needs.
+    """
     pruned = ServiceFlags.NODE_WITNESS
     node = a_handshake_node(status=NodeStatus.HeaderSynced)
     peer = a_peer()
@@ -473,6 +527,12 @@ def test_a_pruned_peer_is_let_go_only_once_the_blocks_are_synced() -> None:
 
 
 def test_a_version_that_says_it_relays_nothing_is_taken_at_its_word() -> None:
+    """A `version` with `relay=False` sets `relay_tx` false, on the right attribute.
+
+    The flag went to the attribute `Connection` defines, and nowhere
+    else: the near miss that dropped it before was one letter long,
+    `relay_txs` rather than `relay_tx`.
+    """
     peer = a_peer()
     version(a_handshake_node(), a_version(relay=False), peer)
     assert peer.relay_tx is False
@@ -482,49 +542,58 @@ def test_a_version_that_says_it_relays_nothing_is_taken_at_its_word() -> None:
 
 
 def test_a_version_without_the_relay_flag_is_a_peer_asking_for_relay() -> None:
-    # BIP37's default, which a peer older than the flag relies on: read
-    # as a false, it would be recorded as asking for the opposite
+    """A `version` with no relay flag at all is read as BIP37's own default: true.
+
+    BIP37's default is what a peer older than the flag relies on: read
+    as a false, it would be recorded as asking for the opposite.
+    """
     peer = a_peer(relay_tx=False)
     version(a_handshake_node(), a_version(relay=None), peer)
     assert peer.relay_tx is True
 
 
 def test_a_version_with_a_trailing_octet_still_costs_the_peer() -> None:
-    # issue #149 leaves this one asymmetric on purpose: addr and addrv2
-    # (below) accept a BinaryData stream, and btclib's own
-    # assert_no_trailing treats one as "the caller's", nothing past it
-    # checked -- Core's own leniency, reached with no second parser.
-    # Version.parse takes Octets alone (its own docstring: "the envelope
-    # is what says where a payload ends"), because its optional relay
-    # byte is detected by whether one more byte is there at all; handing
-    # it a stream that could plausibly hold more would make a genuinely
-    # unknown trailing octet misread as that flag. There is no btclib
-    # mechanism this node can lean on for `version` without a private
-    # copy of its field-by-field parse, so this still raises out of the
-    # callback -- main.handle_p2p_handshake is what turns that into
-    # conn.stop(), covered by tests/unit/p2p/main.py's own coverage of
-    # that generic behaviour.
+    """A `version` with a stray trailing octet still raises, unlike `addr`/`addrv2`.
+
+    Issue #149 leaves this one asymmetric on purpose: addr and addrv2
+    (below) accept a BinaryData stream, and btclib's own
+    assert_no_trailing treats one as "the caller's", nothing past it
+    checked -- Core's own leniency, reached with no second parser.
+    Version.parse takes Octets alone (its own docstring: "the envelope
+    is what says where a payload ends"), because its optional relay
+    byte is detected by whether one more byte is there at all; handing
+    it a stream that could plausibly hold more would make a genuinely
+    unknown trailing octet misread as that flag. There is no btclib
+    mechanism this node can lean on for `version` without a private
+    copy of its field-by-field parse, so this still raises out of the
+    callback -- main.handle_p2p_handshake is what turns that into
+    conn.stop(), covered by tests/unit/p2p/main_test.py's own coverage
+    of that generic behaviour.
+    """
     peer = a_peer()
     with pytest.raises(BTClibValueError):
         version(a_handshake_node(), a_version() + b"\x00", peer)
 
 
 def test_a_relay_octet_that_is_neither_0_nor_1_still_costs_the_peer() -> None:
-    # issue #149's second half, closed on this: Core's own
-    # Unserialize<bool> (serialize.h) reads any nonzero octet as true,
-    # where Version.parse raises for anything but 0x00/0x01. Reaching
-    # Core's leniency here would mean either replaying Version.parse's
-    # whole field walk (the fixed fields, both NetworkAddress entries and
-    # the var_bytes user agent) to find where the flag sits in the
-    # payload, or matching the wording of the BTClibValueError it raises
-    # -- both bind this node to btclib's private shape rather than its
-    # public contract, unlike the stream-based leniency addr/addrv2 use
-    # above. And Core's own encoder (Serialize<bool>, the same
-    # serialize.h) can never write anything but 0x00/0x01: a bool
-    # converts to 0 or 1, nothing else, so no peer running Core -- or
-    # this node's own Version.serialize -- ever reaches this path, only
-    # an adversarial or already-broken one does. Disconnecting it is the
-    # policy kept.
+    """A relay byte that is neither 0 nor 1 raises, unlike Core's own leniency.
+
+    Issue #149's second half, closed on this: Core's own
+    Unserialize<bool> (serialize.h) reads any nonzero octet as true,
+    where Version.parse raises for anything but 0x00/0x01. Reaching
+    Core's leniency here would mean either replaying Version.parse's
+    whole field walk (the fixed fields, both NetworkAddress entries and
+    the var_bytes user agent) to find where the flag sits in the
+    payload, or matching the wording of the BTClibValueError it raises
+    -- both bind this node to btclib's private shape rather than its
+    public contract, unlike the stream-based leniency addr/addrv2 use
+    above. And Core's own encoder (Serialize<bool>, the same
+    serialize.h) can never write anything but 0x00/0x01: a bool
+    converts to 0 or 1, nothing else, so no peer running Core -- or
+    this node's own Version.serialize -- ever reaches this path, only
+    an adversarial or already-broken one does. Disconnecting it is the
+    policy kept.
+    """
     peer = a_peer()
     # relay=None serializes nothing, so appending one raw octet is the
     # only relay byte this payload carries
@@ -533,11 +602,15 @@ def test_a_relay_octet_that_is_neither_0_nor_1_still_costs_the_peer() -> None:
 
 
 def a_real_connection() -> Connection:
-    # not a stand-in: the defect this is about was a callback writing an
-    # attribute no Connection has, which a SimpleNamespace peer takes
-    # without a word and a Connection takes just as quietly. What a real
-    # one adds is that the attribute asserted on below is the one the
-    # rest of the node reads.
+    """Build a real `Connection`, not a stand-in, for a defect a double cannot catch.
+
+    Not a stand-in: the defect this is about was a callback writing an
+    attribute no `Connection` has, which a `SimpleNamespace` peer takes
+    without a word and a `Connection` takes just as quietly -- Python
+    attribute assignment does not check the name either way. What a
+    real one adds is that the attribute asserted on below is the one
+    the rest of the node reads.
+    """
     manager = SimpleNamespace(node=a_handshake_node(), loop=None, peer_db=None)
     unroutable = peer_address("0.0.0.0", 18444)  # noqa: S104
     connection = Connection(
@@ -557,6 +630,7 @@ def a_real_connection() -> Connection:
 def test_what_a_peer_said_about_relay_lands_on_the_connection(
     *, relay: bool | None, wanted: bool
 ) -> None:
+    """`version`'s relay flag lands on a real `Connection.relay_tx`, every value."""
     connection = a_real_connection()
     with connection.client:
         assert connection.relay_tx is True  # BIP37's default until told
@@ -565,6 +639,12 @@ def test_what_a_peer_said_about_relay_lands_on_the_connection(
 
 
 def test_a_verack_completes_the_handshake() -> None:
+    """A valid `verack` promotes the peer and sends the post-handshake messages.
+
+    `promote_connection`, moving the peer out of `pending_connections`
+    and into `connections`, runs right where `P2pConnStatus.Connected`
+    is set (btclib-org/btclib-node#131).
+    """
     promoted: list[int] = []
     peer = a_peer(id=9, version_message=a_parsed_version(), wtxidrelay_received=True)
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
@@ -596,6 +676,13 @@ def test_a_verack_completes_the_handshake() -> None:
 
 
 def test_an_outbound_handshake_records_the_address_dialled() -> None:
+    """A completed outbound handshake records the address this node dialled.
+
+    #70: evidence this node dialled it and a socket answered, not the
+    peer's own unauthenticated word for its address, and the live
+    handshake's own services rather than whatever an earlier gossip of
+    the same peer happened to carry.
+    """
     # #70: evidence this node dialled it and a socket answered, not the
     # peer's own unauthenticated word for its address
     dialled = peer_address("1.2.3.4", 18444)
@@ -621,6 +708,13 @@ def test_an_outbound_handshake_records_the_address_dialled() -> None:
 
 
 def test_an_inbound_handshake_records_the_peers_announced_port() -> None:
+    """An inbound handshake records the port the peer's own `version` names.
+
+    #70: `sock_accept`'s own port is the peer's ephemeral one, never one
+    anything could dial back on -- only the peer's own `addr_from` names
+    a listening port, and it is that port, not the ephemeral one, that
+    is recorded.
+    """
     # #70: sock_accept's own port is the peer's ephemeral one, never one
     # anything could dial back on -- only the peer's own version names a
     # listening port
@@ -643,6 +737,7 @@ def test_an_inbound_handshake_records_the_peers_announced_port() -> None:
 
 
 def test_an_inbound_peer_naming_no_port_is_not_recorded() -> None:
+    """#70: a `version` naming port zero is not evidence of a listening one."""
     # #70: a port of zero is not evidence of a listening one
     peer = a_peer(
         version_message=a_parsed_version(addr_from_port=0),
@@ -666,6 +761,12 @@ def test_an_inbound_peer_naming_no_port_is_not_recorded() -> None:
 def test_the_handshake_logs_the_endpoint_getpeerinfo_answers_with(
     host: str, endpoint: str
 ) -> None:
+    """The connected-peer log line uses `getpeername`'s own host, IPv4 or IPv6.
+
+    A v4-mapped IPv6 address is logged as the plain IPv4 form
+    `getpeerinfo` would answer with, and a genuine IPv6 host is
+    bracketed the way an endpoint with a port needs to be.
+    """
     logged, info = log_recorder()
     node = a_handshake_node(peer_db=PeerDB(cast("Chain", None), cast("Path", None)))
     node.logger.info = info
@@ -679,6 +780,11 @@ def test_the_handshake_logs_the_endpoint_getpeerinfo_answers_with(
 
 
 def test_the_handshake_asks_the_socket_for_the_peer_once() -> None:
+    """`getpeername` is called exactly once while completing a handshake.
+
+    A second lookup is a second chance for the peer to have gone,
+    raising `OSError` where the first answered.
+    """
     # A second lookup is a second chance for the peer to have gone,
     # raising OSError where the first answered.
     sockaddr = ("1.2.3.4", 18444)
@@ -699,6 +805,11 @@ def test_the_handshake_asks_the_socket_for_the_peer_once() -> None:
 
 
 def test_a_verack_before_the_version_is_let_go() -> None:
+    """A `verack` reaching a peer that never sent its `version` is let go.
+
+    Nothing to promote and nothing to record: `verack` before `version`
+    is a peer out of protocol order, dropped and discouraged -- #283.
+    """
     promoted: list[int] = []
     node = a_handshake_node(promote_connection=promoted.append)
     peer = a_peer(wtxidrelay_received=True)
@@ -710,6 +821,12 @@ def test_a_verack_before_the_version_is_let_go() -> None:
 
 
 def test_a_verack_from_a_peer_that_never_asked_for_wtxid_relay_is_let_go() -> None:
+    """A `verack` from a peer that skipped `wtxidrelay` is let go, not promoted.
+
+    Every peer this node still talks to negotiates wtxid relay first;
+    one that reaches `verack` without it is refused rather than
+    promoted -- #283.
+    """
     promoted: list[int] = []
     node = a_handshake_node(promote_connection=promoted.append)
     peer = a_peer(version_message=object())
@@ -720,6 +837,11 @@ def test_a_verack_from_a_peer_that_never_asked_for_wtxid_relay_is_let_go() -> No
 
 
 def test_the_flags_a_peer_sets_on_this_connection() -> None:
+    """`wtxidrelay`, `sendaddrv2` and `sendheaders` each set their own flag.
+
+    None of the three carries a payload; receiving one at all is what
+    the flag records.
+    """
     peer = a_peer()
     wtxidrelay(a_handshake_node(), b"", peer)
     sendaddrv2(a_handshake_node(), b"", peer)
@@ -730,6 +852,7 @@ def test_the_flags_a_peer_sets_on_this_connection() -> None:
 
 
 def test_a_feefilter_lands_on_the_connection() -> None:
+    """An ordinary `feefilter` sets `peer.feefilter` to the rate it carries."""
     peer = a_peer()
     feefilter(a_handshake_node(), FeeFilter(500).serialize(), peer)
     assert peer.feefilter == 500
@@ -743,6 +866,14 @@ def test_a_feefilter_lands_on_the_connection() -> None:
 def test_a_feefilter_outside_the_money_range_is_read_as_no_filter(
     feerate: int,
 ) -> None:
+    """A `feefilter` naming a rate outside MoneyRange is read as no filter at all.
+
+    Core acts on a received rate only within MoneyRange -- 0 to
+    MAX_MONEY inclusive (net_processing.cpp's NetMsgType::FEEFILTER,
+    consensus/amount.h's MoneyRange) -- and leaves either side of it
+    parsed but unused, rather than turning it into a filter nothing
+    a real, non-negative fee rate could ever fail.
+    """
     # Core acts on a received rate only within MoneyRange -- 0 to
     # MAX_MONEY inclusive (net_processing.cpp's NetMsgType::FEEFILTER,
     # consensus/amount.h's MoneyRange) -- and leaves either side of it
@@ -754,6 +885,7 @@ def test_a_feefilter_outside_the_money_range_is_read_as_no_filter(
 
 
 def test_a_feefilter_at_the_edge_of_the_money_range_is_kept() -> None:
+    """A `feefilter` naming exactly MAX_MONEY is kept: the bound is inclusive."""
     # the bound is inclusive, so exactly MAX_MONEY is still a filter
     peer = a_peer()
     at_the_edge = sats_from_btc(Decimal(21_000_000))
@@ -762,6 +894,7 @@ def test_a_feefilter_at_the_edge_of_the_money_range_is_kept() -> None:
 
 
 def test_a_ping_is_answered_with_the_nonce_it_carried() -> None:
+    """A `ping` is answered with a `pong` carrying the same nonce back."""
     peer = a_peer()
     ping(a_handshake_node(), Ping(1234).serialize(), peer)
     (answer,) = peer.sent
@@ -770,6 +903,12 @@ def test_a_ping_is_answered_with_the_nonce_it_carried() -> None:
 
 
 def test_a_pong_answering_our_ping_is_a_latency_measurement() -> None:
+    """A `pong` carrying the outstanding nonce clears it and records a latency.
+
+    `ping_sent` and `ping_nonce` are reset to zero once answered, so a
+    second, unrelated `pong` cannot be mistaken for answering the same
+    round trip again.
+    """
     node = a_handshake_node()
     peer = a_peer(ping_sent=time.time() - 0.5, ping_nonce=1234)
     pong(node, Pong(1234).serialize(), peer)
@@ -781,6 +920,11 @@ def test_a_pong_answering_our_ping_is_a_latency_measurement() -> None:
 
 
 def test_a_pong_with_the_wrong_nonce_is_a_peer_not_speaking_the_protocol() -> None:
+    """A `pong` answering a nonce this node never sent drops and discourages.
+
+    A mismatched nonce cannot be an honest race, since only one `ping`
+    is outstanding at a time -- #283.
+    """
     node = a_handshake_node()
     peer = a_peer(ping_sent=time.time(), ping_nonce=1234)
     pong(node, Pong(4321).serialize(), peer)
@@ -1520,12 +1664,12 @@ def a_filter_hash(height: int) -> bytes:
 def a_filters_node(
     length: int = 8, *, stale: Mapping[bytes, Any] | Iterable[Any] = ()
 ) -> Any:
-    """A node whose chain is `length` blocks, each with a canned filter.
+    """Build a node whose chain is `length` blocks, each with a canned filter.
 
     The filters are made up: what is this node's in BIP157 is which
     blocks a range names and what is refused, and a real filter would
-    say nothing about either. `tests/unit/chainstate/filter_index.py`
-    is where the filters themselves are.
+    say nothing about either. `tests/unit/chainstate/filter_index_test.py`
+    is where the filters themselves are tested.
 
     `stale` is blocks the index knows and the active chain does not,
     which is what a peer asking about an abandoned branch looks like.
