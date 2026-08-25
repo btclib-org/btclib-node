@@ -30,15 +30,15 @@ if TYPE_CHECKING:
     from btclib.p2p.handshake import Version
 
     from btclib_node import Node
-    from btclib_node.rpc.connection import Connection
+    from btclib_node.rpc.connection import RpcConnection
 
 
-def get_best_block_hash(node: Node, conn: Connection, _: list[Any]) -> bytes:
+def get_best_block_hash(node: Node, conn: RpcConnection, _: list[Any]) -> bytes:
     """Answer `getbestblockhash` with the active chain's own tip."""
     return node.chainstate.block_index.active_chain[-1]
 
 
-def get_block_count(node: Node, conn: Connection, _: list[Any]) -> int:
+def get_block_count(node: Node, conn: RpcConnection, _: list[Any]) -> int:
     """Answer `getblockcount` with the active chain's own height."""
     # the genesis block is active_chain[0] and Core's own height for it
     # is 0 (src/validation.h's nHeight on the genesis CBlockIndex), so
@@ -61,7 +61,9 @@ _CORE_CHAIN_NAMES = {
 }
 
 
-def get_blockchain_info(node: Node, conn: Connection, _: list[Any]) -> dict[str, Any]:
+def get_blockchain_info(
+    node: Node, conn: RpcConnection, _: list[Any]
+) -> dict[str, Any]:
     """Answer `getblockchaininfo` with the one member a caller checks.
 
     `BitcoinCoreFetcher.assert_network` (btclib) and
@@ -78,7 +80,7 @@ def get_blockchain_info(node: Node, conn: Connection, _: list[Any]) -> dict[str,
     return {"chain": _CORE_CHAIN_NAMES[node.chain.name]}
 
 
-def get_block_hash(node: Node, conn: Connection, params: list[Any]) -> bytes:
+def get_block_hash(node: Node, conn: RpcConnection, params: list[Any]) -> bytes:
     """Answer `getblockhash`, Core's own checks on `height` in Core's order.
 
     A missing, wrongly typed, non-integral or out-of-range `height` is
@@ -137,7 +139,7 @@ def get_block_hash(node: Node, conn: Connection, params: list[Any]) -> bytes:
 
 
 def get_block_header(
-    node: Node, conn: Connection, params: list[Any]
+    node: Node, conn: RpcConnection, params: list[Any]
 ) -> dict[str, Any] | str:
     """Answer `getblockheader` for `params[0]`, verbose by Core's own default.
 
@@ -261,7 +263,9 @@ def service_names(services: int) -> list[str]:
     return names
 
 
-def get_peer_info(node: Node, conn: Connection, _: list[Any]) -> list[dict[str, Any]]:
+def get_peer_info(
+    node: Node, conn: RpcConnection, _: list[Any]
+) -> list[dict[str, Any]]:
     """Answer `getpeerinfo`, one entry per handshake-complete peer.
 
     A pending connection -- accepted or dialled but short of `verack` --
@@ -336,7 +340,7 @@ def get_peer_info(node: Node, conn: Connection, _: list[Any]) -> list[dict[str, 
     return out
 
 
-def get_connection_count(node: Node, conn: Connection, _: list[Any]) -> int:
+def get_connection_count(node: Node, conn: RpcConnection, _: list[Any]) -> int:
     """Answer `getconnectioncount`, a pending connection counted too.
 
     Core's own `getconnectioncount` counts every entry of `m_nodes`
@@ -365,7 +369,7 @@ def _btc_amount(sats: int) -> RawJSON:
     return RawJSON(f"{quotient}.{remainder:08d}")
 
 
-def get_mempool_info(node: Node, conn: Connection, _: list[Any]) -> dict[str, Any]:
+def get_mempool_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str, Any]:
     """Answer `getmempoolinfo` with the fields this tree backs for real.
 
     The comment below argues, field by field, why Core's own several
@@ -417,7 +421,7 @@ def get_mempool_info(node: Node, conn: Connection, _: list[Any]) -> dict[str, An
 
 
 def get_raw_mempool(
-    node: Node, conn: Connection, params: list[Any]
+    node: Node, conn: RpcConnection, params: list[Any]
 ) -> dict[str, Any] | list[str]:
     """Answer `getrawmempool`, Core's own three shapes by `params`.
 
@@ -542,7 +546,7 @@ def _find_transaction(
 
 
 def get_raw_transaction(
-    node: Node, conn: Connection, params: list[Any]
+    node: Node, conn: RpcConnection, params: list[Any]
 ) -> dict[str, Any] | str:
     """`getrawtransaction`, for a mempool transaction or a named block's.
 
@@ -613,7 +617,7 @@ _MEMPOOL_FULL_REASON = "Mempool is full"
 
 
 def test_mempool_accept(
-    node: Node, conn: Connection, params: list[Any]
+    node: Node, conn: RpcConnection, params: list[Any]
 ) -> list[dict[str, Any]]:
     """Answer `testmempoolaccept`, one verdict per raw tx in `params[0]`.
 
@@ -655,7 +659,7 @@ def test_mempool_accept(
     return out
 
 
-def send_raw_transaction(node: Node, conn: Connection, params: list[Any]) -> str:
+def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> str:
     """Answer `sendrawtransaction`: verify, add to the mempool, announce.
 
     A transaction that fails to decode, that `verify_mempool_acceptance`
@@ -742,7 +746,7 @@ def send_raw_transaction(node: Node, conn: Connection, params: list[Any]) -> str
     return tx.id.hex()
 
 
-def ping(node: Node, conn: Connection, _: list[Any]) -> None:
+def ping(node: Node, conn: RpcConnection, _: list[Any]) -> None:
     """Answer `ping` by sending every peer a fresh one, via `ping_all`.
 
     Called on `Node`'s own thread, `handle_rpc`'s the same as every
@@ -753,7 +757,7 @@ def ping(node: Node, conn: Connection, _: list[Any]) -> None:
     node.p2p_manager.ping_all()
 
 
-def stop(node: Node, conn: Connection, _: list[Any]) -> str:
+def stop(node: Node, conn: RpcConnection, _: list[Any]) -> str:
     """Answer `stop`; `handle_rpc` waits for this reply before stopping."""
     return "Btclib node stopping"
 

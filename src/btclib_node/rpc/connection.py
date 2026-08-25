@@ -2,7 +2,7 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""`Connection`, one HTTP socket carrying a JSON-RPC request and reply.
+"""`RpcConnection`, one HTTP socket carrying a JSON-RPC request and reply.
 
 Parses the header section off the wire, bounded by `MAX_HEADER_BYTES`
 and `MAX_BODY_BYTES` since the listener this serves is bound to every
@@ -60,7 +60,7 @@ class RawJSON:
     return value is re-encoded through the same machinery rather than
     written as-is, and Python's `json` has no hook for a raw literal.
     `JSONEncoder.default` below returns a marked placeholder instead,
-    and `Connection.async_send` substitutes it, quotes and all, for
+    and `RpcConnection.async_send` substitutes it, quotes and all, for
     `text` once encoding has already run.
 
     The mark is not a fixed word: a fixed one is not actually safe -- a
@@ -69,7 +69,7 @@ class RawJSON:
     say), lets a regex substitution's own non-greedy match run past
     that string's closing quote and merge it with an unrelated
     placeholder later in the same response, corrupting both.
-    `Connection.async_send` passes a fresh random token instead, one
+    `RpcConnection.async_send` passes a fresh random token instead, one
     per call, so a legitimate value colliding with it is not a
     realistic risk the way colliding with a guessable word is.
     """
@@ -85,7 +85,7 @@ class JSONEncoder(json.JSONEncoder):
     """Encode `bytes` as hex and unwrap a `RawJSON` under a caller's mark.
 
     `default` below is `json.dumps`'s own hook for a type it has no
-    built-in encoding for; it is what `Connection.async_send` supplies
+    built-in encoding for; it is what `RpcConnection.async_send` supplies
     `cls=` and `mark=` to, so that a `RawJSON` value comes out marked
     rather than quoted, for `async_send` to unquote once encoding is
     done -- `json` itself has no hook for writing a literal unquoted.
@@ -117,7 +117,7 @@ class JSONEncoder(json.JSONEncoder):
             if not self._mark:
                 # A RawJSON reached an encoder built with no mark to wrap
                 # it in -- json.dumps(cls=JSONEncoder) with no mark=,
-                # which only Connection.async_send is meant to supply.
+                # which only RpcConnection.async_send is meant to supply.
                 # Refusing here is the same "not serializable" TypeError
                 # super().default(obj) below raises for any other object
                 # json does not know, rather than writing RawJSON's own
@@ -127,7 +127,7 @@ class JSONEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
-class Connection:
+class RpcConnection:
     """One accepted RPC socket, from the header read through the reply.
 
     `RpcManager.server` builds one per accepted client, on this

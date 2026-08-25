@@ -112,7 +112,7 @@ def test_an_answer_is_written_back_to_the_client_that_asked(
 ) -> None:
     """A connection's own send writes an answer back to the client that asked.
 
-    `Connection.send` is what the node's loop calls once it has an
+    `RpcConnection.send` is what the node's loop calls once it has an
     answer, from its own thread: the write itself belongs to the
     manager's loop, and this is the line that crosses over.
     """
@@ -313,7 +313,7 @@ def test_stop_requests_every_tasks_cancellation_before_awaiting_any_one_of_them(
     while an earlier task's cancellation is being delivered. A connection
     it lands that way is added to `self.connections` strictly after the
     `asyncio.all_tasks()` snapshot has already run, so cancellation never
-    reaches its own `Connection.run` task, which is reported destroyed
+    reaches its own `RpcConnection.run` task, which is reported destroyed
     while still pending.
 
     Two dummy tasks, standing in for whatever `pending` holds in a real

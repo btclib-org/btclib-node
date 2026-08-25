@@ -18,11 +18,11 @@ from btclib_node.rpc.errors import RpcError, RpcErrorCode, error_msg
 
 if TYPE_CHECKING:
     from btclib_node import Node
-    from btclib_node.rpc.connection import Connection
+    from btclib_node.rpc.connection import RpcConnection
     from btclib_node.rpc.manager import RpcManager
 
 
-def get_connection(manager: RpcManager, connection_id: int) -> Connection | None:
+def get_connection(manager: RpcManager, connection_id: int) -> RpcConnection | None:
     """Look up `connection_id` in `manager.connections`, or `None`."""
     try:
         return manager.connections[connection_id]

@@ -2,7 +2,7 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""What rpc.connection.Connection does with the octets off a socket.
+"""What rpc.connection.RpcConnection does with the octets off a socket.
 
 Driven over a socketpair rather than through a running node: the
 functional tests already put a real HTTP client in front of a real
@@ -24,9 +24,9 @@ import pytest
 from btclib_node.rpc.connection import (
     MAX_BODY_BYTES,
     MAX_HEADER_BYTES,
-    Connection,
     JSONEncoder,
     RawJSON,
+    RpcConnection,
 )
 
 if TYPE_CHECKING:
@@ -48,7 +48,7 @@ def with_length(body: bytes = BODY) -> bytes:
 def drive(
     chunks: list[bytes], *, timeout: float = 1.0, hang_up: bool = False
 ) -> tuple[str, list[Any], bool]:
-    """Feed `chunks` to a Connection.run and report what it did.
+    """Feed `chunks` to a RpcConnection.run and report what it did.
 
     Returns (outcome, dispatched messages, whether the socket was
     closed). The sender is async because a socketpair holds only a few
@@ -62,7 +62,7 @@ def drive(
         theirs.setblocking(False)
         loop = asyncio.get_running_loop()
         manager = SimpleNamespace(messages=[])
-        conn = Connection(loop, ours, cast("RpcManager", manager), 0)
+        conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
 
         async def send() -> None:
             for chunk in chunks:
@@ -196,7 +196,7 @@ def test_the_response_is_crlf_framed_and_the_socket_closed() -> None:
         ours.setblocking(False)
         theirs.setblocking(False)
         loop = asyncio.get_running_loop()
-        conn = Connection(
+        conn = RpcConnection(
             loop, ours, cast("RpcManager", SimpleNamespace(messages=[])), 0
         )
         await conn.async_send([{"result": b"\xff", "id": "x"}])
@@ -221,7 +221,7 @@ def test_a_response_of_several_stays_a_list() -> None:
         ours.setblocking(False)
         theirs.setblocking(False)
         loop = asyncio.get_running_loop()
-        conn = Connection(
+        conn = RpcConnection(
             loop, ours, cast("RpcManager", SimpleNamespace(messages=[])), 0
         )
         await conn.async_send([{"id": "a"}, {"id": "b"}])
@@ -249,7 +249,7 @@ def test_a_raw_json_value_with_no_mark_supplied_is_refused_like_any_other_object
 ):
     """A RawJSON reaching a JSONEncoder built with no mark= is refused.
 
-    Only `Connection.async_send` is meant to construct `JSONEncoder`
+    Only `RpcConnection.async_send` is meant to construct `JSONEncoder`
     with a `mark=`; a `RawJSON` reaching one built without it
     (`json.dumps`'s own default `cls=` use) has no placeholder to
     become, so it is refused the same as any other object `json` does
@@ -272,7 +272,7 @@ def test_a_raw_json_value_is_written_unquoted_and_verbatim() -> None:
         ours.setblocking(False)
         theirs.setblocking(False)
         loop = asyncio.get_running_loop()
-        conn = Connection(
+        conn = RpcConnection(
             loop, ours, cast("RpcManager", SimpleNamespace(messages=[])), 0
         )
         await conn.async_send([{"result": RawJSON("0.00000001"), "id": "x"}])
@@ -299,7 +299,7 @@ def test_a_raw_json_value_does_not_swallow_a_field_containing_its_own_mark() -> 
         ours.setblocking(False)
         theirs.setblocking(False)
         loop = asyncio.get_running_loop()
-        conn = Connection(
+        conn = RpcConnection(
             loop, ours, cast("RpcManager", SimpleNamespace(messages=[])), 0
         )
         await conn.async_send(
@@ -320,7 +320,7 @@ def test_close_cancels_the_task_it_was_given() -> None:
         ours, theirs = socket.socketpair()
         ours.setblocking(False)
         loop = asyncio.get_running_loop()
-        conn = Connection(
+        conn = RpcConnection(
             loop, ours, cast("RpcManager", SimpleNamespace(messages=[])), 0
         )
 
@@ -353,7 +353,7 @@ def test_repr_names_the_peer_and_says_so_when_there_is_none() -> None:
     client = socket.create_connection(listener.getsockname())
     served, _ = listener.accept()
 
-    conn = Connection(
+    conn = RpcConnection(
         cast("asyncio.AbstractEventLoop", None),
         client,
         cast("RpcManager", SimpleNamespace(messages=[])),
@@ -385,7 +385,7 @@ def test_repr_brackets_an_ipv6_peer(host: str, endpoint: str) -> None:
     `ip_and_port` itself is (issue #209).
     """
     client = cast("socket.socket", SimpleNamespace(getpeername=lambda: (host, 8332)))
-    conn = Connection(
+    conn = RpcConnection(
         cast("asyncio.AbstractEventLoop", None),
         client,
         cast("RpcManager", SimpleNamespace(messages=[])),
@@ -397,7 +397,7 @@ def test_repr_brackets_an_ipv6_peer(host: str, endpoint: str) -> None:
 def test_close_without_a_task_closes_the_socket_anyway() -> None:
     """`close` still closes the socket for a connection whose task is None."""
     ours, theirs = socket.socketpair()
-    conn = Connection(
+    conn = RpcConnection(
         cast("asyncio.AbstractEventLoop", None),
         ours,
         cast("RpcManager", SimpleNamespace(messages=[])),
@@ -410,7 +410,7 @@ def test_close_without_a_task_closes_the_socket_anyway() -> None:
 
 
 @pytest.mark.filterwarnings(
-    "ignore:coroutine 'Connection.async_send' was never awaited:RuntimeWarning"
+    "ignore:coroutine 'RpcConnection.async_send' was never awaited:RuntimeWarning"
 )
 def test_send_and_wait_gives_up_rather_than_blocking_forever() -> None:
     """send_and_wait gives up after its own timeout, not blocking forever.
@@ -431,7 +431,9 @@ def test_send_and_wait_gives_up_rather_than_blocking_forever() -> None:
     """
     ours, theirs = socket.socketpair()
     loop = asyncio.new_event_loop()
-    conn = Connection(loop, ours, cast("RpcManager", SimpleNamespace(messages=[])), 0)
+    conn = RpcConnection(
+        loop, ours, cast("RpcManager", SimpleNamespace(messages=[])), 0
+    )
     started = time.monotonic()
     conn.send_and_wait([{"id": "x"}])  # returns, does not raise
     waited = time.monotonic() - started

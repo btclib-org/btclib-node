@@ -34,7 +34,7 @@ def make_node(
 ) -> tuple[Any, list[Any], list[Any], list[bool]]:
     """Build a node whose rpc_manager queues `batch` for handle_rpc to pop.
 
-    Returns the node, and the lists its double `Connection`'s `send`,
+    Returns the node, and the lists its double `RpcConnection`'s `send`,
     `send_and_wait` and `stop` each append to -- the answer `handle_rpc`
     produces.
     """
