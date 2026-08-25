@@ -15,7 +15,7 @@ import json
 import socket
 from contextlib import suppress
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast
 
 import pytest
 
@@ -239,50 +239,37 @@ def test_stop_closes_the_listening_socket_even_when_the_accept_task_never_ran(
     assert server_socket.fileno() == -1
 
 
-def test_server_does_not_lose_a_connection_accepted_in_the_instant_of_its_own_cancellation(
-    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+def test_server_does_not_lose_a_connection_queued_in_the_instant_of_its_own_cancellation(
+    a_manager: AManagerFactory,
 ) -> None:
-    """#323: mirrors `P2pManager.server`'s own test of the same name
-    (#312). `server`'s own `loop.sock_accept(server_socket)` can have its
-    underlying future already carrying a result -- the OS having handed
-    asyncio a connection -- at the very instant `stop`'s
-    `asyncio.all_tasks()` sweep cancels this task. `Task.cancel()` cannot
-    cancel an already-resolved future, so it throws `CancelledError` into
-    the coroutine on its *next* step instead of resuming it with that
-    result, and that result -- an already connected client socket -- is
-    referenced by nothing else once this frame unwinds. `asyncio.shield`
-    is what keeps `server`'s own accept -- a task in its own right, not
-    only a future -- reachable from the `except` below rather than lost
-    with this coroutine's frame.
+    """#391: mirrors `P2pManager.server`'s own test of the same shape
+    (#386). A connection can already sit in `server`'s own accept queue
+    when something cancels the task waiting on it -- `Queue.get`'s own
+    internal wakeup future can be discarded by `Task.cancel` exactly as
+    `loop.sock_accept`'s own future used to be (#323), forcing
+    `CancelledError` in on the task's next step rather than letting it
+    resume with the result. What that discards is only the wakeup: the
+    item itself lives in the queue's own deque and not inside that
+    future, so it is still there for `server`'s own `finally` to close
+    once the cancellation it raises unwinds through it -- unlike an
+    accepted socket held by nothing but a discarded future, which goes
+    out with the frame that unwinds and nothing else ever holding it.
 
-    `loop.sock_accept` is replaced with a stand-in whose future is
-    resolved, and this task cancelled, by two `call_soon` callbacks
-    scheduled in that order -- deterministic where the real race is not,
-    since a callback the first schedules is appended after the second
-    and so cannot run before it.
+    The two `call_soon` callbacks below are that instant, made
+    deterministic: they run in the order they were scheduled, so the
+    item has certainly landed by the time the cancel reaches the task.
     """
     manager = a_manager(get_random_port())
     loop = manager.loop
     listening_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     accepted, theirs = socket.socketpair()
-    # a type alias, not a variable: PEP 8's own naming convention for
-    # one is CapWords, the same as a class, not the lowercase this rule
-    # otherwise asks a function-scoped name for
-    AcceptResult = tuple[socket.socket, tuple[str, int]]  # noqa: N806
-    fut_holder: dict[str, asyncio.Future[AcceptResult]] = {}
 
-    async def fake_sock_accept(sock: socket.socket) -> AcceptResult:
-        fut: asyncio.Future[AcceptResult] = loop.create_future()
-        fut_holder["fut"] = fut
-        return await fut
-
-    monkeypatch.setattr(loop, "sock_accept", fake_sock_accept)
     task = loop.create_task(manager.server(loop, listening_socket))
     try:
-        while "fut" not in fut_holder:
+        while manager._accept_queue is None:
             loop.run_until_complete(asyncio.sleep(0))
-
-        loop.call_soon(fut_holder["fut"].set_result, (accepted, ("203.0.113.1", 45000)))
+        queue = manager._accept_queue
+        loop.call_soon(queue.put_nowait, (accepted, ("203.0.113.1", 45000)))
         loop.call_soon(task.cancel)
         with suppress(asyncio.CancelledError):
             loop.run_until_complete(task)
@@ -357,67 +344,58 @@ def test_stop_requests_every_tasks_cancellation_before_awaiting_any_one_of_them(
     ] == ["cancel_b", "cancel_a"]
 
 
-def test_stop_closes_an_accept_already_landed_when_the_drain_begins(
+def test_stop_closes_a_connection_queued_when_the_drain_begins(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#362: mirrors `P2pManager.stop`'s own test of the same name
-    (#353). `server`'s own `accept` is a task of its own, and
-    `asyncio.all_tasks()` below reaches it directly on every call --
-    not only through `server`'s own task cascading a cancel onto it,
-    which the neighbouring test above turns on instead. That test's
-    own cancel never reaches `accept` directly, only `server`, so it
-    does not cover this: `stop` cancels `accept` itself, whether or not
-    `server` is ever cancelled at all.
+    """#391: mirrors `P2pManager.stop`'s own test of the same shape
+    (#386). `server`'s own task is what `stop`'s blanket sweep over
+    `asyncio.all_tasks` reaches directly, `accept` no longer being a
+    task of its own for it to reach instead -- not only through
+    `server`'s own task cascading a cancel onto it, which the
+    neighbouring test above turns on instead.
 
     `Task.cancel` on a task whose own awaited future is already done
     cannot cancel that future either: it forces `CancelledError` into
-    the task's next step regardless, discarding whatever the kernel
-    already handed over with nothing left holding it.
+    the task's next step regardless -- but the item this test lands is
+    in the queue's own deque, not inside the future `Queue.get` awaits
+    to be woken, so the discard costs it nothing, unlike
+    `loop.sock_accept`'s own future before this fix. `server`'s own
+    `finally` is what closes whatever the discard still leaves behind,
+    reaching it before the unconditional `self.connections` sweep at
+    the end of `stop()` ever could -- that sweep is what
+    `RpcManager.stop`'s own standing comment still relies on for a
+    connection landed later still, during the cancel-and-drain below
+    rather than before it, which is why this manager needs no
+    `P2pManager`-style repeated pass.
 
-    A grace step before the sweep -- `run_until_complete(asyncio.sleep(0))`
-    -- is what lets a task sitting on an already-resolved future return
-    normally instead, into `create_connection`, whose own socket the
-    unconditional `self.connections` sweep at the end of `stop()` then
-    closes -- the same sweep `RpcManager.stop`'s own standing comment
-    already relies on for a connection landed later still, during the
-    cancel-and-drain below rather than before it, which is why this
-    manager needs no `P2pManager`-style repeated pass.
-
-    `sock_accept` is replaced so its own future is one this test can
-    resolve from outside it, scheduled through a monkeypatched
-    `is_alive()` -- the window `stop` itself calls it in, between
-    scheduling `loop.stop` and waiting for the thread.
-    `call_soon_threadsafe` queues behind that scheduling rather than
-    ahead of it, so the manager's own loop sees `loop.stop` first and
-    stops before ever stepping `accept`'s own wakeup: the future is
-    resolved and the task that owns it is not, which is the same gap a
-    landed kernel accept leaves for real.
+    Landed into the live queue directly, via `manager._accept_queue`,
+    scheduled through a monkeypatched `is_alive()` -- the window `stop`
+    itself calls it in, between scheduling `loop.stop` and waiting for
+    the thread. `call_soon_threadsafe` queues behind that scheduling
+    rather than ahead of it, so the manager's own loop sees `loop.stop`
+    first and stops before ever stepping `server`'s own wakeup: the
+    item is queued and the task that owns it is not, which is the same
+    gap a landed kernel accept leaves for real.
     """
     manager = a_manager(get_random_port())
-
-    accepts: list[asyncio.Future[tuple[socket.socket, Any]]] = []
-
-    async def sock_accept(sock: socket.socket) -> tuple[socket.socket, Any]:
-        accepts.append(manager.loop.create_future())
-        return await accepts[-1]
-
-    monkeypatch.setattr(manager.loop, "sock_accept", sock_accept)
     manager.start()
     wait_until_listening(manager)
-    wait_until(lambda: accepts)
+    wait_until(lambda: manager._accept_queue is not None)
+    assert manager._accept_queue is not None
+    queue = manager._accept_queue
 
     ours, theirs = socket.socketpair()
     real_is_alive = manager.is_alive
     landed: list[bool] = []
 
-    def is_alive_after_landing_the_accept() -> bool:
+    def is_alive_after_queueing_one() -> bool:
         landed.append(True)
         manager.loop.call_soon_threadsafe(
-            accepts[0].set_result, (ours, ("127.0.0.1", 45000))
+            queue.put_nowait, (ours, ("127.0.0.1", 45000))
         )
         return real_is_alive()
 
-    monkeypatch.setattr(manager, "is_alive", is_alive_after_landing_the_accept)
+    monkeypatch.setattr(manager, "is_alive", is_alive_after_queueing_one)
     try:
         manager.stop()
     finally:
@@ -433,20 +411,24 @@ def test_stop_closes_an_accept_already_landed_when_the_drain_begins(
 def test_stop_drains_a_task_whose_own_cancellation_needs_a_second_step(
     a_manager: AManagerFactory,
 ) -> None:
-    """#377: neither #362's own grace step nor the unconditional drain
-    below it (`for task in pending: ... run_until_complete(task)`) is
-    guarded against a task whose cancellation-unwind needs more than the
-    one batch of already-ready callbacks the loop's very first
-    `_run_once` since `stop()` scheduled its own `loop.stop` -- an
-    `except CancelledError` handler that awaits a fresh, real timer
-    rather than only re-awaiting an already-cancelled future.
+    """#377: the unconditional drain below (`for task in pending: ...
+    run_until_complete(task)`) is not, on its own, guarded against a
+    task whose cancellation-unwind needs more than the one batch of
+    already-ready callbacks the loop's very first `_run_once` since
+    `stop()` scheduled its own `loop.stop` -- an `except CancelledError`
+    handler that awaits a fresh, real timer rather than only re-awaiting
+    an already-cancelled future. `stop_handle.cancel()` above is what
+    answers it instead: cancelling that scheduled `loop.stop` outright,
+    rather than guarding how many steps are taken before it, is what
+    keeps it from firing mid-unwind regardless of how many steps this
+    task's own cancellation needs.
 
     Neither #323's own regression test (`asyncio.Event().wait()`, whose
     cancellation resolves inside that same first batch) nor #368's
     (mirrored above in this file) builds a task shaped this way: this
     one does, on a manager whose thread was never started, and used to
     raise the identical `RuntimeError('Event loop stopped before Future
-    completed.')` out of the drain loop rather than the grace step.
+    completed.')` out of this same drain loop.
     """
     manager = a_manager(get_random_port())
     loop = manager.loop
@@ -469,15 +451,19 @@ def test_stop_drains_a_task_whose_own_cancellation_needs_a_second_step(
 def test_stop_does_not_raise_where_start_was_called_but_run_never_reached_run_forever(
     a_manager: AManagerFactory,
 ) -> None:
-    """#380: `self.ident is not None` -- #362's own guard on the grace
-    step -- is true from the moment `start()` is called, well before
-    `run()` reaches `run_forever()`. Where `run()` raises before that --
-    a bind failure being the ordinary way -- the `loop.stop` `stop()`
-    schedules at its own top is never delivered, and `self.ident is not
-    None` reads `True` anyway, so the grace step used to run against a
-    loop with nothing having ever stepped it, raising the identical
-    `RuntimeError('Event loop stopped before Future completed.')` #362
-    exists to eliminate -- through the very guard meant to rule it out.
+    """#380: `self.ident is not None` -- #362's own guard on a grace
+    step this method no longer has -- is true from the moment `start()`
+    is called, well before `run()` reaches `run_forever()`. Where
+    `run()` raises before that -- a bind failure being the ordinary way
+    -- the `loop.stop` `stop()` schedules at its own top is never
+    delivered, and `self.ident is not None` read `True` anyway: the
+    grace step that guard used to gate ran against a loop with nothing
+    having ever stepped it, raising the identical `RuntimeError('Event
+    loop stopped before Future completed.')` #362 exists to eliminate,
+    through the very guard meant to rule it out. `stop_handle.cancel()`
+    is what removes that failure outright now, on this precondition as
+    on every other this method can be handed, so nothing downstream of
+    it needs a guard of its own to answer this scenario any more.
 
     A real bind failure, not a monkeypatched `_bind`, the same way
     `test_a_manager_that_cannot_bind_stops_being_alive` above gets one --
@@ -503,3 +489,42 @@ def test_stop_does_not_raise_where_start_was_called_but_run_never_reached_run_fo
         assert manager.ident is not None
 
         manager.stop()
+
+
+def test_accept_one_leaves_the_queue_alone_where_nothing_is_pending(
+    a_manager: AManagerFactory,
+) -> None:
+    """`_accept_one`'s `BlockingIOError` arm: a reader callback can fire
+    on a listening socket with an empty backlog, and this is what lets
+    it return without touching the queue at all rather than raising out
+    of a callback nothing awaits.
+    """
+    manager = a_manager(get_random_port())
+    accepted: asyncio.Queue[Any] = asyncio.Queue()
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listening_socket:
+        listening_socket.bind(("127.0.0.1", 0))
+        listening_socket.listen()
+        listening_socket.settimeout(0.0)
+        manager._accept_one(listening_socket, accepted)
+    assert accepted.empty()
+
+
+def test_accept_one_logs_and_returns_on_a_refused_accept(
+    a_manager: AManagerFactory,
+) -> None:
+    """`_accept_one`'s `OSError` arm: `accept()` can fail outright --
+    `ECONNABORTED` being the ordinary way, a peer resetting the
+    connection between the kernel reporting it readable and this
+    callback reaching it -- and this is what keeps that from raising out
+    of a reader callback asyncio has no coroutine frame to deliver it
+    to, the queue this manager's own `server` awaits left untouched.
+    """
+    manager = a_manager(get_random_port())
+    accepted: asyncio.Queue[Any] = asyncio.Queue()
+
+    class RefusingSocket:
+        def accept(self) -> NoReturn:
+            raise OSError("accept refused")  # noqa: TRY003
+
+    manager._accept_one(cast("socket.socket", RefusingSocket()), accepted)
+    assert accepted.empty()

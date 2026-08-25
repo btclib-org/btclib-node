@@ -32,6 +32,7 @@ to check the guess.
   branch inside `P2pManager`'s own background thread while every test
   passed, distinguished from a real regression only by the load average
   `uptime` gave at that run.
+
 ### `src/btclib_node/`'s own root modules get real docstrings (issue #373)
 
 - **`D101`/`D102`/`D103`/`D105`/`D107` are selected for `src/btclib_node/`'s
@@ -137,6 +138,25 @@ to check the guess.
   stop was ever delivered, which `stop_handle.cancel()` (issue #377,
   issue #380) already answers unconditionally. Neither reason applies
   any longer.
+
+### `RpcManager.server` stops discarding an accepted socket, closing issue #391
+
+- **`RpcManager.server` now stores what it accepts in a queue, from a
+  plain reader callback registered with `loop.add_reader`, rather than
+  awaiting `loop.sock_accept` inside a task of its own** (closes #391):
+  the identical race #386 fixed on `P2pManager.server`, in
+  `RpcManager.server`'s own copy of the same construct -- `stop`'s own
+  blanket sweep over `asyncio.all_tasks` could cancel that task directly
+  while its awaited future already carried a connection, and
+  `Task.cancel` on a task whose own awaited future is already done
+  discards it regardless. The accepted socket now sits in the queue's
+  own deque the instant the callback runs, and `server`'s own `finally`
+  closes whatever a cancellation leaves there.
+- **`RpcManager.stop`'s own grace step is removed rather than given a
+  new guard**, for the same reason #386 removed `P2pManager.stop`'s:
+  the task it protected no longer exists, and `stop_handle.cancel()`
+  (issue #377, issue #380) already answers the other reason a step like
+  it ever ran.
 
 ### `check_transactions`'s tasks share a `PrecomputedTxData`, closing issue #385
 

@@ -57,6 +57,16 @@ class RpcManager(threading.Thread):
         # concurrently -- `run` sets it once, from this thread, before
         # `stop` could possibly be reached by another.
         self._server_socket: socket.socket | None = None
+        # `server`'s own accept queue, kept here rather than only local
+        # to `server`'s own frame so the two `manager_test.py` tests
+        # naming btclib-org/btclib-node#391 can land a connection into
+        # the live queue directly -- the seam `loop.sock_accept`'s own
+        # future used to give their own predecessors before this fix
+        # replaced it. Nothing in this class reads it outside `server`
+        # itself.
+        self._accept_queue: (
+            asyncio.Queue[tuple[socket.socket, tuple[str, int]]] | None
+        ) = None
 
     def create_connection(
         self, loop: asyncio.AbstractEventLoop, client: socket.socket
@@ -88,44 +98,82 @@ class RpcManager(threading.Thread):
         self.listening.set()
         return server_socket
 
+    def _accept_one(
+        self,
+        server_socket: socket.socket,
+        accepted: asyncio.Queue[tuple[socket.socket, tuple[str, int]]],
+    ) -> None:
+        """`server`'s own reader callback, a method rather than a closure.
+
+        A unit test can call it directly against a socket of its own --
+        real, or one that only duck-types `.accept()` -- to cover the
+        two exception arms without a live listener.
+        """
+        try:
+            sock, sockaddr = server_socket.accept()
+        except BlockingIOError, InterruptedError:
+            return
+        except OSError:
+            self.logger.exception("Accepting an inbound connection failed")
+            return
+        sock.settimeout(0.0)
+        accepted.put_nowait((sock, sockaddr))
+
     async def server(
         self, loop: asyncio.AbstractEventLoop, server_socket: socket.socket
     ) -> None:
         with server_socket:
-            while True:
-                # A task of its own and shielded, rather than a bare
-                # `await loop.sock_accept(server_socket)`: that call's
-                # own future can already carry a connection when `stop`
-                # cancels this task, the kernel having handed one over
-                # on a pass of the loop that has already run.
-                # `Task.cancel` cannot cancel a future that is already
-                # done, so it throws `CancelledError` in on the next
-                # step rather than resuming with that result, and an
-                # unshielded await loses the accepted socket with the
-                # frame that unwinds, nothing else ever having held it.
-                # Shielding keeps the accept running as a task of its
-                # own, which the `except` below still has to read from
-                # (btclib-org/btclib-node#323).
-                accept = loop.create_task(loop.sock_accept(server_socket))
-                try:
-                    client, _ = await asyncio.shield(accept)
-                except asyncio.CancelledError:
-                    # This server has stopped listening, so a
-                    # connection `accept` did land is closed here
-                    # rather than given to `create_connection`. The two
-                    # suppressed ends are the ones that leave nothing
-                    # to close: the cancel reaching `accept` before the
-                    # kernel did, and `accept()` itself refusing.
-                    accept.cancel()
-                    with suppress(asyncio.CancelledError, OSError):
-                        (await accept)[0].close()
-                    raise
-                self.last_connection_id += 1
-                conn = self.create_connection(self.loop, client)
-                task: Future[None] = asyncio.run_coroutine_threadsafe(
-                    conn.run(), self.loop
-                )
-                conn.task = task
+            # A plain reader callback stores what it accepts in a
+            # queue: the socket sits in a plain deque the instant
+            # `on_readable` runs, a callback rather than a task and so
+            # never itself a `Task.cancel` target, and the `finally`
+            # below closes whatever cancellation leaves in the queue --
+            # `server`'s own task included -- on whichever pass reaches
+            # it.
+            #
+            # A bare `await loop.sock_accept(server_socket)` does not
+            # have that property: that call's own future can already
+            # carry a connection when something cancels the task
+            # suspended on it, and `Task.cancel` cannot cancel a future
+            # that is already done -- it throws `CancelledError` in on
+            # the next step regardless, discarding whatever the kernel
+            # handed over with nothing left holding it. Wrapping that
+            # await in a task of its own, shielded from an outer cancel,
+            # is what btclib-org/btclib-node#323 fixed this discard with
+            # for a cancel arriving through this coroutine's own await;
+            # it could not fix a cancel reaching that inner task
+            # directly, which is what `stop`'s own blanket sweep over
+            # `asyncio.all_tasks` does on every call, and no fixed
+            # number of grace steps before that sweep closes the gap --
+            # the kernel is free to resolve the future in the exact
+            # window between a check and the cancel that follows it
+            # (btclib-org/btclib-node#391, `P2pManager.server`'s own
+            # identical fix, btclib-org/btclib-node#386, measured
+            # against a live listener under load rather than only the
+            # deterministic race the tests construct).
+            accepted: asyncio.Queue[tuple[socket.socket, tuple[str, int]]] = (
+                asyncio.Queue()
+            )
+            self._accept_queue = accepted
+
+            def on_readable() -> None:
+                self._accept_one(server_socket, accepted)
+
+            loop.add_reader(server_socket.fileno(), on_readable)
+            try:
+                while True:
+                    client, _ = await accepted.get()
+                    self.last_connection_id += 1
+                    conn = self.create_connection(self.loop, client)
+                    task: Future[None] = asyncio.run_coroutine_threadsafe(
+                        conn.run(), self.loop
+                    )
+                    conn.task = task
+            finally:
+                loop.remove_reader(server_socket.fileno())
+                self._accept_queue = None
+                while not accepted.empty():
+                    accepted.get_nowait()[0].close()
 
     @override
     def run(self) -> None:
@@ -210,65 +258,26 @@ class RpcManager(threading.Thread):
         # `P2pManager`, whose own connections sweep runs *before* this
         # same loop and so cannot.
         pending = asyncio.all_tasks(self.loop)
-        # `server`'s own `accept` is a task of its own too, and
-        # `pending` above reaches it directly rather than only
-        # through `server`'s task cascading a cancel onto it. The
-        # kernel can have handed a connection to `accept`'s own
-        # future already -- indistinguishable from the ordinary
-        # case once that future is done -- and `Task.cancel` on a
-        # task whose own awaited future is already done cannot
-        # cancel that future either: it forces `CancelledError`
-        # into the task on its next step regardless, discarding a
-        # socket nobody ever gets to close. `server`'s except arm
-        # already guards this for a cancel arriving through its own
-        # shield (btclib-org/btclib-node#323); it cannot guard a
-        # cancel that reaches `accept` directly, which is what
-        # happens here on every call. One step of the loop first is
-        # what a task sitting on an already-resolved future needs
-        # to return normally instead -- for `accept`, straight into
-        # `create_connection`, which registers the connection in
-        # `self.connections` before this method ever schedules a
-        # cancel.
-        #
-        # Guarded on `self._server_socket is not None` -- set only once
-        # `run` has bound successfully and is about to schedule `server`'s
-        # own accept task, right before `run_forever` -- not because a
-        # step where it is `None` is unsafe any longer
-        # (`stop_handle.cancel()` above already made every
-        # `run_until_complete` in this method safe regardless, including
-        # the drain below, which carries no guard of its own --
-        # btclib-org/btclib-node#377), but because a manager `server` was
-        # never scheduled on has no `accept` task this step could
-        # possibly be owed: `self.ident is not None`, which #362 first
-        # guarded this with, answers "was `start()` called", not "did
-        # `run` reach the point of scheduling `server`", and reads `True`
-        # for a thread that started and then died before `run_forever` --
-        # a bind failure being the ordinary way -- exactly the case
-        # `self._server_socket` (set only after a successful `_bind`)
-        # tells apart correctly (btclib-org/btclib-node#380).
-        #
-        # Repeated until a step changes nothing, rather than run
-        # once: nothing about `join` returning orders it against
-        # the callback the future is resolved through, since that
-        # callback reaches `self.loop` from another thread with no
-        # synchronization of its own beyond `call_soon_threadsafe`'s
-        # ordering guarantee. A step that runs before that callback
-        # has been delivered changes nothing, so stopping after
-        # just one would still cancel `accept` directly; only
-        # running until a step is itself a no-op catches a delivery
-        # that arrives on a later one. `pending`
-        # is taken again each time rather than reused, since a step
-        # that does change something can only be observed that way
-        # -- `create_connection` registers a new connection, whose
-        # own task is what a following step's snapshot would show
-        # that the previous one did not.
-        if self._server_socket is not None:
-            while True:
-                self.loop.run_until_complete(asyncio.sleep(0))
-                stepped = asyncio.all_tasks(self.loop)
-                if stepped == pending:
-                    break
-                pending = stepped
+        # No step of the loop first here, unlike an earlier version of
+        # this method: that step existed only to let a task sitting on
+        # an already-resolved future -- `server`'s own former `accept`
+        # task -- return normally into `create_connection` before a
+        # direct cancel discarded it, `Task.cancel` on a task whose own
+        # awaited future is already done forcing `CancelledError` in on
+        # its next step regardless of what the future already held
+        # (btclib-org/btclib-node#323, for a cancel arriving through
+        # `server`'s own shield; this loop's own former blanket sweep,
+        # for one reaching that task directly). `server` no longer has
+        # such a task to protect: what it accepts sits in a queue
+        # instead, immune to that discard regardless of when the cancel
+        # below reaches it (btclib-org/btclib-node#391). `stop_handle.cancel()`
+        # above already closed the other reason an earlier version of
+        # this step existed, a `RuntimeError` this loop could raise
+        # running `pending`'s own already-scheduled tasks on a loop
+        # whose `run_forever` never delivered this method's own
+        # `loop.stop` (btclib-org/btclib-node#377,
+        # btclib-org/btclib-node#380) -- so neither of the two reasons
+        # this step used to answer still applies.
         for task in pending:
             task.cancel()
         for task in pending:
@@ -279,14 +288,13 @@ class RpcManager(threading.Thread):
         # Closed explicitly and unconditionally, after the loop above
         # rather than instead of it: `server`'s own `with server_socket:`
         # is what ordinarily closes this, once that task's own
-        # cancellation is delivered and the exception propagates out of
-        # `sock_accept` through the `with`. Measured to be skipped
-        # entirely where `stop()` arrives before `run_forever` has
-        # stepped that task even once -- `_server_socket`'s own comment
-        # has the mechanism, and this is what closes what that path does
-        # not reach; a `with` block already run leaves nothing here for
-        # `close()` to do, since a socket is closed only once, whichever
-        # call reaches it first.
+        # cancellation is delivered and the exception propagates through
+        # the `with`. Measured to be skipped entirely where `stop()`
+        # arrives before `run_forever` has stepped that task even once
+        # -- `_server_socket`'s own comment has the mechanism, and this
+        # is what closes what that path does not reach; a `with` block
+        # already run leaves nothing here for `close()` to do, since a
+        # socket is closed only once, whichever call reaches it first.
         if self._server_socket is not None:
             self._server_socket.close()
         self.loop.close()
