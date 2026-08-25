@@ -12,6 +12,8 @@ a peer answered past what this connection will queue for it.
 
 import asyncio
 import socket
+import threading
+import time
 from contextlib import suppress
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -19,7 +21,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 from btclib.hashes import hash256
 from btclib.p2p.block_filters import BlockFilterType, CFilter
-from btclib.p2p.keepalive import Ping
+from btclib.p2p.keepalive import Ping, Pong
 from btclib.p2p.limits import MAX_GETCFILTERS_SIZE
 from btclib.p2p.message import Message
 
@@ -27,6 +29,7 @@ from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.p2p import connection as connection_module
 from btclib_node.p2p.address import peer_address
+from btclib_node.p2p.callbacks import pong
 from btclib_node.p2p.connection import Connection
 from tests.helpers import log_recorder
 
@@ -482,3 +485,79 @@ def test_a_third_maximal_answer_s_worth_in_flight_drops_the_peer() -> None:
     assert len(delivered) >= MAX_GETCFILTERS_SIZE
     # released and accounted for, not left on the books by the drop
     assert connection.queued_send_bytes == 0
+
+
+def test_send_ping_racing_pong_does_not_tear_the_ping_pair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#357's second interleaving: `callbacks.pong` clears `ping_sent`
+    then `ping_nonce` as two statements, and `Connection.send_ping`
+    writes both as two statements too. Unlocked, a `send_ping` slipped
+    in between `pong`'s two clears would have its own fresh nonce
+    overwritten by `pong`'s second write, leaving a real outstanding
+    ping under `ping_nonce == 0` -- the sentinel `send_ping`'s own
+    comment is careful never to send -- and the peer discouraged and
+    dropped for a protocol violation this node caused.
+
+    Driven deterministically by hooking the exact write `pong` makes
+    first, `ping_sent = 0`: a real second thread runs `send_ping` from
+    inside that write, and is given only until it is blocked on
+    `_ping_lock` -- the same lock `send_ping` takes -- before `pong`'s
+    own second write runs. Unlocked, that second thread would already
+    have finished writing by the time this test could look.
+    """
+    connection, _ = a_connection()
+    connection.send = lambda msg: None  # type: ignore[method-assign]
+    original_nonce = 111
+    connection.ping_nonce = original_nonce
+
+    other_thread_about_to_block = threading.Event()
+    hook_armed = [False]
+
+    def get_ping_sent(self: Connection) -> float:
+        return cast("float", self.__dict__.get("_ping_sent_value", 0))
+
+    def set_ping_sent(self: Connection, value: float) -> None:
+        self.__dict__["_ping_sent_value"] = value
+        if hook_armed[0] and value == 0:
+            hook_armed[0] = False
+            send_ping_thread.start()
+            # A bound only against a hang: unlocked, `send_ping` runs to
+            # completion at once and this event is never set.
+            other_thread_about_to_block.wait(timeout=5)
+
+    monkeypatch.setattr(
+        Connection,
+        "ping_sent",
+        property(get_ping_sent, set_ping_sent),
+        raising=False,
+    )
+    connection.ping_sent = time.time() - 1  # a ping already outstanding
+
+    real_lock = connection._ping_lock
+
+    class SignallingLock:
+        def __enter__(self) -> None:
+            if threading.current_thread() is not threading.main_thread():
+                other_thread_about_to_block.set()
+            real_lock.acquire()
+
+        def __exit__(self, *exc_info: object) -> None:
+            real_lock.release()
+
+    connection._ping_lock = cast("Any", SignallingLock())
+    send_ping_thread = threading.Thread(target=connection.send_ping)
+    hook_armed[0] = True
+
+    discouraged: list[Any] = []
+    node = SimpleNamespace(p2p_manager=SimpleNamespace(discourage=discouraged.append))
+    pong(cast("Any", node), Pong(original_nonce).serialize(), connection)
+
+    send_ping_thread.join(timeout=5)
+    connection.client.close()
+    assert not send_ping_thread.is_alive()
+    assert not discouraged
+    # send_ping's own fresh pair survives, rather than carrying the
+    # sentinel pong's own second write would otherwise have left behind
+    assert connection.ping_sent != 0
+    assert connection.ping_nonce not in (0, original_nonce)

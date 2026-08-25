@@ -339,6 +339,44 @@ def test_a_peer_that_answered_recently_is_left_alone(
     assert list(manager.connections) == [1]
 
 
+def test_a_pong_landing_between_the_idle_check_and_its_reread_does_not_drop_the_peer(
+    a_manager: AManagerFactory,
+) -> None:
+    """#357's first interleaving: `_prune_stale_connections` used to
+    read `conn.ping_sent` twice -- once for `if not conn.ping_sent` and
+    again for the `elif` right after -- so a `callbacks.pong` on the
+    other thread clearing it to 0 between the two reads made `now - 0 >
+    _IDLE_TIMEOUT` true for a peer that had just answered its ping.
+
+    Driven deterministically rather than by timing an actual thread: a
+    `ping_sent` that answers a recent timestamp on its first read and 0
+    -- what a pong's own clear would leave behind -- on any read after
+    that stands in for the interleaving without needing one.
+    """
+    reads = iter([time.time(), 0])
+
+    class ConnDouble:
+        id = 1
+        status = P2pConnStatus.Connected
+        address = peer_address("1.2.3.4", 18444)
+        last_receive = time.time() - 200
+        relay_tx = True
+        feefilter = 0
+
+        @property
+        def ping_sent(self) -> float:
+            return next(reads)
+
+    conn = ConnDouble()
+    manager = a_manager([cast("Any", conn)])
+    asyncio.run(one_pass(manager))
+    # neither branch below the single read fires: `send_ping` and
+    # `stop` are not even defined on this double, so either firing
+    # would end the test on an `AttributeError` rather than on this
+    # assertion
+    assert list(manager.connections) == [1]
+
+
 def test_a_pending_connection_that_has_closed_is_let_go_of(
     a_manager: AManagerFactory,
 ) -> None:

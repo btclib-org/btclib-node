@@ -191,9 +191,17 @@ class P2pManager(threading.Thread):
             if conn.status == P2pConnStatus.Closed:
                 self.remove_connection(conn.id)
             if now - conn.last_receive > _IDLE_TIMEOUT:
-                if not conn.ping_sent:
+                # One read, not `conn.ping_sent` re-read in the `elif`
+                # below: `callbacks.pong`, on the other thread, clears
+                # it the moment a pong answers this connection's own
+                # ping, and a second read landing right after that
+                # clear turned `now - 0 > _IDLE_TIMEOUT` true for every
+                # `now`, dropping a peer for having just answered.
+                # btclib-org/btclib-node#357
+                ping_sent = conn.ping_sent
+                if not ping_sent:
                     conn.send_ping()
-                elif now - conn.ping_sent > _IDLE_TIMEOUT:
+                elif now - ping_sent > _IDLE_TIMEOUT:
                     self.remove_connection(conn.id)
         for conn in self.pending_connections.copy().values():
             # The same idle bound, but no ping in between: `ping` is
