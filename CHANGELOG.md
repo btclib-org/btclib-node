@@ -39,6 +39,17 @@ to check the guess.
   to `conn.stop()`. `#357` is what made `_ping_lock` protect exactly
   that state.
 
+### `send_version`'s nonce ring keeps the newest ten, not the oldest (closes #433)
+
+- **`Connection.send_version` truncates `manager.nonces` with `[-10:]`
+  instead of `[:10]`** (closes #433): the old slice kept the first ten
+  nonces this process ever drew, so past the tenth connection every
+  freshly appended nonce was discarded on the same line, and
+  `callbacks.version`'s self-connection check compared an incoming
+  `version`'s nonce against ten connections long gone rather than any
+  connection still in flight. `[-10:]` keeps the ten most recently
+  sent, the ring `manager.nonces` was written to be.
+
 ### The docs gate warns against `--only-group docs` (closes #425)
 
 - **`CONTRIBUTING.md`'s *The environment and the gates* now names
