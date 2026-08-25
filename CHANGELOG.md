@@ -14,6 +14,25 @@ to check the guess.
 
 ## Unreleased
 
+### The docs gate's own remaining gaps close: `[project.urls]`, `local-link-prefix`
+
+- **`conf.py`'s `BLOB` constant reads `pyproject.toml`'s own
+  `[project.urls].repository`** (closes #378): that table landed with
+  the tier-1 promotion (issue #286), after `docs/source/` (issue #264)
+  had already worked around its absence with a local `REPO_URL`
+  constant -- removed now that the table it stood in for exists.
+- **`local-link-prefix` is a pre-commit hook here too** (closes #379):
+  section 4 of the organization standard carries it in every
+  repository, and it refuses a local markdown link destination that
+  does not begin `./` -- the shape `docs.yml`'s own built-page grep
+  cannot always catch, since an unresolvable link written without the
+  prefix renders indistinguishably from a real autodoc anchor.
+- **`check-readthedocs` validates `.readthedocs.yaml`** the way
+  `check-dependabot` already validates `.github/dependabot.yml`: the
+  hook existed and this repository's own `.pre-commit-config.yaml`
+  said outright why it was left out, a sentence issue #264 made false
+  the day `.readthedocs.yaml` landed.
+
 ### `P2pManager.stop()`'s grace step is guarded on `self.ident`, closing issue #368
 
 - **`stop()`'s grace step -- `run_until_complete(asyncio.sleep(0))`,
