@@ -142,7 +142,7 @@ class RpcManager(threading.Thread):
         loop.run_forever()
 
     def stop(self) -> None:
-        self.loop.call_soon_threadsafe(self.loop.stop)
+        stop_handle = self.loop.call_soon_threadsafe(self.loop.stop)
         # `join` blocks this thread without spinning it, the way
         # `Node.stop` already waits on itself with `self.join`. Guarded
         # on `is_alive`, since `Node.run` calls this unconditionally --
@@ -151,6 +151,48 @@ class RpcManager(threading.Thread):
         # `P2pManager.stop` for the same fix, applied there first.
         if self.is_alive():
             self.join()
+        # `stop_handle.cancel()` is what makes every `run_until_complete`
+        # below safe, on any loop this method could possibly be handed --
+        # not one more guard clause alongside `self.ident` and `pending`,
+        # which is what #362 tried and #380 and #377 each found a gap
+        # in. The `call_soon_threadsafe` above only *schedules*
+        # `loop.stop`; it is delivered -- `self._stopping` set, so
+        # `run_forever` returns after its current pass -- only once
+        # something actually drives this loop's `run_forever` far enough
+        # to reach it. Three things can happen by the time `join` above
+        # returns:
+        #
+        # - This manager's own thread was running `run_forever` (the
+        #   ordinary case) and delivered it there, exiting on its own.
+        #   `join` already waited for exactly that, so the handle has
+        #   already fired and is spent.
+        # - This thread was never started at all (`self.ident is None`)
+        #   -- `is_alive()` above is `False`, `join` is skipped, and
+        #   nothing has ever driven this loop, so the handle is still
+        #   sitting in its ready queue, undelivered.
+        # - This thread was started and `run()` raised before ever
+        #   reaching `run_forever` -- a bind failure being the ordinary
+        #   way -- so `self.ident is not None` even though `run_forever`,
+        #   again, never ran: the handle is undelivered the same as the
+        #   case above, which is exactly what defeated `self.ident is
+        #   not None` as a guard (btclib-org/btclib-node#380).
+        #
+        # `Handle.cancel()` on a handle already delivered is specified as
+        # a no-op -- there is nothing left to remove from a ready queue
+        # already drained of it -- so calling it here unconditionally is
+        # correct for the first case above and is what removes the
+        # landmine outright for the other two, rather than merely
+        # stepping past where it goes off once (#362) and leaving every
+        # `run_until_complete` downstream of that first step still primed
+        # to hit it (btclib-org/btclib-node#377): a task whose own
+        # cancellation needs a second real step to unwind -- an `except
+        # CancelledError` handler that awaits a fresh timer rather than
+        # only an already-cancelled future -- is not owed anything by a
+        # guarded step loop, only by there being no leftover stop left to
+        # answer at all. `P2pManager.stop` carries the identical fix, for
+        # the identical reason (btclib-org/btclib-node#377,
+        # btclib-org/btclib-node#380).
+        stop_handle.cancel()
         # Cancelled here, as its own pass over `pending`, before any of
         # them is driven to completion below -- not folded into one
         # combined loop. `run_until_complete(task)`, for any one task,
@@ -168,71 +210,59 @@ class RpcManager(threading.Thread):
         # `P2pManager`, whose own connections sweep runs *before* this
         # same loop and so cannot.
         pending = asyncio.all_tasks(self.loop)
-        if self.ident is not None:
-            # `server`'s own `accept` is a task of its own too, and
-            # `pending` above reaches it directly rather than only
-            # through `server`'s task cascading a cancel onto it. The
-            # kernel can have handed a connection to `accept`'s own
-            # future already -- indistinguishable from the ordinary
-            # case once that future is done -- and `Task.cancel` on a
-            # task whose own awaited future is already done cannot
-            # cancel that future either: it forces `CancelledError`
-            # into the task on its next step regardless, discarding a
-            # socket nobody ever gets to close. `server`'s except arm
-            # already guards this for a cancel arriving through its own
-            # shield (btclib-org/btclib-node#323); it cannot guard a
-            # cancel that reaches `accept` directly, which is what
-            # happens here on every call. One step of the loop first is
-            # what a task sitting on an already-resolved future needs
-            # to return normally instead -- for `accept`, straight into
-            # `create_connection`, which registers the connection in
-            # `self.connections` before this method ever schedules a
-            # cancel.
-            #
-            # Guarded on `self.ident`, not on `is_alive()`, not on
-            # `pending` being non-empty, and not on `self._server_socket`:
-            # a `run` that raised before ever reaching `run_forever` --
-            # a bind failure -- leaves the `loop.stop` this method
-            # schedules above undelivered, and asking that idle loop to
-            # run even one more step raises `RuntimeError('Event loop
-            # stopped before Future completed.')`. Neither `pending` nor
-            # `_server_socket` tells that case apart from an ordinary
-            # one reliably: a caller can hand this loop real tasks of
-            # its own, or set `_server_socket` by hand, without ever
-            # starting this manager's thread -- two of this file's own
-            # tests do exactly that -- and either reads as the ordinary
-            # case despite `run_forever` never having run, hitting the
-            # same `RuntimeError`. Nor does `is_alive()`, for the
-            # opposite reason: it is false both before `start` and
-            # after `run` has already returned, and a thread quick
-            # enough to have already finished by the time `join` above
-            # is even asked about it is one whose `run_forever` *did*
-            # run, and did already deliver the `loop.stop` scheduled at
-            # the top of this method -- so gating on `is_alive()` skips
-            # this step precisely in the ordinary case of a manager
-            # stopped soon after it starts, defeating the fix for it.
-            # `ident` is `None` only where `start` was never called at
-            # all, and stays set for the rest of this object's life
-            # once it was -- whether `join` above actually waited on a
-            # thread still alive or found nothing left to wait for --
-            # which is the question this guard actually needs to ask
-            # (btclib-org/btclib-node#362).
-            #
-            # Repeated until a step changes nothing, rather than run
-            # once: nothing about `join` returning orders it against
-            # the callback the future is resolved through, since that
-            # callback reaches `self.loop` from another thread with no
-            # synchronization of its own beyond `call_soon_threadsafe`'s
-            # ordering guarantee. A step that runs before that callback
-            # has been delivered changes nothing, so stopping after
-            # just one would still cancel `accept` directly; only
-            # running until a step is itself a no-op catches a delivery
-            # that arrives on a later one. `pending`
-            # is taken again each time rather than reused, since a step
-            # that does change something can only be observed that way
-            # -- `create_connection` registers a new connection, whose
-            # own task is what a following step's snapshot would show
-            # that the previous one did not.
+        # `server`'s own `accept` is a task of its own too, and
+        # `pending` above reaches it directly rather than only
+        # through `server`'s task cascading a cancel onto it. The
+        # kernel can have handed a connection to `accept`'s own
+        # future already -- indistinguishable from the ordinary
+        # case once that future is done -- and `Task.cancel` on a
+        # task whose own awaited future is already done cannot
+        # cancel that future either: it forces `CancelledError`
+        # into the task on its next step regardless, discarding a
+        # socket nobody ever gets to close. `server`'s except arm
+        # already guards this for a cancel arriving through its own
+        # shield (btclib-org/btclib-node#323); it cannot guard a
+        # cancel that reaches `accept` directly, which is what
+        # happens here on every call. One step of the loop first is
+        # what a task sitting on an already-resolved future needs
+        # to return normally instead -- for `accept`, straight into
+        # `create_connection`, which registers the connection in
+        # `self.connections` before this method ever schedules a
+        # cancel.
+        #
+        # Guarded on `self._server_socket is not None` -- set only once
+        # `run` has bound successfully and is about to schedule `server`'s
+        # own accept task, right before `run_forever` -- not because a
+        # step where it is `None` is unsafe any longer
+        # (`stop_handle.cancel()` above already made every
+        # `run_until_complete` in this method safe regardless, including
+        # the drain below, which carries no guard of its own --
+        # btclib-org/btclib-node#377), but because a manager `server` was
+        # never scheduled on has no `accept` task this step could
+        # possibly be owed: `self.ident is not None`, which #362 first
+        # guarded this with, answers "was `start()` called", not "did
+        # `run` reach the point of scheduling `server`", and reads `True`
+        # for a thread that started and then died before `run_forever` --
+        # a bind failure being the ordinary way -- exactly the case
+        # `self._server_socket` (set only after a successful `_bind`)
+        # tells apart correctly (btclib-org/btclib-node#380).
+        #
+        # Repeated until a step changes nothing, rather than run
+        # once: nothing about `join` returning orders it against
+        # the callback the future is resolved through, since that
+        # callback reaches `self.loop` from another thread with no
+        # synchronization of its own beyond `call_soon_threadsafe`'s
+        # ordering guarantee. A step that runs before that callback
+        # has been delivered changes nothing, so stopping after
+        # just one would still cancel `accept` directly; only
+        # running until a step is itself a no-op catches a delivery
+        # that arrives on a later one. `pending`
+        # is taken again each time rather than reused, since a step
+        # that does change something can only be observed that way
+        # -- `create_connection` registers a new connection, whose
+        # own task is what a following step's snapshot would show
+        # that the previous one did not.
+        if self._server_socket is not None:
             while True:
                 self.loop.run_until_complete(asyncio.sleep(0))
                 stepped = asyncio.all_tasks(self.loop)

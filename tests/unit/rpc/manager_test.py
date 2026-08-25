@@ -428,3 +428,78 @@ def test_stop_closes_an_accept_already_landed_when_the_drain_begins(
     assert landed == [True]
     # a closed socket's own fileno is -1; still >= 0 is still open
     assert ours.fileno() == -1
+
+
+def test_stop_drains_a_task_whose_own_cancellation_needs_a_second_step(
+    a_manager: AManagerFactory,
+) -> None:
+    """#377: neither #362's own grace step nor the unconditional drain
+    below it (`for task in pending: ... run_until_complete(task)`) is
+    guarded against a task whose cancellation-unwind needs more than the
+    one batch of already-ready callbacks the loop's very first
+    `_run_once` since `stop()` scheduled its own `loop.stop` -- an
+    `except CancelledError` handler that awaits a fresh, real timer
+    rather than only re-awaiting an already-cancelled future.
+
+    Neither #323's own regression test (`asyncio.Event().wait()`, whose
+    cancellation resolves inside that same first batch) nor #368's
+    (mirrored above in this file) builds a task shaped this way: this
+    one does, on a manager whose thread was never started, and used to
+    raise the identical `RuntimeError('Event loop stopped before Future
+    completed.')` out of the drain loop rather than the grace step.
+    """
+    manager = a_manager(get_random_port())
+    loop = manager.loop
+
+    async def slow_unwind() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.05)
+            raise
+
+    task = loop.create_task(slow_unwind())
+    loop.run_until_complete(asyncio.sleep(0))
+    assert not task.done()
+
+    manager.stop()
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_stop_does_not_raise_where_start_was_called_but_run_never_reached_run_forever(
+    a_manager: AManagerFactory,
+) -> None:
+    """#380: `self.ident is not None` -- #362's own guard on the grace
+    step -- is true from the moment `start()` is called, well before
+    `run()` reaches `run_forever()`. Where `run()` raises before that --
+    a bind failure being the ordinary way -- the `loop.stop` `stop()`
+    schedules at its own top is never delivered, and `self.ident is not
+    None` reads `True` anyway, so the grace step used to run against a
+    loop with nothing having ever stepped it, raising the identical
+    `RuntimeError('Event loop stopped before Future completed.')` #362
+    exists to eliminate -- through the very guard meant to rule it out.
+
+    A real bind failure, not a monkeypatched `_bind`, the same way
+    `test_a_manager_that_cannot_bind_stops_being_alive` above gets one --
+    with a real task created directly on `manager.loop` before `start()`,
+    the same caller shape #368's own P2pManager test and the one above
+    build.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
+        taken.bind(("127.0.0.1", 0))
+        taken.listen()
+        manager = a_manager(taken.getsockname()[1])
+        loop = manager.loop
+
+        async def a_task() -> None:
+            await asyncio.Event().wait()
+
+        task = loop.create_task(a_task())
+        loop.run_until_complete(asyncio.sleep(0))
+        assert not task.done()
+
+        manager.start()
+        wait_until(lambda: not manager.is_alive())
+        assert manager.ident is not None
+
+        manager.stop()
