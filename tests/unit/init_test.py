@@ -313,7 +313,7 @@ def test_the_node_that_will_not_stop_is_named(
     # that does not say which one leaves the reader to guess
     with (
         a_wedged_node(tmp_path, monkeypatch) as node,
-        pytest.raises(Exception, match=re.escape(str(tmp_path))),
+        pytest.raises(NodeShutdownTimeoutError, match=re.escape(str(tmp_path))),
     ):
         node.stop()
 

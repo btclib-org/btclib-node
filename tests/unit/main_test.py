@@ -18,7 +18,7 @@ from btclib_node.chains import RegTest
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import BlockIndex, BlockStatus
 from btclib_node.constants import NodeStatus
-from btclib_node.exceptions import MissingPrevoutError
+from btclib_node.exceptions import ChainstateInconsistencyError, MissingPrevoutError
 from btclib_node.interpreter import check_transactions
 from btclib_node.main import update_chain, verify_mempool_acceptance
 from tests.helpers import (
@@ -220,7 +220,9 @@ def test_update_chain_refuses_a_block_marked_downloaded_but_missing(
     for block_hash in block_index.header_dict:
         block_index.set_downloaded(block_hash)
     # deliberately not added to node.block_db
-    with pytest.raises(Exception, match="just checked downloaded is missing"):
+    with pytest.raises(
+        ChainstateInconsistencyError, match="just checked downloaded is missing"
+    ):
         update_chain(node)
 
 
@@ -263,7 +265,7 @@ def test_a_reorg_refuses_a_missing_reverse_patch(node: Node) -> None:
     node.block_db.rev_patches.pop(first[-1].header.hash)
 
     second = generate_random_chain(3, RegTest().genesis.hash)
-    with pytest.raises(Exception, match="no reverse patch"):
+    with pytest.raises(ChainstateInconsistencyError, match="no reverse patch"):
         connect(node, second)
 
 
@@ -276,7 +278,9 @@ def test_a_reorg_refuses_a_missing_removed_block(node: Node) -> None:
     node.block_db.blocks.pop(first[-1].header.hash)
 
     second = generate_random_chain(3, RegTest().genesis.hash)
-    with pytest.raises(Exception, match="block just removed is missing"):
+    with pytest.raises(
+        ChainstateInconsistencyError, match="block just removed is missing"
+    ):
         connect(node, second)
 
 

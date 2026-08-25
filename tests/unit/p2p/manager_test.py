@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 
     from btclib_node import Node
 from tests.helpers import (
+    WaitTimeoutError,
     generate_random_transaction,
     get_random_port,
     wait_until,
@@ -1013,7 +1014,7 @@ def test_a_manager_that_cannot_bind_never_says_it_is_listening(
         manager = a_manager(port=taken.getsockname()[1])
         manager.start()
         try:
-            with pytest.raises(Exception, match=r"within 0\.5 seconds"):
+            with pytest.raises(WaitTimeoutError, match=r"within 0\.5 seconds"):
                 wait_until_listening(manager, timeout=0.5)
         finally:
             manager.stop()

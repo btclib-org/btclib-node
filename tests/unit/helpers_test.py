@@ -22,6 +22,7 @@ from btclib.p2p.addrv2 import BIP155Network
 
 from btclib_node.chains import RegTest
 from tests.helpers import (
+    WaitTimeoutError,
     brute_force_nonce,
     build_block,
     call_within,
@@ -57,7 +58,9 @@ def test_a_condition_that_never_holds_is_given_up_on() -> None:
     calls: list[bool] = []
     timeout = 0.2
     start = time.time()
-    with pytest.raises(Exception, match=f"helpers_test.py:.* within {timeout} seconds"):
+    with pytest.raises(
+        WaitTimeoutError, match=f"helpers_test.py:.* within {timeout} seconds"
+    ):
         wait_until(lambda: calls.append(True), timeout=timeout)
     # asked repeatedly, and for as long as it said it would
     assert len(calls) > 1
@@ -78,7 +81,7 @@ def test_a_manager_that_never_binds_is_given_up_on() -> None:
     # failure says which manager, because a test that waits on several
     # is told nothing by a line number inside the helper
     never = SimpleNamespace(listening=threading.Event(), port=18444)
-    with pytest.raises(Exception, match=r"18444.* within 0\.2 seconds"):
+    with pytest.raises(WaitTimeoutError, match=r"18444.* within 0\.2 seconds"):
         wait_until_listening(never, timeout=0.2)
 
 
@@ -107,7 +110,7 @@ def test_a_bounded_call_that_does_not_return_is_given_up_on() -> None:
     start = time.time()
     try:
         with pytest.raises(
-            Exception, match=f"helpers_test.py:.* within {timeout} seconds"
+            WaitTimeoutError, match=f"helpers_test.py:.* within {timeout} seconds"
         ):
             call_within(never_returns, timeout=timeout)
         assert time.time() - start >= timeout
