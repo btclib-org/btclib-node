@@ -418,7 +418,7 @@ class Connection:
         # draw is a narrower guarantee of that
         nonce = secrets.randbelow(2**64)
         self.manager.nonces.append(nonce)
-        self.manager.nonces = self.manager.nonces[:10]
+        self.manager.nonces = self.manager.nonces[-10:]
 
         # A connection exists only once P2pManager.start() has run, and
         # that only happens with a port to listen on (Node.run guards

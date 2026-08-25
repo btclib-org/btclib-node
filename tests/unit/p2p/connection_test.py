@@ -98,6 +98,45 @@ def test_a_message_that_will_not_serialize_is_logged_and_dropped() -> None:
     assert "error in serializing message" in line
 
 
+def test_send_version_keeps_the_most_recently_sent_nonces() -> None:
+    """`manager.nonces` is a ring of the ten most recent, not the ten oldest.
+
+    #433: appending to the list and then slicing `[:10]` kept the first
+    ten nonces this process ever drew, so past the tenth `send_version`
+    every new nonce was appended and immediately discarded by that same
+    slice -- the ring never moved again, and `callbacks.version`'s
+    self-connection check compared against connections long gone. Past
+    eleven calls, the ring must be the last ten appends in order and
+    must no longer hold the first nonce. `sent` records the ring's own
+    last entry after each call rather than the nonce `send_version`
+    drew, which there is no other way to observe -- under the defect
+    that makes `sent` repeat its tenth entry, and the equality below
+    fails on that repetition as much as on the eviction that never
+    happened.
+    """
+    connection, _ = a_connection()
+    manager = cast("Any", connection.manager)
+    manager.nonces = []
+    manager.port = 18444
+
+    async def _send(data: bytes) -> None:
+        return
+
+    connection._send = _send  # type: ignore[method-assign]
+
+    async def drive() -> list[int]:
+        sent = []
+        for _ in range(11):
+            await connection.send_version()
+            sent.append(manager.nonces[-1])
+        return sent
+
+    with connection.client:
+        sent = asyncio.run(drive())
+    assert manager.nonces == sent[-10:]
+    assert sent[0] not in manager.nonces
+
+
 def test_a_connection_names_the_peer_it_is_to() -> None:
     """`repr(connection)` names the real peer address a live socket has."""
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
