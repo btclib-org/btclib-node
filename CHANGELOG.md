@@ -141,6 +141,24 @@ to check the guess.
   individually. `D403`/`D404`/`D105` are clean tree-wide, `tests/**`
   and `scripts/**` included.
 
+### `tests/**`'s own D-family per-file-ignore splits by subdirectory
+
+- **The single `"tests/**"` per-file-ignore entry for those eight codes
+  is now one key per `tests/unit/` subpackage** (issue #373): no
+  docstring is written and no finding is fixed by this change --
+  `uv run ruff check --select <those eight codes> --statistics tests
+  scripts` reports the exact same total before and after. This is
+  infrastructure ahead of the five parallel pull requests #373's own
+  remaining scope is about to be split into, one per new key, so each
+  can remove only its own line without conflicting with the other
+  four's. Verified directly rather than assumed: `ruff`'s own glob
+  matches across a `/` even for a bare `*`, so the bucket for
+  `tests/unit/`'s own root-level files (no subpackage of their own) is
+  an explicit enumeration by name, not a glob that would also silently
+  catch the four subpackages split out beside it -- confirmed by
+  removing each new key in turn and checking that only its own files'
+  findings reappear, never a neighbor's.
+
 ### The docs gate's own remaining gaps close: `[project.urls]`, `local-link-prefix`
 
 - **`conf.py`'s `BLOB` constant reads `pyproject.toml`'s own
