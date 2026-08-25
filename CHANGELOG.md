@@ -12,6 +12,28 @@ to check the guess.
 
 ## Unreleased
 
+### `Connection`'s ping state is one step against the two threads that touch it
+
+- **`send_ping` and `callbacks.pong` share `Connection._ping_lock`**
+  (closes #357): each writes or clears `ping_sent` and `ping_nonce` as a
+  pair, and the lock makes each pair one step against the other's, so a
+  `send_ping` landing between `pong`'s own two clears no longer has its
+  fresh nonce overwritten by the sentinel `0` -- `send_ping`'s own
+  comment is careful never to send it -- which used to discourage and
+  drop a peer for a protocol violation this node caused.
+- **`_prune_stale_connections` reads `ping_sent` once, not twice**
+  (closes #357): its own `elif` re-read the attribute, so a `pong`
+  clearing it to 0 between the two reads dropped a peer that had just
+  answered its ping.
+- **`Connection.stop`'s idempotence comment argues from both of this
+  node's threads, not from one** (closes #360): `stop` is called from
+  `Node`'s own thread as well as from `P2pManager`'s, and what makes two
+  threads passing its guard together harmless is that a second
+  `self.task.cancel()` and a second `socket.close()` each take an early
+  return with no further effect, and `status` only ever moves toward
+  `Closed` -- not, as the comment argued before, several calls queued
+  within one turn of a single loop. No code changes.
+
 ### This node depends on btclib's libsecp256k1 bindings, closing issue #361
 
 - **`btclib`'s dependency line carries the `secp256k1` extra** (closes

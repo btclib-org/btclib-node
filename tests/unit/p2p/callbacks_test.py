@@ -12,6 +12,7 @@ is the path where every message is welcome; these are the rest.
 """
 
 import socket
+import threading
 import time
 from dataclasses import replace
 from decimal import Decimal
@@ -372,6 +373,7 @@ def a_peer(**attributes: Any) -> Any:
         ping_sent=0,
         ping_nonce=0,
         latency=0,
+        _ping_lock=threading.Lock(),
         send_ping=lambda: sent.append("ping"),
         client=SimpleNamespace(getpeername=lambda: ("1.2.3.4", 18444)),
         inbound=False,

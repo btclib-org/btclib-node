@@ -193,16 +193,28 @@ def ping(node: Node, msg: bytes, conn: Connection) -> None:
 
 def pong(node: Node, msg: bytes, conn: Connection) -> None:
     nonce = Pong.parse(msg).nonce
-    if conn.ping_sent:
-        if conn.ping_nonce != nonce:
-            # a nonce this node never sent: a protocol violation, and
-            # discouraged for it (#283)
-            node.p2p_manager.discourage(conn.address)
-            conn.stop()
+    # The read that decides which of ping_sent/ping_nonce apply and the
+    # clear that answers it are one step under conn._ping_lock, against
+    # Connection.send_ping's own pair of writes on the other thread:
+    # unlocked, a send_ping slipped in between this method's own two
+    # statements used to clear ping_nonce to 0 out from under a ping
+    # send_ping had just sent, discouraging (#283) and dropping a peer
+    # for a nonce this node itself changed. btclib-org/btclib-node#357
+    with conn._ping_lock:
+        ping_sent = conn.ping_sent
+        if not ping_sent:
             return
-        conn.latency = time.time() - conn.ping_sent
-        conn.ping_sent = 0
-        conn.ping_nonce = 0
+        matched = conn.ping_nonce == nonce
+        if matched:
+            conn.ping_sent = 0
+            conn.ping_nonce = 0
+    if not matched:
+        # a nonce this node never sent: a protocol violation, and
+        # discouraged for it (#283)
+        node.p2p_manager.discourage(conn.address)
+        conn.stop()
+        return
+    conn.latency = time.time() - ping_sent
 
 
 # Core's own MAX_PCT_ADDR_TO_SEND (net_processing.cpp, 58a7869f86):

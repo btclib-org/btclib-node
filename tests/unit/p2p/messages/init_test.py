@@ -12,6 +12,7 @@ message, and what becomes of a peer whose octets do not decode.
 
 import importlib
 import inspect
+import threading
 from collections import deque
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
@@ -138,6 +139,7 @@ def make_connection() -> Connection:
     conn.buffer = b""
     conn.status = P2pConnStatus.Open
     conn.last_receive = 0
+    conn._ping_lock = threading.Lock()
     return conn
 
 

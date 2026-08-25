@@ -5,6 +5,7 @@
 import asyncio
 import contextlib
 import secrets
+import threading
 import time
 from io import BytesIO
 from typing import TYPE_CHECKING, cast, override
@@ -139,6 +140,21 @@ class Connection:
         self.ping_nonce: int | None = None
         self.ping_sent: float = 0
         self.latency: float = 0
+        # `send_ping` (below) writes this pair from `P2pManager`'s own
+        # loop, off `_prune_stale_connections`; `callbacks.pong` reads
+        # and clears it from `Node`'s, off `handle_p2p`. Each is two
+        # statements, not one, and unlocked the two threads' statements
+        # can interleave into a ping outstanding under `ping_nonce ==
+        # 0` -- the sentinel `send_ping`'s own comment is careful never
+        # to send -- which reads as a peer answering a nonce it was
+        # never sent and gets it discouraged (#283) and dropped for a
+        # protocol violation this node caused. This lock is what makes
+        # each of the two writes one step against the other's; `stop`
+        # does not take it, since `stop` never touches either field --
+        # what makes two concurrent `stop` calls harmless is argued at
+        # `stop` itself, and is a different property from this one.
+        # btclib-org/btclib-node#357
+        self._ping_lock: threading.Lock = threading.Lock()
 
         self.download_queue: list[bytes] = []
         self.pending_eviction: bool = False
@@ -198,7 +214,36 @@ class Connection:
             # to `stop`, before the first has had a chance to change
             # anything a later one could check instead. Idempotent
             # rather than counted on not to happen, since nothing
-            # elsewhere in this class serializes who gets to call it.
+            # elsewhere in this class serializes who gets to call it --
+            # and not only within one turn of this loop: `stop` is
+            # called from Node's own thread as well as this manager's
+            # (p2p/main.py's handle_p2p and handle_p2p_handshake,
+            # callbacks.pong and every other callback that drops a peer
+            # for cause, all on Node's; `_prune_stale_connections`
+            # through `remove_connection`, on this manager's), so two
+            # threads can pass this very guard on one connection before
+            # either has written anything below. What makes that
+            # harmless is not the guard, it is that the three
+            # statements below are themselves idempotent: `self.status`
+            # only ever moves toward `Closed`, so a second write of the
+            # same value loses nothing; `self.task` is a
+            # `concurrent.futures.Future` -- what
+            # `asyncio.run_coroutine_threadsafe` returns and what
+            # `P2pManager.create_connection` stores here, not an
+            # `asyncio.Task` -- and a second `cancel()` on one already
+            # `CANCELLED` takes that method's own early `if self._state
+            # in [CANCELLED, CANCELLED_AND_NOTIFIED]: return True`
+            # branch, before `_invoke_callbacks()` runs again: no
+            # second attempt to cancel anything, whatever the call
+            # returns (measured on this tree's own interpreter: `True`
+            # both times, not `False` -- the state is already
+            # `CANCELLED`, never `FINISHED`, so the branch that would
+            # answer `False` is never the one taken); and a second
+            # `socket.close()` on an already-closed socket raises
+            # nothing, measured against a plain `socket.socket` and a
+            # `socketpair()` half alike. Two racing callers each
+            # running the body once is no different from one caller
+            # running it twice. btclib-org/btclib-node#360
             return
         self.status = P2pConnStatus.Closed
         if self.task and cancel_task:
@@ -377,8 +422,9 @@ class Connection:
         # never zero: a ping carrying the sentinel would make the pong
         # that answers it indistinguishable from no pong at all.
         ping_msg = Ping(1 + secrets.randbelow(2**64 - 1))
-        self.ping_sent = time.time()
-        self.ping_nonce = ping_msg.nonce
+        with self._ping_lock:
+            self.ping_sent = time.time()
+            self.ping_nonce = ping_msg.nonce
         self.send(ping_msg)
 
     def parse_messages(self) -> None:
