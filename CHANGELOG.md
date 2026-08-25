@@ -12,6 +12,19 @@ to check the guess.
 
 ## Unreleased
 
+### `P2pManager.stop()`'s grace step is guarded on `self.ident`, closing issue #368
+
+- **`stop()`'s grace step -- `run_until_complete(asyncio.sleep(0))`,
+  giving `accept` a chance to land normally before the sweep cancels it
+  (issue #353) -- runs only where `self.ident is not None`** (closes
+  #368): guarding it on `pending` being non-empty, as before, read a
+  caller's own tasks created directly on `manager.loop` the same as
+  `server`'s own `accept`, and asked a loop that had never delivered its
+  own scheduled `loop.stop` to run one more step, raising
+  `RuntimeError('Event loop stopped before Future completed.')`
+  precisely where `start()` was never called at all. `RpcManager.stop()`
+  carries the identical guard, for the identical reason (issue #362).
+
 ### `Connection`'s ping state is one step against the two threads that touch it
 
 - **`send_ping` and `callbacks.pong` share `Connection._ping_lock`**

@@ -1342,6 +1342,48 @@ def test_stop_closes_an_accept_already_landed_when_the_drain_begins(
     assert ours.fileno() == -1
 
 
+def test_stop_does_not_raise_on_a_manager_whose_thread_was_never_started(
+    a_manager: AManagerFactory,
+) -> None:
+    """#368: the grace step above -- `run_until_complete(asyncio.sleep(0))`,
+    giving `accept` a chance to land normally rather than being cancelled
+    mid-flight (#353) -- used to run whenever `asyncio.all_tasks(self.loop)`
+    read non-empty, which is not the same question as whether `run_forever`
+    was ever entered: a caller can create real tasks on `manager.loop`
+    directly, without ever calling `start()`, and `pending` reads
+    non-empty regardless. `stop()`'s own first line,
+    `call_soon_threadsafe(self.loop.stop)`, only schedules `loop.stop`; a
+    loop that has never run has not delivered it, so asking that loop to
+    run even one more step is its first run since that scheduling, and
+    raised `RuntimeError('Event loop stopped before Future completed.')`
+    -- the same failure a bind failure already produced through the
+    opposite precondition, `pending` empty rather than non-empty (#353).
+
+    The loop is stepped once directly before `stop()` is ever called, so
+    that the reproduction is not merely "a fresh loop", which the grace
+    step's own guard was already written to expect, but a loop `stop()`
+    itself is the first caller to ask anything of since scheduling its
+    own `loop.stop` -- the actual precondition the guard on `self.ident`
+    now answers instead of the guard on `pending`.
+    """
+    manager = a_manager()
+    loop = manager.loop
+
+    async def a_task() -> None:
+        await asyncio.Event().wait()
+
+    async def b_task() -> None:
+        await asyncio.Event().wait()
+
+    task_a = loop.create_task(a_task())
+    task_b = loop.create_task(b_task())
+    loop.run_until_complete(asyncio.sleep(0))
+    assert not task_a.done()
+    assert not task_b.done()
+
+    manager.stop()
+
+
 def test_server_closes_a_connection_accepted_in_the_instant_it_is_cancelled(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
