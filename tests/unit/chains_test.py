@@ -2,6 +2,8 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
+"""Every `Chain` subclass's constants, checked against Bitcoin Core's own."""
+
 from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet
 
 CHAINS = (Main(), TestNet(), SigNet(), RegTest())
@@ -44,6 +46,13 @@ EXPECTED = {
 
 
 def test_every_chain_is_covered() -> None:
+    """`CHAINS` and `Chain.__subclasses__()` both match `EXPECTED`'s own keys.
+
+    Two checks rather than one: the first catches a chain built and
+    added to `CHAINS` without an `EXPECTED` entry; the second catches
+    the opposite gap, a `Chain` subclass never added to `CHAINS` at
+    all, which the first assertion alone could not see.
+    """
     assert {chain.name for chain in CHAINS} == set(EXPECTED)
     # by class and not by the name an instance carries: `Chain` itself
     # takes its four fields, so building one out of `__subclasses__`
@@ -53,6 +62,7 @@ def test_every_chain_is_covered() -> None:
 
 
 def test_pow_limit_bits() -> None:
+    """Each chain's `pow_limit_bits` matches Core's `consensus.powLimit`."""
     # Chain.pow_limit_bits reads the limit off the genesis header, which
     # holds only because a genesis is mined at exactly its network's
     # easiest target. That is an invariant of the chains defined here
@@ -64,6 +74,7 @@ def test_pow_limit_bits() -> None:
 
 
 def test_pow_allow_min_difficulty_blocks_and_pow_no_retargeting() -> None:
+    """Each chain's two retargeting flags match Core's own chainparams."""
     # Bitcoin Core's fPowAllowMinDifficultyBlocks and fPowNoRetargeting,
     # per chain: src/kernel/chainparams.cpp's CMainParams, CTestNetParams,
     # SigNetParams and CRegTestParams, each setting both fields once in
@@ -78,6 +89,7 @@ def test_pow_allow_min_difficulty_blocks_and_pow_no_retargeting() -> None:
 
 
 def test_magic() -> None:
+    """Each chain's `magic` matches Core's `pchMessageStart`."""
     # the four octets that open every p2p message: a wrong one is a node
     # talking to nobody, and nothing else in this tree asserts them now
     # that they are a lookup rather than literals
@@ -86,11 +98,13 @@ def test_magic() -> None:
 
 
 def test_genesis() -> None:
+    """Each chain's genesis block hash matches Core's own for that chain."""
     for chain in CHAINS:
         assert chain.genesis.hash.hex() == EXPECTED[chain.name]["genesis"], chain.name
 
 
 def test_the_genesis_block_carries_the_coinbase_its_header_commits_to() -> None:
+    """Each chain's genesis block holds one coinbase, and its id is the root."""
     # the header is derived from the transaction, so a block built
     # without it hashes the same and is still wrong: it is the only
     # copy of the genesis block this node has -- no peer serves it --
