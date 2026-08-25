@@ -9,6 +9,7 @@ from btclib.tx.tx_out import TxOut
 
 from btclib_node.block_db import RevBlock
 from btclib_node.db import KeyValueStore
+from btclib_node.exceptions import ChainstateInconsistencyError, InvalidBlockInputError
 from btclib_node.log import Logger
 
 
@@ -40,7 +41,8 @@ class UtxoIndex:
                 prevout_bytes = tx_in.prev_out.serialize(check_validity=False)
 
                 if prevout_bytes in self.removed_utxos:
-                    raise Exception("prevout already spent in this batch")
+                    err_msg = "prevout already spent in this batch"
+                    raise InvalidBlockInputError(err_msg)
                 prevout: TxOut
                 if prevout_bytes in self.updated_utxo_set:
                     prevout = self.updated_utxo_set[prevout_bytes]
@@ -53,7 +55,8 @@ class UtxoIndex:
                         prev_outputs.append(prevout)
                         self.removed_utxos.add(prevout_bytes)
                     else:
-                        raise Exception("prevout not found")
+                        err_msg = "prevout not found"
+                        raise InvalidBlockInputError(err_msg)
 
                 removed.append((tx_in.prev_out, prevout))
 
@@ -75,13 +78,15 @@ class UtxoIndex:
             out_point_bytes = out_point.serialize(check_validity=False)
 
             if out_point_bytes in self.removed_utxos:
-                raise Exception("output already removed")
+                err_msg = "output already removed"
+                raise ChainstateInconsistencyError(err_msg)
             if out_point_bytes in self.updated_utxo_set:
                 self.updated_utxo_set.pop(out_point_bytes)
             elif self.db.get(b"utxo-" + out_point_bytes):
                 self.removed_utxos.add(out_point_bytes)
             else:
-                raise Exception("output not found")
+                err_msg = "output not found"
+                raise ChainstateInconsistencyError(err_msg)
 
         for out_point, tx_out in rev_block.to_add:
             self.updated_utxo_set[out_point.serialize(check_validity=False)] = tx_out

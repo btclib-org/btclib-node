@@ -242,7 +242,11 @@ def get_peer_info(node: Node, conn: Connection, _: list[Any]) -> list[dict[str, 
                 addrbind = p2p_conn.client.getsockname()
             # A peer disconnecting mid-lookup is not worth logging a
             # second time; its own connection state already reports it.
-            except Exception:  # noqa: S112
+            # Deliberately blind (BLE001) alongside S112: a disconnect
+            # racing this call can surface as more than one socket
+            # error depending on timing and platform, and every one of
+            # them means the same "skip this peer, ask the next".
+            except Exception:  # noqa: S112, BLE001
                 continue
 
             # status Connected is only reached after callbacks.verack,
@@ -558,7 +562,12 @@ def test_mempool_accept(
             tx_res["reject-reason"] = _INVALID_SCRIPT_REASON
         except MissingPrevoutError:
             tx_res["reject-reason"] = _MISSING_PREVOUTS_REASON
-        except Exception:
+        # deliberately blind (BLE001): testmempoolaccept answers one
+        # entry per transaction handed to it, Core's own contract for
+        # the RPC this matches, so an unexpected failure on one of them
+        # is reported as that one entry's own reject-reason rather than
+        # ending the whole batch's answer
+        except Exception:  # noqa: BLE001
             tx_res["reject-reason"] = "Unknown error"
         out.append(tx_res)
     return out

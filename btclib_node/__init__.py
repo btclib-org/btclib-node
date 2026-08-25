@@ -16,6 +16,7 @@ from btclib_node.chainstate import Chainstate
 from btclib_node.config import Config
 from btclib_node.constants import NodeStatus
 from btclib_node.download import DownloadManager
+from btclib_node.exceptions import NodeShutdownTimeoutError
 from btclib_node.interpreter import warm
 from btclib_node.log import Logger
 from btclib_node.main import update_chain
@@ -318,4 +319,4 @@ class Node(threading.Thread):
                 err_msg += "thread is still running after the flag was set. "
                 err_msg += "Nothing after this can trust the chainstate or "
                 err_msg += "the databases"
-                raise Exception(err_msg)
+                raise NodeShutdownTimeoutError(err_msg)

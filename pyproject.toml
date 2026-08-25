@@ -446,6 +446,7 @@ explicit-preview-rules = true
 select = [
     "A",    # flake8-builtins
     "B",    # flake8-bugbear
+    "BLE",  # flake8-blind-except
     "C4",   # flake8-comprehensions
     "CPY",  # flake8-copyright, replacing the copyright-notice hook below
     "E",    # pycodestyle errors, replacing flake8
@@ -470,6 +471,7 @@ select = [
     "T10",  # flake8-debugger
     "T20",  # flake8-print
     "TID",  # flake8-tidy-imports
+    "TRY",  # tryceratops
     "UP",   # pyupgrade, replacing the pyupgrade hook below
     "W",    # pycodestyle warnings, replacing flake8
 ]

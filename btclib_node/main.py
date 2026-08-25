@@ -13,7 +13,7 @@ from btclib.tx.tx import Tx
 from btclib_node.block_db import RevBlock
 from btclib_node.chainstate.block_index import BlockIndex, BlockStatus
 from btclib_node.constants import NodeStatus
-from btclib_node.exceptions import MissingPrevoutError
+from btclib_node.exceptions import ChainstateInconsistencyError, MissingPrevoutError
 from btclib_node.interpreter import check_transaction, check_transactions
 
 if TYPE_CHECKING:
@@ -93,7 +93,7 @@ def update_chain(node: Node) -> None:
         block = node.block_db.get_block(block_hash)
         if block is None:
             err_msg = f"block just checked downloaded is missing: {block_hash.hex()}"
-            raise Exception(err_msg)
+            raise ChainstateInconsistencyError(err_msg)
         to_add.append(block)
     # tip first: an output the branch created may have been spent again
     # further along it, and the block that spent it has to be undone
@@ -106,7 +106,7 @@ def update_chain(node: Node) -> None:
             err_msg = (
                 f"no reverse patch for a block on the active chain: {block_hash.hex()}"
             )
-            raise Exception(err_msg)
+            raise ChainstateInconsistencyError(err_msg)
         to_remove.append(rev_block)
     node.logger.debug("Got all blocks")
 
@@ -208,7 +208,7 @@ def update_chain(node: Node) -> None:
             removed_block = node.block_db.get_block(rev_block.hash)
             if removed_block is None:
                 err_msg = f"block just removed is missing: {rev_block.hash.hex()}"
-                raise Exception(err_msg)
+                raise ChainstateInconsistencyError(err_msg)
             for tx in removed_block.transactions[1:]:
                 # a coinbase is never a mempool entrant on any path
                 # into it, and one that is only valid on the branch

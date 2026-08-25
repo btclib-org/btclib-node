@@ -28,6 +28,20 @@ from btclib_node.chains import RegTest
 from btclib_node.p2p.address import peer_address
 
 
+class WaitTimeoutError(TimeoutError):
+    """A poll below gave up: whatever it waited for never became true.
+
+    `TimeoutError`, and not a bare `Exception` (`TRY002`): the failure
+    genuinely is a timeout, so the builtin already named for it is more
+    honest than a bespoke class would be, and it still needs its own
+    `__init__` -- `TRY003` flags a message built at the raise site
+    whichever class carries it, builtin or not.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
 class _ListensOnAPort(Protocol):
     # what wait_until_listening needs: a manager, or a stand-in for one
     listening: threading.Event
@@ -189,7 +203,7 @@ def wait_until(func: Callable[[], object], timeout: float = 60) -> None:
         f"{code.co_filename}:{code.co_firstlineno} "
         f"did not hold within {timeout} seconds"
     )
-    raise Exception(err_msg)
+    raise WaitTimeoutError(err_msg)
 
 
 def wait_until_listening(manager: _ListensOnAPort, timeout: float = 20) -> None:
@@ -215,7 +229,7 @@ def wait_until_listening(manager: _ListensOnAPort, timeout: float = 20) -> None:
     # and its port are what tell them apart.
     err_msg = f"{type(manager).__name__} on port {manager.port} was not "
     err_msg += f"listening within {timeout} seconds"
-    raise Exception(err_msg)
+    raise WaitTimeoutError(err_msg)
 
 
 def post(node: Node, payload: Any, timeout: float = 5) -> str:
@@ -239,7 +253,12 @@ def call_within[T](func: Callable[[], T], timeout: float = 5) -> T:
     def call() -> None:
         try:
             returned.append(func())
-        except Exception as exception:
+        # deliberately blind (BLE001): func is a caller-supplied call of
+        # any nature, and this thread's whole purpose is to hand its
+        # exception back unchanged to the thread that called call_within
+        # (below) -- narrowing this would mean some of func's own
+        # failures are silently never re-raised
+        except Exception as exception:  # noqa: BLE001
             raised.append(exception)
 
     # daemon, because a call that never returns must not keep the
@@ -253,7 +272,7 @@ def call_within[T](func: Callable[[], T], timeout: float = 5) -> T:
             f"{code.co_filename}:{code.co_firstlineno} "
             f"did not return within {timeout} seconds"
         )
-        raise Exception(err_msg)
+        raise WaitTimeoutError(err_msg)
     # re-raised here rather than left to threading's own hook, which
     # would print a traceback and hand the caller a KeyError
     if raised:
@@ -274,7 +293,13 @@ def brute_force_nonce(header: BlockHeader) -> None:
     # bound below is on the failure and not on the search
     solved = mine(header, 100)
     if solved is None:
-        raise BTClibValueError(f"no nonce solves the header: {header.hash.hex()}")
+        # BTClibValueError and not a class of this tree's own: this is
+        # the same failure header.assert_valid_pow below would itself
+        # raise as a BTClibValueError, had mine found a nonce that
+        # somehow did not pass it -- one class for the two, since a
+        # caller catching one has to catch the other.
+        err_msg = f"no nonce solves the header: {header.hash.hex()}"
+        raise BTClibValueError(err_msg)
     header.nonce = solved.nonce
     header.assert_valid_pow(REGTEST_POW_LIMIT_BITS)
 

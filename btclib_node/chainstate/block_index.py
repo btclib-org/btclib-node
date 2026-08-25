@@ -18,6 +18,7 @@ from btclib.utils import bytesio_from_binarydata
 from btclib_node.chains import Chain
 from btclib_node.chainstate.contextual import assert_valid_in_context
 from btclib_node.db import KeyValueStore
+from btclib_node.exceptions import ChainstateInconsistencyError
 from btclib_node.log import Logger
 
 
@@ -301,7 +302,8 @@ class BlockIndex:
 
     def remove_from_active_chain(self, block_hash: bytes) -> None:
         if block_hash != self.active_chain[-1]:
-            raise Exception("block_hash is not the active chain's tip")
+            err_msg = "block_hash is not the active chain's tip"
+            raise ChainstateInconsistencyError(err_msg)
         self.active_chain.pop()
 
     def add_headers(self, headers: Iterable[BlockHeader]) -> bytes | None:
@@ -359,9 +361,15 @@ class BlockIndex:
                     block_info = self.header_dict.get(header.previous_block_hash)
                     if block_info is None:
                         if header.previous_block_hash in not_yet_visited:
-                            raise BTClibValueError(
-                                "a header's parent is later in the same batch"
-                            )
+                            # kept inside the try, against TRY301: the
+                            # except right below logs every refusal this
+                            # loop finds the same way, whether it is
+                            # this raise or assert_valid_in_context's
+                            # own, and abstracting this one out would
+                            # split that one log line into two shapes
+                            # for no reader's benefit.
+                            err_msg = "a header's parent is later in the same batch"
+                            raise BTClibValueError(err_msg)  # noqa: TRY301
                         continue
                     found = (block_info.header, block_info.index)
                 parent, parent_height = found

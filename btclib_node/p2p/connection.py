@@ -11,7 +11,7 @@ from concurrent.futures import Future
 from io import BytesIO
 from typing import TYPE_CHECKING, cast, override
 
-from btclib.exceptions import BTClibException, BTClibValueError, IncompleteMessageError
+from btclib.exceptions import BTClibException, IncompleteMessageError
 from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.addrv2 import NetworkAddressV2
 from btclib.p2p.handshake import Version
@@ -21,6 +21,7 @@ from btclib.p2p.message import Message
 from btclib.p2p.payload import Payload
 
 from btclib_node.constants import P2pConnStatus, ProtocolVersion
+from btclib_node.exceptions import WrongNetworkMagicError
 from btclib_node.p2p.address import ip_and_port, network_address
 from btclib_node.p2p.callbacks import handshake_callbacks
 
@@ -224,7 +225,20 @@ class Connection:
                 try:
                     self.buffer += data
                     self.parse_messages()
-                except Exception as e:
+                # deliberately blind (BLE001), not for the event loop's
+                # own sake: `run` reaches this coroutine through
+                # `run_coroutine_threadsafe`, whose own Future nothing
+                # here ever reads, so an unhandled exception neither
+                # crashes `P2pManager`'s loop nor any other connection
+                # on it -- asyncio isolates that much on its own. What
+                # this catch buys instead is one explicit outcome for
+                # every failure this loop can hit: a bug in this node's
+                # own parsing reaches the same `stop()` below that a
+                # peer's bad envelope does, in the one place that
+                # decides it, rather than falling through to the outer
+                # `finally` by coincidence with nothing having looked at
+                # it
+                except Exception as e:  # noqa: BLE001
                     # A `BTClibException` is `Message.parse` (or the
                     # network-magic check right after it) refusing this
                     # peer's own envelope -- a bad checksum, an oversized
@@ -264,7 +278,12 @@ class Connection:
                 payload.serialize(check_validity=False),
             )
             data = message.serialize()
-        except Exception as e:
+        # deliberately blind (BLE001): this is called for every message
+        # this node ever sends, callers throughout btclib_node/p2p and
+        # btclib_node/download.py among them, so a bug serializing one
+        # payload logs and drops that one send rather than propagating
+        # into an arbitrary caller's own control flow
+        except Exception as e:  # noqa: BLE001
             self.node.logger.warning(f"error in serializing message: {e!s}")
             return
 
@@ -373,9 +392,7 @@ class Connection:
                     # stream is back at the start of the partial message
                     return
                 if message.magic != self.node.chain.magic:
-                    raise BTClibValueError(
-                        f"message for another network: {message.magic.hex()}"
-                    )
+                    raise WrongNetworkMagicError(message.magic)
                 self.last_receive = time.time()
                 item = (message.command, message.payload, self.id)
                 if message.command in handshake_callbacks:

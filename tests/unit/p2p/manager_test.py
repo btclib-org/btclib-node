@@ -717,7 +717,11 @@ def test_a_failed_ipv6_bind_does_not_stop_the_ipv4_listener(
         # `fileno=` rather than a family and a kind, and a wrapper that
         # only took `_bind`'s shape would refuse every inbound peer too
         if family == socket.AF_INET6:
-            raise OSError("no ipv6 route")
+            # OSError, not a class of this tree's own (TRY003): `_bind`
+            # itself catches `OSError`, so a double standing in for what
+            # the real socket module raises has to raise that type, not
+            # a lookalike `_bind` was never written to catch
+            raise OSError("no ipv6 route")  # noqa: TRY003
         return real_socket(family, *args, **kwargs)
 
     monkeypatch.setattr(socket, "socket", refuses_ipv6)

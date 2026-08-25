@@ -4,6 +4,7 @@
 
 from pathlib import Path
 
+from btclib.exceptions import BTClibException
 from btclib.script.engine import verify_transaction
 from btclib.tx.tx import Tx
 from btclib.tx.tx_out import TxOut
@@ -24,7 +25,11 @@ def get_error_data(txid: str, i: str) -> tuple[list[TxOut], Tx, tuple[str, ...]]
         while True:
             try:
                 prevouts.append(TxOut.parse(s))
-            except Exception:
+            # BTClibException, not bare Exception: this is what
+            # TxOut.parse raises on a stream too short for one more
+            # TxOut, confirmed directly against the installed btclib
+            # rather than assumed, and the loop's only exit besides it
+            except BTClibException:
                 break
     return prevouts, tx, flags
 
@@ -36,5 +41,8 @@ for x in Path("errors").iterdir():
         print(txid, vin)
         try:
             verify_transaction(*get_error_data(txid, vin))
-        except Exception:
+        # deliberately blind: a driver over a whole directory of local
+        # error fixtures of unknown shape, meant to keep going and
+        # report the next one whatever kind of failure the last one was
+        except Exception:  # noqa: BLE001
             print("error")

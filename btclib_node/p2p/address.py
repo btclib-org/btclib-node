@@ -35,6 +35,7 @@ from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 
 from btclib_node.chains import Chain
 from btclib_node.db import KeyValueStore
+from btclib_node.exceptions import UnsupportedAddressTypeError
 
 # the two ids whose address field is an IP address, which is the whole
 # of what an addr version 1 entry can carry, and the whole of what
@@ -203,7 +204,7 @@ async def dial(address: NetworkAddressV2) -> socket.socket | None:
     a heavier check to buy.
     """
     if address.network_id not in _IP_NETWORKS:
-        raise ValueError("Address type not yet supported")
+        raise UnsupportedAddressTypeError
     if address.network_id == BIP155Network.IPV4:
         family = socket.AF_INET
         host = str(IPv4Address(address.address))

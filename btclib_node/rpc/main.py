@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 def get_connection(manager: RpcManager, connection_id: int) -> Connection | None:
     try:
         return manager.connections[connection_id]
-    except Exception:
+    except KeyError:
         return None
 
 

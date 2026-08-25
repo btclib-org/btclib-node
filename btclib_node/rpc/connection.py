@@ -142,7 +142,12 @@ class Connection:
             # below true before a single body byte arrived and then
             # slice the body from the wrong end.
             if not 0 <= length <= MAX_BODY_BYTES:
-                raise ConnectionError
+                # kept inside the try, against TRY301: the outer
+                # `except Exception: self.client.close()` below is what
+                # every failure in this method already answers through,
+                # abstracting this one raise to a helper would not
+                # change what catches it, only add a call for no reader
+                raise ConnectionError  # noqa: TRY301
             await self._recv_until(lambda: len(self.buffer) >= length)
 
             try:
@@ -172,7 +177,17 @@ class Connection:
             if not isinstance(body, list):
                 body = [body]
             self.manager.messages.append((body, self.id))
-        except Exception:
+        # deliberately blind (BLE001), not for the event loop's own
+        # sake: `run` is scheduled through `run_coroutine_threadsafe`,
+        # whose own Future nothing here ever reads, so an unhandled
+        # exception neither crashes `RpcManager`'s loop nor any other
+        # connection on it -- asyncio isolates that much on its own.
+        # What this catch buys instead is the only place `self.client`
+        # gets closed for a failure in this method: there is no outer
+        # `finally` here, so narrowing this would leak the socket this
+        # unauthenticated, all-interfaces port (#27) opened, on top of
+        # losing the exception itself to that same unread Future
+        except Exception:  # noqa: BLE001
             self.client.close()
 
     async def async_send(self, response: list[dict[str, Any]]) -> None:

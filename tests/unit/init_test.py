@@ -30,6 +30,7 @@ import pytest
 import btclib_node
 from btclib_node import Node
 from btclib_node.config import Config
+from btclib_node.exceptions import NodeShutdownTimeoutError
 from btclib_node.interpreter import warm
 from tests.conftest import unstarted_node_context
 from tests.helpers import wait_until
@@ -295,7 +296,7 @@ def test_a_node_that_will_not_stop_is_reported_rather_than_waited_for(
     """
     with a_wedged_node(tmp_path, monkeypatch) as node:
         start = time.perf_counter()
-        with pytest.raises(Exception, match="did not stop"):
+        with pytest.raises(NodeShutdownTimeoutError, match="did not stop"):
             node.stop()
         elapsed = time.perf_counter() - start
         # bracketed by what it was told, not merely finite: a wait
