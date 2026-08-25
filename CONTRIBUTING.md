@@ -209,7 +209,7 @@ uv run pytest                                    # the suite, coverage included
 git add -A && uv run pre-commit run --all-files  # the lint gate
 uv run pre-commit validate-config .pre-commit-config.yaml
 uv run --locked --no-default-groups --group docs \
-    sphinx-build -W --keep-going -b html docs/source docs/build/html
+    sphinx-build -W -n --keep-going -b html docs/source docs/build/html
 ```
 
 `--all-files` means every file git tracks, so a file that is new and not
@@ -274,10 +274,10 @@ only the root prose skips the suite and reports the skip as a pass, which
 is what keeps an aggregate check from blocking on a run that never
 happened. `docs.yml` runs the same build the environment section above
 does, on every pull request the way `lint.yml` and `test.yml` do rather
-than on a schedule -- but it is reporting-only for now: `REPOSITORY.md`'s
-required-checks table names only the two above, `docs.yml` having landed
-too recently to have reported the green run branch protection would
-need before naming it a third.
+than on a schedule -- but it is reporting-only for now:
+`REPOSITORY.md`'s *Required checks on main* names only the two above,
+its job being owed a place beside them once the maintainer's own
+follow-up adds it.
 
 **Whether any of these can refuse a merge is a repository setting and
 not a file**, and `REPOSITORY.md` reads it back from the endpoint rather

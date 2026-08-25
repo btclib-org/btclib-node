@@ -165,13 +165,11 @@ lint = [
 # consumer, and it asks for --group test as well, cosmic-ray shelling
 # out to pytest.
 mutation = ["cosmic-ray"]
-# what `docs.yml` and `.readthedocs.yaml` both build `docs/source` with,
-# the same three packages the organization's other Sphinx-built
-# repositories install (btclib, btclib-secp256k1, bitcoin-core-rpc):
+# what `docs.yml` and `.readthedocs.yaml` both build `docs/source` with:
 # myst-parser for the root markdown files pulled into the toctree,
-# sphinx itself, and the theme `docs/source/conf.py` sets as
-# `html_theme`.
-docs = ["myst-parser", "sphinx", "sphinx_rtd_theme"]
+# sphinx itself, and furo, the theme `docs/source/conf.py` sets as
+# `html_theme` (btclib-org/.github#329).
+docs = ["furo", "myst-parser", "sphinx"]
 # the distribution files are built and published by uv itself; what this
 # group holds is what inspects them, before an upload consumes the
 # version release.yml's `dist` job checks. Named check, not build, for

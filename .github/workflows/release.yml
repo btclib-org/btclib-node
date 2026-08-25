@@ -11,18 +11,11 @@ name: release
 # Both indices trust this workflow directly (PyPI Trusted Publishing,
 # see RELEASING.md): there is no API token to store or leak.
 #
-# No `docs:` job: docs.yml (btclib-org/btclib-node#264) exists on
-# origin/main, but it is reporting-only -- REPOSITORY.md's *Required
-# checks on main* names only "Lint and type-check" and
-# "test: every job passed" -- and this workflow calls the checks that
-# already gate a merge, no more. That is the same reason os-macos.yml is
-# not called below, stated once rather than twice. The day docs.yml
-# becomes a required check is the day it earns a `docs:` job here and a
-# place in publish-testpypi's and publish-pypi's own `needs:`, so a tag
-# publishes the docstrings a reader follows into docs/ only after the
-# build that would fail there already has -- not the day the file merely
-# exists, which this comment used to say before docs.yml landed and this
-# one replaced it.
+# The `docs:` job below runs the same build docs.yml gates a pull
+# request with, so a tag publishes the docstrings a reader follows into
+# docs/ only after that build has passed on the tag's own tree, not
+# merely on whichever commit last ran it on `main`. It is named in
+# publish-testpypi's and publish-pypi's own `needs:` for that reason.
 #
 # What else this does not call, unlike a sibling repository's own
 # release.yml: os-macos.yml, this tree's only platform sentinel, gates
@@ -254,12 +247,19 @@ jobs:
     with:
       concurrency-suffix: "-release"
 
-  # no `docs:` job here -- this file's own header comment, at the top,
-  # says why and what makes it earn one
+  # the same build docs.yml gates a pull request with -- this file's own
+  # header comment, at the top, has why it is named in the two `needs:`
+  # below. Not gated on version-check, for the same reason lint above is
+  # not: it is the cheap one, and runs in parallel with it
+  docs:
+    name: Run the docs workflow
+    uses: ./.github/workflows/docs.yml
+    with:
+      concurrency-suffix: "-release"
 
   publish-testpypi:
     name: Publish to TestPyPI
-    needs: [test, lint]
+    needs: [test, lint, docs]
     if: >-
       github.event_name == 'workflow_dispatch' &&
       github.repository == 'btclib-org/btclib-node'
@@ -308,7 +308,7 @@ jobs:
 
   publish-pypi:
     name: Publish to PyPI
-    needs: [test, lint]
+    needs: [test, lint, docs]
     if: >-
       github.event_name == 'push' &&
       github.repository == 'btclib-org/btclib-node'

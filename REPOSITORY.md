@@ -38,6 +38,28 @@ aggregate, so that a job added to that workflow is gated on by being
 added rather than by somebody editing a rule stored outside the tree.
 Both jobs carry the reasoning in their own headers.
 
+**A third context is owed and not yet live.** `docs.yml`'s only job,
+"Build the documentation," reports on every pull request already
+(*What gates a merge, and what only reports* in `CONTRIBUTING.md`), and
+`release.yml` now calls it too (btclib-org/btclib-node#264), but
+reporting is not requiring: the `gh api` answer above stays two
+contexts until it is added, which is a repository setting no pull
+request carries (this section's own opening sentence) and is therefore
+the maintainer's own `gh api` PATCH, run once that job has a green run
+on `main`:
+
+```shell
+gh api -X PATCH \
+  repos/btclib-org/btclib-node/branches/main/protection/required_status_checks \
+  -f strict=true \
+  -f 'contexts[]=Lint and type-check' \
+  -f 'contexts[]=test: every job passed' \
+  -f 'contexts[]=Build the documentation'
+```
+
+Re-run the first command above to tell whether that has happened yet —
+its answer, not this paragraph, is what is true today.
+
 **`links.yml`, `codeql.yml`, `os-macos.yml` and `bootstrap-dns.yml` must
 not become required checks**, and neither must `claude-review.yml`. The
 first and the last of those four ask whether somebody else's server

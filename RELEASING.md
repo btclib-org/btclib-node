@@ -2,14 +2,13 @@
 
 Releases are published by GitHub Actions
 ([release.yml](./.github/workflows/release.yml)), not from a developer
-machine. Pushing a `v<version>` tag runs the test workflow and the lint
-workflow, builds and checks the distribution files, publishes them to
-PyPI, and creates the GitHub release. It does not run the documentation
-build: `docs.yml` is reporting-only, not a required check
-(`REPOSITORY.md`'s *Required checks on main*), and `release.yml` calls
-only what already gates a merge — the same reason it does not call
-`os-macos.yml` either. There is no PyPI token anywhere: both indices are
-configured to trust the workflow itself
+machine. Pushing a `v<version>` tag runs the test workflow, the lint
+workflow and the documentation build, builds and checks the distribution
+files, publishes them to PyPI, and creates the GitHub release. It does
+not call `os-macos.yml`: that sentinel gates no commit and no merge
+today, and a release is not carved out as the one place that changes —
+`release.yml`'s own header has why. There is no PyPI token anywhere:
+both indices are configured to trust the workflow itself
 ([Trusted Publishing](https://docs.pypi.org/trusted-publishers/)).
 
 The same workflow, started by hand instead of by a tag, is a full
@@ -215,12 +214,12 @@ this release included.
 
    ```shell
    uv run --locked --no-default-groups --group docs \
-       sphinx-build -W --keep-going -b html docs/source docs/build/html
+       sphinx-build -W -n --keep-going -b html docs/source docs/build/html
    ```
 
-   the build `docs.yml` runs on every pull request, `-W` and all —
-   `release.yml` does not call it, this file's introduction has why, so
-   this is the only place in the release procedure that reads it.
+   the same build `docs.yml` runs on every pull request and `release.yml`
+   runs again on the tag, `-W`, `-n` and all — checked here too, ahead of
+   a tag, rather than trusted to a run this step already duplicates.
 
 1. Merge it, with the button, the way every other pull request here
    lands: "Squash and merge", pressed by auto-merge once the review and
