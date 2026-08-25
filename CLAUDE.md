@@ -252,6 +252,37 @@ Do not use Fable unless explicitly instructed.
   btclib-org/btclib-node#107. A datadir written by the LevelDB this
   replaced cannot be read; `src/btclib_node/db.py` is where that is
   handled and where the choice is argued against Bitcoin Core's.
+- **`gh api`'s `-f` always sends a string, even for a boolean field.**
+  `gh api -X PATCH .../required_status_checks -f strict=true` fails
+  with `"true" is not a boolean`, because `-f`/`--raw-field` encodes
+  every value as JSON text. `-F`/`--field` is the typed form and is what
+  a boolean, a number, or a `contexts[]=` array element needs.
+  `REPOSITORY.md`'s own documented branch-protection command carried
+  this mistake, unexecuted, since btclib-org/btclib-node#264 landed it;
+  btclib-org/btclib-node#453 is where the follow-up PATCH was actually
+  run and the command corrected.
+- **`autodoc_typehints_format` and `autodoc_type_aliases` cannot resolve
+  a `TYPE_CHECKING`-only annotation, whatever they are set to.** Sphinx
+  falls back to the bare source string for an annotation it can never
+  import, and both settings only reformat a type hint autodoc already
+  resolved. `autodoc_type_aliases` needs PEP 563's `from __future__
+  import annotations` to engage at all, which only one module in this
+  tree still carries — the rest reach PEP 649's native lazy evaluation
+  on this tree's `>=3.14` target instead, so the setting doesn't rescue
+  most of what it's tried against — confirmed by mapping every
+  remaining name and rebuilding, with no change in the warnings.
+  btclib-org/btclib-node#417 is the cross-reference ambiguity this
+  forced a rename to fix rather than a `conf.py` setting;
+  btclib-org/btclib-node#264's own `nitpick_ignore` list is the same
+  wall met a second time.
+- **A `merge=union` file can make GitHub report a conflict a local
+  rebase resolves cleanly.** GitHub's server-side merge check does not
+  apply git's own `union` merge driver, so a pull request touching
+  only `CHANGELOG.md` can show `mergeable: CONFLICTING` while
+  `git rebase origin/main` in a worktree, with the same
+  `.gitattributes`, finds nothing to resolve by hand. Rebase and look,
+  rather than searching the file for a conflict the banner did not
+  actually find.
 
 ## Conventions to match
 
