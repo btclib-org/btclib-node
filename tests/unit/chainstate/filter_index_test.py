@@ -22,6 +22,7 @@ from btclib.script import script
 import btclib_node.chainstate.filter_index as filter_index_module
 from btclib_node import Node
 from btclib_node.chains import RegTest, TestNet
+from btclib_node.exceptions import ChainstateInconsistencyError
 from btclib_node.main import update_chain
 from tests import load, vector_id
 from tests.helpers import build_block, generate_coinbase, generate_random_chain
@@ -132,7 +133,9 @@ def test_a_block_whose_parent_has_no_filter_is_refused(
 ) -> None:
     node = regtest_node()
     orphan = generate_random_chain(1, b"\x11" * 32)[0]
-    with pytest.raises(Exception, match="no filter header for the parent"):
+    with pytest.raises(
+        ChainstateInconsistencyError, match="no filter header for the parent"
+    ):
         node.chainstate.filter_index.add_block(orphan, [])
 
 
@@ -262,7 +265,9 @@ def test_a_catch_up_that_cannot_reach_a_block_says_so(
     block_db = node.block_db
     block_db.blocks.pop(block.header.hash)
 
-    with pytest.raises(Exception, match="cannot build the block filter index"):
+    with pytest.raises(
+        ChainstateInconsistencyError, match="cannot build the block filter index"
+    ):
         filter_index.catch_up(node.chainstate.block_index.active_chain, block_db)
 
 

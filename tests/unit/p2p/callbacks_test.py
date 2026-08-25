@@ -69,7 +69,7 @@ from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import BlockStatus
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion
-from btclib_node.exceptions import MissingPrevoutError
+from btclib_node.exceptions import ChainstateInconsistencyError, MissingPrevoutError
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import PeerDB, addr_entry, endpoint_key, peer_address
@@ -1618,7 +1618,7 @@ def test_get_cfilters_refuses_a_gap_in_a_promised_index() -> None:
     node = a_filters_node()
     node.chainstate.filter_index.get_filter = lambda h: None
     peer = a_peer()
-    with pytest.raises(Exception, match="no filter for a block"):
+    with pytest.raises(ChainstateInconsistencyError, match="no filter for a block"):
         a_getcfilters(node, peer, 2, 2)
 
 
@@ -1752,7 +1752,9 @@ def test_get_cfheaders_refuses_a_gap_in_the_header_before_the_range() -> None:
     node = a_filters_node()
     node.chainstate.filter_index.get_header = lambda h: None
     peer = a_peer()
-    with pytest.raises(Exception, match="no filter header for the parent"):
+    with pytest.raises(
+        ChainstateInconsistencyError, match="no filter header for the parent"
+    ):
         get_cfheaders(
             node,
             GetCFHeaders(BlockFilterType.BASIC, 3, (5).to_bytes(32, "big")).serialize(),
@@ -1764,7 +1766,7 @@ def test_get_cfheaders_refuses_a_gap_in_a_promised_index() -> None:
     node = a_filters_node()
     node.chainstate.filter_index.get_filter_hash = lambda h: None
     peer = a_peer()
-    with pytest.raises(Exception, match="no filter for a block"):
+    with pytest.raises(ChainstateInconsistencyError, match="no filter for a block"):
         get_cfheaders(
             node,
             GetCFHeaders(BlockFilterType.BASIC, 0, (2).to_bytes(32, "big")).serialize(),
@@ -1826,7 +1828,9 @@ def test_get_cfcheckpt_refuses_a_gap_in_a_promised_index() -> None:
     node.chainstate.filter_index.get_header = lambda h: None
     peer = a_peer()
     stop_hash = CFCHECKPT_INTERVAL.to_bytes(32, "big")
-    with pytest.raises(Exception, match="no filter header for a block"):
+    with pytest.raises(
+        ChainstateInconsistencyError, match="no filter header for a block"
+    ):
         get_cfcheckpt(
             node, GetCFCheckpt(BlockFilterType.BASIC, stop_hash).serialize(), peer
         )

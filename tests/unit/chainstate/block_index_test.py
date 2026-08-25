@@ -15,6 +15,7 @@ from btclib.exceptions import BTClibValueError
 from btclib_node.chains import Main, RegTest
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import BlockInfo, BlockStatus, calculate_work
+from btclib_node.exceptions import ChainstateInconsistencyError
 from btclib_node.log import Logger
 from tests.helpers import brute_force_nonce, generate_random_header_chain
 
@@ -683,7 +684,9 @@ def test_only_the_tip_can_leave_the_active_chain(
     for header in chain:
         block_index.add_to_active_chain(header.hash)
 
-    with pytest.raises(Exception, match="not the active chain's tip"):
+    with pytest.raises(
+        ChainstateInconsistencyError, match="not the active chain's tip"
+    ):
         block_index.remove_from_active_chain(chain[0].hash)
     block_index.remove_from_active_chain(chain[-1].hash)
     assert chain[-1].hash not in block_index.active_chain

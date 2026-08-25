@@ -22,6 +22,7 @@ from btclib.tx.tx_out import TxOut
 
 from btclib_node.block_db import BlockDB, BlockLocation, FileMetadata, RevBlock
 from btclib_node.chains import RegTest
+from btclib_node.exceptions import ChainstateInconsistencyError
 from btclib_node.log import Logger
 from tests.helpers import generate_random_chain
 
@@ -256,7 +257,7 @@ def test_finalize_refuses_a_patch_for_a_block_never_stored(
     block_db = a_db(None)
     rev_block = a_rev_block()
     block_db.add_rev_block(rev_block)
-    with pytest.raises(Exception, match="not stored"):
+    with pytest.raises(ChainstateInconsistencyError, match="not stored"):
         block_db.finalize()
 
 
