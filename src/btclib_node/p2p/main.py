@@ -2,7 +2,7 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""`handle_p2p`, `handle_p2p_handshake` and `resume_cfilters`, each one pass.
+"""`handle_p2p`, `handle_p2p_handshake`, `resume_cfilters` and `resume_getdata`.
 
 The first two pop one message off their own queue -- `P2pManager.messages`
 or `P2pManager.handshake_messages` -- and dispatch it through
@@ -12,10 +12,11 @@ by a callback stops that connection rather than the loop, and is
 discouraged for where it is a parse failure from the peer's own bytes
 rather than a bug in the handler.
 
-`resume_cfilters` instead drains `node.pending_cfilters`, the
-connections `p2p.callbacks.get_cfilters` paused mid-answer rather than
-scheduling ahead of what a peer has drained -- nothing queued triggers
-it, so it is called once every pass of `run`'s own loop regardless.
+`resume_cfilters` and `resume_getdata` instead drain `node.pending_cfilters`
+and `node.pending_getdata`, the connections `p2p.callbacks.get_cfilters`
+and `p2p.callbacks.getdata` paused mid-answer rather than scheduling ahead
+of what a peer has drained -- nothing queued triggers either, so both are
+called once every pass of `run`'s own loop regardless.
 """
 
 from typing import TYPE_CHECKING
@@ -23,7 +24,12 @@ from typing import TYPE_CHECKING
 from btclib.exceptions import BTClibException
 
 from btclib_node.constants import P2pConnStatus
-from btclib_node.p2p.callbacks import advance_cfilters, callbacks, handshake_callbacks
+from btclib_node.p2p.callbacks import (
+    advance_cfilters,
+    advance_getdata,
+    callbacks,
+    handshake_callbacks,
+)
 
 if TYPE_CHECKING:
     from btclib_node import Node
@@ -155,4 +161,42 @@ def resume_cfilters(node: Node) -> bool:
             progressed = True
     for conn_id in done:
         del node.pending_cfilters[conn_id]
+    return progressed
+
+
+def resume_getdata(node: Node) -> bool:
+    """Advance every paused `getdata` answer by what now fits.
+
+    The same shape as `resume_cfilters` above, over `node.pending_getdata`
+    and `advance_getdata` (`p2p.callbacks`) instead: answers whether
+    anything did, a connection dropped counting the same as one whose
+    `items` shrank; a connection already closed is dropped without
+    trying it; and an exception out of `advance_getdata` is handled the
+    same way `handle_p2p`'s own is above, being the same call raising it
+    on a later turn.
+    """
+    manager = node.p2p_manager
+    done: list[int] = []
+    progressed = False
+    for conn_id, (conn, items) in list(node.pending_getdata.items()):
+        if conn.status == P2pConnStatus.Closed:
+            done.append(conn_id)
+            progressed = True
+            continue
+        before = len(items)
+        try:
+            if advance_getdata(node, conn, items):
+                done.append(conn_id)
+                progressed = True
+        except Exception as e:
+            conn.stop()
+            done.append(conn_id)
+            progressed = True
+            if isinstance(e, BTClibException):
+                manager.discourage(conn.address)
+            node.logger.exception("Exception occurred")
+        if len(items) != before:
+            progressed = True
+    for conn_id in done:
+        del node.pending_getdata[conn_id]
     return progressed

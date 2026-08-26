@@ -19,7 +19,12 @@ from btclib.p2p.addrv2 import NetworkAddressV2
 from btclib_node.constants import P2pConnStatus
 from btclib_node.p2p import main as main_module
 from btclib_node.p2p.callbacks import callbacks, handshake_callbacks
-from btclib_node.p2p.main import handle_p2p, handle_p2p_handshake, resume_cfilters
+from btclib_node.p2p.main import (
+    handle_p2p,
+    handle_p2p_handshake,
+    resume_cfilters,
+    resume_getdata,
+)
 
 if TYPE_CHECKING:
     import pytest
@@ -457,6 +462,158 @@ def test_resume_cfilters_discourages_the_peer_on_a_btclib_exception(
 
     monkeypatch.setattr(main_module, "advance_cfilters", boom)
     assert resume_cfilters(node) is True
+    assert stopped == [True]
+    assert discouraged == [_AN_ADDRESS]
+    assert logged
+
+
+def a_pending_getdata_node(
+    conn: Any, items: deque[Any]
+) -> tuple[Any, list[Any], list[Any]]:
+    """Build a node stand-in with one connection on `pending_getdata`.
+
+    The same shape as `a_pending_node` above, over `pending_getdata`
+    instead: returns the node alongside the lists its
+    `p2p_manager.discourage` and `logger.exception` calls are recorded
+    into.
+    """
+    discouraged: list[Any] = []
+    logged: list[Any] = []
+    node = SimpleNamespace(
+        pending_getdata={conn.id: (conn, items)},
+        p2p_manager=SimpleNamespace(discourage=discouraged.append),
+        logger=SimpleNamespace(exception=logged.append),
+    )
+    return node, discouraged, logged
+
+
+def test_resume_getdata_drops_a_finished_connection_from_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A finished connection is dropped from `pending_getdata`.
+
+    `progressed` answers `True`: `items` shrank to nothing.
+    """
+    stopped: list[Any] = []
+    conn = SimpleNamespace(
+        id=1, status=P2pConnStatus.Open, stop=lambda: stopped.append(True)
+    )
+    items = deque([1, 2, 3])
+    node, discouraged, logged = a_pending_getdata_node(conn, items)
+    monkeypatch.setattr(main_module, "advance_getdata", lambda *_a: True)
+    assert resume_getdata(node) is True
+    assert node.pending_getdata == {}
+    assert not stopped
+    assert not discouraged
+    assert not logged
+
+
+def test_resume_getdata_leaves_a_still_paused_connection_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A connection `advance_getdata` has not finished stays registered.
+
+    `progressed` still answers `True`: `items` shrank, even though the
+    answer as a whole is not done.
+    """
+    conn = SimpleNamespace(id=2, status=P2pConnStatus.Open, stop=lambda: None)
+    items = deque([1, 2, 3])
+
+    def paused(_node: Any, _conn: Any, it: deque[Any]) -> bool:
+        it.popleft()
+        return False
+
+    node, _discouraged, _logged = a_pending_getdata_node(conn, items)
+    monkeypatch.setattr(main_module, "advance_getdata", paused)
+    assert resume_getdata(node) is True
+    assert node.pending_getdata[2] == (conn, deque([2, 3]))
+
+
+def test_resume_getdata_answers_false_when_nothing_advanced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A connection still too congested to send anything reports no progress."""
+    conn = SimpleNamespace(id=3, status=P2pConnStatus.Open, stop=lambda: None)
+    items = deque([1, 2, 3])
+    node, _discouraged, _logged = a_pending_getdata_node(conn, items)
+    monkeypatch.setattr(main_module, "advance_getdata", lambda *_a: False)
+    assert resume_getdata(node) is False
+    assert node.pending_getdata[3] == (conn, items)
+
+
+def test_resume_getdata_drops_an_already_closed_connection_without_advancing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A connection closed since it paused is dropped, unasked.
+
+    `stop` can be called from `P2pManager`'s own thread between one turn
+    of `Node`'s own loop and the next, so this is read the same way
+    `advance_getdata` itself already reads it mid-answer.
+    """
+    conn = SimpleNamespace(id=4, status=P2pConnStatus.Closed, stop=lambda: None)
+    items = deque([1, 2, 3])
+    node, discouraged, logged = a_pending_getdata_node(conn, items)
+    called: list[Any] = []
+
+    def unreached(*a: Any) -> bool:
+        called.append(a)  # pragma: no cover -- never reached
+        return True  # pragma: no cover -- never reached
+
+    monkeypatch.setattr(main_module, "advance_getdata", unreached)
+    # dropping it is progress in its own right, whether or not it ever
+    # sent anything
+    assert resume_getdata(node) is True
+    assert node.pending_getdata == {}
+    assert not called
+    assert not discouraged
+    assert not logged
+
+
+def test_resume_getdata_stops_the_peer_on_a_bare_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bare exception out of `advance_getdata` drops the peer, undiscouraged.
+
+    Mirrors `handle_p2p`'s own split (#283): a bug in this node's own
+    code, not the peer's doing.
+    """
+    stopped: list[Any] = []
+    conn = SimpleNamespace(
+        id=5, status=P2pConnStatus.Open, stop=lambda: stopped.append(True)
+    )
+    items = deque([1, 2, 3])
+    node, discouraged, logged = a_pending_getdata_node(conn, items)
+
+    def boom(*_a: Any) -> bool:
+        raise RuntimeError("no")
+
+    monkeypatch.setattr(main_module, "advance_getdata", boom)
+    assert resume_getdata(node) is True
+    assert stopped == [True]
+    assert node.pending_getdata == {}
+    assert not discouraged
+    assert logged
+
+
+def test_resume_getdata_discourages_the_peer_on_a_btclib_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A btclib exception out of `advance_getdata` discourages the peer too."""
+    stopped: list[Any] = []
+    conn = SimpleNamespace(
+        id=6,
+        status=P2pConnStatus.Open,
+        address=_AN_ADDRESS,
+        stop=lambda: stopped.append(True),
+    )
+    items = deque([1, 2, 3])
+    node, discouraged, logged = a_pending_getdata_node(conn, items)
+
+    def boom(*_a: Any) -> bool:
+        raise BTClibValueError("no")
+
+    monkeypatch.setattr(main_module, "advance_getdata", boom)
+    assert resume_getdata(node) is True
     assert stopped == [True]
     assert discouraged == [_AN_ADDRESS]
     assert logged

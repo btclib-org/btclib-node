@@ -96,6 +96,18 @@ _BLOCK_STALL_DISCONNECT_TIMEOUT = 300
 # what the redundancy is for
 _MAX_CONCURRENT_REQUESTS_PER_BLOCK = 3
 
+# How many blocks `_request_new_block_work` below batches into one
+# outgoing `GetData` at a time, matching Core's own
+# `MAX_BLOCKS_IN_TRANSIT_PER_PEER` (`net_processing.cpp:133`,
+# at bitcoin/bitcoin@b91d983f66). Public rather than this module's usual
+# underscore-prefixed constants: `p2p/connection.py`'s own
+# `MAX_QUEUED_SEND_BYTES` used to be sized from this fact and no longer
+# is, but the fact itself -- the size of the answer a well-behaved peer
+# sends back to one such request -- outlives whichever bound was last
+# sized from it, and is the natural thing a receive-side bound would
+# want if this tree grows one; nothing in this tree does yet.
+MAX_BLOCKS_PER_GETDATA_BURST = 16
+
 
 def _fee_filter_buckets(min_relay_feerate: int) -> list[float]:
     """Return the sat/kvB boundaries `_round_fee_filter` may round to.
@@ -655,8 +667,8 @@ class DownloadManager:
             # `_BLOCK_STALL_DISCONNECT_TIMEOUT` instead.
             if conn.download_queue == [] and not conn.pending_eviction:
                 if waiting:
-                    new = waiting[:16]
-                    waiting = waiting[16:]
+                    new = waiting[:MAX_BLOCKS_PER_GETDATA_BURST]
+                    waiting = waiting[MAX_BLOCKS_PER_GETDATA_BURST:]
                 elif pending:
                     new = pending[:2]
                     pending = pending[2:]

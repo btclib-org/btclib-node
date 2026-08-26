@@ -53,40 +53,45 @@ if TYPE_CHECKING:
 # messages for that peer, but what is already in `vSendMsg` keeps
 # draining past the cap rather than being cut off.
 #
-# `get_cfilters` (`p2p/callbacks.py`) now has that same kind of pause
-# point of its own -- `MAX_CFILTERS_INFLIGHT_BYTES`, argued beside it --
-# so this bound no longer has to hold one whole legitimate `getcfilters`
-# answer the way it once did (btclib-org/btclib-node#442, this node
-# having had no "next call" to pause and resume at the way `fPauseSend`
-# does, until that change): a `getcfilters` answer is now produced at
-# the rate this connection drains it, not scheduled in full the moment
-# it is asked for.
+# `get_cfilters` and `callbacks.getdata` (`p2p/callbacks.py`) each have
+# that same kind of pause point of their own now --
+# `MAX_CFILTERS_INFLIGHT_BYTES` and `MAX_GETDATA_INFLIGHT_BYTES`,
+# argued beside them -- so this bound no longer has to hold one whole
+# legitimate answer of either kind the way it once did
+# (btclib-org/btclib-node#442 for `get_cfilters`, #470 for `getdata`,
+# this node having had no "next call" to pause and resume at the way
+# `fPauseSend` does, until those changes): each answer is now produced
+# at the rate this connection drains it, not scheduled in full the
+# moment it is asked for.
 #
-# What still has to fit here is a `getdata` answer, which has no pause
-# point of its own: Core's own `ProcessGetData` processes one block item
-# per call and checks `fPauseSend` before every transaction one
-# (`net_processing.cpp:2776`, `:2798`), where this module's own
-# `callbacks.getdata` builds and schedules every item a `GetData` names
-# in one pass -- the same defect this issue diagnoses for `get_cfilters`,
-# left open for `getdata` and filed as its own issue
-# (btclib-org/btclib-node#470). A legitimate peer downloading from this
-# node never asks for more than `_MAX_BLOCKS_PER_GETDATA_BURST` blocks at
-# once: this node's own `download.py` batches its outgoing `GetData` the
-# same way (`_request_new_block_work`'s own `waiting[:16]`), matching
-# Core's `MAX_BLOCKS_IN_TRANSIT_PER_PEER` (`net_processing.cpp:133`).
-# Each such block is at most `MAX_PROTOCOL_MESSAGE_LENGTH`, the wire's
-# own ceiling on any one message and, since a block's serialized size
-# cannot exceed its own weight, on one block's answer as well.
-_MAX_BLOCKS_PER_GETDATA_BURST = 16
-
-# That burst, plus room for one filter of `get_cfilters`'s own paced
-# answer to finish draining and a second, already serialized, to be on
-# its way behind it -- `filter_size.ONE_BUSY_MODERN_BLOCK_FILTER_BYTES`,
-# the same estimate `MAX_CFILTERS_INFLIGHT_BYTES` paces against, doubled
-# the same way that bound is.
+# Neither pacing bound is a hard ceiling on its own, though:
+# `advance_getdata` and `advance_cfilters` (`p2p/callbacks.py`) each
+# check their own bound *before* popping and sending the next item, not
+# after, so either can schedule one item past its own bound before the
+# next check catches it and pauses -- one more block, up to
+# `MAX_PROTOCOL_MESSAGE_LENGTH`, for `getdata`; one more filter,
+# `ONE_BUSY_MODERN_BLOCK_FILTER_BYTES`, for `get_cfilters`. So what this
+# bound has to hold is each pacing bound plus one maximum item of its
+# own kind, for both mechanisms at once: a peer pipelining a
+# `getcfilters` behind a `getdata` it has not finished draining can
+# have both mid-overshoot on the same connection together.
+#
+# That puts this bound, ~12.3 MB, above both of Core's own flat,
+# content-blind per-connection figures: its send buffer default just
+# above (1,000,000 bytes) by more than an order of magnitude, and its
+# *receive* buffer default -- `recv_flood_size`
+# (`net.h:677`, `DEFAULT_MAXRECEIVEBUFFER * 1000` = 5,000,000 bytes,
+# `net.h:100`), Core's own judgement of how much of one peer's traffic
+# is worth holding at all -- by roughly two and a half times. Neither
+# is the number to match: both are sized without reference to any one
+# message's content, where this bound is sized from two real message
+# sizes, a block and a filter, because this node's own dispatch has no
+# incremental pause-and-resume loop of Core's own shape to lean on for
+# the rest of an answer the way the paragraph above already argues --
+# so a bound this much larger than either of Core's flat figures is
+# what that difference in shape costs, not an oversight next to them.
 MAX_QUEUED_SEND_BYTES = int(
-    _MAX_BLOCKS_PER_GETDATA_BURST * MAX_PROTOCOL_MESSAGE_LENGTH
-    + 2 * ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
+    3 * MAX_PROTOCOL_MESSAGE_LENGTH + 3 * ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 )
 
 # The wire header's own layout -- `btclib.p2p.message`'s module docstring
