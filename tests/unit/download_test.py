@@ -429,7 +429,7 @@ def test_an_outbound_peers_schedule_draws_from_the_shorter_mean(
 ) -> None:
     """An outbound peer draws its schedule from the shorter of the two means."""
     # net_processing.cpp's OUTBOUND_INVENTORY_BROADCAST_INTERVAL/
-    # INBOUND_INVENTORY_BROADCAST_INTERVAL, bitcoin/bitcoin@58a7869f86:
+    # INBOUND_INVENTORY_BROADCAST_INTERVAL, at bitcoin/bitcoin@58a7869f86:
     # an outbound connection's mean is the shorter of the two
     means: list[float] = []
 
@@ -449,7 +449,7 @@ def test_an_outbound_peers_schedule_draws_from_the_shorter_mean(
 
 def test_two_inbound_ipv4_peers_share_one_schedule_regardless_of_subnet() -> None:
     """Two inbound IPv4 peers, different /16s, share one send-time draw."""
-    # `CNode::m_network_key` (net.h:755, bitcoin/bitcoin@58a7869f86) is
+    # `CNode::m_network_key` (net.h:755, at bitcoin/bitcoin@58a7869f86) is
     # keyed on the peer's coarse `GetNetClass()` and this node's own bind
     # address, not on anything of the peer's own subnet -- so two inbound
     # IPv4 peers share `NextInvToInbounds`'s one draw even from two

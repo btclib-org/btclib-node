@@ -71,6 +71,20 @@ reasonable**, and the comment beside it names the commit Core was read
 at. What differs from Core in consensus or in relay is a difference the
 network sees, so the default is not a matter of taste.
 
+The citation itself reads `at bitcoin/bitcoin@<sha>`, with `at`
+immediately before the sha **on the same physical line as it**: an
+identifier directly followed by a parenthesised list ending in the bare
+citation parses as a Python call, which is what ruff's `ERA001` reads as
+commented-out code, and `ERA001` walks one physical comment line at a
+time, so an `at` left stranded on the line above by a wrap does nothing
+for the line that actually carries the sha. `at` glued to the citation
+defeats `ERA001` for a structural reason rather than an accidental one,
+whatever else is on that line or encloses it: `at` and the citation's
+own leading word are two consecutive names with no operator between
+them, which is never valid Python (btclib-org/btclib-node#471). A
+citation inside a docstring rather than a comment needs none of this:
+`ERA001` only ever walks comment ranges.
+
 Not always, though. This tree has constraints Core does not share, and a
 divergence one of those forces is legitimate: `src/btclib_node/db.py`'s
 docstring is the worked example, arguing its store against Core's.

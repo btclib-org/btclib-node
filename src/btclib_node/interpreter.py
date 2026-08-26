@@ -85,7 +85,7 @@ def _tasks(
     `std::vector<PrecomputedTransactionData> txsdata(block.vtx.size())`
     across the threads its `CCheckQueue` runs them on (`validation.cpp`'s
     `ConnectBlock` and `validation.h`'s `CScriptCheck::txdata`,
-    bitcoin/bitcoin@794a753958). Under `_pool_factory`'s process arm
+    at bitcoin/bitcoin@794a753958). Under `_pool_factory`'s process arm
     nothing here can be shared by pointer the way Core's threads share
     `txdata`: what a thread reads through it a process has to receive as
     its own pickled copy, one per task. That copy is a handful of

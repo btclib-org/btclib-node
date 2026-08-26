@@ -206,7 +206,7 @@ class Connection:
         # What this node last told this peer its own minimum relay
         # feerate is, and when it may next say so again -- Core's own
         # `Peer::m_fee_filter_sent`/`m_next_send_feefilter`
-        # (`net_processing.cpp`, bitcoin/bitcoin@58a7869f86), both
+        # (`net_processing.cpp`, at bitcoin/bitcoin@58a7869f86), both
         # initialized the same way there: 0 is a rate nothing is
         # withheld under, so the first comparison in
         # `DownloadManager._send_due_feefilters` never mistakes "never

@@ -42,7 +42,8 @@ def test_port() -> None:
 
 def test_min_relay_feerate_defaults_to_cores_own_floor() -> None:
     """`min_relay_feerate` defaults to Core's own floor, 100 sat/kvB."""
-    # bitcoin/bitcoin@58a7869f86's DEFAULT_MIN_RELAY_TX_FEE, src/policy/policy.h
+    # at bitcoin/bitcoin@58a7869f86's DEFAULT_MIN_RELAY_TX_FEE,
+    # src/policy/policy.h
     assert Config(chain="regtest").min_relay_feerate == DEFAULT_MIN_RELAY_FEERATE
     assert DEFAULT_MIN_RELAY_FEERATE.sats_per_kvbyte == 100
 

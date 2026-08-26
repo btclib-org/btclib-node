@@ -90,7 +90,7 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     conn.version_message = version_msg
     # Every refusal below is discouraged, and not only a protocol
     # violation: Core's own discouragement covers "incompatible or
-    # broken peers" alike (banman.h, bitcoin/bitcoin@58a7869f86), and a
+    # broken peers" alike (banman.h, at bitcoin/bitcoin@58a7869f86), and a
     # peer stopped here is redialled from the address it dialled or was
     # accepted on, not one a later `verack` may still rewrite (#70).
     # btclib-org/btclib-node#283
@@ -187,7 +187,7 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     # already uses -- so a second, special-cased first send here would
     # duplicate rather than precede it. Core does not send one from its
     # own verack handler either: PeerManagerImpl::MaybeSendFeefilter
-    # (net_processing.cpp, bitcoin/bitcoin@58a7869f86) is reached from
+    # (net_processing.cpp, at bitcoin/bitcoin@58a7869f86) is reached from
     # the ordinary per-peer message loop once a peer is
     # fSuccessfullyConnected, not from a one-time handshake action.
     # btclib-org/btclib-node#275
@@ -934,7 +934,7 @@ def not_found(node: Node, msg: bytes, conn: Connection) -> None:
     """
     missing = NotFound.parse(msg)
     # `TxDownloadManagerImpl::ReceivedNotFound`, net_processing.cpp
-    # (bitcoin/bitcoin@58a7869f86): a `notfound` for a transaction this
+    # (at bitcoin/bitcoin@58a7869f86): a `notfound` for a transaction this
     # node asked for is what tells it the ask will go unanswered, so the
     # peer's own entry in `DownloadManager.tx_download`'s in-flight
     # table (`conn.tx_requested`, which is what keeps that ask from
