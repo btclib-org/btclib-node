@@ -1,6 +1,11 @@
 [project]
 name = "btclib-node"
-version = "0.1.0"
+# The shape a checkout of `main` carries between releases: the month
+# the cycle is open on, and no day. `RELEASING.md`'s *Which version
+# string is which* has the three shapes one cycle takes and what each
+# means; `version-check` refuses this one on a tag, so it is a version
+# no release can be cut on. The day is added on release day.
+version = "2026.8"
 description = "Bitcoin node in python"
 authors = [{ name = "Giacomo Caironi", email = "giacomo.caironi@gmail.com" }]
 readme = "README.md"
@@ -91,9 +96,10 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: Implementation :: CPython",
     "Typing :: Typed",
-    # 0.1.0, and the README's own claim for it: this node downloaded and
-    # validated the whole chain, which is past pre-alpha and short of
-    # what a beta would promise about its interfaces
+    # the README's own claim, made of the 2023 prototype that `v0.1.0`
+    # tags and still made here: this node downloaded and validated the
+    # whole chain, which is past pre-alpha and short of what a beta
+    # would promise about its interfaces
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Natural Language :: English",

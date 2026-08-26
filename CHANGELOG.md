@@ -14,6 +14,27 @@ to check the guess.
 
 ## Unreleased
 
+### The declared version is a calendar version (closes #504)
+
+- **`pyproject.toml` declares `2026.8`, the shape `RELEASING.md`'s
+  calendar scheme takes between releases, in place of the `0.1.0` that
+  predates this tree's release path** (closes #504): `0.1.0` is a
+  version this repository has already tagged — a lightweight tag from
+  2023 with a release page of its own and nothing published from it — so
+  a checkout of `main` reported itself as the prototype that tag names,
+  which `release.yml`'s own `public-api` job already reads as not a
+  release, excluding `v0.1.0` there by name. The month alone cannot be
+  mistaken for a release either: `version-check` refuses a
+  two-component version on a tag. What the first release does to the
+  version is now add the day, rather than adopt a scheme for the first
+  time on the one day every step of `RELEASING.md` is also running for
+  the first time, ending in an upload that cannot be undone.
+  `RELEASING.md`, `CONTRIBUTING.md` and `RELEASE_NOTES.md` no longer
+  say the declared version is `0.1.0`, and `uv.lock` carries the
+  project version too, so it is re-locked. Nothing is published by any
+  of this: both this file and `RELEASE_NOTES.md` still open under
+  `## Unreleased`, and there is still no release.
+
 ### The lint gate selects every family ruff ships (issue #402)
 
 - **`[tool.ruff.lint]` selects `ALL`, with every declined rule in

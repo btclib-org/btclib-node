@@ -352,8 +352,9 @@ that #171 had removed, back under this section's own heading.
 Nothing has been published, though: `REPOSITORY.md`'s *What is not
 configured, and why* still answers `0` environments, the `pypi` and
 `testpypi` pair `RELEASING.md`'s *One-time setup* describes not existing
-yet, and `project.version` is still `0.1.0`, static, the placeholder from
-before this tree carried a release path at all.
+yet, and `project.version` is `2026.8`, the shape `RELEASING.md`'s
+calendar scheme takes between releases: the month a cycle is open on,
+with no day, which is what `version-check` refuses on a tag.
 
 ```shell
 curl -s -o /dev/null -w '%{http_code}\n' https://pypi.org/pypi/btclib-node/json
