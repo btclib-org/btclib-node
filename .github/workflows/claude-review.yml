@@ -13,10 +13,12 @@ name: claude-review
 # request and are required checks on main; this one deliberately is not,
 # for the reason just given.
 #
-# It is one job on every pull request, which is not free: the organization
-# has twenty concurrent jobs and the other repositories' matrices compete
-# for them. It earns the slot by being short -- it reads a diff, it does
-# not build anything -- and by skipping a draft.
+# It is one job on every pull request, which is not free: the ceiling on
+# concurrent jobs is the organization's, and the other repositories'
+# matrices compete for the same slots. REPOSITORY.md's *The
+# concurrent-job ceiling* has the command that reads the plan the limit
+# is documented for. It earns the slot by being short -- it reads a
+# diff, it does not build anything -- and by skipping a draft.
 
 on:
   pull_request:
@@ -60,8 +62,8 @@ jobs:
     # btclib-org/bbt, itself a fork.
     #
     # CLAUDE_REVIEW_ENABLED is the switch, an *organization* variable,
-    # and section 11's *Review* in the organization's standard says what
-    # it does rather than this file saying it a second time.
+    # and section 11 of the organization's standard says what it does
+    # rather than this file saying it a second time.
     #
     # On the job and not on a step. A step declining to run leaves
     # `steps.review.outcome` at `skipped`, which the guard below reads as
@@ -184,15 +186,14 @@ jobs:
             `CHANGES REQUESTED <sha>` or `NACK <sha>`, naming the sha
             because an ack belongs to a tree and not to a branch.
             REVIEWING.md has the three lines, and section 11's *Review*
-            in the organization's standard has what each one
-            concludes. For this review the line is not optional: this
-            is the ack of record, the one a landing reads, and it is
-            the only part of a review that anything other than a
-            person can read -- a review of record ending without it
-            cannot be told apart from one that never finished. A
-            person reading the same diff may say what they found and
-            deliver no verdict; REVIEWING.md has why that is not a
-            NACK.
+            has what each one concludes. For this review the line is not
+            optional: this is the ack of record, the one a landing
+            reads, and it is the only part of a review that anything
+            other than a person can read -- a review of record ending
+            without it cannot be told apart from one that never
+            finished. A person reading the same diff may say what they
+            found and deliver no verdict; REVIEWING.md has why that is
+            not a NACK.
 
             Do not run the gates. lint.yml, test.yml and docs.yml all
             run on pull_request, beside you on this same sha, and
@@ -223,13 +224,12 @@ jobs:
             log reads. `gh pr review --comment` for the summary, which
             is what puts the ack of record in the forge's own record of
             reviews; never `--approve` and never `--request-changes`,
-            section 11's *Review* in the organization's standard having
-            why. `mcp__github_inline_comment__create_inline_comment`
-            (with `confirmed: true`) for a finding a line is the
-            subject of.
+            section 11's *Review* having why.
+            `mcp__github_inline_comment__create_inline_comment` (with
+            `confirmed: true`) for a finding a line is the subject of.
           # folded rather than literal, and `gh pr` rather than the three
           # subcommands spelled out: the flag has to reach the CLI as one
-          # line, and the line that spells out comment, diff and view is
+          # line, and the line that spells out diff, review and view is
           # past the 100 columns yamllint holds this file to. git and
           # gh issue view/api are what a review needs and `gh pr diff`
           # alone does not give: history to check a claim about what the
@@ -321,8 +321,8 @@ jobs:
       # So what is read here is what was posted rather than what the
       # action produced: the verdict is the last line of a review body,
       # which is where REVIEWING.md puts it, and only what claude[bot]
-      # wrote is the ack of record -- section 11's *Review* in the
-      # organization's standard is what says an author's own is not.
+      # wrote is the ack of record -- section 11's *Review* is what says
+      # an author's own is not.
       #
       # The reviews endpoint and not the issue comments one, those being
       # two stores rather than two views: a review posted with `gh pr
@@ -453,19 +453,16 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 1
-      # a missing credential is a silent pass without this, which is the
-      # worst shape a gate can take: measured on the first run after the
-      # organization secret was deleted -- the action found the token
-      # empty, reviewed nothing, and reported success. Fail loudly
-      # instead, and say which secret and where it lives
-      - name: Refuse to review without a credential
+      # a missing credential is a silent pass without this, for the
+      # reason the review job above gives
+      - name: Refuse to answer without a credential
         env:
           TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
           if [ -z "$TOKEN" ]; then
             echo "::error::CLAUDE_CODE_OAUTH_TOKEN is empty. It is an" \
                  "organization secret of btclib-org, visible to all" \
-                 "repositories; without it this workflow reviews nothing."
+                 "repositories; without it this workflow answers nothing."
             exit 1
           fi
       - name: Answer the mention

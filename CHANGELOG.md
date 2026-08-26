@@ -174,6 +174,39 @@ to check the guess.
   answer this node already gives a request `_filter_range` declines for
   other reasons.
 
+### `claude-review.yml`'s comments name the right subcommands, job and ceiling
+
+- **The `claude_args` comment names the `gh pr` subcommands the prompt
+  uses** (issue btclib-org/.github#398): `diff`, `review` and `view`.
+- **The `mention` job's credential step refuses in the words of the job
+  it guards** (issue btclib-org/.github#402): that job answers an
+  `@claude` mention and reviews nothing, so the step is named *Refuse to
+  answer without a credential* and its annotation says the workflow
+  answers nothing without the secret.
+- **The comment above that step points at the review job's reason
+  rather than restating it** (issue btclib-org/.github#410): the
+  restatement narrated a measurement made on the review job -- a token
+  found empty, a review reported successful -- inside the job that
+  reviews nothing.
+- **The header's argument for the job's slot carries no figure** (issue
+  btclib-org/.github#405): the ceiling on concurrent jobs belongs to the
+  organization, so the other repositories' matrices compete for the same
+  slots, and that is the whole of the argument. `REPOSITORY.md`'s *The
+  concurrent-job ceiling* has the command that reads the plan the limit
+  is documented for, where a figure in a comment goes wrong in silence
+  the day the plan moves.
+- **Section 11 of the organization's standard is cited in a full form
+  and a subsection form rather than the two concatenated** (issue
+  btclib-org/.github#400): `section 11's *Review*` where *Review* holds
+  the rule cited; `section 11 of the organization's standard` where no
+  one subsection does, the two secret stores a Dependabot-initiated run
+  reads being stated in the section's own prose and in *Dependabot and
+  pre-commit.ci*; and the same full form again wherever the sentence is
+  the one that names the standard, which is what the file's first
+  citation of it is. What chooses the shape is what holds the rule and
+  never where the sentence sits. A rule that lives elsewhere in the
+  standard is still cited with no section number at all.
+
 ### The signal handlers move out of `Node.__init__` (closes #436)
 
 - **`Node.__init__` no longer calls `signal.signal`** (closes #436): a
