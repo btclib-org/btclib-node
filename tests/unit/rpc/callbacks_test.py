@@ -783,6 +783,38 @@ def test_an_unparsable_transaction_is_named_as_such() -> None:
     assert result == {"allowed": False, "reject-reason": "Invalid serialization"}
 
 
+def test_test_mempool_accept_with_no_params_is_answered_the_usage() -> None:
+    """`testmempoolaccept` with no arguments is refused with its own usage.
+
+    An empty `params` used to reach `params[0]` unguarded and raise
+    `IndexError`, which `handle_rpc` answers `-32603 Internal Error` --
+    the code this node owes its own fault, not a call short of a
+    required argument (issue #443).
+    """
+    with pytest.raises(RpcError) as raised:
+        mempool_accept(a_node(), _CONN, [])
+    assert raised.value.code == RpcErrorCode.MISC_ERROR
+    assert raised.value.message == 'testmempoolaccept ["rawtx",...] ( maxfeerate )'
+
+
+def test_test_mempool_accept_rawtxs_of_the_wrong_json_type_is_named() -> None:
+    """`testmempoolaccept`'s `rawtxs` of the wrong JSON type is named.
+
+    `rawtxs` used to be handed straight to a `for` loop, so a JSON
+    string -- itself iterable in Python -- was walked one character at a
+    time instead of being refused (issue #443). Core declares this
+    argument `RPCArg::Type::ARR`, type-checked before the handler body
+    runs.
+    """
+    with pytest.raises(RpcError) as raised:
+        mempool_accept(a_node(), _CONN, ["not an array"])
+    assert raised.value.code == RpcErrorCode.TYPE_ERROR
+    assert (
+        raised.value.message
+        == "JSON value of type string is not of expected type array"
+    )
+
+
 def test_a_relayed_transaction_is_answered_with_its_txid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -849,6 +881,23 @@ def test_a_rawtx_of_the_wrong_json_type_is_named() -> None:
     assert (
         raised.value.message
         == "JSON value of type number is not of expected type string"
+    )
+
+
+def test_send_raw_transaction_with_no_params_is_answered_the_usage() -> None:
+    """`sendrawtransaction` with no arguments is refused with its own usage.
+
+    An empty `params` used to reach `params[0]` unguarded and raise
+    `IndexError`, which `handle_rpc` answers `-32603 Internal Error` --
+    the code this node owes its own fault, not a call short of a
+    required argument (issue #443).
+    """
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(a_node(), _CONN, [])
+    assert raised.value.code == RpcErrorCode.MISC_ERROR
+    assert (
+        raised.value.message
+        == 'sendrawtransaction "hexstring" ( maxfeerate maxburnamount )'
     )
 
 

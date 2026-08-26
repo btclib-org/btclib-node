@@ -98,7 +98,7 @@ def get_block_hash(node: Node, conn: RpcConnection, params: list[Any]) -> bytes:
         # JSONRPCError call, cited below for the shape rather than left
         # commented out -- ERA001 reads it as Python and is wrong.
         # JSONRPCError(RPC_MISC_ERROR, e.what()), src/rpc/server.cpp  # noqa: ERA001
-        # :884-886. Unquoted, unlike blockhash's own usage string:
+        # :887. Unquoted, unlike blockhash's own usage string:
         # RPCArg::ToString(oneline=true) quotes an argument's name only
         # for Type::STR/STR_HEX, and height is Type::NUM
         # (src/rpc/blockchain.cpp:585), which formats bare
@@ -125,7 +125,7 @@ def get_block_hash(node: Node, conn: RpcConnection, params: list[Any]) -> bytes:
         # regardless of its value; the std::runtime_error("JSON integer
         # out of range") it throws is ExecuteCommand's generic
         # `catch (const std::exception&)` case, RPC_MISC_ERROR and not
-        # RPC_TYPE_ERROR (src/rpc/server.cpp:884-886, src/univalue
+        # RPC_TYPE_ERROR (src/rpc/server.cpp:884-887, src/univalue
         # /include/univalue.h:139-150)
         raise RpcError(RpcErrorCode.MISC_ERROR, "JSON integer out of range")
 
@@ -467,7 +467,7 @@ def _parse_txid(params: list[Any]) -> bytes:
     if not params:
         # the same shape as getblockheader's own missing-argument case:
         # RPCMethod::HandleRequest's HelpResult, RPC_MISC_ERROR
-        # (src/rpc/server.cpp:884-886)
+        # (src/rpc/server.cpp:887)
         raise RpcError(
             RpcErrorCode.MISC_ERROR,
             'getrawtransaction "txid" ( verbose ) ( "blockhash" )',
@@ -626,7 +626,38 @@ def test_mempool_accept(
     added -- the same reject reasons `send_raw_transaction` raises are
     reported here per entry instead, and never end the whole batch.
     """
+    if not params:
+        # the same mechanism get_block_hash's own missing-argument case
+        # answers with: RPCMethod::HandleRequest throws HelpResult for a
+        # call short of a required argument, and ExecuteCommand's
+        # `catch (const std::exception& e)` turns that into Core's own
+        # JSONRPCError call, cited below for the shape rather than left
+        # commented out -- ERA001 reads it as Python and is wrong.
+        # JSONRPCError(RPC_MISC_ERROR, e.what()), src/rpc/server.cpp  # noqa: ERA001
+        # :887. `rawtxs` is declared RPCArg::Type::ARR of one
+        # STR_HEX `rawtx`, which RPCArg::ToString(oneline=true) renders
+        # `["rawtx",...]` (src/rpc/util.cpp:1265-1301); `maxfeerate` is
+        # RPCArg::Type::AMOUNT, formatted bare and grouped in its own
+        # `( ... )` for being optional -- read at
+        # bitcoin/bitcoin@b91d983f66, src/rpc/mempool.cpp:291-298
+        raise RpcError(
+            RpcErrorCode.MISC_ERROR,
+            'testmempoolaccept ["rawtx",...] ( maxfeerate )',
+        )
     rawtxs = params[0]
+    if not isinstance(rawtxs, list):
+        # rawtxs is declared RPCArg::Type::ARR, type-checked before the
+        # handler body runs, the same as blockhash and txid elsewhere in
+        # this file. The message itself is this tree's own bare
+        # sentence, not Core's "Wrong type passed:\n{...}" wrapper --
+        # matching every other RPC_TYPE_ERROR this node raises rather
+        # than Core's own rendering here is a known, tracked divergence,
+        # not a silent one: btclib-org/btclib-node#451
+        raise RpcError(
+            RpcErrorCode.TYPE_ERROR,
+            f"JSON value of type {json_type_name(rawtxs)} is "
+            "not of expected type array",
+        )
     out: list[dict[str, Any]] = []
     for rawtx in rawtxs:
         try:
@@ -668,6 +699,24 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
     cited beside its own raise, below; one kept is broadcast to peers
     and its txid answered.
     """
+    if not params:
+        # the same mechanism get_block_hash's own missing-argument case
+        # answers with: RPCMethod::HandleRequest throws HelpResult for a
+        # call short of a required argument, and ExecuteCommand's
+        # `catch (const std::exception& e)` turns that into Core's own
+        # JSONRPCError call, cited below for the shape rather than left
+        # commented out -- ERA001 reads it as Python and is wrong.
+        # JSONRPCError(RPC_MISC_ERROR, e.what()), src/rpc/server.cpp  # noqa: ERA001
+        # :887. `hexstring` is declared RPCArg::Type::STR_HEX,
+        # quoted the way blockhash's own usage string already is;
+        # `maxfeerate` and `maxburnamount` are both RPCArg::Type::AMOUNT
+        # with a Default, formatted bare and grouped in one `( ... )`
+        # for being consecutively optional -- read at
+        # bitcoin/bitcoin@b91d983f66, src/rpc/mempool.cpp:72-77
+        raise RpcError(
+            RpcErrorCode.MISC_ERROR,
+            'sendrawtransaction "hexstring" ( maxfeerate maxburnamount )',
+        )
     rawtx = params[0]
     if not isinstance(rawtx, str):
         # hexstring is declared RPCArg::Type::STR_HEX
