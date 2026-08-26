@@ -479,3 +479,8 @@ because that document, and not this one, is where the rule lives.
   `pyproject.toml` is what turns a node that stops answering into a named
   failure carrying a stack of every thread it left running, instead of a
   run that hangs until something outside it gives up.
+- **Does a mutation offered as proof a test can fail reach the process
+  the test actually runs in?** `addopts` carries `-n auto`, so a test
+  runs in an xdist worker subprocess, and CLAUDE.md's *Non-obvious facts*
+  names which form of mutation reaches it and which reads as a pass
+  while proving nothing.

@@ -24,6 +24,32 @@ to check the guess.
   an absent declaration made an absent convention test indistinguishable
   from a convention this tree does not have.
 
+### A mutation from outside the runner never reaches a worker (closes #477)
+
+- **CLAUDE.md's *Non-obvious facts* names two more ways a green pytest
+  run means something other than it appears to** (closes #477): a
+  mutation applied by monkeypatching an attribute in the controlling
+  process, before calling `pytest.main`, never reaches the worker
+  subprocess `-n auto` runs the test in, and the guarded test passes
+  against the original, unmutated code; editing the file and reverting
+  it afterward is the form that reaches a worker, since a worker reads
+  the file. A `.venv` reused from another worktree carries the same
+  hazard from a different mechanism: its `btclib_node.pth` is a plain
+  absolute path fixed at `uv sync` time, so an interpreter run from a
+  different `cwd` still imports the other worktree's `src/`, unmutated.
+  `REVIEWING.md`'s *This repository in particular* asks a reviewer to
+  check which form a mutation took, and `CONTRIBUTING.md`'s *Mutation
+  testing* notes that `cosmic-ray`'s own sweep already takes the form
+  that works, writing each mutation into the file rather than into a
+  running process.
+
+### CLAUDE.md says what pytest collects (closes #483)
+
+- **The `python_files` bullet named an override `pyproject.toml` does
+  not carry** (closes #483): collection under `tests/unit` and
+  `tests/functional` follows pytest's own default (`test_*.py`,
+  `*_test.py`).
+
 ### The `typos` hook is `repo: local`, pinned through `additional_dependencies`
 
 - **`.pre-commit-config.yaml`'s `typos` entry no longer mirrors

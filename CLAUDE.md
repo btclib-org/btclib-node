@@ -224,9 +224,10 @@ Do not use Fable unless explicitly instructed.
   machine loaded past its core count is where the per-test `timeout`
   starts deciding runs; measuring anything on one is measuring the
   machine.
-- **`python_files = "*.py"`**, so every module under `tests/unit` and
-  `tests/functional` is collected, suffix or no suffix, and a helper put
-  there is collected too.
+- **Collection under `tests/unit` and `tests/functional` follows
+  pytest's own default `python_files`** (`test_*.py`, `*_test.py`).
+  `pyproject.toml` carries no override, and its own comment beside
+  `testpaths` says why.
 - **A second `pytest` anywhere in this tree, even `--help`, erases a
   running suite's coverage data, unless `COVERAGE_FILE` points outside
   the rootdir.** `addopts` names no `data_file`, so every invocation from
@@ -262,6 +263,24 @@ Do not use Fable unless explicitly instructed.
   The load average `uptime` gives at the run, not read back afterward, is
   the number ISS 372 records beside each of its runs, and the one worth
   recording here too.
+- **A mutation applied outside the runner's own process never reaches an
+  `-n auto` worker, and the guarded test passes.** A wrapper that
+  monkeypatches an attribute and then calls `pytest.main` mutates the
+  controlling process; each worker `-n auto` spawns imports the module
+  from disk in its own subprocess, unmutated, and runs the test against
+  the original code. Verifying that a test can fail means editing the
+  file the mutation targets and reverting it afterward, since a worker
+  reads the file rather than the controlling process's state — proving
+  the revert with `git diff --stat` or a grep for a marker the mutation
+  left, rather than trusting that it ran.
+- **A `.venv` reused from another worktree imports that worktree's
+  `src/`, not the caller's.** `site-packages/btclib_node.pth` is a plain
+  absolute path written at `uv sync` time and does not follow `cwd`.
+  Confirm which `src/` an interpreter actually loaded before trusting a
+  test result against it —
+  `python -c "import btclib_node; print(btclib_node.__file__)"`, run
+  with the same interpreter, `cwd` and environment as the test
+  invocation, and read before the result rather than after.
 - **The store is `sqlite3` from the standard library**, since
   btclib-org/btclib-node#107. A datadir written by the LevelDB this
   replaced cannot be read; `src/btclib_node/db.py` is where that is
