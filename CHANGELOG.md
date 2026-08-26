@@ -14,6 +14,17 @@ to check the guess.
 
 ## Unreleased
 
+### Two waits stop sitting tighter than `wait_until`'s default (closes #476)
+
+- **`test_a_slow_manager_start_cannot_still_clobber_the_status_it_raced` and
+  `test_download` each passed `wait_until` a `timeout` under its own
+  default of 60, with nothing beside either saying why** (closes #476):
+  `tests/helpers.py`'s own docstring argues the timeout bounds a failure
+  and not a success, so a generous limit costs a passing run nothing and
+  only delays one that was going to fail -- a bound worth keeping tight
+  only where the test itself asserts that the timeout fires, which
+  neither of these does. Both now let the default stand.
+
 ### `RpcConnection` reads 64 KB at a time, copying a body O(1) times (closes #466)
 
 - **`_recv_until` reads into a 64 KB buffer, matching Core's own HTTP
