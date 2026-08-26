@@ -45,6 +45,28 @@ to check the guess.
   issue named, is untouched and stays linear per round; #457 is where
   that is measured and argued on its own.
 
+### The tx-relay queueing step checks two sets, not two lists (closes #444)
+
+- **`_queue_announcements_for_received_txs` (`download.py`) tests
+  membership against a `set` at both of its peer-controlled loops, not a
+  `list`** (closes #444): whether a wtxid a peer announced is one this
+  node already holds, and whether a wtxid about to be queued to a
+  connection is already in that connection's own `tx_announce_queue`.
+  `received` keeps the list order `_send_due_announcements` sends in, and
+  `tx_announce_queue` stays the `list[bytes]` `connection.py` declares it
+  as; only the membership test against each now reads a `set` built
+  alongside it, in the shape `has_it` already used one function over.
+  The second loop is the one whose cost a benchmark can show: `queue`
+  persists across calls until a connection's own trickle schedule drains
+  it, `received` does not, so a call with little to announce can still
+  face a large accumulated queue -- measured directly against that loop
+  as it stood before this change, its own cost was quadratic in the two
+  peer-controlled sizes it multiplied and is linear in their sum after
+  it. The first loop's own `received` and `inv_txs` are each reset every
+  call, so its argument is the one the issue itself makes: a list scan
+  repeated once per `inv_txs` entry costs more than a set built once,
+  without a benchmark behind that half.
+
 ### `NodeStatus.Reindexing` goes (closes #445)
 
 - **`NodeStatus` no longer declares a `Reindexing` member** (closes
