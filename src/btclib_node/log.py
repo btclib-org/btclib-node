@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from pathlib import Path
 
+__all__ = ["Logger"]
+
 
 class Logger(logging.Logger):
     """A `logging.Logger` writing to `log_path`, or a stream if unset."""

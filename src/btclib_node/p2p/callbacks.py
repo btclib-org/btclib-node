@@ -81,6 +81,39 @@ if TYPE_CHECKING:
     from btclib_node import Node
     from btclib_node.p2p.connection import Connection
 
+__all__ = [
+    "MAX_CFILTERS_INFLIGHT_BYTES",
+    "MAX_GETDATA_INFLIGHT_BYTES",
+    "MAX_PENDING_CFILTERS_HEIGHTS",
+    "MAX_PENDING_GETDATA_ITEMS",
+    "addr",
+    "addrv2",
+    "advance_cfilters",
+    "advance_getdata",
+    "block",
+    "callbacks",
+    "feefilter",
+    "get_cfcheckpt",
+    "get_cfheaders",
+    "get_cfilters",
+    "getaddr",
+    "getdata",
+    "getheaders",
+    "handshake_callbacks",
+    "headers",
+    "inv",
+    "not_found",
+    "ping",
+    "pong",
+    "reject",
+    "sendaddrv2",
+    "sendheaders",
+    "tx",
+    "verack",
+    "version",
+    "wtxidrelay",
+]
+
 
 def version(node: Node, msg: bytes, conn: Connection) -> None:
     """Handle a peer's `version`: refuse an incompatible peer, else continue.

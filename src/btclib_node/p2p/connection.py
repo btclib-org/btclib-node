@@ -46,6 +46,8 @@ if TYPE_CHECKING:
     from btclib_node import Node
     from btclib_node.p2p.manager import P2pManager
 
+__all__ = ["MAX_QUEUED_RECV_BYTES", "MAX_QUEUED_SEND_BYTES", "Connection"]
+
 
 # Core's own cap, `-maxsendbuffer` (`src/net.h`'s
 # `DEFAULT_MAXSENDBUFFER = 1 * 1000`, in the KB units

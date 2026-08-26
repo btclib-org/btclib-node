@@ -23,6 +23,8 @@ from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
+__all__ = ["Chain", "Main", "RegTest", "SigNet", "TestNet"]
+
 
 def create_genesis(
     time: int, nonce: int, difficulty: int, version: int, reward: int

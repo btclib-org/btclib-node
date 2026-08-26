@@ -46,10 +46,13 @@ def asks_for_everything(config: pytest.Config) -> bool:
     if not given:
         return True
     # against the rootdir and not against where pytest was run from,
-    # which is what `testpaths` means. `rootpath` is already absolute,
-    # so joining is all it takes; the paths above are the ones that need
-    # resolving, `./tests` and the absolute path being one directory.
-    wanted = [config.rootpath / p for p in config.getini("testpaths")]
+    # which is what `testpaths` means. `rootpath` is built with
+    # `os.path.abspath`, which leaves a symlink in the path alone, while
+    # `Path.resolve` above follows one -- so a rootdir reached through a
+    # symlink needs resolving here too, or a tree under `/tmp` on macOS
+    # would compare `/tmp/...` against `/private/tmp/...` and find no
+    # containment anywhere.
+    wanted = [(config.rootpath / p).resolve() for p in config.getini("testpaths")]
     if not wanted:
         # `all` over nothing is true, and would make every path named
         # here the whole suite. Nothing names the suite, so a bare run

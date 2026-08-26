@@ -153,6 +153,27 @@ def test_testpaths_are_read_against_the_rootdir_and_not_the_working_directory() 
     assert asks_for_everything(config) is False
 
 
+def test_a_symlinked_rootdir_still_reads_as_the_whole_suite(tmp_path: Path) -> None:
+    """A `rootpath` reached through a symlink still contains the resolved suite.
+
+    `rootpath` is built with `os.path.abspath`, which leaves a symlink in
+    the path alone; the paths given on the command line are resolved, which
+    follows one. Before `wanted` was resolved on the same terms, a rootdir
+    reached through a symlink made the two sides incomparable, and a run
+    naming the whole suite read as a subset of itself.
+    """
+    real = tmp_path / "real"
+    (real / "tests").mkdir(parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    config, options = a_config(
+        file_or_dir=[str(link / "tests")], rootpath=link, testpaths=["tests"]
+    )
+    assert asks_for_everything(config) is True
+    assert relax_coverage_floor(config) is False
+    assert options.cov_fail_under == FLOOR
+
+
 def test_a_suite_that_names_no_paths_of_its_own() -> None:
     """With `testpaths` unset, one named file is narrower; the floor drops."""
     # with testpaths unset a bare run collects the rootdir, so anything

@@ -25,6 +25,8 @@ if TYPE_CHECKING:
 
     from btclib_node import Node
 
+__all__ = ["RpcManager"]
+
 
 class RpcManager(threading.Thread):
     """The thread listening for JSON-RPC connections.

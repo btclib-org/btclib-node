@@ -30,6 +30,8 @@ if TYPE_CHECKING:
     from btclib_node import Node
     from btclib_node.block_db import RevBlock
 
+__all__ = ["update_chain", "verify_mempool_acceptance"]
+
 
 # update_chain calls this on the failure path, naming the block whose
 # contextual validation just failed. BlockIndex.invalidate is where

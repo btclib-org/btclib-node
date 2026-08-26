@@ -32,6 +32,8 @@ if TYPE_CHECKING:
 
     from btclib_node import Node
 
+__all__ = ["P2pManager"]
+
 # How often `manage_connections`' own loop prunes the active-address
 # table on its own rather than only as a side effect of something asking
 # for it. Not tied to the loop's own sleep below -- an O(n) walk of

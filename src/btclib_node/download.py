@@ -33,6 +33,8 @@ if TYPE_CHECKING:
     from btclib_node.log import Logger
     from btclib_node.p2p.connection import Connection
 
+__all__ = ["DownloadManager"]
+
 # net_processing.cpp's INBOUND_INVENTORY_BROADCAST_INTERVAL and
 # OUTBOUND_INVENTORY_BROADCAST_INTERVAL, at bitcoin/bitcoin@58a7869f86: the
 # mean of the exponential draw `_send_due_announcements` makes for the

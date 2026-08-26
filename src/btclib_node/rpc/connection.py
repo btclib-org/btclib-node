@@ -31,6 +31,15 @@ if TYPE_CHECKING:
 
     from btclib_node.rpc.manager import RpcManager
 
+__all__ = [
+    "MAX_BODY_BYTES",
+    "MAX_HEADER_BYTES",
+    "REQUEST_TIMEOUT",
+    "JSONEncoder",
+    "RawJSON",
+    "RpcConnection",
+]
+
 HEADER_TERMINATOR = b"\r\n\r\n"
 # Bounds on the read below, which is fed by whoever connects: the RPC
 # socket is bound to every interface (see rpc.manager.RpcManager.server),

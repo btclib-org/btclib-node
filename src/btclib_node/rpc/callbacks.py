@@ -32,6 +32,25 @@ if TYPE_CHECKING:
     from btclib_node import Node
     from btclib_node.rpc.connection import RpcConnection
 
+__all__ = [
+    "callbacks",
+    "get_best_block_hash",
+    "get_block_count",
+    "get_block_hash",
+    "get_block_header",
+    "get_blockchain_info",
+    "get_connection_count",
+    "get_mempool_info",
+    "get_peer_info",
+    "get_raw_mempool",
+    "get_raw_transaction",
+    "ping",
+    "send_raw_transaction",
+    "service_names",
+    "stop",
+    "test_mempool_accept",
+]
+
 
 def get_best_block_hash(node: Node, conn: RpcConnection, _: list[Any]) -> bytes:
     """Answer `getbestblockhash` with the active chain's own tip."""

@@ -11,3 +11,5 @@ thread; `connection.RpcConnection` is one request's own socket;
 dispatches through; `errors.RpcError` is what a handler raises to
 answer with a JSON-RPC error object instead of a result.
 """
+
+__all__ = []

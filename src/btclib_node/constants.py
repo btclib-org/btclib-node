@@ -11,6 +11,8 @@ shutdown the node as a whole is in.
 
 import enum
 
+__all__ = ["NodeStatus", "P2pConnStatus", "ProtocolVersion"]
+
 ProtocolVersion = 70016
 
 

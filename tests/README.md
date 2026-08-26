@@ -17,9 +17,10 @@ convention section 7 lists.
 | convention | tested in |
 | --- | --- |
 | the documentation | `unit/docs_test.py` |
+| the public surface | `unit/all_test.py` |
 
-Not tested here: the public surface; the copyright header;
-the import graph; the changelog; the build system;
-the calling convention; input validation; the suite opens no socket.
+Not tested here: the copyright header; the import graph;
+the changelog; the build system; the calling convention;
+input validation; the suite opens no socket.
 
 [std]: https://github.com/btclib-org/.github/blob/main/README.md

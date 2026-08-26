@@ -26,6 +26,8 @@ if TYPE_CHECKING:
 
     from btclib_node.log import Logger
 
+__all__ = ["Mempool"]
+
 # Core's own `DEFAULT_INCREMENTAL_RELAY_FEE` (`src/policy/policy.h`,
 # at bitcoin/bitcoin@58a7869f86): what an eviction round bumps the rolling
 # minimum to, above the feerate of whatever it just evicted, so a

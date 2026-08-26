@@ -42,6 +42,8 @@ from btclib_node.exceptions import IncompatibleStoreError, StoreClosedError
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+__all__ = ["KeyValueStore"]
+
 # What a LevelDB directory always holds, and this one never will. A
 # datadir written before this store existed cannot be read by it, and
 # starting an empty chain over the top of one is a worse answer than

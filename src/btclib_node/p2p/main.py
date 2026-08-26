@@ -42,6 +42,8 @@ from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
 if TYPE_CHECKING:
     from btclib_node import Node
 
+__all__ = ["handle_p2p", "handle_p2p_handshake", "resume_cfilters", "resume_getdata"]
+
 
 def handle_p2p_handshake(node: Node) -> None:
     """Pop one queued handshake message and dispatch it, or drop the peer.
