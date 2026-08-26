@@ -24,6 +24,7 @@ import pytest
 from btclib_node.rpc.connection import (
     MAX_BODY_BYTES,
     MAX_HEADER_BYTES,
+    REQUEST_TIMEOUT,
     JSONEncoder,
     RawJSON,
     RpcConnection,
@@ -46,14 +47,27 @@ def with_length(body: bytes = BODY) -> bytes:
 
 
 def drive(
-    chunks: list[bytes], *, timeout: float = 1.0, hang_up: bool = False
+    chunks: list[bytes],
+    *,
+    timeout: float = 1.0,
+    hang_up: bool = False,
+    request_timeout: float = REQUEST_TIMEOUT,
 ) -> tuple[str, list[Any], bool]:
     """Feed `chunks` to a RpcConnection.run and report what it did.
 
     Returns (outcome, dispatched messages, whether the socket was
     closed). The sender is async because a socketpair holds only a few
     kilobytes: a blocking send of a large chunk would deadlock before
-    the loop starts.
+    the loop starts. `request_timeout` is `REQUEST_TIMEOUT` unless a
+    caller lowers it, which is what a test of the deadline itself does
+    rather than waiting out the real, Core-matching default.
+
+    `manager.connections` is seeded with the id `run` is given below,
+    the way `RpcManager.create_connection` seeds it before scheduling
+    `run` for real -- every path `run` fails through pops this id back
+    out of it, and a manager missing the entry the pop expects would
+    have that failure silently swallowed by `run`'s own catch-all
+    instead of surfaced to whichever test misses it.
     """
 
     async def main() -> tuple[str, list[Any], bool]:
@@ -61,8 +75,10 @@ def drive(
         ours.setblocking(False)
         theirs.setblocking(False)
         loop = asyncio.get_running_loop()
-        manager = SimpleNamespace(messages=[])
-        conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
+        manager = SimpleNamespace(messages=[], connections={0: None})
+        conn = RpcConnection(
+            loop, ours, cast("RpcManager", manager), 0, request_timeout=request_timeout
+        )
 
         async def send() -> None:
             for chunk in chunks:
@@ -183,6 +199,24 @@ def test_a_body_shorter_than_its_length_is_waited_for() -> None:
     outcome, messages, _ = drive([whole[:-5]], timeout=0.4)
     assert outcome == "waiting"
     assert not messages
+
+
+def test_a_stalled_read_is_refused_once_request_timeout_elapses() -> None:
+    """A client that never completes a request is refused at request_timeout.
+
+    ISS 437: with no deadline at all, this coroutine hung on `sock_recv`
+    for as long as the node ran instead of ever reaching either outcome
+    above. `request_timeout` is lowered here, well below the external
+    `timeout` `drive` itself waits on, so the assertion is that `run`
+    gives up **on its own** -- `outcome == "returned"`, not `"waiting"` --
+    rather than that `drive`'s own `asyncio.wait_for` gave up on it.
+    """
+    outcome, messages, closed = drive(
+        [b"POST / HTTP/1.1\r\nHost: x\r\n"], timeout=1.0, request_timeout=0.05
+    )
+    assert outcome == "returned"
+    assert not messages
+    assert closed
 
 
 def test_the_response_is_crlf_framed_and_the_socket_closed() -> None:

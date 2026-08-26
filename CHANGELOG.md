@@ -67,6 +67,35 @@ to check the guess.
   repeated once per `inv_txs` entry costs more than a set built once,
   without a benchmark behind that half.
 
+### `RpcConnection.run` bounds the whole request read (closes #437)
+
+- **`RpcConnection.run` now reads a request under `REQUEST_TIMEOUT`**
+  (closes #437): `_recv_until` used to await `sock_recv` with no
+  deadline anywhere in it, so a client that connected, sent a byte and
+  stopped kept its socket -- and its entry in `RpcManager.connections`,
+  since only `send()` popped it -- open for the life of the node. The
+  bound is spent once, on the whole read from accept to a complete
+  request, rather than reset on each `sock_recv`: a per-read timeout
+  alone would still leave a client trickling one byte at a time
+  unbounded. It matches Core's own `-rpcservertimeout` default, 30
+  seconds (`DEFAULT_HTTP_SERVER_TIMEOUT`, `src/httpserver.h`), though
+  not Core's own mechanism -- Core resets that timer on every receive
+  and every send (`httpserver.cpp:930,1275`) and its own
+  `DisconnectClients` (`:1098-1100`) only disconnects a client idle
+  *between* requests on a connection carrying more than one, and this
+  tree's own connection is one request per socket, with no such
+  "between" for a reset to find. `RpcManager`'s own periodic sweep the
+  issue also named was not taken: the peer-to-peer side's
+  `_prune_stale_connections` fits a peer connection that is legitimately
+  idle between messages, and an RPC connection is one request with no
+  such gap to distinguish from a stall.
+- **`run`'s own catch-all now also pops `manager.connections`** on every
+  failure, not only the JSON-parse branch, which already did: an
+  unterminated header, an overstated or negative `Content-Length`, and a
+  peer going away mid-request each raise `ConnectionError` there, and
+  none of them reached `send()` -- the only other place popping that
+  table -- so each left its id behind regardless of `REQUEST_TIMEOUT`.
+
 ### `NodeStatus.Reindexing` goes (closes #445)
 
 - **`NodeStatus` no longer declares a `Reindexing` member** (closes
