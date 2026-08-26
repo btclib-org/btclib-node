@@ -23,7 +23,7 @@ from btclib.exceptions import BTClibException, IncompleteMessageError
 from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.handshake import Version
 from btclib.p2p.keepalive import Ping
-from btclib.p2p.limits import MAX_GETCFILTERS_SIZE
+from btclib.p2p.limits import MAX_GETCFILTERS_SIZE, MAX_PROTOCOL_MESSAGE_LENGTH
 from btclib.p2p.message import Message
 
 from btclib_node.constants import P2pConnStatus, ProtocolVersion
@@ -98,6 +98,16 @@ MAX_QUEUED_SEND_BYTES = int(
     * _BYTES_PER_FILTER_ELEMENT
 )
 
+# The wire header's own layout -- `btclib.p2p.message`'s module docstring
+# argues it against Core's `CMessageHeader` (`src/protocol.h`): magic (4
+# octets) and command (12) ahead of a little-endian `length` (4), then a
+# checksum (4). `btclib.p2p.message` keeps the matching constants private,
+# so `parse_messages` below repeats the two it needs to peek the header
+# itself, rather than reach into another module's underscored names.
+_HEADER_SIZE = 24
+_LENGTH_OFFSET = 16
+_LENGTH_SIZE = 4
+
 
 class Connection:
     """One peer-to-peer socket and everything owed to or by it.
@@ -126,7 +136,10 @@ class Connection:
         self.loop = manager.loop
         self.client: socket.socket = client
         self.address: NetworkAddressV2 = address
-        self.buffer = b""
+        # A `bytearray`, not `bytes`: `run`'s own `+=` below is an
+        # in-place, amortised extend on this type and a full copy of
+        # everything held so far on the other -- btclib-org/btclib-node#438.
+        self.buffer = bytearray()
         self.task: Future[None] | None = None
 
         self.status: P2pConnStatus = P2pConnStatus.Open
@@ -295,7 +308,12 @@ class Connection:
         try:
             await self.send_version()
             while self.status < P2pConnStatus.Closed:
-                data = await self.loop.sock_recv(self.client, 1024)
+                # 64 KB, matching Core's own read buffer (`pchBuf`,
+                # `src/net.cpp`) rather than the 1024 this had no
+                # argument for: fewer syscalls, and -- quadratically,
+                # through `parse_messages`'s own gate below -- far fewer
+                # bytes copied per message. btclib-org/btclib-node#438
+                data = await self.loop.sock_recv(self.client, 65536)
                 if not data:
                     return self.stop(cancel_task=False)
                 try:
@@ -484,7 +502,34 @@ class Connection:
         Leaves a trailing partial message in `buffer` for the next
         read, and routes each parsed one to `handshake_messages` or
         `messages` -- `ping`/`pong` pushed to the front of the latter.
+
+        Peeks the header's own `length` field in `buffer` before
+        building a stream or calling `Message.parse` at all: a chunk
+        that does not yet complete even the first message in `buffer`
+        returns here without copying anything. That is the common case
+        on a connection carrying one large message over many reads --
+        a block during initial block download chief among them -- and
+        it is what keeps such a message copied a constant number of
+        times overall rather than once per chunk. btclib-org/btclib-node#438
         """
+        if len(self.buffer) < _HEADER_SIZE:
+            return
+        length = int.from_bytes(
+            self.buffer[_LENGTH_OFFSET : _LENGTH_OFFSET + _LENGTH_SIZE],
+            byteorder="little",
+        )
+        # `length` above the protocol's own bound falls through instead
+        # of waiting for however many further octets it claims: nothing
+        # this node could ever receive completes such a message, and
+        # `Message.parse` below refuses it the moment it reads the
+        # header -- the same refusal a peer telling the truth about a
+        # too-large message would get once its payload actually arrived,
+        # just not deferred until then.
+        if length <= MAX_PROTOCOL_MESSAGE_LENGTH and len(self.buffer) < (
+            _HEADER_SIZE + length
+        ):
+            return
+
         # A stream and not the bytes: Message.parse consumes one message
         # and leaves the position after it, so several whole messages in
         # one read are taken one at a time, and a partial one rewinds.
@@ -509,12 +554,12 @@ class Connection:
                     self.manager.messages.append(item)
         finally:
             # whatever the loop did not consume, partial message
-            # included. Guarded on the position because the common read
-            # off a socket completes no message at all: rewriting the
-            # buffer there would copy it once more per 1024 octets, and
-            # a block arrives in thousands of them.
+            # included. The gate above already returned without
+            # touching `stream` for a read that completes no message at
+            # all, so this only copies the (typically short) remainder
+            # once a message has actually been taken off the front.
             if stream.tell():
-                self.buffer = stream.read()
+                self.buffer = bytearray(stream.read())
 
     @override
     def __repr__(self) -> str:

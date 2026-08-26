@@ -31,6 +31,25 @@ to check the guess.
   rather than in a constructor (`src/init.cpp`, `src/bitcoind.cpp`,
   bitcoin/bitcoin@b91d983f66).
 
+### `Connection` reads 64 KB at a time and copies a message O(1) times (closes #438)
+
+- **`Connection.run` reads into a 64 KB buffer, matching Core's own
+  `pchBuf` (`src/net.cpp`, bitcoin/bitcoin@b91d983f66), rather than
+  1024 bytes with no argument behind that number** (closes #438):
+  fewer syscalls per message, and `self.buffer` is a `bytearray` whose
+  `+=` extends in place instead of copying everything held so far the
+  way `bytes += bytes` did.
+- **`parse_messages` peeks the 24-byte envelope's own `length` field in
+  `buffer` before building a stream or calling `Message.parse` at
+  all**, so a chunk that does not yet complete the first message in
+  `buffer` returns without copying anything -- the common case on a
+  connection carrying one large message, a block during initial block
+  download chief among them, over many reads. A `length` already past
+  `MAX_PROTOCOL_MESSAGE_LENGTH` falls through the gate instead of being
+  waited on, so `Message.parse`'s own refusal of it still fires as soon
+  as the header arrives rather than once (if ever) that many octets
+  did.
+
 ### `BlockDB` serializes its own reads and writes (closes #432)
 
 - **`BlockDB` now holds one `RLock` across every public method** (closes

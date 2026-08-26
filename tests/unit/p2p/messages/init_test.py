@@ -166,7 +166,7 @@ def make_connection() -> Connection:
     conn.id = 0
     conn.manager = cast("P2pManager", manager)
     conn.node = manager.node
-    conn.buffer = b""
+    conn.buffer = bytearray()
     conn.status = P2pConnStatus.Open
     conn.last_receive = 0
     conn._ping_lock = threading.Lock()
@@ -185,7 +185,7 @@ def test_one_message_is_dispatched() -> None:
     with the field it was built with, not just the right command.
     """
     conn = make_connection()
-    conn.buffer = framed(Ping(7))
+    conn.buffer = bytearray(framed(Ping(7)))
     conn.parse_messages()
     assert not conn.buffer
     assert [item[0] for item in conn.manager.messages] == ["ping"]
@@ -200,7 +200,7 @@ def test_several_messages_in_one_read() -> None:
     ahead of the one that arrived before it.
     """
     conn = make_connection()
-    conn.buffer = framed(Ping(1)) + framed(Mempool()) + framed(Ping(2))
+    conn.buffer = bytearray(framed(Ping(1)) + framed(Mempool()) + framed(Ping(2)))
     conn.parse_messages()
     assert not conn.buffer
     # ping jumps the queue, mempool does not
@@ -215,7 +215,7 @@ def test_a_handshake_message_goes_to_its_own_queue() -> None:
     stays empty.
     """
     conn = make_connection()
-    conn.buffer = framed(Verack())
+    conn.buffer = bytearray(framed(Verack()))
     conn.parse_messages()
     assert [item[0] for item in conn.manager.handshake_messages] == ["verack"]
     assert not conn.manager.messages
@@ -234,7 +234,7 @@ def test_a_partial_message_is_held_whole() -> None:
     # inside the header, at its boundary, and inside the payload
     for cut in (1, 10, 23, 24, len(whole) - 1):
         conn = make_connection()
-        conn.buffer = whole[:cut]
+        conn.buffer = bytearray(whole[:cut])
         conn.parse_messages()
         assert not conn.manager.messages
         assert conn.buffer == whole[:cut], f"cut at {cut}"
@@ -245,6 +245,48 @@ def test_a_partial_message_is_held_whole() -> None:
         assert not conn.buffer
 
 
+def test_a_message_fed_one_octet_at_a_time_reassembles_identically() -> None:
+    """A message split across as many chunks as it has octets still parses.
+
+    #438: `parse_messages` peeks the header's own `length` field before
+    it ever builds a stream, so this drives the read loop the way a
+    real socket read would, one octet per call rather than one cut --
+    the gate has to survive being asked, and answering "not yet",
+    dozens of times running rather than once.
+    """
+    whole = framed(Ping(424242))
+    conn = make_connection()
+    for i in range(len(whole)):
+        conn.buffer += whole[i : i + 1]
+        conn.parse_messages()
+    assert not conn.buffer
+    assert [item[0] for item in conn.manager.messages] == ["ping"]
+    assert Ping.parse(conn.manager.messages[0][1]).nonce == 424242
+
+
+def test_a_declared_length_short_of_arrived_never_parses_early() -> None:
+    """Nothing parses before the last octet a message's own length asks for.
+
+    Distinct from `test_a_partial_message_is_held_whole`'s cut points: a
+    message is fed one payload octet at a time after its header, and at
+    every single step short of the last, `buffer` must hold exactly
+    what has arrived and nothing must be queued -- not only at one
+    chosen cut, so a gate that gets the bound wrong by one for some
+    lengths but not others cannot pass by luck of the cut chosen.
+    """
+    whole = framed(Ping(1))  # 24-byte header + 8-byte nonce payload
+    conn = make_connection()
+    conn.buffer += whole[:24]  # the header, none of the payload
+    for i in range(24, len(whole)):
+        conn.parse_messages()
+        assert conn.buffer == whole[:i]
+        assert not conn.manager.messages
+        conn.buffer += whole[i : i + 1]
+    conn.parse_messages()
+    assert not conn.buffer
+    assert [item[0] for item in conn.manager.messages] == ["ping"]
+
+
 def test_a_whole_message_before_a_partial_one_is_still_taken() -> None:
     """The first of two messages in one read is queued despite the second.
 
@@ -253,7 +295,7 @@ def test_a_whole_message_before_a_partial_one_is_still_taken() -> None:
     """
     conn = make_connection()
     second = framed(Ping(2))
-    conn.buffer = framed(Ping(1)) + second[:8]
+    conn.buffer = bytearray(framed(Ping(1)) + second[:8])
     conn.parse_messages()
     assert [item[0] for item in conn.manager.messages] == ["ping"]
     assert conn.buffer == second[:8]
@@ -276,7 +318,7 @@ def test_a_bad_checksum_raises_instead_of_spinning() -> None:
     conn = make_connection()
     tampered = bytearray(framed(Ping(1)))
     tampered[20] ^= 0xFF  # a checksum byte
-    conn.buffer = bytes(tampered)
+    conn.buffer = tampered
     with pytest.raises(BTClibValueError):
         conn.parse_messages()
     assert not conn.manager.messages
@@ -290,7 +332,7 @@ def test_a_message_for_another_network_is_refused() -> None:
     at that check rather than by a command it happens not to recognise.
     """
     conn = make_connection()
-    conn.buffer = framed(Ping(1), magic=bytes.fromhex("f9beb4d9"))  # mainnet
+    conn.buffer = bytearray(framed(Ping(1), magic=bytes.fromhex("f9beb4d9")))  # mainnet
     with pytest.raises(BTClibValueError):
         conn.parse_messages()
     assert not conn.manager.messages
@@ -308,7 +350,7 @@ def test_an_oversized_payload_is_refused_before_it_is_allocated() -> None:
     header = Message(MAGIC, "ping", b"").serialize()[:24]
     # rewrite the length field with something no peer would honour
     forged = header[:16] + (0xFFFFFFF0).to_bytes(4, "little") + header[20:]
-    conn.buffer = forged
+    conn.buffer = bytearray(forged)
     with pytest.raises(BTClibValueError):
         conn.parse_messages()
     assert not conn.manager.messages
