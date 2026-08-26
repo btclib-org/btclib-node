@@ -14,6 +14,7 @@ import asyncio
 import socket
 import threading
 import time
+from collections import deque
 from contextlib import suppress
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -21,6 +22,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 from btclib.hashes import hash256
 from btclib.p2p.block_filters import BlockFilterType, CFilter
+from btclib.p2p.handshake import Verack
 from btclib.p2p.inventory import GetData, Inventory, InventoryType
 from btclib.p2p.keepalive import Ping, Pong
 from btclib.p2p.limits import MAX_PROTOCOL_MESSAGE_LENGTH
@@ -67,7 +69,13 @@ def a_connection(
             warning=warning, info=lambda *a: None, debug=lambda *a: None
         ),
     )
-    manager = SimpleNamespace(node=node, loop=None, peer_db=None)
+    manager = SimpleNamespace(
+        node=node,
+        loop=None,
+        peer_db=None,
+        messages=deque(),
+        handshake_messages=deque(),
+    )
     connection = Connection(
         cast("P2pManager", manager),
         client if client is not None else socket.socket(),
@@ -202,9 +210,10 @@ def a_running_connection(
     """Build a `Connection` with enough manager state for `run` to actually run.
 
     Unlike `a_connection` above, this one carries a real loop, a
-    `pending_outbound_nonces` set and a stub `discourage`, which is what
-    the tests below need to drive `Connection.run` end to end rather
-    than only a synchronous method on an idle connection.
+    `pending_outbound_nonces` set, a stub `discourage`, and the two
+    queues `parse_messages` routes a completed message onto, which is
+    what the tests below need to drive `Connection.run` end to end
+    rather than only a synchronous method on an idle connection.
     """
     node = SimpleNamespace(
         chain=RegTest(),
@@ -224,6 +233,8 @@ def a_running_connection(
         peer_db=None,
         discourage=discouraged.append,
         discouraged=discouraged,
+        messages=deque(),
+        handshake_messages=deque(),
     )
     return Connection(
         cast("P2pManager", manager),
@@ -437,6 +448,130 @@ def test_a_connections_own_task_cancelled_directly_still_closes_its_socket() -> 
     ours = asyncio.run(drive())
     # a closed socket's own fileno is -1; still >= 0 is still open
     assert ours.fileno() == -1
+
+
+def _wire_ping(nonce: int = 1) -> bytes:
+    """One whole `ping` message's own wire octets, magic through checksum."""
+    return Message(RegTest().magic, "ping", Ping(nonce).serialize()).serialize()
+
+
+def _wire_verack() -> bytes:
+    """One whole `verack` message's own wire octets."""
+    return Message(RegTest().magic, "verack", Verack().serialize()).serialize()
+
+
+def test_parse_messages_weighs_a_queued_message_against_the_recv_bound() -> None:
+    """A `messages`-bound item adds its own wire size to `queued_recv_bytes`.
+
+    Far under `MAX_QUEUED_RECV_BYTES`, so `_recv_resume` stays set: what
+    this checks is the size accounting itself, the boundary tests below
+    are what check the pause it feeds.
+    """
+    connection, _ = a_connection()
+    with connection.client:
+        wire = _wire_ping()
+        connection.buffer += wire
+        connection.parse_messages()
+    (item,) = connection.manager.messages
+    assert item == ("ping", Ping(1).serialize(), 0, len(wire))
+    assert connection.queued_recv_bytes == len(wire)
+    assert connection._recv_resume.is_set()
+
+
+def test_parse_messages_does_not_weigh_a_handshake_message() -> None:
+    """A `handshake_messages`-bound item carries no size and pays no weight.
+
+    `handshake_messages` is drained whole every pass of `Node`'s own
+    loop (`_drain_message_queues`) rather than sharing this connection's
+    own pacing -- `MAX_QUEUED_RECV_BYTES`'s own comment
+    (`p2p/connection.py`) argues why only `messages` needs it.
+    """
+    connection, _ = a_connection()
+    with connection.client:
+        connection.buffer += _wire_verack()
+        connection.parse_messages()
+    (item,) = connection.manager.handshake_messages
+    assert item == ("verack", Verack().serialize(), 0)
+    assert connection.queued_recv_bytes == 0
+    assert connection._recv_resume.is_set()
+
+
+def test_parse_messages_clears_recv_resume_once_over_the_bound() -> None:
+    """Crossing `MAX_QUEUED_RECV_BYTES` clears `_recv_resume`.
+
+    Seeded one octet under the bound, so the incoming message's own
+    size is what tips it over -- landing exactly on the bound, the
+    complementary case below, is deliberately not this.
+    """
+    connection, _ = a_connection()
+    with connection.client:
+        wire = _wire_ping()
+        connection.queued_recv_bytes = (
+            connection_module.MAX_QUEUED_RECV_BYTES - len(wire) + 1
+        )
+        connection.buffer += wire
+        connection.parse_messages()
+    assert connection.queued_recv_bytes == connection_module.MAX_QUEUED_RECV_BYTES + 1
+    assert not connection._recv_resume.is_set()
+
+
+def test_parse_messages_leaves_recv_resume_set_landing_exactly_on_the_bound() -> None:
+    """Landing exactly on `MAX_QUEUED_RECV_BYTES`, not over it, does not pause.
+
+    `handle_p2p`'s own resume check (`p2p/main.py`) uses the same `<=`,
+    so the two share this one boundary rather than each picking it
+    independently.
+    """
+    connection, _ = a_connection()
+    with connection.client:
+        wire = _wire_ping()
+        connection.queued_recv_bytes = connection_module.MAX_QUEUED_RECV_BYTES - len(
+            wire
+        )
+        connection.buffer += wire
+        connection.parse_messages()
+    assert connection.queued_recv_bytes == connection_module.MAX_QUEUED_RECV_BYTES
+    assert connection._recv_resume.is_set()
+
+
+def test_run_does_not_read_again_while_recv_resume_is_cleared() -> None:
+    """`run`'s own read loop honours `_recv_resume`, not only who clears it.
+
+    `sock_recv` is patched rather than driven over a real socket, so
+    this is a check on `run`'s own loop structure -- the `await` gating
+    its next read -- and not on how quickly a real read becomes ready;
+    the `parse_messages` tests above are what cover `_recv_resume`
+    actually being cleared and set.
+    """
+
+    async def drive() -> tuple[list[int], list[int]]:
+        loop = asyncio.get_running_loop()
+        connection = a_running_connection(loop, socket.socket())
+        connection._recv_resume.clear()
+        calls: list[int] = []
+        read = asyncio.Event()
+
+        async def fake_sock_recv(_client: socket.socket, size: int) -> bytes:
+            calls.append(size)
+            read.set()
+            return b""  # an empty read: run's own hang-up path, ending the loop
+
+        connection.loop.sock_recv = fake_sock_recv  # type: ignore[method-assign,assignment]
+        task = asyncio.ensure_future(connection.run())
+        # two turns: past send_version's own await and parked on
+        # `_recv_resume.wait()`, the same shape the cancellation test
+        # above uses to park a connection in `sock_recv` instead
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        before = list(calls)
+        connection._recv_resume.set()
+        await asyncio.wait_for(read.wait(), timeout=5)
+        await task
+        return before, calls
+
+    before, after = asyncio.run(drive())
+    assert not before
+    assert after == [65536]
 
 
 def test_a_peer_already_at_the_send_bound_is_dropped_not_queued_further() -> None:

@@ -108,7 +108,13 @@ class P2pManager(threading.Thread):
         # (command, payload, connection id), which is what a connection
         # appends and what p2p.main pops apart; the handshake ones go
         # in a queue of their own, drained whole before the rest.
-        self.messages: deque[tuple[str, bytes, int]] = deque()
+        # `messages`' own items carry a fourth element, the message's own
+        # wire size -- `Connection.parse_messages` and `handle_p2p`
+        # (`p2p/main.py`) are the two ends of what that paces,
+        # `Connection.MAX_QUEUED_RECV_BYTES`'s own comment arguing why;
+        # `handshake_messages` is not paced this way and carries no
+        # fourth element. btclib-org/btclib-node#462
+        self.messages: deque[tuple[str, bytes, int, int]] = deque()
         self.handshake_messages: deque[tuple[str, bytes, int]] = deque()
         # Every nonce `add_pending_outbound_nonce` (below) has recorded
         # for an outbound connection still short of its own `verack` --

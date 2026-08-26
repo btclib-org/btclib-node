@@ -9,6 +9,7 @@ tests only ever drive a connection that reaches Connected: the states
 either side of it, and the raise, are what is left.
 """
 
+import threading
 from collections import deque
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -19,6 +20,7 @@ from btclib.p2p.addrv2 import NetworkAddressV2
 from btclib_node.constants import P2pConnStatus
 from btclib_node.p2p import main as main_module
 from btclib_node.p2p.callbacks import callbacks, handshake_callbacks
+from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
 from btclib_node.p2p.main import (
     handle_p2p,
     handle_p2p_handshake,
@@ -38,24 +40,37 @@ _AN_ADDRESS = NetworkAddressV2(0, 0, 1, b"\x01\x02\x03\x04", 18444)
 
 def make_node(
     queue_name: str,
-    item: tuple[str, bytes, int],
+    item: tuple[str, bytes, int] | tuple[str, bytes, int, int],
     *,
     status: P2pConnStatus,
     present: bool = True,
     pending: bool = False,
+    queued_recv_bytes: int = 0,
 ) -> tuple[Any, list[bool]]:
     """Build a node stand-in, one queued `item` on a `Connection` at `status`.
 
     `present` files the connection under `connections` or leaves it out entirely
     (a peer already gone by the time its message is handled); `pending` moves it
     into `pending_connections` instead, for the handshake's own in-between
-    state. Returns the node alongside the list `conn.stop` was told to record
-    onto.
+    state. `queued_recv_bytes` seeds `handle_p2p`'s own byte accounting, which
+    every stub connection carries whether or not a given test exercises it --
+    `_recv_lock` a real lock, matching `Connection`'s own, and `loop` a stand-in
+    whose `call_soon_threadsafe` runs its argument immediately rather than
+    through a real event loop, `handle_p2p` never awaiting the result. Returns
+    the node alongside the list `conn.stop` was told to record onto.
     """
     stopped: list[bool] = []
     discouraged: list[Any] = []
+    resumed: list[bool] = []
     conn = SimpleNamespace(
-        status=status, address=_AN_ADDRESS, stop=lambda: stopped.append(True)
+        status=status,
+        address=_AN_ADDRESS,
+        stop=lambda: stopped.append(True),
+        queued_recv_bytes=queued_recv_bytes,
+        _recv_lock=threading.Lock(),
+        _recv_resume=SimpleNamespace(set=lambda: resumed.append(True)),
+        loop=SimpleNamespace(call_soon_threadsafe=lambda fn: fn()),
+        resumed=resumed,
     )
     manager = SimpleNamespace(
         messages=deque(),
@@ -222,7 +237,7 @@ def test_a_message_reaches_its_callback(monkeypatch: pytest.MonkeyPatch) -> None
 
     monkeypatch.setitem(callbacks, "ping", a_callback)
     node, stopped = make_node(
-        "messages", ("ping", b"x", 0), status=P2pConnStatus.Connected
+        "messages", ("ping", b"x", 0, 1), status=P2pConnStatus.Connected
     )
     handle_p2p(node)
     assert seen == [b"x"]
@@ -236,7 +251,9 @@ def test_a_message_before_the_handshake_is_over_drops_the_peer() -> None:
     violation, discouraged for it -- #283, the mirror of the handshake
     version above.
     """
-    node, stopped = make_node("messages", ("ping", b"", 0), status=P2pConnStatus.Open)
+    node, stopped = make_node(
+        "messages", ("ping", b"", 0, 1), status=P2pConnStatus.Open
+    )
     handle_p2p(node)
     assert stopped == [True]
     assert node.p2p_manager.discouraged == [_AN_ADDRESS]  # #283
@@ -244,7 +261,9 @@ def test_a_message_before_the_handshake_is_over_drops_the_peer() -> None:
 
 def test_a_message_on_a_closed_connection_is_dropped() -> None:
     """An ordinary message for a `Closed` connection is dropped, not run."""
-    node, stopped = make_node("messages", ("ping", b"", 0), status=P2pConnStatus.Closed)
+    node, stopped = make_node(
+        "messages", ("ping", b"", 0, 1), status=P2pConnStatus.Closed
+    )
     handle_p2p(node)
     assert not stopped
 
@@ -252,7 +271,7 @@ def test_a_message_on_a_closed_connection_is_dropped() -> None:
 def test_a_command_nothing_dispatches_is_ignored() -> None:
     """A command with no entry in `callbacks` is ignored, not dropped."""
     node, stopped = make_node(
-        "messages", ("nosuchcommand", b"", 0), status=P2pConnStatus.Connected
+        "messages", ("nosuchcommand", b"", 0, 1), status=P2pConnStatus.Connected
     )
     handle_p2p(node)
     assert not stopped
@@ -270,7 +289,7 @@ def test_a_callback_that_raises_drops_the_peer(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setitem(callbacks, "ping", boom)
     node, stopped = make_node(
-        "messages", ("ping", b"", 0), status=P2pConnStatus.Connected
+        "messages", ("ping", b"", 0, 1), status=P2pConnStatus.Connected
     )
     handle_p2p(node)
     assert stopped == [True]
@@ -289,7 +308,7 @@ def test_a_callback_that_raises_a_btclib_exception_costs_the_peer(
 
     monkeypatch.setitem(callbacks, "ping", boom)
     node, stopped = make_node(
-        "messages", ("ping", b"", 0), status=P2pConnStatus.Connected
+        "messages", ("ping", b"", 0, 1), status=P2pConnStatus.Connected
     )
     handle_p2p(node)
     assert stopped == [True]
@@ -299,7 +318,7 @@ def test_a_callback_that_raises_a_btclib_exception_costs_the_peer(
 def test_a_message_for_a_connection_that_is_gone_is_dropped() -> None:
     """A message naming an unknown connection id is dropped, not run."""
     node, stopped = make_node(
-        "messages", ("ping", b"", 7), status=P2pConnStatus.Connected, present=False
+        "messages", ("ping", b"", 7, 1), status=P2pConnStatus.Connected, present=False
     )
     handle_p2p(node)
     assert not stopped
@@ -313,10 +332,70 @@ def test_a_message_on_a_connection_still_pending_drops_the_peer() -> None:
     found in `connections` or still in `pending_connections`.
     """
     node, stopped = make_node(
-        "messages", ("ping", b"", 0), status=P2pConnStatus.Open, pending=True
+        "messages", ("ping", b"", 0, 1), status=P2pConnStatus.Open, pending=True
     )
     handle_p2p(node)
     assert stopped == [True]
+
+
+def test_handle_p2p_weighs_the_message_off_the_connections_own_queued_bytes() -> None:
+    """The popped item's own size is subtracted from `queued_recv_bytes`.
+
+    Whatever happens to the message next -- here, an ordinary dispatch --
+    `MAX_QUEUED_RECV_BYTES` (`p2p/connection.py`) paces what a connection
+    has queued and not yet had `handle_p2p` look at, not what became of
+    it once looked at.
+    """
+    node, stopped = make_node(
+        "messages",
+        ("nosuchcommand", b"", 0, 1_000),
+        status=P2pConnStatus.Connected,
+        queued_recv_bytes=1_500,
+    )
+    handle_p2p(node)
+    assert node.p2p_manager.connections[0].queued_recv_bytes == 500
+    assert not stopped
+
+
+def test_handle_p2p_resumes_a_connection_back_under_the_bound() -> None:
+    """Dropping back to the bound schedules `_recv_resume.set` once.
+
+    Seeded one octet over `MAX_QUEUED_RECV_BYTES` -- `Connection.__init__`'s
+    `queued_recv_bytes` docstring is the constant this mirrors -- so that
+    subtracting the popped item's own size lands it exactly on the bound,
+    which `handle_p2p`'s own `<=` treats as resumed.
+    """
+    node, stopped = make_node(
+        "messages",
+        ("nosuchcommand", b"", 0, 1),
+        status=P2pConnStatus.Connected,
+        queued_recv_bytes=MAX_QUEUED_RECV_BYTES + 1,
+    )
+    handle_p2p(node)
+    conn = node.p2p_manager.connections[0]
+    assert conn.queued_recv_bytes == MAX_QUEUED_RECV_BYTES
+    assert conn.resumed == [True]
+    assert not stopped
+
+
+def test_handle_p2p_does_not_resume_a_connection_still_over_the_bound() -> None:
+    """Still over `MAX_QUEUED_RECV_BYTES` after the pop: no resume scheduled.
+
+    The mirror of the test above -- one octet short of the bound rather
+    than landing on it -- so a connection that queued far more than one
+    message's worth stays paused until enough of the rest drains too.
+    """
+    node, stopped = make_node(
+        "messages",
+        ("nosuchcommand", b"", 0, 1),
+        status=P2pConnStatus.Connected,
+        queued_recv_bytes=MAX_QUEUED_RECV_BYTES + 2,
+    )
+    handle_p2p(node)
+    conn = node.p2p_manager.connections[0]
+    assert conn.queued_recv_bytes == MAX_QUEUED_RECV_BYTES + 1
+    assert not conn.resumed
+    assert not stopped
 
 
 def a_pending_node(conn: Any, heights: deque[int]) -> tuple[Any, list[Any], list[Any]]:

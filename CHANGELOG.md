@@ -77,6 +77,44 @@ to check the guess.
   only where the test itself asserts that the timeout fires, which
   neither of these does. Both now let the default stand.
 
+### A connection stops reading once its queue piles up unprocessed (closes #462)
+
+- **`Connection.run` pauses `sock_recv` once `queued_recv_bytes` --
+  every octet `parse_messages` has handed to `P2pManager.messages` and
+  `handle_p2p` (`p2p/main.py`) has not yet popped -- crosses
+  `MAX_QUEUED_RECV_BYTES`, resuming once enough of it drains** (closes
+  #462): `P2pManager.messages` was a plain `deque`, pushed to
+  unconditionally by every connection's own read loop and drained by
+  `Node`'s own loop at a `log2`-scaled share of its length, with nothing
+  stopping a peer sending valid messages faster than that share drains
+  them from growing the queue without bound. `MAX_QUEUED_RECV_BYTES`
+  matches Core's own `recv_flood_size`, 5,000,000 bytes from `net.h`'s
+  `DEFAULT_MAXRECEIVEBUFFER * 1000`, exactly -- not the size of this
+  node's own worst legitimate receive burst, `download.py`'s own
+  16-block `_request_new_block_work` batch at
+  `MAX_PROTOCOL_MESSAGE_LENGTH` each, 64,000,000 bytes, which was the
+  first number tried and is the wrong shape: Core requests that
+  identical 16-block burst per peer too and still caps at 5,000,000,
+  read at bitcoin/bitcoin@b91d983f66, pausing reading mid-burst on its
+  own ordinary IBD traffic by construction, because the bytes already
+  sent sit in the kernel's own receive buffer rather than being
+  dropped, and the read resumes once the queue drains. A bound sized to
+  fit the whole legitimate case, the way `MAX_QUEUED_SEND_BYTES` was
+  before #442, never distinguishes flooding from ordinary traffic.
+- **Pausing, not dropping the message or the connection** -- Core's own
+  answer, `fPauseRecv`, which stops selecting a connection's socket for
+  a read event rather than discarding anything already parsed, all
+  read at bitcoin/bitcoin@b91d983f66: a connection over this bound has
+  sent nothing but valid protocol messages faster than this node
+  currently drains them, not a protocol violation to punish the way
+  `MAX_QUEUED_SEND_BYTES` punishes a connection already over its own
+  send budget.
+- **`P2pManager.messages`' own items now carry a fourth element, the
+  message's own wire size**, what `handle_p2p` weighs back off
+  `queued_recv_bytes`; `handshake_messages` carries no such element,
+  that queue being drained whole every pass of `Node`'s own loop rather
+  than sharing this pacing.
+
 ### `RpcConnection` reads 64 KB at a time, copying a body O(1) times (closes #466)
 
 - **`_recv_until` reads into a 64 KB buffer, matching Core's own HTTP
