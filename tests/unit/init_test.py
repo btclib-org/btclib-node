@@ -30,11 +30,14 @@ import pytest
 
 import btclib_node
 from btclib_node import Node, install_signal_handlers
+from btclib_node.chains import RegTest
 from btclib_node.config import Config
+from btclib_node.constants import NodeStatus
 from btclib_node.exceptions import NodeShutdownTimeoutError
 from btclib_node.interpreter import warm
+from btclib_node.main import update_chain
 from tests.conftest import unstarted_node_context
-from tests.helpers import wait_until
+from tests.helpers import generate_random_chain, wait_until
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
@@ -299,6 +302,62 @@ def test_a_step_that_raises_brings_the_node_down_rather_than_spinning(
 
     monkeypatch.setattr(btclib_node, "update_chain", boom)
     node = a_node(tmp_path)
+    node.start()
+    node.join(timeout=10)
+    assert not node.is_alive()
+    assert node.chainstate.db.closed
+    assert node.block_db.db.closed
+
+
+def test_a_missing_reverse_patch_stops_the_node_rather_than_rolling_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A raise reading a trial's own blocks back off disk stops the loop.
+
+    `_blocks_to_add`/`_rev_blocks_to_remove` (`main.py`) sit outside the
+    trial's own `try`, so a raise out of either is the case the test
+    above pins for any raising step, driven here through real chain
+    state rather than a mocked `update_chain`: it propagates out of
+    `update_chain` rather than being rolled back the way a raise inside
+    the trial is. A change moving the two calls inside that `try` would
+    have this same raise caught, rolled back and swallowed instead, and
+    the node would still be running when `join` times out below.
+    """
+    node = a_node(tmp_path)
+    block_index = node.chainstate.block_index
+
+    first = generate_random_chain(2, RegTest().genesis.hash)
+    block_index.add_headers([block.header for block in first])
+    for block in first:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    node.status = NodeStatus.HeaderSynced
+    for _ in range(len(first)):
+        update_chain(node)
+    assert block_index.active_chain[1:] == [block.header.hash for block in first]
+
+    # the reverse patch a heavier fork's own rollback would need to
+    # remove first[-1] -- gone, as if this node's own store had lost it
+    node.block_db.rev_patches.pop(first[-1].header.hash)
+
+    second = generate_random_chain(3, RegTest().genesis.hash)
+    block_index.add_headers([block.header for block in second])
+    for block in second:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+
+    # run() overwrites status with SyncingHeaders the moment it starts,
+    # same as every node that has not synced a single header yet -- so
+    # HeaderSynced is restored here, from inside the loop's own first
+    # pass, rather than raced against that assignment from outside it
+    original_drain = node._drain_message_queues
+
+    def drain_once_synced() -> bool:
+        node.status = NodeStatus.HeaderSynced
+        return original_drain()
+
+    monkeypatch.setattr(node, "_drain_message_queues", drain_once_synced)
+
     node.start()
     node.join(timeout=10)
     assert not node.is_alive()
