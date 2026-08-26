@@ -22,9 +22,12 @@ name: release
 # no commit and no merge today (its own header has why -- a platform row
 # earns a place before a review only where waiting for it costs less
 # than the review does), and a release is not carved out as the one
-# place that changes. There is no os-ubuntu.yml, os-windows.yml or
-# integration-bitcoind.yml here either, test.yml's own header naming
-# what would ask nothing this tree does not already ask elsewhere.
+# place that changes. There is no os-ubuntu.yml or os-windows.yml here
+# either, test.yml's own header naming what each would ask that this
+# tree does not already ask elsewhere. integration-bitcoind.yml exists
+# and is a required check on every pull request, so the ancestry check
+# below -- the tag has to be merged into the default branch -- is what
+# already carries its answer for the tree being released.
 # There is no ReadTheDocs project connected yet either -- REPOSITORY.md's
 # "No Pages, and no Read the Docs project connected" -- so there is no
 # sentinel here waiting on one the way bitcoin-core-rpc's `documented`
@@ -211,6 +214,115 @@ jobs:
           echo "run $GITHUB_RUN_NUMBER attempt $GITHUB_RUN_ATTEMPT: $suffix"
           echo "version-suffix=$suffix" >> "$GITHUB_OUTPUT"
 
+  # walks the public API of the release before this one against the one
+  # being cut and reports what broke: a removed object, a changed
+  # parameter kind or default, a narrowed type. It runs here rather than
+  # as a merge gate -- btclib-org/.github#326's own decision -- because
+  # before 1.0 the surface breaks deliberately and often, and a gate
+  # reporting every such break on every pull request has nothing to say
+  # about which ones are allowed. Here the answer arrives while
+  # RELEASE_NOTES.md is already being written, so a break with no entry
+  # is refused at the moment somebody is already writing entries.
+  # Ahead of the test workflow below: a broken surface is worth knowing
+  # before that call's suite and dist build spend the wall clock they
+  # take
+  public-api:
+    name: Check the public API against the last release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # the previous tag has to be reachable in this checkout for the
+          # step below to find it, and a single-commit checkout -- what
+          # every other job's checkout takes -- would not carry it
+          fetch-depth: 0
+          fetch-tags: true
+      # a release tag is already on the remote by the time this job runs,
+      # so the "latest tag" griffe would resolve on its own is the release
+      # being cut, not the one before it -- comparing a tag against itself
+      # reports no break whatever changed. The previous tag is resolved
+      # explicitly instead, by walking the ref's own ancestry rather than
+      # a version sort, so a tag pushed on a branch this history never
+      # merged is not picked up as "previous". A rehearsal has no tag of
+      # its own, so it asks from HEAD directly rather than HEAD^.
+      # v0.1.0 is excluded because it is not a release: it is a
+      # lightweight tag on the 2023 prototype, nothing was published
+      # from it and nobody installed it, so the surface it names is not
+      # a promise this repository ever made. Comparing against it
+      # reports the whole rewrite since as breakage, on a job both
+      # publish jobs need, which would fail every release until the
+      # second one. Excluded, the first release resolves no previous
+      # tag and the check below skips itself; from the second on, the
+      # previous tag is a release that was published
+      - name: Resolve the previous release
+        id: previous
+        env:
+          REF: >-
+            ${{ github.event_name == 'push' && format('{0}^', github.ref_name)
+            || 'HEAD' }}
+        run: |
+          if tag=$(git describe --tags --abbrev=0 --match 'v*' \
+            --exclude 'v0.1.0' "$REF" 2>&1); then
+            echo "previous release: $tag"
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+            echo "has-previous=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no previous v* tag reachable from $REF: $tag"
+            echo "has-previous=false" >> "$GITHUB_OUTPUT"
+          fi
+      # caching off, as in version-check above: this job runs on the same
+      # tag-push and workflow_dispatch triggers that job's own comment
+      # gives for downloading fresh rather than trusting a cache entry
+      # written by a run this one cannot vouch for
+      - name: Setup uv
+        if: steps.previous.outputs.has-previous == 'true'
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: false
+      # griffe runs from PyPI through uvx rather than from a pyproject.toml
+      # dependency group: unlike pre-commit -- pinned by uv.lock because
+      # every contributor's own run has to agree with the gate's -- this
+      # runs at release time only, on one maintainer's own action, so a
+      # dependency group buys reproducibility nothing here needs. The
+      # version pin on the line below is what still keeps this
+      # comparison from answering differently on two release days for a
+      # reason that has nothing to do with either release.
+      # -s . -s src covers a layout this repository has moved once:
+      # the working tree keeps btclib_node/ under src/, where v0.1.0
+      # held it at the root. That tag is excluded above and is no
+      # longer a reference this job resolves, so -s . stands against a
+      # move of the same kind rather than against that one -- a search
+      # path that finds nothing in a reference is skipped in favour of
+      # the other, so keeping it costs nothing.
+      # No base ref on a rehearsal: workflow_dispatch has no tag to check
+      # a public surface at, so the comparison falls back to griffe's own
+      # default, the current code
+      - name: Check the public API against the previous release
+        if: steps.previous.outputs.has-previous == 'true'
+        env:
+          PREVIOUS_TAG: ${{ steps.previous.outputs.tag }}
+          BASE_REF: ${{ github.event_name == 'push' && github.ref_name || '' }}
+        run: |
+          base_args=()
+          if [ -n "$BASE_REF" ]; then
+            base_args=(-b "$BASE_REF")
+          fi
+          if ! uvx griffe==2.2.0 check btclib_node -s . -s src \
+              -a "$PREVIOUS_TAG" "${base_args[@]}" -f github; then
+            msg="the public API changed since $PREVIOUS_TAG:"
+            echo "::error::$msg add a breaking-changes bullet to" \
+              "RELEASE_NOTES.md, or say here why the change is not one"
+            exit 1
+          fi
+      - name: Skip the check (no previous release to compare against)
+        if: steps.previous.outputs.has-previous == 'false'
+        run: |
+          echo "::notice::no previous v* tag is reachable; nothing to" \
+            "compare this release's public API against"
+
   # the whole test/lint gate, exactly as a pull request runs it, and the
   # distribution files besides: test.yml's `dist` job builds them, checks
   # them and uploads them, so this call is what makes them exist for the
@@ -259,7 +371,7 @@ jobs:
 
   publish-testpypi:
     name: Publish to TestPyPI
-    needs: [test, lint, docs]
+    needs: [public-api, test, lint, docs]
     if: >-
       github.event_name == 'workflow_dispatch' &&
       github.repository == 'btclib-org/btclib-node'
@@ -308,7 +420,7 @@ jobs:
 
   publish-pypi:
     name: Publish to PyPI
-    needs: [test, lint, docs]
+    needs: [public-api, test, lint, docs]
     if: >-
       github.event_name == 'push' &&
       github.repository == 'btclib-org/btclib-node'

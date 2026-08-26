@@ -24,11 +24,11 @@ request and no memory of how the last review went. Read the other way
 round, before a pull request is opened, it is what that pull request
 will be answered against.
 
-A review produces comments on a pull request and issues filed against
-the repository. **A reviewer writes nothing to the branch**: no push, no
-amend, no merge. The one commit a review can lead to is the author's own
-click on a suggestion, below, which is theirs to make and theirs to
-decline.
+A review produces a verdict and comments on a pull request, and issues
+filed against the repository. **A reviewer writes nothing to the
+branch**: no push, no amend, no merge. The one commit a review can lead
+to is the author's own click on a suggestion, below, which is theirs to
+make and theirs to decline.
 
 ## The standard an ack is given against
 
@@ -151,9 +151,9 @@ gh issue create --title "<the finding, as a claim>" \
   --body "<what was noticed and where, how it is known, why it matters>"
 ```
 
-Name the issues filed at the foot of the summary comment, under a line
-saying they are **not** findings against this pull request. Without that
-line the list reads as more things to fix before merging, which is the
+Name the issues filed at the foot of the summary, under a line saying
+they are **not** findings against this pull request. Without that line
+the list reads as more things to fix before merging, which is the
 opposite of what filing them was for.
 
 ## What a finding says
@@ -362,23 +362,34 @@ a gap.
 
 ## The verdict
 
-Inline comments for the line-anchored findings, then exactly one summary
-comment. **A review that decides whether the pull request lands** ends
-that comment with one of two lines:
+Inline comments for the line-anchored findings, then exactly one
+summary. **A review that decides whether the pull request lands** posts
+that summary to the forge as a review, and ends it with one of three
+lines:
+
+```text
+ACK <sha>
+```
 
 ```text
 CHANGES REQUESTED <sha>
 ```
 
 ```text
-ACK <sha>
+NACK <sha>
 ```
 
-Nothing else is an ack — not "looks good", and not a forge approval,
-which section 11 of the standard records GitHub as refusing to the author
-of the pull request. That refusal is why the record of a review here is a
-comment at all. It names the sha because an ack belongs to a tree and
-not to a branch.
+The ack of record carries whichever of the three applies and is posted
+as a review of type COMMENT — `gh pr review --comment` — never as a
+forge approval or a forge request for changes. Section 11 of the
+standard says whose verdict the ack of record is, what each of the three
+concludes, and what forbids the workflow an approval; a forge approval
+is a person's, and it is not the ack.
+
+Every other summary is a comment. Nothing else is an ack — not "looks
+good", and not a forge approval by the author of the pull request, which
+section 11 records GitHub as refusing. Every line names the sha, because
+an ack belongs to a tree and not to a branch.
 
 **A review that does not decide ends without one, and is not an
 unfinished review.** Somebody who reads a diff and says what they found
@@ -388,11 +399,21 @@ having are the ones nobody was assigned. What a pull request lands on is
 the ack of record; every other comment on it is evidence a person weighs
 before pressing.
 
+**A `NACK` is a decision and ending without a verdict is not.** Both
+leave the pull request unacked, which is what makes them easy to read as
+one thing, and they say opposite things: the first concludes, and
+section 11 has what it concludes; the second declines to conclude, which
+is what a reading does. Silence is not a refusal, so a reviewer who
+means to refuse writes the line.
+
 The summary says, in a few lines, what was reviewed — the sha, the gates
 and their exit codes —, lists the blocking findings, and names the
-issues filed. **In a verdict**, no blocking findings and no ack is a
-contradiction: either the finding is blocking or the ack is due. In a
-reading it is neither, the reading having declined to say.
+issues filed. **In a verdict**, `CHANGES REQUESTED` with no blocking
+finding is a contradiction: either the finding is blocking or the ack is
+due. In a reading neither is owed, the reading having declined to say. A
+`NACK` need not carry a blocking finding at all: its ground is the
+change rather than a defect in it, and that ground is what the summary
+states.
 
 And, in either, **what was not checked**: a command that could not be
 run, an issue that could not be read, a part of the tree left unopened.

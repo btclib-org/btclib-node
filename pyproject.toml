@@ -535,151 +535,60 @@ fail_under = 100
 # alone, rather than every rule ruff is still designing.
 preview = true
 explicit-preview-rules = true
-# Narrower than the standard's own reference selection (btclib's), and
-# closer to what black/isort/flake8/autoflake/yesqa/pyupgrade/bandit
-# actually checked before this repository moved to ruff: pycodestyle
-# (E/W), pyflakes (F, replacing autoflake and most of yesqa), isort (I),
-# pyupgrade (UP), bandit (S), plus CPY. Issue #284 measured the standard's
-# full reference `select` (btclib's own, plus CPY) against this tree --
-#
-#   uv run ruff check --select \
-#     A,B,BLE,C4,C90,CPY,E,ERA,F,FA,FIX,FLY,FURB,I,ISC,PGH,PIE,PL,PT, \
-#     PTH,RET,RSE,RUF,S,SIM,SLOT,T10,T20,TID,TRY,UP,W --statistics .
-#
-# -- and every family that reported a finding needs a per-site decision
-# (a refactor, a suppression, or a behaviour change) on consensus- and
-# network-facing code: not a config change, and out of scope for a
-# bundle that touches no `src/btclib_node/` runtime code. What moved here
-# instead is the families the same command reports nothing for: C4, FA,
-# FIX, FLY, ISC, PGH, PIE, PTH, RSE, SLOT, T10 and TID. Adopting those
-# now costs nothing, and what is left is the rest of that select list,
-# one rule family (or a handful of related ones) at a time, per issue
-# #284's own suggested shape.
-# "D" (pydocstyle) is not selected whole either, and for the same reason
-# at a larger scale: measured, almost every module under
-# `src/btclib_node/` carried no docstring at all, so turning it on is a
-# documentation pass across the whole package. `D100`/`D104`
-# (undocumented-public-module, undocumented-public-package) are below
-# instead, on their own: issue #264 added the module and package
-# docstrings `docs/source/`'s own coverage test needed, which closes
-# those two codes for `src/btclib_node/` -- the per-file-ignores further
-# down defer them for every file under `tests/` and for `scripts/**`,
-# neither being part of the shipped package. `D101`/`D102`/`D103`/`D107`,
-# the bulk of the family (the class, method, function and `__init__`
-# narration #264 did not attempt), are issue #373's own five
-# package-directory slices, landed one at a time: `src/btclib_node/`'s
-# own root-level modules, `block_db/`, `chainstate/`, `p2p/` and `rpc/`
-# -- clean across the whole package, with the per-file-ignores further
-# down still deferring every file under `tests/` and `scripts/**`,
-# neither being part of the shipped package.
-# `D205`/`D401`/`D403`/`D404`/`D105` (a summary not on one physical
-# line, a docstring not in the imperative mood, an uncapitalized first
-# word, one starting with "This", an undocumented magic method) are
-# turned on tree-wide already: issue #373 asked for them to fold into
-# whichever slice landed first rather than be split five ways, and
-# slice 1's own sweep found a handful of stray findings outside
-# `src/btclib_node/`'s root, in `rpc/` and `p2p/` -- fixed directly
-# rather than deferred, since nothing about them is tied to a
-# directory's own D101-D107 sweep still being incomplete. `D205` and
-# `D401` are the two of those five still deferred, in the per-file-ignores
-# below, for `tests/`, the only place either still has findings of its
-# own; `D403`, `D404` and `D105` are already clean there too, and need no
-# deferral.
-#
-# Issue #284 closed that reference selection; ruff's own catalogue is
-# larger still, and issues #340/#341 are a further sweep of every
-# family the reference selection did not name, `uv run ruff linter`
-# measured one family at a time against `uv run ruff check --preview
-# --extend-select <family> --statistics .`. "TC" (flake8-type-checking)
-# is the first of those: a typing-only import moved under `if
-# TYPE_CHECKING:` costs nothing at runtime on this tree's `>=3.14`
-# target, PEP 649's lazy annotation evaluation being native there --
-# confirmed by "FA" above already finding that only one file in the
-# whole tree still needs `from __future__ import annotations`, not
-# every module a typing-only import would otherwise touch. "G"
-# (flake8-logging-format) is a `logger.*` call's own f-string argument,
-# built whether or not that level is enabled, deferred to only when the
-# message is actually emitted by the `%`-style form `logging` itself
-# already supports. "N" (pep8-naming) is PEP 8's own casing convention,
-# checked rather than renamed where a flagged name already follows a
-# different convention PEP 8 also names -- a type alias in CapWords,
-# the same as a class. "PERF" (Perflint) is a manual accumulation loop
-# where a comprehension already says the same thing.
-#
-# Considered and declined, for reasons this comment records so the
-# survey is not repeated: "COM" (flake8-commas) reports 361 findings,
-# all `COM812` (missing-trailing-comma) -- redundant against
-# `ruff-format`, which already places one on every multi-line
-# construct it reflows; ruff's own documentation recommends against
-# enabling it alongside the formatter, the same reasoning
-# "line-too-long" is ignored for below. "Q" (flake8-quotes) reports
-# zero for the identical reason one layer earlier: `ruff-format`
-# already normalises every string's own quote character, so there is
-# nothing left for the rule to find. "EM" (flake8-errmsg) and "SLF"
-# (flake8-self) are, measured, entirely inside `tests/` -- 13 and 140
-# findings, zero of either in `src/btclib_node/` -- a test double raising
-# with a raw string, a test reading a fixture's own private attribute:
-# whitebox-test idiom, not a defect, and a blanket per-file-ignore
-# would cover every one of them and leave nothing behind to answer
-# for. "INP" (flake8-no-pep420) reports 16, `scripts/**` and a
-# handful of `tests/**/p2p` directories lacking their own
-# `__init__.py`; whether `scripts/` is meant to be an importable
-# package is a packaging decision this tree has not made, not a lint
-# fix to make it for.
-select = [
-    "A",    # flake8-builtins
-    "ANN",  # flake8-annotations
-    "ARG",  # flake8-unused-arguments
-    "B",    # flake8-bugbear
-    "BLE",  # flake8-blind-except
-    "C4",   # flake8-comprehensions
-    "C90",  # mccabe (complex-structure)
-    "CPY",  # flake8-copyright, replacing the copyright-notice hook below
-    "D100", # pydocstyle: undocumented-public-module (issue #264)
-    "D101", # pydocstyle: undocumented-public-class (issue #373, slice 1)
-    "D102", # pydocstyle: undocumented-public-method (issue #373, slice 1)
-    "D103", # pydocstyle: undocumented-public-function (issue #373, slice 1)
-    "D104", # pydocstyle: undocumented-public-package (issue #264)
-    "D105", # pydocstyle: undocumented-magic-method (issue #373, slice 1)
-    "D107", # pydocstyle: undocumented-public-init (issue #373, slice 1)
-    "D205", # pydocstyle: missing-blank-line-after-summary (issue #373)
-    "D401", # pydocstyle: non-imperative-mood (issue #373)
-    "D403", # pydocstyle: first-word-uncapitalized (issue #373)
-    "D404", # pydocstyle: docstring-starts-with-this (issue #373)
-    "E",    # pycodestyle errors, replacing flake8
-    "ERA",  # eradicate (commented-out code)
-    "F",    # pyflakes, replacing autoflake and most of yesqa
-    "FA",   # flake8-future-annotations
-    "FBT",  # flake8-boolean-trap
-    "FIX",  # flake8-fixme
-    "FLY",  # flynt
-    "FURB", # refurb
-    "G",    # flake8-logging-format
-    "I",    # isort
-    "ISC",  # flake8-implicit-str-concat
-    "N",    # pep8-naming
-    "PERF", # Perflint
-    "PGH",  # pygrep-hooks
-    "PIE",  # flake8-pie
-    "PL",   # pylint
-    "PT",   # flake8-pytest-style
-    "PTH",  # flake8-use-pathlib
-    "RET",  # flake8-return
-    "RSE",  # flake8-raise
-    "RUF",  # ruff-specific rules (RUF043's own extend-select entry folds in)
-    "S",    # flake8-bandit, replacing the two bandit hooks below
-    "SIM",  # flake8-simplify
-    "SLOT", # flake8-slots
-    "T10",  # flake8-debugger
-    "T20",  # flake8-print
-    "TC",   # flake8-type-checking
-    "TID",  # flake8-tidy-imports
-    "TRY",  # tryceratops
-    "UP",   # pyupgrade, replacing the pyupgrade hook below
-    "W",    # pycodestyle warnings, replacing flake8
-]
+# Every rule family ruff ships, present ones and a release's future ones
+# alike, rather than a hand-picked list: a list is a thing that rots,
+# since nothing forces a second edit here the day ruff ships a family
+# nobody has looked at yet. `ALL` takes a new family in on the pull
+# request that bumps ruff's own pinned rev instead, which is the day
+# somebody is already looking at what changed. Section 5 of the
+# organization standard states the rule; `ignore` below is where every
+# declined rule's reason lives -- a rule the formatter conflicts with,
+# cited from ruff's own docs/formatter.md and not argued here since that
+# list is the vendor's; a rule this tree declines on its own merits,
+# argued beside it; or a finding that is real and is not in `ignore` at
+# all, fixed at its site or answered with a `# noqa` that RUF100 retires
+# the day it stops being needed.
+select = ["ALL"]
+# a rule and not a family, so it is here rather than in `select` above:
+# `ALL` selects every stable rule ruff ships, and pylint's
+# unspecified-encoding is PLW1514, which preview is where ruff keeps it.
+# It asks that `open`, `Path.open`, `read_text`, `write_text` and the
+# tempfile factories name an encoding, because a call that omits it
+# takes the locale's: UTF-8 wherever this suite usually runs, cp1252 on
+# Windows. .pre-commit-config.yaml carries the other half, `text=True`
+# being the same locale-dependent decode one layer out.
 extend-select = ["unspecified-encoding"]
+# named rather than coded: an entry that suppresses a single rule can
+# say which, so the reason sits in the comment and the rule sits in the
+# entry, with no code left to look up between them
 ignore = [
+    # ruff's own docs/formatter.md, under "Conflicting lint rules",
+    # fetched at the ruff revision pyproject.toml and
+    # .pre-commit-config.yaml both pin (v0.16.4): each of these is
+    # undone by the formatter's own rewriting, so selecting it is a
+    # lint failure the next `ruff format` produces again. The list is
+    # the vendor's, and does not change with this tree.
+    # `incorrect-blank-line-before-class` (D203) needs no entry here:
+    # the pep257 convention below already disables it in favour of
+    # D211, the other half of the pair ruff calls incompatible, without
+    # printing the warning ruff reserves for a pair nothing has
+    # settled. `multi-line-implicit-string-concatenation` (ISC002)
+    # needs none either: the vendor conditions it on being used without
+    # ISC001 and with `allow-multiline` false, and ISC001 stays
+    # selected here, which fails the first half on its own
+    "tab-indentation",
+    "indentation-with-invalid-multiple",
+    "indentation-with-invalid-multiple-comment",
+    "over-indented",
+    "docstring-tab-indentation",
+    "triple-single-quotes",
+    "bad-quotes-inline-string",
+    "bad-quotes-multiline-string",
+    "bad-quotes-docstring",
+    "avoidable-escaped-quote",
+    "unnecessary-escaped-quote",
+    "missing-trailing-comma",
+    "prohibited-trailing-comma",
     # code length is enforced by the formatter, which reflows to its 88
     # columns everything it is allowed to rewrite; max-doc-length below
     # measures the prose the formatter never touches.
@@ -728,6 +637,22 @@ ignore = [
     "PLR2004", # a test's own literal expected value, not a magic number
     "S101",    # assert
     "S311",    # non-cryptographic random: fine in tests
+    "SLF001",  # whitebox testing is this suite's method, not an
+    #            accident: a test arms or reads the private state of the
+    #            object it itself built -- a Connection's
+    #            `_recv_resume`, the mempool's `_rolling_min_fee_rate` --
+    #            because the invariant under test is about that state,
+    #            and a public accessor added only so a test can avoid an
+    #            underscore would widen the API for no caller. Every
+    #            finding is under `tests/`; `src/btclib_node/` stays
+    #            gated, its own few cross-object sites answered with a
+    #            `# noqa` and a reason where they sit
+    "EM101", # a test double raising with a raw string: the exception
+    #            exists to be caught and asserted on by the test one
+    #            screen away, so the assign-to-a-variable-first form the
+    #            rule asks for adds a name nothing else reads. Every
+    #            finding is under `tests/`; `src/btclib_node/` stays
+    #            gated and is clean
 ]
 # Every handler in p2p.callbacks.callbacks/handshake_callbacks is called
 # uniformly (node, msg, conn) by p2p.main's handle_p2p/
@@ -767,7 +692,17 @@ ignore = [
 # package rather than assumed) -- an override matching the base class's
 # own signature is not a choice this file made, so ANN401 is not a
 # per-site decision the way it is where this tree picks its own `Any`.
-"docs/source/conf.py" = ["ANN401"]
+# INP001: sphinx imports conf.py by its own convention, reading
+# docs/source/ as a configuration directory rather than a package, so
+# an __init__.py there would misrepresent it as one.
+"docs/source/conf.py" = ["ANN401", "INP001"]
+# flake8-no-pep420: each of these is a standalone entry point -- a
+# workflow step's "python .github/scripts/<name>.py", or a script a
+# person runs from a checkout -- never an import. The directories hold
+# no __init__.py because they are not packages, and adding one to
+# satisfy this rule would make each look like one.
+".github/scripts/*.py" = ["INP001"]
+"scripts/**" = ["INP001"]
 # reset_chainstate.py and reset_download.py are each a template edited
 # by hand before a run, not a program run as-is: their reset itself is
 # commented out on purpose, one block per operation, so whoever runs
@@ -794,6 +729,12 @@ ignore = [
 
 [tool.ruff.lint.pycodestyle]
 max-doc-length = 80
+
+[tool.ruff.lint.pydocstyle]
+# section 5 of the organization standard; what settles the pairs ruff
+# calls incompatible (D203/D211, D212/D213), so `ignore` above does not
+# name the half a convention already disables
+convention = "pep257"
 
 [tool.ruff.lint.flake8-copyright]
 # COPYRIGHT is the one place the notice text is written down; this is all
