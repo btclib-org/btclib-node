@@ -81,7 +81,7 @@ STOP_TIMEOUT = 30
 # variable that a producer signals, so a node with work is woken at
 # once and one without costs nothing until the wait's own ceiling
 # (`CConnman::ThreadMessageHandler`, `src/net.cpp`, up to 100 ms,
-# bitcoin/bitcoin@b91d983f66). A plain sleep cannot do that -- nothing
+# at bitcoin/bitcoin@b91d983f66). A plain sleep cannot do that -- nothing
 # wakes it early -- so raising it trades idle CPU for latency on
 # whatever arrives while it is asleep, in a way Core's own wait does
 # not have to. Giving `step()` its own cadence or signalling the loop
@@ -167,7 +167,7 @@ def _pool_factory(*, gil_enabled: bool) -> type[Pool]:
     Core's own `CCheckQueue` always shares one
     `PrecomputedTransactionData` by pointer across its worker threads
     (`validation.h`'s `CScriptCheck::txdata`,
-    bitcoin/bitcoin@794a753958); a `ThreadPool` is this tree's way of
+    at bitcoin/bitcoin@794a753958); a `ThreadPool` is this tree's way of
     doing the same once the interpreter running it makes a real thread
     as parallel as one of Core's.
     """

@@ -155,8 +155,8 @@ def get_block_header(
         # turns that into JSONRPCError(RPC_MISC_ERROR, e.what()). Both
         # arguments render the way RPCArg::ToString(oneline=true) does:
         # blockhash quoted for being STR_HEX, verbose bare and grouped
-        # in its own trailing `( ... )` for being optional -- read at
-        # bitcoin/bitcoin@b91d983f66, src/rpc/blockchain.cpp:614-617
+        # in its own trailing `( ... )` for being optional --
+        # read at bitcoin/bitcoin@b91d983f66, src/rpc/blockchain.cpp:614-617
         raise RpcError(
             RpcErrorCode.MISC_ERROR, 'getblockheader "blockhash" ( verbose )'
         )
@@ -269,7 +269,7 @@ def get_peer_info(
     A pending connection -- accepted or dialled but short of `verack` --
     is left out: it carries no `version_message` yet for the fields
     below to read. Each field matches one `getpeerinfo` answers with its
-    own `CNode::CopyStats` (`src/net.cpp`, bitcoin/bitcoin@58a7869f86),
+    own `CNode::CopyStats` (`src/net.cpp`, at bitcoin/bitcoin@58a7869f86),
     cited beside where it is built.
     """
     out: list[dict[str, Any]] = []
@@ -353,7 +353,7 @@ def _btc_amount(sats: int) -> RawJSON:
     """Format a non-negative satoshi amount as Core's own exact BTC string.
 
     Core's own `ValueFromAmount` (`src/core_io.cpp:283-293`,
-    bitcoin/bitcoin@58a7869f86): integer `amount / COIN` and
+    at bitcoin/bitcoin@58a7869f86): integer `amount / COIN` and
     `amount % COIN`, formatted `%d.%08d` -- exact at every magnitude,
     where a Python float division (`sats / 1e8`) serializes through
     `repr`, which fixes no decimal places and emits exponent notation
@@ -377,7 +377,7 @@ def get_mempool_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     """
     mempool = node.mempool
     # Core's own MempoolInfoToJSON (`src/rpc/mempool.cpp:1075-1086`,
-    # bitcoin/bitcoin@58a7869f86) answers several fields beyond these
+    # at bitcoin/bitcoin@58a7869f86) answers several fields beyond these
     # four: `usage`, `total_fee`, `unbroadcastcount`,
     # `permitbaremultisig`, `maxdatacarriersize`, `limitclustercount`,
     # `limitclustersize`, `optimal`, the deprecated `fullrbf`. Every one
@@ -474,8 +474,8 @@ def _parse_txid(params: list[Any]) -> bytes:
         # :246); this node keeps its own "verbose" instead, because
         # `verbose` below reads only the boolean shape Core's
         # `RPCArg::Default{0}` degrades to under `allow_bool=true`, not
-        # the full 0/1/2 verbosity Core's name is for -- read at
-        # bitcoin/bitcoin@b91d983f66
+        # the full 0/1/2 verbosity Core's name is for --
+        # read at bitcoin/bitcoin@b91d983f66
         raise RpcError(
             RpcErrorCode.MISC_ERROR,
             'getrawtransaction "txid" ( verbose "blockhash" )',
@@ -605,7 +605,7 @@ _MISSING_PREVOUTS_REASON = "Missing prevouts"
 _INVALID_SCRIPT_REASON = "Invalid signatures or script"
 # Core's own reject reason for the same refusal, `TxValidationResult::
 # TX_RECONSIDERABLE`/`TX_MEMPOOL_POLICY` invalidated with "mempool
-# full" (`validation.cpp`, bitcoin/bitcoin@58a7869f86) once
+# full" (`validation.cpp`, at bitcoin/bitcoin@58a7869f86) once
 # `LimitMempoolSize` has run and the transaction just submitted is not
 # among what it kept -- `HandleATMPError` (`node/transaction.cpp`, same
 # commit) turns that into `TransactionError::MEMPOOL_REJECTED`, and
@@ -639,8 +639,8 @@ def test_mempool_accept(
         # STR_HEX `rawtx`, which RPCArg::ToString(oneline=true) renders
         # `["rawtx",...]` (src/rpc/util.cpp:1265-1301); `maxfeerate` is
         # RPCArg::Type::AMOUNT, formatted bare and grouped in its own
-        # `( ... )` for being optional -- read at
-        # bitcoin/bitcoin@b91d983f66, src/rpc/mempool.cpp:291-298
+        # `( ... )` for being optional --
+        # read at bitcoin/bitcoin@b91d983f66, src/rpc/mempool.cpp:291-298
         raise RpcError(
             RpcErrorCode.MISC_ERROR,
             'testmempoolaccept ["rawtx",...] ( maxfeerate )',
@@ -704,8 +704,8 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
         # quoted the way blockhash's own usage string already is;
         # `maxfeerate` and `maxburnamount` are both RPCArg::Type::AMOUNT
         # with a Default, formatted bare and grouped in one `( ... )`
-        # for being consecutively optional -- read at
-        # bitcoin/bitcoin@b91d983f66, src/rpc/mempool.cpp:72-77
+        # for being consecutively optional --
+        # read at bitcoin/bitcoin@b91d983f66, src/rpc/mempool.cpp:72-77
         raise RpcError(
             RpcErrorCode.MISC_ERROR,
             'sendrawtransaction "hexstring" ( maxfeerate maxburnamount )',
@@ -763,7 +763,7 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
         # than the mempool's, would queue a wtxid nothing holds:
         # `Mempool.add_tx`'s own comment on #277 is the defect this
         # substitution avoids, one call site over. `BroadcastTransaction`
-        # (`node/transaction.cpp`, bitcoin/bitcoin@58a7869f86) makes the
+        # (`node/transaction.cpp`, at bitcoin/bitcoin@58a7869f86) makes the
         # identical substitution for the identical reason -- "Use the
         # mempool's wtxid for reannouncement" -- rather than
         # reannouncing what was just submitted. The type is wider than

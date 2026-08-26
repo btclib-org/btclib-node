@@ -14,6 +14,20 @@ to check the guess.
 
 ## Unreleased
 
+### A Bitcoin Core citation reads `at bitcoin/bitcoin@<sha>` (closes #471)
+
+- **An identifier directly followed by a parenthesised list ending in
+  `bitcoin/bitcoin@<sha>` parses as a Python call, which is what ruff's
+  `ERA001` reads as commented-out code** (closes #471): every citation
+  in a `#` comment across `src/` and `tests/` now has `at` glued to the
+  sha on the same physical line, which cannot parse for a structural
+  reason rather than an accidental one -- `at` and the citation's own
+  leading word are two consecutive names with no operator between them,
+  whatever text surrounds them or however the comment wraps. A citation
+  inside a docstring needs none of this, since `ERA001` only ever walks
+  comment ranges. `CLAUDE.md`'s *Following Bitcoin Core* states the
+  shape.
+
 ### Two waits stop sitting tighter than `wait_until`'s default (closes #476)
 
 - **`test_a_slow_manager_start_cannot_still_clobber_the_status_it_raced` and

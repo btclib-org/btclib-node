@@ -971,7 +971,7 @@ def test_resubmitting_a_transaction_already_held_is_tolerated_even_when_the_memp
     held.
     """
     # BroadcastTransaction's own early return for a txid already in the
-    # mempool (node/transaction.cpp, bitcoin/bitcoin@58a7869f86):
+    # mempool (node/transaction.cpp, at bitcoin/bitcoin@58a7869f86):
     # resubmission is reannounced rather than refused for a fullness
     # this particular submission did not cause
     monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 1000)
@@ -1004,7 +1004,7 @@ def test_a_resubmission_under_a_different_witness_is_also_tolerated_when_full(
     # Mempool.contains_tx is keyed by wtxid (Mempool.transactions), so it
     # does not recognise a txid already held under a different witness --
     # exactly the case BroadcastTransaction's own comment names
-    # (node/transaction.cpp, bitcoin/bitcoin@58a7869f86): "The mempool
+    # (node/transaction.cpp, at bitcoin/bitcoin@58a7869f86): "The mempool
     # transaction may have the same or different witness (and wtxid) as
     # this transaction." The guard has to be txid-keyed
     # (Mempool.txid_index) to reannounce here instead of refusing a

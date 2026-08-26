@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from btclib_node.log import Logger
 
 # Core's own `DEFAULT_INCREMENTAL_RELAY_FEE` (`src/policy/policy.h`,
-# bitcoin/bitcoin@58a7869f86): what an eviction round bumps the rolling
+# at bitcoin/bitcoin@58a7869f86): what an eviction round bumps the rolling
 # minimum to, above the feerate of whatever it just evicted, so a
 # transaction does not requalify at the exact rate something was just
 # evicted for. A constant of this module and not `Config.min_relay_feerate`
@@ -114,7 +114,7 @@ class Mempool:
         self.size: int = 0
         self.bytesize: int = 0
         # Core's own `DEFAULT_MAX_MEMPOOL_SIZE_MB`
-        # (`src/kernel/mempool_options.h`, bitcoin/bitcoin@58a7869f86) is
+        # (`src/kernel/mempool_options.h`, at bitcoin/bitcoin@58a7869f86) is
         # 300, and this field carried 500 with no argument on record for
         # the difference -- inert while nothing evicted, since the exact
         # number only ever decided whether `add_tx` refused outright.
@@ -206,7 +206,7 @@ class Mempool:
         # transaction paid. It now adds the transaction provisionally and
         # runs `_evict_to_limit`, Core's own `LimitMempoolSize` shape
         # (`validation.cpp`, called right after a provisional add,
-        # bitcoin/bitcoin@58a7869f86): if this transaction is itself the
+        # at bitcoin/bitcoin@58a7869f86): if this transaction is itself the
         # worst one held once trimming is done, eviction takes it right
         # back out and the return value is `False` here exactly as it
         # was for the old outright refusal -- `rpc/callbacks.py`'s own
@@ -436,7 +436,7 @@ class Mempool:
         """Evict by worst individual feerate until back at the limit.
 
         Core's own `TrimToSize` (`src/txmempool.cpp:909`,
-        bitcoin/bitcoin@58a7869f86) evicts the worst *chunk*, a package
+        at bitcoin/bitcoin@58a7869f86) evicts the worst *chunk*, a package
         score `m_txgraph` computes over the whole cluster graph -- so a
         low-feerate parent paid for by a high-feerate child is not taken
         out from under it. This mempool holds no dependency graph to

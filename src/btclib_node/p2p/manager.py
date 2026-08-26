@@ -116,7 +116,7 @@ class P2pManager(threading.Thread):
         # `endpoint_key` -- process lifetime, not `peer_db`'s own tables,
         # so a wrongly discouraged endpoint is recovered by a restart
         # rather than by touching the datadir, matching Core's own
-        # `CRollingBloomFilter` (`banman.h`, bitcoin/bitcoin@58a7869f86)
+        # `CRollingBloomFilter` (`banman.h`, at bitcoin/bitcoin@58a7869f86)
         # over its persisted ban list. Unlocked: `discourage` only ever
         # adds a key and `manage_connections` only ever asks `in`, never
         # walks it, so there is nothing here for the two to catch each

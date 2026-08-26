@@ -146,7 +146,7 @@ def _reconcile_mempool_for_reorg(
         for tx in block.transactions[1:]:
             node.mempool.remove_tx(tx)
         # Core's own `removeForBlock` (`src/txmempool.cpp:405-427`,
-        # bitcoin/bitcoin@58a7869f86): once per block connected,
+        # at bitcoin/bitcoin@58a7869f86): once per block connected,
         # whether or not it held anything this mempool was also
         # holding, restarting `Mempool.get_min_fee_rate`'s own decay
         # clock -- not folded into `remove_tx` above, which already
@@ -254,8 +254,8 @@ def update_chain(node: Node) -> None:
     # question is check_transactions', inside the try, and is answered
     # by rejecting the fork rather than by stopping the node.
     #
-    # Bitcoin Core's own split (src/validation.cpp, read at
-    # bitcoin/bitcoin@b91d983f66) is not symmetric between the two
+    # Bitcoin Core's own split (src/validation.cpp,
+    # read at bitcoin/bitcoin@b91d983f66) is not symmetric between the two
     # directions this function tries a block in, and is cited as it
     # actually reads rather than tidied into one: ConnectTip answers a
     # failed read immediately, with FatalError. DisconnectTip answers

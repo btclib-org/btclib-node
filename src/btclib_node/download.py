@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from btclib_node.p2p.connection import Connection
 
 # net_processing.cpp's INBOUND_INVENTORY_BROADCAST_INTERVAL and
-# OUTBOUND_INVENTORY_BROADCAST_INTERVAL, bitcoin/bitcoin@58a7869f86: the
+# OUTBOUND_INVENTORY_BROADCAST_INTERVAL, at bitcoin/bitcoin@58a7869f86: the
 # mean of the exponential draw `_send_due_announcements` makes for the
 # next trickle, an outbound peer's own and shorter than an inbound one's
 # for the same reason Core's is -- an outbound peer is one this node
@@ -101,7 +101,7 @@ def _fee_filter_buckets(min_relay_feerate: int) -> list[float]:
     """Return the sat/kvB boundaries `_round_fee_filter` may round to.
 
     Core's own `MakeFeeSet` (`policy/fees/block_policy_estimator.cpp`,
-    bitcoin/bitcoin@58a7869f86): zero, then a geometric series from half
+    at bitcoin/bitcoin@58a7869f86): zero, then a geometric series from half
     `min_relay_feerate` (never under 1) up to `_MAX_FILTER_FEERATE`,
     spaced by `_FEE_FILTER_SPACING`. Kept as `float` and not rounded
     here: Core's own `std::set<double>` holds the raw boundary too, and
@@ -152,7 +152,7 @@ def _inbound_net_class(address: NetworkAddressV2) -> BIP155Network | int:
     `CNode::m_network_key` (net.h:755) is what `NextInvToInbounds`
     (net_processing.cpp:6318-6319, calling `PeerManagerImpl::
     NextInvToInbounds` at :1273-1282) actually keys its per-peer timer
-    on, bitcoin/bitcoin@58a7869f86. For an inbound connection it is a
+    on, at bitcoin/bitcoin@58a7869f86. For an inbound connection it is a
     hash (net.cpp:1853-1857) of the peer's coarse `GetNetClass()`
     (netaddress.cpp:674) together with *this node's own* listening bind
     address and port -- not anything of the peer's own beyond which
@@ -396,7 +396,7 @@ class DownloadManager:
 
     def _send_due_announcements(self) -> None:
         # Core's `TxRelay::m_next_inv_send_time`/`m_tx_inventory_to_send`
-        # (net_processing.cpp, bitcoin/bitcoin@58a7869f86): each
+        # (net_processing.cpp, at bitcoin/bitcoin@58a7869f86): each
         # connection is told what is waiting for it only once its own
         # timer comes due, rather than the instant something is queued,
         # so the gap between a `tx` this node receives and the `inv` it
@@ -453,7 +453,7 @@ class DownloadManager:
         """Tell every connected peer this node's own current relay floor.
 
         Core's own `MaybeSendFeefilter` (`net_processing.cpp`,
-        bitcoin/bitcoin@58a7869f86), reached from its per-peer message
+        at bitcoin/bitcoin@58a7869f86), reached from its per-peer message
         loop for every peer regardless of what else that pass sent --
         `_send_due_announcements`'s own `conn.relay_tx` gate does not
         apply here, since BIP133's `feefilter` says what this node will

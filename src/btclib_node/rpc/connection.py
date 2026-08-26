@@ -46,7 +46,7 @@ MAX_BODY_BYTES = 32 * 1024 * 1024
 # on `sock_recv` for the life of the node, its socket and its entry in
 # `RpcManager.connections` both held the whole time (issue #437). Core's
 # own `-rpcservertimeout`, `DEFAULT_HTTP_SERVER_TIMEOUT` (`src/httpserver.h:42`,
-# bitcoin/bitcoin@b91d983f66), is 30 seconds, and is what this is matched
+# at bitcoin/bitcoin@b91d983f66), is 30 seconds, and is what this is matched
 # to -- but not to Core's own mechanism: Core resets that timer on every
 # receive (`httpserver.cpp:930`) and every send (`:1275`), and its own
 # `DisconnectClients` (`:1098-1100`) only disconnects a client genuinely
@@ -71,7 +71,7 @@ class RawJSON:
     the value is built from a string and written out verbatim, whatever
     that string was, rather than round-tripped through a floating-point
     type on the way out. `ValueFromAmount` (`src/core_io.cpp:283-293`,
-    bitcoin/bitcoin@58a7869f86) is the caller this exists for --
+    at bitcoin/bitcoin@58a7869f86) is the caller this exists for --
     `rpc.callbacks.get_mempool_info`'s own `mempoolminfee`, an exact
     eight-decimal BTC amount a Python `float` cannot always carry:
     `repr` fixes no decimal places and emits exponent notation
@@ -204,7 +204,7 @@ class RpcConnection:
                 raise ConnectionError
             # 64 KB, matching Core's own HTTP server:
             # `HTTPServer::SocketHandlerConnected` (`src/httpserver.cpp:904`,
-            # bitcoin/bitcoin@b91d983f66) reads into `char buf[0x10000]`,
+            # at bitcoin/bitcoin@b91d983f66) reads into `char buf[0x10000]`,
             # "typical socket buffer is 8K-64K" by its own comment there --
             # the hand-written raw-socket read loop that server uses in
             # place of libevent's `evhttp` (`doc/release-notes-35182.md`).
@@ -213,7 +213,7 @@ class RpcConnection:
             # same commit -- btclib-org/btclib-node#438): Core's own
             # `SocketHandlerConnected` is "adapted from CConnman"
             # (`net.cpp`'s own class, `pchBuf`'s home) by its own commit
-            # message (bitcoin/bitcoin@80e1cfe5a2), and the comment
+            # message (at bitcoin/bitcoin@80e1cfe5a2), and the comment
             # above is copied verbatim between the two files -- one
             # Core design decision, applied to both of its own read
             # loops, cited here the same way it is on the p2p side.
