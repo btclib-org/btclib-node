@@ -108,6 +108,35 @@ to check the guess.
   `blockhash` and `txid` are already checked against elsewhere in this
   file.
 
+### A `stop` at or below the locator no longer raises (closes #434)
+
+- **A known `stop` hash at or below `getheaders`'s own resolved locator
+  no longer raises `ValueError`** (closes #434): the previous check
+  looked for `stop` in the whole of `header_index`, where the answer is
+  built from the slice *after* the locator, and a `stop` below it is in
+  the first without being in the second. `p2p.main.handle_p2p` read the
+  exception as this node's own bug and dropped the peer for it, on a
+  request Core answers without incident -- with nothing to send where
+  the locator is already this node's own tip, and with the headers past
+  the locator otherwise, `stop` being unreachable going forward from
+  it.
+
+### `header_index_pos` resolves a locator in O(1), not a list scan (closes #439)
+
+- **`BlockIndex` now keeps `header_index_pos`, a `dict[bytes, int]` from
+  hash to position, beside `header_index`** (closes #439), the same way
+  `chainwork` sits beside `header_dict` (#201) and `children` beside
+  `header_dict`'s own lineage (#125). `get_headers_from_locators` now
+  resolves a locator by lookup rather than by scanning the whole known
+  chain of headers, once per entry the peer's own locator carries -- so
+  neither the size of the chain nor the length of a locator the peer
+  chooses is anything a `getheaders` request can turn into more work for
+  this node.
+- **The answer is sliced to 2000 before `stop` is looked for, not
+  after**: the tail past the resolved locator is no longer copied in
+  full only to be capped once `stop` has already been searched for
+  across the whole of it.
+
 ### The docs gate warns against `--only-group docs` (closes #425)
 
 - **`CONTRIBUTING.md`'s *The environment and the gates* now names

@@ -1003,6 +1003,77 @@ def test_a_block_already_held_is_left_out_of_what_is_asked_for(
     chainstate.close()
 
 
+def test_a_stop_hash_at_or_below_the_locator_is_answered_not_raised(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """A known `stop` at or below the resolved locator answers, not raises.
+
+    `stop` sitting at or below the locator's own height is not in the
+    slice `get_headers_from_locators` takes *after* it, and looking for
+    `stop` in `header_index` as a whole -- rather than in that slice --
+    used to raise `ValueError` here: btclib-org/btclib-node#434. A
+    `stop` behind the locator can never be reached going forward, so it
+    does not truncate the answer at all; where the locator is already
+    the chain's own tip, that answer is empty -- Core's own "nothing to
+    send" for the same request.
+    """
+    chainstate = a_chainstate(None)
+    block_index = chainstate.block_index
+    chain = generate_random_header_chain(5, RegTest().genesis.hash)
+    block_index.add_headers(chain)
+
+    # the genesis is the measured case in the issue: known, and below
+    # every locator this chain can offer -- and the locator here is
+    # already the tip, so there is nothing to send either way
+    assert (
+        block_index.get_headers_from_locators([chain[-1].hash], RegTest().genesis.hash)
+        == []
+    )
+    # stop at the locator itself, not only strictly below it
+    assert block_index.get_headers_from_locators([chain[-1].hash], chain[-1].hash) == []
+    # stop below a locator that is not the tip: unreachable going
+    # forward, so it does not raise and does not truncate what follows
+    assert (
+        block_index.get_headers_from_locators([chain[2].hash], chain[0].hash)
+        == chain[3:]
+    )
+    chainstate.close()
+
+
+def test_header_index_pos_agrees_with_header_index(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """header_index_pos always maps header_index's own hashes to their position.
+
+    Checked after add_headers builds a fork that beats the active
+    chain's own tip (moving header_index by more than one append) and
+    again after invalidate rebuilds header_index from scratch.
+    """
+    chainstate = a_chainstate(None)
+    block_index = chainstate.block_index
+
+    def assert_consistent() -> None:
+        assert block_index.header_index_pos == {
+            h: i for i, h in enumerate(block_index.header_index)
+        }
+
+    assert_consistent()
+    active = generate_random_header_chain(5, RegTest().genesis.hash)
+    block_index.add_headers(active)
+    for header in active:
+        block_index.add_to_active_chain(header.hash)
+    assert_consistent()
+
+    fork = generate_random_header_chain(7, RegTest().genesis.hash)
+    block_index.add_headers(fork)
+    assert block_index.header_index[-1] == fork[-1].hash  # the fork won
+    assert_consistent()
+
+    block_index.invalidate(fork[0].hash)
+    assert_consistent()
+    chainstate.close()
+
+
 def test_the_locators_of_a_node_that_holds_only_the_genesis_block(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
