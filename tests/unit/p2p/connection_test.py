@@ -478,21 +478,22 @@ def test_parse_messages_weighs_a_queued_message_against_the_recv_bound() -> None
     assert connection._recv_resume.is_set()
 
 
-def test_parse_messages_does_not_weigh_a_handshake_message() -> None:
-    """A `handshake_messages`-bound item carries no size and pays no weight.
+def test_parse_messages_weighs_a_handshake_message_too() -> None:
+    """A `handshake_messages`-bound item adds its own wire size too.
 
-    `handshake_messages` is drained whole every pass of `Node`'s own
-    loop (`_drain_message_queues`) rather than sharing this connection's
-    own pacing -- `MAX_QUEUED_RECV_BYTES`'s own comment
-    (`p2p/connection.py`) argues why only `messages` needs it.
+    `handshake_messages` is still drained whole every pass of `Node`'s
+    own loop (`_drain_message_queues`) rather than sharing `messages`'s
+    own log2-scaled share, but shares this connection's own recv-bound
+    pacing with it since btclib-org/btclib-node#482.
     """
     connection, _ = a_connection()
     with connection.client:
-        connection.buffer += _wire_verack()
+        wire = _wire_verack()
+        connection.buffer += wire
         connection.parse_messages()
     (item,) = connection.manager.handshake_messages
-    assert item == ("verack", Verack().serialize(), 0)
-    assert connection.queued_recv_bytes == 0
+    assert item == ("verack", Verack().serialize(), 0, len(wire))
+    assert connection.queued_recv_bytes == len(wire)
     assert connection._recv_resume.is_set()
 
 

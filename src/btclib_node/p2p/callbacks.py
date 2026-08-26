@@ -85,9 +85,21 @@ if TYPE_CHECKING:
 def version(node: Node, msg: bytes, conn: Connection) -> None:
     """Handle a peer's `version`: refuse an incompatible peer, else continue.
 
+    A second `version` ahead of this connection's own `verack` is
+    ignored outright -- Core's own guard, `pfrom.nVersion != 0`
+    (`net_processing.cpp:3823`, at bitcoin/bitcoin@5f45583e43), which
+    logs and returns before doing anything else. `conn.status` stays
+    `Open` until `verack` promotes it, so #283's own discourage-and-drop
+    for a handshake command out of order never reaches a repeat sent
+    before that point -- unguarded, every repeat would resend
+    `WtxidRelay`, `SendAddrV2` and `Verack` in answer.
+    btclib-org/btclib-node#482
+
     Continuing means answering `wtxidrelay`, `sendaddrv2` and `verack`,
     and recording whether the peer asked to have transactions relayed.
     """
+    if conn.version_message is not None:
+        return
     version_msg = Version.parse(msg)
 
     conn.version_message = version_msg
