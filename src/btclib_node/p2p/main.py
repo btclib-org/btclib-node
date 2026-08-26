@@ -12,6 +12,13 @@ by a callback stops that connection rather than the loop, and is
 discouraged for where it is a parse failure from the peer's own bytes
 rather than a bug in the handler.
 
+`handle_p2p` also weighs its own queued item's wire size back off the
+connection it came from, `queued_recv_bytes`, resuming that connection's
+own reads (`Connection.run`) once enough of what it queued is off
+`messages` -- the other end of the pacing `Connection.parse_messages`
+and `MAX_QUEUED_RECV_BYTES` (`p2p/connection.py`) start, argued there.
+btclib-org/btclib-node#462
+
 `resume_cfilters` and `resume_getdata` instead drain `node.pending_cfilters`
 and `node.pending_getdata`, the connections `p2p.callbacks.get_cfilters`
 and `p2p.callbacks.getdata` paused mid-answer rather than scheduling ahead
@@ -30,6 +37,7 @@ from btclib_node.p2p.callbacks import (
     callbacks,
     handshake_callbacks,
 )
+from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
 
 if TYPE_CHECKING:
     from btclib_node import Node
@@ -76,8 +84,19 @@ def handle_p2p(node: Node) -> None:
     gets the connection discouraged and stopped rather than dispatched;
     a callback that raises stops it too, discouraged only for a
     `BTClibException` (the comment below argues why that split matters).
+
+    Weighs the item's own size back off the connection's
+    `queued_recv_bytes` the moment it is popped, whatever happens to it
+    next -- dispatched, ignored for want of a callback, or dropped along
+    with a connection out of handshake order -- since what
+    `MAX_QUEUED_RECV_BYTES` paces is how much of a connection's own
+    traffic sits unprocessed, not how that traffic was resolved. A
+    connection paused there is resumed, via `call_soon_threadsafe`
+    rather than a direct `set()`, from `Node`'s own thread onto the
+    connection's (`Connection.__init__`'s own comment on `_recv_resume`
+    argues why the indirection is required). btclib-org/btclib-node#462
     """
-    msg_type, msg, conn_id = node.p2p_manager.messages.popleft()
+    msg_type, msg, conn_id, size = node.p2p_manager.messages.popleft()
     manager = node.p2p_manager
     # a connection still pending is still found here, so that anything
     # other than the four handshake commands it sends before `verack`
@@ -85,6 +104,11 @@ def handle_p2p(node: Node) -> None:
     # below, rather than being silently dropped along with the lookup
     conn = manager.connections.get(conn_id) or manager.pending_connections.get(conn_id)
     if conn is not None:
+        with conn._recv_lock:
+            conn.queued_recv_bytes -= size
+            resume = conn.queued_recv_bytes <= MAX_QUEUED_RECV_BYTES
+        if resume:
+            conn.loop.call_soon_threadsafe(conn._recv_resume.set)
         node.logger.info("Received p2p message: %s, %s", msg_type, conn_id)
         try:
             if msg_type in callbacks:

@@ -50,8 +50,9 @@ CHAIN_LENGTH = 3
 
 
 # what Connection.parse_messages puts on the queue: the command, the
-# payload behind it, and which connection it came in on
-Message = tuple[str, bytes, int]
+# payload behind it, which connection it came in on, and its own wire
+# size, weighed against MAX_QUEUED_RECV_BYTES (btclib-org/btclib-node#462)
+Message = tuple[str, bytes, int, int]
 
 Peers = tuple[Node, Node, list[Block]]
 
@@ -171,7 +172,7 @@ def received[M: _ParsablePayload](
     seen = cast("RecordingDeque", client.p2p_manager.messages).seen
     return [
         message_type.parse(payload)
-        for command, payload, _ in seen[mark:]
+        for command, payload, _conn_id, _size in seen[mark:]
         if command == message_type.command
     ]
 

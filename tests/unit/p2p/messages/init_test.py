@@ -10,6 +10,7 @@ queue a command lands in, how much of the buffer survives a partial
 message, and what becomes of a peer whose octets do not decode.
 """
 
+import asyncio
 import importlib
 import inspect
 import threading
@@ -153,7 +154,13 @@ def make_connection() -> Connection:
 
     Built with `__new__` rather than `Connection()`: the real
     constructor opens a socket, and nothing below exercises anything
-    past framing, buffering and dispatch.
+    past framing, buffering and dispatch. `_recv_lock` and
+    `_recv_resume` are `parse_messages`'s own bookkeeping toward
+    `MAX_QUEUED_RECV_BYTES` (btclib-org/btclib-node#462); this
+    package's own tests never queue enough to cross it, so they are
+    here only because `parse_messages` always touches them, not because
+    a test below exercises the bound itself -- `connection_test.py`'s
+    own tests do that.
     """
     manager = SimpleNamespace(
         node=SimpleNamespace(chain=RegTest()),
@@ -170,6 +177,10 @@ def make_connection() -> Connection:
     conn.status = P2pConnStatus.Open
     conn.last_receive = 0
     conn._ping_lock = threading.Lock()
+    conn.queued_recv_bytes = 0
+    conn._recv_lock = threading.Lock()
+    conn._recv_resume = asyncio.Event()
+    conn._recv_resume.set()
     return conn
 
 

@@ -7,8 +7,11 @@
 Reads `btclib.p2p.message.Message`s off the wire and hands each one to
 `P2pManager`, writes what `Node`'s own thread queues back out, and
 bounds what it will buffer in either direction -- `MAX_PROTOCOL_MESSAGE_LENGTH`
-on what it reads, and a send buffer capped the way Core's own
-`-maxsendbuffer` caps one, per the comment beside that cap below.
+on what any one message may claim to be, `MAX_QUEUED_RECV_BYTES` on how
+much of what this connection has already handed to `P2pManager.messages`
+may sit there unprocessed before this connection's own `run` stops
+reading any further, and a send buffer capped the way Core's own
+`-maxsendbuffer` caps one, per the comments beside each below.
 """
 
 import asyncio
@@ -93,6 +96,80 @@ if TYPE_CHECKING:
 MAX_QUEUED_SEND_BYTES = int(
     3 * MAX_PROTOCOL_MESSAGE_LENGTH + 3 * ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 )
+
+# Core's own per-connection receive bound, `-maxreceivebuffer`
+# (`net.h`'s `DEFAULT_MAXRECEIVEBUFFER = 5 * 1000`, the same KB-to-bytes
+# units `recv_flood_size` turns into): once a connection's own
+# `m_msg_process_queue_size` exceeds it, `MarkReceivedMsgsForProcessing`
+# sets `fPauseRecv` (`net.cpp:4116-4130`) and `GenerateWaitSockets`
+# (`net.cpp:2102`) stops selecting that socket for a read event at all --
+# not a drop of anything already parsed, a pause of the next `recv()` --
+# and `PollMessage` (`net.cpp:4133-4142`) clears it again as the
+# already-queued messages are processed one at a time -- all three
+# read at bitcoin/bitcoin@b91d983f66.
+#
+# This node has no per-connection processing stage of Core's own shape
+# to poll one message at a time from -- `P2pManager.messages` is one
+# queue shared by every connection, drained by `Node`'s own loop through
+# `_drain_message_queues`'s log2-scaled batch (btclib-org/btclib-node#462)
+# -- but the same pause is available at the one place that is this
+# connection's own: `run`'s own read loop below, gated on `_recv_resume`
+# until enough of what this connection queued is processed to fall back
+# under this bound. Pausing rather than dropping the message or the
+# connection is the deliberate choice: unlike `MAX_QUEUED_SEND_BYTES`
+# above, which drops a connection already over budget because this node
+# once had no pause-and-resume point of its own to offer it (the comment
+# there, and btclib-org/btclib-node#442), a connection hitting this bound
+# has sent nothing but valid protocol messages faster than this node
+# currently drains them -- exactly Core's own flood-control case, not a
+# protocol violation to punish.
+#
+# The tempting number to size this against instead is this node's own
+# worst legitimate receive burst: `download.py`'s own
+# `_request_new_block_work` never asks one peer for more than
+# `MAX_BLOCKS_PER_GETDATA_BURST` blocks at once (`pending[:2]` never
+# adds to it -- the two are an `if`/`elif` on the same
+# `download_queue`, never both in one batch), each up to
+# `MAX_PROTOCOL_MESSAGE_LENGTH`, and this node never
+# itself sends `GetCFilters`/`GetCFHeaders`/`GetCFCheckpt`, so no
+# cfilter headroom belongs on this side either -- 64,000,000 bytes,
+# nothing more, would be the whole of it. That is exactly the shape
+# `MAX_QUEUED_SEND_BYTES` above used to be before btclib-org/btclib-node#442:
+# a bound sized to the full legitimate case never distinguishes flooding
+# from ordinary traffic, because ordinary traffic always fits under it
+# whatever multiple of that burst is picked.
+#
+# And Core's own answer shows the size of that burst was never the
+# question `recv_flood_size` was answering. Core requests the same 16
+# blocks per peer, `MAX_BLOCKS_IN_TRANSIT_PER_PEER`
+# (`net_processing.cpp:133`), at bitcoin/bitcoin@b91d983f66 --
+# 64,000,000 bytes at `MAX_PROTOCOL_MESSAGE_LENGTH` each, the same
+# figure this node's own burst comes to -- and still caps
+# `recv_flood_size` at 5,000,000: Core pauses reading in the middle of
+# its own ordinary IBD
+# batches, on purpose, every time one arrives faster than
+# `ProcessMessages` empties it. That pause costs nothing a well-behaved
+# peer notices: the bytes it already sent sit in the kernel's own
+# receive buffer and the TCP window rather than being dropped,
+# `GenerateWaitSockets` simply stops selecting that socket for one more
+# read, and the blocks still arrive once the queue falls back under the
+# bound -- backpressure doing its job, not a flood being punished.
+#
+# This node's own drain differs from Core's in shape, not only in
+# number. `ProcessMessages` is called once per peer every round of
+# `ThreadMessageHandler`'s own loop, at bitcoin/bitcoin@b91d983f66
+# (`net.cpp:3216-3238`), so every peer is guaranteed one message drained
+# per round regardless of what any other peer has queued, where
+# `_drain_message_queues` instead pops a `log2`-scaled share of one
+# queue shared by every connection (btclib-org/btclib-node#462), with
+# no such per-connection guarantee. Turning that shape into a larger
+# number here would mean assuming some number of simultaneously busy
+# peers, which nothing in this tree fixes as a constant -- doing so
+# would be the same unmeasured inflation as the burst-sized bound
+# above, just reached from the drain side instead of the peer side.
+# Absent that measurement, this bound matches Core's own figure exactly
+# rather than guess past it.
+MAX_QUEUED_RECV_BYTES = 5 * 1000 * 1000
 
 # The wire header's own layout -- `btclib.p2p.message`'s module docstring
 # argues it against Core's `CMessageHeader` (`src/protocol.h`): magic (4
@@ -239,6 +316,34 @@ class Connection:
         self.queued_send_bytes: int = 0
         self.send_lock = asyncio.Lock()
 
+        # The read-side mirror of `queued_send_bytes` above: every octet
+        # of a message `parse_messages` has already handed to
+        # `manager.messages` and `handle_p2p` (`p2p/main.py`) has not yet
+        # popped and dispatched, and `MAX_QUEUED_RECV_BYTES` its bound
+        # (argued beside that constant). Unlike `queued_send_bytes`,
+        # this is written from two threads rather than one:
+        # `parse_messages` runs on this connection's own loop, and what
+        # decrements it runs on `Node`'s, off `_drain_message_queues`'s
+        # log2-scaled batch -- so a `+=` or `-=` here is a real
+        # read-modify-write race rather than one thread's own
+        # sequential bookkeeping, and `_recv_lock` is what makes each
+        # one step. Modelled on `_ping_lock` above, guarding a pair of
+        # fields crossing the same two threads for the same reason.
+        self.queued_recv_bytes: int = 0
+        self._recv_lock: threading.Lock = threading.Lock()
+        # Set: `run`'s own read loop below may call `sock_recv` again.
+        # `parse_messages` clears it, synchronously and on this same
+        # loop, the moment `queued_recv_bytes` crosses
+        # `MAX_QUEUED_RECV_BYTES`. What sets it back is `handle_p2p`'s
+        # own decrement, from `Node`'s thread, through
+        # `loop.call_soon_threadsafe` -- `asyncio.Event.set()` is not
+        # itself safe to call from a thread other than the one running
+        # the loop the event belongs to, the same reason `send` below
+        # reaches `async_send` through `run_coroutine_threadsafe` rather
+        # than awaiting it directly.
+        self._recv_resume: asyncio.Event = asyncio.Event()
+        self._recv_resume.set()
+
     def stop(self, *, cancel_task: bool = True) -> None:
         """Close the socket and cancel `task`, idempotent on a repeat call.
 
@@ -311,6 +416,16 @@ class Connection:
         try:
             await self.send_version()
             while self.status < P2pConnStatus.Closed:
+                # Cleared by `parse_messages` once `queued_recv_bytes`
+                # crosses `MAX_QUEUED_RECV_BYTES`, so a connection whose
+                # own messages are piling up unprocessed stops pulling
+                # more off the wire here rather than growing that queue
+                # further -- the receive-side mirror of `async_send`'s
+                # own refusal to queue past `MAX_QUEUED_SEND_BYTES`
+                # below, and of Core's own `fPauseRecv`
+                # (`MAX_QUEUED_RECV_BYTES`'s own comment).
+                # btclib-org/btclib-node#462
+                await self._recv_resume.wait()
                 # 64 KB, matching Core's own read buffer (`pchBuf`,
                 # `src/net.cpp`) rather than the 1024 this had no
                 # argument for: fewer syscalls, and -- quadratically,
@@ -509,6 +624,12 @@ class Connection:
         Leaves a trailing partial message in `buffer` for the next
         read, and routes each parsed one to `handshake_messages` or
         `messages` -- `ping`/`pong` pushed to the front of the latter.
+        Every message routed to `messages` carries its own wire size
+        alongside it, a fourth tuple element `handle_p2p` (`p2p/main.py`)
+        weighs back off `queued_recv_bytes` once it is processed;
+        `handshake_messages` carries none, that queue being drained
+        whole every pass of `Node`'s own loop rather than sharing this
+        connection's own pacing (btclib-org/btclib-node#462).
 
         Peeks the header's own `length` field in `buffer` before
         building a stream or calling `Message.parse` at all: a chunk
@@ -541,8 +662,17 @@ class Connection:
         # and leaves the position after it, so several whole messages in
         # one read are taken one at a time, and a partial one rewinds.
         stream = BytesIO(self.buffer)
+        # Bytes actually handed to `manager.messages` this call -- not to
+        # `handshake_messages`, which this connection's own recv bound
+        # does not cover -- added to `queued_recv_bytes` once, below,
+        # rather than once per message: the same shape Core's own
+        # `MarkReceivedMsgsForProcessing` accumulates `nSizeAdded` in
+        # before it takes `m_msg_process_queue_mutex` once
+        # (`MAX_QUEUED_RECV_BYTES`'s own comment).
+        consumed = 0
         try:
             while True:
+                start = stream.tell()
                 try:
                     message = Message.parse(stream)
                 except IncompleteMessageError:
@@ -552,14 +682,29 @@ class Connection:
                 if message.magic != self.node.chain.magic:
                     raise WrongNetworkMagicError(message.magic)
                 self.last_receive = time.time()
-                item = (message.command, message.payload, self.id)
                 if message.command in handshake_callbacks:
-                    self.manager.handshake_messages.append(item)
-                elif message.command in ("ping", "pong"):
+                    self.manager.handshake_messages.append(
+                        (message.command, message.payload, self.id)
+                    )
+                    continue
+                size = stream.tell() - start
+                consumed += size
+                item = (message.command, message.payload, self.id, size)
+                if message.command in ("ping", "pong"):
                     self.manager.messages.appendleft(item)
                 else:
                     self.manager.messages.append(item)
         finally:
+            # `queued_recv_bytes` first, ahead of `self.buffer` below: the
+            # two are independent bookkeeping over the same call, and
+            # this order is what leaves the buffer rewind as the last
+            # statement of the function, the shape every other exit path
+            # above already relies on -- nothing here depends on which
+            # runs first. Split into its own method rather than inlined
+            # here: `parse_messages` is already at this file's own
+            # complexity ceiling (`ruff`'s `complex-structure`) without
+            # it.
+            self._weigh_against_recv_bound(consumed)
             # whatever the loop did not consume, partial message
             # included. The gate above already returned without
             # touching `stream` for a read that completes no message at
@@ -567,6 +712,24 @@ class Connection:
             # once a message has actually been taken off the front.
             if stream.tell():
                 self.buffer = bytearray(stream.read())
+
+    def _weigh_against_recv_bound(self, consumed: int) -> None:
+        """Add `consumed` to `queued_recv_bytes`, pausing past the bound.
+
+        Split out of `parse_messages`, the sole caller, only to keep that
+        method under this file's own complexity ceiling; `consumed` is
+        `0` whenever nothing was routed to `manager.messages` this call
+        (only handshake commands parsed, or none at all), in which case
+        this does nothing -- `queued_recv_bytes` moves only for what
+        actually adds to the pressure `MAX_QUEUED_RECV_BYTES` bounds.
+        """
+        if not consumed:
+            return
+        with self._recv_lock:
+            self.queued_recv_bytes += consumed
+            over_bound = self.queued_recv_bytes > MAX_QUEUED_RECV_BYTES
+        if over_bound:
+            self._recv_resume.clear()
 
     @override
     def __repr__(self) -> str:
