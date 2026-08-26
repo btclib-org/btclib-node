@@ -408,6 +408,114 @@ def test_a_removed_child_does_not_reappear_in_a_later_eviction_of_its_parent() -
     assert mempool.size == 1
 
 
+def test_a_stale_heap_entry_left_by_an_evicted_descendant_is_skipped() -> None:
+    """`_pop_worst_wtxid` discards a descendant's own leftover heap entry.
+
+    Evicting a parent's package leaves the descendant's own
+    `_feerate_heap` entry unconsumed -- `_pop_worst_wtxid` only pops the
+    package root off the heap itself, `_evict_to_limit`'s own loop
+    removing every other package member through `_pop` alone. A later
+    eviction round has to reach past that stale entry, not raise on it
+    or evict the same wtxid a second time: without the current-entry
+    check this test guards, `_descendants` would be asked for the
+    descendants of a wtxid `self.transactions` no longer holds and raise
+    `KeyError`.
+    btclib-org/btclib-node#457
+    """
+    mempool = Mempool(Logger(debug=True))
+    parent = generate_random_transaction()
+    child = generate_random_transaction(parent.id)
+    mempool.add_tx(parent, 0)
+    mempool.add_tx(child, 0)
+    other = generate_random_transaction()
+    mempool.bytesize_limit = mempool.bytesize + other.vsize - 1
+    assert mempool.add_tx(other, 10_000) is True
+    assert not mempool.contains_tx(parent)
+    assert not mempool.contains_tx(child)
+    # `child`'s own heap entry is still in `_feerate_heap`, unconsumed and
+    # now stale -- feerate 0, the same as `cheap` below, but pushed
+    # earlier and so ordered first by the heap's own insertion-order
+    # tiebreak, which is exactly what makes the next eviction round
+    # discard it before finding `cheap` as the genuine worst entry.
+    cheap = generate_random_transaction()
+    mempool.add_tx(cheap, 0)
+    rich = generate_random_transaction()
+    mempool.bytesize_limit = mempool.bytesize + rich.vsize - 1  # room for one more
+    assert mempool.add_tx(rich, 10_000) is True
+    assert not mempool.contains_tx(cheap)
+    assert mempool.contains_tx(other)
+    assert mempool.contains_tx(rich)
+
+
+def test_a_wtxid_that_left_and_came_back_ties_as_the_newest_entry() -> None:
+    """A re-added wtxid's leftover heap entry does not sort as its old self.
+
+    `b` (fee 50), `a` (fee 100), remove `a`, `c` (fee 100, tying `a`'s
+    own feerate), re-add `a` (fee 100): `a`'s first-spell heap entry is
+    still physically in `_feerate_heap`, unconsumed by the `remove_tx`
+    that dropped it, and carries `a`'s *original* insertion-order
+    tiebreak -- lower than `c`'s, since `a` was first added before `c`
+    ever was. Evicting worst-first twice has to remove `b`, then `c`,
+    the same as a plain dict tied on `min`'s own stability would (a
+    delete followed by a fresh insert moves a key to the end, past
+    every key already there when it was reinserted) -- not `b` then
+    `a`, which is what accepting that first-spell entry on membership in
+    `transactions` alone gives, `a` still being held under its second
+    spell. This is what a review of the first round of #457 caught by
+    running this exact sequence against the pre-heap `Mempool`.
+    """
+    mempool = Mempool(Logger(debug=True))
+    b = generate_random_transaction()
+    a = generate_random_transaction()
+    c = generate_random_transaction()
+    mempool.add_tx(b, 50)
+    mempool.add_tx(a, 100)
+    mempool.remove_tx(a)
+    mempool.add_tx(c, 100)
+    mempool.add_tx(a, 100)  # a's second spell
+
+    mempool.bytesize_limit = mempool.bytesize - 1
+    mempool._evict_to_limit()
+    assert not mempool.contains_tx(b)
+    assert mempool.contains_tx(a)
+    assert mempool.contains_tx(c)
+
+    mempool.bytesize_limit = mempool.bytesize - 1
+    mempool._evict_to_limit()
+    assert not mempool.contains_tx(c)
+    assert mempool.contains_tx(a)
+
+
+def test_the_feerate_heap_is_rebuilt_once_its_garbage_outgrows_its_entries() -> None:
+    """`_rebuild_feerate_heap` fires once stale entries exceed live ones.
+
+    Three transactions, none ever evicted: two plain `remove_tx` calls
+    each leave that wtxid's own heap entry behind, stale, since neither
+    goes through `_pop_worst_wtxid`. `_pop`'s own check
+    (`len(self._feerate_heap) > 2 * self.size`) fires on the second
+    removal, once garbage outnumbers what is still held two to one, and
+    `_feerate_heap` comes back holding exactly one entry per surviving
+    transaction rather than the three pushed since the mempool started.
+    btclib-org/btclib-node#457
+    """
+    mempool = Mempool(Logger(debug=True))
+    first = generate_random_transaction()
+    second = generate_random_transaction()
+    third = generate_random_transaction()
+    mempool.add_tx(first, 0)
+    mempool.add_tx(second, 0)
+    mempool.add_tx(third, 0)
+    assert len(mempool._feerate_heap) == 3
+
+    mempool.remove_tx(first)
+    assert len(mempool._feerate_heap) == 3  # 3 > 2*2 is false: no rebuild yet
+
+    mempool.remove_tx(second)
+    assert len(mempool._feerate_heap) == 1  # 3 > 2*1 was true: rebuilt
+    assert mempool.size == 1
+    assert mempool.contains_tx(third)
+
+
 def test_eviction_runs_multiple_rounds_when_one_is_not_enough() -> None:
     """`_evict_to_limit` loops, evicting more than one entry to reach limit."""
     mempool = Mempool(Logger(debug=True))
