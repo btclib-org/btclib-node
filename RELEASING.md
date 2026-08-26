@@ -14,17 +14,21 @@ both indices are configured to trust the workflow itself
 The same workflow, started by hand instead of by a tag, is a full
 rehearsal against TestPyPI. A rehearsal is never tagged.
 
-**No release has been cut yet.** `project.version` is `0.1.0`, a
-placeholder from before this repository carried a release path at all —
-`CONTRIBUTING.md`'s former *A version, and no release* section is what
-it replaced, [ISS btclib-org/btclib-node#286][iss-286] carrying the
-decision. The `v0.1.0` tag `REPOSITORY.md` records is lightweight, has a
-release page with no artifact attached, and is not an ancestor this
-workflow's `version-check` job would accept, `git merge-base
---is-ancestor` being the first thing it asks. The first release built
-with this file is where `pyproject.toml`'s version leaves `0.1.0` for the
-calendar scheme below, in the same pull request that retitles
-`CHANGELOG.md` and `RELEASE_NOTES.md`.
+**No release has been cut yet.** `project.version` is `2026.8`: the
+scheme below, on the shape it takes between releases — a cycle open on a
+month, with no day for a release to be confused with. It replaced
+`0.1.0`, the placeholder from before this repository carried a release
+path at all, a version this repository had already tagged being a poor
+thing for a checkout of `main` to report itself as
+([ISS btclib-org/btclib-node#504][iss-504]). This file is what replaced
+`CONTRIBUTING.md`'s former *A version, and no release* section,
+[ISS btclib-org/btclib-node#286][iss-286] carrying that decision. The
+`v0.1.0` tag `REPOSITORY.md` records is lightweight, has a release page
+with no artifact attached, and is not an ancestor this workflow's
+`version-check` job would accept, `git merge-base --is-ancestor` being
+the first thing it asks. The first release built with this file adds the
+day to the month already declared, in the same pull request that
+retitles `CHANGELOG.md` and `RELEASE_NOTES.md`.
 
 **A workflow GitHub has not registered cannot be dispatched, and it
 registers one only once its file has reached the default branch.** That
@@ -451,3 +455,4 @@ reading a mismatch as tampering:
   establish.
 
 [iss-286]: https://github.com/btclib-org/btclib-node/issues/286
+[iss-504]: https://github.com/btclib-org/btclib-node/issues/504
