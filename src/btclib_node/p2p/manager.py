@@ -110,7 +110,18 @@ class P2pManager(threading.Thread):
         # in a queue of their own, drained whole before the rest.
         self.messages: deque[tuple[str, bytes, int]] = deque()
         self.handshake_messages: deque[tuple[str, bytes, int]] = deque()
-        self.nonces: list[int] = []
+        # Every nonce `add_pending_outbound_nonce` (below) has recorded
+        # for an outbound connection still short of its own `verack` --
+        # `promote_connection` and `remove_connection` below each
+        # discard their own connection's entry, so this shrinks exactly
+        # as those connections complete or close, rather than sitting
+        # in a fixed-size ring. `is_self_connect_nonce` (below) is the
+        # only reader, and both it and every write here go through
+        # `_connections_lock` above, the same as `pending_connections`
+        # and `connections` -- so a `remove_connection` discarding one
+        # connection's entry on this manager's own thread can never
+        # race a lookup for a different one on `Node`'s.
+        self.pending_outbound_nonces: set[int] = set()
         self.last_connection_id = -1
         # Endpoints `discourage` has been told to stop redialling, by
         # `endpoint_key` -- process lifetime, not `peer_db`'s own tables,
@@ -186,24 +197,88 @@ class P2pManager(threading.Thread):
         (`__init__`) is what makes the pop and the write one step too,
         against `remove_connection`'s own two pops below, on the other
         thread.
+
+        Successfully connected is exactly the state
+        `pending_outbound_nonces` (`__init__`) has to stop answering
+        for, so this connection's own nonce leaves it here too, inside
+        the same locked block -- `discard` rather than a guarded pop,
+        since an inbound connection's nonce, never added there, is just
+        as harmless to ask it to remove; the `is not None` guard is only
+        for `discard`'s own typing, `set[int]` rather than
+        `set[int | None]`.
         """
         with self._connections_lock:
             conn = self.pending_connections.pop(connection_id, None)
             if conn is not None:
                 self.connections[connection_id] = conn
+                if conn.nonce is not None:
+                    self.pending_outbound_nonces.discard(conn.nonce)
 
     def remove_connection(self, connection_id: int) -> None:
         """Drop `connection_id` from either table and stop it, if it was held.
 
         `_connections_lock` (`__init__`) is what makes the two pops one
-        step, against `promote_connection`'s own pop-then-write.
+        step, against `promote_connection`'s own pop-then-write. The
+        same connection leaving `pending_connections` this way is one
+        `pending_outbound_nonces` (`__init__`) has to stop answering for
+        too, so its own nonce is discarded inside the same locked block,
+        the same reason `promote_connection` above does it there rather
+        than after. `conn.stop()` stays outside the lock, as every other
+        call into `Connection` from in here does.
         """
         with self._connections_lock:
             conn = self.connections.pop(
                 connection_id, None
             ) or self.pending_connections.pop(connection_id, None)
+            if conn is not None and conn.nonce is not None:
+                self.pending_outbound_nonces.discard(conn.nonce)
         if conn is not None:
             conn.stop()
+
+    def add_pending_outbound_nonce(self, nonce: int) -> None:
+        """Record `nonce` as this outbound, still-unhandshaken connection's own.
+
+        The only caller is `Connection.send_version`, for an outbound
+        connection. `_connections_lock` (`__init__`) is what every
+        access to `pending_outbound_nonces` goes through -- this write
+        included -- so it can never land between `is_self_connect_nonce`
+        below reading the set and returning.
+        """
+        with self._connections_lock:
+            self.pending_outbound_nonces.add(nonce)
+
+    def is_self_connect_nonce(self, nonce: int) -> bool:
+        """Whether `nonce` is a live, unhandshaken outbound connection's own.
+
+        The only caller is `callbacks.version`. Matches Core's own
+        live, per-connection search -- `CConnman::CheckIncomingNonce`,
+        `net.cpp:360-376` at bitcoin/bitcoin@b91d983f66 -- which walks
+        every node still short of `fSuccessfullyConnected` and not
+        `IsInboundConn()`, rather than a fixed-size ring:
+        `pending_outbound_nonces` (`__init__`) reproduces that search by
+        never holding an inbound connection's own nonce to begin with
+        (`add_pending_outbound_nonce` above), not by filtering one out
+        of a wider set at lookup time.
+
+        That same walk also excludes a private-broadcast connection's
+        own nonce, one candidate among the ones it visits -- the reason
+        given there is a peer taking such a connection down must not be
+        able to infer this node dropped it and learn its clearnet
+        address from the disconnect. This tree has no private-broadcast
+        connection, so nothing here excludes on that account, and
+        nothing here depends on that exclusion existing either.
+
+        Separately, `net_processing.cpp:3886` only calls that walk at
+        all for a `version` arriving on an inbound connection -- a
+        second restriction, on when the search runs rather than on what
+        it searches, and not the one the paragraph above is about. Not
+        reproduced here: the set already holds only outbound-origin
+        nonces, so an ordinary peer's own draw is never found in it
+        regardless of which side received the `version`, and asking
+        unconditionally costs nothing extra.
+        """
+        with self._connections_lock:
+            return nonce in self.pending_outbound_nonces
 
     def discourage(self, address: NetworkAddressV2) -> None:
         """Stop `manage_connections` from redialling this endpoint.

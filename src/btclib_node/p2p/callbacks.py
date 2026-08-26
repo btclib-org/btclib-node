@@ -94,7 +94,13 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     # peer stopped here is redialled from the address it dialled or was
     # accepted on, not one a later `verack` may still rewrite (#70).
     # btclib-org/btclib-node#283
-    if version_msg.nonce in node.p2p_manager.nonces:  # connection to ourselves
+    #
+    # `is_self_connect_nonce` replaces a fixed-size ring of recently
+    # sent nonces, which a burst of outbound connects could evict a
+    # still-outstanding attempt's own nonce from before its `version`
+    # came back (btclib-org/btclib-node#448) -- its own docstring is
+    # where the search it runs is argued against Core's.
+    if node.p2p_manager.is_self_connect_nonce(version_msg.nonce):
         node.p2p_manager.discourage(conn.address)
         conn.stop()
         return

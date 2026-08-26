@@ -136,6 +136,13 @@ class Connection:
         self.status: P2pConnStatus = P2pConnStatus.Open
         self.inbound: bool = inbound
 
+        # Set by `send_version`, below, to what it drew: `None` until
+        # then, and afterwards this connection's own share of
+        # `P2pManager.pending_outbound_nonces` (`manager.py`), which is
+        # what `promote_connection` and `remove_connection` read it back
+        # for once this connection leaves the handshake.
+        self.nonce: int | None = None
+
         self.version_message: Version | None = None
         self.wtxidrelay_received: bool = False
 
@@ -426,8 +433,12 @@ class Connection:
         # how a node recognises a connection to itself, so a narrower
         # draw is a narrower guarantee of that
         nonce = secrets.randbelow(2**64)
-        self.manager.nonces.append(nonce)
-        self.manager.nonces = self.manager.nonces[-10:]
+        self.nonce = nonce
+        # Only an outbound connection's own nonce is ever recorded:
+        # `P2pManager.is_self_connect_nonce`'s own docstring is where
+        # that choice is argued against Core's.
+        if not self.inbound:
+            self.manager.add_pending_outbound_nonce(nonce)
 
         # A connection exists only once P2pManager.start() has run, and
         # that only happens with a port to listen on (Node.run guards
