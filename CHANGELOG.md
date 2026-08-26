@@ -14,6 +14,24 @@ to check the guess.
 
 ## Unreleased
 
+### `Node.run`'s idle sleep is 5 ms, not a tenth of a millisecond (closes #440)
+
+- **`Node.run`'s loop sleeps `IDLE_SLEEP_SECONDS`, 5 ms, once a pass
+  finds nothing waiting in either queue** (closes #440): the figure it
+  replaces sat below the platform timer's own granularity, so an idle
+  node's actual pace was set by the OS rather than by the sleep, and
+  every one of those passes still ran `download_manager.step()` and
+  `update_chain()` in full. Raising it cuts an idle node's own CPU cost
+  by most of what it was paying, at a latency added to work arriving
+  while the loop sleeps that stays a small fraction of
+  `tests/helpers.py`'s own 25 ms poll in `wait_until` and
+  `wait_until_listening`. Core's own message loop takes the shape of a
+  wait on a condition variable a producer signals rather than a plain
+  sleep (`CConnman::ThreadMessageHandler`, `src/net.cpp`, up to 100 ms,
+  bitcoin/bitcoin@b91d983f66); this loop still spins on a fixed
+  interval instead of being woken, which the citation does not paper
+  over.
+
 ### The signal handlers move out of `Node.__init__` (closes #436)
 
 - **`Node.__init__` no longer calls `signal.signal`** (closes #436): a

@@ -67,6 +67,38 @@ __all__ = ["Node", "install_signal_handlers"]
 # to this comment.
 STOP_TIMEOUT = 30
 
+# How long the loop below sleeps once a pass finds nothing waiting in
+# either queue. The figure it replaces, 0.0001, sat below the
+# platform timer's own granularity, so what set the pace of an idle
+# node was the OS rather than the number, and every one of those passes
+# still ran `download_manager.step()` and `update_chain()` in full
+# (btclib-org/btclib-node#440).
+#
+# Core's own message loop takes this shape as a wait on a condition
+# variable that a producer signals, so a node with work is woken at
+# once and one without costs nothing until the wait's own ceiling
+# (`CConnman::ThreadMessageHandler`, `src/net.cpp`, up to 100 ms,
+# bitcoin/bitcoin@b91d983f66). A plain sleep cannot do that -- nothing
+# wakes it early -- so raising it trades idle CPU for latency on
+# whatever arrives while it is asleep, in a way Core's own wait does
+# not have to. Giving `step()` its own cadence or signalling the loop
+# from the queues would close that gap; neither is done here, so the
+# gap stays and this is a divergence from what is cited above rather
+# than a match to it.
+#
+# 5 ms rather than a larger figure in the 5-20 ms range the issue
+# above named: an idle node's own CPU cost falls to about the same
+# small fraction of its former self at 5, 10 and 20 ms alike, measured
+# by comparing resource.getrusage across an idle run at each -- so
+# nothing past 5 ms buys back more of it. What does move past 5 ms is
+# the very latency the comment above says this sleep trades for that
+# CPU, measured end to end on a real RPC round trip: it grows with the
+# sleep, so the smallest figure that already captures the CPU win is
+# the one that pays least for it, and it still leaves comfortable
+# headroom under `tests/helpers.py`'s own 25 ms poll in `wait_until`
+# and `wait_until_listening`, so nothing in the suite can resolve it.
+IDLE_SLEEP_SECONDS = 0.005
+
 
 def _default_worker_count() -> int:
     """How many workers `Node.worker_pool` spawns.
@@ -360,7 +392,7 @@ class Node(threading.Thread):
             self.rpc_manager.start()
         while not self.terminate_flag.is_set():
             if self._drain_message_queues():
-                time.sleep(0.0001)
+                time.sleep(IDLE_SLEEP_SECONDS)
             if self._step_chain():
                 break
         self.p2p_manager.stop()
