@@ -329,6 +329,12 @@ point CLAUDE.md's architecture section names as what validates — and a
 second scope is a second `.toml` beside it, the way
 `btclib-org/btclib`'s own `.github/mutation/` holds one per profile.
 
+`test-command` in `.github/mutation/interpreter.toml` runs with `-n0`,
+overriding `addopts`' own `-n auto` for the one process that reads the
+mutated file: the file-edit form is the one CLAUDE.md's *Non-obvious
+facts* names as reaching a worker, and cosmic-ray's own mutation is the
+same form, applied to the file rather than to a running process.
+
 ### A release path, and nothing published on it yet
 
 `.github/workflows/release.yml` exists and section 2 of
