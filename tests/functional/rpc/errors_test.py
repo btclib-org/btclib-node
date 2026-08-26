@@ -221,7 +221,10 @@ def test_a_missing_argument_is_not_answered_internal_error(rpc_node: Node) -> No
     }
     assert refusal("testmempoolaccept", ["not an array"]) == {
         "code": -3,
-        "message": "JSON value of type string is not of expected type array",
+        "message": (
+            'Wrong type passed:\n{\n    "Position 1 (rawtxs)": "JSON value '
+            'of type string is not of expected type array"\n}'
+        ),
     }
     assert refusal("sendrawtransaction", []) == {
         "code": -1,
