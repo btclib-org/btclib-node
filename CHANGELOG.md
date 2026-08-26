@@ -96,6 +96,30 @@ to check the guess.
   none of them reached `send()` -- the only other place popping that
   table -- so each left its id behind regardless of `REQUEST_TIMEOUT`.
 
+### `claude-review.yml` converges to the organization's current mechanism
+
+- **The `review` job now gates on the organization variable
+  `CLAUDE_REVIEW_ENABLED`** (issue btclib-org/.github#364), on the job
+  rather than a step: unset organization-wide, so a `pull_request` run
+  skips cleanly instead of failing at "Review against REVIEWING.md" the
+  way every run has since the action's own SDK call started erroring,
+  a cause that issue leaves unestablished.
+- **The guard step that reports a review which never ran now reads
+  `api_error_status`, `stop_reason` and `.result` off the SDK's
+  execution file** (issue btclib-org/.github#385) when the review step
+  did not succeed, instead of reporting only that it failed.
+- **The verdict now posts as a pull request review of type `COMMENT`**
+  (`gh pr review --comment`, never `--approve` or `--request-changes`)
+  **rather than an issue comment** (issue btclib-org/.github#340), and
+  the verification step now reads `pulls/<n>/reviews` instead of issue
+  comments; the verdict lines are `ACK`, `CHANGES REQUESTED` and now
+  also `NACK`.
+- **The `review` job's timeout is 20 minutes, with a 15-minute ceiling
+  on the review step itself**: a review that exhausts its own budget
+  now fails that step, with the runner's own line saying so, rather
+  than the job being cancelled by the outer limit with nothing in the
+  checks to show for it.
+
 ### `NodeStatus.Reindexing` goes (closes #445)
 
 - **`NodeStatus` no longer declares a `Reindexing` member** (closes
