@@ -13,6 +13,15 @@ digit.
 
 ## Unreleased
 
-Nothing to act on. No release has shipped: this section fills in one
-landed change at a time, the way `RELEASING.md`'s *Release to PyPI*
-reads it back into the first release's own pull request body.
+No release has shipped: this section fills in one landed change at a
+time, the way `RELEASING.md`'s *Release to PyPI* reads it back into the
+first release's own pull request body.
+
+### Breaking changes
+
+- **`Node.__init__` no longer installs signal handlers** (closes #436).
+  Act on it if a `Node` you build is meant to stop on an operator's
+  `SIGINT`, `SIGTERM` or `SIGTSTP`: call `install_signal_handlers(node)`
+  for it, the way `scripts/chains/` now does right after building the
+  node each of them starts. A `Node` built without that call no longer
+  responds to any of the three on its own.

@@ -47,10 +47,12 @@ if TYPE_CHECKING:
 # be handed to a caller: `handle_p2p`, `RpcManager` and the rest are
 # named here so this module can wire them together, and nothing outside
 # this repository has ever imported one of them from the package root
-# rather than from its own module. `Node` is the one name a caller
-# reaches for -- `scripts/chains/` and every functional test do exactly
-# that -- so it is the whole of `__all__` (btclib-org/.github#239).
-__all__ = ["Node"]
+# rather than from its own module. `Node` and `install_signal_handlers`
+# below are the two names a caller reaches for -- `scripts/chains/`
+# reaches for both, and every functional test builds a `Node` without
+# ever calling the other -- so together they are the whole of `__all__`
+# (btclib-org/.github#239).
+__all__ = ["Node", "install_signal_handlers"]
 
 # How long `stop` waits for the loop to come back before saying it did
 # not. The flag is read at the top of the loop, so the wait is however
@@ -144,6 +146,10 @@ class Node(threading.Thread):
     which chain, which data directory and which ports; `__init__` opens
     every database under that directory and wires the p2p and RPC
     managers to this node before `start()` ever runs `run`'s loop.
+
+    Building one touches no process-wide state: `install_signal_handlers`
+    below is the separate, explicit call a caller makes for that, and
+    this object never makes it on its own behalf (issue #436).
     """
 
     def __init__(self, config: Config | None = None) -> None:
@@ -152,18 +158,6 @@ class Node(threading.Thread):
 
         if config is None:
             config = Config()
-
-        # signal.signal's own calling convention, POSIX's SIG_DFL/SIG_IGN
-        # only alternative being no handler object at all: every handler
-        # is called with (signum, frame), unread here since the three
-        # signals below share this one and stop() takes neither.
-        def stop_handler(_signum: int, _frame: FrameType | None) -> None:
-            self.stop()
-
-        signal.signal(signal.SIGINT, stop_handler)
-        signal.signal(signal.SIGTERM, stop_handler)
-        # for hibernation
-        signal.signal(signal.SIGTSTP, stop_handler)
 
         self.config = config
         self.chain = config.chain
@@ -427,3 +421,41 @@ class Node(threading.Thread):
                 err_msg += "Nothing after this can trust the chainstate or "
                 err_msg += "the databases"
                 raise NodeShutdownTimeoutError(err_msg)
+
+
+def install_signal_handlers(node: Node) -> None:
+    """Stop `node` on SIGINT, SIGTERM and SIGTSTP, process-wide.
+
+    `signal.signal` keeps one handler per signal per process, replacing
+    whatever was there before, so this is for the one caller in a
+    process that wants an operator's interrupt to reach a node at all --
+    `scripts/chains/`, and whatever a future CLI ends up being. Calling
+    it a second time, for a second node, replaces the first node's
+    handler rather than adding to it: that is the same `signal.signal`
+    the first call made, not a defect this function introduces.
+
+    Kept out of `Node.__init__` for two reasons (issue #436). A second
+    `Node` built in one process used to silently disown the first,
+    every call installing a fresh handler bound to the newer node with
+    nothing to say the first one's databases were still open behind it
+    -- every functional p2p test builds two nodes, so the first node's
+    handlers survived only for the length of the second one's
+    constructor call. And `signal.signal` raises outside the main
+    thread of the main interpreter, so a `Node` could not be built at
+    all from a worker thread, whether or not that caller ever wanted a
+    process-wide interrupt.
+
+    SIG_DFL/SIG_IGN are `signal.signal`'s own other two handler
+    arguments, POSIX's only alternatives to a callable one; every
+    handler is called with `(signum, frame)`, unread here since the
+    three signals below share one handler and `stop` takes neither.
+    SIGTSTP is for hibernation and does not exist on Windows
+    (btclib-org/btclib-node#429).
+    """
+
+    def stop_handler(_signum: int, _frame: FrameType | None) -> None:
+        node.stop()
+
+    signal.signal(signal.SIGINT, stop_handler)
+    signal.signal(signal.SIGTERM, stop_handler)
+    signal.signal(signal.SIGTSTP, stop_handler)

@@ -10,7 +10,7 @@ instead of a file, and `debug=True` keeps it live for this chain, unlike
 `mainnet.py`'s own commented-out toggle.
 """
 
-from btclib_node import Node
+from btclib_node import Node, install_signal_handlers
 from btclib_node.config import Config
 
 node = Node(
@@ -23,4 +23,8 @@ node = Node(
         log_path=None,
     )
 )
+# this script is the process: an operator's Ctrl-C or a kill is meant
+# to reach this node, which is what a library object never assumes for
+# itself (issue #436)
+install_signal_handlers(node)
 node.start()
