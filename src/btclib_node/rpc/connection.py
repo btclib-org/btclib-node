@@ -40,6 +40,28 @@ HEADER_TERMINATOR = b"\r\n\r\n"
 # body this node is sent is a raw transaction.
 MAX_HEADER_BYTES = 64 * 1024
 MAX_BODY_BYTES = 32 * 1024 * 1024
+# What bounds how *long* a read may take, where the two above only bound
+# how much of it this node buffers: a client that sends a byte and then
+# stops never crosses either cap, and used to leave `run` below suspended
+# on `sock_recv` for the life of the node, its socket and its entry in
+# `RpcManager.connections` both held the whole time (issue #437). Core's
+# own `-rpcservertimeout`, `DEFAULT_HTTP_SERVER_TIMEOUT` (`src/httpserver.h:42`,
+# bitcoin/bitcoin@b91d983f66), is 30 seconds, and is what this is matched
+# to -- but not to Core's own mechanism: Core resets that timer on every
+# receive (`httpserver.cpp:930`) and every send (`:1275`), and its own
+# `DisconnectClients` (`:1098-1100`) only disconnects a client genuinely
+# idle *between* requests, one of its own HTTP connections carrying more
+# than one. This tree's connection is one request per socket with no
+# such "between" to distinguish, so
+# REQUEST_TIMEOUT is spent once, on the whole read from accept to a
+# complete request (`run` below), rather than reset on each byte -- which
+# also bounds a client that dribbles one byte at a time forever, where a
+# per-`sock_recv` reset would not.
+# a float, not Core's own int seconds: asyncio.timeout below and
+# RpcManager.request_timeout both carry this as a float throughout, a
+# test lowering it to a fraction of a second being the only assignment
+# that would otherwise disagree with an int-inferred attribute
+REQUEST_TIMEOUT = 30.0
 
 
 class RawJSON:
@@ -143,8 +165,16 @@ class RpcConnection:
         client: socket.socket,
         manager: RpcManager,
         connection_id: int,
+        request_timeout: float = REQUEST_TIMEOUT,
     ) -> None:
-        """Set up empty buffers for `client`, tracked under `connection_id`."""
+        """Set up empty buffers for `client`, tracked under `connection_id`.
+
+        `request_timeout` is `REQUEST_TIMEOUT` unless `manager` -- in
+        practice `RpcManager.create_connection` -- is built or told to
+        hand over something else, which is the seam a test uses to keep
+        `REQUEST_TIMEOUT`'s own real, Core-matching value off its own
+        critical path.
+        """
         super().__init__()
         self.loop = loop
         self.client = client
@@ -154,6 +184,7 @@ class RpcConnection:
         self.messages: list[Any] = []
         self.buffer = b""
         self.task: Future[None] | None = None
+        self.request_timeout = request_timeout
 
     def close(self) -> None:
         """Cancel the running `run` task, if any, and close `client`."""
@@ -177,34 +208,40 @@ class RpcConnection:
 
         Reads the header section up to `HEADER_TERMINATOR`, then the
         body up to its own `Content-Length`, both bounded against an
-        unterminated or overstated one; a body that is not valid JSON is
-        answered `PARSE_ERROR` directly, on the spot, and a body that is
-        gets appended to `manager.messages` for `rpc.main.handle_rpc` to
-        answer instead, through `send`. Any failure closes `client`
-        rather than raising, since nothing reads the `Future` this task
-        runs under.
+        unterminated or overstated one and, together, against taking
+        longer than `self.request_timeout` -- `REQUEST_TIMEOUT`'s own
+        docstring is where that bound is argued against Core's. A body
+        that is not valid JSON is answered `PARSE_ERROR` directly, on
+        the spot, and a body that is gets appended to `manager.messages`
+        for `rpc.main.handle_rpc` to answer instead, through `send`. Any
+        failure -- `asyncio.timeout` raises the standard library's own
+        `TimeoutError` once expired, caught below like any other -- closes
+        `client` rather than raising, since nothing reads the `Future`
+        this task runs under.
         """
         try:
-            await self._recv_until(
-                lambda: HEADER_TERMINATOR in self.buffer, MAX_HEADER_BYTES
-            )
-            head, _, self.buffer = self.buffer.partition(HEADER_TERMINATOR)
-            # parse_headers wants the field lines alone, so drop the
-            # request line, and the blank line partition() consumed.
-            _, _, fields = head.partition(b"\r\n")
-            headers = parse_headers(BytesIO(fields + HEADER_TERMINATOR))
-            length = int(headers.get("Content-Length", 0))
-            # int() admits a negative, which would make the predicate
-            # below true before a single body byte arrived and then
-            # slice the body from the wrong end.
-            if not 0 <= length <= MAX_BODY_BYTES:
-                # kept inside the try, against TRY301: the outer
-                # `except Exception: self.client.close()` below is what
-                # every failure in this method already answers through,
-                # abstracting this one raise to a helper would not
-                # change what catches it, only add a call for no reader
-                raise ConnectionError  # noqa: TRY301
-            await self._recv_until(lambda: len(self.buffer) >= length)
+            async with asyncio.timeout(self.request_timeout):
+                await self._recv_until(
+                    lambda: HEADER_TERMINATOR in self.buffer, MAX_HEADER_BYTES
+                )
+                head, _, self.buffer = self.buffer.partition(HEADER_TERMINATOR)
+                # parse_headers wants the field lines alone, so drop the
+                # request line, and the blank line partition() consumed.
+                _, _, fields = head.partition(b"\r\n")
+                headers = parse_headers(BytesIO(fields + HEADER_TERMINATOR))
+                length = int(headers.get("Content-Length", 0))
+                # int() admits a negative, which would make the
+                # predicate below true before a single body byte arrived
+                # and then slice the body from the wrong end.
+                if not 0 <= length <= MAX_BODY_BYTES:
+                    # kept inside the try, against TRY301: the outer
+                    # `except Exception: self.client.close()` below is
+                    # what every failure in this method already answers
+                    # through, abstracting this one raise to a helper
+                    # would not change what catches it, only add a call
+                    # for no reader
+                    raise ConnectionError  # noqa: TRY301
+                await self._recv_until(lambda: len(self.buffer) >= length)
 
             try:
                 body = json.loads(self.buffer[:length])
@@ -242,9 +279,18 @@ class RpcConnection:
         # gets closed for a failure in this method: there is no outer
         # `finally` here, so narrowing this would leak the socket this
         # unauthenticated, all-interfaces port (#27) opened, on top of
-        # losing the exception itself to that same unread Future
+        # losing the exception itself to that same unread Future.
+        # `self.manager.connections.pop` below is the same reasoning
+        # the parse-error branch's own pop above already argues, applied
+        # to every other way this method fails rather than only that
+        # one: `ConnectionError` (an unterminated header, an overstated
+        # or negative Content-Length, a peer that goes away mid-request)
+        # and `TimeoutError` (`REQUEST_TIMEOUT` elapsing) never reach
+        # `send()` either, and `send()` is the only other place this id
+        # leaves `manager.connections` (issue #437).
         except Exception:  # noqa: BLE001
             self.client.close()
+            self.manager.connections.pop(self.id, None)
 
     async def async_send(self, response: list[dict[str, Any]]) -> None:
         """Write `response` back as one JSON-RPC HTTP reply, then close.

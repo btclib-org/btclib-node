@@ -18,7 +18,7 @@ from collections import deque
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, override
 
-from btclib_node.rpc.connection import RpcConnection
+from btclib_node.rpc.connection import REQUEST_TIMEOUT, RpcConnection
 
 if TYPE_CHECKING:
     from concurrent.futures import Future
@@ -49,6 +49,12 @@ class RpcManager(threading.Thread):
         self.loop = asyncio.new_event_loop()
         self.port = port
         self.last_connection_id = -1
+        # handed to every RpcConnection create_connection below builds;
+        # an instance attribute rather than a call-site default so a
+        # test can lower it on a live manager, before opening the
+        # connection it means to time out, without waiting through
+        # REQUEST_TIMEOUT's own real, Core-matching value.
+        self.request_timeout = REQUEST_TIMEOUT
 
         # see P2pManager.listening: `is_alive()` is true before `run`
         # has bound anything, and a client that posts on the strength of
@@ -82,7 +88,13 @@ class RpcManager(threading.Thread):
     ) -> RpcConnection:
         """Wrap `client` in a `RpcConnection` and register it under a new id."""
         client.settimeout(0.0)
-        new_connection = RpcConnection(loop, client, self, self.last_connection_id)
+        new_connection = RpcConnection(
+            loop,
+            client,
+            self,
+            self.last_connection_id,
+            request_timeout=self.request_timeout,
+        )
         self.connections[self.last_connection_id] = new_connection
         return new_connection
 
