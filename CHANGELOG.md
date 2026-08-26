@@ -14,6 +14,16 @@ to check the guess.
 
 ## Unreleased
 
+### `tests/README.md` declares section 7's convention-test bullets (closes #488)
+
+- **`tests/README.md` names which of section 7's convention-test bullets
+  this repository tests and the module that tests each, and
+  `tests/unit/conventions_test.py` asserts the declaration is true**
+  (closes #488): section 7 of the organization standard says which of
+  these bullets a repository implements is declared, not inferred, and
+  an absent declaration made an absent convention test indistinguishable
+  from a convention this tree does not have.
+
 ### The `typos` hook is `repo: local`, pinned through `additional_dependencies`
 
 - **`.pre-commit-config.yaml`'s `typos` entry no longer mirrors
