@@ -33,7 +33,7 @@ from btclib_node.p2p.address import (
     peer_address,
     peer_from_addr_entry,
 )
-from tests.helpers import call_within
+from tests import call_within
 
 if TYPE_CHECKING:
     from pathlib import Path

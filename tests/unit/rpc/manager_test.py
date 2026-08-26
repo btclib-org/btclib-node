@@ -23,7 +23,7 @@ from btclib_node.chains import RegTest
 from btclib_node.config import Config
 from btclib_node.log import Logger
 from btclib_node.rpc.manager import RpcManager
-from tests.helpers import get_random_port, wait_until, wait_until_listening
+from tests import get_random_port, wait_until, wait_until_listening
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping

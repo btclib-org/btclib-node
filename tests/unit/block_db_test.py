@@ -26,7 +26,7 @@ from btclib_node.block_db import BlockDB, BlockLocation, FileMetadata, RevBlock
 from btclib_node.chains import RegTest
 from btclib_node.exceptions import ChainstateInconsistencyError
 from btclib_node.log import Logger
-from tests.helpers import generate_random_chain
+from tests import generate_random_chain
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator

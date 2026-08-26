@@ -106,13 +106,13 @@ repos:
       - id: debug-statements
       - id: check-docstring-first
       # default args, so the pattern it enforces is `*_test.py`, which
-      # every test module under tests/ is named. `tests/helpers.py` is
-      # not one: the hook's own exception list is `__init__.py` and
-      # `conftest.py`, and this is the third shared, non-test module the
-      # tree happens to keep at the suite's root rather than nested
-      # under a package's `__init__.py` the way the others are
+      # every test module under tests/ is named. The hook's own
+      # exception list is `__init__.py` and `conftest.py`, which is
+      # where this suite's shared code lives -- section 7 of the
+      # organization standard puts it in a package `__init__.py` rather
+      # than in a module whose name says "test" and holds none, so the
+      # hook reads every file under tests/ with no exclude of its own
       - id: name-tests-test
-        exclude: ^tests/helpers\.py$
       - id: check-toml
       # only files being *added* are measured, the hook intersecting its
       # arguments with git's added set

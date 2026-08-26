@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from btclib_node import Node
 from btclib_node.config import Config
-from tests.helpers import get_random_port, wait_until_listening
+from tests import get_random_port, wait_until_listening
 
 if TYPE_CHECKING:
     from pathlib import Path

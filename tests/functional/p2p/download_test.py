@@ -20,7 +20,7 @@ from btclib_node.chains import RegTest
 from btclib_node.config import Config
 from btclib_node.constants import NodeStatus
 from btclib_node.main import update_chain
-from tests.helpers import (
+from tests import (
     generate_random_chain,
     get_random_port,
     local_addr,

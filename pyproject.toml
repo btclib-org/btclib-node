@@ -428,7 +428,19 @@ ignore = ["W002"]
 package = ["src/btclib_node"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests/unit", "tests/functional"]
+# `tests/interpreters_test.py` is named on its own because it sits
+# beside the two directories rather than under either: it reads
+# pyproject.toml, .python-version and the CI files against one another,
+# so it mirrors no module of the package and drives no node. Naming it
+# is what collects it -- and [tool.coverage.run]'s `source` takes all
+# of tests/, so a module no run collects is a file the floor reports at
+# zero. `tests/integration/` stays out: it needs a bitcoind, which
+# integration-bitcoind.yml installs and a bare run has not got.
+testpaths = [
+    "tests/interpreters_test.py",
+    "tests/unit",
+    "tests/functional",
+]
 # No `python_files`/`python_functions` here: every test module under
 # tests/ is named `*_test.py`, which pytest's own default `python_files`
 # already collects, and no test function needs a `python_functions`
@@ -463,7 +475,7 @@ xfail_strict = true
 # failure that names its test.
 #
 # It does not bound the deadlines beneath it and is not meant to. A test
-# that waits seven times at tests/helpers.py's default could in
+# that waits seven times at wait_until's own default could in
 # principle ask for more than this, and the run would then be killed by
 # this limit rather than by the deadline that was actually missed --
 # which loses the condition the test was waiting on. Nothing observed

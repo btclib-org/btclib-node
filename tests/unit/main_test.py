@@ -23,7 +23,7 @@ from btclib_node.constants import NodeStatus
 from btclib_node.exceptions import ChainstateInconsistencyError, MissingPrevoutError
 from btclib_node.interpreter import check_transactions
 from btclib_node.main import update_chain, verify_mempool_acceptance
-from tests.helpers import (
+from tests import (
     build_block,
     generate_coinbase,
     generate_random_chain,

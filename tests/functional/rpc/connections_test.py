@@ -8,7 +8,7 @@ import json
 import socket
 from typing import TYPE_CHECKING
 
-from tests.helpers import post, wait_until, wait_until_listening
+from tests import post, wait_until, wait_until_listening
 
 if TYPE_CHECKING:
     from btclib_node import Node

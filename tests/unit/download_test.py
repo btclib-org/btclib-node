@@ -29,7 +29,7 @@ from btclib_node.download import DownloadManager
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import peer_address
-from tests.helpers import generate_random_transaction
+from tests import generate_random_transaction
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

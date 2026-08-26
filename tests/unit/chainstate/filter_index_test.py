@@ -24,8 +24,13 @@ from btclib_node import Node
 from btclib_node.chains import RegTest, TestNet
 from btclib_node.exceptions import ChainstateInconsistencyError
 from btclib_node.main import update_chain
-from tests import load, vector_id
-from tests.helpers import build_block, generate_coinbase, generate_random_chain
+from tests import (
+    build_block,
+    generate_coinbase,
+    generate_random_chain,
+    load,
+    vector_id,
+)
 from tests.unit.main_test import connect, spend
 
 if TYPE_CHECKING:

@@ -104,7 +104,7 @@ from btclib_node.p2p.callbacks import (
 from btclib_node.p2p.callbacks import block as block_callback
 from btclib_node.p2p.connection import Connection
 from btclib_node.p2p.messages.errors import Reject, RejectCode
-from tests.helpers import (
+from tests import (
     generate_random_chain,
     generate_random_header_chain,
     generate_random_transaction,

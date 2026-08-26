@@ -25,7 +25,7 @@ from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import BlockInfo, BlockStatus, calculate_work
 from btclib_node.exceptions import ChainstateInconsistencyError
 from btclib_node.log import Logger
-from tests.helpers import brute_force_nonce, generate_random_header_chain
+from tests import brute_force_nonce, generate_random_header_chain
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator

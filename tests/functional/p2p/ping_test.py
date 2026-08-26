@@ -12,7 +12,7 @@ from btclib.p2p.keepalive import Ping
 from btclib_node import Node
 from btclib_node.config import Config
 from btclib_node.constants import P2pConnStatus
-from tests.helpers import get_random_port, local_addr, wait_until, wait_until_listening
+from tests import get_random_port, local_addr, wait_until, wait_until_listening
 
 if TYPE_CHECKING:
     from pathlib import Path
