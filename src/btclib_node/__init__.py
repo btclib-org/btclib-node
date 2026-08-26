@@ -384,6 +384,30 @@ class Node(threading.Thread):
         not one more queue to size a share from: nothing is queued to
         trigger either, a paused `getcfilters` or `getdata` answer being
         owed regardless of what else this pass finds waiting.
+
+        A connection paused on `MAX_QUEUED_RECV_BYTES`
+        (`p2p/connection.py`) waits here and nowhere of its own: what
+        resumes it is `handle_p2p` popping enough of that connection's
+        own items off `p2p_manager.messages`, and that queue is shared by
+        every connection. The items another peer has ahead of it grow
+        with the number of peers currently busy, while the share popped
+        per pass grows only with the log of the whole backlog, so the
+        wait is a function of how many peers are busy rather than a
+        constant -- where Core's own `ThreadMessageHandler`
+        (`net.cpp:3216-3238`, at bitcoin/bitcoin@b91d983f66) calls
+        `ProcessMessages` once per peer every round and so bounds it by a
+        constant. The wait is still bounded rather than open-ended:
+        `parse_messages` appends in arrival order and each connection's
+        own contribution is capped near that same bound rather than by
+        it -- the weighing happens once per parse pass, after it, so a
+        connection already at the bound still adds whatever that pass
+        completed, up to `MAX_PROTOCOL_MESSAGE_LENGTH` for the single
+        message that crossed it -- so what can sit ahead of a paused
+        connection is the other connections' caps and whatever
+        `ping`/`pong` arrives after it.
+        `tests/unit/init_test.py` measures the wait in passes of this
+        loop against the number of busy connections.
+        btclib-org/btclib-node#490
         """
         wait = True
         try:

@@ -14,6 +14,62 @@ to check the guess.
 
 ## Unreleased
 
+### Every backpressure bound is watched doing its job (closes #490, #492)
+
+- **`tests/functional/p2p/backpressure_test.py` drives the send-side
+  bounds against a peer on a real socket that completes the handshake
+  and then never reads again** (closes #492): a `getdata` larger than
+  the send queue leaves the rest on `node.pending_getdata` with the
+  connection still `Connected`, which is what says
+  `MAX_GETDATA_INFLIGHT_BYTES` engaged — `advance_getdata` has no other
+  way out with items still to serve; a `getcfilters` reaching a
+  connection already that far behind is parked whole against
+  `MAX_CFILTERS_INFLIGHT_BYTES`; and what reaches `Connection.send`
+  with no pacing point in front of it is refused at
+  `MAX_QUEUED_SEND_BYTES`, the connection stopped and
+  `queued_send_bytes` never past the bound. A bitcoind cannot be the
+  peer for any of the three, a well-behaved daemon always reading, so
+  this half wants a synthetic peer and no daemon at all.
+- **`tests/integration/backpressure_test.py` puts a real bitcoind
+  behind `MAX_QUEUED_RECV_BYTES`, serving megabyte blocks faster than
+  this node validates them** (closes #492): the pause is counted on the
+  loop's own thread, by an event that records being cleared, rather
+  than by a poll that would have to catch a pause lasting
+  milliseconds — and the node still reaches bitcoind's own tip, which
+  is what separates a pause from a stall. Its chain is built in the
+  test and handed to bitcoind through `submitblock`: what a wallet can
+  put in one block is bounded by mempool policy, so a megabyte of it
+  costs hundreds of transactions and a coinbase maturity to fund them,
+  where a coinbase paying one large unspendable output is a megabyte on
+  its own and needs no policy relaxed on the command line.
+  `integration-bitcoind.yml`'s header names the second question the
+  directory now asks. The initial-block-download rehearsal the issue
+  sketched around this one -- a reorg announced to this node by Core
+  rather than handed to it in process -- is its own question and is
+  filed as one (issue #513).
+- **Both halves run in the gate rather than on a weekly sentinel**
+  (closes #492): the issue reserved that question and argued the other
+  way, on the ground that reaching bounds this size means mining
+  regtest blocks and moving tens of megabytes. Built rather than mined,
+  the fixtures cost seconds, so the cadence a sentinel buys is not
+  worth the delay it also buys — a bound that stops engaging is found
+  by the pull request that broke it rather than by the following
+  Sunday. Nothing in the weekly calendar changes, and neither does
+  which workflows this tree owes.
+- **`Node._drain_message_queues`'s docstring says what one shared queue
+  costs a connection paused on `MAX_QUEUED_RECV_BYTES`, and
+  `tests/unit/init_test.py` measures it in passes of that loop**
+  (closes #490): the items another peer has ahead of a paused
+  connection grow with the number of peers currently busy, while the
+  share popped per pass grows only with the log of the whole backlog,
+  so the wait is a function of how many peers are busy rather than the
+  constant Core's own per-peer round gives — but it grows more slowly
+  than their number, and it is bounded, each connection's own
+  contribution being capped by that same bound. That is the
+  measurement `MAX_QUEUED_RECV_BYTES`'s own comment said it was
+  deciding without, and it does not ask for a bound of the paused
+  connection's own.
+
 ### The two publishing environments exist, and the files say so (closes #509)
 
 - **`REPOSITORY.md` gains *The two publishing environments*, recording
@@ -60,6 +116,7 @@ to check the guess.
   project version too, so it is re-locked. Nothing is published by any
   of this: both this file and `RELEASE_NOTES.md` still open under
   `## Unreleased`, and there is still no release.
+
 ### `codeql.yml` runs on a pull request and reports one context (issue #402)
 
 - **`codeql.yml` gains the `pull_request` trigger and an aggregate job

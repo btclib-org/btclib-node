@@ -170,8 +170,15 @@ MAX_QUEUED_SEND_BYTES = int(
 # peers, which nothing in this tree fixes as a constant -- doing so
 # would be the same unmeasured inflation as the burst-sized bound
 # above, just reached from the drain side instead of the peer side.
-# Absent that measurement, this bound matches Core's own figure exactly
-# rather than guess past it.
+# This bound matches Core's own figure exactly rather than guessing past
+# it. What that difference in shape costs a connection paused here -- a
+# wait that is a function of how many peers are busy rather than a
+# constant, and that grows more slowly than their number -- is
+# `Node._drain_message_queues`'s own docstring
+# (`btclib_node/__init__.py`), the loop that owns the resume, and
+# `tests/unit/init_test.py` measures it in passes of that loop. Any
+# argument for inflating this bound past Core's starts there.
+# btclib-org/btclib-node#490
 MAX_QUEUED_RECV_BYTES = 5 * 1000 * 1000
 
 # The wire header's own layout -- `btclib.p2p.message`'s module docstring

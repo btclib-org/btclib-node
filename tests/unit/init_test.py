@@ -36,6 +36,7 @@ from btclib_node.constants import NodeStatus
 from btclib_node.exceptions import NodeShutdownTimeoutError
 from btclib_node.interpreter import warm
 from btclib_node.main import update_chain
+from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
 from tests import generate_random_chain, wait_until
 from tests.conftest import unstarted_node_context
 
@@ -186,6 +187,93 @@ def test_drain_message_queues_calls_resume_getdata(
 
         monkeypatch.setattr(btclib_node, "resume_getdata", lambda _n: True)
         assert node._drain_message_queues() is False
+
+
+# How many items one busy connection's own queued bytes are split into,
+# and what one of them weighs. Equal sizes are what make a pass's own
+# share countable, and this many of them leaves the watched connection
+# back under `MAX_QUEUED_RECV_BYTES` on its first pop, so what the
+# measurement below counts is when that pop happens rather than how many
+# it takes.
+_ITEMS_PER_BUSY_PEER = 8
+_ONE_QUEUED_MESSAGE = MAX_QUEUED_RECV_BYTES // _ITEMS_PER_BUSY_PEER
+
+
+def a_paused_connection(resumed: list[bool]) -> Any:
+    """Return a connection queued past its own bound, recording its resume.
+
+    Only what `handle_p2p` (`btclib_node/p2p/main.py`) reads off a
+    connection while weighing a message back off it: the counter, the
+    lock around it, the event it sets to resume the reads, and a loop
+    stand-in that runs a threadsafe call inline -- the same stand-in
+    `tests/unit/p2p/main_test.py` builds, there being no running loop
+    under an unstarted node.
+    """
+    return SimpleNamespace(
+        queued_recv_bytes=MAX_QUEUED_RECV_BYTES + 1,
+        _recv_lock=threading.Lock(),
+        _recv_resume=SimpleNamespace(set=lambda: resumed.append(True)),
+        loop=SimpleNamespace(call_soon_threadsafe=lambda fn: fn()),
+    )
+
+
+def passes_until_resume(node: Node, peers: int) -> int:
+    """Drain until the last connection resumes, and answer the passes taken.
+
+    Every connection is queued up to its own bound and their items
+    arrive in turn, which puts the watched one -- the last of them --
+    behind one item of every other peer, the worst place `parse_messages`
+    can leave it. The command is one no callback answers, so a pass
+    measures `_drain_message_queues`'s own scheduling rather than a
+    handler's work.
+    """
+    resumed: list[bool] = []
+    manager = node.p2p_manager
+    manager.connections.clear()
+    manager.messages.clear()
+    watched = peers - 1
+    for conn_id in range(peers):
+        connection = a_paused_connection(resumed if conn_id == watched else [])
+        manager.connections[conn_id] = connection
+    for _ in range(_ITEMS_PER_BUSY_PEER):
+        for conn_id in range(peers):
+            manager.messages.append(("unknown", b"", conn_id, _ONE_QUEUED_MESSAGE))
+    passes = 0
+    while not resumed:
+        node._drain_message_queues()
+        passes += 1
+    return passes
+
+
+def test_a_paused_connection_resumes_on_the_first_pass_with_nobody_else_busy(
+    tmp_path: Path,
+) -> None:
+    """One busy peer is its own first item, so the next pass resumes it.
+
+    This is the whole of what `MAX_QUEUED_RECV_BYTES`
+    (`btclib_node/p2p/connection.py`) promises on its own, and the
+    control for the measurement below: a wait longer than this one is
+    another peer's traffic and not the bound's own doing.
+    """
+    with unstarted_node_context(tmp_path) as node:
+        assert passes_until_resume(node, 1) == 1
+
+
+def test_a_paused_connections_wait_is_a_function_of_how_many_peers_are_busy(
+    tmp_path: Path,
+) -> None:
+    """More simultaneously busy peers, more passes before the resume.
+
+    `_drain_message_queues`'s own docstring is where this is argued
+    against Core's own per-peer guarantee; this is the measurement
+    behind it, and what would go red if the drain ever gained one.
+    btclib-org/btclib-node#490
+    """
+    with unstarted_node_context(tmp_path) as node:
+        alone = passes_until_resume(node, 1)
+        a_few = passes_until_resume(node, 8)
+        a_crowd = passes_until_resume(node, 64)
+    assert alone < a_few < a_crowd
 
 
 def test_a_config_omitted_is_constructed_rather_than_shared(
