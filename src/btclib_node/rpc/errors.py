@@ -76,6 +76,49 @@ def json_type_name(value: object) -> str:
     return _JSON_TYPE_NAMES[type(value)]
 
 
+def type_error(position: int, name: str, value: object, expected: str) -> RpcError:
+    """Refuse a declared argument's own JSON type, Core's own wrapped shape.
+
+    `RPCMethod::HandleRequest`'s own type check (`src/rpc/util.cpp`
+    :652-661, read at `bitcoin/bitcoin@b91d983f66`) collects every
+    mismatched argument into one `UniValue` object, keyed
+    `strprintf("Position %s (%s)", i + 1, arg.m_names)`, and wraps it in
+    `strprintf("Wrong type passed:\\n%s", arg_mismatch.write(4))` --
+    `UniValue::write`'s own four-space indent and lack of a trailing
+    newline after the closing brace
+    (`src/univalue/lib/univalue_write.cpp`), reproduced literally below
+    rather than through a JSON encoder, because every caller here checks
+    exactly one declared argument and raises before a second could ever
+    join it in the same object -- there is never a second key to encode.
+    Measured against a real `bitcoind` (v31.1.0, `-regtest`) answering a
+    raw `testmempoolaccept`, `getblockheader`, `getblockhash`,
+    `getrawtransaction` and `sendrawtransaction` call each with one
+    argument of the wrong JSON type.
+
+    `position` is the argument's own one-based position among the
+    method's declared arguments, the way Core counts it (`i + 1`), and
+    `name` is Core's own declared name for it -- `arg.m_names` itself,
+    the raw field the key above is built from, not `GetFirstName()`'s
+    `|`-trimmed form (`m_names.substr(0, m_names.find('|'))`,
+    `src/rpc/util.cpp:917-920`), which only `RPCArg::ToString` reads,
+    for the usage string, and which `HandleRequest`'s own type check
+    never calls. The two coincide for every argument checked here except
+    `getrawtransaction`'s own second one, declared `"verbosity|verbose"`
+    -- `get_raw_transaction`'s own `verbose` is neither the raw
+    `m_names` this key is built from nor `GetFirstName()`'s trimmed
+    form, for the reason `_parse_txid`'s own usage-string comment
+    argues.
+    """
+    return RpcError(
+        RpcErrorCode.TYPE_ERROR,
+        "Wrong type passed:\n{\n"
+        f'    "Position {position} ({name})": '
+        f'"JSON value of type {json_type_name(value)} is '
+        f'not of expected type {expected}"'
+        "\n}",
+    )
+
+
 def error_msg(
     code: RpcErrorCode, message: str, request_id: object = None
 ) -> dict[str, Any]:
@@ -100,7 +143,7 @@ def error_msg(
     }
 
 
-def bool_param(params: list[Any], position: int, *, default: bool) -> bool:
+def bool_param(params: list[Any], position: int, *, name: str, default: bool) -> bool:
     """Read a declared `RPCArg::Type::BOOL` parameter, Core's own way.
 
     Omitted or explicit `null` both stand for the argument's own
@@ -109,14 +152,13 @@ def bool_param(params: list[Any], position: int, *, default: bool) -> bool:
     check `RPCMethod::HandleRequest` makes for every declared argument
     before the handler body runs at all (`src/rpc/util.cpp:653-661`),
     applied here to the one JSON type this helper's every caller
-    declares.
+    declares. `position` is the zero-based index into `params`, the way
+    every caller here already addresses it; `type_error` wants Core's
+    own one-based count, so it is passed `position + 1`.
     """
     if len(params) <= position or params[position] is None:
         return default
     value = params[position]
     if not isinstance(value, bool):
-        raise RpcError(
-            RpcErrorCode.TYPE_ERROR,
-            f"JSON value of type {json_type_name(value)} is not of expected type bool",
-        )
+        raise type_error(position + 1, name, value, "bool")
     return value

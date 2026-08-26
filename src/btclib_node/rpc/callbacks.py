@@ -23,7 +23,7 @@ from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.main import verify_mempool_acceptance
 from btclib_node.p2p.address import ip_and_port
 from btclib_node.rpc.connection import RawJSON
-from btclib_node.rpc.errors import RpcError, RpcErrorCode, bool_param, json_type_name
+from btclib_node.rpc.errors import RpcError, RpcErrorCode, bool_param, type_error
 
 if TYPE_CHECKING:
     from btclib.p2p.addrv2 import BIP155Network
@@ -113,11 +113,7 @@ def get_block_hash(node: Node, conn: RpcConnection, params: list[Any]) -> bytes:
         # :653-661 -- a JSON bool is its own VBOOL, not VNUM
         # (src/rpc/util.cpp:878-890), so it is refused here the same
         # way blockhash's own wrong-typed argument is
-        raise RpcError(
-            RpcErrorCode.TYPE_ERROR,
-            f"JSON value of type {json_type_name(height)} is "
-            "not of expected type number",
-        )
+        raise type_error(1, "height", height, "number")
     if isinstance(height, float):
         # a JSON number literal written with a decimal point or
         # exponent is still VNUM, so it passes the check above, but
@@ -156,26 +152,28 @@ def get_block_header(
         # text under RPC_MISC_ERROR: RPCMethod::HandleRequest throws
         # HelpResult for a call short of its required arguments, and
         # ExecuteCommand's `catch (const std::exception& e)` is what
-        # turns that into JSONRPCError(RPC_MISC_ERROR, e.what())
-        raise RpcError(RpcErrorCode.MISC_ERROR, 'getblockheader "blockhash"')
+        # turns that into JSONRPCError(RPC_MISC_ERROR, e.what()). Both
+        # arguments render the way RPCArg::ToString(oneline=true) does:
+        # blockhash quoted for being STR_HEX, verbose bare and grouped
+        # in its own trailing `( ... )` for being optional -- read at
+        # bitcoin/bitcoin@b91d983f66, src/rpc/blockchain.cpp:614-617
+        raise RpcError(
+            RpcErrorCode.MISC_ERROR, 'getblockheader "blockhash" ( verbose )'
+        )
     if not isinstance(params[0], str):
         # RPCMethod::HandleRequest checks a declared argument's JSON
         # type before the handler body runs at all, src/rpc/util.cpp
         # :653-661 -- blockhash is declared RPCArg::Type::STR_HEX, so a
         # blockhash of any other JSON type never reaches ParseHashV and
         # is refused here the same way, before bytes.fromhex sees it
-        raise RpcError(
-            RpcErrorCode.TYPE_ERROR,
-            f"JSON value of type {json_type_name(params[0])} is "
-            "not of expected type string",
-        )
+        raise type_error(1, "blockhash", params[0], "string")
 
     # verbose, src/rpc/blockchain.cpp:617: RPCArg::Type::BOOL,
     # RPCArg::Default{true}. Read and type-checked up front, the same
     # as blockhash above and for the same reason: HandleRequest checks
     # every declared argument's type before any of the handler's own
     # work runs, not only the first one
-    verbose = bool_param(params, 1, default=True)
+    verbose = bool_param(params, 1, name="verbose", default=True)
 
     try:
         block_hash = bytes.fromhex(params[0])
@@ -432,8 +430,8 @@ def get_raw_mempool(
     """
     # verbose and mempool_sequence, both RPCArg::Type::BOOL,
     # RPCArg::Default{false}: src/rpc/mempool.cpp:694-695
-    verbose = bool_param(params, 0, default=False)
-    include_sequence = bool_param(params, 1, default=False)
+    verbose = bool_param(params, 0, name="verbose", default=False)
+    include_sequence = bool_param(params, 1, name="mempool_sequence", default=False)
 
     if verbose and include_sequence:
         # MempoolToJSON refuses the combination outright rather than
@@ -467,19 +465,25 @@ def _parse_txid(params: list[Any]) -> bytes:
     if not params:
         # the same shape as getblockheader's own missing-argument case:
         # RPCMethod::HandleRequest's HelpResult, RPC_MISC_ERROR
-        # (src/rpc/server.cpp:887)
+        # (src/rpc/server.cpp:887). RPCMethod::ToString opens a `( ` on
+        # the first optional argument and closes it once, after the
+        # loop (src/rpc/util.cpp:775-798), so verbose and blockhash --
+        # both optional here -- render inside one group, not two.
+        # Core's own first name for this argument is "verbosity"
+        # (declared "verbosity|verbose", src/rpc/rawtransaction.cpp
+        # :246); this node keeps its own "verbose" instead, because
+        # `verbose` below reads only the boolean shape Core's
+        # `RPCArg::Default{0}` degrades to under `allow_bool=true`, not
+        # the full 0/1/2 verbosity Core's name is for -- read at
+        # bitcoin/bitcoin@b91d983f66
         raise RpcError(
             RpcErrorCode.MISC_ERROR,
-            'getrawtransaction "txid" ( verbose ) ( "blockhash" )',
+            'getrawtransaction "txid" ( verbose "blockhash" )',
         )
     if not isinstance(params[0], str):
         # txid is declared RPCArg::Type::STR_HEX, type-checked before
         # the handler body runs, same as blockhash below
-        raise RpcError(
-            RpcErrorCode.TYPE_ERROR,
-            f"JSON value of type {json_type_name(params[0])} is "
-            "not of expected type string",
-        )
+        raise type_error(1, "txid", params[0], "string")
     try:
         return bytes.fromhex(params[0])
     except ValueError as error:
@@ -497,10 +501,7 @@ def _parse_optional_block_hash(params: list[Any]) -> bytes | None:
     if len(params) <= 2 or params[2] is None:  # noqa: PLR2004
         return None
     if not isinstance(params[2], str):
-        raise RpcError(
-            RpcErrorCode.TYPE_ERROR,
-            f"JSON value of type {json_type_name(params[2])} is not of expected type string",
-        )
+        raise type_error(3, "blockhash", params[2], "string")
     try:
         return bytes.fromhex(params[2])
     except ValueError as error:
@@ -569,7 +570,7 @@ def get_raw_transaction(
     # default and the boolean shape every other verbose flag here
     # already takes, and not Core's 2 -- fee and prevout data come from
     # undo data this node does not keep alongside a block
-    verbose = bool_param(params, 1, default=False)
+    verbose = bool_param(params, 1, name="verbose", default=False)
     block_hash = _parse_optional_block_hash(params)
     tx, block_height = _find_transaction(node, txid, block_hash)
 
@@ -648,16 +649,8 @@ def test_mempool_accept(
     if not isinstance(rawtxs, list):
         # rawtxs is declared RPCArg::Type::ARR, type-checked before the
         # handler body runs, the same as blockhash and txid elsewhere in
-        # this file. The message itself is this tree's own bare
-        # sentence, not Core's "Wrong type passed:\n{...}" wrapper --
-        # matching every other RPC_TYPE_ERROR this node raises rather
-        # than Core's own rendering here is a known, tracked divergence,
-        # not a silent one: btclib-org/btclib-node#451
-        raise RpcError(
-            RpcErrorCode.TYPE_ERROR,
-            f"JSON value of type {json_type_name(rawtxs)} is "
-            "not of expected type array",
-        )
+        # this file
+        raise type_error(1, "rawtxs", rawtxs, "array")
     out: list[dict[str, Any]] = []
     for rawtx in rawtxs:
         try:
@@ -722,11 +715,7 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
         # hexstring is declared RPCArg::Type::STR_HEX
         # (src/rpc/mempool.cpp:72), type-checked before the handler
         # body runs, the same as blockhash and txid above
-        raise RpcError(
-            RpcErrorCode.TYPE_ERROR,
-            f"JSON value of type {json_type_name(rawtx)} is "
-            "not of expected type string",
-        )
+        raise type_error(1, "hexstring", rawtx, "string")
     try:
         tx = Tx.parse(rawtx)
     except BTClibException as error:

@@ -481,15 +481,17 @@ def test_a_raw_mempool_parameter_of_the_wrong_json_type_is_named() -> None:
     with pytest.raises(RpcError) as raised:
         get_raw_mempool(node, _CONN, ["true"])
     assert raised.value.code == RpcErrorCode.TYPE_ERROR
-    assert (
-        raised.value.message == "JSON value of type string is not of expected type bool"
+    assert raised.value.message == (
+        'Wrong type passed:\n{\n    "Position 1 (verbose)": "JSON value of '
+        'type string is not of expected type bool"\n}'
     )
 
     with pytest.raises(RpcError) as raised:
         get_raw_mempool(node, _CONN, [False, 1])
     assert raised.value.code == RpcErrorCode.TYPE_ERROR
-    assert (
-        raised.value.message == "JSON value of type number is not of expected type bool"
+    assert raised.value.message == (
+        'Wrong type passed:\n{\n    "Position 2 (mempool_sequence)": "JSON '
+        'value of type number is not of expected type bool"\n}'
     )
 
 
@@ -659,7 +661,7 @@ def test_no_txid_at_all_is_answered_with_the_usage() -> None:
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, [])
     assert raised.value.code == RpcErrorCode.MISC_ERROR
-    assert raised.value.message.startswith("getrawtransaction")
+    assert raised.value.message == 'getrawtransaction "txid" ( verbose "blockhash" )'
 
 
 def test_a_txid_of_the_wrong_json_type_is_named() -> None:
@@ -668,9 +670,9 @@ def test_a_txid_of_the_wrong_json_type_is_named() -> None:
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, [5])
     assert raised.value.code == RpcErrorCode.TYPE_ERROR
-    assert (
-        raised.value.message
-        == "JSON value of type number is not of expected type string"
+    assert raised.value.message == (
+        'Wrong type passed:\n{\n    "Position 1 (txid)": "JSON value of '
+        'type number is not of expected type string"\n}'
     )
 
 
@@ -689,9 +691,9 @@ def test_a_blockhash_of_the_wrong_json_type_is_named() -> None:
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, ["11" * 32, False, 5])
     assert raised.value.code == RpcErrorCode.TYPE_ERROR
-    assert (
-        raised.value.message
-        == "JSON value of type number is not of expected type string"
+    assert raised.value.message == (
+        'Wrong type passed:\n{\n    "Position 3 (blockhash)": "JSON value '
+        'of type number is not of expected type string"\n}'
     )
 
 
@@ -720,8 +722,9 @@ def test_a_verbose_of_the_wrong_json_type_is_named() -> None:
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, ["11" * 32, "true"])
     assert raised.value.code == RpcErrorCode.TYPE_ERROR
-    assert (
-        raised.value.message == "JSON value of type string is not of expected type bool"
+    assert raised.value.message == (
+        'Wrong type passed:\n{\n    "Position 2 (verbose)": "JSON value of '
+        'type string is not of expected type bool"\n}'
     )
 
 
@@ -809,9 +812,9 @@ def test_test_mempool_accept_rawtxs_of_the_wrong_json_type_is_named() -> None:
     with pytest.raises(RpcError) as raised:
         mempool_accept(a_node(), _CONN, ["not an array"])
     assert raised.value.code == RpcErrorCode.TYPE_ERROR
-    assert (
-        raised.value.message
-        == "JSON value of type string is not of expected type array"
+    assert raised.value.message == (
+        'Wrong type passed:\n{\n    "Position 1 (rawtxs)": "JSON value of '
+        'type string is not of expected type array"\n}'
     )
 
 
@@ -878,9 +881,9 @@ def test_a_rawtx_of_the_wrong_json_type_is_named() -> None:
     with pytest.raises(RpcError) as raised:
         send_raw_transaction(a_node(), _CONN, [5])
     assert raised.value.code == RpcErrorCode.TYPE_ERROR
-    assert (
-        raised.value.message
-        == "JSON value of type number is not of expected type string"
+    assert raised.value.message == (
+        'Wrong type passed:\n{\n    "Position 1 (hexstring)": "JSON value '
+        'of type number is not of expected type string"\n}'
     )
 
 
@@ -1203,8 +1206,9 @@ def test_a_verbose_of_the_wrong_json_type_is_named_rather_than_coerced() -> None
     with pytest.raises(RpcError) as raised:
         get_block_header(node, _CONN, [chain[0].hash.hex(), "false"])
     assert raised.value.code == RpcErrorCode.TYPE_ERROR
-    assert (
-        raised.value.message == "JSON value of type string is not of expected type bool"
+    assert raised.value.message == (
+        'Wrong type passed:\n{\n    "Position 2 (verbose)": "JSON value of '
+        'type string is not of expected type bool"\n}'
     )
 
 
@@ -1333,9 +1337,9 @@ def test_a_block_hash_of_the_wrong_json_type_is_named_rather_than_faulted() -> N
     with pytest.raises(RpcError) as raised:
         get_block_header(node, _CONN, [5])
     assert raised.value.code == RpcErrorCode.TYPE_ERROR
-    assert (
-        raised.value.message
-        == "JSON value of type number is not of expected type string"
+    assert raised.value.message == (
+        'Wrong type passed:\n{\n    "Position 1 (blockhash)": "JSON value '
+        'of type number is not of expected type string"\n}'
     )
 
 
@@ -1354,8 +1358,9 @@ def test_a_null_block_hash_is_the_same_wrong_type_as_any_other() -> None:
     with pytest.raises(RpcError) as raised:
         get_block_header(node, _CONN, [None])
     assert raised.value.code == RpcErrorCode.TYPE_ERROR
-    assert (
-        raised.value.message == "JSON value of type null is not of expected type string"
+    assert raised.value.message == (
+        'Wrong type passed:\n{\n    "Position 1 (blockhash)": "JSON value '
+        'of type null is not of expected type string"\n}'
     )
 
 
@@ -1369,7 +1374,7 @@ def test_no_block_hash_at_all_is_answered_with_the_usage() -> None:
     with pytest.raises(RpcError) as raised:
         get_block_header(node, _CONN, [])
     assert raised.value.code == RpcErrorCode.MISC_ERROR
-    assert raised.value.message.startswith("getblockheader")
+    assert raised.value.message == 'getblockheader "blockhash" ( verbose )'
 
 
 def test_the_tip_and_the_block_at_a_height_are_read_off_the_active_chain() -> None:
@@ -1482,7 +1487,8 @@ def test_a_height_of_the_wrong_json_type_is_named_rather_than_faulted() -> None:
             get_block_hash(node, _CONN, [bad])
         assert raised.value.code == RpcErrorCode.TYPE_ERROR
         assert raised.value.message == (
-            f"JSON value of type {type_name} is not of expected type number"
+            'Wrong type passed:\n{\n    "Position 1 (height)": "JSON value '
+            f'of type {type_name} is not of expected type number"\n}}'
         )
 
 

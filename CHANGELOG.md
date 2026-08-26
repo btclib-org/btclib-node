@@ -32,6 +32,37 @@ to check the guess.
   interval instead of being woken, which the citation does not paper
   over.
 
+### RPC error messages now match Core's own rendering, closing #450 and #451
+
+- **`getblockheader`'s and `getrawtransaction`'s own `RPC_MISC_ERROR`
+  usage strings now match `RPCArg::ToString(oneline=true)`'s own
+  rendering of their declared arguments** (closes #450):
+  `getblockheader`'s used to omit its trailing optional `verbose`
+  entirely, and `getrawtransaction`'s wrapped its two optional trailing
+  arguments in two separate `( ... )` groups where
+  `RPCMethod::ToString` opens one only on the first required-to-optional
+  transition and closes it once, after the loop -- both read at
+  `bitcoin/bitcoin@b91d983f66`, `src/rpc/util.cpp:775-798`.
+  `getrawtransaction`'s own argument keeps this tree's `verbose` rather
+  than Core's own first name for it, `verbosity`: this node's own
+  argument answers only the boolean shape Core's `allow_bool=true`
+  degrades to, not the full `0`/`1`/`2` verbosity Core's name is for,
+  and the usage string is where that choice is now argued rather than
+  left silent.
+- **Every `RPC_TYPE_ERROR` this node raises for a wrongly typed
+  argument now builds Core's own `"Wrong type passed:\n{...}"` wrapper**
+  (closes #451), keyed `Position N (name)` the way
+  `RPCMethod::HandleRequest`'s own type check builds it
+  (`src/rpc/util.cpp:652-661`), rather than answering the bare sentence
+  that value would carry at that one key on its own. `rpc/errors.py`'s
+  new `type_error` builds the wrapper from the argument's own one-based
+  position and declared name, both of which a raise site already has to
+  hand or reads off `bool_param`'s own `position`; `CLAUDE.md`'s
+  *Following Bitcoin Core* is why this tree's own prior agreement on the
+  bare shape, across every site including the two issue #443 added, was
+  not by itself a reason to keep answering Core's own surface
+  differently from Core.
+
 ### The signal handlers move out of `Node.__init__` (closes #436)
 
 - **`Node.__init__` no longer calls `signal.signal`** (closes #436): a
