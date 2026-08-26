@@ -19,6 +19,7 @@ import signal
 import threading
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from multiprocessing.pool import Pool, ThreadPool
 from pathlib import Path
@@ -28,7 +29,7 @@ from typing import TYPE_CHECKING, Any, cast, override
 import pytest
 
 import btclib_node
-from btclib_node import Node
+from btclib_node import Node, install_signal_handlers
 from btclib_node.config import Config
 from btclib_node.exceptions import NodeShutdownTimeoutError
 from btclib_node.interpreter import warm
@@ -207,20 +208,82 @@ def test_the_node_asking_itself_to_stop_does_not_wait_for_itself(
 def test_a_signal_asks_the_node_to_stop(
     tmp_path: Path, signal_number: signal.Signals
 ) -> None:
-    """`SIGTERM`/`SIGINT` both reach a handler that stops the node."""
-    # both are registered on the process, and stopping is what they are
-    # for: a node killed without it leaves its databases open
+    """`SIGTERM`/`SIGINT` reach a handler that stops the node once installed."""
+    # installed explicitly -- `Node.__init__` no longer does this on its
+    # own behalf (issue #436) -- by the one caller in a process that
+    # wants an operator's interrupt to reach this node at all
     node = a_node(tmp_path)
+    install_signal_handlers(node)
     node.start()
     handler = signal.getsignal(signal_number)
     # getsignal also answers SIG_DFL, SIG_IGN or None -- a disposition
     # the process never installed a function for -- and calling one of
     # those is a TypeError rather than the failure this test is about.
-    # That the node installed a handler at all is half of what it says.
+    # That `install_signal_handlers` installed a handler at all is half
+    # of what it says.
     assert callable(handler)
     handler(signal_number, None)
     node.join(timeout=10)
     assert not node.is_alive()
+
+
+def test_building_a_node_touches_no_process_signal_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`Node()` alone never touches process signal state (issue #436)."""
+    calls = []
+    monkeypatch.setattr(signal, "signal", lambda *args: calls.append(args))
+    with unstarted_node_context(tmp_path):
+        pass
+    assert not calls
+
+
+def test_a_second_node_does_not_disown_the_first(tmp_path: Path) -> None:
+    """A second `Node` leaves a handler already installed for the first."""
+    # this is the failure #436 reports: a second `Node()` used to replace
+    # every handler with one bound to itself, on construction alone, so
+    # the first node's own interrupt silently stopped reaching it. Now
+    # that only `install_signal_handlers` touches process signal state,
+    # a second `Node()` that never calls it leaves the first alone.
+    node1 = a_node(tmp_path / "node1")
+    install_signal_handlers(node1)
+    node1.start()
+    handler = signal.getsignal(signal.SIGINT)
+
+    node2 = a_node(tmp_path / "node2")
+    try:
+        assert signal.getsignal(signal.SIGINT) is handler
+        assert callable(handler)
+        handler(signal.SIGINT, None)
+        node1.join(timeout=10)
+        assert not node1.is_alive()
+    finally:
+        node2._close_worker_pool()
+        node2.p2p_manager.peer_db.close()
+        node2.chainstate.close()
+        node2.block_db.close()
+        node2.p2p_manager.loop.close()
+        node2.rpc_manager.loop.close()
+        node2.logger.close()
+
+
+def test_a_node_is_constructible_off_the_main_thread(tmp_path: Path) -> None:
+    """`Node()` no longer raises on a plain `threading.Thread` (issue #436).
+
+    `signal.signal` -- called from `Node.__init__` before the fix --
+    raises `ValueError: signal only works in main thread of the main
+    interpreter` anywhere but the main thread of the main interpreter.
+    `ThreadPoolExecutor.result` re-raises onto this thread whatever the
+    worker thread raised, rather than this test having to collect it
+    itself.
+    """
+
+    def build() -> None:
+        with unstarted_node_context(tmp_path):
+            pass
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(build).result(timeout=10)
 
 
 def test_a_step_that_raises_brings_the_node_down_rather_than_spinning(
@@ -523,11 +586,11 @@ def test_del_closes_a_worker_pool_on_a_node_that_was_never_started(
     # Node built and never start()ed, which is the shape this guards:
     # run()'s own teardown never runs for one, so nothing but __del__
     # ever takes the pool it built back down (btclib-org/btclib-node#195).
-    # Called directly rather than through `del` and a collection: the
-    # node's own signal handler closes over `self`, so it is still
-    # referenced from `signal`'s table and a real collection would not
-    # reach it inside this test, only whenever the next test's own node
-    # replaces that handler.
+    # Called directly rather than through `del` and a collection: `node`
+    # holds a reference cycle with each of its own managers (`self.node`
+    # on `P2pManager`, `RpcManager` and `DownloadManager`), so only the
+    # cyclic collector reaches it at all, and nothing here pins that to
+    # a moment this test can name.
     with unstarted_node_context(tmp_path) as node:
         assert node.worker_pool is not None
         assert pools == [btclib_node._WORKER_COUNT]

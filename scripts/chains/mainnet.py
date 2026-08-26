@@ -11,7 +11,7 @@ by default, left there for whoever is chasing a mainnet-specific
 problem to uncomment.
 """
 
-from btclib_node import Node
+from btclib_node import Node, install_signal_handlers
 from btclib_node.config import Config
 
 node = Node(
@@ -28,4 +28,8 @@ node = Node(
         log_path=None,
     )
 )
+# this script is the process: an operator's Ctrl-C or a kill is meant
+# to reach this node, which is what a library object never assumes for
+# itself (issue #436)
+install_signal_handlers(node)
 node.start()

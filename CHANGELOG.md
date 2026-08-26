@@ -14,6 +14,23 @@ to check the guess.
 
 ## Unreleased
 
+### The signal handlers move out of `Node.__init__` (closes #436)
+
+- **`Node.__init__` no longer calls `signal.signal`** (closes #436): a
+  second `Node` built in one process used to replace every handler with
+  one bound to itself, leaving the first running with its databases
+  open once an operator's interrupt reached the newer node instead, and
+  `signal.signal` raises outside the main thread of the main
+  interpreter, so a `Node` could not be built there at all. The three
+  handlers move to `install_signal_handlers(node)`, a new function next
+  to `Node` in `__all__`, called explicitly by the one caller in a
+  process that wants an operator's interrupt to reach a given node --
+  `scripts/chains/` calls it right after building the node it starts.
+  Matches Core's `AppInitBasicSetup`, which `AppInit` calls and `main`
+  in turn calls, registering its signal handlers at process start-up
+  rather than in a constructor (`src/init.cpp`, `src/bitcoind.cpp`,
+  bitcoin/bitcoin@b91d983f66).
+
 ### `BlockDB` serializes its own reads and writes (closes #432)
 
 - **`BlockDB` now holds one `RLock` across every public method** (closes
