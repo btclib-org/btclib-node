@@ -14,6 +14,32 @@ to check the guess.
 
 ## Unreleased
 
+### The two publishing environments exist, and the files say so (closes #509)
+
+- **`REPOSITORY.md` gains *The two publishing environments*, recording
+  the `pypi` and `testpypi` pair by the calls that read it back, and
+  `RELEASING.md`'s *One-time setup* and `CONTRIBUTING.md`'s *A release
+  path, and nothing published on it yet* stop naming the pair as
+  missing** (closes #509): both were created with `fametrano` as the
+  required reviewer and self-review left on — the maintainer who pushes
+  the tag is the reviewer — and `pypi` restricted to `v*` tags. What the
+  new section argues rather than states is why the count is read back at
+  all: an environment a workflow names and the settings do not carry is
+  created by GitHub at the first deployment that references it, with no
+  protection rules, so the pair being absent would not have failed a
+  release for want of a gate — it would have published without asking
+  anybody. `REPOSITORY.md`'s *What is not configured, and why* keeps
+  only what is still not configured, which is the release itself, and
+  `RELEASING.md`'s cross-reference to that bullet now uses the title the
+  bullet carries.
+- **`REPOSITORY.md`'s *Token permissions* names the four jobs of
+  `release.yml` that elevate past `contents: read`** (closes #509): the
+  section ended "Nothing here publishes, attests, or writes to the
+  repository's contents", which that workflow has contradicted since it
+  landed — `publish-pypi` and `publish-testpypi` hold `id-token: write`,
+  `attest` holds `attestations: write` beside its own, and
+  `github-release` holds `contents: write`.
+
 ### The declared version is a calendar version (closes #504)
 
 - **`pyproject.toml` declares `2026.8`, the shape `RELEASING.md`'s

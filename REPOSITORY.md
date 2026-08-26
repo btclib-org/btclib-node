@@ -250,7 +250,13 @@ itself where it needs more: `test.yml`'s `changes` job adds
 `codeql.yml`'s analysis adds `security-events: write` to upload its
 SARIF, and `claude-review.yml` adds `pull-requests: write` to post a
 comment and `id-token: write` for the OIDC token its action mints.
-Nothing here publishes, attests, or writes to the repository's contents.
+`release.yml` is where that stops being a list of reads: `publish-pypi`
+and `publish-testpypi` add `id-token: write` for the OIDC token each
+index trusts, `attest` adds `attestations: write` beside an
+`id-token: write` of its own, and `github-release` adds
+`contents: write`, which is the one token in this repository that
+writes to it. Each is a job-level block under a workflow whose own
+top-level `permissions:` is `contents: read` like every other.
 
 `can_approve_pull_request_reviews` is false, which matters as much as the
 token: a workflow that could approve would satisfy `main-self-merge`
@@ -346,15 +352,57 @@ rather than this section repeating it: the two cells run as parallel
 jobs, so the second costs one more slot at the ceiling and no additional
 wait, against a review that costs more than the wait regardless.
 
+## The two publishing environments
+
+```shell
+env=repos/btclib-org/btclib-node/environments
+gh api "$env" --jq .total_count
+# 2
+for e in pypi testpypi; do
+  gh api "$env/$e" --jq '.name, (.protection_rules[]
+    | select(.type=="required_reviewers")
+    | "\(.reviewers[].reviewer.login) self_review=\(.prevent_self_review)")'
+done
+# pypi
+# fametrano self_review=false
+# testpypi
+# fametrano self_review=false
+gh api "$env/pypi/deployment-branch-policies" \
+  --jq '.branch_policies[] | "\(.name) (\(.type))"'
+# v* (tag)
+```
+
+`publish-pypi` and `publish-testpypi` are the only jobs that carry one
+of these, and carrying one is what makes an upload wait for a person:
+the run stops before the job and does not start it until the review
+lands. `pypi` additionally takes only `v*` tags, which is the only ref
+its own `if:` lets it run on; `testpypi` takes any, a rehearsal being
+dispatched from a branch on purpose. `RELEASING.md`'s *One-time setup*
+is where the rest of the argument is, self-review included -- allowed
+on both, the maintainer who pushes the tag being the reviewer.
+
+**This pair is not the kind of setting whose absence a workflow would
+have reported.** An environment a workflow names and the settings do
+not carry is created by GitHub at the first deployment that references
+it, [with no protection rules on
+it](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments),
+so the run would not have failed for want of one: it would have
+published without asking anybody. That is why the count above is read
+back here rather than inferred from `release.yml` naming the two
+(btclib-org/btclib-node#509).
+
+The trusted publishers these are named by live on the two indices'
+own side, where no `gh api` call here reads them back -- the same
+boundary the Read the Docs bullet below sits on.
+
 ## What is not configured, and why
 
-- **A release workflow, and no publishing yet.** `.github/workflows/release.yml`
-  exists and `CONTRIBUTING.md`'s *A release path, and nothing published
-  on it yet* is the whole of that answer and carries the commands
-  behind it. There is still no `pypi` environment, `RELEASING.md`'s
-  *One-time setup* not having been done:
-  `gh api repos/btclib-org/btclib-node/environments --jq .total_count`
-  answers `0`. There is a `v0.1.0` tag and a GitHub release with no
+- **A release path configured to the last step, and nothing published
+  on it yet.** `.github/workflows/release.yml` exists, the two
+  environments it names are the section above, and `CONTRIBUTING.md`'s
+  *A release path, and nothing published on it yet* is the whole of that
+  answer and carries the commands behind it. What is missing is the
+  release itself: there is a `v0.1.0` tag and a GitHub release with no
   artifact attached to it, and `tag-integrity` already holds the
   signature a tag would need.
 - **No Pages, and no Read the Docs project connected.**

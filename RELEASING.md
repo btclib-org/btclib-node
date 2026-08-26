@@ -91,13 +91,20 @@ PEP 440 does.
 
 ## One-time setup
 
-Nothing below has been done yet: `REPOSITORY.md`'s "No publishing, and no
-release workflow" bullet is what this section leaves for the day it does
-not answer `0` any more. Neither index holds the project until an upload
-creates it, so both entries are added as *pending* publishers, on that
-same page: a publisher attached to a project can only be added to a
-project that exists, and a first upload has nothing else to authenticate
-with, there being no token anywhere.
+This is done, and what a `gh api` call can read back of it —
+the two environments — is `REPOSITORY.md`'s *The two publishing
+environments*; its *What is not configured, and why* is what the rest
+of the release path is still down to, which is the release itself.
+What follows is kept as the record of what was configured and why,
+which is also what a second registration would need: a rotated account,
+a fork that publishes, or a project renamed on the index, a trusted
+publisher being attached to a project name.
+
+Neither index held the project when these were added — an upload is
+what creates it — so both entries went in as *pending* publishers, on
+that same page: a publisher attached to a project can only be added to
+a project that exists, and a first upload has nothing else to
+authenticate with, there being no token anywhere.
 
 1. On [PyPI](https://pypi.org/manage/account/publishing/), add a trusted
    publisher: PyPI project name `btclib-node`, owner `btclib-org`,
