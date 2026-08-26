@@ -64,11 +64,13 @@ def handle_p2p_handshake(node: Node) -> None:
     # that a peer sent a second version/verack/wtxidrelay/sendaddrv2 to
     conn = manager.pending_connections.get(conn_id) or manager.connections.get(conn_id)
     if conn is not None:
-        with conn._recv_lock:
+        # Connection's own backpressure pair, crossed from this thread on
+        # purpose: connection.py argues both where it defines them
+        with conn._recv_lock:  # noqa: SLF001
             conn.queued_recv_bytes -= size
             resume = conn.queued_recv_bytes <= MAX_QUEUED_RECV_BYTES
         if resume:
-            conn.loop.call_soon_threadsafe(conn._recv_resume.set)
+            conn.loop.call_soon_threadsafe(conn._recv_resume.set)  # noqa: SLF001
         node.logger.info("Received p2p message: %s, %s", msg_type, conn_id)
         try:
             if conn.status == P2pConnStatus.Open:
@@ -116,11 +118,13 @@ def handle_p2p(node: Node) -> None:
     # below, rather than being silently dropped along with the lookup
     conn = manager.connections.get(conn_id) or manager.pending_connections.get(conn_id)
     if conn is not None:
-        with conn._recv_lock:
+        # the same backpressure pair as handle_p2p_handshake above, for
+        # the same reason
+        with conn._recv_lock:  # noqa: SLF001
             conn.queued_recv_bytes -= size
             resume = conn.queued_recv_bytes <= MAX_QUEUED_RECV_BYTES
         if resume:
-            conn.loop.call_soon_threadsafe(conn._recv_resume.set)
+            conn.loop.call_soon_threadsafe(conn._recv_resume.set)  # noqa: SLF001
         node.logger.info("Received p2p message: %s, %s", msg_type, conn_id)
         try:
             if msg_type in callbacks:

@@ -291,7 +291,7 @@ def pong(node: Node, msg: bytes, conn: Connection) -> None:
     # statements used to clear ping_nonce to 0 out from under a ping
     # send_ping had just sent, discouraging (#283) and dropping a peer
     # for a nonce this node itself changed. btclib-org/btclib-node#357
-    with conn._ping_lock:
+    with conn._ping_lock:  # noqa: SLF001 -- the comment above is why
         ping_sent = conn.ping_sent
         if not ping_sent:
             return

@@ -79,13 +79,13 @@ def json_type_name(value: object) -> str:
 
 
 def type_error(position: int, name: str, value: object, expected: str) -> RpcError:
-    """Refuse a declared argument's own JSON type, Core's own wrapped shape.
+    r"""Refuse a declared argument's own JSON type, Core's own wrapped shape.
 
     `RPCMethod::HandleRequest`'s own type check (`src/rpc/util.cpp`
     :652-661, read at `bitcoin/bitcoin@b91d983f66`) collects every
     mismatched argument into one `UniValue` object, keyed
     `strprintf("Position %s (%s)", i + 1, arg.m_names)`, and wraps it in
-    `strprintf("Wrong type passed:\\n%s", arg_mismatch.write(4))` --
+    `strprintf("Wrong type passed:\n%s", arg_mismatch.write(4))` --
     `UniValue::write`'s own four-space indent and lack of a trailing
     newline after the closing brace
     (`src/univalue/lib/univalue_write.cpp`), reproduced literally below

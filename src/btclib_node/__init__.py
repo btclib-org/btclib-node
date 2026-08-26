@@ -289,9 +289,11 @@ class Node(threading.Thread):
         """
         with self._worker_pool_lock:
             if self._worker_pool is None:
-                self._worker_pool = _pool_factory(gil_enabled=sys._is_gil_enabled())(
-                    processes=_WORKER_COUNT
-                )
+                # sys._is_gil_enabled is the interpreter's own name for
+                # the question; CPython gives it no public spelling
+                self._worker_pool = _pool_factory(
+                    gil_enabled=sys._is_gil_enabled()  # noqa: SLF001
+                )(processes=_WORKER_COUNT)
             return self._worker_pool
 
     def _close_worker_pool(self) -> None:

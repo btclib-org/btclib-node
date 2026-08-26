@@ -14,6 +14,67 @@ to check the guess.
 
 ## Unreleased
 
+### The lint gate selects every family ruff ships (issue #402)
+
+- **`[tool.ruff.lint]` selects `ALL`, with every declined rule in
+  `ignore` carrying its reason** (issue #402, under
+  btclib-org/.github#334): a hand-picked list rots, where `ALL` takes a
+  new family in on the pull request that bumps ruff's own pinned rev,
+  which is section 5 of the organization standard. What the switch
+  surfaced is answered where it sits: the formatter-conflict rules in
+  `ignore` with the vendor's citation, whitebox `SLF001`/`EM101` under
+  `tests/**` in `per-file-ignores`, `INP001` for the entry-point
+  directories nothing imports, and a `# noqa` with its reason at each
+  `src/btclib_node/` site that reaches another object's private state
+  on purpose.
+- **`[tool.ruff.lint.pydocstyle]` declares `convention = "pep257"`**,
+  the btclib-node half of btclib-org/.github#177, bbt's half still
+  owed there: the convention settles the two rule pairs ruff warns
+  about as incompatible, and it turns `docstring-starts-with-this`
+  off — a rule the select list had named on its own, and one the tree
+  has no finding under either way.
+- **`tests/functional/` and `tests/unit/p2p/` are packages**: each was
+  the one directory on its path without an `__init__.py`, so the
+  modules under them read as an implicit namespace package (`INP001`)
+  while their siblings did not.
+- **`rpc/errors.py`'s `type_error` docstring is raw**: it quotes Core's
+  own `"Wrong type passed:\n%s"` format string, and a raw docstring
+  carries that backslash without an escape sequence (`D301`).
+
+### Badges, a scorecard sentinel, and a release-path API check (issue #402)
+
+- **`README.md` opens with the badge row section 2 of the organization
+  standard derives from what the tree is** (issue #402, under
+  btclib-org/.github#338): the index and forge badges, the gate
+  workflows and pre-commit.ci, then one badge per sentinel in section
+  10's calendar order. The index badges answer "not found" until a
+  first release reaches PyPI, which is datable rather than a defect;
+  there is no Read the Docs badge, no project there being connected
+  (`REPOSITORY.md`).
+- **`.github/workflows/scorecard.yml` runs the OpenSSF Scorecard
+  weekly** (issue #402, under btclib-org/.github#339): Saturday hour
+  03 at this repository's minute, ported from btclib's copy, its
+  triggers the action's own rather than section 10's general rule.
+- **`release.yml` gains a `public-api` job: `griffe check` against the
+  previous released `v*` tag** (issue #402, under
+  btclib-org/.github#326): both publish jobs need it, so a break in the
+  public surface is refused while `RELEASE_NOTES.md` is being written
+  rather than found by a caller. `v0.1.0` is excluded as the prototype
+  tag it is, so the first release resolves no previous tag and the
+  check skips itself, the workflow's own comment carrying the reason.
+  The header sentence claiming `integration-bitcoind.yml` is not in
+  this tree goes with it, that workflow existing and gating every pull
+  request as a required check.
+
+### REVIEWING.md converges with the organization's copy (issue #402)
+
+- **The shared half of `REVIEWING.md` — everything above `## This
+  repository in particular` — is byte for byte btclib-org/.github's**
+  (issue #402, under btclib-org/.github#353): the wording this copy
+  held predates the ack of record becoming a forge review, and
+  convergence rather than the one measured sentence is what also
+  covers the drift nobody measured.
+
 ### `asks_for_everything` resolves `testpaths` like `file_or_dir` (closes #496)
 
 - **`tests/conftest.py`'s `asks_for_everything` now resolves `wanted`,
