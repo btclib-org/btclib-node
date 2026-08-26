@@ -40,7 +40,7 @@ _AN_ADDRESS = NetworkAddressV2(0, 0, 1, b"\x01\x02\x03\x04", 18444)
 
 def make_node(
     queue_name: str,
-    item: tuple[str, bytes, int] | tuple[str, bytes, int, int],
+    item: tuple[str, bytes, int, int],
     *,
     status: P2pConnStatus,
     present: bool = True,
@@ -105,7 +105,7 @@ def test_a_handshake_message_reaches_its_callback(
 
     monkeypatch.setitem(handshake_callbacks, "verack", a_callback)
     node, stopped = make_node(
-        "handshake_messages", ("verack", b"", 0), status=P2pConnStatus.Open
+        "handshake_messages", ("verack", b"", 0, 1), status=P2pConnStatus.Open
     )
     handle_p2p_handshake(node)
     assert seen == [b""]
@@ -119,7 +119,7 @@ def test_a_handshake_message_on_a_closed_connection_is_dropped() -> None:
     a second `stop`.
     """
     node, stopped = make_node(
-        "handshake_messages", ("verack", b"", 0), status=P2pConnStatus.Closed
+        "handshake_messages", ("verack", b"", 0, 1), status=P2pConnStatus.Closed
     )
     handle_p2p_handshake(node)
     assert not stopped
@@ -132,7 +132,7 @@ def test_a_handshake_message_on_a_connected_one_drops_the_peer() -> None:
     speaking the protocol, and discouraged for it -- #283.
     """
     node, stopped = make_node(
-        "handshake_messages", ("verack", b"", 0), status=P2pConnStatus.Connected
+        "handshake_messages", ("verack", b"", 0, 1), status=P2pConnStatus.Connected
     )
     handle_p2p_handshake(node)
     assert stopped == [True]
@@ -154,7 +154,7 @@ def test_a_handshake_callback_that_raises_drops_the_peer(
 
     monkeypatch.setitem(handshake_callbacks, "verack", boom)
     node, stopped = make_node(
-        "handshake_messages", ("verack", b"", 0), status=P2pConnStatus.Open
+        "handshake_messages", ("verack", b"", 0, 1), status=P2pConnStatus.Open
     )
     handle_p2p_handshake(node)
     assert stopped == [True]
@@ -178,7 +178,7 @@ def test_a_handshake_callback_that_raises_a_btclib_exception_costs_the_peer(
 
     monkeypatch.setitem(handshake_callbacks, "verack", boom)
     node, stopped = make_node(
-        "handshake_messages", ("verack", b"", 0), status=P2pConnStatus.Open
+        "handshake_messages", ("verack", b"", 0, 1), status=P2pConnStatus.Open
     )
     handle_p2p_handshake(node)
     assert stopped == [True]
@@ -194,7 +194,7 @@ def test_a_handshake_message_for_a_connection_that_is_gone_is_dropped() -> None:
     """
     node, stopped = make_node(
         "handshake_messages",
-        ("verack", b"", 7),
+        ("verack", b"", 7, 1),
         status=P2pConnStatus.Open,
         present=False,
     )
@@ -219,12 +219,79 @@ def test_a_handshake_message_reaches_a_connection_still_pending(
     monkeypatch.setitem(handshake_callbacks, "verack", a_callback)
     node, stopped = make_node(
         "handshake_messages",
-        ("verack", b"", 0),
+        ("verack", b"", 0, 1),
         status=P2pConnStatus.Open,
         pending=True,
     )
     handle_p2p_handshake(node)
     assert seen == [b""]
+    assert not stopped
+
+
+def test_handle_p2p_handshake_weighs_the_message_off_the_connections_own_queued_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The popped handshake item's own size is subtracted too.
+
+    `handshake_messages` now shares `MAX_QUEUED_RECV_BYTES`
+    (`p2p/connection.py`) with `messages`, so what a connection has
+    queued there and not yet had `handle_p2p_handshake` look at counts
+    the same way `handle_p2p`'s own weighing already does.
+    btclib-org/btclib-node#482
+    """
+    monkeypatch.setitem(handshake_callbacks, "verack", lambda *_a: None)
+    node, stopped = make_node(
+        "handshake_messages",
+        ("verack", b"", 0, 1_000),
+        status=P2pConnStatus.Open,
+        queued_recv_bytes=1_500,
+    )
+    handle_p2p_handshake(node)
+    assert node.p2p_manager.connections[0].queued_recv_bytes == 500
+    assert not stopped
+
+
+def test_handle_p2p_handshake_resumes_a_connection_back_under_the_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dropping back to the bound schedules `_recv_resume.set` once.
+
+    Mirrors `test_handle_p2p_resumes_a_connection_back_under_the_bound`
+    above, over `handshake_messages` instead. btclib-org/btclib-node#482
+    """
+    monkeypatch.setitem(handshake_callbacks, "verack", lambda *_a: None)
+    node, stopped = make_node(
+        "handshake_messages",
+        ("verack", b"", 0, 1),
+        status=P2pConnStatus.Open,
+        queued_recv_bytes=MAX_QUEUED_RECV_BYTES + 1,
+    )
+    handle_p2p_handshake(node)
+    conn = node.p2p_manager.connections[0]
+    assert conn.queued_recv_bytes == MAX_QUEUED_RECV_BYTES
+    assert conn.resumed == [True]
+    assert not stopped
+
+
+def test_handle_p2p_handshake_does_not_resume_a_connection_still_over_the_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Still over `MAX_QUEUED_RECV_BYTES` after the pop: no resume scheduled.
+
+    Mirrors `test_handle_p2p_does_not_resume_a_connection_still_over_the_bound`
+    above, over `handshake_messages` instead. btclib-org/btclib-node#482
+    """
+    monkeypatch.setitem(handshake_callbacks, "verack", lambda *_a: None)
+    node, stopped = make_node(
+        "handshake_messages",
+        ("verack", b"", 0, 1),
+        status=P2pConnStatus.Open,
+        queued_recv_bytes=MAX_QUEUED_RECV_BYTES + 2,
+    )
+    handle_p2p_handshake(node)
+    conn = node.p2p_manager.connections[0]
+    assert conn.queued_recv_bytes == MAX_QUEUED_RECV_BYTES + 1
+    assert not conn.resumed
     assert not stopped
 
 

@@ -9,9 +9,10 @@ Reads `btclib.p2p.message.Message`s off the wire and hands each one to
 bounds what it will buffer in either direction -- `MAX_PROTOCOL_MESSAGE_LENGTH`
 on what any one message may claim to be, `MAX_QUEUED_RECV_BYTES` on how
 much of what this connection has already handed to `P2pManager.messages`
-may sit there unprocessed before this connection's own `run` stops
-reading any further, and a send buffer capped the way Core's own
-`-maxsendbuffer` caps one, per the comments beside each below.
+or `P2pManager.handshake_messages` may sit there unprocessed before this
+connection's own `run` stops reading any further, and a send buffer
+capped the way Core's own `-maxsendbuffer` caps one, per the comments
+beside each below.
 """
 
 import asyncio
@@ -624,12 +625,15 @@ class Connection:
         Leaves a trailing partial message in `buffer` for the next
         read, and routes each parsed one to `handshake_messages` or
         `messages` -- `ping`/`pong` pushed to the front of the latter.
-        Every message routed to `messages` carries its own wire size
-        alongside it, a fourth tuple element `handle_p2p` (`p2p/main.py`)
-        weighs back off `queued_recv_bytes` once it is processed;
-        `handshake_messages` carries none, that queue being drained
-        whole every pass of `Node`'s own loop rather than sharing this
-        connection's own pacing (btclib-org/btclib-node#462).
+        Every item carries its own wire size alongside it, a fourth
+        tuple element `handle_p2p` or `handle_p2p_handshake`
+        (`p2p/main.py`) weighs back off `queued_recv_bytes` once it is
+        processed (btclib-org/btclib-node#462); `handshake_messages` is
+        still drained whole every pass of `Node`'s own loop rather than
+        sharing `messages`'s own log2-scaled share, which bounds how
+        long a backlog persists but not how large one can grow between
+        two passes -- what the size on this queue's own items is for,
+        argued beside `consumed` below. btclib-org/btclib-node#482
 
         Peeks the header's own `length` field in `buffer` before
         building a stream or calling `Message.parse` at all: a chunk
@@ -662,13 +666,16 @@ class Connection:
         # and leaves the position after it, so several whole messages in
         # one read are taken one at a time, and a partial one rewinds.
         stream = BytesIO(self.buffer)
-        # Bytes actually handed to `manager.messages` this call -- not to
-        # `handshake_messages`, which this connection's own recv bound
-        # does not cover -- added to `queued_recv_bytes` once, below,
-        # rather than once per message: the same shape Core's own
-        # `MarkReceivedMsgsForProcessing` accumulates `nSizeAdded` in
-        # before it takes `m_msg_process_queue_mutex` once
-        # (`MAX_QUEUED_RECV_BYTES`'s own comment).
+        # Bytes handed to either queue this call, added to
+        # `queued_recv_bytes` once, below, rather than once per message:
+        # the same shape Core's own `MarkReceivedMsgsForProcessing`
+        # accumulates `nSizeAdded` in before it takes
+        # `m_msg_process_queue_mutex` once (`MAX_QUEUED_RECV_BYTES`'s own
+        # comment). A handshake command counts here the same as any
+        # other: `handshake_messages` shares this connection's own recv
+        # bound, so a peer resending one faster than `Node`'s own loop
+        # drains it pauses this connection's reads exactly as flooding
+        # `messages` already does. btclib-org/btclib-node#482
         consumed = 0
         try:
             while True:
@@ -682,13 +689,13 @@ class Connection:
                 if message.magic != self.node.chain.magic:
                     raise WrongNetworkMagicError(message.magic)
                 self.last_receive = time.time()
-                if message.command in handshake_callbacks:
-                    self.manager.handshake_messages.append(
-                        (message.command, message.payload, self.id)
-                    )
-                    continue
                 size = stream.tell() - start
                 consumed += size
+                if message.command in handshake_callbacks:
+                    self.manager.handshake_messages.append(
+                        (message.command, message.payload, self.id, size)
+                    )
+                    continue
                 item = (message.command, message.payload, self.id, size)
                 if message.command in ("ping", "pong"):
                     self.manager.messages.appendleft(item)
@@ -718,10 +725,8 @@ class Connection:
 
         Split out of `parse_messages`, the sole caller, only to keep that
         method under this file's own complexity ceiling; `consumed` is
-        `0` whenever nothing was routed to `manager.messages` this call
-        (only handshake commands parsed, or none at all), in which case
-        this does nothing -- `queued_recv_bytes` moves only for what
-        actually adds to the pressure `MAX_QUEUED_RECV_BYTES` bounds.
+        `0` whenever nothing was parsed this call, in which case this
+        does nothing.
         """
         if not consumed:
             return

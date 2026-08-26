@@ -105,17 +105,39 @@ class P2pManager(threading.Thread):
         # included -- not a second snapshot-style reader this lock left
         # out.
         self._connections_lock = threading.Lock()
-        # (command, payload, connection id), which is what a connection
-        # appends and what p2p.main pops apart; the handshake ones go
-        # in a queue of their own, drained whole before the rest.
-        # `messages`' own items carry a fourth element, the message's own
-        # wire size -- `Connection.parse_messages` and `handle_p2p`
-        # (`p2p/main.py`) are the two ends of what that paces,
-        # `Connection.MAX_QUEUED_RECV_BYTES`'s own comment arguing why;
-        # `handshake_messages` is not paced this way and carries no
-        # fourth element. btclib-org/btclib-node#462
+        # (command, payload, connection id, wire size) -- the size,
+        # `Connection.parse_messages`'s own addition since #462, is what
+        # `handle_p2p`/`handle_p2p_handshake` (`p2p/main.py`) weigh back
+        # off `queued_recv_bytes`, `MAX_QUEUED_RECV_BYTES`'s own comment
+        # (`p2p/connection.py`) arguing why. `handshake_messages` is
+        # drained whole every pass of `Node`'s own loop rather than
+        # sharing `messages`'s own log2-scaled share
+        # (btclib-org/btclib-node#462), and now paces its own reads
+        # against the same bound `messages` does: the earlier scoping
+        # away from it answered how long a backlog persists, not how
+        # large one pass's own backlog could grow before draining it.
+        # btclib-org/btclib-node#482
+        #
+        # Appended only from this manager's own event-loop thread --
+        # every `Connection.run` coroutine, whichever connection it
+        # belongs to, is multiplexed onto this one thread's asyncio loop
+        # -- and popped only from `Node`'s, through
+        # `Node._drain_message_queues`. Unlocked on both ends:
+        # `deque.append`, `.appendleft` and `.popleft` are each wrapped
+        # in their own `Py_BEGIN_CRITICAL_SECTION`/
+        # `Py_END_CRITICAL_SECTION` (`Modules/_collectionsmodule.c` and
+        # its clinic-generated wrapper, at python/cpython@f54fd2ab6e),
+        # which locks the deque's own per-object mutex under a
+        # free-threaded build and compiles to nothing under the ordinary
+        # GIL one (`Include/critical_section.h`: "no-ops in
+        # non-free-threaded builds") -- so a call from each thread can
+        # never interleave its own mutation of the same deque with the
+        # other's. What that does not cover, two threads calling the
+        # same method on one deque at once, never happens here: this is
+        # the only appender and `Node`'s thread the only popper.
+        # btclib-org/btclib-node#484
         self.messages: deque[tuple[str, bytes, int, int]] = deque()
-        self.handshake_messages: deque[tuple[str, bytes, int]] = deque()
+        self.handshake_messages: deque[tuple[str, bytes, int, int]] = deque()
         # Every nonce `add_pending_outbound_nonce` (below) has recorded
         # for an outbound connection still short of its own `verack` --
         # `promote_connection` and `remove_connection` below each

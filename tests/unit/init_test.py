@@ -554,7 +554,7 @@ def test_every_message_waiting_is_taken_before_the_loop_waits(
     node = a_networked_node
     p2p_manager = cast("AManager", node.p2p_manager)
     rpc_manager = cast("AManager", node.rpc_manager)
-    p2p_manager.handshake_messages.append(("version", None, 99))
+    p2p_manager.handshake_messages.append(("version", None, 99, 0))
     p2p_manager.messages.append(("ping", None, 99, 0))
     rpc_manager.messages.append(([], 99))
 

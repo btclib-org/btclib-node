@@ -50,6 +50,41 @@ to check the guess.
   `tests/functional` follows pytest's own default (`test_*.py`,
   `*_test.py`).
 
+### A repeat `version` ahead of `verack` is ignored, not answered again
+
+- **`callbacks.version` now ignores a second `version` from the same
+  peer ahead of its own `verack`, and `Connection.parse_messages` now
+  paces a handshake command's own wire size the same way it already
+  paced an ordinary message's** (closes #482): `handle_p2p_handshake`
+  never moved a connection's own `status` off `Open` on a repeat, so a
+  peer withholding `verack` could resend `version` as fast as this
+  node's read loop parsed it, each one answered again with
+  `WtxidRelay`, `SendAddrV2` and `Verack` and queued onto
+  `handshake_messages` with nothing pausing that connection's own
+  reads. Core's own guard, `pfrom.nVersion != 0`
+  (`net_processing.cpp`, at bitcoin/bitcoin@5f45583e43), ignores a
+  repeat outright instead -- no reply, no discouragement -- which is
+  what this callback now does too, and `handshake_messages` now shares
+  `MAX_QUEUED_RECV_BYTES` with `messages`: the earlier fix (#462)
+  scoped that pacing away from this queue on the reasoning that a full
+  drain every pass bounds how long a backlog persists, which says
+  nothing about how large one pass's own backlog can grow before it
+  drains.
+
+### `P2pManager.messages`/`handshake_messages` name why an unlocked deque is safe
+
+- **The comment beside `P2pManager.messages`/`handshake_messages` now
+  names the mechanism that makes appending from one thread and popping
+  from another safe with neither locked** (closes #484): `deque.append`,
+  `.appendleft` and `.popleft` are each wrapped in their own
+  `Py_BEGIN_CRITICAL_SECTION`/`Py_END_CRITICAL_SECTION`
+  (`Modules/_collectionsmodule.c` and its clinic-generated wrapper, at
+  python/cpython@f54fd2ab6e) -- CPython's own per-object lock under a
+  free-threaded build, and a no-op under the ordinary GIL one
+  (`Include/critical_section.h`'s own "no-ops in non-free-threaded
+  builds"). The only argument on record before this was an empirical
+  stress test in a coder's own report to the human, never landed prose.
+
 ### The `typos` hook is `repo: local`, pinned through `additional_dependencies`
 
 - **`.pre-commit-config.yaml`'s `typos` entry no longer mirrors

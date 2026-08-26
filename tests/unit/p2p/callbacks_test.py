@@ -482,6 +482,22 @@ def test_a_version_is_answered_with_what_this_node_speaks() -> None:
     assert not node.p2p_manager.discouraged
 
 
+def test_a_second_version_ahead_of_verack_is_ignored_outright() -> None:
+    """A repeat `version`, `version_message` already set, gets no reply at all.
+
+    Core's own guard against `pfrom.nVersion != 0`: no `WtxidRelay`,
+    `SendAddrV2` or `Verack` resent, no discouragement, no drop --
+    matching a peer's second `verack` and `wtxidrelay`, each already
+    idempotent for the same reason. btclib-org/btclib-node#482
+    """
+    node = a_handshake_node()
+    peer = a_peer(version_message=a_parsed_version())
+    version(node, a_version(), peer)
+    assert not peer.sent
+    assert not peer.stopped
+    assert not node.p2p_manager.discouraged
+
+
 def test_a_version_carrying_our_own_nonce_is_this_node_calling_itself() -> None:
     """A `version` carrying this node's own nonce is a self-connection, dropped.
 

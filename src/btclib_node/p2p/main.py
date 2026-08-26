@@ -12,12 +12,12 @@ by a callback stops that connection rather than the loop, and is
 discouraged for where it is a parse failure from the peer's own bytes
 rather than a bug in the handler.
 
-`handle_p2p` also weighs its own queued item's wire size back off the
+Each also weighs its own queued item's wire size back off the
 connection it came from, `queued_recv_bytes`, resuming that connection's
 own reads (`Connection.run`) once enough of what it queued is off
-`messages` -- the other end of the pacing `Connection.parse_messages`
+either queue -- the other end of the pacing `Connection.parse_messages`
 and `MAX_QUEUED_RECV_BYTES` (`p2p/connection.py`) start, argued there.
-btclib-org/btclib-node#462
+btclib-org/btclib-node#462, btclib-org/btclib-node#482
 
 `resume_cfilters` and `resume_getdata` instead drain `node.pending_cfilters`
 and `node.pending_getdata`, the connections `p2p.callbacks.get_cfilters`
@@ -49,14 +49,24 @@ def handle_p2p_handshake(node: Node) -> None:
     A message out of handshake order gets the connection discouraged
     and stopped rather than dispatched; a callback that raises stops it
     too, discouraged only where the exception is a `BTClibException`.
+
+    Weighs the item's own size back off the connection's
+    `queued_recv_bytes` the moment it is popped, the same as `handle_p2p`
+    below and for the same reason -- argued there.
+    btclib-org/btclib-node#482
     """
-    msg_type, msg, conn_id = node.p2p_manager.handshake_messages.popleft()
+    msg_type, msg, conn_id, size = node.p2p_manager.handshake_messages.popleft()
     manager = node.p2p_manager
     # a connection still finishing its handshake, which is where every
     # one of these four commands is answered, or one already promoted
     # that a peer sent a second version/verack/wtxidrelay/sendaddrv2 to
     conn = manager.pending_connections.get(conn_id) or manager.connections.get(conn_id)
     if conn is not None:
+        with conn._recv_lock:
+            conn.queued_recv_bytes -= size
+            resume = conn.queued_recv_bytes <= MAX_QUEUED_RECV_BYTES
+        if resume:
+            conn.loop.call_soon_threadsafe(conn._recv_resume.set)
         node.logger.info("Received p2p message: %s, %s", msg_type, conn_id)
         try:
             if conn.status == P2pConnStatus.Open:
