@@ -15,15 +15,18 @@ Set through classic branch protection; no ruleset on `main` carries a
 
 ```shell
 gh api repos/btclib-org/btclib-node/branches/main/protection \
-  --jq '.required_status_checks.contexts'
-# ["Lint and type-check","test: every job passed","Build the documentation"]
+  --jq '.required_status_checks.contexts[]'
+# Lint and type-check
+# test: every job passed
+# Build the documentation
+# Regtest against Bitcoin Core
 gh api repos/btclib-org/btclib-node/rulesets --jq '.[].id' \
   | xargs -I{} gh api repos/btclib-org/btclib-node/rulesets/{} \
     --jq '.rules[] | select(.type=="required_status_checks")'
 # (nothing)
 ```
 
-A red run on any of the three blocks the merge. Each is produced by the
+A red run on any of them blocks the merge. Each is produced by the
 workflow that answers for it:
 
 | Check | Produced by |
@@ -31,14 +34,22 @@ workflow that answers for it:
 | `Lint and type-check` | `lint.yml`'s only job |
 | `test: every job passed` | `test.yml`'s aggregate job |
 | `Build the documentation` | `docs.yml`'s only job |
+| `Regtest against Bitcoin Core` | `integration-bitcoind.yml`'s `regtest` job |
 
-`lint.yml` and `docs.yml` each have one job, so that job is the context;
-an aggregate over a single cell would be a job whose whole purpose is to
-repeat another's answer. `test.yml` has more than one and is therefore
-named through its aggregate, so that a job added to that workflow is
-gated on by being added rather than by somebody editing a rule stored
-outside the tree. All three jobs carry the reasoning in their own
-headers.
+`lint.yml`, `docs.yml` and `integration-bitcoind.yml` each have one job,
+so that job is the context; an aggregate over a single cell would be a
+job whose whole purpose is to repeat another's answer. `test.yml` has
+more than one and is therefore named through its aggregate, so that a
+job added to that workflow is gated on by being added rather than by
+somebody editing a rule stored outside the tree. Every one of these jobs
+carries the reasoning in its own header.
+
+The context is the job's `name:`, not the workflow's, and the array
+above holds it as a literal string that nothing in the tree can keep in
+step: **renaming the `regtest` job would leave a required check nothing
+produces, and a merge would wait on it forever.** That is a change to
+make here first, in the same order this section's own opening argues —
+the setting, then the record of it.
 
 `docs.yml`'s "Build the documentation" runs on every pull request
 already, the way `lint.yml` and `test.yml` do (*What gates a merge, and
@@ -54,10 +65,16 @@ gh api -X PATCH \
   -F strict=true \
   -f 'contexts[]=Lint and type-check' \
   -f 'contexts[]=test: every job passed' \
-  -f 'contexts[]=Build the documentation'
+  -f 'contexts[]=Build the documentation' \
+  -f 'contexts[]=Regtest against Bitcoin Core'
 ```
 
-Re-run the first command above to confirm the three contexts still hold
+The array is rewritten whole rather than added to: a context left out of
+that PATCH stops being required, silently. `-F` is what `strict` needs,
+`-f` sending a string even for a boolean — btclib-org/btclib-node#453 is
+where this command was first run rather than only documented.
+
+Re-run the first command above to confirm the contexts still hold
 — its answer, not this paragraph, is what is true today.
 
 **`links.yml`, `codeql.yml`, `os-macos.yml` and `bootstrap-dns.yml` must

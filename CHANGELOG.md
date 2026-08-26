@@ -14,6 +14,21 @@ to check the guess.
 
 ## Unreleased
 
+### `Regtest against Bitcoin Core` is a required check on `main`
+
+- **`integration-bitcoind.yml`'s own job now blocks a merge rather than
+  only reporting**: the workflow landed with #374 gating every pull
+  request, but whether a red run stops anything is a repository setting
+  and not a file, so it needed the `gh api` PATCH `REPOSITORY.md`
+  already carried as its own follow-up. The context is the job's
+  `name:`, held outside the tree as a literal string nothing here can
+  keep in step, so that file now says what renaming the job would cost
+  and in which order the two changes go.
+- **`CONTRIBUTING.md`'s *What gates a merge, and what only reports*
+  named three required checks and the workflow's own header still said
+  making it gate a merge was a change for later**: both are the same
+  fact recorded in a second place, and both are corrected here.
+
 ### A Bitcoin Core citation reads `at bitcoin/bitcoin@<sha>` (closes #471)
 
 - **An identifier directly followed by a parenthesised list ending in

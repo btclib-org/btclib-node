@@ -19,10 +19,13 @@ name: integration-bitcoind
 # price of the question.
 #
 # Which workflow a required check comes from lives outside this
-# repository, in main's protection, and names it as a literal string:
-# making this one gate a merge is therefore a separate `gh api` change,
-# REPOSITORY.md's own recipe, once this file has run enough times to
-# trust.
+# repository, in main's protection, and names it as a literal string --
+# this job's own `name:` below, not this file's. That change has been
+# made: `Regtest against Bitcoin Core` is a required check on main, and
+# REPOSITORY.md records it along with the PATCH that set it. Renaming
+# the job therefore leaves a required check nothing produces, and a
+# merge waiting on it forever; the rule outside the tree is the thing to
+# change first.
 #
 # A schedule too, like every other unattended question here, and it is
 # not about the tree: the job below asks the same node the same question
