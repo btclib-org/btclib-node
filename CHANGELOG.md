@@ -63,6 +63,25 @@ to check the guess.
   not by itself a reason to keep answering Core's own surface
   differently from Core.
 
+### `update_chain`'s own block reads stay outside the trial's rollback (closes #452)
+
+- **A raise from `_blocks_to_add`/`_rev_blocks_to_remove` stops the node
+  rather than rolling the trial back** (closes #452): both read this
+  node's own already-validated blocks and reverse patches back off
+  `block_db`, so a raise there is this node's storage failing to give
+  back what it wrote, not a fork turning out bad. Core's `ConnectTip`
+  answers a failed read the same way, with `FatalError`; its
+  `DisconnectTip` answers the same failure plainly and leaves
+  `FatalError` to `ActivateBestChainStep`, one level up, which holds
+  any failure to walk its chain backward fatal -- a bad read among
+  them -- on the same chain-advance path `update_chain` mirrors
+  (`src/validation.cpp`, bitcoin/bitcoin@b91d983f66). The two calls
+  keep their place ahead of the trial's own `try`, now argued in a
+  comment beside them rather than left to be read as an oversight, and
+  `test_a_missing_reverse_patch_stops_the_node_rather_than_rolling_back`
+  (`tests/unit/init_test.py`) drives a real `Node.run` through exactly
+  this raise to pin it.
+
 ### The signal handlers move out of `Node.__init__` (closes #436)
 
 - **`Node.__init__` no longer calls `signal.signal`** (closes #436): a

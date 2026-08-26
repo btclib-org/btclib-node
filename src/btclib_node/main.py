@@ -241,6 +241,40 @@ def update_chain(node: Node) -> None:
     node.logger.info("Start block validation")
 
     node.logger.debug("Start getting blocks")
+    # Deliberately outside the try below, so a raise from either call
+    # propagates out of update_chain, into Node._step_chain and out of
+    # Node.run's own loop, rather than being caught and rolled back the
+    # way a raise inside the trial is. Every hash the two functions are
+    # given names a block this node already validated and wrote for
+    # itself -- _blocks_to_add's and _rev_blocks_to_remove's own
+    # comments say so -- so a raise here is this node's own storage
+    # failing to give back what it wrote (a corrupt file, a disk error,
+    # get_block/get_rev_block finding block_db's index disagreeing with
+    # chainstate's), never the fork's content turning out bad: that
+    # question is check_transactions', inside the try, and is answered
+    # by rejecting the fork rather than by stopping the node.
+    #
+    # Bitcoin Core's own split (src/validation.cpp, read at
+    # bitcoin/bitcoin@b91d983f66) is not symmetric between the two
+    # directions this function tries a block in, and is cited as it
+    # actually reads rather than tidied into one: ConnectTip answers a
+    # failed read immediately, with FatalError. DisconnectTip answers
+    # the same failure by returning plainly from inside itself --
+    # FatalError for a disconnect lives one level up, in
+    # ActivateBestChainStep, and covers a failed read, a failed
+    # DisconnectBlock and a failed FlushStateToDisk alike, one fatal
+    # condition over that caller's whole walk rather than over the read
+    # alone. ActivateBestChainStep trying a heavier candidate block by
+    # block is the path update_chain mirrors; DisconnectTip's other
+    # caller, InvalidateBlock, answers that same read failure by
+    # returning to the RPC layer instead, because an operator's own
+    # explicit command is not the chain trying to advance itself, a
+    # distinction this function has no counterpart to. So what Core
+    # holds fatal is failing to walk its own chain while advancing it,
+    # on either side of that walk, not a read specifically -- which is
+    # the same claim made of _blocks_to_add and _rev_blocks_to_remove
+    # above: stop rather than reject, because the question here is this
+    # node's own storage, not the fork's content. btclib-org/btclib-node#452
     to_add = _blocks_to_add(node, to_add_hash)
     to_remove = _rev_blocks_to_remove(node, to_remove_hash)
     node.logger.debug("Got all blocks")
