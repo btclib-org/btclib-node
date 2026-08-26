@@ -40,13 +40,8 @@ records with the reason. -->
 [![mutation workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/mutation.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/mutation.yml)
 [![integration-bitcoind workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/integration-bitcoind.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/integration-bitcoind.yml)
 
-btclib-node is a bitcoin node with its consensus and network code written
-in python, using the [btclib](https://github.com/btclib-org/btclib)
-bitcoin library.
-
-**btclib-node** succeeded in downloading and validating the entire bitcoin
-blockchain, starting from version 0.1.0 and, as far as I can tell, is the
-first python implementation that was able to do so
+btclib-node is a full node bitcoin implementation written in Python and
+based on btclib.
 
 ## Security
 
