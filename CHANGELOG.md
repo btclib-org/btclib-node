@@ -14,6 +14,35 @@ to check the guess.
 
 ## Unreleased
 
+### The `typos` hook is `repo: local`, pinned through `additional_dependencies`
+
+- **`.pre-commit-config.yaml`'s `typos` entry no longer mirrors
+  `crate-ci/typos`** (closes btclib-org/.github#399): `local` and `meta`
+  are the only two `repo:` values `pre-commit autoupdate` filters out
+  before it walks a config's `repos:` list, so a mirrored `typos` entry
+  is what a scheduled autoupdate can move onto `crate-ci/typos`'s own
+  moving `v1` alias, past the `pinned-rev` guard that only reads
+  `rev:`. The `repo: local` hook carries the pin itself, in
+  `additional_dependencies: [typos==1.49.0]`, and `language`, `entry`,
+  `args` and `types` are upstream's own typos hook definition, copied in
+  rather than fetched — `args` was already named explicitly in the
+  mirrored entry, for the reason its own comment gave, and the rest the
+  mirror took from the manifest. The block carries
+  `stages: [pre-commit, pre-merge-commit, pre-push, manual]` too:
+  a `repo: local` hook inherits no stage restriction from a manifest, so
+  leaving `stages:` out would run the hook at `commit-msg` too, where its
+  own `--write-changes` rewrites the commit message being typed.
+
+### `.gitignore`'s `docs/_build/` entry is gone
+
+- **`build/` already covers `docs/build/html`, the directory
+  `CONTRIBUTING.md`'s documented `sphinx-build` command writes**
+  (closes btclib-org/.github#411): `docs/_build/` is the stock
+  GitHub Python template's Sphinx section, and no command in this
+  repository writes there — `docs/` carries no `Makefile` or `make.bat`
+  of its own, sphinx's own default output directory being reachable only
+  by a command `CONTRIBUTING.md` does not name.
+
 ### `Regtest against Bitcoin Core` is a required check on `main`
 
 - **`integration-bitcoind.yml`'s own job now blocks a merge rather than
