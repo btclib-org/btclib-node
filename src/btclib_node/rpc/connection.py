@@ -182,7 +182,11 @@ class RpcConnection:
         self.id = connection_id
         self.rpc_id = ""
         self.messages: list[Any] = []
-        self.buffer = b""
+        # A `bytearray`, not `bytes`: `_recv_until`'s own `+=` below is
+        # an in-place, amortised extend on this type and a full copy of
+        # everything held so far on the other -- btclib-org/btclib-node#466,
+        # the same shape btclib-org/btclib-node#438 fixed on the p2p side.
+        self.buffer = bytearray()
         self.task: Future[None] | None = None
         self.request_timeout = request_timeout
 
@@ -198,7 +202,22 @@ class RpcConnection:
         while not predicate():
             if max_bytes is not None and len(self.buffer) > max_bytes:
                 raise ConnectionError
-            data = await self.loop.sock_recv(self.client, 1024)
+            # 64 KB, matching Core's own HTTP server:
+            # `HTTPServer::SocketHandlerConnected` (`src/httpserver.cpp:904`,
+            # bitcoin/bitcoin@b91d983f66) reads into `char buf[0x10000]`,
+            # "typical socket buffer is 8K-64K" by its own comment there --
+            # the hand-written raw-socket read loop that server uses in
+            # place of libevent's `evhttp` (`doc/release-notes-35182.md`).
+            # Not a second, independent reason to reuse this tree's own
+            # p2p `Connection.run`'s read size (`pchBuf`, `src/net.cpp`,
+            # same commit -- btclib-org/btclib-node#438): Core's own
+            # `SocketHandlerConnected` is "adapted from CConnman"
+            # (`net.cpp`'s own class, `pchBuf`'s home) by its own commit
+            # message (bitcoin/bitcoin@80e1cfe5a2), and the comment
+            # above is copied verbatim between the two files -- one
+            # Core design decision, applied to both of its own read
+            # loops, cited here the same way it is on the p2p side.
+            data = await self.loop.sock_recv(self.client, 65536)
             if not data:
                 raise ConnectionError
             self.buffer += data
