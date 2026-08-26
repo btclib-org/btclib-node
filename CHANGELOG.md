@@ -48,6 +48,24 @@ to check the guess.
   live, not-yet-successful outbound connections rather than a ring at
   all.
 
+### A live node syncs against a real bitcoind (closes #374)
+
+- **`tests/integration/bitcoind_test.py` starts a disposable regtest
+  `bitcoind`, connects a fresh `Node` to it over p2p, and asserts the
+  node's own tip against bitcoind's `getbestblockhash` once it reaches
+  `NodeStatus.BlockSynced`** (closes #374): every other p2p test in this
+  suite connects one `Node` to another, which shows `btclib`'s p2p
+  implementation working against itself and nothing about it meeting a
+  Bitcoin Core it did not write. `tests/integration/` is new, following
+  section 7 of the organization standard -- each test skips itself
+  without `BTCLIB_NODE_INTEGRATION` set, excluded from both `testpaths`
+  and the coverage ratchet, and covered instead by
+  `integration-bitcoind.yml`, which fails if what it runs skips rather
+  than reaches a node. `.github/actions/install-bitcoind` downloads the
+  pinned release the workflow points the test at, its version and
+  digest read off `btclib`'s and `bitcoin-core-rpc`'s own copies of the
+  same action rather than either file copied whole.
+
 ### Two waits stop sitting tighter than `wait_until`'s default (closes #476)
 
 - **`test_a_slow_manager_start_cannot_still_clobber_the_status_it_raced` and
