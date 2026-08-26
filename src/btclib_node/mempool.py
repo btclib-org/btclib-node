@@ -12,6 +12,7 @@ round leaves behind decays the way Core's own does, `_ROLLING_FEE_HALFLIFE`
 below being `ROLLING_FEE_HALFLIFE` (`src/txmempool.h`).
 """
 
+import heapq
 import time
 from fractions import Fraction
 from typing import TYPE_CHECKING
@@ -52,7 +53,12 @@ class Mempool:
     that holds it, and `fees` carries what each entry paid -- the module
     docstring above is where the single-thread invariant that lets this
     class carry no lock of its own is argued. `spent_by` is the fourth
-    index, `_descendants` below is where it is read.
+    index, `_descendants` below is where it is read; `_feerate_heap` is
+    the fifth, `_pop_worst_wtxid` below being where it is read and
+    `_rebuild_feerate_heap` where it is kept from growing without bound.
+    `_heap_current_seq` is the sixth, and is what tells a heap entry for
+    a wtxid still held apart from one superseded by a later re-add of
+    the same wtxid -- `_pop_worst_wtxid` again being where that is read.
     """
 
     def __init__(self, logger: Logger) -> None:
@@ -74,6 +80,37 @@ class Mempool:
         # leaves rather than leaving an empty set behind for every
         # confirmed parent a mempool transaction ever spent.
         self.spent_by: dict[bytes, set[bytes]] = {}
+        # (individual feerate, insertion order, wtxid), a min-heap
+        # `add_tx` pushes one entry onto and `_pop_worst_wtxid` below
+        # reads from instead of `_evict_to_limit` scanning `transactions`
+        # whole -- the other O(n) factor btclib-org/btclib-node#441
+        # measured and deliberately left alone, #457 being where this
+        # heap is argued and measured both ways. A wtxid's feerate is
+        # fixed at push time and never mutated in place -- there is no
+        # fee-bump or replace-by-fee path in this mempool to change what
+        # an entry already held pays -- but a wtxid can still leave and
+        # come back (a reorg's own `_reconcile_mempool_for_reorg`, in
+        # `main.py`, is one path that does this), and a heap entry from
+        # its first spell is not deleted when it leaves, only ignored
+        # once found stale. `_heap_current_seq` below is what tells that
+        # entry apart from the fresh one its second spell pushes;
+        # `_pop_worst_wtxid` is where a mismatch, not mere membership in
+        # `transactions`, is what discards it, and `_rebuild_feerate_heap`
+        # is what keeps every kind of leftover from growing without
+        # bound across a mempool's whole lifetime, most of which is
+        # spent under its limit rather than evicting anything -- see
+        # both docstrings.
+        self._feerate_heap: list[tuple[Fraction, int, bytes]] = []
+        # wtxid -> the second element of whichever `_feerate_heap` entry
+        # is this wtxid's own current one -- the value `add_tx` just
+        # pushed, or the value `_rebuild_feerate_heap` just re-assigned,
+        # never one a since-superseded push or rebuild left behind. A
+        # popped heap entry answers this call correctly (not merely "is
+        # this wtxid still held") only once its own second element is
+        # checked against this: a re-add's fresh entry and its own
+        # first spell's leftover entry both name a wtxid `transactions`
+        # currently holds, and only one of the two is the current entry.
+        self._heap_current_seq: dict[bytes, int] = {}
         self.size: int = 0
         self.bytesize: int = 0
         # Core's own `DEFAULT_MAX_MEMPOOL_SIZE_MB`
@@ -189,6 +226,20 @@ class Mempool:
         self.size += 1
         self.bytesize += tx.vsize
         self.sequence += 1
+        # `self.sequence`, already bumped once above and unique to this
+        # call -- it never repeats and only ever grows -- is this heap's
+        # own tie-breaker too, so a second counter kept only for this is
+        # not needed: two equal-feerate entries pop in the order they
+        # were pushed, `min`'s own stability over `self.transactions`'
+        # insertion order before this heap existed. It also doubles as
+        # this wtxid's current heap entry's own identifier: a wtxid
+        # re-added after leaving overwrites `_heap_current_seq[wtxid]`
+        # with this call's own value, so the entry a leftover, unpopped
+        # heap tuple from its first spell still carries stops matching.
+        self._heap_current_seq[wtxid] = self.sequence
+        heapq.heappush(
+            self._feerate_heap, (Fraction(fee, tx.vsize), self.sequence, wtxid)
+        )
         self._evict_to_limit()
         return wtxid in self.transactions
 
@@ -232,11 +283,22 @@ class Mempool:
         The one place every removal, `remove_tx` and eviction alike,
         updates the bookkeeping the indices and counters above carry --
         so they never drift the way two independent copies of the same
-        accounting would.
+        accounting would. `_feerate_heap` is the exception: a removal
+        through `remove_tx` leaves that wtxid's own entry there, stale,
+        because finding and dropping one buried entry out of a heap is
+        itself an O(n) scan -- exactly the cost this index exists to
+        avoid paying on every acceptance. `_heap_current_seq` is what
+        marks it stale despite still being physically present --
+        dropping this wtxid's own entry here is what a re-add's later
+        push has to overwrite instead of finding absent -- and
+        `_rebuild_feerate_heap` is what the check below hands the
+        physical leftover to, rather than letting it accumulate for as
+        long as this mempool runs.
         """
         tx = self.transactions.pop(wtxid)
         self.txid_index.pop(tx.id, None)
         self.fees.pop(wtxid, None)
+        self._heap_current_seq.pop(wtxid, None)
         # A set of the spent txids first, not a loop over `tx.vin` itself:
         # two inputs of one transaction spending two outputs of the same
         # earlier one are not unusual, and `add_tx` below records that
@@ -252,6 +314,15 @@ class Mempool:
         self.size -= 1
         self.bytesize -= tx.vsize
         self.sequence += 1
+        # Bounds the heap at twice the size it would be with no stale
+        # entries in it at all: a wtxid removed here without its own
+        # heap entry ever being popped (every removal but the one
+        # `_pop_worst_wtxid` itself just consumed) is one more entry
+        # `len(self._feerate_heap)` counts and `self.size` no longer
+        # does, and this is the one place, alongside `add_tx`'s own
+        # push, that both numbers are already in hand to compare.
+        if len(self._feerate_heap) > 2 * self.size:
+            self._rebuild_feerate_heap()
         return tx
 
     def _descendants(self, wtxid: bytes) -> set[bytes]:
@@ -287,6 +358,80 @@ class Mempool:
                 frontier.append(self.transactions[candidate_wtxid].id)
         return descendants
 
+    def _pop_worst_wtxid(self) -> bytes:
+        """Pop and return the currently held wtxid of the lowest feerate.
+
+        `_feerate_heap` holds one entry per wtxid this mempool has ever
+        held a push for, and a push happens once per `add_tx` call and
+        once per `_rebuild_feerate_heap` sweep -- never updated in
+        place, since a wtxid's feerate cannot change while it is held,
+        there being no fee-bump or replace-by-fee path into this
+        mempool. What can change is whether a given physical entry is
+        still the one this wtxid is currently held under: `add_tx` on a
+        wtxid that left and came back pushes a fresh entry with a fresh
+        second element and overwrites `_heap_current_seq[wtxid]` to
+        match it, so an older entry for the same wtxid, still physically
+        in the heap because `_pop` never goes looking for it, now names
+        a second element `_heap_current_seq` no longer agrees with. This
+        popped a wtxid still in `self.transactions` and got the eviction
+        order wrong on exactly that path -- checking membership alone
+        cannot tell the two entries apart, only checking the entry
+        `_heap_current_seq` currently names for that wtxid can -- and
+        that check is the fix (btclib-org/btclib-node#457, second
+        round).
+
+        This discards every entry that fails the check, in ascending
+        feerate order, until one that passes surfaces -- which always
+        happens before the heap runs out. For every wtxid still held,
+        exactly one entry in the heap has the second element
+        `_heap_current_seq` currently names for it, pushed either by the
+        `add_tx` call that last (re-)added it or by the most recent
+        `_rebuild_feerate_heap` sweep since; that entry cannot have been
+        popped already, since popping the entry matching a wtxid's
+        current mapping only ever happens here, at the moment this
+        method returns that wtxid to be evicted, and eviction is what
+        removes the wtxid (and its mapping) from `self.transactions` --
+        so the invariant is "at least one matching entry per currently
+        held wtxid", not "exactly one": a re-add can leave a second,
+        now-permanently-stale entry for the same wtxid behind, and nothing
+        needs it gone before this can terminate correctly.
+        """
+        while True:
+            _, seq, wtxid = heapq.heappop(self._feerate_heap)
+            if self._heap_current_seq.get(wtxid) == seq:
+                return wtxid
+
+    def _rebuild_feerate_heap(self) -> None:
+        """Re-derive `_feerate_heap` from scratch, dropping every stale entry.
+
+        `self.transactions` and `self.fees` are inserted into and
+        deleted from together, in `add_tx` and `_pop`, so their key
+        order agrees at every point this can run -- `enumerate` over
+        one, read against the other, reproduces each currently held
+        wtxid's own original relative insertion order without this
+        mempool having kept a separate record of it. Every entry built
+        here is the new current one: `_heap_current_seq[wtxid]` is
+        overwritten to the same index the rebuilt entry carries, so a
+        heap entry from before this rebuild -- superseded here whether
+        or not it had already gone stale on its own -- stops matching
+        exactly the way an ordinary re-add's leftover does. The indices
+        handed out this way, `0` upward, are smaller than `self.sequence`
+        can ever be read as here: `self.sequence` only ever grows, by at
+        least one per add and one per removal, so it already exceeds
+        `self.size` -- and therefore every index below it -- at any
+        point `_pop`'s own check calls this. A push after this rebuild
+        still carries the current, larger `self.sequence`, so it still
+        breaks a tie against a rebuilt entry the same way it would have
+        against the entry the rebuild replaced.
+        """
+        self._feerate_heap = []
+        for index, (wtxid, fee) in enumerate(self.fees.items()):
+            self._heap_current_seq[wtxid] = index
+            self._feerate_heap.append(
+                (Fraction(fee, self.transactions[wtxid].vsize), index, wtxid)
+            )
+        heapq.heapify(self._feerate_heap)
+
     def _evict_to_limit(self) -> None:
         """Evict by worst individual feerate until back at the limit.
 
@@ -302,17 +447,19 @@ class Mempool:
         it -- not because that is cheapest to evict, but because it is
         the only choice that never leaves a remaining transaction whose
         own prevout no longer resolves. Ties break toward the
-        longest-held entry, `self.transactions`' own insertion order and
-        `min`'s own stability, there being no ordering Core's package
-        score would give here to break them by instead. This is a
-        deliberate, argued departure from Core, unlike `removed_rate`
-        below, which matches it.
+        longest-*currently*-held entry: `_heap_current_seq` (`add_tx`,
+        `_rebuild_feerate_heap`) names each wtxid's own tiebreak value
+        by when it was last (re-)added, not by when it was first ever
+        seen, reproducing what `self.transactions`' own insertion order
+        and `min`'s own stability gave before this heap replaced that
+        scan -- a wtxid that left and came back sorts as newly held,
+        the same way a dict does on a delete followed by a fresh insert
+        (btclib-org/btclib-node#457). This is a deliberate, argued
+        departure from Core, unlike `removed_rate` below, which matches
+        it.
         """
         while self.bytesize > self.bytesize_limit and self.transactions:
-            worst = min(
-                self.transactions,
-                key=lambda w: Fraction(self.fees[w], self.transactions[w].vsize),
-            )
+            worst = self._pop_worst_wtxid()
             package = self._descendants(worst)
             # Core's own `removed` (`:917-925`): the feerate of the whole
             # evicted chunk -- `GetWorstMainChunk`'s own aggregate fee

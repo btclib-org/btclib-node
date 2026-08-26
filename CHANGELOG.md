@@ -46,6 +46,31 @@ to check the guess.
   instead of repeating it. Whether to support Windows at all stays
   issue #430's to decide.
 
+### `Mempool._evict_to_limit` reads its worst entry off a heap (closes #457)
+
+- **`Mempool` keeps `_feerate_heap`, a min-heap of individual feerate
+  pushed once per accepted transaction, and `_evict_to_limit` reads the
+  current worst entry off it instead of scanning every held transaction
+  once per eviction round** (closes #457): the `min` scan
+  btclib-org/btclib-node#441 measured and deliberately left alone is
+  gone. A wtxid's feerate cannot change while it is held -- this
+  mempool has no fee-bump or replace-by-fee path -- but a wtxid can
+  still leave and come back (a reorg's own reconciliation is one path
+  that does this), so a heap entry is discarded once its own second
+  element no longer matches `_heap_current_seq`'s current record for
+  that wtxid, not merely once it names a wtxid the mempool no longer
+  holds: membership alone cannot tell a re-added wtxid's fresh entry
+  from its own leftover first-spell entry, and the two do not tie-break
+  the same way. `_pop` rebuilds the heap from scratch once its stale
+  entries outnumber what is actually held, so a mempool that runs for a
+  long time under its limit, the ordinary case, does not carry one heap
+  entry for every transaction it has ever accepted. Bitcoin Core avoids
+  this cost differently, keeping `m_txgraph`'s own live package-score
+  structure rather than a heap that tolerates stale entries at all
+  (`TrimToSize`, `src/txmempool.cpp:909`, bitcoin/bitcoin@58a7869f86);
+  the substitute here is narrower, matching btclib-org/btclib-node#441's
+  own reasoning for the index it added instead of that structure.
+
 ### `Node.run`'s idle sleep is 5 ms, not a tenth of a millisecond (closes #440)
 
 - **`Node.run`'s loop sleeps `IDLE_SLEEP_SECONDS`, 5 ms, once a pass
