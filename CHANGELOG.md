@@ -32,6 +32,20 @@ to check the guess.
   before that, so there was no per-chunk parse attempt to defer in the
   first place.
 
+### The Windows classifier comment now names its known blockers (closes #429)
+
+- **`pyproject.toml`'s classifier comment said Windows was left out
+  only because nothing here runs it, not because anything is known to
+  stop it** (closes #429): that was false. The comment now names
+  `loop.add_reader` and `signal.SIGTSTP` as already-known blockers,
+  says what changed about `SIGTSTP`'s own reach when its handler moved
+  into `install_signal_handlers`, and says the list is a lower bound
+  rather than an inventory. `test.yml`'s own header restated the same
+  false claim in its own words, to explain why it keeps no
+  `windows.yml` sentinel; it now points at the classifier comment
+  instead of repeating it. Whether to support Windows at all stays
+  issue #430's to decide.
+
 ### `Node.run`'s idle sleep is 5 ms, not a tenth of a millisecond (closes #440)
 
 - **`Node.run`'s loop sleeps `IDLE_SLEEP_SECONDS`, 5 ms, once a pass

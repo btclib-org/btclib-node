@@ -97,9 +97,16 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Natural Language :: English",
-    # where this gets developed and where it gets run; Windows is left
-    # out because nothing here runs it, not because anything is known to
-    # stop it
+    # where this gets developed and where it gets run: nothing here has
+    # ever run on Windows, and at least two things are already known to
+    # stop it. `loop.add_reader`, which both p2p/manager.py and
+    # rpc/manager.py call, is not implemented by the Proactor event
+    # loop that is Windows' default. `signal.SIGTSTP` does not exist
+    # there either; it is reached only by the three scripts/chains
+    # entry points, which call install_signal_handlers, and not by
+    # building a Node itself (issue #429). The list is a lower bound,
+    # not an inventory, and whether to support Windows at all is issue
+    # #430's to decide.
     "Operating System :: POSIX",
     "Operating System :: MacOS",
     "Topic :: Internet",
