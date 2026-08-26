@@ -14,6 +14,24 @@ to check the guess.
 
 ## Unreleased
 
+### `RpcConnection` reads 64 KB at a time, copying a body O(1) times (closes #466)
+
+- **`_recv_until` reads into a 64 KB buffer, matching Core's own HTTP
+  server -- `HTTPServer::SocketHandlerConnected`'s `char buf[0x10000]`
+  (`src/httpserver.cpp`, bitcoin/bitcoin@b91d983f66), itself adapted
+  from the p2p read loop this tree's own sibling already cites -- rather
+  than 1024 bytes with no argument behind that number** (closes #466):
+  fewer syscalls
+  per request, and `self.buffer` is a `bytearray` whose `+=` extends in
+  place instead of copying everything held so far the way
+  `bytes += bytes` did -- the same shape #438 fixed on the p2p side.
+  That fix's own third part, deferring a parse until the buffer holds a
+  whole message, has no equivalent here: `_recv_until` already returns
+  only once its own predicate -- the header terminator found, or the
+  declared `Content-Length` reached -- holds, and `run` parses nothing
+  before that, so there was no per-chunk parse attempt to defer in the
+  first place.
+
 ### `Node.run`'s idle sleep is 5 ms, not a tenth of a millisecond (closes #440)
 
 - **`Node.run`'s loop sleeps `IDLE_SLEEP_SECONDS`, 5 ms, once a pass
