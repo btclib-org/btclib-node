@@ -56,7 +56,7 @@ from btclib_node.rpc.callbacks import (
 from btclib_node.rpc.callbacks import test_mempool_accept as mempool_accept
 from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import RpcError, RpcErrorCode
-from tests.helpers import generate_random_header_chain
+from tests import generate_random_header_chain
 
 if TYPE_CHECKING:
     from btclib.block import BlockHeader

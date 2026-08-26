@@ -32,7 +32,7 @@ from btclib_node import Node
 from btclib_node.chains import RegTest
 from btclib_node.config import Config
 from btclib_node.constants import NodeStatus, P2pConnStatus
-from tests.helpers import (
+from tests import (
     generate_random_chain,
     get_random_port,
     local_addr,

@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from btclib.p2p.payload import Payload
 
     from btclib_node import Node
-from tests.helpers import (
+from tests import (
     WaitTimeoutError,
     generate_random_transaction,
     get_random_port,

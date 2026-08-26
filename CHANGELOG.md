@@ -34,6 +34,62 @@ to check the guess.
   project version too, so it is re-locked. Nothing is published by any
   of this: both this file and `RELEASE_NOTES.md` still open under
   `## Unreleased`, and there is still no release.
+### `codeql.yml` runs on a pull request and reports one context (issue #402)
+
+- **`codeql.yml` gains the `pull_request` trigger and an aggregate job
+  named `codeql: every job passed`** (issue #402, under
+  btclib-org/.github#349 and btclib-org/.github#459): the analysis ran
+  on `main` after a merge, on a commit that is already the default
+  branch, and the `analyze` matrix produced a context per language, so
+  no branch rule had a single stable name to hold. The two land
+  together because either alone is inert — an aggregate with no
+  pull-request trigger produces no context on the run a pull request
+  has, which is what btclib-org/bitcoin-core-rpc#233 was about, and the
+  shape here is ported from that tree's `dee71fe8`. The header paragraph arguing
+  against the trigger goes with it, as does the concurrency comment
+  reading `github.ref` as the whole of what groups a run; the group is
+  now the pull request's own number where there is one. `REPOSITORY.md`
+  drops `codeql.yml` from the workflows that must not become required
+  checks, and the `contexts` array still does not name it: requiring the
+  check is a repository setting and no part of this change.
+
+### Shared test code moves into the package (issue btclib-org/.github#371)
+
+- **`tests/helpers.py` is gone, and what it held is in
+  `tests/__init__.py`** (issue btclib-org/.github#371): section 7 of the
+  organization standard puts shared test code in a package
+  `__init__.py`, never in a module whose name says "test" and holds
+  none, and `tests/helpers.py` was named neither `*_test.py` nor either
+  of the two names `name-tests-test` excepts. `.pre-commit-config.yaml`
+  drops the `exclude` that held that hook off the one file it would have
+  refused, so the hook now reads every file under `tests/`. Each
+  importer moves from `from tests.helpers import` to `from tests
+  import`; `tests/unit/helpers_test.py` keeps its name, testing the same
+  functions from where they now live.
+
+### The interpreter declarations are compared (issue btclib-org/.github#365)
+
+- **`tests/interpreters_test.py` compares `requires-python`, the
+  per-version classifiers, `.python-version` and every interpreter a
+  workflow or composite action names** (issue btclib-org/.github#365):
+  section 15 of the organization standard asks a library for the module
+  that keeps its own declarations in step, and this is ported from
+  `btclib`'s copy. It reads every CI file rather than the platform
+  sweeps alone, this tree's window being one version wide and written
+  out literally in each of them, and it parses `pyproject.toml` with
+  `tomllib` where the sibling reads it with a regex — that sibling's
+  floor being below the version `tomllib` arrives in and this tree's
+  not. `[tool.pytest.ini_options] testpaths` names the module, which
+  sits beside `tests/unit` and `tests/functional` rather than under
+  either, and `[tool.coverage.run] source` covers all of `tests/`, so a
+  module nothing collects is a file the floor reports at zero.
+- **The window itself is unchanged**: the standard gives a tier-1
+  repository the library window and this tree declares an application's,
+  which is the first of that issue's boxes and is issue #507 here — the
+  package does not import below 3.14, PEP 649's lazy annotations being
+  what lets its modules annotate with `TYPE_CHECKING`-only names, so the
+  floor moves with the work that makes the claim true rather than ahead
+  of it.
 
 ### The lint gate selects every family ruff ships (issue #402)
 

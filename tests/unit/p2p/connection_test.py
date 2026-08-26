@@ -35,7 +35,7 @@ from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.callbacks import getdata, pong
 from btclib_node.p2p.connection import Connection
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
-from tests.helpers import log_recorder
+from tests import log_recorder
 
 if TYPE_CHECKING:
     from btclib.p2p.payload import Payload

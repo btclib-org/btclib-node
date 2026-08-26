@@ -11,7 +11,7 @@ and nothing about `btclib`'s own p2p implementation meeting a Bitcoin
 Core it did not write. This is the one test in the suite that asks that
 question, against the pinned release `integration-bitcoind.yml` installs.
 
-`peer_address("127.0.0.1", ...)`, not `tests/helpers.local_addr`'s
+`peer_address("127.0.0.1", ...)`, not `tests.local_addr`'s
 `0.0.0.0` construction: bitcoind here is a real process bound to an
 explicit host and not this suite's own convenience for dialling a peer on
 the same machine.
@@ -23,7 +23,7 @@ from btclib_node import Node
 from btclib_node.config import Config
 from btclib_node.constants import NodeStatus
 from btclib_node.p2p.address import peer_address
-from tests.helpers import get_random_port, wait_until, wait_until_listening
+from tests import get_random_port, wait_until, wait_until_listening
 
 if TYPE_CHECKING:
     from pathlib import Path

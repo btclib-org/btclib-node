@@ -31,6 +31,13 @@ on:
   # anything else to be measured against
   push:
     branches: [main]
+  pull_request:
+    # ready_for_review and closed, the same two types test.yml and
+    # lint.yml carry and for the reasons those files give: a pull
+    # request marked ready gets the run the draft condition below
+    # withheld, and a closed one lands in this pull request's own
+    # concurrency group, so the landing cancels the run still holding it
+    types: [opened, reopened, synchronize, ready_for_review, closed]
   schedule:
     # section 10 of btclib-org/.github's README.md is the calendar, and
     # this line is not the place to restate it. A weekly run is what a
@@ -39,21 +46,23 @@ on:
     # answer this week than last. Only the default branch schedules
     # anything, so on any other branch the dispatch below is the way in
     - cron: "20 4 * * 2"
-  # the escape hatch, and with no pull_request trigger it is the only way
-  # to analyse a branch before it merges: worth reaching for on one that
-  # edits a workflow, which is what the actions queries read
+  # the escape hatch: the analysis on demand for a branch whose pull
+  # request is not open yet, which the trigger above cannot reach
   workflow_dispatch:
 
-# no pull_request trigger, deliberately. GitHub Free gives the
-# organization twenty concurrent jobs shared across every repository in
-# it, and this workflow holds two of them for minutes; the design
-# btclib-org/.github#85 sets out is that a merge waits for one cell and
-# the sweeps answer weekly. What a merge defers is the time between it
-# and the next run -- for main, the merge itself, the push above being
-# the trigger. It follows that no check this workflow produces can be
-# required of a pull request: a required check has to report on the run
-# the pull request has, and this workflow gives it none. That is also
-# why there is no aggregate job here where test.yml has one
+# The pull_request trigger is a trade in the direction opposite to the
+# one this file made while the push and the schedule were the whole of
+# it: two more cells on every push to a branch, against the ceiling on
+# the organization's concurrent jobs that REPOSITORY.md's *The
+# concurrent-job ceiling* measures and btclib-org/.github#85 argues.
+# What buys it back is that a finding arrives while the branch can still
+# answer it, rather than on the commit a merge creates -- which is
+# already the default branch. The OpenSSF Scorecard's SAST check reads
+# the same way: btclib-org/.github#349 measured it scoring "SAST tool
+# detected but not run on all commits" against a tree whose analysis
+# only ever ran after the merge. Whether it credits this run where the
+# merge is a squash is that issue's own open question and no part of
+# the reason above.
 
 # least privilege for the GITHUB_TOKEN, which everything running in a job
 # can read. The analysis job asks for the two it needs on top of it, so
@@ -62,11 +71,13 @@ permissions:
   contents: read
 
 # cancel superseded runs. Named literally rather than through
-# github.workflow, as everywhere else here. No pull_request context to
-# read on any of the three triggers above, so github.ref is the whole of
-# what groups a run
+# github.workflow, as everywhere else here. By the pull request's own
+# number where there is one: github.ref for a closed, merged pull
+# request resolves to the base branch's ref, so a group built from it
+# alone would put that run in the push trigger's group and cancel the
+# analysis of the merge commit
 concurrency:
-  group: codeql-${{ github.ref }}
+  group: codeql-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -75,6 +86,10 @@ jobs:
     # one job per language, so a red check says which analysis broke
     # rather than a matrix cell to open. It also lets the two run at once
     name: Analyze ${{ matrix.language }} with CodeQL
+    # the same draft and closed condition every job of test.yml carries:
+    # a draft is not asking to be reviewed, and a closed pull request's
+    # run exists only to cancel the one its group is holding
+    if: ${{ !github.event.pull_request.draft && github.event.action != 'closed' }}
     runs-on: ubuntu-latest
     permissions:
       # where the alerts are uploaded; the one write in this workflow
@@ -129,3 +144,48 @@ jobs:
           # commit's analysis: without a distinct category the second
           # upload replaces the first rather than adding to it
           category: /language:${{ matrix.language }}
+
+  # one context a branch rule can name, in place of job names that move:
+  # the matrix above produces one per language, a set that changes the
+  # day CodeQL gains a language worth adding here, and this job depends
+  # on the matrix rather than on those names. A required status check
+  # reports on the run a pull request has, so this name is requirable
+  # only because the pull_request trigger above exists; whether main's
+  # rule asks for it is REPOSITORY.md's *Required checks on main*, which
+  # reads the endpoint rather than this file
+  codeql-passed:
+    # the name and not the id is what a ruleset matches, and it carries
+    # the workflow on purpose: a check is keyed by name alone, so two
+    # workflows with a job named "every job passed" would produce one
+    # ambiguous context, and test.yml's aggregate is a required check
+    name: "codeql: every job passed"
+    needs: [analyze]
+    # not success(): a job whose dependencies failed is skipped, and a
+    # skipped check reports "skipped", which a ruleset counts as
+    # satisfied. Not always() either: a cancellation of this run itself
+    # -- the concurrency group superseding it with a newer push -- would
+    # reach this job and fail it, turning a cancellation the newer run
+    # already speaks for into a red check with no defect behind it. The
+    # draft and closed halves are the analysis job's own condition, so a
+    # draft skips uniformly rather than tripping this
+    if: >-
+      ${{ !cancelled()
+      && !github.event.pull_request.draft
+      && github.event.action != 'closed' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # the condition reads the whole needs context rather than naming
+      # each job, so a language added to the matrix above is covered
+      # without touching this. "skipped" is a failure here where
+      # test.yml's own aggregate tolerates it: nothing in this workflow
+      # is conditional on what a pull request touched, so a skip means
+      # something upstream did not run
+      - name: Fail unless every job above succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "$RESULTS"
+          case " $RESULTS " in
+            *" failure "* | *" cancelled "* | *" skipped "*) exit 1 ;;
+          esac

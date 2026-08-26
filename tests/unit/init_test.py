@@ -36,8 +36,8 @@ from btclib_node.constants import NodeStatus
 from btclib_node.exceptions import NodeShutdownTimeoutError
 from btclib_node.interpreter import warm
 from btclib_node.main import update_chain
+from tests import generate_random_chain, wait_until
 from tests.conftest import unstarted_node_context
-from tests.helpers import generate_random_chain, wait_until
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator

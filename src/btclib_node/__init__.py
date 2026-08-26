@@ -105,7 +105,7 @@ STOP_TIMEOUT = 30
 # CPU, measured end to end on a real RPC round trip: it grows with the
 # sleep, so the smallest figure that already captures the CPU win is
 # the one that pays least for it, and it still leaves comfortable
-# headroom under `tests/helpers.py`'s own 25 ms poll in `wait_until`
+# headroom under `tests/__init__.py`'s own 25 ms poll in `wait_until`
 # and `wait_until_listening`, so nothing in the suite can resolve it.
 IDLE_SLEEP_SECONDS = 0.005
 

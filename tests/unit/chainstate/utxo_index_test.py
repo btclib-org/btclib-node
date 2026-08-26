@@ -25,7 +25,7 @@ from btclib_node.chains import RegTest
 from btclib_node.chainstate import Chainstate
 from btclib_node.exceptions import ChainstateInconsistencyError, InvalidBlockInputError
 from btclib_node.log import Logger
-from tests.helpers import generate_random_chain
+from tests import generate_random_chain
 
 if TYPE_CHECKING:
     from pathlib import Path

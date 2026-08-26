@@ -18,7 +18,7 @@ from btclib.tx.tx_out import TxOut
 
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
-from tests.helpers import generate_random_transaction
+from tests import generate_random_transaction
 
 
 def a_witness_transaction() -> Tx:

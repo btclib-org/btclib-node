@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 import pytest
 import requests
 
-from tests.helpers import get_random_port
+from tests import get_random_port
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

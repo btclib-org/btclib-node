@@ -18,7 +18,7 @@ import pytest
 from btclib_node import Node
 from btclib_node.config import Config
 from btclib_node.constants import NodeStatus
-from tests.helpers import get_random_port
+from tests import get_random_port
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator

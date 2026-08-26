@@ -21,7 +21,7 @@ from btclib.exceptions import BTClibValueError
 from btclib.p2p.addrv2 import BIP155Network
 
 from btclib_node.chains import RegTest
-from tests.helpers import (
+from tests import (
     WaitTimeoutError,
     brute_force_nonce,
     build_block,

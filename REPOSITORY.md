@@ -77,13 +77,18 @@ where this command was first run rather than only documented.
 Re-run the first command above to confirm the contexts still hold
 — its answer, not this paragraph, is what is true today.
 
-**`links.yml`, `codeql.yml`, `os-macos.yml` and `bootstrap-dns.yml` must
-not become required checks**, and neither must `claude-review.yml`. The
-first and the last of those four ask whether somebody else's server
-answered, the middle two run on a schedule and report what a sweep sees
-rather than what a pull request introduced, and `claude-review.yml`
-writes an opinion for an author to weigh. Each says so in its own
-header.
+**`links.yml`, `os-macos.yml` and `bootstrap-dns.yml` must not become
+required checks**, and neither must `claude-review.yml`. `links.yml` and
+`bootstrap-dns.yml` ask whether somebody else's server answered,
+`os-macos.yml` runs on a schedule and reports what a sweep sees rather
+than what a pull request introduced, and `claude-review.yml` writes an
+opinion for an author to weigh. Each says so in its own header.
+
+`codeql.yml` is not among them. It runs on `pull_request` and carries an
+aggregate job, `codeql: every job passed`, so its result is one context
+a rule can name however many languages the matrix grows to
+(btclib-org/.github#459). Whether the rule asks for it is the `contexts`
+array above, which does not name it.
 
 ## Branch protection and the rulesets
 

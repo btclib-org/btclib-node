@@ -19,7 +19,7 @@ from btclib.fetch.bitcoin_core import BitcoinCoreFetcher
 
 from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus
-from tests.helpers import (
+from tests import (
     generate_random_chain,
     generate_random_transaction,
     wait_until,
