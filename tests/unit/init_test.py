@@ -134,6 +134,12 @@ def test_pending_cfilters_starts_empty(tmp_path: Path) -> None:
         assert node.pending_cfilters == {}
 
 
+def test_pending_getdata_starts_empty(tmp_path: Path) -> None:
+    """A fresh node has nothing registered on `pending_getdata`."""
+    with unstarted_node_context(tmp_path) as node:
+        assert node.pending_getdata == {}
+
+
 def test_drain_message_queues_calls_resume_cfilters(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -156,6 +162,29 @@ def test_drain_message_queues_calls_resume_cfilters(
         assert calls == [node]
 
         monkeypatch.setattr(btclib_node, "resume_cfilters", lambda _n: True)
+        assert node._drain_message_queues() is False
+
+
+def test_drain_message_queues_calls_resume_getdata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_drain_message_queues` calls `resume_getdata` and follows its answer.
+
+    The same shape as `test_drain_message_queues_calls_resume_cfilters`
+    above, over `resume_getdata` instead.
+    """
+    with unstarted_node_context(tmp_path) as node:
+        calls: list[Any] = []
+
+        def not_progressed(n: Any) -> bool:
+            calls.append(n)
+            return False
+
+        monkeypatch.setattr(btclib_node, "resume_getdata", not_progressed)
+        assert node._drain_message_queues() is True
+        assert calls == [node]
+
+        monkeypatch.setattr(btclib_node, "resume_getdata", lambda _n: True)
         assert node._drain_message_queues() is False
 
 

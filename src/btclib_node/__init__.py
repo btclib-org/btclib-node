@@ -35,7 +35,12 @@ from btclib_node.log import Logger
 from btclib_node.main import update_chain
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import PeerDB
-from btclib_node.p2p.main import handle_p2p, handle_p2p_handshake, resume_cfilters
+from btclib_node.p2p.main import (
+    handle_p2p,
+    handle_p2p_handshake,
+    resume_cfilters,
+    resume_getdata,
+)
 from btclib_node.p2p.manager import P2pManager
 from btclib_node.rpc.main import handle_rpc
 from btclib_node.rpc.manager import RpcManager
@@ -43,6 +48,8 @@ from btclib_node.rpc.manager import RpcManager
 if TYPE_CHECKING:
     from collections import deque
     from types import FrameType
+
+    from btclib.p2p.inventory import Inventory
 
     from btclib_node.p2p.connection import Connection
 
@@ -225,6 +232,13 @@ class Node(threading.Thread):
         # nothing here needs a lock. btclib-org/btclib-node#442
         self.pending_cfilters: dict[int, tuple[Connection, deque[int]]] = {}
 
+        # The same shape as `pending_cfilters` above, for a `getdata`
+        # `p2p.callbacks.getdata` could not finish serving: the
+        # connection and the items still owed, read and written only by
+        # `p2p.callbacks.advance_getdata` and `p2p.main.resume_getdata`,
+        # both on this thread. btclib-org/btclib-node#470
+        self.pending_getdata: dict[int, tuple[Connection, deque[Inventory]]] = {}
+
         # Built on first use, by the property below: the pool is
         # interpreters under a GIL build (spawned rather than forked
         # wherever that is the platform's default) or threads under a
@@ -364,10 +378,10 @@ class Node(threading.Thread):
         -- and leaving `run`'s own loop by exception skips every close
         below it, so the databases would stay open.
 
-        `resume_cfilters` is last and unconditional, not one more queue
-        to size a share from: nothing is queued to trigger it, a paused
-        `getcfilters` answer being owed regardless of what else this
-        pass finds waiting.
+        `resume_cfilters` and `resume_getdata` are last and unconditional,
+        not one more queue to size a share from: nothing is queued to
+        trigger either, a paused `getcfilters` or `getdata` answer being
+        owed regardless of what else this pass finds waiting.
         """
         wait = True
         try:
@@ -381,6 +395,8 @@ class Node(threading.Thread):
                 handle_p2p(self)
                 wait = False
             if resume_cfilters(self):
+                wait = False
+            if resume_getdata(self):
                 wait = False
         except Exception:
             self.logger.exception("Exception occurred handling a message")

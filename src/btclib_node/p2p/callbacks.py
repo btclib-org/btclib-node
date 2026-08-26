@@ -11,10 +11,11 @@ signature, `(node, msg, conn)`, whether or not its own body reads every
 argument -- the dispatch table calls each one uniformly, and an unread
 `msg` or `conn` documents that rather than a mistake.
 
-`advance_cfilters` is the one exception to "one handler, one message":
-`get_cfilters` below and `p2p.main.resume_cfilters` both call it to pace
-a `getcfilters` answer against the connection's own send queue, across
-however many turns of `Node`'s own loop that answer takes to drain.
+`advance_getdata` and `advance_cfilters` are the two exceptions to "one
+handler, one message": `getdata` and `get_cfilters` below, and
+`p2p.main.resume_getdata` and `resume_cfilters`, each call one of them to
+pace an answer against the connection's own send queue, across however
+many turns of `Node`'s own loop that answer takes to drain.
 """
 
 import secrets
@@ -57,6 +58,8 @@ from btclib.p2p.limits import (
     MAX_GETCFHEADERS_SIZE,
     MAX_GETCFILTERS_SIZE,
     MAX_HEADERS_RESULTS,
+    MAX_INV_SZ,
+    MAX_PROTOCOL_MESSAGE_LENGTH,
 )
 from btclib.p2p.negotiation import FeeFilter, GetAddr, SendHeaders, WtxidRelay
 
@@ -488,46 +491,92 @@ def inv(node: Node, msg: bytes, conn: Connection) -> None:
         node.download_manager.inv_txs.extend([(conn.id, wtxid) for wtxid in missing_tx])
 
 
-def getdata(node: Node, msg: bytes, conn: Connection) -> None:
-    """Answer a peer's request for the transactions and blocks it named.
+# The two families `advance_getdata` below dispatches on -- everything
+# else a `getdata` may name (`MSG_FILTERED_BLOCK`, `MSG_CMPCT_BLOCK`,
+# `UNDEFINED`, an unrecognised code) is neither, and is popped off the
+# front of the pending items and otherwise ignored, the same silence
+# `_filter_range` already answers a request it declines with elsewhere
+# in this module.
+_GETDATA_TX_TYPES = (
+    InventoryType.MSG_TX,
+    InventoryType.MSG_WTX,
+    InventoryType.MSG_WITNESS_TX,
+)
+_GETDATA_BLOCK_TYPES = (InventoryType.MSG_BLOCK, InventoryType.MSG_WITNESS_BLOCK)
 
-    Transactions are served from the mempool only if the peer wants
-    them relayed, answered `notfound` on a miss; a requested block not
-    held is silent, matching Core -- the comments below argue both.
+# Room to schedule ahead of a peer's own draining before `advance_getdata`
+# pauses and hands the rest to `node.pending_getdata`, for `resume_getdata`
+# (`p2p.main`) to finish -- the same idea `MAX_CFILTERS_INFLIGHT_BYTES`
+# below applies to `get_cfilters`, sized against a `getdata` answer's own
+# largest item instead of a filter's: a block, up to
+# `MAX_PROTOCOL_MESSAGE_LENGTH`. Twice that is the same "one draining, one
+# already serialized behind it" margin `MAX_CFILTERS_INFLIGHT_BYTES` gives
+# a filter, scaled to this answer's own larger item.
+#
+# Core's own analogue, `ProcessGetData`'s "only process one BLOCK item per
+# call" (`net_processing.cpp:2798`, at bitcoin/bitcoin@b91d983f66), is a
+# hard count instead of a byte bound, because Core's own next call is
+# `ProcessMessages` looping back over every connection regardless of what
+# this one has queued. A byte bound reproduces the same shape without a
+# second, item-type-specific count to keep in step with
+# `MAX_QUEUED_SEND_BYTES`
+# (`connection.py`): a transaction item is cheap and small, so many of
+# them fit under this bound in one pass, matching Core's own "process as
+# many TX items as possible" (`:2772`, checked against `fPauseSend`
+# before each one, `:2776`); a block item is large enough on its own that
+# one or two exhaust it, without this function ever counting block items
+# by hand the way Core's own count does.
+MAX_GETDATA_INFLIGHT_BYTES = int(2 * MAX_PROTOCOL_MESSAGE_LENGTH)
+
+
+def advance_getdata(node: Node, conn: Connection, items: deque[Inventory]) -> bool:
+    """Serve from the front of `items` while `conn`'s own queue has room.
+
+    Shared by `getdata` below, dispatching a request for the first time,
+    and by `p2p.main.resume_getdata`, retrying one already paused -- each
+    pops what it serves off the front of the same `deque`, the shape
+    `advance_cfilters` below already gives `get_cfilters`.
+
+    A transaction is served from the mempool only if the peer wants it
+    relayed, answered `notfound` on a miss; a requested block not held
+    is silent. Both match Core -- BIP37's `fRelay` is written about
+    announcements, "broadcast transactions will not be announced", and
+    says nothing about a transaction a peer asks for by hash, but Core
+    answers nothing anyway: with `fRelay` false and `NODE_BLOOM` not
+    offered, `ProcessGetData` skips every transaction item outright, and
+    where `NODE_BLOOM` is offered, `FindTxForGetData` gates on
+    `m_last_inv_sequence`, which never advances for a peer nothing is
+    announced to. This node follows Core rather than the sentence, and
+    the reason is what the sentence does not cover: serving the mempool
+    by hash to a peer that declined announcements answers, for anyone
+    willing to ask, whether a given transaction reached this node -- and
+    a peer that declined is the one with no other reason to be asking.
+    Blocks are not affected: a peer that wants no transactions is still
+    a peer syncing the chain. A block this node does not hold gets no
+    `notfound` either: `ProcessGetBlockData` returns on one with no
+    `notfound` of its own, `vNotFound` being `ProcessGetData`'s own local
+    and never touched by the function it calls out to for a block item.
+
+    `conn.queued_send_bytes` is read the same way `advance_cfilters`
+    below reads it: written only on `P2pManager`'s own thread, inside
+    `async_send`, while this runs on `Node`'s, a plain `int` with one
+    writer and one reader rather than a value this needs a lock to see.
+
+    `notfound` batches whatever this call found missing, sent once this
+    call is done serving -- whether `items` ran out or this paused --
+    rather than once for the whole original request: Core's own
+    `vNotFound` is a per-call local too, built and sent fresh by every
+    `ProcessGetData` call rather than carried across them.
     """
-    getdata = GetData.parse(msg)
-
-    tx_types = (
-        InventoryType.MSG_TX,
-        InventoryType.MSG_WTX,
-        InventoryType.MSG_WITNESS_TX,
-    )
-    # BIP37's fRelay is written about announcements -- "broadcast
-    # transactions will not be announced" -- and says nothing about a
-    # transaction a peer asks for by hash. Core answers nothing anyway:
-    # with fRelay false and NODE_BLOOM not offered, `ProcessGetData`
-    # skips every transaction item outright, and where NODE_BLOOM is
-    # offered, `FindTxForGetData` gates on `m_last_inv_sequence`, which
-    # never advances for a peer nothing is announced to. This node
-    # follows Core rather than the sentence, and the reason is what the
-    # sentence does not cover: serving the mempool by hash to a peer
-    # that declined announcements answers, for anyone willing to ask,
-    # whether a given transaction reached this node -- and a peer that
-    # declined is the one with no other reason to be asking.
-    #
-    # Blocks are not affected. A peer that wants no transactions is
-    # still a peer syncing the chain.
-    #
-    # A hash this node does not hold, once relay is wanted, is answered
-    # with `notfound` rather than silence: `FindTxForGetData` returning
-    # null is `vNotFound`'s only source in Core's own `ProcessGetData`
-    # (src/net_processing.cpp), so a miss is told apart from a peer that
-    # is merely slow. The declined-relay peer above gets none of this
-    # either, matching Core's own `continue` on that path.
     not_found: list[Inventory] = []
-    if conn.relay_tx:
-        for item in getdata.items:
-            if item.type_code not in tx_types:
+    while items:
+        if conn.status == P2pConnStatus.Closed:
+            return True
+        if conn.queued_send_bytes >= MAX_GETDATA_INFLIGHT_BYTES:
+            break
+        item = items.popleft()
+        if item.type_code in _GETDATA_TX_TYPES:
+            if not conn.relay_tx:
                 continue
             wtxid = item.type_code == InventoryType.MSG_WTX
             tx = node.mempool.get_tx(item.hash, wtxid=wtxid)
@@ -539,24 +588,94 @@ def getdata(node: Node, msg: bytes, conn: Connection) -> None:
                 conn.send(TxMsg(tx, include_witness=include_witness))
             else:
                 not_found.append(item)
-
-    block_types = (InventoryType.MSG_BLOCK, InventoryType.MSG_WITNESS_BLOCK)
-    for item in getdata.items:
-        if item.type_code not in block_types:
-            continue
-        block = node.block_db.get_block(item.hash)
-        if block:
-            include_witness = item.type_code == InventoryType.MSG_WITNESS_BLOCK
-            conn.send(
-                BlockMsg(block, include_witness=include_witness, check_validity=False)
-            )
-        # else: silence, matching Core -- `ProcessGetBlockData` returns
-        # on a block it does not hold with no `notfound` of its own,
-        # `vNotFound` being `ProcessGetData`'s own local and never
-        # touched by the function it calls out to for a block item.
-
+        elif item.type_code in _GETDATA_BLOCK_TYPES:
+            block = node.block_db.get_block(item.hash)
+            if block:
+                include_witness = item.type_code == InventoryType.MSG_WITNESS_BLOCK
+                conn.send(
+                    BlockMsg(
+                        block, include_witness=include_witness, check_validity=False
+                    )
+                )
+        # else: neither family, popped and otherwise ignored -- see the
+        # comment beside _GETDATA_TX_TYPES above.
     if not_found:
         conn.send(NotFound(not_found))
+    return not items
+
+
+# How many items one connection's own entry on `node.pending_getdata`
+# may hold at once, `getdata` below extending an existing one rather
+# than answering a second `getdata` that arrives while the first is
+# still paused -- sized the way `MAX_PENDING_CFILTERS_HEIGHTS` above
+# is: two full requests, `MAX_INV_SZ` apiece, `GetData.parse` already
+# bounding any one message to that many. `getdata`'s own docstring below
+# is where this tree's own need for a numeric cap here, where Core's
+# real protection is not one, is argued.
+#
+# Unlike `MAX_PENDING_CFILTERS_HEIGHTS`'s own plain `int`s, an `Inventory`
+# is not negligible to hold: measured directly in this tree's own venv,
+# `tracemalloc` gives roughly 161 bytes per live instance, so this bound's
+# own 100,000 items cost roughly 16.1 MB of interpreter memory per
+# connection -- the same order as `MAX_QUEUED_SEND_BYTES` itself, not two
+# orders of magnitude below it the way the cfilters analogy alone would
+# suggest.
+MAX_PENDING_GETDATA_ITEMS = 2 * MAX_INV_SZ
+
+
+def getdata(node: Node, msg: bytes, conn: Connection) -> None:
+    """Answer a peer's request for the transactions and blocks it named.
+
+    `advance_getdata` above is where every item is actually served, and
+    where this request's own place in Core's `getdata` semantics is
+    argued; this is only where a fresh request joins whatever this
+    connection has not yet finished serving.
+
+    A second `getdata` arriving while `conn`'s own entry on
+    `node.pending_getdata` is still paused extends the same `deque`
+    rather than replacing it, up to `MAX_PENDING_GETDATA_ITEMS` -- past
+    which a third stacked request is silent, the same answer
+    `get_cfilters` below already gives a request past its own
+    `MAX_PENDING_CFILTERS_HEIGHTS`, and for the same reason: dropping
+    the connection over pipelining this node already tolerates
+    elsewhere would be disproportionate to what tripped it, and
+    `MAX_QUEUED_SEND_BYTES` (`connection.py`) is still underneath this
+    to catch a peer that is actually abusive.
+
+    Core's own protection here is not a numeric cap either, whatever
+    reading only `Peer.m_getdata_requests` (appended to at
+    `net_processing.cpp:4472`) suggests. `ProcessMessages`
+    (`net_processing.cpp:5429-5436`, at bitcoin/bitcoin@b91d983f66) is
+    where it actually lives: "this maintains the order of responses and
+    prevents m_getdata_requests to grow unbounded", by returning before
+    `PollMessage` -- the call that reads this connection's own next
+    message off the wire -- whenever `m_getdata_requests` is still
+    non-empty, and again whenever `fPauseSend` is set. Core therefore
+    never backlogs more than one request's own `MAX_INV_SZ` items per
+    connection: it simply stops reading that connection's next message,
+    `getdata` included, until the current one has drained.
+
+    That discipline does not port here without a larger redesign:
+    `P2pManager.messages` (`p2p/manager.py`) is one `deque` shared by
+    every connection, and `handle_p2p` (`p2p/main.py`) pops one message
+    off its front regardless of which connection sent it, where Core's
+    own `m_getdata_requests` and `PollMessage` are both per connection
+    to begin with -- there is no single connection this node could
+    "stop reading from" without reordering that shared queue or giving
+    each connection a backlog of its own. `MAX_PENDING_GETDATA_ITEMS`
+    above is this tree's own bound in place of that redesign.
+    """
+    getdata = GetData.parse(msg)
+    existing = node.pending_getdata.get(conn.id)
+    if existing is None:
+        items = deque(getdata.items)
+    else:
+        _, items = existing
+        if len(items) + len(getdata.items) > MAX_PENDING_GETDATA_ITEMS:
+            return
+        items.extend(getdata.items)
+    if not advance_getdata(node, conn, items):
+        node.pending_getdata[conn.id] = (conn, items)
 
 
 def headers(node: Node, msg: bytes, conn: Connection) -> None:

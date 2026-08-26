@@ -241,6 +241,64 @@ to check the guess.
   never where the sentence sits. A rule that lives elsewhere in the
   standard is still cited with no section number at all.
 
+### `getdata` paces itself against `Connection`'s own send queue too (closes #470)
+
+- **`getdata` serves an item at a time from a `GetData` only while
+  `conn.queued_send_bytes` stays under a new `MAX_GETDATA_INFLIGHT_BYTES`,
+  handing what it could not serve to `node.pending_getdata` for
+  `resume_getdata` (`p2p/main.py`) to finish on a later pass of `Node`'s
+  own loop** (closes #470): the same mechanism #442 gave `get_cfilters`,
+  reused rather than Core's own "at most one BLOCK item per call"
+  (`ProcessGetData`, `net_processing.cpp:2798`, bitcoin/bitcoin@b91d983f66)
+  -- a byte bound produces the same shape without a second, per-item-type
+  count to keep in step with `MAX_QUEUED_SEND_BYTES`, many small
+  transaction items fitting under it in one pass the way Core's own
+  "process as many TX items as possible" does, and a block item large
+  enough on its own that one or two exhaust it.
+- **`MAX_QUEUED_SEND_BYTES` (`connection.py`) no longer has to hold one
+  whole legitimate `getdata` burst either**, now that this answer is
+  paced too: it is sized for each pacing bound plus one item past it --
+  `advance_getdata` and `advance_cfilters` both check their own bound
+  *before* the next item is popped and sent, not after, so either can
+  schedule one item beyond its own bound before the next check catches
+  it -- for both mechanisms together, superseding the figure #442 left
+  it at.
+- **A second `getdata` arriving while the first is still paused extends
+  the same connection's own pending items rather than replacing them**,
+  up to a new `MAX_PENDING_GETDATA_ITEMS` -- two full requests,
+  `MAX_INV_SZ` apiece. Core's own protection here is not a numeric cap:
+  `ProcessMessages` (`net_processing.cpp:5429-5436`,
+  bitcoin/bitcoin@b91d983f66) declines to read a connection's next
+  message at all while its `Peer.m_getdata_requests` backlog is still
+  non-empty, which this tree cannot reproduce without restructuring
+  `P2pManager.messages` from the single queue shared by every
+  connection it is today into one queue per connection.
+- **`notfound` covers only what one call actually served**, not the whole
+  original request: an item never reached because the pacing bound
+  tripped first is reported once a later call gets to it, matching
+  Core's own `vNotFound`, built fresh by every `ProcessGetData` call
+  rather than carried across them.
+- **The batch size `_request_new_block_work` (`download.py`) asks a peer
+  for is now a named, public `MAX_BLOCKS_PER_GETDATA_BURST`**, where it
+  used to be an untied literal cross-referenced only in a comment on
+  `connection.py`'s own former `MAX_QUEUED_SEND_BYTES` derivation: that
+  derivation no longer needs it, but the fact it named -- this node
+  never asks a peer for more than sixteen blocks at once, matching
+  Core's own `MAX_BLOCKS_IN_TRANSIT_PER_PEER` -- outlives the bound it
+  used to be sized from, and is what a peer answering this node's own
+  request sends back in one burst, still relevant to this connection's
+  own buffering on the receiving end.
+- **`MAX_QUEUED_SEND_BYTES` (~12.3 MB) sits above both of Core's own
+  flat, content-blind per-connection figures**: its send buffer default
+  (1,000,000 bytes, cited above) by more than an order of magnitude,
+  and its receive buffer default (`recv_flood_size`, 5,000,000 bytes)
+  by roughly two and a half times. Neither is the number this bound
+  matches: both are sized without reference to any one message's
+  content, where this bound is sized from two real message sizes, a
+  block and a filter, for the reason the paragraph beside it argues --
+  this node's own dispatch has no incremental pause-and-resume loop of
+  Core's own shape to lean on for the rest of an answer.
+
 ### The signal handlers move out of `Node.__init__` (closes #436)
 
 - **`Node.__init__` no longer calls `signal.signal`** (closes #436): a
