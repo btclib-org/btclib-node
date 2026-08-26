@@ -29,6 +29,8 @@ from btclib_node.exceptions import ChainstateInconsistencyError
 if TYPE_CHECKING:
     from btclib_node.log import Logger
 
+__all__ = ["BlockDB", "BlockLocation", "FileMetadata", "RevBlock"]
+
 # A file's byte offset or length, and the store's own file-rotation
 # counter, are this store's bookkeeping about itself, not a count of
 # items an untrusted peer handed it -- so none of the three needs

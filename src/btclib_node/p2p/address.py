@@ -40,6 +40,19 @@ if TYPE_CHECKING:
 
     from btclib_node.chains import Chain
 
+__all__ = [
+    "PeerDB",
+    "addr_entry",
+    "can_addrv1",
+    "can_connect",
+    "dial",
+    "endpoint_key",
+    "ip_and_port",
+    "network_address",
+    "peer_address",
+    "peer_from_addr_entry",
+]
+
 # the two ids whose address field is an IP address, which is the whole
 # of what an addr version 1 entry can carry, and the whole of what
 # `dial` below opens a socket for

@@ -7,6 +7,8 @@
 import enum
 from typing import Any
 
+__all__ = ["RpcError", "RpcErrorCode", "bool_param", "error_msg", "type_error"]
+
 
 class RpcErrorCode(enum.IntEnum):
     """The codes of Bitcoin Core's RPCErrorCode, `src/rpc/protocol.h`.

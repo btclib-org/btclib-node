@@ -14,6 +14,31 @@ to check the guess.
 
 ## Unreleased
 
+### `asks_for_everything` resolves `testpaths` like `file_or_dir` (closes #496)
+
+- **`tests/conftest.py`'s `asks_for_everything` now resolves `wanted`,
+  built from `testpaths`, the same way it already resolved `given`**
+  (closes #496): `config.rootpath` is built with `os.path.abspath`,
+  which leaves a symlink in the path alone, where `Path.resolve` on the
+  command-line paths follows one, so a rootdir reached through a symlink
+  made the two sides incomparable, read the whole suite as a subset of
+  itself, and relaxed the coverage floor on the run it exists to gate.
+  `tests/unit/coverage_floor_test.py` pins the case through a real
+  symlinked directory built in `tmp_path`.
+
+### `__all__` covers the package, and the public surface is tested (closes #497)
+
+- **Every module and package under `src/btclib_node/` now declares
+  `__all__`, and `tests/unit/all_test.py` asserts nothing public is
+  missing from one** (closes #497): `py.typed` ships and this package is
+  published, so section 7 of the organization standard does not let its
+  escape clause reach the public-surface bullet the way it reaches the
+  other seven, and nothing before this walked the tree to check that
+  every module declares its own list. `tests/README.md`'s table and its
+  "Not tested here" line move the public surface into what is declared
+  tested, and `tests/unit/all_test.py` is ported from `btclib`'s own
+  `tests/all_test.py`, named as the precedent it takes its shape from.
+
 ### `tests/README.md` declares section 7's convention-test bullets (closes #488)
 
 - **`tests/README.md` names which of section 7's convention-test bullets

@@ -21,6 +21,8 @@ if TYPE_CHECKING:
     from btclib_node.rpc.connection import RpcConnection
     from btclib_node.rpc.manager import RpcManager
 
+__all__ = ["get_connection", "handle_rpc", "is_valid_rpc"]
+
 
 def get_connection(manager: RpcManager, connection_id: int) -> RpcConnection | None:
     """Look up `connection_id` in `manager.connections`, or `None`."""

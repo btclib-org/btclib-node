@@ -41,6 +41,8 @@ if TYPE_CHECKING:
     from btclib_node.db import KeyValueStore
     from btclib_node.log import Logger
 
+__all__ = ["NO_PREVIOUS_FILTER_HEADER", "FilterIndex"]
+
 _FILTER = b"cfilter-"
 _HEADER = b"cfheader-"
 

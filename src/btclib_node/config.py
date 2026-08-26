@@ -19,6 +19,8 @@ from btclib.fee import FeeRate
 from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet
 from btclib_node.exceptions import InvalidChainTypeError, UnknownChainError
 
+__all__ = ["DEFAULT_MIN_RELAY_FEERATE", "Config"]
+
 # Core's own floor, `DEFAULT_MIN_RELAY_TX_FEE` (`src/policy/policy.h`,
 # read at bitcoin/bitcoin@58a7869f86): 100 sat/kvB. This node prices
 # nothing at mempool acceptance yet (issue #85 is the open question of

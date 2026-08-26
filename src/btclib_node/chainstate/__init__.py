@@ -21,6 +21,8 @@ from .block_index import BlockIndex
 from .filter_index import FilterIndex
 from .utxo_index import UtxoIndex
 
+__all__ = ["Chainstate"]
+
 if TYPE_CHECKING:
     from pathlib import Path
 

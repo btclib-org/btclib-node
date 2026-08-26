@@ -14,6 +14,8 @@ back from `connection.py` would cycle, and neither module's own job is
 to hold a number the other one needs too.
 """
 
+__all__ = ["ONE_BUSY_MODERN_BLOCK_FILTER_BYTES"]
+
 # Bytes per filter element, measured rather than guessed: averaging
 # `btclib.block.block_filter._golomb_encode` (`BASIC_FILTER_P=19`,
 # `BASIC_FILTER_M=784931`) over synthetic element counts from 2,000 to

@@ -37,6 +37,15 @@ if TYPE_CHECKING:
 
     from btclib_node.chains import Chain
 
+__all__ = [
+    "MEDIAN_TIME_SPAN",
+    "ParentOf",
+    "assert_valid_in_context",
+    "block_time",
+    "median_time_past",
+    "next_bits_required",
+]
+
 # Core's CBlockIndex::nMedianTimeSpan
 MEDIAN_TIME_SPAN = 11
 

@@ -19,6 +19,8 @@ from btclib.utils import bytesio_from_binarydata
 if TYPE_CHECKING:
     from btclib.alias import BinaryData
 
+__all__ = ["Reject", "RejectCode"]
+
 
 class RejectCode(enum.IntEnum):
     """BIP61's own reject codes, as `Reject.code` carries them on the wire."""

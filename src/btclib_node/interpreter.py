@@ -32,6 +32,8 @@ if TYPE_CHECKING:
     from btclib_node import Node
     from btclib_node.config import Config
 
+__all__ = ["check_transaction", "check_transactions", "f", "get_flags", "warm"]
+
 
 def get_flags(config: Config, index: int) -> tuple[str, ...]:
     """Return every script flag already active at block height `index`.

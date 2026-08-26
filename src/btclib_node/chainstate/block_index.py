@@ -34,6 +34,14 @@ if TYPE_CHECKING:
     from btclib_node.db import KeyValueStore
     from btclib_node.log import Logger
 
+__all__ = [
+    "MAX_DOWNLOAD_WINDOW",
+    "BlockIndex",
+    "BlockInfo",
+    "BlockStatus",
+    "calculate_work",
+]
+
 # `get_download_candidates`'s own cap on how many hashes it hands back
 # at once, and `download.py`'s `block_download` reads the same number
 # to decide whether the download window has run too far ahead of the

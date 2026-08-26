@@ -14,3 +14,5 @@ p2p.callbacks dispatches on are one constant. The four header fields are
 `btclib.p2p.message.Message`'s, and p2p.connection.Connection is the
 single place that puts them on and takes them off.
 """
+
+__all__ = []

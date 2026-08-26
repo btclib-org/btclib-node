@@ -30,6 +30,20 @@ bug.
 
 from btclib.exceptions import BTClibValueError
 
+__all__ = [
+    "ChainstateInconsistencyError",
+    "IncompatibleStoreError",
+    "InvalidBlockInputError",
+    "InvalidChainTypeError",
+    "MissingPrevoutError",
+    "NodeShutdownTimeoutError",
+    "PrevoutCountMismatchError",
+    "StoreClosedError",
+    "UnknownChainError",
+    "UnsupportedAddressTypeError",
+    "WrongNetworkMagicError",
+]
+
 
 class MissingPrevoutError(ValueError):
     """A transaction's input spends an output this node cannot find.
