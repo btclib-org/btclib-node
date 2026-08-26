@@ -139,6 +139,30 @@ to check the guess.
   (`tests/unit/init_test.py`) drives a real `Node.run` through exactly
   this raise to pin it.
 
+### `get_cfilters` paces itself against `Connection`'s own send queue (closes #442)
+
+- **`get_cfilters` sends from a `getcfilters` range only while
+  `conn.queued_send_bytes` stays under a new, much smaller
+  `MAX_CFILTERS_INFLIGHT_BYTES`, handing what it could not schedule to
+  `node.pending_cfilters` for `resume_cfilters` (`p2p/main.py`) to
+  finish on a later pass of `Node`'s own loop** (closes #442): this
+  node has no message-processing stage to pause and resume the way
+  Core's `fPauseSend` does (`net.cpp`, bitcoin/bitcoin@b91d983f66) --
+  `get_cfilters` runs once, on `Node`'s own thread, and cannot `await`
+  the drain the way a coroutine could, so the range it has not yet sent
+  is a plain `deque` this node's own loop keeps coming back to instead.
+- **`MAX_QUEUED_SEND_BYTES` (`connection.py`) no longer has to hold one
+  whole legitimate `getcfilters` answer**, now that one is paced: it is
+  sized for a legitimate `getdata` burst instead -- still unpaced,
+  filed as #470 -- plus the new pacing bound.
+- **A second `getcfilters` arriving while the first is still paused
+  extends the same connection's own pending range rather than replacing
+  it**, up to `MAX_PENDING_CFILTERS_HEIGHTS` -- two full requests, the
+  pipelining `MAX_QUEUED_SEND_BYTES` already tolerated before this
+  change -- past which a third stacked request is silent, the same
+  answer this node already gives a request `_filter_range` declines for
+  other reasons.
+
 ### The signal handlers move out of `Node.__init__` (closes #436)
 
 - **`Node.__init__` no longer calls `signal.signal`** (closes #436): a

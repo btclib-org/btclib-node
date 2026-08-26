@@ -17,8 +17,9 @@ from btclib.exceptions import BTClibValueError
 from btclib.p2p.addrv2 import NetworkAddressV2
 
 from btclib_node.constants import P2pConnStatus
+from btclib_node.p2p import main as main_module
 from btclib_node.p2p.callbacks import callbacks, handshake_callbacks
-from btclib_node.p2p.main import handle_p2p, handle_p2p_handshake
+from btclib_node.p2p.main import handle_p2p, handle_p2p_handshake, resume_cfilters
 
 if TYPE_CHECKING:
     import pytest
@@ -311,4 +312,151 @@ def test_a_message_on_a_connection_still_pending_drops_the_peer() -> None:
     )
     handle_p2p(node)
     assert stopped == [True]
-    assert node.p2p_manager.discouraged == [_AN_ADDRESS]  # #283
+
+
+def a_pending_node(conn: Any, heights: deque[int]) -> tuple[Any, list[Any], list[Any]]:
+    """Build a node stand-in with one connection on `pending_cfilters`.
+
+    Returns the node alongside the lists its `p2p_manager.discourage` and
+    `logger.exception` calls are recorded into.
+    """
+    discouraged: list[Any] = []
+    logged: list[Any] = []
+    node = SimpleNamespace(
+        pending_cfilters={conn.id: (conn, heights)},
+        p2p_manager=SimpleNamespace(discourage=discouraged.append),
+        logger=SimpleNamespace(exception=logged.append),
+    )
+    return node, discouraged, logged
+
+
+def test_resume_cfilters_drops_a_finished_connection_from_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A finished connection is dropped from `pending_cfilters`.
+
+    `progressed` answers `True`: `heights` shrank to nothing.
+    """
+    stopped: list[Any] = []
+    conn = SimpleNamespace(
+        id=1, status=P2pConnStatus.Open, stop=lambda: stopped.append(True)
+    )
+    heights = deque([1, 2, 3])
+    node, discouraged, logged = a_pending_node(conn, heights)
+    monkeypatch.setattr(main_module, "advance_cfilters", lambda *_a: True)
+    assert resume_cfilters(node) is True
+    assert node.pending_cfilters == {}
+    assert not stopped
+    assert not discouraged
+    assert not logged
+
+
+def test_resume_cfilters_leaves_a_still_paused_connection_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A connection `advance_cfilters` has not finished stays registered.
+
+    `progressed` still answers `True`: `heights` shrank, even though the
+    answer as a whole is not done.
+    """
+    conn = SimpleNamespace(id=2, status=P2pConnStatus.Open, stop=lambda: None)
+    heights = deque([1, 2, 3])
+
+    def paused(_node: Any, _conn: Any, hs: deque[int]) -> bool:
+        hs.popleft()
+        return False
+
+    node, _discouraged, _logged = a_pending_node(conn, heights)
+    monkeypatch.setattr(main_module, "advance_cfilters", paused)
+    assert resume_cfilters(node) is True
+    assert node.pending_cfilters[2] == (conn, deque([2, 3]))
+
+
+def test_resume_cfilters_answers_false_when_nothing_advanced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A connection still too congested to send anything reports no progress."""
+    conn = SimpleNamespace(id=3, status=P2pConnStatus.Open, stop=lambda: None)
+    heights = deque([1, 2, 3])
+    node, _discouraged, _logged = a_pending_node(conn, heights)
+    monkeypatch.setattr(main_module, "advance_cfilters", lambda *_a: False)
+    assert resume_cfilters(node) is False
+    assert node.pending_cfilters[3] == (conn, heights)
+
+
+def test_resume_cfilters_drops_an_already_closed_connection_without_advancing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A connection closed since it paused is dropped, unasked.
+
+    `stop` can be called from `P2pManager`'s own thread between one turn
+    of `Node`'s own loop and the next, so this is read the same way
+    `advance_cfilters` itself already reads it mid-answer.
+    """
+    conn = SimpleNamespace(id=4, status=P2pConnStatus.Closed, stop=lambda: None)
+    heights = deque([1, 2, 3])
+    node, discouraged, logged = a_pending_node(conn, heights)
+    called: list[Any] = []
+
+    def unreached(*a: Any) -> bool:
+        called.append(a)  # pragma: no cover -- never reached
+        return True  # pragma: no cover -- never reached
+
+    monkeypatch.setattr(main_module, "advance_cfilters", unreached)
+    # dropping it is progress in its own right, whether or not it ever
+    # sent anything
+    assert resume_cfilters(node) is True
+    assert node.pending_cfilters == {}
+    assert not called
+    assert not discouraged
+    assert not logged
+
+
+def test_resume_cfilters_stops_the_peer_on_a_bare_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bare exception out of `advance_cfilters` drops the peer, undiscouraged.
+
+    Mirrors `handle_p2p`'s own split (#283): a bug in this node's own
+    code, not the peer's doing.
+    """
+    stopped: list[Any] = []
+    conn = SimpleNamespace(
+        id=5, status=P2pConnStatus.Open, stop=lambda: stopped.append(True)
+    )
+    heights = deque([1, 2, 3])
+    node, discouraged, logged = a_pending_node(conn, heights)
+
+    def boom(*_a: Any) -> bool:
+        raise RuntimeError("no")
+
+    monkeypatch.setattr(main_module, "advance_cfilters", boom)
+    assert resume_cfilters(node) is True
+    assert stopped == [True]
+    assert node.pending_cfilters == {}
+    assert not discouraged
+    assert logged
+
+
+def test_resume_cfilters_discourages_the_peer_on_a_btclib_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A btclib exception out of `advance_cfilters` discourages the peer too."""
+    stopped: list[Any] = []
+    conn = SimpleNamespace(
+        id=6,
+        status=P2pConnStatus.Open,
+        address=_AN_ADDRESS,
+        stop=lambda: stopped.append(True),
+    )
+    heights = deque([1, 2, 3])
+    node, discouraged, logged = a_pending_node(conn, heights)
+
+    def boom(*_a: Any) -> bool:
+        raise BTClibValueError("no")
+
+    monkeypatch.setattr(main_module, "advance_cfilters", boom)
+    assert resume_cfilters(node) is True
+    assert stopped == [True]
+    assert discouraged == [_AN_ADDRESS]
+    assert logged

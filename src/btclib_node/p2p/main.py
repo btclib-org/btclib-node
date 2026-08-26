@@ -2,15 +2,20 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""`handle_p2p` and `handle_p2p_handshake`, one pass of `Node`'s own loop.
+"""`handle_p2p`, `handle_p2p_handshake` and `resume_cfilters`, each one pass.
 
-Each pops one message off its own queue -- `P2pManager.messages` or
-`P2pManager.handshake_messages` -- and dispatches it through
+The first two pop one message off their own queue -- `P2pManager.messages`
+or `P2pManager.handshake_messages` -- and dispatch it through
 `p2p.callbacks.callbacks` or `p2p.callbacks.handshake_callbacks`
 depending on the connection's own `P2pConnStatus`. An exception raised
 by a callback stops that connection rather than the loop, and is
 discouraged for where it is a parse failure from the peer's own bytes
 rather than a bug in the handler.
+
+`resume_cfilters` instead drains `node.pending_cfilters`, the
+connections `p2p.callbacks.get_cfilters` paused mid-answer rather than
+scheduling ahead of what a peer has drained -- nothing queued triggers
+it, so it is called once every pass of `run`'s own loop regardless.
 """
 
 from typing import TYPE_CHECKING
@@ -18,7 +23,7 @@ from typing import TYPE_CHECKING
 from btclib.exceptions import BTClibException
 
 from btclib_node.constants import P2pConnStatus
-from btclib_node.p2p.callbacks import callbacks, handshake_callbacks
+from btclib_node.p2p.callbacks import advance_cfilters, callbacks, handshake_callbacks
 
 if TYPE_CHECKING:
     from btclib_node import Node
@@ -100,3 +105,54 @@ def handle_p2p(node: Node) -> None:
             if isinstance(e, BTClibException):
                 manager.discourage(conn.address)
             node.logger.exception("Exception occurred")
+
+
+def resume_cfilters(node: Node) -> bool:
+    """Advance every paused `getcfilters` answer by what now fits.
+
+    Answers whether anything did -- a connection dropped from
+    `node.pending_cfilters` counts, same as one whose `heights` shrank
+    from this function's own vantage point (a `getcfilters` extending
+    it runs inside `get_cfilters`, strictly before this is called
+    again, so growth is never what a pass here sees), so this only
+    answers `False` where every paused connection was tried and stayed
+    exactly as paused as it already was.
+    `node.pending_cfilters` maps a connection id to the connection
+    itself and the heights `advance_cfilters` (`p2p.callbacks`) has not
+    yet sent -- entered there only when that call paused rather than
+    finished, and read and written only here and in `get_cfilters`
+    itself, both on `Node`'s own thread, so nothing here needs a lock
+    any more than `get_cfilters`'s own loop over a fresh request does.
+
+    A connection already closed is dropped without trying it -- `stop`
+    can be called from `P2pManager`'s own thread too, but the flag it
+    sets, `P2pConnStatus.Closed`, is read here the same way
+    `advance_cfilters` already reads it mid-answer. An exception out of
+    `advance_cfilters` is handled the same way `handle_p2p`'s own is
+    above, since it is the same call raising it, just on a later turn.
+    """
+    manager = node.p2p_manager
+    done: list[int] = []
+    progressed = False
+    for conn_id, (conn, heights) in list(node.pending_cfilters.items()):
+        if conn.status == P2pConnStatus.Closed:
+            done.append(conn_id)
+            progressed = True
+            continue
+        before = len(heights)
+        try:
+            if advance_cfilters(node, conn, heights):
+                done.append(conn_id)
+                progressed = True
+        except Exception as e:
+            conn.stop()
+            done.append(conn_id)
+            progressed = True
+            if isinstance(e, BTClibException):
+                manager.discourage(conn.address)
+            node.logger.exception("Exception occurred")
+        if len(heights) != before:
+            progressed = True
+    for conn_id in done:
+        del node.pending_cfilters[conn_id]
+    return progressed

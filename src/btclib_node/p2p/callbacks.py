@@ -10,10 +10,16 @@ for a connection still completing one. Every handler shares the same
 signature, `(node, msg, conn)`, whether or not its own body reads every
 argument -- the dispatch table calls each one uniformly, and an unread
 `msg` or `conn` documents that rather than a mistake.
+
+`advance_cfilters` is the one exception to "one handler, one message":
+`get_cfilters` below and `p2p.main.resume_cfilters` both call it to pace
+a `getcfilters` answer against the connection's own send queue, across
+however many turns of `Node`'s own loop that answer takes to drain.
 """
 
 import secrets
 import time
+from collections import deque
 from dataclasses import replace
 from io import BytesIO
 from typing import TYPE_CHECKING
@@ -65,6 +71,7 @@ from btclib_node.p2p.address import (
     ip_and_port,
     peer_from_addr_entry,
 )
+from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 from btclib_node.p2p.messages.errors import Reject
 
 if TYPE_CHECKING:
@@ -672,38 +679,102 @@ def _filter_range(
     return range(start_height, stop_height + 1)
 
 
-def get_cfilters(node: Node, msg: bytes, conn: Connection) -> None:
-    """Answer a BIP157 `getcfilters` with one `cfilter` per requested height.
+# Where `get_cfilters` below pauses mid-answer rather than scheduling
+# the rest of a range in one go, the way it used to
+# (btclib-org/btclib-node#442): Core's own analogue is `fPauseSend`
+# (`net.cpp:4205`, read at b91d983f66), tripped once a connection's own
+# send buffer passes `-maxsendbuffer` and cleared as the socket drains
+# (`net.cpp:1677`) -- checked, and re-checked, from `ProcessMessages`'s
+# own loop over each connection's queued work (`net_processing.cpp:2776`),
+# which is one thread calling back into the same connection repeatedly.
+#
+# This node has no such loop to call back into: `get_cfilters` is one
+# call, made once, on `Node`'s own thread under `handle_p2p`; and
+# `conn.queued_send_bytes` -- what a pause point here has to read -- is
+# only ever written on `P2pManager`'s own thread, inside
+# `Connection.async_send`, never on this one. Core's "next call" is
+# therefore not `get_cfilters` called again: it is `resume_cfilters`
+# (`p2p.main`), invoked once every pass of `Node`'s own loop regardless
+# of whether this connection has sent anything meanwhile, since a peer
+# already served everything it asked for need not ask again for this
+# node to keep answering it. `advance_cfilters` below is the one piece
+# of logic both `get_cfilters` and `resume_cfilters` call, so the pacing
+# is the same whichever of the two resumes it.
+#
+# `MAX_CFILTERS_INFLIGHT_BYTES` is the pause point itself: how far ahead
+# of a peer's own draining `advance_cfilters` is allowed to schedule
+# before it stops and hands the rest to `node.pending_cfilters`, for
+# `resume_cfilters` to pick up. Twice one busy modern block's own filter
+# (`filter_size.ONE_BUSY_MODERN_BLOCK_FILTER_BYTES`, the same estimate
+# `connection.py`'s own `MAX_QUEUED_SEND_BYTES` is sized from) is room
+# for one filter to finish draining and a second, already serialized,
+# to be on its way behind it -- far below `MAX_QUEUED_SEND_BYTES`
+# itself, which is what makes this a real pause rather than the whole
+# answer the bound it used to lean on already was.
+MAX_CFILTERS_INFLIGHT_BYTES = int(2 * ONE_BUSY_MODERN_BLOCK_FILTER_BYTES)
 
-    Silent on a request `_filter_range` refuses; stops mid-answer,
-    without raising, if this connection is closed by the time it gets
-    there -- the comment below is where that check is argued.
+# How many heights one connection's own entry on `node.pending_cfilters`
+# may hold at once, `get_cfilters` extending an existing one rather than
+# answering a second `getcfilters` that arrives while the first is still
+# paused. Core has nothing here to diverge from: `ProcessGetCFilters`
+# (`net_processing.cpp:3556`, b91d983f66) calls `LookupFilterRange` and
+# pushes every filter it returns in one call, with no pending state of
+# its own to collide with a second `getcfilters` from the same peer --
+# each is answered to completion, in turn, before the next is looked at,
+# relying only on `nSendBufferMaxSize`/`fPauseSend` to bound how much of
+# that can queue at the socket. This node's own pause point is per
+# request rather than per byte queued at the socket, so it needs a bound
+# of its own kind, and BIP157 says nothing about how many `getcfilters`
+# one connection may have outstanding at once for a reader to diverge
+# from either. Two full requests -- `MAX_GETCFILTERS_SIZE` apiece -- is
+# what `connection.py`'s own `MAX_QUEUED_SEND_BYTES` already names as
+# legitimate pipelining ("the next request a peer sends without waiting
+# for the first to finish"), so extending up to that many heights keeps
+# both requests this node already tolerates rather than dropping either
+# of them. Past it, a third stacked request is silence -- `_filter_range`
+# below already answers this way for a request it declines on other
+# grounds, and a peer pipelining past what two full answers cover is the
+# same kind of request: one this node will not serve, with no refusal
+# message BIP157 defines to send instead. This file has a second idiom
+# for "won't serve", not just `_filter_range`'s: `MAX_QUEUED_SEND_BYTES`
+# drops the connection outright, for a capacity refusal much like this
+# one rather than a protocol-validity check. Silence is preferred here
+# because that byte bound is still underneath this one to catch a peer
+# that is actually abusive; dropping the connection over ordinary
+# pipelining this node already tolerates elsewhere would be
+# disproportionate to what tripped it.
+MAX_PENDING_CFILTERS_HEIGHTS = 2 * MAX_GETCFILTERS_SIZE
+
+
+def advance_cfilters(node: Node, conn: Connection, heights: deque[int]) -> bool:
+    """Send from the front of `heights` while `conn`'s own queue has room.
+
+    Shared by `get_cfilters`, dispatching a request for the first time,
+    and by `p2p.main.resume_cfilters`, retrying one already paused --
+    each pops what it sends off the front of the same `deque`, so a
+    later call, on a later turn of `Node`'s own loop, picks up exactly
+    where the last one left off rather than resending or skipping a
+    height. Answers whether `heights` is now empty.
+
+    Checked before every send rather than after: `conn.queued_send_bytes`
+    is written only on `P2pManager`'s own thread, inside `async_send`,
+    while this runs on `Node`'s -- a plain `int` attribute with one
+    writer thread and one reader, the same shape `conn.status` already
+    is here and elsewhere in this module. Neither is taken under a
+    lock: a torn read is not a risk (CPython never hands back a value
+    that was not, at some point, actually written), and a stale one is
+    not a bug to guard against here, because this only ever paces
+    production -- it does not have to see the drain the instant it
+    happens, only soon enough that a slow peer's queue stops growing.
     """
-    request = GetCFilters.parse(msg)
-    heights = _filter_range(
-        node,
-        request.filter_type,
-        request.start_height,
-        request.stop_hash,
-        MAX_GETCFILTERS_SIZE,
-    )
-    if heights is None:
-        return
     active_chain = node.chainstate.block_index.active_chain
     filter_index = node.chainstate.filter_index
-    # "sequentially in order by block height", which is BIP157's own
-    # words and the reason this is the one request answered by many
-    # messages rather than one -- and the reason a status worth checking
-    # mid-loop exists here and not in get_cfheaders or get_cfcheckpt
-    # below, which build their one answer and call conn.send once: a
-    # peer whose answer trips Connection's send-buffer bound
-    # (MAX_QUEUED_SEND_BYTES, connection.py) partway through is
-    # conn.status == P2pConnStatus.Closed already, and every height
-    # still to come would otherwise be serialized into a CFilter and
-    # scheduled onto a connection nothing more will ever reach.
-    for height in heights:
+    while heights:
         if conn.status == P2pConnStatus.Closed:
-            break
+            return True
+        if conn.queued_send_bytes >= MAX_CFILTERS_INFLIGHT_BYTES:
+            return False
+        height = heights.popleft()
         block_hash = active_chain[height]
         # every block on the active chain is caught up before the node
         # starts listening, and kept up as blocks connect
@@ -718,6 +789,49 @@ def get_cfilters(node: Node, msg: bytes, conn: Connection) -> None:
                 block_filter,
             )
         )
+    return True
+
+
+def get_cfilters(node: Node, msg: bytes, conn: Connection) -> None:
+    """Answer a BIP157 `getcfilters` with one `cfilter` per requested height.
+
+    Silent on a request `_filter_range` refuses. "sequentially in order
+    by block height" is BIP157's own words and the reason this is the
+    one request answered by many messages rather than one; `_filter_range`
+    already bounds how many, and `advance_cfilters` above is where the
+    rate they are produced at is bounded too, registering what it could
+    not finish on `node.pending_cfilters` for `p2p.main.resume_cfilters`
+    to complete.
+
+    A second `getcfilters` arriving while `conn`'s own entry there is
+    still paused extends that same `deque` rather than replacing it --
+    `MAX_PENDING_CFILTERS_HEIGHTS`, beside `advance_cfilters` above, is
+    where that bound and the reasoning behind it are. `_filter_range`
+    has already validated and bounded this request's own range before
+    that check runs, so what is refused there is refused whole: no
+    partial answer is ever started for a range this node will not
+    finish.
+    """
+    request = GetCFilters.parse(msg)
+    heights = _filter_range(
+        node,
+        request.filter_type,
+        request.start_height,
+        request.stop_hash,
+        MAX_GETCFILTERS_SIZE,
+    )
+    if heights is None:
+        return
+    existing = node.pending_cfilters.get(conn.id)
+    if existing is None:
+        pending = deque(heights)
+    else:
+        _, pending = existing
+        if len(pending) + len(heights) > MAX_PENDING_CFILTERS_HEIGHTS:
+            return
+        pending.extend(heights)
+    if not advance_cfilters(node, conn, pending):
+        node.pending_cfilters[conn.id] = (conn, pending)
 
 
 def get_cfheaders(node: Node, msg: bytes, conn: Connection) -> None:

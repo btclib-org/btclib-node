@@ -35,13 +35,16 @@ from btclib_node.log import Logger
 from btclib_node.main import update_chain
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import PeerDB
-from btclib_node.p2p.main import handle_p2p, handle_p2p_handshake
+from btclib_node.p2p.main import handle_p2p, handle_p2p_handshake, resume_cfilters
 from btclib_node.p2p.manager import P2pManager
 from btclib_node.rpc.main import handle_rpc
 from btclib_node.rpc.manager import RpcManager
 
 if TYPE_CHECKING:
+    from collections import deque
     from types import FrameType
+
+    from btclib_node.p2p.connection import Connection
 
 # Everything above this line is imported for `Node` to build on, not to
 # be handed to a caller: `handle_p2p`, `RpcManager` and the rest are
@@ -212,6 +215,16 @@ class Node(threading.Thread):
         )
         self.mempool = Mempool(self.logger)
 
+        # A `getcfilters` answer `p2p.callbacks.get_cfilters` could not
+        # finish scheduling under its own pacing bound, keyed by
+        # connection id: the connection itself and the heights still
+        # owed. `p2p.callbacks.advance_cfilters` and
+        # `p2p.main.resume_cfilters` are the only two that read or write
+        # this, and both run on this thread -- `run`'s own loop below,
+        # under `handle_p2p` or under `resume_cfilters` directly -- so
+        # nothing here needs a lock. btclib-org/btclib-node#442
+        self.pending_cfilters: dict[int, tuple[Connection, deque[int]]] = {}
+
         # Built on first use, by the property below: the pool is
         # interpreters under a GIL build (spawned rather than forked
         # wherever that is the platform's default) or threads under a
@@ -350,6 +363,11 @@ class Node(threading.Thread):
         the peer, but what reaches here is whatever they did not expect
         -- and leaving `run`'s own loop by exception skips every close
         below it, so the databases would stay open.
+
+        `resume_cfilters` is last and unconditional, not one more queue
+        to size a share from: nothing is queued to trigger it, a paused
+        `getcfilters` answer being owed regardless of what else this
+        pass finds waiting.
         """
         wait = True
         try:
@@ -361,6 +379,8 @@ class Node(threading.Thread):
                 wait = False
             for _ in range(int(log2(len(self.p2p_manager.messages) + 1))):
                 handle_p2p(self)
+                wait = False
+            if resume_cfilters(self):
                 wait = False
         except Exception:
             self.logger.exception("Exception occurred handling a message")

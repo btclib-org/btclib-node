@@ -128,6 +128,37 @@ def test_init(tmp_path: Path) -> None:
     node.stop()
 
 
+def test_pending_cfilters_starts_empty(tmp_path: Path) -> None:
+    """A fresh node has nothing registered on `pending_cfilters`."""
+    with unstarted_node_context(tmp_path) as node:
+        assert node.pending_cfilters == {}
+
+
+def test_drain_message_queues_calls_resume_cfilters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_drain_message_queues` calls `resume_cfilters` and follows its answer.
+
+    Patched here rather than driven through a real paused answer: what is
+    owed to this module is that the call happens on every pass and its
+    answer is heeded, not `resume_cfilters`'s own behaviour, which
+    `tests/unit/p2p/main_test.py` already covers.
+    """
+    with unstarted_node_context(tmp_path) as node:
+        calls: list[Any] = []
+
+        def not_progressed(n: Any) -> bool:
+            calls.append(n)
+            return False
+
+        monkeypatch.setattr(btclib_node, "resume_cfilters", not_progressed)
+        assert node._drain_message_queues() is True
+        assert calls == [node]
+
+        monkeypatch.setattr(btclib_node, "resume_cfilters", lambda _n: True)
+        assert node._drain_message_queues() is False
+
+
 def test_a_config_omitted_is_constructed_rather_than_shared(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
