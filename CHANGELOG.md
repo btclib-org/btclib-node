@@ -14,6 +14,22 @@ to check the guess.
 
 ## Unreleased
 
+### `BlockDB` serializes its own reads and writes (closes #432)
+
+- **`BlockDB` now holds one `RLock` across every public method** (closes
+  #432): `open_block_file` and `open_rev_file` are each one handle with
+  one file position shared by every `seek`, `read` and `write` reaching
+  it, and nothing serialized `add_block`/`finalize` against
+  `get_block`/`get_rev_block` before this -- a write landing between a
+  reader's own `seek` and its `read` moved the position out from under
+  it, answering with whatever bytes were there instead of the block or
+  patch asked for. The lock matches `KeyValueStore`'s own "one
+  connection, and a lock around every use of it" (`db.py:58-73`), one
+  lock for the whole instance rather than one per handle: `files`, the
+  size bookkeeping `__add_data_to_file` updates, is shared by both the
+  `.blk` and the `.rev` side regardless of which handle a call is
+  writing through.
+
 ### `NodeStatus.Reindexing` goes (closes #445)
 
 - **`NodeStatus` no longer declares a `Reindexing` member** (closes

@@ -12,8 +12,10 @@ and reopened, and does it come back after the file it was written to is
 no longer the file being written to.
 """
 
+import threading
+import time
 from contextlib import ExitStack
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, BinaryIO
 
 import pytest
 from btclib.script import script
@@ -84,6 +86,53 @@ def test_a_rev_patch_survives_the_wire() -> None:
     """`RevBlock.deserialize` undoes `RevBlock.serialize` exactly."""
     rev_block = a_rev_block()
     assert RevBlock.deserialize(rev_block.serialize()) == rev_block
+
+
+def test_a_write_from_another_thread_cannot_land_inside_get_blocks_seek_and_read(
+    a_db: Callable[[Path | None], BlockDB], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second thread's `add_block` waits for `get_block`, not races it.
+
+    Forces, on real threads, the interleaving ISS 432 measured:
+    `open_block_file` is one handle with one position shared by every
+    seek, read and write reaching it, so a write landing between this
+    read's own seek and its read moves the position out from under it.
+    `get_block` is paused right there -- after its own seek, before its
+    own read -- and a second thread is given that whole window to call
+    `add_block` in. Before `_lock` existed, that window was enough: the
+    second thread's write ran unimpeded, moved the file position to its
+    own end, and the first thread's `read` came back with nothing at
+    that offset, exactly the `BTClibValueError: invalid decoded length:
+    0 instead of 80` the issue measured. The lock now held across every
+    public method makes the second thread's own call block until this
+    one is done instead.
+    """
+    block_db = a_db(None)
+    first, second = generate_random_chain(2, RegTest().genesis.hash)
+    block_db.add_block(first)
+
+    sought = threading.Event()
+
+    def paced_get_data(file: BinaryIO, index: int, size: int) -> bytes:
+        file.seek(index)
+        sought.set()
+        time.sleep(0.2)  # the window a second thread's write races into
+        return file.read(size)
+
+    monkeypatch.setattr(block_db, "_BlockDB__get_data_from_file", paced_get_data)
+
+    def writer() -> None:
+        assert sought.wait(timeout=5)
+        block_db.add_block(second)
+
+    thread = threading.Thread(target=writer)
+    thread.start()
+    result = block_db.get_block(first.header.hash)
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert result == first
+    assert block_db.get_block(second.header.hash) == second
 
 
 def test_a_rev_patch_is_read_back_from_the_file_it_went_into(
