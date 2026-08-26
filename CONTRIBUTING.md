@@ -349,12 +349,12 @@ had landed one day before that issue was filed. `RELEASING.md` and
 `RELEASE_NOTES.md` are the two files section 2 gives a tier-1 repository
 that #171 had removed, back under this section's own heading.
 
-Nothing has been published, though: `REPOSITORY.md`'s *What is not
-configured, and why* still answers `0` environments, the `pypi` and
-`testpypi` pair `RELEASING.md`'s *One-time setup* describes not existing
-yet, and `project.version` is `2026.8`, the shape `RELEASING.md`'s
-calendar scheme takes between releases: the month a cycle is open on,
-with no day, which is what `version-check` refuses on a tag.
+Nothing has been published, though. The `pypi` and `testpypi` pair of
+`RELEASING.md`'s *One-time setup* is configured — `REPOSITORY.md`'s
+*The two publishing environments* reads it back — and `project.version`
+is `2026.8`, the shape `RELEASING.md`'s calendar scheme takes between
+releases: the month a cycle is open on, with no day, which is what
+`version-check` refuses on a tag. What is left is the release.
 
 ```shell
 curl -s -o /dev/null -w '%{http_code}\n' https://pypi.org/pypi/btclib-node/json
