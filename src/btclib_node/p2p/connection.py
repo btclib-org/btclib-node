@@ -6,8 +6,8 @@
 
 Reads `btclib.p2p.message.Message`s off the wire and hands each one to
 `P2pManager`, writes what `Node`'s own thread queues back out, and
-bounds what it will buffer in either direction -- `MAX_GETCFILTERS_SIZE`
-on a request it parses, and a send buffer capped the way Core's own
+bounds what it will buffer in either direction -- `MAX_PROTOCOL_MESSAGE_LENGTH`
+on what it reads, and a send buffer capped the way Core's own
 `-maxsendbuffer` caps one, per the comment beside that cap below.
 """
 
@@ -23,13 +23,14 @@ from btclib.exceptions import BTClibException, IncompleteMessageError
 from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.handshake import Version
 from btclib.p2p.keepalive import Ping
-from btclib.p2p.limits import MAX_GETCFILTERS_SIZE, MAX_PROTOCOL_MESSAGE_LENGTH
+from btclib.p2p.limits import MAX_PROTOCOL_MESSAGE_LENGTH
 from btclib.p2p.message import Message
 
 from btclib_node.constants import P2pConnStatus, ProtocolVersion
 from btclib_node.exceptions import WrongNetworkMagicError
 from btclib_node.p2p.address import ip_and_port, network_address
 from btclib_node.p2p.callbacks import handshake_callbacks
+from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 
 if TYPE_CHECKING:
     import socket
@@ -50,52 +51,42 @@ if TYPE_CHECKING:
 # `fPauseSend` (`net.cpp:4205`) and `ProcessMessages`/`ProcessGetData`
 # (`net_processing.cpp:5438`, `:2774-2776`) stop generating further
 # messages for that peer, but what is already in `vSendMsg` keeps
-# draining past the cap rather than being cut off -- Core's own queue
-# for an in-progress `getcfilters` answer routinely exceeds 1,000,000
-# bytes while paused, because BIP157's own per-request bound reaches
-# tens of megabytes on its own (`MAX_GETCFILTERS_SIZE`, `_filter_range`,
-# this module's own answer to #101). A `Connection` that refuses to
-# queue a message past a bound copied from `-maxsendbuffer` would drop
-# a peer mid-response for asking for nothing out of spec, since this
-# node has no message-processing stage separate from the handler that
-# calls `send` once and is done: there is no later "next call" to pause
-# and resume at the way `fPauseSend` is, so what queues here has to
-# accommodate an entire legitimate answer, not merely start pausing
-# where Core does.
+# draining past the cap rather than being cut off.
 #
-# Bytes per filter element, measured rather than guessed: averaging
-# `btclib.block.block_filter._golomb_encode` (`BASIC_FILTER_P=19`,
-# `BASIC_FILTER_M=784931`) over synthetic element counts from 2,000 to
-# `MAX_FILTER_ELEMENT_COUNT` gives about 2.632 bytes, stable across
-# scales -- the cost is the Golomb-Rice parameter's, not the elements'.
+# `get_cfilters` (`p2p/callbacks.py`) now has that same kind of pause
+# point of its own -- `MAX_CFILTERS_INFLIGHT_BYTES`, argued beside it --
+# so this bound no longer has to hold one whole legitimate `getcfilters`
+# answer the way it once did (btclib-org/btclib-node#442, this node
+# having had no "next call" to pause and resume at the way `fPauseSend`
+# does, until that change): a `getcfilters` answer is now produced at
+# the rate this connection drains it, not scheduled in full the moment
+# it is asked for.
 #
-# A real block anchors the element count instead of guessing that too:
-# height 481824 (btclib's own `tests/block/_data/block_481824.bin`,
-# 988,519 on-wire bytes) parses to 1,866 transactions, 4,124 outputs and
-# 5,192 non-coinbase inputs -- 9,316 elements before the OP_RETURN
-# exclusion and the deduplication `BasicBlockFilter.from_block` applies,
-# both of which only lower the true count -- for about 24.5 KB of
-# filter. That block is from 2017; four times its element count stands
-# in for a block nearer today's without reaching for the 111,111-element
-# theoretical ceiling (`MAX_FILTER_ELEMENT_COUNT`) itself, which no
-# chain this node could serve has ever produced 1,000 of in a row.
-_BYTES_PER_FILTER_ELEMENT = 2.632
-_ELEMENTS_PER_BUSY_MODERN_BLOCK = 4 * 9316
+# What still has to fit here is a `getdata` answer, which has no pause
+# point of its own: Core's own `ProcessGetData` processes one block item
+# per call and checks `fPauseSend` before every transaction one
+# (`net_processing.cpp:2776`, `:2798`), where this module's own
+# `callbacks.getdata` builds and schedules every item a `GetData` names
+# in one pass -- the same defect this issue diagnoses for `get_cfilters`,
+# left open for `getdata` and filed as its own issue
+# (btclib-org/btclib-node#470). A legitimate peer downloading from this
+# node never asks for more than `_MAX_BLOCKS_PER_GETDATA_BURST` blocks at
+# once: this node's own `download.py` batches its outgoing `GetData` the
+# same way (`_request_new_block_work`'s own `waiting[:16]`), matching
+# Core's `MAX_BLOCKS_IN_TRANSIT_PER_PEER` (`net_processing.cpp:133`).
+# Each such block is at most `MAX_PROTOCOL_MESSAGE_LENGTH`, the wire's
+# own ceiling on any one message and, since a block's serialized size
+# cannot exceed its own weight, on one block's answer as well.
+_MAX_BLOCKS_PER_GETDATA_BURST = 16
 
-# `MAX_GETCFILTERS_SIZE` (BIP157's own per-request bound, enforced by
-# `_filter_range`) times that estimate is one legitimate `getcfilters`
-# answer at its largest -- about 98 MB, the same order as the "tens of
-# megabytes" the issue itself measured. Twice that is room for one such
-# answer to drain in full and for a second one -- pipelined behind it,
-# per the issue's other complaint, or simply the next request a peer
-# sends without waiting for the first to finish -- to be under way as
-# well, before a connection stops being plausibly one peer served within
-# the protocol's own bounds.
+# That burst, plus room for one filter of `get_cfilters`'s own paced
+# answer to finish draining and a second, already serialized, to be on
+# its way behind it -- `filter_size.ONE_BUSY_MODERN_BLOCK_FILTER_BYTES`,
+# the same estimate `MAX_CFILTERS_INFLIGHT_BYTES` paces against, doubled
+# the same way that bound is.
 MAX_QUEUED_SEND_BYTES = int(
-    2
-    * MAX_GETCFILTERS_SIZE
-    * _ELEMENTS_PER_BUSY_MODERN_BLOCK
-    * _BYTES_PER_FILTER_ELEMENT
+    _MAX_BLOCKS_PER_GETDATA_BURST * MAX_PROTOCOL_MESSAGE_LENGTH
+    + 2 * ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 )
 
 # The wire header's own layout -- `btclib.p2p.message`'s module docstring

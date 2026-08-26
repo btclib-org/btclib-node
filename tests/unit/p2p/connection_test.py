@@ -22,7 +22,7 @@ import pytest
 from btclib.hashes import hash256
 from btclib.p2p.block_filters import BlockFilterType, CFilter
 from btclib.p2p.keepalive import Ping, Pong
-from btclib.p2p.limits import MAX_GETCFILTERS_SIZE
+from btclib.p2p.limits import MAX_PROTOCOL_MESSAGE_LENGTH
 from btclib.p2p.message import Message
 
 from btclib_node.chains import RegTest
@@ -31,6 +31,7 @@ from btclib_node.p2p import connection as connection_module
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.callbacks import pong
 from btclib_node.p2p.connection import Connection
+from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 from tests.helpers import log_recorder
 
 if TYPE_CHECKING:
@@ -478,20 +479,20 @@ def _message_overhead() -> int:
 
 
 def _burst_summing_to(total_wire_bytes: int, count: int) -> list[CFilter]:
-    """`count` `cfilter` answers whose own wire bytes add to `total_wire_bytes`.
+    """Build `count` `CFilter`-shaped messages summing to `total_wire_bytes`.
 
     What `async_send` actually counts toward `queued_send_bytes` is the whole
     wire message, not merely the `filter_bytes` argument each is built from.
-
-    One `send` per block and nothing between it and the event loop is exactly
-    `get_cfilters`'s own loop over a `getcfilters` request's heights, so a burst
-    is what a single request answers with, not one message of the whole answer's
-    size -- which no message here could be anyway, `Message.serialize` refusing
-    a payload over `MAX_PROTOCOL_MESSAGE_LENGTH` regardless of `check_validity`.
-    `filter_bytes` is not a real Golomb-Rice set: `check_validity=False` on both
-    the object and `async_send`'s own `serialize` call is what lets zeroed
-    octets stand in for one, the way a wrong-shaped block already does elsewhere
-    in this test tree.
+    `CFilter` is a convenient, arbitrarily-sized payload to stand in for
+    whatever a connection has queued -- a `getdata` answer's own blocks
+    among them, since `count` here models how many separate messages one
+    handler schedules back to back, not that they are filters: no message
+    here could be one whole answer's size anyway, `Message.serialize`
+    refusing a payload over `MAX_PROTOCOL_MESSAGE_LENGTH` regardless of
+    `check_validity`. `filter_bytes` is not a real Golomb-Rice set:
+    `check_validity=False` on both the object and `async_send`'s own
+    `serialize` call is what lets zeroed octets stand in for one, the way
+    a wrong-shaped block already does elsewhere in this test tree.
     """
     total = total_wire_bytes - count * _message_overhead()
     base = total // count
@@ -508,13 +509,16 @@ def _burst_summing_to(total_wire_bytes: int, count: int) -> list[CFilter]:
 def _two_bursts_in_flight(
     first_burst: list[CFilter], second_burst: list[CFilter]
 ) -> tuple[Connection, list[int]]:
-    """Put two whole `getcfilters` answers in flight together.
+    """Put two bursts of messages in flight on the same connection together.
 
-    Both bursts are scheduled the way `get_cfilters`'s synchronous loop
-    schedules them -- one `Connection.send` per block, all of one
-    request before the next -- and the first is held open on a socket
-    write that never finishes, the way a real one would be by a peer
-    reading slower than this node can serialize. Returns the
+    Each burst is scheduled the way a handler that calls `Connection.send`
+    several times in a row without anything else running in between
+    schedules its own messages -- `callbacks.getdata`'s own loop over a
+    `GetData`'s items, unpaced (btclib-org/btclib-node#470), rather than
+    `get_cfilters`'s, which paces itself since #442 and so no longer
+    produces a burst this large in one call. The first burst is held open
+    on a socket write that never finishes, the way a real one would be by
+    a peer reading slower than this node can serialize. Returns the
     connection and the sizes `_send` actually saw.
     """
 
@@ -558,49 +562,56 @@ def _two_bursts_in_flight(
     return asyncio.run(drive())
 
 
-def test_two_maximal_getcfilters_answers_pipelined_are_not_dropped() -> None:
+def _getdata_burst_and_cfilters_headroom(
+    slack: int,
+) -> tuple[list[CFilter], list[CFilter]]:
+    """Build a legitimate `getdata` burst and `get_cfilters`'s own headroom.
+
+    `MAX_QUEUED_SEND_BYTES` (`connection.py`) is derived from exactly these
+    two terms -- `_MAX_BLOCKS_PER_GETDATA_BURST` messages at
+    `MAX_PROTOCOL_MESSAGE_LENGTH` each, the largest `getdata` still
+    unpaced (btclib-org/btclib-node#470), plus twice
+    `ONE_BUSY_MODERN_BLOCK_FILTER_BYTES` -- so the two together, short of
+    the bound by `slack`, are what the bound is actually sized to hold.
+    """
+    burst = connection_module._MAX_BLOCKS_PER_GETDATA_BURST
+    getdata_total = burst * MAX_PROTOCOL_MESSAGE_LENGTH
+    headroom = int(2 * ONE_BUSY_MODERN_BLOCK_FILTER_BYTES) - slack
+    return (
+        _burst_summing_to(getdata_total, burst),
+        _burst_summing_to(headroom, 2),
+    )
+
+
+def test_a_legitimate_getdata_burst_and_cfilters_headroom_are_not_dropped() -> None:
     """`MAX_QUEUED_SEND_BYTES` is sized for BIP157 traffic, not against it.
 
-    One maximal, realistically-estimated `getcfilters` answer -- 1,000
-    blocks, `MAX_GETCFILTERS_SIZE`, at this module's own busy-block
-    estimate -- is about half the bound, so a second one, pipelined
-    behind the first per the issue's other complaint, still fits while
-    the first has not finished draining.
+    A `getdata` answering `_MAX_BLOCKS_PER_GETDATA_BURST` maximal blocks in
+    one unpaced call is what `getdata` may still legitimately schedule
+    (btclib-org/btclib-node#470); `get_cfilters`'s own paced headroom,
+    pipelined behind it the way a `getcfilters` request arriving while
+    that answer still drains would be, still fits alongside it.
     """
-    one_response = connection_module.MAX_QUEUED_SEND_BYTES // 2
-    connection, delivered = _two_bursts_in_flight(
-        _burst_summing_to(one_response, MAX_GETCFILTERS_SIZE),
-        _burst_summing_to(
-            connection_module.MAX_QUEUED_SEND_BYTES - one_response - 4096,
-            MAX_GETCFILTERS_SIZE,
-        ),
-    )
+    first, second = _getdata_burst_and_cfilters_headroom(slack=4096)
+    connection, delivered = _two_bursts_in_flight(first, second)
     assert connection.status == P2pConnStatus.Open
-    assert len(delivered) == 2 * MAX_GETCFILTERS_SIZE
+    assert len(delivered) == len(first) + len(second)
     assert connection.queued_send_bytes == 0
 
 
-def test_a_third_maximal_answer_s_worth_in_flight_drops_the_peer() -> None:
-    """Past twice a maximal legitimate answer, the peer is dropped.
+def test_past_that_headroom_the_peer_is_dropped() -> None:
+    """Past the bound above, the peer is dropped.
 
-    The same two answers as above, past the bound instead of short of
-    it: not a single request out of spec, but more outstanding at once
-    than the protocol's own per-request bound and this node's own
-    pipelining allowance together account for.
+    The same two bursts, tipping past `MAX_QUEUED_SEND_BYTES` instead of
+    stopping short of it.
     """
-    one_response = connection_module.MAX_QUEUED_SEND_BYTES // 2
-    connection, delivered = _two_bursts_in_flight(
-        _burst_summing_to(one_response, MAX_GETCFILTERS_SIZE),
-        _burst_summing_to(
-            connection_module.MAX_QUEUED_SEND_BYTES - one_response + 4096,
-            MAX_GETCFILTERS_SIZE,
-        ),
-    )
+    first, second = _getdata_burst_and_cfilters_headroom(slack=-4096)
+    connection, delivered = _two_bursts_in_flight(first, second)
     assert connection.status == P2pConnStatus.Closed
-    # the first answer reached the socket in full; at least one message
-    # of the second, the one that tipped the bound, never did
-    assert len(delivered) < 2 * MAX_GETCFILTERS_SIZE
-    assert len(delivered) >= MAX_GETCFILTERS_SIZE
+    # the first burst reached the socket in full; at least one message of
+    # the second, the one that tipped the bound, never did
+    assert len(delivered) < len(first) + len(second)
+    assert len(delivered) >= len(first)
     # released and accounted for, not left on the books by the drop
     assert connection.queued_send_bytes == 0
 

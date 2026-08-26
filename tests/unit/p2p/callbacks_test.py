@@ -74,8 +74,11 @@ from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import PeerDB, addr_entry, endpoint_key, peer_address
 from btclib_node.p2p.callbacks import (
+    MAX_CFILTERS_INFLIGHT_BYTES,
+    MAX_PENDING_CFILTERS_HEIGHTS,
     addr,
     addrv2,
+    advance_cfilters,
     feefilter,
     get_cfcheckpt,
     get_cfheaders,
@@ -396,6 +399,11 @@ def a_peer(**attributes: Any) -> Any:
         stop=lambda: stopped.append(True),
         stopped=stopped,
         status=P2pConnStatus.Open,
+        # what Connection starts every fresh connection at, and what
+        # `advance_cfilters` reads to pace a `getcfilters` answer: never
+        # written here, so it never trips that pacing bound, the same
+        # way a real connection whose peer reads promptly never would
+        queued_send_bytes=0,
         version_message=None,
         wtxidrelay_received=False,
         prefer_addressv2=False,
@@ -1929,6 +1937,9 @@ def a_filters_node(
         logger=SimpleNamespace(
             info=lambda *a: None, warning=lambda *a: None, debug=lambda *a: None
         ),
+        # written by `get_cfilters` only where `advance_cfilters` pauses;
+        # empty here for every test that never trips that pacing bound
+        pending_cfilters={},
     )
 
 
@@ -1972,6 +1983,101 @@ def test_one_block_is_a_range_of_one() -> None:
     a_getcfilters(node, peer, 3, 3)
     (msg,) = peer.sent
     assert msg.block_hash == (3).to_bytes(32, "big")
+
+
+def test_get_cfilters_pauses_once_the_queue_is_full_and_registers_the_rest() -> None:
+    """`get_cfilters` stops scheduling once `conn` is at its pacing bound.
+
+    Nothing is sent -- the peer was already at the bound before this
+    request arrived -- and every height is left on `node.pending_cfilters`,
+    keyed by the connection's own id, for `p2p.main.resume_cfilters` to
+    pick up later.
+    """
+    node = a_filters_node(length=8)
+    peer = a_peer(queued_send_bytes=MAX_CFILTERS_INFLIGHT_BYTES)
+    a_getcfilters(node, peer, 2, 5)
+    assert not peer.sent
+    conn, heights = node.pending_cfilters[peer.id]
+    assert conn is peer
+    assert list(heights) == [2, 3, 4, 5]
+
+
+def test_a_paused_answer_resumes_once_the_queue_drains() -> None:
+    """Calling `advance_cfilters` again once the queue drains finishes it.
+
+    The same call `p2p.main.resume_cfilters` makes on a later pass of
+    `Node`'s own loop, driven directly here: what is owed to this module
+    is that it picks the paused range up correctly, not the polling
+    loop around it, which `tests/unit/p2p/main_test.py` already covers.
+    """
+    node = a_filters_node(length=8)
+    peer = a_peer(queued_send_bytes=MAX_CFILTERS_INFLIGHT_BYTES)
+    a_getcfilters(node, peer, 2, 5)
+    assert not peer.sent
+    _conn, heights = node.pending_cfilters[peer.id]
+
+    peer.queued_send_bytes = 0
+    assert advance_cfilters(node, peer, heights) is True
+    assert not heights
+    assert [msg.block_hash for msg in peer.sent] == [
+        h.to_bytes(32, "big") for h in range(2, 6)
+    ]
+
+
+def test_a_second_getcfilters_while_the_first_is_still_paused_is_not_lost() -> None:
+    """A second `getcfilters` arriving while the first is paused extends it.
+
+    Neither range is dropped: both are answered in full, in the order
+    the two requests arrived, once the connection's own queue drains --
+    rather than the second overwriting `node.pending_cfilters`'s entry
+    for this connection and discarding the first range's own remaining
+    heights, which is what a plain assignment there used to do.
+    """
+    node = a_filters_node(length=20)
+    peer = a_peer(queued_send_bytes=MAX_CFILTERS_INFLIGHT_BYTES)
+    a_getcfilters(node, peer, 0, 5)
+    assert not peer.sent
+    a_getcfilters(node, peer, 10, 12)
+    _conn, heights = node.pending_cfilters[peer.id]
+    assert list(heights) == [0, 1, 2, 3, 4, 5, 10, 11, 12]
+
+    peer.queued_send_bytes = 0
+    assert advance_cfilters(node, peer, heights) is True
+    assert [msg.block_hash for msg in peer.sent] == [
+        h.to_bytes(32, "big") for h in (0, 1, 2, 3, 4, 5, 10, 11, 12)
+    ]
+
+
+def test_a_getcfilters_past_the_pending_cap_is_silent() -> None:
+    """A third request stacked past `MAX_PENDING_CFILTERS_HEIGHTS` is silent.
+
+    Two requests of `MAX_GETCFILTERS_SIZE` heights apiece -- `_filter_range`'s
+    own bound on any one of them -- already reach the cap between them; a
+    third is refused whole rather than partially extending it.
+
+    `_filter_range` already answers a request it will not serve with
+    silence rather than an error -- an unknown filter type, an unknown
+    stop hash, a range too long -- and a peer pipelining past what this
+    connection still extends for is the same kind of request this node
+    will not serve, for lack of a defined refusal message BIP157 leaves
+    it to send instead.
+    """
+    node = a_filters_node(length=MAX_PENDING_CFILTERS_HEIGHTS + 20)
+    peer = a_peer(queued_send_bytes=MAX_CFILTERS_INFLIGHT_BYTES)
+    a_getcfilters(node, peer, 0, MAX_GETCFILTERS_SIZE - 1)
+    a_getcfilters(node, peer, MAX_GETCFILTERS_SIZE, MAX_PENDING_CFILTERS_HEIGHTS - 1)
+    _conn, heights = node.pending_cfilters[peer.id]
+    assert len(heights) == MAX_PENDING_CFILTERS_HEIGHTS
+
+    a_getcfilters(
+        node,
+        peer,
+        MAX_PENDING_CFILTERS_HEIGHTS,
+        MAX_PENDING_CFILTERS_HEIGHTS,
+    )
+    assert not peer.sent
+    _conn, heights = node.pending_cfilters[peer.id]
+    assert len(heights) == MAX_PENDING_CFILTERS_HEIGHTS
 
 
 def test_get_cfilters_stops_once_the_connection_closes_mid_answer() -> None:
