@@ -501,7 +501,18 @@ source = ["btclib_node", "tests"]
 # On a node whose defects are mostly in branches not taken, that is the
 # wrong thing to count.
 branch = true
-omit = ["*/site-packages/*"]
+# `tests/integration/*` beside the usual site-packages exclusion: every
+# test there skips itself without a real bitcoind (`tests/integration/
+# conftest.py`'s own `bitcoind_path` fixture), which is a body `source`
+# above would otherwise still walk and report at zero the moment
+# anything lands under that directory -- `source` is what makes an
+# unimported module appear in the report in the first place, so the
+# floor would fail for every contributor who has no bitcoind on an
+# ordinary `uv run pytest`, which never even collects that directory
+# (`testpaths`, in `[tool.pytest.ini_options]`, does not name it).
+# `integration-bitcoind.yml` is what actually runs it, with its own
+# unrelated guard against reporting a skip as a pass.
+omit = ["*/site-packages/*", "tests/integration/*"]
 
 [tool.coverage.report]
 show_missing = true

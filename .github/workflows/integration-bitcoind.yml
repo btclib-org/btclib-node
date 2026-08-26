@@ -1,0 +1,163 @@
+---
+name: integration-bitcoind
+
+# The one claim the rest of the suite cannot make. Every other p2p test
+# connects one `Node` to another -- `download_test.py`'s own bootstrap
+# peers included -- which is `btclib`'s p2p implementation talking to
+# itself, and says nothing about it meeting a Bitcoin Core it did not
+# write. `tests/integration/bitcoind_test.py` asks that question: a
+# disposable regtest bitcoind, a handful of blocks, and a fresh node
+# connected to it over p2p, its tip checked against bitcoind's own.
+#
+# Gated rather than run only on a schedule: connecting to bitcoind and
+# reaching its tip took 0.11s measured against a local build of Bitcoin
+# Core v31.1.0 on an otherwise idle machine, well inside the few seconds
+# `bitcoin-core-rpc`'s own copy of this workflow spends per cell -- and
+# that repository's is a required check for exactly that reason. A run
+# can still go red on an unreachable bitcoincore.org or a runner slow
+# enough to miss bitcoind's own startup; that is a re-run, and it is the
+# price of the question.
+#
+# Which workflow a required check comes from lives outside this
+# repository, in main's protection, and names it as a literal string:
+# making this one gate a merge is therefore a separate `gh api` change,
+# REPOSITORY.md's own recipe, once this file has run enough times to
+# trust.
+#
+# A schedule too, like every other unattended question here, and it is
+# not about the tree: the job below asks the same node the same question
+# about a tree nothing has touched, which is what it takes to notice
+# bitcoincore.org no longer serving the tarball pinned below rather than
+# a pull request discovering that by accident. `mutation.yml`'s own
+# header already reasons about the slot this takes -- Sunday, the hour
+# after it -- and the organization's own calendar
+# (btclib-org/.github's README) already names this workflow at that
+# slot, this repository's own minute.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Sunday 05:20 UTC: btclib-org/.github's own calendar names
+    # `integration-bitcoind` at Sunday, hour 05, and `btclib-node` at
+    # minute 20 -- `mutation.yml`'s own header already anticipates this
+    # slot. Cron runs from the default branch only, so this file gates
+    # nothing until it reaches main -- elsewhere it is reachable through
+    # the dispatch below and nowhere else.
+    - cron: "20 5 * * 0"
+  workflow_call:
+  workflow_dispatch:
+  pull_request:
+    # ready_for_review, so a pull request marked ready gets the run the
+    # draft condition below withheld while it was a draft: the default
+    # types do not include it. closed joins them so that a run this pull
+    # request's own concurrency group is still holding is superseded by
+    # the landing rather than left to finish on a branch nobody will
+    # look at again -- the same list `test.yml` and `lint.yml` carry.
+    types: [opened, reopened, synchronize, ready_for_review, closed]
+    # no `paths` filter: a candidate required check that never runs
+    # blocks a merge where a skipped one satisfies it, so a filter and a
+    # required check cannot both be had. Every pull request pays it,
+    # documentation-only ones included.
+
+# least privilege for the GITHUB_TOKEN: the tarball is fetched from
+# bitcoincore.org, which does not know this token, and nothing here
+# writes to the repository
+permissions:
+  contents: read
+
+# cancel superseded runs. Named literally rather than through
+# github.workflow, as everywhere else here: in a called workflow that
+# expression is the caller's name.
+# head_ref falls back to ref rather than being used bare: it is set only
+# for pull_request events, to the pull request's own head branch, so a
+# push run (ref refs/heads/main) still gets its own group, and a
+# pull_request run -- closed and merged ones included -- never collides
+# with a push's group the way a bare ref would
+concurrency:
+  group: integration-bitcoind-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regtest:
+    name: Regtest against Bitcoin Core
+    # a draft pull request is work in progress and spends no runner
+    # here either, the same condition test.yml and lint.yml carry; a
+    # closed pull request spends none either -- the trigger above takes
+    # the closed event only to supersede a run this ref's group is
+    # still holding
+    if: ${{ !github.event.pull_request.draft && github.event.action != 'closed' }}
+    runs-on: ubuntu-latest
+    # the whole flow is seconds, the download of bitcoind included; this
+    # bounds the download and the failure cases rather than the work
+    timeout-minutes: 20
+    steps:
+      # every action is pinned to a commit SHA, the tag in the comment: a
+      # tag, let alone a branch, is a name its owner can move
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+      # the release under test, and the sha256 of its linux tarball as
+      # four independent guix builders attested it in
+      # bitcoin-core/guix.sigs. Pinned rather than resolved to "latest":
+      # a run that installs whatever is newest reports the day Core
+      # released rather than the day this tree changed, and the version
+      # that answered would then be unknowable from a green run. Raising
+      # it is a commit, with the new sha read from the same place --
+      # `btclib-org/btclib` and `btclib-org/bitcoin-core-rpc` pin the
+      # identical release and digest for their own copies of this job
+      - name: Install bitcoind
+        id: bitcoind
+        uses: ./.github/actions/install-bitcoind
+        with:
+          version: "31.1"
+          sha256: b80d9c3e04da78fb6f0569685673418cf686fadba9042d926d13fb87ff503f9e
+      # BTCLIB_NODE_INTEGRATION and BTCLIB_NODE_BITCOIND are
+      # tests/integration/conftest.py's own two switches; the junit
+      # report is for the step below, the run itself being read from the
+      # log
+      - name: Run the integration tests
+        env:
+          BTCLIB_NODE_INTEGRATION: "1"
+          BTCLIB_NODE_BITCOIND: ${{ steps.bitcoind.outputs.path }}
+        run: |
+          uv run --locked --no-default-groups --group test \
+            pytest tests/integration --junitxml=integration.xml
+      # a skip is not a failure, and that is exactly why this step
+      # exists: pytest exits 0 for a module that skipped itself, so a job
+      # whose fixture stopped finding the node would stay green while
+      # asking Core nothing -- the failure mode of an unattended run that
+      # looks like good news, section 7 of the organization standard's
+      # own reason for asking for this step
+      - name: Fail if the integration tests did not run
+        run: |
+          uv run --locked --no-default-groups --group test python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          cases = list(ET.parse("integration.xml").getroot().iter("testcase"))
+          skipped = [one for one in cases if one.find("skipped") is not None]
+          for one in skipped:
+              reason = one.find("skipped").get("message", "")
+              print(f"::error::{one.get('name')} skipped: {reason}")
+          if not cases or skipped:
+              print("::error::the integration tests skipped rather than ran")
+              sys.exit(1)
+          print("every integration test ran against the node")
+          PY
+      # always(), because a failure is what somebody opens this job for,
+      # and the report is what says whether bitcoind refused the sync or
+      # the test never reached it
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: integration-report
+          path: integration.xml
+          if-no-files-found: error
+          retention-days: 90
