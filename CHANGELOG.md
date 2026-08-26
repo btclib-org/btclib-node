@@ -28,6 +28,26 @@ to check the guess.
   comment ranges. `CLAUDE.md`'s *Following Bitcoin Core* states the
   shape.
 
+### The self-connect nonce moves onto the connection, off the ring (closes #448)
+
+- **`callbacks.version` now asks `P2pManager.is_self_connect_nonce`, which
+  walks `pending_outbound_nonces` -- a set that shrinks exactly as an
+  outbound connection completes its handshake or closes -- in place of
+  `manager.nonces`'s own fixed-size ring** (closes #448): the ring was a
+  process-wide list of the ten most recently sent nonces, so a burst of
+  outbound connects could evict a still-outstanding attempt's own nonce
+  before its `version` came back, a false negative on a genuine
+  self-connection. `Connection.send_version` now records the nonce it
+  drew on the connection itself and, only for an outbound connection,
+  in that set through `add_pending_outbound_nonce`;
+  `P2pManager.promote_connection` and `remove_connection` each discard
+  their own connection's entry once it leaves the handshake, both
+  inside the same `_connections_lock` every other access to the set
+  takes. This is closer to Core's own `CConnman::CheckIncomingNonce`
+  (`net.cpp:360-376` at bitcoin/bitcoin@b91d983f66), which walks the
+  live, not-yet-successful outbound connections rather than a ring at
+  all.
+
 ### Two waits stop sitting tighter than `wait_until`'s default (closes #476)
 
 - **`test_a_slow_manager_start_cannot_still_clobber_the_status_it_raced` and

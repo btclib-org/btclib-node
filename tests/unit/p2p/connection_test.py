@@ -99,25 +99,17 @@ def test_a_message_that_will_not_serialize_is_logged_and_dropped() -> None:
     assert "error in serializing message" in line
 
 
-def test_send_version_keeps_the_most_recently_sent_nonces() -> None:
-    """`manager.nonces` is a ring of the ten most recent, not the ten oldest.
+def test_send_version_records_this_connections_own_nonce() -> None:
+    """`send_version` sets `self.nonce` to what it drew, on either side.
 
-    #433: appending to the list and then slicing `[:10]` kept the first
-    ten nonces this process ever drew, so past the tenth `send_version`
-    every new nonce was appended and immediately discarded by that same
-    slice -- the ring never moved again, and `callbacks.version`'s
-    self-connection check compared against connections long gone. Past
-    eleven calls, the ring must be the last ten appends in order and
-    must no longer hold the first nonce. `sent` records the ring's own
-    last entry after each call rather than the nonce `send_version`
-    drew, which there is no other way to observe -- under the defect
-    that makes `sent` repeat its tenth entry, and the equality below
-    fails on that repetition as much as on the eviction that never
-    happened.
+    #448: `callbacks.version` reads this connection's own nonce back off
+    it rather than off a manager-wide ring, so this is the whole of what
+    `send_version` owes it, whether the connection is outbound or in.
     """
     connection, _ = a_connection()
     manager = cast("Any", connection.manager)
-    manager.nonces = []
+    manager.pending_outbound_nonces = set()
+    manager.add_pending_outbound_nonce = manager.pending_outbound_nonces.add
     manager.port = 18444
 
     async def _send(data: bytes) -> None:
@@ -125,17 +117,36 @@ def test_send_version_keeps_the_most_recently_sent_nonces() -> None:
 
     connection._send = _send  # type: ignore[method-assign]
 
-    async def drive() -> list[int]:
-        sent = []
-        for _ in range(11):
-            await connection.send_version()
-            sent.append(manager.nonces[-1])
-        return sent
+    with connection.client:
+        asyncio.run(connection.send_version())
+    drawn = connection.nonce
+    assert drawn is not None
+    assert manager.pending_outbound_nonces == {drawn}
+
+
+def test_send_version_only_adds_an_outbound_nonce_to_the_manager() -> None:
+    """An inbound connection's own nonce never enters `pending_outbound_nonces`.
+
+    `P2pManager.is_self_connect_nonce`'s own docstring is where that set
+    is argued against Core's search -- an inbound connection's own draw
+    has to stay out of it for the same reason.
+    """
+    connection, _ = a_connection()
+    connection.inbound = True
+    manager = cast("Any", connection.manager)
+    manager.pending_outbound_nonces = set()
+    manager.add_pending_outbound_nonce = manager.pending_outbound_nonces.add
+    manager.port = 18444
+
+    async def _send(data: bytes) -> None:
+        return
+
+    connection._send = _send  # type: ignore[method-assign]
 
     with connection.client:
-        sent = asyncio.run(drive())
-    assert manager.nonces == sent[-10:]
-    assert sent[0] not in manager.nonces
+        asyncio.run(connection.send_version())
+    assert connection.nonce is not None
+    assert not manager.pending_outbound_nonces
 
 
 def test_a_connection_names_the_peer_it_is_to() -> None:
@@ -190,9 +201,9 @@ def a_running_connection(
     """Build a `Connection` with enough manager state for `run` to actually run.
 
     Unlike `a_connection` above, this one carries a real loop, a
-    `nonces` list and a stub `discourage`, which is what the tests
-    below need to drive `Connection.run` end to end rather than only
-    a synchronous method on an idle connection.
+    `pending_outbound_nonces` set and a stub `discourage`, which is what
+    the tests below need to drive `Connection.run` end to end rather
+    than only a synchronous method on an idle connection.
     """
     node = SimpleNamespace(
         chain=RegTest(),
@@ -202,10 +213,12 @@ def a_running_connection(
         ),
     )
     discouraged: list[object] = []
+    pending_outbound_nonces: set[int] = set()
     manager = SimpleNamespace(
         node=node,
         loop=loop,
-        nonces=[],
+        pending_outbound_nonces=pending_outbound_nonces,
+        add_pending_outbound_nonce=pending_outbound_nonces.add,
         port=18444,
         peer_db=None,
         discourage=discouraged.append,

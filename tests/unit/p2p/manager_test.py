@@ -51,12 +51,16 @@ def a_conn(
     address: NetworkAddressV2 | None = None,
     relay_tx: bool = True,
     feefilter: int = 0,
+    nonce: int | None = None,
 ) -> Any:
     """Build a `Connection` double: no socket, its own `sent`/`stopped` logs.
 
     `send_ping` on this double does not send a real ping: it records
     one and backdates `ping_sent` well past the idle bound, standing in
-    for a ping already sent and never answered.
+    for a ping already sent and never answered. `nonce` defaults to
+    `None`, the same as a real `Connection` that has not sent a
+    `version` yet -- `promote_connection` and `remove_connection` both
+    read it back to clear `pending_outbound_nonces`.
     """
     conn = SimpleNamespace(
         id=conn_id,
@@ -66,6 +70,7 @@ def a_conn(
         ping_sent=0,
         relay_tx=relay_tx,
         feefilter=feefilter,
+        nonce=nonce,
         sent=[],
         stopped=[],
     )
@@ -219,6 +224,37 @@ def test_removing_a_connection_still_pending_stops_it_too(
     assert conn.stopped == [True]
 
 
+def test_removing_a_pending_connection_discards_its_own_pending_nonce(
+    a_manager: AManagerFactory,
+) -> None:
+    """`remove_connection` clears this connection's nonce out of the set.
+
+    #448: `callbacks.version`'s self-connection check walks
+    `pending_outbound_nonces` for exactly as long as the connection that
+    drew a nonce is still live and unhandshaken -- a connection dropped
+    for any other reason has to leave it too, or a later, unrelated
+    connection drawing the same nonce (astronomically unlikely, but not
+    what this is testing) would find a stale entry answering for it.
+    """
+    conn = a_conn(1, status=P2pConnStatus.Open, nonce=7)
+    manager = a_manager()
+    manager.pending_connections[conn.id] = conn
+    manager.pending_outbound_nonces.add(7)
+    manager.remove_connection(1)
+    assert not manager.pending_outbound_nonces
+
+
+def test_removing_a_connection_with_no_nonce_yet_does_not_raise(
+    a_manager: AManagerFactory,
+) -> None:
+    """A connection dropped before `send_version` ran carries no nonce."""
+    conn = a_conn(1, status=P2pConnStatus.Open, nonce=None)
+    manager = a_manager()
+    manager.pending_connections[conn.id] = conn
+    manager.remove_connection(1)
+    assert not manager.pending_outbound_nonces
+
+
 def test_a_promote_racing_remove_connection_waits_for_its_own_two_pops(
     a_manager: AManagerFactory,
 ) -> None:
@@ -290,6 +326,24 @@ def test_discourage_marks_the_endpoint_dialled_or_accepted(
     assert endpoint_key(address) in manager.discouraged
 
 
+def test_add_pending_outbound_nonce_makes_it_visible_to_is_self_connect_nonce(
+    a_manager: AManagerFactory,
+) -> None:
+    """A nonce recorded by one is found by the other, on the same manager."""
+    manager = a_manager()
+    manager.add_pending_outbound_nonce(7)
+    assert manager.pending_outbound_nonces == {7}
+    assert manager.is_self_connect_nonce(7)
+
+
+def test_is_self_connect_nonce_is_false_for_one_never_added(
+    a_manager: AManagerFactory,
+) -> None:
+    """A nonce nobody drew answers `False`, not a `KeyError`."""
+    manager = a_manager()
+    assert not manager.is_self_connect_nonce(7)
+
+
 def test_promoting_a_connection_moves_it_into_connections(
     a_manager: AManagerFactory,
 ) -> None:
@@ -310,6 +364,23 @@ def test_promoting_a_connection_that_is_not_pending_changes_nothing(
     manager.promote_connection(99)
     assert not manager.connections
     assert not manager.pending_connections
+
+
+def test_promoting_a_connection_discards_its_own_pending_nonce(
+    a_manager: AManagerFactory,
+) -> None:
+    """A connection past its own `verack` no longer needs checking against.
+
+    #448: `pending_outbound_nonces` holds a nonce only for as long as the
+    connection that drew it is still short of `verack` -- successfully
+    connected is exactly the state it stops standing for.
+    """
+    conn = a_conn(1, status=P2pConnStatus.Open, nonce=7)
+    manager = a_manager()
+    manager.pending_connections[conn.id] = conn
+    manager.pending_outbound_nonces.add(7)
+    manager.promote_connection(1)
+    assert not manager.pending_outbound_nonces
 
 
 def test_a_peer_that_cannot_be_dialled_is_not_kept(

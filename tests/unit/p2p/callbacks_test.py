@@ -429,7 +429,7 @@ def a_peer(**attributes: Any) -> Any:
 
 def a_handshake_node(
     *,
-    nonces: Sequence[int] = (),
+    pending_outbound_nonces: Sequence[int] = (),
     status: NodeStatus = NodeStatus.HeaderSynced,
     peer_db: Any = None,
     promote_connection: Any = None,
@@ -437,11 +437,13 @@ def a_handshake_node(
 ) -> Any:
     """Build a node double with just what handshake callbacks read or write."""
     discouraged: list[Any] = []
+    own_nonces = set(pending_outbound_nonces)
     return SimpleNamespace(
         status=status,
         config=SimpleNamespace(min_relay_feerate=min_relay_feerate),
         p2p_manager=SimpleNamespace(
-            nonces=list(nonces),
+            pending_outbound_nonces=own_nonces,
+            is_self_connect_nonce=own_nonces.__contains__,
             peer_db=peer_db,
             promote_connection=promote_connection or (lambda conn_id: None),
             discourage=discouraged.append,
@@ -484,7 +486,7 @@ def test_a_version_carrying_our_own_nonce_is_this_node_calling_itself() -> None:
     #283: an incompatibility, not a protocol violation, and still cause to
     discourage.
     """
-    node = a_handshake_node(nonces=[7])
+    node = a_handshake_node(pending_outbound_nonces=[7])
     peer = a_peer()
     version(node, a_version(nonce=7), peer)
     assert peer.stopped == [True]

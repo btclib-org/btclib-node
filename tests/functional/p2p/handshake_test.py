@@ -68,9 +68,9 @@ def test_connection_to_ourselves(tmp_path: Path) -> None:
     `connections` -- so `pending_connections` emptying out, not
     `connections` staying at zero, is what proves the drop actually
     happened rather than the connection never having been attempted.
-    Two nonces are recorded because the loopback dial reaches this same
-    node's listener too, and each side of that pair sends its own
-    version with its own nonce.
+    Two pending connections are waited for first because the loopback
+    dial reaches this same node's listener too, and each side of that
+    pair has to exist before the drain that follows means anything.
     """
     node = Node(
         config=Config(
@@ -86,7 +86,7 @@ def test_connection_to_ourselves(tmp_path: Path) -> None:
 
     node.p2p_manager.connect(local_addr(node.p2p_port))
 
-    wait_until(lambda: len(node.p2p_manager.nonces) == 2)
+    wait_until(lambda: len(node.p2p_manager.pending_connections) == 2)
     # a connection to itself is stopped inside `version`, before its own
     # `verack` could ever promote it: it never reaches `connections`, so
     # `pending_connections` emptying out is what proves it was let go of
