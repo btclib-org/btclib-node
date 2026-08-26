@@ -113,7 +113,7 @@ def test_a_slow_manager_start_cannot_still_clobber_the_status_it_raced(
             node.block_db.add_block(block)
             block_index.set_downloaded(block.header.hash)
 
-        wait_until(lambda: len(block_index.active_chain) == 1 + 1, timeout=5)
+        wait_until(lambda: len(block_index.active_chain) == 1 + 1)
         assert node.status == NodeStatus.BlockSynced
     finally:
         node.stop()
