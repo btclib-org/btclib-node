@@ -14,6 +14,32 @@ to check the guess.
 
 ## Unreleased
 
+### A bare run collects the integration directory (closes #508)
+
+- **`tests/integration` is a `testpaths` entry** (closes #508): section
+  7 of the organization standard puts every suite directory there, so
+  that a bare `uv run pytest` is still the whole suite, and attaches to
+  an integration directory the conditions that make that affordable --
+  each test skipping itself where the environment switch that asks for
+  it is unset, the switch named in the skip message, and the directory
+  kept out of the coverage ratchet. `tests/integration/conftest.py` and
+  `[tool.coverage.run]`'s `omit` already held all of those, so the entry
+  was what was left. What a contributor without a bitcoind sees is
+  `set BTCLIB_NODE_INTEGRATION=1 to run the integration tests` against
+  each test there, rather than a directory a bare run never mentions --
+  and not the divergence from the standard the alternative would have
+  owed an issue.
+- **The skips do not cost the run its green**: the summary bar stays
+  green with the skipped count sitting beside the passed one, and the
+  run exits 0. That is the whole of what collecting the directory costs.
+- **`integration-bitcoind.yml`'s own invocation is a selection, so the
+  floor does not apply to it**: the workflow names `tests/integration`
+  alone, which leaves the rest of `testpaths` out, and
+  `tests/conftest.py`'s `relax_coverage_floor` drops the threshold for
+  it. Asking for `--cov-fail-under=100` on that same command exits 1
+  where the command the workflow runs exits 0, which is what says the
+  drop is what carries it rather than an absent floor.
+
 ### A peer's malformed `reject` is refused as the peer's own fault (closes #515)
 
 - **`Reject.parse` refuses a payload with `InvalidRejectPayloadError`, a
