@@ -31,9 +31,9 @@ fails in the suite, on the pull request that moved the name, rather than
 on the sentinel's own day.
 
 A seed is accepted where a declared entry point returns rather than
-refusing it, and `_parsed` treats the same two families the harness
+refusing it, and `_parsed` treats the same family the harness
 suppresses as a refusal -- `fuzz/fuzz_reject.py`'s own docstring argues
-which they are and why `ValueError` is among them.
+which it is.
 """
 
 from __future__ import annotations
@@ -86,12 +86,12 @@ def _seeds(harness: str) -> tuple[Path, ...]:
 def _parsed(spec: str, data: bytes) -> Any:
     """Return what `spec` parses `data` into, or None where it refuses.
 
-    The two families are the ones the harness suppresses, so what counts
-    as a refusal here is what counts as one there.
+    The family is the one the harness suppresses, so what counts as a
+    refusal here is what counts as one there.
     """
     try:
         return _resolve(spec)(data)
-    except BTClibException, ValueError:
+    except BTClibException:
         return None
 
 

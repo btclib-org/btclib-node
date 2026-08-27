@@ -22,15 +22,14 @@ unconstrained octets handed straight to it, with nothing decoding,
 validating or otherwise standing between the fuzzer's own choice of
 octets and the parser.
 
-What is suppressed below is what `parse` refuses today rather than what
-it ought to refuse. `BTClibException` is `btclib.var_int.parse`'s own
-refusal of octets no var_int carries. `ValueError` is this tree's own
-two refusals, `str.decode` on a message no utf-8 encodes and
-`RejectCode` on a code BIP61 does not name, and it covers the
-`UnicodeDecodeError` of the first as a subclass;
-btclib-org/btclib-node#515 is where that classification is argued, and
-narrowing this suppression to `BTClibException` is what closes it from
-this side.
+`BTClibException` is the whole of what `parse` refuses an input with,
+and it is the family `handle_p2p` (`p2p/main.py`) discourages a peer
+on: `btclib.var_int.parse`'s own `BTClibValueError` for a length
+prefix no var_int carries, and `InvalidRejectPayloadError` for what
+`p2p/messages/errors.py` decides itself. Suppressing that family alone
+is what makes this harness report: what leaves `fuzz_target` below is
+then either a crash or a refusal `handle_p2p` reads as this node's own
+defect, and each is a finding against `parse`.
 
 `fuzz.yml` runs this file as an ordinary script under the interpreter
 `.python-version` pins, and its header is where that is argued against
@@ -59,10 +58,9 @@ def fuzz_target(data: bytes) -> None:
 
     Atheris reports a failure on any exception leaving this function,
     so what is suppressed here is what `parse` refusing an input looks
-    like; the module docstring above is where the two families are
-    argued.
+    like; the module docstring above is where that family is argued.
     """
-    with contextlib.suppress(BTClibException, ValueError):
+    with contextlib.suppress(BTClibException):
         Reject.parse(data)
 
 

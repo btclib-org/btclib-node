@@ -52,12 +52,11 @@ on:
   # reserializing to itself -- and that is a test in the suite,
   # tests/fuzz_corpus_test.py, run by test.yml like any other.
   #
-  # This row is expected to report nothing until btclib-org/btclib-node#515
-  # lands. The suppression below is contextlib.suppress(BTClibException,
-  # ValueError), and every refusal Reject.parse can reach is one of
-  # those or a UnicodeDecodeError it also suppresses, so no input can
-  # escape by construction. A green Monday is therefore not evidence
-  # about the parser until that suppression is narrowed
+  # What a green run here says is bounded by what the harness
+  # suppresses, and that is BTClibException alone -- the family
+  # handle_p2p discourages a peer on. So an input Reject.parse refuses
+  # any other way leaves fuzz_target and is reported as a crash, which
+  # is what makes a green Monday evidence about the parser
 
 # least privilege for the GITHUB_TOKEN: nothing here writes to the
 # repository. In particular no security-events: write -- a crash is read
