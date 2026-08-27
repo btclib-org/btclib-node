@@ -10,6 +10,8 @@ nothing is reconstructed for it: a changelog written backwards from a git
 log is a guess at what somebody would have noticed, and there is no way
 to check the guess.
 
+## Unreleased
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
