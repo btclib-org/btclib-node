@@ -14,6 +14,25 @@ to check the guess.
 
 ## Unreleased
 
+### The two publish jobs stop gating on `public-api`'s result (closes #534)
+
+- **Both jobs' `if:` now opens with `always()` and reads
+  `needs.test.result`, `needs.lint.result` and `needs.docs.result`
+  explicitly, `public-api` staying in `needs:` for ordering only**
+  (closes #534): `public-api`'s own comment calls it deliberately not a
+  merge gate, exiting 1 on any public-API difference since the last
+  release with no matching `RELEASE_NOTES.md` entry -- its documented
+  behaviour on a real breaking-changes cycle, not a crash. A bare
+  `needs:` gates on every listed job regardless of why it failed, a
+  skipped job counting the same as a failed one, so that designed
+  failure would have kept both publish jobs from ever starting.
+  `btclib-org/btclib#1461` is where the identical shape did exactly
+  that, on the first cycle to run the job against a real breaking
+  change; this repository's own `release.yml` carried the same bug and
+  had never run `public-api` against one, no release having been cut
+  yet. `attest` and `github-release`, two jobs further down the same
+  file, already carried this pattern correctly.
+
 ### The btclib floor carries `p2p.negotiation` (closes #381)
 
 - **`btclib[secp256k1]>=2026.8.27` in place of `>=2026.8.21`, and
