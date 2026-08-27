@@ -8,10 +8,13 @@ name: integration-bitcoind
 # write. `tests/integration/bitcoind_test.py` asks that question: a
 # disposable regtest bitcoind, a handful of blocks, and a fresh node
 # connected to it over p2p, its tip checked against bitcoind's own.
-# `tests/integration/backpressure_test.py` asks the one other question
-# that wants a real peer rather than a double -- whether this node's own
+# `tests/integration/backpressure_test.py` asks whether this node's own
 # receive bound engages, and releases, against a daemon serving it
 # megabyte blocks faster than it validates them.
+# `tests/integration/reorg_test.py` asks whether this node follows Core
+# off a branch Core abandons, its own block index, UTXO set and mempool
+# moving back together: a reorg is where a disagreement with Core is a
+# chain split rather than a slow peer.
 #
 # Gated rather than run only on a schedule: connecting to bitcoind and
 # reaching its tip took 0.11s measured against a local build of Bitcoin
@@ -21,9 +24,13 @@ name: integration-bitcoind
 # megabyte chain the second module needs costs seconds too rather than
 # the minutes a wallet-mined fixture would: its blocks are built in the
 # test and handed over with `submitblock`, the reasoning being that
-# module's own. A run can still go red on an unreachable bitcoincore.org
-# or a runner slow enough to miss bitcoind's own startup; that is a
-# re-run, and it is the price of the question.
+# module's own. The third module hands its two branches over the same
+# way, for a reason of its own: `submitblock` takes a branch from a
+# lower height as readily as an extension, where mining a competing
+# branch out of bitcoind's wallet wants `invalidateblock` or a second
+# daemon. A run can still go red on an unreachable bitcoincore.org or a
+# runner slow enough to miss bitcoind's own startup; that is a re-run,
+# and it is the price of the question.
 #
 # Which workflow a required check comes from lives outside this
 # repository, in main's protection, and names it as a literal string --
