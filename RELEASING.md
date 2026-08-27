@@ -401,14 +401,23 @@ this release included.
      python -c "from btclib_node import Node; print(Node)"
    ```
 
-   then check the attestations — the JSON API answers `null` for
-   `provenance` even where they exist; the
+   then check the attestations. **The
    [simple API](https://pypi.org/simple/btclib-node/) (`Accept:
-   application/vnd.pypi.simple.v1+json`) carries the real link, under
+   application/vnd.pypi.simple.v1+json`) is the index's own state; the
+   JSON API is a cache of it** — `provenance` answers `null` there
+   even where the link exists. The simple API carries the real
+   provenance link, under
    `/integrity/<project>/<version>/<filename>/provenance`, and
    `pypi-attestations verify pypi <file> --repository
    https://github.com/btclib-org/btclib-node` checks the signature
-   rather than merely its presence.
+   rather than merely its presence. The simple API is itself served
+   through a CDN, so one request straight after a publish can still
+   answer stale for a few minutes — `release.yml`'s own *Install from
+   TestPyPI and use it* step measured exactly that lag, a `curl` GET
+   confirming a version and `uv` failing to resolve it one second
+   later (#546, #548); a retry is what an absence needs before it is
+   trusted, the way that workflow step retries rather than asking
+   once.
 
 1. Read the bill of materials attached to the release,
    `btclib_node-<version>.cdx.json`: a CycloneDX 1.6 document naming the
@@ -552,7 +561,23 @@ reading a mismatch as tampering:
 ## If something goes wrong
 
 - The workflow failed before the `publish-pypi` job: nothing was
-  uploaded. Delete the tag, fix, and tag again:
+  uploaded — confirm that from the index's own state before deleting
+  the tag, rather than from which job the run reports as having
+  failed: a `needs:` chain several jobs deep can report a job
+  `skipped` without saying why (*Audit the run job by job* above),
+  and `publish-pypi` is not idempotent, so retagging over a version
+  that in fact landed fails a second time on top of the first.
+
+  ```shell
+  curl -s -H "Accept: application/vnd.pypi.simple.v1+json" \
+    https://pypi.org/simple/btclib-node/ \
+    | python3 -c "import json,sys; \
+      print('<version>' in json.load(sys.stdin)['versions'])"
+  ```
+
+  `False`, and only `False`, is what licenses the delete — retry the
+  request before trusting it, the simple API being cached the way the
+  paragraph above describes. Delete the tag, fix, and tag again:
 
   ```shell
   git tag -d v<version>
@@ -595,9 +620,10 @@ reading a mismatch as tampering:
   gh run download "$run_id" -n dist -n sbom -n attestation
 
   for f in dist/*.whl dist/*.tar.gz; do
-    sha=$(curl -sf "https://pypi.org/pypi/btclib-node/$version/json" |
+    sha=$(curl -s -H "Accept: application/vnd.pypi.simple.v1+json" \
+      https://pypi.org/simple/btclib-node/ |
       jq -r --arg n "$(basename "$f")" \
-        '.urls[] | select(.filename==$n) | .digests.sha256')
+        '.files[] | select(.filename==$n) | .hashes.sha256')
     echo "$sha  $f" | sha256sum -c -
   done
 

@@ -14,6 +14,23 @@ where this file was written rather than where anything was tagged.
 
 ## Unreleased
 
+### RELEASING.md treats the simple API as the index's state (closes #545)
+
+- **`RELEASING.md` named the JSON API's staleness as a quirk of the
+  `provenance` field alone** (closes #545). It now states the general
+  rule: the simple API is the index's own state and the JSON API is a
+  cache of it, disagreeing with the simple API on more than which
+  fields it fills in.
+- **The *If something goes wrong* section's first branch, on whether
+  anything was uploaded, now answers that from the simple API** rather
+  than from which job a run reports as having failed — `publish-pypi`
+  is not idempotent, so retagging over a version that in fact landed
+  fails a second time on top of the first.
+- The `github-release` recovery script's own digest check read the
+  JSON API for a version the workflow had just published, the exact
+  situation the staleness reaches; it now reads the digest off the
+  simple API instead.
+
 ### `tests/README.md` declares the suite's split (closes #530, #531)
 
 - **`tests/README.md` now carries the split's reason, and the package
