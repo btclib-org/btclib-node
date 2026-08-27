@@ -17,28 +17,28 @@ triggers are the action's own -- is to the trigger rule rather than to
 the calendar. No Read the Docs badge: no project there is connected to
 this repository, which REPOSITORY.md's *What is not configured, and why*
 records with the reason. -->
+[![GitHub release](https://img.shields.io/github/v/release/btclib-org/btclib-node.svg)](https://github.com/btclib-org/btclib-node/releases)
 [![PyPI version](https://img.shields.io/pypi/v/btclib-node.svg?logo=pypi)](https://pypi.python.org/pypi/btclib-node/)
 [![downloads](https://static.pepy.tech/badge/btclib-node)](https://pepy.tech/project/btclib-node)
+[![supported Python versions](https://img.shields.io/pypi/pyversions/btclib-node.svg?logo=python)](https://pypi.python.org/pypi/btclib-node/)
+[![implementation](https://img.shields.io/pypi/implementation/btclib-node.svg)](https://pypi.python.org/pypi/btclib-node/)
 [![development status](https://img.shields.io/pypi/status/btclib-node.svg)](https://pypi.python.org/pypi/btclib-node/)
 [![license](https://img.shields.io/github/license/btclib-org/btclib-node.svg)](https://github.com/btclib-org/btclib-node/blob/main/LICENSE)
-[![supported Python versions](https://img.shields.io/pypi/pyversions/btclib-node.svg?logo=python)](https://pypi.python.org/pypi/btclib-node/)
-[![wheel](https://img.shields.io/pypi/wheel/btclib-node.svg)](https://pypi.python.org/pypi/btclib-node/)
-[![implementation](https://img.shields.io/pypi/implementation/btclib-node.svg)](https://pypi.python.org/pypi/btclib-node/)
-[![GitHub release](https://img.shields.io/github/v/release/btclib-org/btclib-node.svg)](https://github.com/btclib-org/btclib-node/releases)
 
-[![test workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/test.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/test.yml)
-[![lint workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/lint.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/lint.yml)
-[![docs workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/docs.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/docs.yml)
 [![pre-commit.ci status](https://results.pre-commit.ci/badge/github/btclib-org/btclib-node/main.svg)](https://results.pre-commit.ci/latest/github/btclib-org/btclib-node/main)
-[![links workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/links.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/links.yml)
+[![test workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/test.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/test.yml)
 [![vendored-vectors workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/vendored-vectors.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/vendored-vectors.yml)
+[![mutation workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/mutation.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/mutation.yml)
+[![lint workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/lint.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/lint.yml)
+[![links workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/links.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/links.yml)
+[![docs workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/docs.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/docs.yml)
 [![codeql workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/codeql.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/codeql.yml)
 [![deps-latest workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/deps-latest.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/deps-latest.yml)
 [![bootstrap-dns workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/bootstrap-dns.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/bootstrap-dns.yml)
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/btclib-org/btclib-node/badge)](https://scorecard.dev/viewer/?uri=github.com/btclib-org/btclib-node)
 [![os-macos workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/os-macos.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/os-macos.yml)
-[![mutation workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/mutation.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/mutation.yml)
 [![integration-bitcoind workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/integration-bitcoind.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/integration-bitcoind.yml)
+
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/btclib-org/btclib-node/badge)](https://scorecard.dev/viewer/?uri=github.com/btclib-org/btclib-node)
 
 btclib-node is a full node bitcoin implementation written in Python and
 based on btclib.
