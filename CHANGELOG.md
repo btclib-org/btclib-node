@@ -14,6 +14,30 @@ to check the guess.
 
 ## Unreleased
 
+### A peer's malformed `reject` is refused as the peer's own fault (closes #515)
+
+- **`Reject.parse` refuses a payload with `InvalidRejectPayloadError`, a
+  `BTClibValueError`**: `handle_p2p` (`p2p/main.py`) discourages the
+  peer where the exception is a `BTClibException` and reads anything
+  else as this node's own code failing on content that was fine, so a
+  `message` or a `reason` no utf-8 decodes and a code outside BIP61's
+  own tables belong inside that family. `WrongNetworkMagicError` is the
+  same decision one layer out, over the envelope rather than the
+  payload, and its docstring already carries the reasoning.
+- **`parse` accepts exactly what `serialize` writes**: every field is
+  held to the length its own prefix declares, `BytesIO.read` answering
+  a stream that has run out with what is left rather than with an
+  error, and what follows `reason` is either the 32 octets of a hash or
+  nothing at all — BIP61 ending a version reject after the common
+  payload and having a tx or block reject append the hash of what was
+  rejected. A payload cut short mid-field, a hash cut short, and octets
+  past a whole one are each refused rather than parsed into an object
+  the peer did not send.
+- **`fuzz/fuzz_reject.py` suppresses `BTClibException` alone**: that
+  being the whole of what the parser refuses an input with, an input it
+  refuses any other way leaves the harness, which is what gives
+  `fuzz.yml`'s scheduled row something to report.
+
 ### The fuzz sentinel, over the parser a peer reaches first (closes #402)
 
 - **`fuzz/fuzz_reject.py` fuzzes BIP61's `reject` payload parser, and
