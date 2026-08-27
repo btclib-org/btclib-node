@@ -14,6 +14,33 @@ to check the guess.
 
 ## Unreleased
 
+### The install check waits for the index (closes #546)
+
+- **Both publish jobs poll the simple API for the version they just
+  uploaded before installing it, twenty attempts fifteen seconds
+  apart, erroring by name if it never arrives** (closes #546): the
+  index does not serve a new file the instant the upload returns, and
+  the step that installs from it ran 1.2 seconds later. On
+  [run 33089825557](https://github.com/btclib-org/btclib-node/actions/runs/33089825557)
+  TestPyPI answered `200 OK` for both files and printed the project
+  URL; the resolver was told there was no such version; the index
+  served it minutes afterwards. `publish-pypi` carried the identical
+  shape, which on a tag push is the third distinct way these three
+  lines produce a published-but-unattested release with no GitHub
+  release page (#541, #543).
+- **The wait asks the simple API, not the JSON one** (closes #546):
+  the resolver reads the simple API, and #545 is the finding that JSON
+  is a cache of the index where simple is its state -- a wait in front
+  of a resolver asks what the resolver asks.
+  `btclib-org/btclib`'s own `pypi-install.yml` carries the same wait
+  against a failure this tree cannot have, its step installing whatever
+  the resolver picks so that starting early tests the *previous*
+  version and reports a pass for it. The `==$version` here makes that a
+  loud failure rather than a quiet wrong answer, and the wait makes it
+  neither. The match is exact on the quoted version, checked against
+  the live index for a version present, one absent, and a prefix of a
+  present one.
+
 ### The install check names its interpreter (closes #543)
 
 - **Both publish jobs, and `RELEASING.md`'s two install checks, pass
