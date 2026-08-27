@@ -160,6 +160,36 @@ those checks passed to
    so a permission or an API that only works on release day is one this
    job would find there.
 
+## What a red `public-api` means
+
+`release.yml`'s `public-api` job walks the public API of the release
+before this one against the one being cut, with griffe, and reports
+what broke: a removed object, a changed parameter kind or default, a
+narrowed type. **A red one is not a failure to stop on.** Before 1.0
+the surface breaks deliberately and often, which is why that job is not
+a merge gate and why its own comment says so: it runs here, on the
+release, so the answer arrives while `RELEASE_NOTES.md` is already
+being written.
+
+Read it, do not obey it. Each finding is checked by hand against that
+file's own *Breaking changes* list, and the question is whether the
+break is announced, not whether it exists. A finding with an entry is
+the system working; a finding with none is either a missing entry to
+write or a break nobody meant, and only reading the finding tells you
+which.
+
+What the job does **not** do is stop the release: since #534 both
+publish jobs keep it in `needs:` for ordering only, their own `if:`
+opening with `always()` and reading the other dependencies' results
+explicitly. Before that fix a red `public-api` silently kept them from
+ever starting — no upload, no environment review, and nothing red
+except the job that was designed to be.
+
+On the first release it cannot be red at all: it resolves no previous
+tag — `v0.1.0` is excluded by name, being a lightweight tag nothing was
+published from — so the check skips itself and the job reports success.
+The first cycle that can actually exercise it is the second release.
+
 ## Release to PyPI
 
 **A release is a tag on `main`, and everything below that edits a file
@@ -275,6 +305,29 @@ this release included.
 1. Approve the `pypi` environment when the workflow asks. Up to here
    nothing is public and the tag can still be deleted; the upload that
    follows is the point of no return.
+
+1. **Audit the run job by job, and not for red.** A failed job is loud;
+   a skipped one is silent, and the signature is a conclusion of
+   `skipped` with **zero steps**:
+
+   ```shell
+   gh api "repos/btclib-org/btclib-node/actions/runs/<id>/jobs?per_page=100" \
+     --jq '.jobs[] | [.conclusion, (.steps|length), .name] | @tsv'
+   ```
+
+   `btclib-org/btclib`'s own `v2026.8.27` published with its
+   post-publish sentinel never having run and nothing saying so, the
+   run reading as done (btclib-org/btclib#1470, btclib-org/.github#484).
+   A `needs:` reads back through the listed job's own `needs:` chain, so
+   a job two hops from something that failed by design is skipped
+   without ever being mentioned.
+
+   **One skip is correct and is the one a reader will cite as the
+   defect**: `publish-testpypi` reports `skipped` on a tag push, its
+   guard being `workflow_dispatch`. On a rehearsal the mirror image is
+   correct for the same reason — `publish-pypi` skips, its guard being
+   `push`. Everything else that skipped wants explaining before the
+   release is called done.
 
 1. Install what was just published, in an environment of its own:
 
