@@ -14,6 +14,21 @@ where this file was written rather than where anything was tagged.
 
 ## Unreleased
 
+### dependabot.yml argues from what deps-latest.yml does (closes #558)
+
+- **The uv ecosystem's comment stops arguing from a missing `latest`
+  sentinel** (closes #558): `deps-latest.yml` is in the tree and
+  resolves the same floor `pyproject.toml` declares a day before
+  Dependabot's own Thursday run, so a Thursday pull request bumping a
+  dependency is not the first run that tries the bump -- it is only the
+  first whose own required checks a merge waits on, the earlier report
+  not being one of them.
+- **The github-actions ecosystem keeps the old argument, now in its own
+  sentence** (closes #558): nothing resolves an action version the way
+  `deps-latest.yml` resolves a dependency, so that pull request is still
+  the first run that tries one, and weekly is still the trade against a
+  month of unread drift.
+
 ### The Read the Docs bullet stops waiting on a met condition (closes #559)
 
 - **`REPOSITORY.md`'s Read the Docs bullet gave "this tree does not

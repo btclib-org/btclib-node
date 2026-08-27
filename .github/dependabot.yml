@@ -10,12 +10,16 @@
 #
 # Weekly, and no target-branch on either: without one dependabot opens
 # against the default branch, which is the only branch a change lands on.
-# Nothing pre-validates these upgrades -- there is no `latest` sentinel
-# here yet -- so a dependabot pull request is the first run that tries
-# one, and what reads it is the same suite and coverage floor a human
-# pull request waits for. That is the argument for weekly rather than
-# monthly: a week of drift is a diff somebody can still read and revert,
-# where a month of it arrives as one.
+# The uv ecosystem below has a sentinel now: deps-latest.yml resolves the
+# same floor pyproject.toml declares a day earlier, Wednesday against
+# Thursday, and runs it through the suite and the lint gate -- so a
+# Thursday pull request there is not the first run that tries the bump,
+# though it still waits on its own required checks rather than on that
+# earlier report. The github-actions ecosystem has no such sentinel:
+# nothing here resolves an action version the way uv resolves a
+# dependency, so that pull request remains the first run that tries one.
+# Weekly rather than monthly either way: a week of drift is a diff
+# somebody can still read and revert, where a month of it arrives as one.
 #
 # The seven-day cooldown is what the interval is really trading against.
 # A compromised release is usually yanked within days, and nothing here
