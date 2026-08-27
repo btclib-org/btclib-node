@@ -30,7 +30,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 import requests
-from btclib.block import Block, BlockHeader, merkle_root_and_mutated_from_transactions
+from btclib.block import (
+    Block,
+    BlockHeader,
+    bip34_commitment,
+    merkle_root_and_mutated_from_transactions,
+)
 from btclib.block.mining import mine
 from btclib.block.proof_of_work import REGTEST_POW_LIMIT_BITS
 from btclib.exceptions import BTClibValueError
@@ -162,13 +167,18 @@ def generate_random_header_chain(
     return chain
 
 
-def generate_random_transaction(prevouthash: bytes | None = None) -> Tx:
+def generate_random_transaction(
+    prevouthash: bytes | None = None, value: int = 50 * 10**8
+) -> Tx:
     """Return a one-input, one-output transaction spending `prevouthash`.
 
     `prevouthash` names the outpoint being spent, defaulting to a random
     one where the caller only needs a transaction that is structurally
     valid rather than one that actually spends something built earlier
-    in the same test.
+    in the same test. `value` is what the new output pays, the subsidy
+    by default -- what `prevouthash` is worth where it names a coinbase
+    still paying it in full, which stops holding past a halving
+    (`generate_random_chain` is what has to pass its own).
     """
     prevouthash = prevouthash or secrets.token_bytes(32)
     tx_in = TxIn(
@@ -177,7 +187,7 @@ def generate_random_transaction(prevouthash: bytes | None = None) -> Tx:
         sequence=0xFFFFFFFF,
     )
     tx_out = TxOut(
-        value=50 * 10**8,
+        value=value,
         script_pub_key=script.serialize([secrets.token_bytes(32)]),
     )
     return Tx(
@@ -188,21 +198,28 @@ def generate_random_transaction(prevouthash: bytes | None = None) -> Tx:
     )
 
 
-def generate_coinbase(value: int = 50 * 10**8) -> Tx:
+def generate_coinbase(value: int = 50 * 10**8, height: int | None = None) -> Tx:
     """Return a coinbase transaction paying `value`, the subsidy by default.
 
     A null-outpoint input marks it as a coinbase; `value` lets a test
     fund an output with an exact, known amount rather than the subsidy,
     where what it is checking is the amount rather than the block being
-    otherwise ordinary.
+    otherwise ordinary. `height`, where given, is prefixed onto the
+    script_sig as BIP34's own commitment (`bip34_commitment`) -- what a
+    chain enforcing BIP34 needs to connect the block this funds, which
+    regtest does from height 1 on. Left out, the script_sig commits to
+    no height at all, which is what a test of that rule itself builds.
     """
+    script_sig = script.serialize([secrets.token_bytes(32)])
+    if height is not None:
+        script_sig = bip34_commitment(height) + script_sig
     return Tx(
         version=1,
         lock_time=0,
         vin=[
             TxIn(
                 prev_out=OutPoint(),
-                script_sig=script.serialize([secrets.token_bytes(32)]),
+                script_sig=script_sig,
                 sequence=0xFFFFFFFF,
             )
         ],
@@ -249,13 +266,28 @@ def generate_random_chain(length: int, start: bytes) -> list[Block]:
     its predecessor's coinbase, so the chain is not just height -- a
     reader can also walk it as a spend history, which is what
     `block_db_test.py`'s undo-data tests need it for.
+
+    `start` is assumed to be its own chain's genesis (height 0), so the
+    block built at loop position `x` sits at real height `x + 1` --
+    true of every caller in this tree but one, an orphan fork never
+    offered to `update_chain` (`filter_index_test.py`'s own
+    `orphan`) -- which is the height each coinbase commits to (BIP34):
+    regtest enforces it from height 1, and a chain meant to connect has
+    to carry one that does. Each coinbase pays its own height's real
+    subsidy rather than a flat fifty bitcoin, and the transaction
+    spending the one before it pays exactly what that one paid: past
+    regtest's own hundred-and-fiftieth-block halving, a flat amount on
+    either side of that spend would be a coinbase printing money or a
+    transaction printing money instead, one rule swapped for the other.
     """
     chain: list[Block] = []
     for x in range(length):
         previous_block_hash = chain[-1].header.hash if chain else start
-        transactions = [generate_coinbase()]
+        transactions = [generate_coinbase(value=RegTest().subsidy(x + 1), height=x + 1)]
         if chain:
-            tx = generate_random_transaction(chain[x - 1].transactions[0].id)
+            tx = generate_random_transaction(
+                chain[x - 1].transactions[0].id, value=RegTest().subsidy(x)
+            )
             transactions.append(tx)
         chain.append(build_block(previous_block_hash, transactions, x))
     return chain

@@ -107,7 +107,10 @@ def test_reject_block_that_prints_money(node: Node) -> None:
     funding = chain[-1].transactions[0]
     bad = build_block(
         chain[-1].header.hash,
-        [generate_coinbase(), spend(funding, funding.vout[0].value + 1)],
+        [
+            generate_coinbase(height=len(chain) + 1),
+            spend(funding, funding.vout[0].value + 1),
+        ],
         len(chain),
     )
     connect(node, [bad])
@@ -132,8 +135,49 @@ def test_reject_block_with_a_failing_script(node: Node) -> None:
         script_sig=script.serialize(["OP_RETURN"]),
     )
     bad = build_block(
-        chain[-1].header.hash, [generate_coinbase(), unspendable], len(chain)
+        chain[-1].header.hash,
+        [generate_coinbase(height=len(chain) + 1), unspendable],
+        len(chain),
     )
+    connect(node, [bad])
+
+    assert bad.header.hash not in block_index.active_chain
+    assert len(block_index.active_chain) == connected
+
+
+def test_reject_block_whose_coinbase_pays_more_than_subsidy_plus_fees(
+    node: Node,
+) -> None:
+    """A coinbase paying far more than subsidy plus fees fails to connect."""
+    # btclib-org/btclib-node#568: nothing used to compare a coinbase
+    # against what it is allowed to pay, so this connected.
+    chain = generate_random_chain(2, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    connected = len(block_index.active_chain)
+
+    printed = 21_000_000 * 10**8
+    bad = build_block(
+        chain[-1].header.hash,
+        [generate_coinbase(printed, height=len(chain) + 1)],
+        len(chain),
+    )
+    connect(node, [bad])
+
+    assert bad.header.hash not in block_index.active_chain
+    assert len(block_index.active_chain) == connected
+
+
+def test_reject_block_whose_coinbase_does_not_commit_to_its_height(
+    node: Node,
+) -> None:
+    """A coinbase committing to no height at all fails to connect (BIP34)."""
+    # btclib-org/btclib-node#571: Block.assert_valid_contextual was never
+    # called, so this connected -- regtest enforces BIP34 from height 1.
+    chain = generate_random_chain(1, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    connected = len(block_index.active_chain)
+
+    bad = build_block(chain[-1].header.hash, [generate_coinbase()], len(chain))
     connect(node, [bad])
 
     assert bad.header.hash not in block_index.active_chain
@@ -363,7 +407,9 @@ def _extend(previous_hash: bytes, start_height: int, count: int) -> list[Block]:
     # candidates uses for the same reason
     continuation: list[Block] = []
     for height in range(start_height, start_height + count):
-        block = build_block(previous_hash, [generate_coinbase()], height)
+        block = build_block(
+            previous_hash, [generate_coinbase(height=height + 1)], height
+        )
         continuation.append(block)
         previous_hash = block.header.hash
     return continuation
@@ -382,7 +428,7 @@ def test_a_reorg_still_resurrects_a_transaction_its_prevout_survives(
 
     resurrectable = generate_random_transaction(common[0].transactions[0].id)
     abandoned = build_block(
-        common[0].header.hash, [generate_coinbase(), resurrectable], 1
+        common[0].header.hash, [generate_coinbase(height=2), resurrectable], 1
     )
     fork = [*common, abandoned]
     block_index.add_headers([block.header for block in fork])
@@ -420,9 +466,9 @@ def test_a_reorg_re_adds_abandoned_transactions_parent_first(
     block_index = connect(node, common)
 
     parent = generate_random_transaction(common[0].transactions[0].id)
-    older = build_block(common[0].header.hash, [generate_coinbase(), parent], 1)
+    older = build_block(common[0].header.hash, [generate_coinbase(height=2), parent], 1)
     child = generate_random_transaction(parent.id)
-    newer = build_block(older.header.hash, [generate_coinbase(), child], 2)
+    newer = build_block(older.header.hash, [generate_coinbase(height=3), child], 2)
     fork = [*common, older, newer]
     block_index.add_headers([block.header for block in fork])
     for block in fork:
@@ -527,7 +573,7 @@ def test_a_refused_branch_invalidates_only_the_block_that_failed(
     prints_money = build_block(
         below[-1].header.hash,
         [
-            generate_coinbase(),
+            generate_coinbase(height=len(below) + 1),
             spend(below[-1].transactions[0], 50 * 10**8 + 1),
         ],
         len(below),
@@ -582,7 +628,7 @@ def test_a_refused_branch_leaves_no_reverse_patches_in_the_block_store(
     prints_money = build_block(
         below[-1].header.hash,
         [
-            generate_coinbase(),
+            generate_coinbase(height=len(below) + 1),
             spend(below[-1].transactions[0], 50 * 10**8 + 1),
         ],
         len(below),
@@ -624,7 +670,7 @@ def test_a_refused_branch_invalidates_headers_that_were_never_candidates(
     prints_money = build_block(
         below[-1].header.hash,
         [
-            generate_coinbase(),
+            generate_coinbase(height=len(below) + 1),
             spend(below[-1].transactions[0], 50 * 10**8 + 1),
         ],
         len(below),

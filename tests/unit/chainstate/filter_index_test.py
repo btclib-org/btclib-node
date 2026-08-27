@@ -410,7 +410,9 @@ def test_a_block_that_does_not_connect_leaves_no_filter_behind(
         funding, funding.vout[0].value, script_sig=script.serialize(["OP_RETURN"])
     )
     bad = build_block(
-        chain[-1].header.hash, [generate_coinbase(), unspendable], len(chain)
+        chain[-1].header.hash,
+        [generate_coinbase(height=len(chain) + 1), unspendable],
+        len(chain),
     )
     connect(node, [bad])
 
@@ -442,7 +444,9 @@ def test_a_batch_that_fails_partway_leaves_nothing_of_the_blocks_before_it(
         funding, funding.vout[0].value, script_sig=script.serialize(["OP_RETURN"])
     )
     bad = build_block(
-        branch[-1].header.hash, [generate_coinbase(), unspendable], len(branch)
+        branch[-1].header.hash,
+        [generate_coinbase(height=len(branch) + 1), unspendable],
+        len(branch),
     )
     offer(node, [*branch, bad])
 

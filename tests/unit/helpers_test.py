@@ -16,7 +16,11 @@ from itertools import pairwise
 from types import SimpleNamespace
 
 import pytest
-from btclib.block import BlockHeader, merkle_root_and_mutated_from_transactions
+from btclib.block import (
+    BlockHeader,
+    bip34_commitment,
+    merkle_root_and_mutated_from_transactions,
+)
 from btclib.exceptions import BTClibValueError
 from btclib.p2p.addrv2 import BIP155Network
 
@@ -195,12 +199,21 @@ def test_a_coinbase_spends_nothing() -> None:
     assert generate_coinbase(value=1).vout[0].value == 1
 
 
+def test_a_coinbase_commits_to_its_height_only_where_asked() -> None:
+    """`generate_coinbase`'s `height` prefixes the BIP34 commitment, or not."""
+    uncommitted = generate_coinbase().vin[0].script_sig
+    assert not uncommitted.startswith(bip34_commitment(52))
+    committed = generate_coinbase(height=52).vin[0].script_sig
+    assert committed.startswith(bip34_commitment(52))
+
+
 def test_a_transaction_spends_what_it_is_told_to() -> None:
     """`generate_random_transaction` spends the given txid, or a random one."""
     funding = generate_coinbase()
     spend = generate_random_transaction(funding.id)
     assert spend.vin[0].prev_out.tx_id == funding.id
     assert generate_random_transaction().vin[0].prev_out.tx_id != funding.id
+    assert generate_random_transaction(value=1).vout[0].value == 1
 
 
 def test_a_built_block_carries_the_transactions_it_was_given() -> None:

@@ -110,11 +110,32 @@ class Chain:
     # Core's fPowNoRetargeting: the target never moves off the one the
     # genesis carries.
     pow_no_retargeting: bool
+    # Core's nSubsidyHalvingInterval: how many blocks the coinbase reward
+    # stays at one level before halving again. subsidy() below is what
+    # reads it.
+    subsidy_halving_interval: int
+    # Core's BIP34Height: the first height a coinbase must commit to its
+    # own height (BIP34, bad-cb-height). Read by main.update_chain,
+    # through BlockContext.bip34_height.
+    bip34_height: int
 
     @property
     def genesis(self) -> BlockHeader:
         """Return the genesis header, which is what most callers want."""
         return self.genesis_block.header
+
+    def subsidy(self, height: int) -> int:
+        """Return the block reward at `height`: fifty bitcoin, halved by height.
+
+        Core's `GetBlockSubsidy` (`src/validation.cpp:1844`,
+        at bitcoin/bitcoin@204256c73f): fifty bitcoin, right-shifted once
+        per `subsidy_halving_interval` blocks, forced to zero once that
+        shift is undefined for a native int.
+        """
+        halvings = height // self.subsidy_halving_interval
+        if halvings >= 64:  # noqa: PLR2004
+            return 0
+        return (50 * 10**8) >> halvings
 
     @property
     def magic(self) -> bytes:
@@ -174,6 +195,8 @@ class Main(Chain):
         ]
         self.pow_allow_min_difficulty_blocks = False
         self.pow_no_retargeting = False
+        self.subsidy_halving_interval = 210000
+        self.bip34_height = 227931
 
 
 @dataclass
@@ -206,6 +229,8 @@ class TestNet(Chain):
         ]
         self.pow_allow_min_difficulty_blocks = True
         self.pow_no_retargeting = False
+        self.subsidy_halving_interval = 210000
+        self.bip34_height = 21111
 
 
 @dataclass
@@ -237,6 +262,8 @@ class SigNet(Chain):
         ]
         self.pow_allow_min_difficulty_blocks = False
         self.pow_no_retargeting = False
+        self.subsidy_halving_interval = 210000
+        self.bip34_height = 1
 
 
 @dataclass
@@ -267,3 +294,5 @@ class RegTest(Chain):
         ]
         self.pow_allow_min_difficulty_blocks = True
         self.pow_no_retargeting = True
+        self.subsidy_halving_interval = 150
+        self.bip34_height = 1

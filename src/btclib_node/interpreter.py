@@ -18,6 +18,7 @@ pay for.
 
 from typing import TYPE_CHECKING
 
+from btclib.exceptions import BTClibValueError
 from btclib.script.engine import verify_amounts, verify_input, verify_transaction
 from btclib.script.sig_hash import PrecomputedTxData
 
@@ -32,7 +33,14 @@ if TYPE_CHECKING:
     from btclib_node import Node
     from btclib_node.config import Config
 
-__all__ = ["check_transaction", "check_transactions", "f", "get_flags", "warm"]
+__all__ = [
+    "check_coinbase_value",
+    "check_transaction",
+    "check_transactions",
+    "f",
+    "get_flags",
+    "warm",
+]
 
 
 def get_flags(config: Config, index: int) -> tuple[str, ...]:
@@ -162,3 +170,29 @@ def check_transaction(prevouts: list[TxOut], tx: Tx, index: int, node: Node) -> 
     # defect that is not there, once per mempool acceptance.
     flags = get_flags(node.config, index)
     verify_transaction(prevouts, tx, flags)
+
+
+def check_coinbase_value(
+    coinbase: Tx,
+    transaction_data: list[tuple[list[TxOut], Tx]],
+    index: int,
+    node: Node,
+) -> None:
+    """Refuse a coinbase paying more than the subsidy plus the fees it collects.
+
+    Core's `bad-cb-amount` (`ConnectBlock`, `src/validation.cpp:2619-2621`,
+    at bitcoin/bitcoin@204256c73f): `nFees + GetBlockSubsidy(...)` is the
+    ceiling. The fee sum is recomputed here from `transaction_data`'s own
+    prevouts and outputs -- the same shape `main.verify_mempool_acceptance`
+    already uses to recover a single transaction's own fee -- rather than
+    threaded out of `verify_amounts` above, which returns nothing.
+    """
+    fees = sum(
+        sum(x.value for x in prevouts) - sum(x.value for x in tx.vout)
+        for prevouts, tx in transaction_data
+    )
+    coinbase_value = sum(x.value for x in coinbase.vout)
+    ceiling = node.chain.subsidy(index) + fees
+    if coinbase_value > ceiling:
+        err_msg = f"coinbase pays too much: {coinbase_value} instead of {ceiling}"
+        raise BTClibValueError(err_msg)
