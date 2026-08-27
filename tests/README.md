@@ -1,5 +1,22 @@
 # Tests
 
+## Suite layout
+
+Section 7 of the [organization standard][std] admits a suite split by
+kind, rather than by module, where a test's subject is a running process
+instead of something `tests/unit/` can mirror — and asks that the split
+be declared here, with its reason.
+
+`tests/unit/` mirrors `src/btclib_node/`, module for module, and is free
+to reach into the object under test directly. `tests/functional/` and
+`tests/integration/` hold what has no module to mirror, told apart by
+what each needs: `functional/` starts a `Node` itself and speaks to it
+over its p2p or RPC socket, needing nothing the repository does not
+ship; `integration/` speaks to a real `bitcoind` instead, which the
+repository does not ship, and every test in it skips itself without one.
+All three directories are in `testpaths`, so a bare run is still the
+whole suite.
+
 ## Convention tests
 
 Section 7 of the [organization standard][std] lists convention-test

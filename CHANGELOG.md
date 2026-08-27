@@ -14,6 +14,21 @@ where this file was written rather than where anything was tagged.
 
 ## Unreleased
 
+### `tests/README.md` declares the suite's split (closes #530, #531)
+
+- **`tests/README.md` now carries the split's reason, and the package
+  `__init__.py` docstrings point at it instead of restating it**
+  (closes #531): section 7 of the organization standard asks for the
+  split between `tests/unit/`, `tests/functional/` and
+  `tests/integration/` to be declared in `tests/README.md`, and it
+  lived instead in the package docstrings, each naming its counterpart
+  rather than pointing at one place.
+- **`tests/integration/conftest.py`'s docstrings no longer name a
+  single consumer** (closes #530): they named `bitcoind_test.py` as the
+  module the fixtures below are for, where every module under
+  `tests/integration/` asks for them; both now say "this package's
+  tests" instead of one module that stopped being the only one.
+
 ### dependabot.yml argues from what deps-latest.yml does (closes #558)
 
 - **The uv ecosystem's comment stops arguing from a missing `latest`
