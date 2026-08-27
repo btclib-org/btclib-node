@@ -1,10 +1,12 @@
 [project]
 name = "btclib-node"
-# Release day: the day added to the month the cycle was open on.
+# A cycle in progress: the month alone, with no day a release could be
+# confused with, so a checkout of `main` reports itself as work rather
+# than as a version somebody could go and install.
 # `RELEASING.md`'s *Which version string is which* has the three shapes
-# one cycle takes and what each means; this is the one that gets
-# published, and the tag has to say the same thing.
-version = "2026.8.27"
+# one cycle takes and what each means; the day is added by hand, in the
+# release's own pull request, on the day it is cut.
+version = "2026.9"
 description = "Bitcoin node in python"
 authors = [{ name = "Giacomo Caironi", email = "giacomo.caironi@gmail.com" }]
 readme = "README.md"

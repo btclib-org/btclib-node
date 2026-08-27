@@ -11,6 +11,13 @@ release was cut, and it promises nothing about compatibility, so a
 breaking change is announced in this file — read it before upgrading,
 rather than a digit.
 
+## Unreleased
+
+The `2026.9` cycle is open and nothing has been cut from it. This
+section fills in one landed change at a time — what a user of
+`v2026.8.27` would have to act on to move to it — and `RELEASING.md`'s
+*Release to PyPI* is what retitles it to the version on release day.
+
 ## v2026.8.27
 
 **The first release of btclib-node.** Nothing here is an upgrade: no
