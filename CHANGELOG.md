@@ -14,6 +14,52 @@ to check the guess.
 
 ## Unreleased
 
+### A reorg reaches this node from a real bitcoind (closes #513)
+
+- **`tests/integration/reorg_test.py` submits a competing branch to the
+  regtest bitcoind the node is already synced against, and holds the
+  node to the tip Core switches to** (closes #513): `update_chain` and
+  `_reconcile_mempool_for_reorg` (`btclib_node/main.py`) are otherwise
+  driven by tests that hand this node both branches directly, on the
+  thread that built them, which says nothing about a reorg arriving
+  over p2p from an implementation this tree did not write. A reorg is
+  where the block index, the UTXO set, the filter index and the mempool
+  have to move backwards together, and where a disagreement with Core
+  is a chain split rather than a slow peer.
+- **The reorg is asserted and not assumed**: the node is held to the
+  abandoned branch's own tip before the competing branch is built at
+  all, the abandoned block is looked up in the block index afterwards
+  and found off the active chain at `BlockStatus.valid`, and the
+  transaction that branch confirmed is looked for in the mempool.
+  Stubbing `_reconcile_mempool_for_reorg` out leaves the first two
+  passing and fails the third, which is what says the mempool half is
+  carried by that function rather than by the sync.
+- **The mempool is waited for where the block index is read straight
+  off**: `update_chain` commits the new tip in `_finalize_fork` and
+  reconciles the mempool only after it returns, so the wait that sees
+  the tip move can still see the transaction outside the mempool.
+  Delaying `_reconcile_mempool_for_reorg` fails a bare read there and
+  leaves the wait passing, which is what says the order is the node's
+  and not the test's timing.
+- **The chain is dated backwards from the clock rather than from the
+  regtest genesis** `backpressure_test.py` counts from: Core relays no
+  inventory while it holds itself to be in initial block download
+  (`PeerManagerImpl::UpdatedBlockTip`, `src/net_processing.cpp`) and
+  leaves that state only once its own tip is within
+  `DEFAULT_MAX_TIP_AGE` of the clock
+  (`src/kernel/chainstatemanager_opts.h`), so a chain dated from the
+  genesis is one Core accepts and never announces. The modules that
+  sync rather than wait to be told do not notice.
+- **The branch carries a transaction, which costs the chain Core's own
+  coinbase maturity**: the only thing a chain built from nothing has to
+  spend is a coinbase, and `COINBASE_MATURITY`
+  (`src/consensus/consensus.h`) is a constant rather than a chain
+  parameter, so regtest does not relax it. What the blocks cost at that
+  height is nearly nothing, each being a coinbase and at most one other
+  transaction: both branches together cost less than the megabyte chain
+  `backpressure_test.py` hands over, which is why this module is in the
+  gate's own workflow rather than reserved for a sentinel.
+
 ### The two publish jobs stop gating on `public-api`'s result (closes #534)
 
 - **Both jobs' `if:` now opens with `always()` and reads
