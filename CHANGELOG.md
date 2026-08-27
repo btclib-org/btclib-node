@@ -14,6 +14,59 @@ where this file was written rather than where anything was tagged.
 
 ## Unreleased
 
+### RELEASING.md's two steps that a release disproved (closes #554, closes #561)
+
+- **The bill-of-materials step describes the document the script
+  writes** (closes #554). It said the document names "one component per
+  dependency the wheel's metadata declares — `btclib[secp256k1]`, and
+  whatever it in turn resolves to on the interpreter that built the
+  release". `btclib_node-2026.8.27.cdx.json` names **one** component,
+  `pkg:pypi/btclib`, with no version and nothing transitive. The script
+  is right and the prose was wrong:
+  `.github/scripts/generate_sbom.py`'s own docstring says a resolved
+  version "would be a claim the wheel does not make".
+- **It also says what the document therefore does not cover** (closes
+  #554): a consumer matching vulnerabilities against it gets the direct
+  dependency and nothing below. That is a property rather than a
+  defect, and it is only a property if the step saying to read it says
+  so. The `git+https://` check, which is why the step exists, holds and
+  stays the point of the paragraph — verified by running the step's own
+  command against the published release rather than by reading it.
+- **A verification step whose expected output does not match a correct
+  run is the failure mode here** (closes #554), and it is worse than
+  having no step: a reader who follows it finds one component where the
+  text led them to expect a tree, and has to decide whether the release
+  is broken, the script is, or the sentence is. The one that leaves no
+  trace on the artifact is the right answer and the hardest to reach
+  just after publishing something.
+- **Step 3 gives the check that tells a safe rebase from a fused one**
+  (closes #561), keeping the prohibition as the default rather than
+  replacing it. The check is the redo itself, done in a scratch file:
+  rebuild the file from `git show origin/main:<file>` plus this
+  release's own edits, and `cmp` it against `git show HEAD:<file>`.
+  Identical bytes prove the rebase produced what the redo would have,
+  and a difference hands back the file that should have been there.
+  `v2026.8.27` was rebased when #551 landed in front of the tag, and
+  this is what licensed it.
+- **Two checks that look like that one are named as not being it**
+  (closes #561), both measured rather than reasoned about. Comparing
+  the added and removed lines of the diff before and after the rebase
+  is **necessary and not sufficient**: it catches a fusion that ate a
+  line and passes a pure misordering — the same entry below the newly
+  landed one instead of above it, every line intact — because the `+`
+  lines are the same sequence wherever they land. This entry's first
+  draft prescribed exactly that check, and the counterexample was
+  built to test it rather than to illustrate it. And `git merge-tree
+  --write-tree` is not a check at all: `merge-ort` reads
+  `.gitattributes` from the trees it merges, applies the `union`
+  driver, and writes the fused blob with exit `0`.
+- **The reconstruction is owed on the hand redo the rule prescribes**
+  (closes #561), which the rule did not say. Retitling a heading the
+  landed change also opened fuses it the same way, and having typed it
+  yourself says nothing about that — a prohibition standing in for a
+  check it could have specified does not cover the path it sends the
+  reader down.
+
 ### The crons and the badges follow the reordered calendar (closes #520)
 
 - **Every `cron:` here names the instant section 10's calendar gives its
