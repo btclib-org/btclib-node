@@ -452,14 +452,31 @@ package = ["src/btclib_node"]
 # `tests/fuzz_corpus_test.py` reads fuzz/ -- so each mirrors no module of
 # the package and drives no node. Naming one is what collects it -- and
 # [tool.coverage.run]'s `source` takes all of tests/, so a module no run
-# collects is a file the floor reports at zero. `tests/integration/`
-# stays out: it needs a bitcoind, which integration-bitcoind.yml
-# installs and a bare run has not got.
+# collects is a file the floor reports at zero.
+#
+# `tests/integration/` is named too. It needs a bitcoind a bare run
+# has not got, so what a contributor without one gets is a skip naming
+# `BTCLIB_NODE_INTEGRATION` -- `tests/integration/conftest.py` is where
+# that is decided -- rather than a directory nothing on the command
+# line mentions. Section 7 of the organization standard asks for that
+# shape: every suite directory collected by a bare run, each test
+# skipping itself where the switch that asks for it is unset, and the
+# directory kept out of the coverage ratchet, which
+# `[tool.coverage.run]`'s own `omit` below is.
+#
+# What it costs is a skip in a bare run's summary for each test there,
+# on a machine with no bitcoind. The bar stays green, the skipped count
+# sitting beside the passed one, and the run exits 0.
+# `integration-bitcoind.yml` is what runs them against a real daemon,
+# naming the directory alone and so leaving every other entry here out
+# -- a selection, whose floor `tests/conftest.py`'s own
+# `relax_coverage_floor` drops.
 testpaths = [
     "tests/fuzz_corpus_test.py",
     "tests/interpreters_test.py",
     "tests/unit",
     "tests/functional",
+    "tests/integration",
 ]
 # No `python_files`/`python_functions` here: every test module under
 # tests/ is named `*_test.py`, which pytest's own default `python_files`
@@ -542,12 +559,11 @@ branch = true
 # `tests/integration/*` beside the usual site-packages exclusion: every
 # test there skips itself without a real bitcoind (`tests/integration/
 # conftest.py`'s own `bitcoind_path` fixture), which is a body `source`
-# above would otherwise still walk and report at zero the moment
-# anything lands under that directory -- `source` is what makes an
-# unimported module appear in the report in the first place, so the
-# floor would fail for every contributor who has no bitcoind on an
-# ordinary `uv run pytest`, which never even collects that directory
-# (`testpaths`, in `[tool.pytest.ini_options]`, does not name it).
+# above would otherwise still walk and report at zero -- `source` is
+# what makes an unimported module appear in the report in the first
+# place, so without this the floor would fail on an ordinary
+# `uv run pytest` for every contributor who has no bitcoind, the
+# directory being one `testpaths` names.
 # `integration-bitcoind.yml` is what actually runs it, with its own
 # unrelated guard against reporting a skip as a pass.
 omit = ["*/site-packages/*", "tests/integration/*"]
