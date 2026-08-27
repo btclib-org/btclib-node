@@ -426,13 +426,36 @@ boundary the Read the Docs bullet below sits on.
 ## What is not configured, and why
 
 - **No Pages, and no Read the Docs project connected.**
-  `gh api repos/btclib-org/btclib-node/pages` answers `404`. `docs/source/`
-  and `.readthedocs.yaml` exist (issue #264) and `docs.yml` builds them
-  on every pull request, but connecting a Read the Docs project to this
-  repository is a setting on that service's own side, outside what a
-  `gh api` call here can read back or a pull request can carry, and this
-  tree does not publish -- the day it does, `btclib`'s own "Read the
-  Docs, which is btclib.readthedocs.io" section of its `REPOSITORY.md`
-  is the shape this file's own section would take.
-- **No `homepage`**, the answer to `.homepage` being empty. There is no
-  published site for it to point at.
+  `gh api repos/btclib-org/btclib-node/pages` answers `404`.
+  `docs/source/` and `.readthedocs.yaml` exist (issue #264), `docs.yml`
+  builds them with `-W -n --keep-going` on every pull request and
+  `release.yml` builds them again on the tag. **What is left is an
+  action on Read the Docs' own side** -- importing the project under
+  the organization's account and pointing it here -- which no `gh api`
+  call in this file can take or read back, which is why this is
+  recorded rather than fixed. Issue #563 is where it is tracked.
+
+  ```shell
+  rtd=https://app.readthedocs.org/projects
+  strip () { sed -e 's/<[^>]*>/|/g' | tr -s '|' '\n' | grep -v '^$'; }
+  for p in btclib-node btclib; do
+    curl -s "$rtd/$p/badge/?version=latest" | strip | tail -2 | head -1
+  done
+  # unknown
+  # passing        <- the control, and the shape this file will take:
+  #                   `btclib`'s own "Read the Docs, which is
+  #                   btclib.readthedocs.io" section
+  ```
+
+  This bullet used to give the reason as *this tree does not publish --
+  the day it does*, and `v2026.8.27` is that day. A reason that names a
+  condition already met is worse than a stale record, because the next
+  reader takes the section as saying the work is now due and looks for
+  what is blocking it: issue #559.
+- **No `homepage`**, the answer to `.homepage` being empty. `btclib`'s
+  is `https://btclib.org` rather than its documentation site, so this
+  is a decision of its own and not something the Read the Docs bullet
+  above settles on its way past -- the reason recorded here used to be
+  "there is no published site for it to point at", which
+  <https://pypi.org/project/btclib-node/> has answered since
+  `v2026.8.27`.
