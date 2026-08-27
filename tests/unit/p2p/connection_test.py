@@ -16,13 +16,14 @@ import threading
 import time
 from collections import deque
 from contextlib import suppress
+from importlib.metadata import version
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from btclib.hashes import hash256
 from btclib.p2p.block_filters import BlockFilterType, CFilter
-from btclib.p2p.handshake import Verack
+from btclib.p2p.handshake import Verack, Version
 from btclib.p2p.inventory import GetData, Inventory, InventoryType
 from btclib.p2p.keepalive import Ping, Pong
 from btclib.p2p.limits import MAX_PROTOCOL_MESSAGE_LENGTH
@@ -162,6 +163,34 @@ def test_send_version_only_adds_an_outbound_nonce_to_the_manager() -> None:
         asyncio.run(connection.send_version())
     assert connection.nonce is not None
     assert not manager.pending_outbound_nonces
+
+
+def test_send_version_announces_the_name_and_the_installed_version() -> None:
+    """The `version` on the wire carries `/btclib:<installed version>/`.
+
+    Read back off the framed octets `_send` is handed, not off
+    `_USER_AGENT`: what #580 reported is what a peer received, and a
+    constant asserted against itself answers for nothing between the
+    two.
+    """
+    connection, _ = a_connection()
+    manager = cast("Any", connection.manager)
+    manager.pending_outbound_nonces = set()
+    manager.add_pending_outbound_nonce = manager.pending_outbound_nonces.add
+    manager.port = 18444
+    sent: list[bytes] = []
+
+    async def _send(data: bytes) -> None:
+        sent.append(data)
+
+    connection._send = _send  # type: ignore[method-assign]
+
+    with connection.client:
+        asyncio.run(connection.send_version())
+
+    (framed,) = sent
+    user_agent = Version.parse(Message.parse(framed).payload).user_agent
+    assert user_agent == f"/btclib:{version('btclib-node')}/".encode()
 
 
 def test_a_connection_names_the_peer_it_is_to() -> None:

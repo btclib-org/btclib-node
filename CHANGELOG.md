@@ -14,6 +14,32 @@ where this file was written rather than where anything was tagged.
 
 ## Unreleased
 
+### The user agent names the project, and its version (closes #580)
+
+- **`/Btclib/` becomes `/btclib:<version>/`** (closes #580), which is
+  BIP14's `/Name:Version/` -- the shape Core's own `FormatSubVersion`
+  builds (`src/clientversion.cpp:65-70`) and the one a crawler reporting
+  what the network is made of parses. The name is the project's own
+  spelling, lowercase, and not the distribution's `btclib-node`: btclib
+  is what this is a node over.
+- **The version is read from the installed distribution**, through
+  `importlib.metadata`, rather than written here a second time. No gate
+  in this tree reads the wire, so a literal is the one spelling of the
+  version that nothing would catch drifting, and
+  `RELEASING.md`'s *Which version string is which* already tracks four
+  of them. A checkout of `main` therefore announces the cycle it is
+  open on and what pip installs announces its release day.
+- **A tree that was never installed raises rather than announcing a
+  placeholder**: a user agent is a claim, and one saying `unknown` where
+  the version belongs is worse than a node that says why it will not
+  start.
+- **The test reads the framed octets, not the constant**: what #580
+  reported is what a real peer received -- `getpeerinfo` on the
+  `bitcoind` a node of this tree was connected to answered `/Btclib/` --
+  and a constant asserted against itself answers for nothing in
+  between. Verified by mutation: putting `b"/Btclib/"` back fails the
+  new test and nothing else.
+
 ### CLAUDE.md's union bullet trusts the endpoint, not the cache (closes #565)
 
 - **CLAUDE.md's `merge=union` bullet told a session to "rebase and
