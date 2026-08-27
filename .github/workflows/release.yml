@@ -454,6 +454,37 @@ jobs:
           # {distribution}-{version}-... regardless
           wheel=$(basename dist/*.whl)
           version=$(echo "$wheel" | cut -d- -f2)
+          # the index does not serve a new file the instant the upload
+          # returns, and the step below installs from it: run 33089825557
+          # uploaded, began resolving 1.2 seconds later, and failed on a
+          # version the index served minutes afterwards
+          # (btclib-org/btclib-node#546). So wait for it, bounded, and
+          # fail with a named error rather than hang if it never arrives.
+          # The simple API and not the JSON one: the resolver reads the
+          # simple API, and btclib-org/btclib-node#545 is the finding
+          # that JSON is a cache of the index where simple is its state
+          # -- a wait in front of a resolver asks what the resolver asks.
+          # btclib-org/btclib's own pypi-install.yml has the same wait,
+          # against the failure this tree cannot have: it installs
+          # whatever the resolver picks, so starting early tests the
+          # previous version and reports a pass for it. The `==$version`
+          # below makes that a loud failure here instead of a quiet
+          # wrong answer, and this wait makes it neither
+          for attempt in $(seq 20); do
+            if curl -sf --max-time 10 \
+                -H "Accept: application/vnd.pypi.simple.v1+json" \
+                "https://test.pypi.org/simple/btclib-node/" \
+                | grep -qF "\"$version\""; then
+              echo "the index serves $version"
+              break
+            fi
+            if [ "$attempt" -eq 20 ]; then
+              echo "::error::$version never appeared on the index"
+              exit 1
+            fi
+            echo "attempt $attempt: $version is not served yet"
+            sleep 15
+          done
           uv run --isolated --no-project --python 3.14 \
             --index https://test.pypi.org/simple/ \
             --index-strategy unsafe-best-match \
@@ -507,6 +538,25 @@ jobs:
         run: |
           wheel=$(basename dist/*.whl)
           version=$(echo "$wheel" | cut -d- -f2)
+          # the same wait publish-testpypi's own comment argues for, on
+          # this job's own index: this is the copy that matters, PyPI
+          # having accepted the filename by the time this runs and never
+          # accepting it again
+          for attempt in $(seq 20); do
+            if curl -sf --max-time 10 \
+                -H "Accept: application/vnd.pypi.simple.v1+json" \
+                "https://pypi.org/simple/btclib-node/" \
+                | grep -qF "\"$version\""; then
+              echo "the index serves $version"
+              break
+            fi
+            if [ "$attempt" -eq 20 ]; then
+              echo "::error::$version never appeared on the index"
+              exit 1
+            fi
+            echo "attempt $attempt: $version is not served yet"
+            sleep 15
+          done
           uv run --isolated --no-project --python 3.14 \
             --with "btclib-node==$version" \
             python -c "from btclib_node import Node; print(Node)"
