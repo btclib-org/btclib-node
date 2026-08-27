@@ -14,6 +14,28 @@ to check the guess.
 
 ## Unreleased
 
+### The install check names its interpreter (closes #543)
+
+- **Both publish jobs, and `RELEASING.md`'s two install checks, pass
+  `--python 3.14` to the `uv run` that installs the published package
+  and imports `Node`** (closes #543): `requires-python` here is
+  `>=3.14` and `ubuntu-latest` defaults to 3.12, so uv resolved against
+  an interpreter the published package excludes and reported the
+  requirement unsatisfiable -- in a step that runs *after* the upload.
+  On a tag push that is the shape #541 described: a version on PyPI, a
+  filename that index never accepts twice, and `attest` and
+  `github-release` skipped behind the failure.
+- **The file was already internally inconsistent about it** (closes
+  #543): *Rebuild a release from its tag* passes `--python 3.14` in both
+  of its commands, and the two install checks did not -- which is to
+  say the two commands that lacked it were exactly the two nobody had
+  ever run. Measured on
+  [run 33070323112](https://github.com/btclib-org/btclib-node/actions/runs/33070323112),
+  the rehearsal #542's own fix first let reach this step, and the fix
+  verified against TestPyPI's `2026.8.dev201` -- the artifact that run
+  uploaded before dying -- by running the failing command locally at
+  3.12, where it fails identically, and at 3.14, where it imports.
+
 ### The send bound is derived from the peak its pacing checks reach (closes #521)
 
 - **The two pacing mechanisms' overshoots do not add, so

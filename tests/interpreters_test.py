@@ -74,6 +74,11 @@ _NAMES_ONE = (
     ".github/workflows/fuzz.yml",
     ".github/workflows/mutation.yml",
     ".github/workflows/os-macos.yml",
+    # release.yml joined this list with btclib-org/btclib-node#543: its
+    # two publish jobs install the published package from the index and
+    # import it, and the runner's own default is below this project's
+    # `requires-python`, so each names the interpreter uv resolves for
+    ".github/workflows/release.yml",
     ".github/workflows/test.yml",
 )
 

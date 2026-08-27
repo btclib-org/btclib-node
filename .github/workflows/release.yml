@@ -438,6 +438,14 @@ jobs:
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: false
+      # --python 3.14 and not the runner's own: `requires-python` here is
+      # >=3.14 and ubuntu-latest defaults to 3.12, so uv resolves against
+      # an interpreter the published package excludes and reports the
+      # requirement as unsatisfiable -- after the upload, this step
+      # running where it does. btclib-org/btclib-node#543 is where that
+      # was measured, on the rehearsal that #542's own fix first let get
+      # this far. RELEASING.md's *Rebuild a release from its tag* already
+      # named an interpreter for the same reason
       - name: Install from TestPyPI and use it
         run: |
           # read off the wheel this job just published rather than
@@ -446,7 +454,7 @@ jobs:
           # {distribution}-{version}-... regardless
           wheel=$(basename dist/*.whl)
           version=$(echo "$wheel" | cut -d- -f2)
-          uv run --isolated --no-project \
+          uv run --isolated --no-project --python 3.14 \
             --index https://test.pypi.org/simple/ \
             --index-strategy unsafe-best-match \
             --with "btclib-node==$version" \
@@ -492,11 +500,15 @@ jobs:
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: false
+      # the interpreter is named here for the reason publish-testpypi's
+      # own comment gives, and this is the copy that matters: this step
+      # runs after PyPI has the files
       - name: Install from PyPI and use it
         run: |
           wheel=$(basename dist/*.whl)
           version=$(echo "$wheel" | cut -d- -f2)
-          uv run --isolated --no-project --with "btclib-node==$version" \
+          uv run --isolated --no-project --python 3.14 \
+            --with "btclib-node==$version" \
             python -c "from btclib_node import Node; print(Node)"
 
   # the same files reach users by two routes and only one of them carried
