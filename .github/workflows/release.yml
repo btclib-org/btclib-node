@@ -371,10 +371,21 @@ jobs:
 
   publish-testpypi:
     name: Publish to TestPyPI
+    # public-api stays a need for ordering -- reading a broken surface
+    # before spending the platform sweeps' wall clock is the point,
+    # public-api's own comment says so -- but not for its result: that
+    # job's own comment calls it deliberately not a merge gate, and
+    # `needs` without `always()` gates on every listed job regardless, a
+    # skipped or failed job counting the same as one that never ran.
+    # btclib-org/btclib#1461 is where this exact shape blocked
+    # publish-testpypi from ever starting, on the first cycle to run
+    # public-api against a real breaking change
     needs: [public-api, test, lint, docs]
     if: >-
-      github.event_name == 'workflow_dispatch' &&
-      github.repository == 'btclib-org/btclib-node'
+      always() && github.event_name == 'workflow_dispatch' &&
+      github.repository == 'btclib-org/btclib-node' &&
+      needs.test.result == 'success' && needs.lint.result == 'success' &&
+      needs.docs.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:
@@ -420,10 +431,15 @@ jobs:
 
   publish-pypi:
     name: Publish to PyPI
+    # See publish-testpypi's own comment: public-api stays a need for
+    # ordering, not for its result, the same issue applying to a tag
+    # push as to a rehearsal
     needs: [public-api, test, lint, docs]
     if: >-
-      github.event_name == 'push' &&
-      github.repository == 'btclib-org/btclib-node'
+      always() && github.event_name == 'push' &&
+      github.repository == 'btclib-org/btclib-node' &&
+      needs.test.result == 'success' && needs.lint.result == 'success' &&
+      needs.docs.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # deployment gate: configure required reviewers on the "pypi"
