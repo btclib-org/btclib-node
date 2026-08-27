@@ -455,41 +455,36 @@ jobs:
           wheel=$(basename dist/*.whl)
           version=$(echo "$wheel" | cut -d- -f2)
           # the index does not serve a new file the instant the upload
-          # returns, and the step below installs from it: run 33089825557
-          # uploaded, began resolving 1.2 seconds later, and failed on a
-          # version the index served minutes afterwards
-          # (btclib-org/btclib-node#546). So wait for it, bounded, and
-          # fail with a named error rather than hang if it never arrives.
-          # The simple API and not the JSON one: the resolver reads the
-          # simple API, and btclib-org/btclib-node#545 is the finding
-          # that JSON is a cache of the index where simple is its state
-          # -- a wait in front of a resolver asks what the resolver asks.
-          # btclib-org/btclib's own pypi-install.yml has the same wait,
-          # against the failure this tree cannot have: it installs
-          # whatever the resolver picks, so starting early tests the
-          # previous version and reports a pass for it. The `==$version`
-          # below makes that a loud failure here instead of a quiet
-          # wrong answer, and this wait makes it neither
+          # returns, and it is served through a cache whose edges
+          # disagree: btclib-org/btclib-node#546 is the race, and
+          # btclib-org/btclib-node#548 is what a probe in front of it
+          # got wrong -- a `curl` GET confirmed the version and `uv`
+          # failed on it one second later, the two not being served the
+          # same index.
+          # So the retry wraps the resolution itself. What is retried is
+          # the operation this step exists to perform, so a pass means
+          # that operation passed rather than that a proxy for it did.
+          # --refresh because the CDN is not the only cache in the path:
+          # uv keeps its own copy of an index response, and a resolution
+          # that failed once must not be answered from it.
+          # btclib-org/btclib's own pypi-install.yml waits against a
+          # failure this tree cannot have, its step installing whatever
+          # the resolver picks so that starting early tests the previous
+          # version and reports a pass for it; the `==$version` here
+          # makes that a loud failure, and this retry makes it neither
           for attempt in $(seq 20); do
-            if curl -sf --max-time 10 \
-                -H "Accept: application/vnd.pypi.simple.v1+json" \
-                "https://test.pypi.org/simple/btclib-node/" \
-                | grep -qF "\"$version\""; then
-              echo "the index serves $version"
-              break
+            if uv run --isolated --no-project --python 3.14 --refresh \
+                --index https://test.pypi.org/simple/ \
+                --index-strategy unsafe-best-match \
+                --with "btclib-node==$version" \
+                python -c "from btclib_node import Node; print(Node)"; then
+              exit 0
             fi
-            if [ "$attempt" -eq 20 ]; then
-              echo "::error::$version never appeared on the index"
-              exit 1
-            fi
-            echo "attempt $attempt: $version is not served yet"
+            echo "attempt $attempt: $version is not installable yet"
             sleep 15
           done
-          uv run --isolated --no-project --python 3.14 \
-            --index https://test.pypi.org/simple/ \
-            --index-strategy unsafe-best-match \
-            --with "btclib-node==$version" \
-            python -c "from btclib_node import Node; print(Node)"
+          echo "::error::$version never became installable from the index"
+          exit 1
 
   publish-pypi:
     name: Publish to PyPI
@@ -538,28 +533,22 @@ jobs:
         run: |
           wheel=$(basename dist/*.whl)
           version=$(echo "$wheel" | cut -d- -f2)
-          # the same wait publish-testpypi's own comment argues for, on
-          # this job's own index: this is the copy that matters, PyPI
-          # having accepted the filename by the time this runs and never
-          # accepting it again
+          # the same retry publish-testpypi's own comment argues for,
+          # on this job's own index and with no `--index` flag, PyPI
+          # being uv's default. This is the copy that matters: PyPI has
+          # accepted the filename by the time this runs and will never
+          # accept it again
           for attempt in $(seq 20); do
-            if curl -sf --max-time 10 \
-                -H "Accept: application/vnd.pypi.simple.v1+json" \
-                "https://pypi.org/simple/btclib-node/" \
-                | grep -qF "\"$version\""; then
-              echo "the index serves $version"
-              break
+            if uv run --isolated --no-project --python 3.14 --refresh \
+                --with "btclib-node==$version" \
+                python -c "from btclib_node import Node; print(Node)"; then
+              exit 0
             fi
-            if [ "$attempt" -eq 20 ]; then
-              echo "::error::$version never appeared on the index"
-              exit 1
-            fi
-            echo "attempt $attempt: $version is not served yet"
+            echo "attempt $attempt: $version is not installable yet"
             sleep 15
           done
-          uv run --isolated --no-project --python 3.14 \
-            --with "btclib-node==$version" \
-            python -c "from btclib_node import Node; print(Node)"
+          echo "::error::$version never became installable from the index"
+          exit 1
 
   # the same files reach users by two routes and only one of them carried
   # provenance: the publish action above generates PEP 740 attestations

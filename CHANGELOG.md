@@ -14,6 +14,30 @@ to check the guess.
 
 ## Unreleased
 
+### The retry wraps the resolution, not a probe of it (closes #548)
+
+- **Both publish jobs retry the `uv run` itself, with `--refresh`, in
+  place of #546's `curl` poll followed by a single attempt** (closes
+  #548): the poll and the install were not served the same index. On
+  [run 33091369402](https://github.com/btclib-org/btclib-node/actions/runs/33091369402)
+  the wait reported `the index serves 2026.8.dev401` and uv failed on
+  that version one second later. The file existed throughout -- its
+  project page and JSON API both answered `200` -- and the simple API
+  disagreed with itself by request: a plain GET still served a stale
+  list minutes afterwards, while the same GET with `Cache-Control:
+  no-cache` and a cachebust served the new version three times out of
+  three.
+- **What that cost was a check whose subject was not the operation it
+  guarded** (closes #548): the step needs to know whether uv can
+  resolve the version, and a `curl` GET answers a different question
+  that can differ. Retrying the real command subsumes the probe, so the
+  probe is gone rather than kept beside it -- a second check that can
+  disagree with the first is a second thing to reason about.
+  `--refresh` is the other half: the CDN is not the only cache in the
+  path, uv keeping its own copy of an index response. Verified against
+  the exact version the runner failed on, which resolves and imports
+  with `--refresh`.
+
 ### The install check waits for the index (closes #546)
 
 - **Both publish jobs poll the simple API for the version they just
