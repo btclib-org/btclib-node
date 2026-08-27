@@ -247,18 +247,61 @@ this release included.
    uv lock
    ```
 
-   **If `main` moves while the gates run, throw the branch away and redo
-   these edits on top of it — never rebase it, and never merge `main`
-   into it.** `CHANGELOG.md` and `RELEASE_NOTES.md` are `merge=union`,
-   so a change that opened a heading this release also opens is fused
-   into one section carrying that heading twice, and the union driver
-   reports no conflict for a reader to catch.
+   **If `main` moves while the gates run, the default is to throw the
+   branch away and redo these edits on top of it, and never to merge
+   `main` into it.** `CHANGELOG.md` and `RELEASE_NOTES.md` are
+   `merge=union`, so a change that opened a heading this release also
+   opens is fused into one section carrying that heading twice, and the
+   union driver reports no conflict for a reader to catch.
 
    ```shell
    git fetch origin
    git reset --hard origin/main       # then retitle, set the version,
                                        # uv lock, and gate again
    ```
+
+   **A rebase is allowed where it is checked, and the check is the redo
+   itself, done in a scratch file.** Rebuild what the redo would have
+   produced, from `git show` rather than from the working tree, and
+   compare it byte for byte against what the rebase left:
+
+   ```shell
+   version=<the version being released>
+   git rebase origin/main
+   git show origin/main:CHANGELOG.md > /tmp/expected.md
+   # apply this release's own edits to /tmp/expected.md: retitle
+   # `## Unreleased` to `## v$version`, and whatever the intro needs
+   git show HEAD:CHANGELOG.md > /tmp/actual.md
+   cmp /tmp/expected.md /tmp/actual.md      # silent, exit 0
+   ```
+
+   and the same pair for `RELEASE_NOTES.md`. Identical bytes are a
+   proof the rebase produced what the redo would have; a difference is
+   both the defect and, in `/tmp/expected.md`, the file that should
+   have been there. `v2026.8.27` was rebased when #551 landed in front
+   of the tag, and this is what licensed it.
+
+   **Two checks that look like this one and are not.** Both were
+   measured against a fused rebase and against a *misordered* one — the
+   same entry below the newly landed one instead of above it, with
+   every line intact:
+
+   - **The added and removed lines of the diff, compared before and
+     after the rebase, are necessary and not sufficient.** They catch a
+     fusion that ate a line and **pass** a pure misordering, the `+`
+     lines being the same sequence wherever they land. This paragraph
+     prescribed exactly that check until
+     [ISS btclib-org/btclib-node#561][iss-561] measured it;
+     btclib-org/.github#488 has the fuller scale it belongs to.
+   - **`git merge-tree --write-tree` is not a check at all.**
+     `merge-ort` reads `.gitattributes` from the trees it is merging,
+     applies the `union` driver, and writes the fused blob — exit `0`,
+     a tree id, and the defect inside it.
+
+   **The reconstruction is owed on a hand redo too.** `git reset
+   --hard` and retyping the edits is not immune: retitling a heading
+   the landed change also opened fuses it the same way, and nothing
+   about having typed it yourself says otherwise.
 
 1. Give the release pull request its title and its body, before merging
    it and not after. The title is the version; the body says what the
@@ -369,16 +412,48 @@ this release included.
 
 1. Read the bill of materials attached to the release,
    `btclib_node-<version>.cdx.json`: a CycloneDX 1.6 document naming the
-   distribution, its licence, the two files with their SHA-256, and one
-   component per dependency the wheel's metadata declares —
-   `btclib[secp256k1]`, and whatever it in turn resolves to on the
-   interpreter that built the release. What is worth reading rather than
-   assuming is that list: a `git+https://` still in it is a release that
-   should not have got this far, `[tool.uv.sources]`'s pin to btclib's
-   `main` branch being dropped from a built wheel's own metadata in
-   favor of `project.dependencies`' floor — the comment beside that
-   table says so, and the smoke test in `test.yml`'s `dist` job checks
-   it on every pull request, not only at a release.
+   distribution, its licence, the two files with their SHA-256 under
+   `metadata.component.externalReferences`, and **one component per
+   `Requires-Dist` line the wheel declares** — which today is one,
+   `btclib`, carrying `btclib[secp256k1]>=<floor>` as a property.
+
+   ```shell
+   version=<the released version>
+   gh release download "v$version" --repo btclib-org/btclib-node \
+     --pattern '*.cdx.json'
+   python3 -c "import json,sys; d=json.load(open(sys.argv[1])); \
+     print(len(d['components']), 'components'); \
+     print('git+https:// present:', 'git+https://' in json.dumps(d))" \
+     "btclib_node-$version.cdx.json"
+   # 1 components
+   # git+https:// present: False
+   ```
+
+   **A resolved version is not in it, deliberately**, and this is where
+   a reader is most likely to think the document is broken.
+   `.github/scripts/generate_sbom.py`'s own docstring is the argument:
+   what a user's installer resolves is not a fact about these files, so
+   a resolved version recorded here would be a claim the wheel does not
+   make. A requirement pinned with `==` gets a `version`; anything else
+   gets its specifier as a property and none. A vendored submodule
+   would get a component of its own with the gitlink's sha — this tree
+   vendors none.
+
+   So the document stops at what this distribution declares, and a
+   consumer matching vulnerabilities against it gets the direct
+   dependency and nothing below it. That is a property of the document
+   rather than a defect in it, and it is only a property if the step
+   that tells you to read it says so
+   ([ISS btclib-org/btclib-node#554][iss-554], which is this paragraph
+   having said the opposite until then).
+
+   What is worth reading rather than assuming is that a `git+https://`
+   in it is a release that should not have got this far,
+   `[tool.uv.sources]`'s pin to btclib's `main` branch being dropped
+   from a built wheel's own metadata in favor of
+   `project.dependencies`' floor — the comment beside that table says
+   so, and the smoke test in `test.yml`'s `dist` job checks it on every
+   pull request, not only at a release.
 
 1. Check the GitHub release the `github-release` job created — **ask for
    the release itself, not for the run's conclusion**, a skipped job
@@ -538,5 +613,7 @@ reading a mismatch as tampering:
 
 [iss-286]: https://github.com/btclib-org/btclib-node/issues/286
 [iss-504]: https://github.com/btclib-org/btclib-node/issues/504
+[iss-554]: https://github.com/btclib-org/btclib-node/issues/554
+[iss-561]: https://github.com/btclib-org/btclib-node/issues/561
 [iss-553]: https://github.com/btclib-org/btclib-node/issues/553
 [gh-105]: https://github.com/btclib-org/.github/issues/105
