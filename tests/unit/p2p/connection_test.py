@@ -33,7 +33,12 @@ from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.download import MAX_BLOCKS_PER_GETDATA_BURST
 from btclib_node.p2p import connection as connection_module
 from btclib_node.p2p.address import peer_address
-from btclib_node.p2p.callbacks import MAX_GETDATA_INFLIGHT_BYTES, getdata, pong
+from btclib_node.p2p.callbacks import (
+    MAX_CFILTERS_INFLIGHT_BYTES,
+    MAX_GETDATA_INFLIGHT_BYTES,
+    getdata,
+    pong,
+)
 from btclib_node.p2p.connection import Connection
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 from tests import log_recorder
@@ -664,11 +669,11 @@ def _two_bursts_in_flight(
 ) -> tuple[Connection, list[int]]:
     """Put two bursts of messages in flight on the same connection together.
 
-    Between them the two bursts stand for what one connection can owe at
-    once with both pacing mechanisms mid-overshoot --
-    `callbacks.advance_getdata` and `advance_cfilters` each check their
-    own bound before popping the next item, so each can put one item
-    past it (btclib-org/btclib-node#470, #442). The first burst is held
+    Between them the two bursts stand for whatever one connection has
+    been committed to sending, in two handlers' worth rather than one:
+    the sizes are the caller's to pick, and what is measured is
+    `Connection._queue`'s own comparison against `MAX_QUEUED_SEND_BYTES`
+    rather than any dispatch's own schedule. The first burst is held
     open on a socket write that never finishes, the way a real one would
     be by a peer reading slower than this node can serialize. Returns
     the connection and the sizes `_send` actually saw.
@@ -714,61 +719,49 @@ def _two_bursts_in_flight(
     return asyncio.run(drive())
 
 
-def _reachable_maximum(slack: int) -> tuple[list[CFilter], list[CFilter]]:
-    """Build two synthetic bursts summing to the real reachable maximum.
+def _bursts_summing_to_the_bound(slack: int) -> tuple[list[CFilter], list[CFilter]]:
+    """Build two bursts summing to `MAX_QUEUED_SEND_BYTES` less `slack`.
 
-    `MAX_QUEUED_SEND_BYTES` (`connection.py`) is not sized for
-    `MAX_GETDATA_INFLIGHT_BYTES` and `MAX_CFILTERS_INFLIGHT_BYTES`
-    themselves: `advance_getdata` and `advance_cfilters`
-    (`callbacks.py`) each check their own bound *before* popping and
-    sending the next item, so either can schedule one item past its own
-    bound before the next check catches it -- one more block, up to
-    `MAX_PROTOCOL_MESSAGE_LENGTH`, for `getdata`; one more filter,
-    `ONE_BUSY_MODERN_BLOCK_FILTER_BYTES`, for `get_cfilters`. The
-    reachable maximum is therefore each bound plus one such item, for
-    both mechanisms at once.
-
-    This is the low-level half of that argument only -- whether
-    `Connection._queue`'s own comparison lets a total this size
-    through -- and says nothing about whether `getdata` or
-    `get_cfilters` actually schedule this much in practice; that half is
+    A total, not a schedule: what these two drive is
+    `Connection._queue`'s own comparison at its own boundary, and
+    nothing here claims either pacing mechanism reaches this much. What
+    they do reach is
+    `test_filters_in_flight_come_out_of_a_getdata_answers_own_room` and
     `test_a_realistic_getdata_burst_and_cfilters_headroom_are_not_dropped`
-    below, which drives the real dispatch instead of assuming a total.
+    below, each driving the real dispatch instead of assuming a total.
     """
-    getdata_reachable = int(3 * MAX_PROTOCOL_MESSAGE_LENGTH)
-    cfilters_reachable = int(3 * ONE_BUSY_MODERN_BLOCK_FILTER_BYTES)
-    total = getdata_reachable + cfilters_reachable - slack
-    # slack always comes out of the cfilters share below, never the
-    # getdata one, so a caller's own slack has to stay well under
-    # cfilters_reachable or that share goes negative
+    first_share = MAX_GETDATA_INFLIGHT_BYTES + MAX_PROTOCOL_MESSAGE_LENGTH
+    total = connection_module.MAX_QUEUED_SEND_BYTES - slack
+    # slack always comes out of the second share, never the first, so a
+    # caller's own slack has to stay well under what the bound leaves
+    # above `first_share` or that share goes negative
     return (
-        _burst_summing_to(getdata_reachable, 3),
-        _burst_summing_to(total - getdata_reachable, 3),
+        _burst_summing_to(first_share, 3),
+        _burst_summing_to(total - first_share, 3),
     )
 
 
-def test_the_reachable_maximum_is_not_dropped() -> None:
-    """`MAX_QUEUED_SEND_BYTES` holds the real reachable maximum of both.
+def test_a_total_at_the_send_bound_is_not_dropped() -> None:
+    """`MAX_QUEUED_SEND_BYTES` holds a total landing just short of it.
 
-    A boundary check on `Connection._queue`'s own comparison, at the
-    exact total `connection.py`'s own comment argues the bound is sized
-    for -- not a claim about what `getdata` or `get_cfilters` actually
-    schedule, which the realistic test below covers instead.
+    A boundary check on `Connection._queue`'s own comparison, and only
+    that: what either pacing mechanism actually schedules is what the
+    tests below drive.
     """
-    first, second = _reachable_maximum(slack=4096)
+    first, second = _bursts_summing_to_the_bound(slack=4096)
     connection, delivered = _two_bursts_in_flight(first, second)
     assert connection.status == P2pConnStatus.Open
     assert len(delivered) == len(first) + len(second)
     assert connection.queued_send_bytes == 0
 
 
-def test_past_the_reachable_maximum_the_peer_is_dropped() -> None:
+def test_past_the_send_bound_the_peer_is_dropped() -> None:
     """Past the bound above, the peer is dropped.
 
     The same two bursts, tipping past `MAX_QUEUED_SEND_BYTES` instead of
     stopping short of it.
     """
-    first, second = _reachable_maximum(slack=-4096)
+    first, second = _bursts_summing_to_the_bound(slack=-4096)
     connection, delivered = _two_bursts_in_flight(first, second)
     assert connection.status == P2pConnStatus.Closed
     # the first burst reached the socket in full; at least one message of
@@ -809,9 +802,13 @@ def test_a_realistic_getdata_burst_and_cfilters_headroom_are_not_dropped() -> No
     `MAX_QUEUED_SEND_BYTES` under-size itself once already
     (btclib-org/btclib-node#470), `advance_getdata`'s check-before-send
     shape scheduling whatever fits *before* the item that tips its own
-    pacing bound, not a total capped at that bound. `get_cfilters`'s own
-    headroom is layered on top the way a `getcfilters` pipelined behind
-    a still-draining `getdata` would be.
+    pacing bound, not a total capped at that bound. The filters behind
+    it are handed to `Connection.async_send` rather than to
+    `advance_cfilters`, which at this much already queued pauses on its
+    own first check instead: what is measured here is the total this
+    connection carries, where the displacement that pause produces is
+    what `test_filters_in_flight_come_out_of_a_getdata_answers_own_room`
+    below drives.
     """
     size = 1_500_000
     blocks = {bytes([i]) + b"\x00" * 31: _FakeBigBlock(size) for i in range(6)}
@@ -863,6 +860,90 @@ def test_a_realistic_getdata_burst_and_cfilters_headroom_are_not_dropped() -> No
     assert connection.status == P2pConnStatus.Open
     assert len(delivered) == len(items) + len(cfilters_headroom)
     assert connection.queued_send_bytes == 0
+
+
+def _blocks_served_behind(in_flight_bytes: int) -> tuple[int, int]:
+    """Answer a `getdata` for small blocks with `in_flight_bytes` already owed.
+
+    Returns the peak `queued_send_bytes` the answer reached and how many
+    of the blocks it served before `MAX_GETDATA_INFLIGHT_BYTES` paused
+    it. The blocks are sized so that a filter answer's own peak is the
+    same order as one of them, which is what makes the displacement
+    below visible at all.
+    """
+    size = 300_000
+    blocks = {bytes([i]) + b"\x00" * 31: _FakeBigBlock(size) for i in range(40)}
+    items = [Inventory(InventoryType.MSG_BLOCK, h) for h in blocks]
+
+    async def drive() -> tuple[int, int]:
+        loop = asyncio.get_running_loop()
+        connection = a_running_connection(loop, socket.socket())
+        connection.node.block_db = SimpleNamespace(get_block=blocks.get)  # type: ignore[assignment]
+        connection.node.mempool = SimpleNamespace(get_tx=lambda *a, **k: None)  # type: ignore[assignment]
+        connection.node.pending_getdata = {}
+        release = asyncio.Event()
+
+        async def _send(data: bytes) -> None:
+            await release.wait()
+
+        connection._send = _send  # type: ignore[method-assign]
+
+        tasks = []
+        if in_flight_bytes:
+            tasks = [
+                asyncio.ensure_future(connection.async_send(f))
+                for f in _burst_summing_to(in_flight_bytes, 2)
+            ]
+            await asyncio.sleep(0)
+
+        getdata(connection.node, GetData(items).serialize(), connection)
+        peak = connection.queued_send_bytes
+        assert connection.status == P2pConnStatus.Open
+        _conn, remaining = connection.node.pending_getdata[connection.id]
+
+        release.set()
+        await asyncio.gather(*tasks)
+        connection.client.close()
+        return peak, len(items) - len(remaining)
+
+    return asyncio.run(drive())
+
+
+def test_filters_in_flight_come_out_of_a_getdata_answers_own_room() -> None:
+    """A filter answer already owed displaces blocks rather than adding to them.
+
+    `advance_getdata` and `advance_cfilters` (`callbacks.py`) pace on the
+    one `queued_send_bytes` field, so a `getcfilters` pipelined behind a
+    `getdata` the peer has not drained is counted inside that answer's
+    own peak: the same request is served fewer blocks, and the total the
+    connection carries does not grow. That is what
+    `MAX_QUEUED_SEND_BYTES` is sized against, rather than the two
+    overshoots added together (btclib-org/btclib-node#521).
+    """
+    alone_peak, alone_served = _blocks_served_behind(0)
+    behind_peak, behind_served = _blocks_served_behind(
+        MAX_CFILTERS_INFLIGHT_BYTES + int(ONE_BUSY_MODERN_BLOCK_FILTER_BYTES)
+    )
+    assert behind_served < alone_served
+    assert behind_peak <= alone_peak
+    assert behind_peak < connection_module.MAX_QUEUED_SEND_BYTES
+
+
+def test_the_send_bound_holds_the_peak_a_getdata_answer_can_pace_to() -> None:
+    """The bound stays above `MAX_GETDATA_INFLIGHT_BYTES` and one whole block.
+
+    The relation the bound is derived from: `advance_getdata`'s last
+    check passes just under its own bound, and what it then commits is a
+    whole wire message rather than the payload
+    `MAX_PROTOCOL_MESSAGE_LENGTH` bounds. A change to either constant
+    that left this false would have this bound drop the peer the pacing
+    bound had already paused. The envelope is measured off a
+    `Message` built the way `Connection._queue` builds one rather than
+    counted on to stay what it was.
+    """
+    envelope = len(Message(RegTest().magic, "block", b"").serialize())
+    peak = MAX_GETDATA_INFLIGHT_BYTES + MAX_PROTOCOL_MESSAGE_LENGTH + envelope
+    assert peak < connection_module.MAX_QUEUED_SEND_BYTES
 
 
 def test_send_counts_a_message_before_the_loop_has_written_it() -> None:

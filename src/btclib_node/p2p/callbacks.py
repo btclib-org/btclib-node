@@ -612,8 +612,8 @@ def advance_getdata(node: Node, conn: Connection, items: deque[Inventory]) -> bo
     the blocks this node asks its own peers for
     (btclib-org/btclib-node#512).
 
-    What the read can miss is either half of a count it did not make.
-    A drain is the loop's -- `conn.send` counts on this thread, but the
+    What the read can miss is either half of a count it did not make. A
+    drain is the loop's -- `conn.send` counts on this thread, but the
     decrement once the write completes is not -- and that direction is
     the safe one, an unseen decrement making the number too large and
     this pause sooner. An increment can also be missed, and that one is
@@ -621,12 +621,11 @@ def advance_getdata(node: Node, conn: Connection, items: deque[Inventory]) -> bo
     `_prune_stale_connections`'s `send_ping`, so a read here can predate
     a ping and pause later rather than sooner. What makes that
     immaterial is the magnitude rather than the direction: one ping is a
-    bare envelope and a nonce, where the room `MAX_QUEUED_SEND_BYTES`
-    leaves above the worst peak both pacing bounds can reach together is
-    sized for a whole block (`connection.py`) -- so the read
-    needs no lock, and a torn one is not a risk to guard against either
-    (CPython never hands back a value that was not, at some point,
-    actually written).
+    bare envelope and a nonce, where what `MAX_QUEUED_SEND_BYTES` leaves
+    above this loop's own bound is a whole block message and the room
+    over it (`connection.py`) -- so the read needs no lock, and a torn
+    one is not a risk to guard against either (CPython never hands back
+    a value that was not, at some point, actually written).
 
     `notfound` batches whatever this call found missing, sent once this
     call is done serving -- whether `items` ran out or this paused --

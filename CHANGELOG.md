@@ -14,6 +14,42 @@ to check the guess.
 
 ## Unreleased
 
+### The send bound is derived from the peak its pacing checks reach (closes #521)
+
+- **The two pacing mechanisms' overshoots do not add, so
+  `MAX_QUEUED_SEND_BYTES` (`p2p/connection.py`) is not their sum**:
+  `advance_getdata` and `advance_cfilters` (`p2p/callbacks.py`) both
+  pace on `Connection.queued_send_bytes` and neither reads anything
+  else, so filters a connection already owes leave a `getdata` answer
+  that much less room rather than adding to what that answer may commit;
+  and `MAX_CFILTERS_INFLIGHT_BYTES` being the lower of the two bounds,
+  `advance_cfilters` stops on its first check throughout a `getdata`
+  overshoot. A `getcfilters` pipelined behind a `getdata` the peer has
+  not drained is counted inside that answer's own peak rather than on
+  top of it. The bound is written as `MAX_GETDATA_INFLIGHT_BYTES` and
+  one block, and room above them; its value is unchanged, that bound
+  being twice `MAX_PROTOCOL_MESSAGE_LENGTH`.
+- **What the room above that peak is for is written down**: a sender
+  that passes no pacing check commits its whole message on top of
+  whatever the field already holds — the `notfound` closing a `getdata`
+  answer, a transaction announcement's `inv`, a `headers`, an `addr` —
+  and this room does not hold the largest of them, so a peer that has
+  stopped draining can be dropped by a message no pacing check stands in
+  front of, where the pacing bound would have paused an answer instead.
+  Issue #529 is where that is measured and where pacing those senders is
+  decided; raising this bound is not the answer to it, because
+  `_send_due_announcements` (`download.py`) sends as many `MAX_INV_SZ`
+  chunks in one pass as the mempool has entries to announce.
+- **`tests/unit/p2p/connection_test.py` measures the displacement rather
+  than assuming it**: a `getdata` answered on a connection that already
+  owes a filter answer serves fewer blocks and carries no larger a
+  total, driven through the real dispatch; and the bound is held above
+  `MAX_GETDATA_INFLIGHT_BYTES` and one whole block message, the wire
+  envelope measured off a `Message` built the way `Connection._queue`
+  builds one. The boundary tests over that comparison say that is what
+  they are, rather than that they are the maximum either mechanism
+  reaches.
+
 ### Both publish jobs set up uv before running it (closes #541)
 
 - **`publish-testpypi` and `publish-pypi` each gain a `Setup uv` step,
