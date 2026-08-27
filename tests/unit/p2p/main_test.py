@@ -9,6 +9,8 @@ tests only ever drive a connection that reaches Connected: the states
 either side of it, and the raise, are what is left.
 """
 
+from __future__ import annotations
+
 import threading
 from collections import deque
 from types import SimpleNamespace

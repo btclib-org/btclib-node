@@ -11,6 +11,8 @@ said about which test it was. So the bound is part of the harness, and
 this is what asks whether it is still there.
 """
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:

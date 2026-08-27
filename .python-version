@@ -1,5 +1,6 @@
-# The newest interpreter every dependency supports, and the version
-# requires-python names. Not 3.14t, and not for the reason this comment
+# The newest interpreter every dependency supports, and the newest
+# version pyproject.toml classifies: requires-python names the other end
+# of that window. Not 3.14t, and not for the reason this comment
 # used to give: plyvel's Cython source would not compile against the
 # free-threaded build, and plyvel is gone. This tree's runtime closure
 # does carry a compiled extension now: btclib depends on the

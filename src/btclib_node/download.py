@@ -13,6 +13,8 @@ commit it was read at beside it, per this tree's own convention of
 following Core's behaviour where that is possible and reasonable.
 """
 
+from __future__ import annotations
+
 import time
 from bisect import bisect_left
 from collections import Counter

@@ -12,6 +12,8 @@ entered from a single transaction instead, for the RPC and p2p callbacks
 that relay one.
 """
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 from btclib.exceptions import BTClibValueError
@@ -141,7 +143,7 @@ def _reconcile_mempool_for_reorg(
             # btclib-org/btclib-node#85
             try:
                 fee = verify_mempool_acceptance(node, tx)
-            except MissingPrevoutError, BTClibValueError:
+            except (MissingPrevoutError, BTClibValueError):
                 continue
             node.mempool.add_tx(tx, fee)
     for block in to_add:

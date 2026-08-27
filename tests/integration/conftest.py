@@ -11,6 +11,8 @@ defect report that is not one; its skip message names the switch, the
 way section 7 of the organization standard asks for.
 """
 
+from __future__ import annotations
+
 import os
 import shutil
 import subprocess

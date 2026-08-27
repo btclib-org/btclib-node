@@ -12,6 +12,8 @@ every entry here: this table is served over a listener that
 authenticates nothing.
 """
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING, Any, cast
 
 from btclib.exceptions import BTClibException, BTClibValueError

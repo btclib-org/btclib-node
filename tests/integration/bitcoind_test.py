@@ -17,6 +17,8 @@ explicit host and not this suite's own convenience for dialling a peer on
 the same machine.
 """
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 from btclib_node import Node

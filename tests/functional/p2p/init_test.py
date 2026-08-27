@@ -4,6 +4,8 @@
 
 """A node starts listening on its own port, then stops cleanly."""
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 from btclib_node import Node

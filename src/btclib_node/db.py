@@ -31,6 +31,8 @@ compiles its own, so the packaging problem this store exists to remove
 is not one Core has.
 """
 
+from __future__ import annotations
+
 import sqlite3
 import threading
 from contextlib import contextmanager

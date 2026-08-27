@@ -14,6 +14,48 @@ to check the guess.
 
 ## Unreleased
 
+### The interpreter window is a library's, and a sweep runs it (closes #507)
+
+- **`requires-python` is the oldest Python still in support and the
+  classifiers name every version up to the one `.python-version`
+  pins**: section 1 of the organization standard gives that window to a
+  library, and section 2 measures a repository that publishes as one.
+  The window is python.org's release cycle rather than this tree's
+  choice, so it moves on a date; `btclib`, `btclib-secp256k1` and
+  `bitcoin-core-rpc` declare the same one, which
+  `tests/interpreters_test.py` of `btclib-org/.github` is what compares
+  (issue btclib-org/.github#365).
+- **`os-ubuntu.yml` runs the suite on every classified interpreter,
+  weekly**: a classifier is a claim about where this runs, and section
+  10 of that standard puts a cell claiming a version the package does
+  not already run in the weekly calendar rather than in the merge gate.
+  `test.yml` keeps its own two cells, which are the pinned interpreter
+  and that interpreter without the GIL.
+- **`typing-extensions` is a dependency, for `override` and `Self`**:
+  both are `typing` names newer than the floor, and the backport is
+  where `btclib` takes them from at the same floor. Every module that
+  annotates with a name it imports under `TYPE_CHECKING` opens with
+  `from __future__ import annotations`, PEP 649's lazy evaluation not
+  being available across the window; `docs/source/conf.py`'s
+  `nitpick_ignore` names what autodoc then fails to resolve under its
+  own name rather than under a placeholder.
+- **`RpcConnection` bounds its read with `asyncio.wait_for` over a
+  coroutine of its own, `_read_request`**, `asyncio.timeout` being
+  newer than the floor. Two timeouts are caught under the names that
+  are one class across the window and two below it: `asyncio` spells
+  what `wait_for` raises, `concurrent.futures` what `Future.result`
+  raises, and the builtin is neither at the floor — a dial or an
+  unanswered `send_and_wait` would have escaped its handler there.
+- **`Node`'s pool choice asks `_gil_enabled()`**, which answers `True`
+  for an interpreter that carries no `sys._is_gil_enabled`: that
+  attribute arrives with the free-threaded build, so an interpreter
+  short of it is one no such build exists for.
+- **The 3.14-only syntax is gone**: a multiple-exception `except`
+  writes its tuple, and a generic test helper takes a `TypeVar` rather
+  than PEP 695's parameter list. `PERF203` is what a `try` inside a
+  loop draws below 3.11, and each loop it names exits through its own
+  handler, which is what the `noqa` beside each says.
+
 ### The fuzz sentinel, over the parser a peer reaches first (closes #402)
 
 - **`fuzz/fuzz_reject.py` fuzzes BIP61's `reject` payload parser, and

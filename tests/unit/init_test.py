@@ -13,9 +13,12 @@ messages directly and what it does with them does not depend on
 scheduling.
 """
 
+from __future__ import annotations
+
 import os
 import re
 import signal
+import sys
 import threading
 import time
 from collections import deque
@@ -24,9 +27,10 @@ from contextlib import contextmanager
 from multiprocessing.pool import Pool, ThreadPool
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast, override
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
+from typing_extensions import override
 
 import btclib_node
 from btclib_node import Node, install_signal_handlers
@@ -712,7 +716,7 @@ class APool:
 def pools(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
     """Patch both `btclib_node.Pool` and `.ThreadPool` to `APool`.
 
-    `_pool_factory` picks one of the two by `sys._is_gil_enabled()`, and
+    `_pool_factory` picks one of the two by `_gil_enabled()`, and
     that answer is the interpreter running this suite's, not this
     fixture's to choose (issue #388) -- patching only `Pool` would make
     every test below pass under a GIL build and fail under a
@@ -744,6 +748,22 @@ def test_pool_factory_picks_by_gil_enabled(
     branch the free-threaded one would take (issue #388).
     """
     assert btclib_node._pool_factory(gil_enabled=gil_enabled) is expected
+
+
+def test_gil_enabled_answers_for_an_interpreter_that_does_not_say(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An interpreter without `sys._is_gil_enabled` is one that has a GIL.
+
+    That attribute arrives with the free-threaded build, so an
+    interpreter short of it is one for which no build without the GIL
+    exists: `True` is that interpreter's own answer rather than a
+    default standing in for one. `sys` is stripped of the attribute
+    here because every interpreter this suite runs on carries it, so
+    nothing else reaches that arm.
+    """
+    monkeypatch.delattr(sys, "_is_gil_enabled", raising=False)
+    assert btclib_node._gil_enabled()
 
 
 def test_the_worker_pool_is_built_on_first_use_and_only_once(

@@ -91,7 +91,7 @@ def _parsed(spec: str, data: bytes) -> Any:
     """
     try:
         return _resolve(spec)(data)
-    except BTClibException, ValueError:
+    except (BTClibException, ValueError):
         return None
 
 

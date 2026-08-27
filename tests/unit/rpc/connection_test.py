@@ -11,6 +11,8 @@ that only a malformed request provokes -- a header section that never
 ends, a Content-Length no client would send, a body that is not JSON.
 """
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import json
@@ -92,7 +94,9 @@ def drive(
         try:
             await asyncio.wait_for(task, timeout)
             outcome = "returned"
-        except TimeoutError:
+        # asyncio's own spelling, for the reason `p2p/address.py` gives
+        # where it catches the same thing
+        except asyncio.TimeoutError:
             task.cancel()
             # awaited, so `closed` below reads a settled state rather
             # than racing the cancellation
@@ -367,7 +371,11 @@ def test_close_cancels_the_task_it_was_given() -> None:
         await asyncio.sleep(0)
         conn.close()
         await asyncio.sleep(0)
-        cancelled = bool(task.cancelled() or task.cancelling())
+        # another tick, so the cancellation `close` requested has been
+        # delivered and the task carries it: `Task.cancelling` would
+        # answer without one and arrives in 3.11, above the floor
+        await asyncio.sleep(0)
+        cancelled = task.cancelled()
         theirs.close()
         return cancelled
 

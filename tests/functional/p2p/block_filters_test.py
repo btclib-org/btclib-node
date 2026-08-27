@@ -11,8 +11,10 @@ headers it is sent against a chain it builds itself, and then use a
 filter to decide whether a block is worth fetching.
 """
 
+from __future__ import annotations
+
 from collections import deque
-from typing import TYPE_CHECKING, ClassVar, Protocol, Self, cast, override
+from typing import TYPE_CHECKING, ClassVar, Protocol, TypeVar, cast
 
 import pytest
 from btclib.block import Block
@@ -27,6 +29,7 @@ from btclib.p2p.block_filters import (
     GetCFHeaders,
     GetCFilters,
 )
+from typing_extensions import Self, override
 
 from btclib_node import Node
 from btclib_node.chains import RegTest
@@ -165,9 +168,11 @@ def mark(peers: Peers) -> int:
     return len(cast("RecordingDeque", client.p2p_manager.messages).seen)
 
 
-def received[M: _ParsablePayload](
-    client: Node, message_type: type[M], mark: int = 0
-) -> list[M]:
+# the payload type `received` and `answers` parse the bytes back into
+_M = TypeVar("_M", bound=_ParsablePayload)
+
+
+def received(client: Node, message_type: type[_M], mark: int = 0) -> list[_M]:
     """Every `message_type` the client has seen from `mark` on, parsed."""
     seen = cast("RecordingDeque", client.p2p_manager.messages).seen
     return [
@@ -177,9 +182,9 @@ def received[M: _ParsablePayload](
     ]
 
 
-def answers[M: _ParsablePayload](
-    client: Node, message_type: type[M], mark: int, count: int = 1
-) -> list[M]:
+def answers(
+    client: Node, message_type: type[_M], mark: int, count: int = 1
+) -> list[_M]:
     """Wait for the peer's answers to arrive, and parse them."""
     wait_until(lambda: len(received(client, message_type, mark)) >= count)
     return received(client, message_type, mark)

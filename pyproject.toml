@@ -11,12 +11,15 @@ authors = [{ name = "Giacomo Caironi", email = "giacomo.caironi@gmail.com" }]
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE", "AUTHORS.md"]
-# Above the standard's 3.10 floor, deliberately: this is the version
-# .python-version pins, and with no CI matrix here
-# (btclib-org/btclib-node#33) it is the only version anything runs on.
-# A lower bound would be a claim of support nothing checks. Lower it to
-# whatever the matrix covers once there is one.
-requires-python = ">=3.14"
+# The oldest Python still in support, which is what section 1 of
+# btclib-org/.github's README.md gives a tier-1 repository: what this
+# organization publishes is what other projects import, so the window is
+# python.org's release cycle rather than this tree's choice, and it
+# moves when a branch reaches end of life. os-ubuntu.yml runs every
+# version between this and the classifiers' newest, weekly, so the floor
+# is a claim something checks; tests/interpreters_test.py is what holds
+# the two together.
+requires-python = ">=3.10"
 # Floors only, here and in the dependency groups below: an upper bound
 # on a release nobody has seen break is a guess, and uv.lock is what
 # decides what any given checkout installs. Exact versions are pinned
@@ -31,6 +34,10 @@ dependencies = [
     # package's own: btclib-org/btclib-node#361 is where dependency
     # versus extra was decided, and why.
     "btclib[secp256k1]>=2026.8.21",
+    # `typing.override` is 3.12's and `typing.Self` is 3.11's, and the
+    # floor is 3.10, so both come from the backport; 4.4 is the release
+    # that adds `override`, the later of the two
+    "typing-extensions>=4.4",
 ]
 # What this repository is about, in the order a reader ranks them:
 # PyPI shows keywords as the metadata gives them, and GitHub sorts its
@@ -62,10 +69,12 @@ keywords = [
 # each line is a claim about this tree rather than a line copied from a
 # sibling's.
 #
-# One interpreter, because `requires-python` above is `>=3.14` and its
-# comment says why: with no CI matrix here, a lower bound would be a
-# claim of support nothing checks, and a classifier is that claim made
-# to an index.
+# Every version between `requires-python` above and the interpreter
+# `.python-version` pins, which is the window section 1 of
+# btclib-org/.github's README.md asks a library for. A classifier is a
+# claim made to an index and os-ubuntu.yml is what runs each of them;
+# `3.14t` is in that sweep and in the gate and is not classified here,
+# a free-threaded build being the same version to an index.
 #
 # `Typing :: Typed` is below, and only because `src/btclib_node/py.typed`
 # now ships: the classifier is machine-readable and a downstream type
@@ -74,10 +83,11 @@ keywords = [
 #
 # No PyPy, and the reason is no longer plyvel: that dependency is gone,
 # and with it the C extension built from source against a LevelDB the
-# reader had to install first. What is left is the line at the top of
-# this file -- `requires-python = ">=3.14"`, and no PyPy release targets
-# 3.14. `Implementation :: CPython` is that bound restated where an
-# index reads it, and it needs no dependency to justify it.
+# reader had to install first. What is left is that nothing runs it:
+# os-ubuntu.yml sweeps CPython alone, and a classifier this tree does
+# not run is the claim rather than its check.
+# `Implementation :: CPython` is what is left standing once that is
+# said, and it needs no dependency to justify it.
 #
 # No `OS Independent` either, and nothing in the dependencies argues
 # against it any more: what this installs is btclib and what btclib
@@ -93,6 +103,10 @@ keywords = [
 classifiers = [
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: Implementation :: CPython",
     "Typing :: Typed",
@@ -860,7 +874,7 @@ files = ["src/btclib_node", "tests", "scripts", ".github/scripts"]
 # package says it supports. btclib-org/btclib-node#30 describes the
 # floor as 3.10, which is stale -- against 3.10 mypy reports that
 # `datetime.UTC` does not exist, and it is right about 3.10.
-python_version = "3.14"
+python_version = "3.10"
 
 # The organization's standard requires this outright (section 6 of
 # btclib-org/.github's README, tracked for every repository as

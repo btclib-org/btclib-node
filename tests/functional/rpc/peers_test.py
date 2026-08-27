@@ -8,6 +8,8 @@ Each test connects two live nodes over p2p and asks one of them, over
 its own RPC socket, what its p2p side reports about the other.
 """
 
+from __future__ import annotations
+
 import json
 from typing import TYPE_CHECKING
 

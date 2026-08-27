@@ -9,12 +9,14 @@ documentation: https://www.sphinx-
 doc.org/en/master/usage/configuration.html
 """
 
+from __future__ import annotations
+
 import posixpath
 import re
-import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, override
 
+import tomllib
 from docutils import nodes
 from sphinx.addnodes import pending_xref
 from sphinx.transforms.post_transforms import SphinxPostTransform
@@ -85,9 +87,9 @@ intersphinx_mapping = {
 # - a name a signature carries, or carries inside another name's own
 #   subscript, only because ruff's own "TC" family (pyproject.toml's own
 #   comment beside it) moves a typing-only import under
-#   `if TYPE_CHECKING:` on this tree's >=3.14 target -- deliberately: "TC"
-#   is selected because the import costs nothing at runtime there, PEP
-#   649's lazy annotation evaluation being native to that version.
+#   `if TYPE_CHECKING:` -- deliberately: "TC" is selected because the
+#   import costs nothing at runtime, every module carrying such a name
+#   in an annotation opening with `from __future__ import annotations`.
 #   Autodoc reads a signature's annotation by evaluating it and reading
 #   the resulting class's qualified name back off it; that evaluation
 #   fails for a module that only imports the name under TYPE_CHECKING,
@@ -106,10 +108,9 @@ intersphinx_mapping = {
 #   but nested inside `Iterable[BlockHeader]`, and Iterable is what that
 #   file imports under TYPE_CHECKING: one guarded name inside a
 #   subscript is enough to keep autodoc from resolving the whole
-#   annotation, BlockHeader included. __annotationlib_name_1__ is the
-#   same defect once more, surfacing as Python 3.14's own placeholder
-#   for a name a *compound* annotation could not resolve, rather than as
-#   that name itself
+#   annotation, BlockHeader included. That same nesting again is what
+#   leaves PrecomputedTxData unresolved in interpreter.py, Inventory in
+#   download.py, and deque in p2p/connection.py and rpc/manager.py
 # - asyncio.AbstractEventLoop, spelled that way everywhere this tree
 #   uses it (p2p/manager.py, rpc/manager.py, rpc/connection.py):
 #   autodoc reads the qualified name back off the class itself once
@@ -131,7 +132,9 @@ nitpick_ignore = [
     ("py:class", "Path"),
     ("py:class", "datetime"),
     ("py:class", "BtclibTx"),
-    ("py:class", "__annotationlib_name_1__"),
+    ("py:class", "PrecomputedTxData"),
+    ("py:class", "Inventory"),
+    ("py:class", "deque"),
     ("py:class", "asyncio.events.AbstractEventLoop"),
     ("py:class", "ParentOf"),
     ("py:class", "BinaryData"),

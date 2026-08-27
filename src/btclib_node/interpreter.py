@@ -16,6 +16,8 @@ this module's own is, so `warm` still runs there but has nothing left to
 pay for.
 """
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 from btclib.script.engine import verify_amounts, verify_input, verify_transaction

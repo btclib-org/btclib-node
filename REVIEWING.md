@@ -482,10 +482,12 @@ Each of these is a question, and the document that answers it is named
 because that document, and not this one, is where the rule lives.
 
 - **Does a change to `requires-python` or to `.python-version` know that
-  the two are one claim?** `pyproject.toml` asks for `>=3.14`, that file
-  pins 3.14, and no matrix runs anything else, so what reads as a floor
-  is also the ceiling of what has been run. Both files carry the
-  reasoning beside the number.
+  the two are the ends of one window?** `pyproject.toml` asks for
+  `>=3.10`, that file pins 3.14, the classifiers name every version
+  between them, and `os-ubuntu.yml` runs each. Moving either end without
+  the classifiers and that sweep leaves a claim nothing checks;
+  `tests/interpreters_test.py` is what fails on it, and every one of
+  those files carries the reasoning beside the number.
 - **Does a re-lock of `btclib` say what it moved onto?**
   `[tool.uv.sources]` resolves that dependency from its `main` branch
   rather than from a release, and `uv.lock` pins the commit — so a

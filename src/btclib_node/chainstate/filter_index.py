@@ -27,6 +27,8 @@ dynamically on request, as malicious peers may be able to perform DoS
 attacks by requesting small filters derived from large blocks."
 """
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 from btclib.block.block_filter import BasicBlockFilter, prevout_scripts_from_utxos

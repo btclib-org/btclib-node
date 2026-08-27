@@ -12,6 +12,8 @@ reaches -- a datadir written by the version before it, a batch that
 raises, and a second thread.
 """
 
+from __future__ import annotations
+
 import sqlite3
 import threading
 from typing import TYPE_CHECKING
@@ -222,7 +224,9 @@ def test_closing_while_another_thread_reads_does_not_take_the_process_down(
         while True:
             try:
                 outcomes.add(store.get(b"k"))
-            except StoreClosedError as error:
+            # PERF203, for the reason scripts/test_errors.py gives at
+            # its own: the handler runs once and ends the loop
+            except StoreClosedError as error:  # noqa: PERF203
                 outcomes.add(str(error).split(" at ")[0])
                 return
 

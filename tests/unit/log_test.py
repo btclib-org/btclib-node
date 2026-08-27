@@ -4,6 +4,8 @@
 
 """`Logger` picks the right handler and drops it cleanly on `close`."""
 
+from __future__ import annotations
+
 import logging
 from typing import TYPE_CHECKING
 

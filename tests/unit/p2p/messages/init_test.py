@@ -10,6 +10,8 @@ queue a command lands in, how much of the buffer survives a partial
 message, and what becomes of a peer whose octets do not decode.
 """
 
+from __future__ import annotations
+
 import asyncio
 import importlib
 import inspect

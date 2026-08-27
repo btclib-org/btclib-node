@@ -11,12 +11,16 @@ actually bound the socket, which is what a caller waits on rather than
 `is_alive()` alone -- that flag is true before anything is bound.
 """
 
+from __future__ import annotations
+
 import asyncio
 import socket
 import threading
 from collections import deque
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, override
+from typing import TYPE_CHECKING, Any
+
+from typing_extensions import override
 
 from btclib_node.rpc.connection import REQUEST_TIMEOUT, RpcConnection
 
@@ -135,7 +139,7 @@ class RpcManager(threading.Thread):
         """
         try:
             sock, sockaddr = server_socket.accept()
-        except BlockingIOError, InterruptedError:
+        except (BlockingIOError, InterruptedError):
             return
         except OSError:
             self.logger.exception("Accepting an inbound connection failed")

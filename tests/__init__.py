@@ -19,6 +19,8 @@ functions the tests import directly, in `tests/unit/`,
 `tests/functional/` and `tests/integration/` alike.
 """
 
+from __future__ import annotations
+
 import json
 import re
 import secrets
@@ -27,7 +29,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 import requests
 from btclib.block import Block, BlockHeader, merkle_root_and_mutated_from_transactions
@@ -52,6 +54,9 @@ if TYPE_CHECKING:
 
 
 _TESTS_DIR = Path(__file__).parent
+
+# the return type `call_within` hands back from the thread it runs on
+_T = TypeVar("_T")
 
 
 def load(*relative_path: str, encoding: str = "ascii") -> Any:
@@ -363,7 +368,7 @@ def post(node: Node, payload: Any, timeout: float = 5) -> str:
     ).text
 
 
-def call_within[T](func: Callable[[], T], timeout: float = 5) -> T:
+def call_within(func: Callable[[], _T], timeout: float = 5) -> _T:
     """Call `func` on a daemon thread; return its result, or its exception."""
     # For a call whose way of being wrong is never coming back. A test
     # that asserts on the answer hangs the whole suite when there is no
@@ -371,7 +376,7 @@ def call_within[T](func: Callable[[], T], timeout: float = 5) -> T:
     # fails, and names where the call was written. As in wait_until
     # above, the timeout bounds the failure and not the success: the
     # join returns as soon as the call does.
-    returned: list[T] = []
+    returned: list[_T] = []
     raised: list[Exception] = []
 
     def call() -> None:

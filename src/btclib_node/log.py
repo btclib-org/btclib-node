@@ -9,6 +9,8 @@ one under `Config.data_dir` when `Config.log_path` is set -- a stream
 handler otherwise, and `close` to release whichever one it opened.
 """
 
+from __future__ import annotations
+
 import logging
 from typing import TYPE_CHECKING
 

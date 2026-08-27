@@ -11,6 +11,8 @@ losing the peer. The functional tests drive two cooperating nodes, which
 is the path where every message is welcome; these are the rest.
 """
 
+from __future__ import annotations
+
 import socket
 import threading
 import time

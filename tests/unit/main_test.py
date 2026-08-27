@@ -4,6 +4,8 @@
 
 """`update_chain`/`verify_mempool_acceptance`: connect, reorg, reject."""
 
+from __future__ import annotations
+
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 

@@ -11,6 +11,8 @@ a malformed request with an `RpcError` rather than raising past the
 loop.
 """
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING, Any
 
 from btclib_node.rpc.callbacks import callbacks

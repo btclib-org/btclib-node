@@ -12,10 +12,12 @@ download is allowed to run, read from both `download.py` and here.
 `main.update_header_index`, to drop a header and everything built on it.
 """
 
+from __future__ import annotations
+
 import enum
 from collections import deque
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from btclib import var_int
@@ -465,7 +467,7 @@ class BlockIndex:
     def _validate_header_batch(
         self, headers: list[BlockHeader]
     ) -> dict[bytes, tuple[BlockHeader, int]]:
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         pow_limit_bits = self.chain.pow_limit_bits
         pending: dict[bytes, tuple[BlockHeader, int]] = {}
         # every header's hash, shrunk as each is visited: what is still

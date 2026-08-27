@@ -11,6 +11,8 @@ refuses, hangs or is cancelled on, and the round trip between BIP155's
 sent.
 """
 
+from __future__ import annotations
+
 import asyncio
 import socket
 import threading

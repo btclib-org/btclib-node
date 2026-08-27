@@ -4,9 +4,11 @@
 
 """RpcManager.connections does not grow without bound, over a real node."""
 
+from __future__ import annotations
+
 import json
 import socket
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from tests import post, wait_until, wait_until_listening
 
@@ -60,7 +62,10 @@ def test_a_client_that_sends_nothing_is_dropped_within_the_deadline(
     # machine slow enough to delay RpcManager's own loop past a tight
     # margin -- wait_until's own default below is headroom measured the
     # same way, against this suite's own worst tail under load.
-    stalled = socket.create_connection(("127.0.0.1", node.rpc_port), timeout=60)
+    # cast, because a Node configured without the RPC listener carries
+    # no port and this one is configured with it
+    port = cast("int", node.rpc_port)
+    stalled = socket.create_connection(("127.0.0.1", port), timeout=60)
     try:
         # the server closing its end is read here as EOF, b"" -- not as
         # data, and not as the read simply never returning, which a

@@ -12,9 +12,11 @@ asked for it, which peer a block is fetched from, and when a peer that
 has stopped sending blocks is let go.
 """
 
+from __future__ import annotations
+
 import time
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import pytest
 from btclib.fee import FeeRate, fee_from_vsize
@@ -126,7 +128,11 @@ def hashes_of(message: GetData | Inv) -> list[bytes]:
     return [item.hash for item in message.items]
 
 
-def only[M](conn: Any, kind: type[M]) -> list[M]:
+# the message type `only` filters `conn.sent` down to
+_M = TypeVar("_M")
+
+
+def only(conn: Any, kind: type[_M]) -> list[_M]:
     """Return the messages of `conn.sent` that are instances of `kind`."""
     return [message for message in conn.sent if isinstance(message, kind)]
 

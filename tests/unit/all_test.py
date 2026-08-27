@@ -20,6 +20,8 @@ Written against the names rather against a total, so that a deliberate
 addition is one line here and an accidental one is a failure.
 """
 
+from __future__ import annotations
+
 import ast
 from importlib import import_module
 from pathlib import Path

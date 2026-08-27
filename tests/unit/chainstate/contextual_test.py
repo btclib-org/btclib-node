@@ -10,8 +10,10 @@ out is exactly what `BlockHeader.assert_valid_pow` accepts, so a header
 that would take a mainnet miner an hour is one line here.
 """
 
+from __future__ import annotations
+
 import secrets
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import pytest
@@ -34,7 +36,7 @@ if TYPE_CHECKING:
 
 # the mainnet genesis' timestamp, so that every header below is one
 # `BlockHeader.assert_valid` accepts
-EPOCH = datetime.fromtimestamp(1231006505, UTC)
+EPOCH = datetime.fromtimestamp(1231006505, timezone.utc)
 
 POW_LIMIT = Main().pow_limit_bits
 # 2^216, three bytes into the compact form and a quarter and four times
@@ -280,7 +282,9 @@ def test_a_header_at_the_target_the_chain_requires_is_accepted() -> None:
     chain = RegTest()
     parent, parent_of = a_parent(chain)
     header = a_header(parent.hash, 1200, chain.pow_limit_bits)
-    assert_valid_in_context(chain, header, parent, 1, parent_of, datetime.now(UTC))
+    assert_valid_in_context(
+        chain, header, parent, 1, parent_of, datetime.now(timezone.utc)
+    )
 
 
 def test_a_header_at_another_target_than_the_chain_requires_is_refused() -> None:
@@ -293,7 +297,9 @@ def test_a_header_at_another_target_than_the_chain_requires_is_refused() -> None
     parent, parent_of = a_parent(chain)
     header = a_header(parent.hash, 1200, HARD)
     with pytest.raises(BTClibValueError, match="target not the required one"):
-        assert_valid_in_context(chain, header, parent, 1, parent_of, datetime.now(UTC))
+        assert_valid_in_context(
+            chain, header, parent, 1, parent_of, datetime.now(timezone.utc)
+        )
 
 
 def test_a_header_no_later_than_the_median_before_it_is_refused() -> None:
@@ -306,7 +312,9 @@ def test_a_header_no_later_than_the_median_before_it_is_refused() -> None:
     parent, parent_of = a_parent(chain)
     header = a_header(parent.hash, 600, chain.pow_limit_bits)
     with pytest.raises(BTClibValueError, match="not after the median past"):
-        assert_valid_in_context(chain, header, parent, 1, parent_of, datetime.now(UTC))
+        assert_valid_in_context(
+            chain, header, parent, 1, parent_of, datetime.now(timezone.utc)
+        )
 
 
 def test_a_header_too_far_ahead_of_the_clock_is_refused() -> None:

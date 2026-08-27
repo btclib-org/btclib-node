@@ -13,13 +13,17 @@ coroutine enters this loop only through `run_coroutine_threadsafe`;
 own `promote_connection`, directly.
 """
 
+from __future__ import annotations
+
 import asyncio
 import socket
 import threading
 import time
 from collections import deque
 from contextlib import suppress
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING
+
+from typing_extensions import override
 
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.p2p.address import PeerDB, dial, endpoint_key, peer_address
@@ -536,7 +540,7 @@ class P2pManager(threading.Thread):
         """
         try:
             sock, sockaddr = server_socket.accept()
-        except BlockingIOError, InterruptedError:
+        except (BlockingIOError, InterruptedError):
             return
         except OSError:
             self.logger.exception("Accepting an inbound connection failed")

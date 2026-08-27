@@ -299,11 +299,13 @@ Do not use Fable unless explicitly instructed.
   falls back to the bare source string for an annotation it can never
   import, and both settings only reformat a type hint autodoc already
   resolved. `autodoc_type_aliases` needs PEP 563's `from __future__
-  import annotations` to engage at all, which only one module in this
-  tree still carries — the rest reach PEP 649's native lazy evaluation
-  on this tree's `>=3.14` target instead, so the setting doesn't rescue
-  most of what it's tried against — confirmed by mapping every
-  remaining name and rebuilding, with no change in the warnings.
+  import annotations`, which every module carrying such a name opens
+  with, and it rescues nothing even so: what autodoc cannot do is
+  import the name, and a string annotation leaves it as unimportable
+  as a lazy one — measured by mapping `Tx`, `TxOut`, `Block` and
+  `BlockHeader`, dropping their `nitpick_ignore` entries and
+  rebuilding, which returns the same warnings plus
+  `TypeAliasForwardRef`.
   btclib-org/btclib-node#417 is the cross-reference ambiguity this
   forced a rename to fix rather than a `conf.py` setting;
   btclib-org/btclib-node#264's own `nitpick_ignore` list is the same

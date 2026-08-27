@@ -4,6 +4,8 @@
 
 """A broadcast transaction reaches a peer's mempool over `inv`/`getdata`."""
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 import btclib_node.download as download_module

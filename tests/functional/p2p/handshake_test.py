@@ -4,6 +4,8 @@
 
 """Two real nodes complete a handshake, and a node refuses one with itself."""
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 from btclib_node import Node

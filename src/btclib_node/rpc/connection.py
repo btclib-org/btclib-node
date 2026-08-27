@@ -12,14 +12,19 @@ back out exactly as given, the way Core's own `UniValue` writes one
 built from a string rather than from a `float`.
 """
 
+from __future__ import annotations
+
 import asyncio
+import concurrent.futures
 import contextlib
 import json
 import re
 import secrets
 from http.client import parse_headers
 from io import BytesIO
-from typing import TYPE_CHECKING, Any, override
+from typing import TYPE_CHECKING, Any
+
+from typing_extensions import override
 
 from btclib_node.p2p.address import ip_and_port
 from btclib_node.rpc.errors import RpcErrorCode, error_msg
@@ -66,7 +71,7 @@ MAX_BODY_BYTES = 32 * 1024 * 1024
 # complete request (`run` below), rather than reset on each byte -- which
 # also bounds a client that dribbles one byte at a time forever, where a
 # per-`sock_recv` reset would not.
-# a float, not Core's own int seconds: asyncio.timeout below and
+# a float, not Core's own int seconds: asyncio.wait_for below and
 # RpcManager.request_timeout both carry this as a float throughout, a
 # test lowering it to a fraction of a second being the only assignment
 # that would otherwise disagree with an int-inferred attribute
@@ -231,6 +236,38 @@ class RpcConnection:
                 raise ConnectionError
             self.buffer += data
 
+    async def _read_request(self) -> int:
+        """Read one whole request off `client`, and say how long its body is.
+
+        The header section up to `HEADER_TERMINATOR` first, then the
+        body up to its own `Content-Length`; the body is left in
+        `self.buffer` for `run` to parse, this returning only the length
+        that says where it ends. A method of its own because the bound
+        `run` spends on the whole read is `asyncio.wait_for`'s, which
+        wants a coroutine rather than a block.
+
+        :returns: the body's `Content-Length`.
+        :raises ConnectionError: on a header section that never
+            terminates, a `Content-Length` outside `MAX_BODY_BYTES`, or
+            a peer that goes away mid-request.
+        """
+        await self._recv_until(
+            lambda: HEADER_TERMINATOR in self.buffer, MAX_HEADER_BYTES
+        )
+        head, _, self.buffer = self.buffer.partition(HEADER_TERMINATOR)
+        # parse_headers wants the field lines alone, so drop the request
+        # line, and the blank line partition() consumed.
+        _, _, fields = head.partition(b"\r\n")
+        headers = parse_headers(BytesIO(fields + HEADER_TERMINATOR))
+        length = int(headers.get("Content-Length", 0))
+        # int() admits a negative, which would make the predicate below
+        # true before a single body byte arrived and then slice the body
+        # from the wrong end.
+        if not 0 <= length <= MAX_BODY_BYTES:
+            raise ConnectionError
+        await self._recv_until(lambda: len(self.buffer) >= length)
+        return length
+
     async def run(self) -> None:
         """Read one request off `client` and queue it for `handle_rpc`.
 
@@ -242,34 +279,13 @@ class RpcConnection:
         that is not valid JSON is answered `PARSE_ERROR` directly, on
         the spot, and a body that is gets appended to `manager.messages`
         for `rpc.main.handle_rpc` to answer instead, through `send`. Any
-        failure -- `asyncio.timeout` raises the standard library's own
-        `TimeoutError` once expired, caught below like any other -- closes
+        failure -- `asyncio.wait_for` raises `asyncio.TimeoutError` once
+        the bound is spent, caught below like any other -- closes
         `client` rather than raising, since nothing reads the `Future`
         this task runs under.
         """
         try:
-            async with asyncio.timeout(self.request_timeout):
-                await self._recv_until(
-                    lambda: HEADER_TERMINATOR in self.buffer, MAX_HEADER_BYTES
-                )
-                head, _, self.buffer = self.buffer.partition(HEADER_TERMINATOR)
-                # parse_headers wants the field lines alone, so drop the
-                # request line, and the blank line partition() consumed.
-                _, _, fields = head.partition(b"\r\n")
-                headers = parse_headers(BytesIO(fields + HEADER_TERMINATOR))
-                length = int(headers.get("Content-Length", 0))
-                # int() admits a negative, which would make the
-                # predicate below true before a single body byte arrived
-                # and then slice the body from the wrong end.
-                if not 0 <= length <= MAX_BODY_BYTES:
-                    # kept inside the try, against TRY301: the outer
-                    # `except Exception: self.client.close()` below is
-                    # what every failure in this method already answers
-                    # through, abstracting this one raise to a helper
-                    # would not change what catches it, only add a call
-                    # for no reader
-                    raise ConnectionError  # noqa: TRY301
-                await self._recv_until(lambda: len(self.buffer) >= length)
+            length = await asyncio.wait_for(self._read_request(), self.request_timeout)
 
             try:
                 body = json.loads(self.buffer[:length])
@@ -313,7 +329,7 @@ class RpcConnection:
         # to every other way this method fails rather than only that
         # one: `ConnectionError` (an unterminated header, an overstated
         # or negative Content-Length, a peer that goes away mid-request)
-        # and `TimeoutError` (`REQUEST_TIMEOUT` elapsing) never reach
+        # and `asyncio.TimeoutError` (`REQUEST_TIMEOUT` elapsing) never reach
         # `send()` either, and `send()` is the only other place this id
         # leaves `manager.connections` (issue #437).
         except Exception:  # noqa: BLE001
@@ -369,7 +385,10 @@ class RpcConnection:
         `loop` down under it.
         """
         future = asyncio.run_coroutine_threadsafe(self.async_send(response), self.loop)
-        with contextlib.suppress(TimeoutError):
+        # the concurrent.futures spelling and not the builtin: what
+        # `Future.result` raises is that one, which is the builtin from
+        # 3.11 on and its own class at the floor
+        with contextlib.suppress(concurrent.futures.TimeoutError):
             future.result(timeout=2)
 
     @override

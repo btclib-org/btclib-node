@@ -10,6 +10,8 @@ the port and that queue -- binding it, accepting a client, and letting
 go of both -- and until now only a functional test reached any of it.
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import socket

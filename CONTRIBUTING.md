@@ -287,8 +287,10 @@ anything.
 Everything else reports. `codeql.yml` follows a value from a peer's
 message or an RPC request body to where it is used, which no hook here
 does. `os-macos.yml` runs the suite on the one platform
-`pyproject.toml` classifies that no other workflow runs, and its header
-says what differs beneath it. `links.yml` asks whether somebody else's
+`pyproject.toml` classifies that no other workflow runs, and
+`os-ubuntu.yml` runs it on the interpreters that file classifies
+that the gate does not; each header says what differs beneath it.
+`links.yml` asks whether somebody else's
 server answered, and `bootstrap-dns.yml` asks the same question of the
 DNS seeds `src/btclib_node/chains.py` names. `claude-review.yml` writes the
 review and its own header says it must not become a required check.

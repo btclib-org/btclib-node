@@ -20,29 +20,27 @@ does not try to: python.org keeps it, and a test hard-coding a date
 would be one more thing to move. What it holds is the weaker and
 checkable claim that whatever these say, they say the same thing.
 
-The window here is one version wide, so every site naming an
-interpreter names that one, which is why the comparison runs over every
-workflow and composite action rather than over the platform sweeps
-alone the way `btclib`'s copy of this module does. `test.yml`'s matrix
-carries a second value, the free-threaded build of the same version,
-which a classifier does not distinguish.
+The comparison runs over every workflow and composite action rather
+than over the weekly sweep alone: the gate and the periodic jobs each
+name the pinned interpreter literally, and `os-ubuntu.yml` is the one
+that names the whole window, so a version dropped from any of them is
+what this catches. `test.yml`'s matrix carries the free-threaded build
+of the pinned version, which a classifier does not distinguish.
 
-`pyproject.toml` is parsed, `tomllib` being in the standard library at
-this tree's floor. The workflow files are yaml and no dependency group
-here carries a parser for that, so they are read with the pattern
-below -- which reads a comment naming an interpreter as readily as a
-step that runs one, the safe direction to be wrong in: a comment
-arguing for a version this tree no longer classifies has gone stale
-too.
+Read with a regex rather than parsed, the way `btclib`'s copy of this
+module reads its own: `tomllib` arrives in 3.11 and the floor here is
+3.10. The workflow files are yaml and no dependency group here carries
+a parser for that either, so they are read with the patterns below --
+which read a comment naming an interpreter as readily as a step that
+runs one, the safe direction to be wrong in: a comment arguing for a
+version this tree no longer classifies has gone stale too.
 """
 
 import re
-import tomllib
 from pathlib import Path
 
 _ROOT = Path(__file__).parents[1]
-_PYPROJECT = tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-_PROJECT = _PYPROJECT["project"]
+_PYPROJECT = (_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
 # every yaml a job or a step reads an interpreter out of: the workflows
 # and the composite actions they call. The issue templates and
@@ -51,29 +49,38 @@ _CI = sorted((_ROOT / ".github/workflows").glob("*.yml")) + sorted(
     (_ROOT / ".github/actions").glob("*/action.yml")
 )
 
+# the floor and nothing else: an upper bound is not declared here and
+# would be a different claim
+_REQUIRES = re.compile(r'^requires-python = ">=(3\.\d+)"', re.MULTILINE)
 # a classifier naming one interpreter version: `:: 3` and `:: 3 :: Only`
 # say something about the major version rather than about an interpreter
-_CLASSIFIER = re.compile(r"^Programming Language :: Python :: (3\.\d+)$")
+_CLASSIFIER = re.compile(
+    r'^ +"Programming Language :: Python :: (3\.\d+)",$', re.MULTILINE
+)
 _PYPY_CLASSIFIER = "Programming Language :: Python :: Implementation :: PyPy"
 
 # `python-version: "3.14"` and `python-version: ["3.14", "3.14t"]`, the
-# two shapes the setup steps here are given, and the `--python 3.14` a
+# two shapes a setup step is given inline, and the `--python 3.14` a
 # `run:` step hands uv directly. `python-version: ${{ matrix.* }}` is
-# neither: an expression names no version, and the matrix it reads is
-# already matched where that matrix is written
+# none of them: an expression names no version, and the matrix it reads
+# is matched by the pattern below instead
 _NAMED = re.compile(r'python-version: ("[^"\n]*"|\[[^]\n]*\])|--python (\S+)')
+# the third shape, and the one the weekly sweep writes: a matrix axis as
+# a block sequence, each version on its own line under the key
+_BLOCK = re.compile(r'^ +python-version:\n(?P<block>(?: +- "\S+"\n)+)', re.MULTILINE)
 _QUOTED = re.compile(r'"([^"]*)"')
 
 # the files naming an interpreter, named rather than counted: a pattern
 # that stopped matching one of them would leave the rest agreeing with
 # each other and this module green
-_NAMES_ONE = (
+_NAMES_AN_INTERPRETER = (
     ".github/actions/dev-version/action.yml",
     ".github/workflows/bootstrap-dns.yml",
     ".github/workflows/deps-latest.yml",
     ".github/workflows/fuzz.yml",
     ".github/workflows/mutation.yml",
     ".github/workflows/os-macos.yml",
+    ".github/workflows/os-ubuntu.yml",
     ".github/workflows/test.yml",
 )
 
@@ -84,6 +91,8 @@ def _named(text: str) -> set[str]:
     for match in _NAMED.finditer(text):
         value, bare = match.groups()
         found.update(_QUOTED.findall(value) if value else [bare])
+    for match in _BLOCK.finditer(text):
+        found.update(_QUOTED.findall(match["block"]))
     return found
 
 
@@ -92,10 +101,8 @@ def _ordered(version: str) -> tuple[int, ...]:
     return tuple(int(part) for part in version.split("."))
 
 
-_FLOOR = str(_PROJECT.get("requires-python", "")).removeprefix(">=")
-_CLASSIFIED = tuple(
-    match[1] for match in map(_CLASSIFIER.match, _PROJECT["classifiers"]) if match
-)
+_FLOOR = next(iter(_REQUIRES.findall(_PYPROJECT)), "")
+_CLASSIFIED = tuple(_CLASSIFIER.findall(_PYPROJECT))
 # a whole-line comment is what .python-version takes -- a trailing one
 # on the version line makes uv ignore the file -- so what is left once
 # they are dropped is the pin. The `t` of a free-threaded build goes
@@ -122,9 +129,9 @@ def test_every_declaration_was_read() -> None:
     assert _FLOOR, "pyproject.toml declares no requires-python"
     assert _CLASSIFIED, "pyproject.toml declares no per-version Python classifier"
     assert _PIN, ".python-version names no interpreter"
-    assert _NAMING == _NAMES_ONE, (
+    assert _NAMING == _NAMES_AN_INTERPRETER, (
         f"an interpreter is named in {', '.join(_NAMING) or 'no CI file'},"
-        f" and the files that carry one are {', '.join(_NAMES_ONE)}"
+        f" and the files that carry one are {', '.join(_NAMES_AN_INTERPRETER)}"
     )
 
 
@@ -165,7 +172,7 @@ def test_every_interpreter_ci_names_is_classified() -> None:
 
 def test_pypy_is_classified_exactly_when_it_is_run() -> None:
     """The PyPy classifier is a claim about what runs, not a decoration."""
-    classified = _PYPY_CLASSIFIER in _PROJECT["classifiers"]
+    classified = _PYPY_CLASSIFIER in _PYPROJECT
     run = any(version.startswith("pypy") for name in _NAMING for version in _RUN[name])
     assert classified == run, (
         f"the PyPy classifier is {'present' if classified else 'absent'} and"

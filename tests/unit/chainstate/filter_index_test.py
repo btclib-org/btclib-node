@@ -11,6 +11,8 @@ that the header chain a peer would check against is the one BIP157
 defines.
 """
 
+from __future__ import annotations
+
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 

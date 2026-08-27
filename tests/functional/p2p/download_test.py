@@ -9,6 +9,8 @@ requested from; what this checks is that the requests it schedules
 across many connections actually land a complete, synced chain.
 """
 
+from __future__ import annotations
+
 import shutil
 import time
 from typing import TYPE_CHECKING

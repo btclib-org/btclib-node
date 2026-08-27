@@ -12,6 +12,8 @@ and reopened, and does it come back after the file it was written to is
 no longer the file being written to.
 """
 
+from __future__ import annotations
+
 import threading
 import time
 from contextlib import ExitStack

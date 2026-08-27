@@ -77,10 +77,12 @@ where this command was first run rather than only documented.
 Re-run the first command above to confirm the contexts still hold
 — its answer, not this paragraph, is what is true today.
 
-**`links.yml`, `os-macos.yml` and `bootstrap-dns.yml` must not become
-required checks**, and neither must `claude-review.yml`. `links.yml` and
+**`links.yml`, `os-macos.yml`, `os-ubuntu.yml` and `bootstrap-dns.yml`
+must not become required checks**, and neither must `claude-review.yml`.
+`links.yml` and
 `bootstrap-dns.yml` ask whether somebody else's server answered,
-`os-macos.yml` runs on a schedule and reports what a sweep sees rather
+`os-macos.yml` and `os-ubuntu.yml` run on a schedule and report what a
+sweep sees rather
 than what a pull request introduced, and `claude-review.yml` writes an
 opinion for an author to weigh. Each says so in its own header.
 
@@ -349,7 +351,8 @@ the same allowance. So a matrix on every commit here is a slot a reviewer
 in a sibling repository waits behind, which is the argument for keeping
 most of a matrix out of the merge gate and into a weekly sweep instead
 ([btclib-org/.github#85](https://github.com/btclib-org/.github/issues/85))
--- the platform axis `os-macos.yml` covers, among them.
+-- the platform axis `os-macos.yml` covers and the interpreter axis
+`os-ubuntu.yml` does, among them.
 
 `test.yml`'s own interpreter axis is the row this repository gates
 instead of sweeping, and that file's own header carries the argument

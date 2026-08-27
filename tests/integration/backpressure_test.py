@@ -23,10 +23,12 @@ coinbase paying one large unspendable output is a megabyte on its own,
 consensus-valid, and needs no policy relaxed on the command line.
 """
 
+from __future__ import annotations
+
 import asyncio
 import secrets
 from datetime import timedelta
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING
 
 from btclib.block import Block, BlockHeader, merkle_root_and_mutated_from_transactions
 from btclib.block.proof_of_work import REGTEST_POW_LIMIT_BITS
@@ -35,6 +37,7 @@ from btclib.tx.out_point import OutPoint
 from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
+from typing_extensions import override
 
 from btclib_node import Node
 from btclib_node.chains import RegTest

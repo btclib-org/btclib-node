@@ -10,6 +10,8 @@ purpose -- each checked to answer the client without ending the node's
 own loop.
 """
 
+from __future__ import annotations
+
 import contextlib
 import json
 from typing import TYPE_CHECKING, Any

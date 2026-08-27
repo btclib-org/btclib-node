@@ -19,16 +19,17 @@ name: test
 # ceiling and no extra wait, against a review that takes longer than
 # either cell does regardless.
 #
-# What the design still puts beside this file is a platform sentinel
-# each, and here that is one workflow rather than three. `ubuntu.yml`
-# would run this file's own image over the interpreter axis this gate
-# already covers, both of its cells. `windows.yml` would check a claim
-# this package does not make: pyproject.toml's own classifier comment
-# says why Windows is left out and what is already known to stand in
-# its way -- a sentinel here would be the claim rather than its check.
-# `os-macos.yml` is the one that asks something nothing here asks, and
-# its own header says what. Issue #33 tracks what is still missing
-# here.
+# What the design still puts beside this file is a sentinel each for
+# what this gate does not vary. `os-ubuntu.yml` runs this file's own
+# image over the rest of the interpreter window -- the versions
+# pyproject.toml classifies that these two cells do not, which is where
+# section 10 puts a cell claiming a version the package does not
+# already run. `windows.yml` would check a claim this package does not
+# make: pyproject.toml's own classifier comment says why Windows is
+# left out and what is already known to stand in its way -- a sentinel
+# here would be the claim rather than its check. `os-macos.yml` is the
+# one that asks something neither of the other two asks, and its own
+# header says what.
 
 on:
   push:

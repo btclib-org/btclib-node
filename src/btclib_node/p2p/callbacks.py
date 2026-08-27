@@ -18,6 +18,8 @@ pace an answer against the connection's own send queue, across however
 many turns of `Node`'s own loop that answer takes to drain.
 """
 
+from __future__ import annotations
+
 import secrets
 import time
 from collections import deque

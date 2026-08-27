@@ -10,6 +10,8 @@ validates against -- and the `block_db.RevBlock` a reorg away from this
 block would need to undo it.
 """
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 from btclib.tx.out_point import OutPoint

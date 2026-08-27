@@ -13,6 +13,8 @@ p2p; `contextual.py` is the height- and time-dependent validation the
 first of those calls before extending the active chain.
 """
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 from btclib_node.db import KeyValueStore

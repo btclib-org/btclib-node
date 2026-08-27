@@ -27,11 +27,13 @@ below does connect its own blocks, a block's filter being built as it
 connects.
 """
 
+from __future__ import annotations
+
 import secrets
 import socket
 import time
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from btclib.block import Block, BlockHeader, merkle_root_and_mutated_from_transactions
@@ -191,7 +193,11 @@ class DeafPeer:
     def __init__(self, node: Node) -> None:
         """Dial `node`'s own p2p port and hold the socket."""
         self.magic = node.chain.magic
-        self.socket = socket.create_connection(("127.0.0.1", node.p2p_port), timeout=30)
+        # cast, for the reason rpc/connections_test.py gives at its own:
+        # a Node without the p2p listener carries no port, and this one
+        # is built with it
+        port = cast("int", node.p2p_port)
+        self.socket = socket.create_connection(("127.0.0.1", port), timeout=30)
 
     def send(self, payload: Payload) -> None:
         """Frame `payload` with this network's own magic and write it."""

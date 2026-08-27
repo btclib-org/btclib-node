@@ -15,13 +15,15 @@ capped the way Core's own `-maxsendbuffer` caps one, per the comments
 beside each below.
 """
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import secrets
 import threading
 import time
 from io import BytesIO
-from typing import TYPE_CHECKING, cast, override
+from typing import TYPE_CHECKING, cast
 
 from btclib.exceptions import BTClibException, IncompleteMessageError
 from btclib.p2p.address import NetworkAddress, ServiceFlags
@@ -29,6 +31,7 @@ from btclib.p2p.handshake import Version
 from btclib.p2p.keepalive import Ping
 from btclib.p2p.limits import MAX_PROTOCOL_MESSAGE_LENGTH
 from btclib.p2p.message import Message
+from typing_extensions import override
 
 from btclib_node.constants import P2pConnStatus, ProtocolVersion
 from btclib_node.exceptions import WrongNetworkMagicError

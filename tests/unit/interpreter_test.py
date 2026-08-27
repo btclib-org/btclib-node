@@ -11,6 +11,8 @@ plainly that it raises rather than swallowing -- the property
 main.update_chain depends on to roll a block back.
 """
 
+from __future__ import annotations
+
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 

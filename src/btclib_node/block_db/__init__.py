@@ -12,6 +12,8 @@ own block only once that block's branch connects, `pending_rev_blocks`
 holding one generated for a branch `update_chain` may still refuse.
 """
 
+from __future__ import annotations
+
 import threading
 from dataclasses import dataclass
 from pathlib import Path

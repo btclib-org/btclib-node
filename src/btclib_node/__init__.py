@@ -15,6 +15,8 @@ an asyncio loop of their own; this module is what calls into them and
 what they hand work back to.
 """
 
+from __future__ import annotations
+
 import os
 import signal
 import sys
@@ -22,7 +24,9 @@ import threading
 import time
 from math import log2
 from multiprocessing.pool import Pool, ThreadPool
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING
+
+from typing_extensions import override
 
 from btclib_node.block_db import BlockDB
 from btclib_node.chainstate import Chainstate
@@ -146,11 +150,26 @@ def _default_worker_count() -> int:
 _WORKER_COUNT = _default_worker_count()
 
 
+def _gil_enabled() -> bool:
+    """Say whether this interpreter holds a GIL.
+
+    `sys._is_gil_enabled` is the interpreter's own name for the
+    question and CPython gives it no public spelling. The attribute
+    arrives with the free-threaded build, so an interpreter that does
+    not carry it is one for which no build without the GIL exists, and
+    `True` is that interpreter's answer rather than a default standing
+    in for one.
+
+    :returns: whether the GIL is in force.
+    """
+    return getattr(sys, "_is_gil_enabled", lambda: True)()
+
+
 def _pool_factory(*, gil_enabled: bool) -> type[Pool]:
     """Return the pool type `Node.worker_pool` builds, chosen by `gil_enabled`.
 
     `Pool` under a GIL build, `ThreadPool` under a free-threaded one --
-    `sys._is_gil_enabled()` is `worker_pool`'s own caller for
+    `_gil_enabled()` is `worker_pool`'s own caller for
     `gil_enabled`, kept out of this function so that both arms are
     reachable, and asserted, on a single interpreter (issue #388): a
     `ThreadPool` constructs on a GIL build as readily as a `Pool` does,
@@ -280,8 +299,8 @@ class Node(threading.Thread):
     def worker_pool(self) -> Pool:
         """The pool `interpreter.py` validates a script in, built on first use.
 
-        `_pool_factory` picks the type against `sys._is_gil_enabled()`
-        read here, once, rather than inside that function: a `Pool`
+        `_pool_factory` picks the type against `_gil_enabled()` read
+        here, once, rather than inside that function: a `Pool`
         under a GIL build, a `ThreadPool` under a free-threaded one
         (issue #388). Under the lock, so that two callers building it at
         once get one pool between them: the second would otherwise leave
@@ -289,11 +308,9 @@ class Node(threading.Thread):
         """
         with self._worker_pool_lock:
             if self._worker_pool is None:
-                # sys._is_gil_enabled is the interpreter's own name for
-                # the question; CPython gives it no public spelling
-                self._worker_pool = _pool_factory(
-                    gil_enabled=sys._is_gil_enabled()  # noqa: SLF001
-                )(processes=_WORKER_COUNT)
+                self._worker_pool = _pool_factory(gil_enabled=_gil_enabled())(
+                    processes=_WORKER_COUNT
+                )
             return self._worker_pool
 
     def _close_worker_pool(self) -> None:

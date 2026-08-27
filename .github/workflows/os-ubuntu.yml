@@ -1,0 +1,121 @@
+---
+name: os-ubuntu
+
+# The interpreters the merge gate does not wait for. pyproject.toml
+# claims 3.10 through 3.14 in its classifiers, section 1 of
+# btclib-org/.github's README.md being what asks a tier-1 repository for
+# the whole window still in support, and the gate spends its cells on
+# the newest of them.
+#
+# That is the whole of the argument, and it is the same small one
+# os-macos.yml makes for the platform: a classifier is a claim about
+# where this runs, and a claim nothing runs is a claim nobody checks.
+#
+# What differs beneath the suite is the interpreter and nothing else:
+# the same image the gate uses, the same lock, the same suite. Where a
+# cell goes red, what it has found is a version of the language, not a
+# platform and not a dependency -- os-macos.yml is the file that varies
+# the platform, on its own image and on the pinned interpreter alone.
+#
+# It gates no commit and no merge, and section 10 of that README is why
+# rather than a preference of this file's: a row belongs in the gate
+# only where the cell runs in parallel with the ones already there and
+# claims the pinned interpreter run again, which is what `3.14t` is and
+# what `3.10` through `3.13` are not. So an interpreter regression sits
+# on main for at most a week, against every review waiting on a cell
+# for each of them.
+
+on:
+  schedule:
+    # section 10 of btclib-org/.github's README.md is the calendar, and
+    # this line is not the place to restate it: one grid, in one file,
+    # naming the day for the workflow and the minute for the repository.
+    # Only the default branch schedules anything, so on any other branch
+    # the dispatch below is the way in
+    - cron: "20 4 * * 5"
+  # the escape hatch: the whole window on demand, for a branch that
+  # touches syntax, an import, or anything the floor decides
+  workflow_dispatch:
+  # so a change to this file is checked by the thing it configures, the
+  # same way os-macos.yml is -- and for the same reason a schedule alone
+  # is not enough here: a mistake in it would otherwise be found by the
+  # next sweep rather than by the pull request that made it
+  pull_request:
+    # the type list every workflow here carries, for the reasons the same
+    # list carries in test.yml
+    types: [opened, reopened, synchronize, ready_for_review, closed]
+    paths:
+      - .github/workflows/os-ubuntu.yml
+
+# least privilege for the GITHUB_TOKEN: everything running in a job can
+# read it, and nothing here writes
+permissions:
+  contents: read
+
+# cancel superseded runs. Named literally rather than through
+# github.workflow, and by the pull request's number where there is one,
+# for the reason test.yml's own group gives: neither the schedule nor a
+# dispatch carries pull_request context, so github.ref still groups
+# either of those, and a closed pull request cannot land in their group
+concurrency:
+  group: os-ubuntu-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suite-ubuntu:
+    name: Run the suite on ${{ matrix.python-version }}
+    # a draft pull request is work its author is not asking anyone to
+    # read yet, and spends no runner here either. A closed one spends
+    # none: the trigger above takes that event only so the landing
+    # supersedes a run this ref's group is still holding
+    if: ${{ !github.event.pull_request.draft && github.event.action != 'closed' }}
+    runs-on: ubuntu-latest
+    strategy:
+      # every cell to the end: which interpreter fails is the whole
+      # answer here, and stopping at the first one hides the rest
+      fail-fast: false
+      matrix:
+        # every version pyproject.toml classifies, the two the gate
+        # already spends included: a matrix with the gate's cells cut
+        # out of it is one nobody can read the shape of, and whoever
+        # asked which interpreters ran would have to re-derive the hole
+        # from test.yml. tests/interpreters_test.py is what holds this
+        # list to those classifiers
+        python-version:
+          - "3.10"
+          - "3.11"
+          - "3.12"
+          - "3.13"
+          - "3.14"
+          - "3.14t"
+    # the same bound test.yml sets on the same suite: what it bounds is
+    # a runner wedged before or between the tests, not the work
+    timeout-minutes: 30
+    steps:
+      # every action is pinned to a commit SHA, the tag in the comment: a
+      # tag, let alone a branch, is a name its owner can move, and these
+      # run in a job that can read the workflow token
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # for the reason test.yml's checkout gives: nothing here
+          # performs an authenticated git operation, so the token has no
+          # reason to stay in .git/config where a later step can read it
+          persist-credentials: false
+      - name: Setup uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          # the cache holds what uv.lock resolves, which is wheels and
+          # no build: what this job spends its time on is the suite
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+      # --no-cov, against the --cov that pyproject.toml's addopts
+      # carries: the floor is a claim about the interpreter
+      # .python-version pins, the fail_under comment in that file naming
+      # which, and a statement count moves between interpreters. What
+      # this matrix asks is whether the suite passes, and a cell that
+      # gated the floor would go red naming a ratio where the finding is
+      # a version of the language
+      - name: Run the suite
+        run: >
+          uv run --locked --no-default-groups --group test pytest --no-cov

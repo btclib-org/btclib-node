@@ -8,13 +8,16 @@
 a peer sent; this node never constructs or sends one of its own.
 """
 
+from __future__ import annotations
+
 import enum
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING
 
 from btclib import var_int
 from btclib.p2p.payload import Payload
 from btclib.utils import bytesio_from_binarydata
+from typing_extensions import override
 
 if TYPE_CHECKING:
     from btclib.alias import BinaryData

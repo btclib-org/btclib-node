@@ -10,17 +10,20 @@ peer that cannot be dialled, an address already connected to, and the
 messages addressed to a connection that is no longer there.
 """
 
+from __future__ import annotations
+
 import asyncio
 import socket
 import threading
 import time
 from contextlib import closing, suppress
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast, override
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast
 
 import pytest
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 from btclib.p2p.keepalive import Ping
+from typing_extensions import override
 
 from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus, P2pConnStatus

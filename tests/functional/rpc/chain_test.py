@@ -9,6 +9,8 @@ and `getblockchaininfo`, each driven against a node that has actually
 validated and connected the chain it is asked about.
 """
 
+from __future__ import annotations
+
 import json
 from typing import TYPE_CHECKING, Any
 

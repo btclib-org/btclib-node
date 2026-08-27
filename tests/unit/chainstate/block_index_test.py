@@ -10,9 +10,11 @@ candidates, `invalidate`, persistence across a restart, and the block
 locators it serves.
 """
 
+from __future__ import annotations
+
 import secrets
 from contextlib import ExitStack
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import pytest
@@ -65,7 +67,7 @@ def unmined_header(previous_block_hash: bytes, bits: bytes) -> BlockHeader:
         version=70015,
         previous_block_hash=previous_block_hash,
         merkle_root=secrets.token_bytes(32),
-        time=datetime.fromtimestamp(1231006506, UTC),
+        time=datetime.fromtimestamp(1231006506, timezone.utc),
         bits=bits,
         nonce=1,
         check_validity=False,
@@ -82,7 +84,7 @@ def test_calculate_work() -> None:
         1,
         "00" * 32,
         "00" * 32,
-        datetime.fromtimestamp(1231006506, UTC),
+        datetime.fromtimestamp(1231006506, timezone.utc),
         REGTEST_POW_LIMIT_BITS,
         1,
     )
@@ -600,7 +602,7 @@ def test_block_info_serialization() -> None:
         1,
         "00" * 32,
         "00" * 32,
-        datetime.fromtimestamp(1231006506, UTC),
+        datetime.fromtimestamp(1231006506, timezone.utc),
         REGTEST_POW_LIMIT_BITS,
         1,
         check_validity=False,

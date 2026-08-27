@@ -18,6 +18,8 @@ speaks to nobody -- so the question "can this be connected to" and the
 answer to it are this node's.
 """
 
+from __future__ import annotations
+
 import asyncio
 import secrets
 import socket
@@ -239,7 +241,10 @@ async def dial(address: NetworkAddressV2) -> socket.socket | None:
     peer = (host, address.port)
     try:
         await asyncio.wait_for(loop.sock_connect(client, peer), _DIAL_TIMEOUT)
-    except OSError, TimeoutError:
+    # asyncio's own spelling, which is the builtin from 3.11 on and its
+    # own class at the floor: `wait_for` raises that one, so the builtin
+    # alone would let a dial that ran out of time escape this arm
+    except (OSError, asyncio.TimeoutError):
         client.close()
         return None
     except asyncio.CancelledError:

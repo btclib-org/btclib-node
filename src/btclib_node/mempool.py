@@ -12,6 +12,8 @@ round leaves behind decays the way Core's own does, `_ROLLING_FEE_HALFLIFE`
 below being `ROLLING_FEE_HALFLIFE` (`src/txmempool.h`).
 """
 
+from __future__ import annotations
+
 import heapq
 import time
 from fractions import Fraction

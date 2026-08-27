@@ -10,6 +10,8 @@ connection describes itself once the socket underneath it is gone, and
 a peer answered past what this connection will queue for it.
 """
 
+from __future__ import annotations
+
 import asyncio
 import socket
 import threading
@@ -400,8 +402,12 @@ def test_a_peer_that_hangs_up_is_dropped() -> None:
         theirs.close()
         await connection.run()
         # asked inside the loop: shutting the loop down cancels whatever
-        # is still pending, which would answer this on its own
-        left_alone = not task.cancelling()
+        # is still pending, which would answer this on its own. After a
+        # tick, so that a cancellation has been delivered and the task
+        # has settled -- `Task.cancelling` answers without the tick and
+        # arrives in 3.11, above this package's floor
+        await asyncio.sleep(0)
+        left_alone = not task.cancelled()
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task

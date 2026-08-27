@@ -39,8 +39,12 @@ def get_error_data(txid: str, i: str) -> tuple[list[TxOut], Tx, tuple[str, ...]]
             # BTClibException, not bare Exception: this is what
             # TxOut.parse raises on a stream too short for one more
             # TxOut, confirmed directly against the installed btclib
-            # rather than assumed, and the loop's only exit besides it
-            except BTClibException:
+            # rather than assumed, and the loop's only exit besides it.
+            # PERF203 is about the cost of setting a handler up on every
+            # iteration, and this handler runs once and ends the loop;
+            # the rule fires below 3.11, where an exception handler is
+            # not yet free to enter
+            except BTClibException:  # noqa: PERF203
                 break
     return prevouts, tx, flags
 

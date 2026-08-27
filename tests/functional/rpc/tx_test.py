@@ -10,6 +10,8 @@ is held in the mempool -- and checks `BitcoinCoreFetcher.get_tx` against
 this node unchanged.
 """
 
+from __future__ import annotations
+
 import json
 from typing import TYPE_CHECKING
 

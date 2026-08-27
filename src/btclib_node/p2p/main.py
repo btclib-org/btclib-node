@@ -26,6 +26,8 @@ of what a peer has drained -- nothing queued triggers either, so both are
 called once every pass of `run`'s own loop regardless.
 """
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 from btclib.exceptions import BTClibException

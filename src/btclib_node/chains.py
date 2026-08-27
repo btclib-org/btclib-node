@@ -13,7 +13,7 @@ test, into one of these.
 """
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from btclib.block import Block, BlockHeader, merkle_root_and_mutated_from_transactions
 from btclib.p2p.magic import magic_from_network
@@ -69,7 +69,7 @@ def create_genesis(
         version=version,
         previous_block_hash="00" * 32,
         merkle_root="00" * 32,
-        time=datetime.fromtimestamp(time, UTC),
+        time=datetime.fromtimestamp(time, timezone.utc),
         bits=difficulty.to_bytes(4, "big"),
         nonce=nonce,
         check_validity=False,

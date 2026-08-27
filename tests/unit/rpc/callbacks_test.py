@@ -11,10 +11,12 @@ node did not follow, a peer that goes away mid-lookup, or a transaction
 the mempool refuses.
 """
 
+from __future__ import annotations
+
 import time
 from dataclasses import replace
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, NoReturn, cast, override
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import pytest
 from btclib.exceptions import BTClibValueError
@@ -26,6 +28,7 @@ from btclib.tx.out_point import OutPoint
 from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
+from typing_extensions import override
 
 import btclib_node.rpc.callbacks as cb
 from btclib_node.chains import Main, RegTest

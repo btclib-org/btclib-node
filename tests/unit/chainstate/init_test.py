@@ -4,6 +4,8 @@
 
 """`Chainstate` opens its store and closes it again with nothing on disk yet."""
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 from btclib_node.chains import RegTest

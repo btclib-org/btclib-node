@@ -9,6 +9,8 @@ have crossed it; the fixtures start and stop real `Node` instances,
 on their own ports, for the functional and unit tests that need one.
 """
 
+from __future__ import annotations
+
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING

@@ -9,6 +9,8 @@ answer used to end the node rather than the request -- which is what
 these are mostly about.
 """
 
+from __future__ import annotations
+
 from collections import deque
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, cast
