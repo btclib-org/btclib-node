@@ -8,15 +8,22 @@ name: integration-bitcoind
 # write. `tests/integration/bitcoind_test.py` asks that question: a
 # disposable regtest bitcoind, a handful of blocks, and a fresh node
 # connected to it over p2p, its tip checked against bitcoind's own.
+# `tests/integration/backpressure_test.py` asks the one other question
+# that wants a real peer rather than a double -- whether this node's own
+# receive bound engages, and releases, against a daemon serving it
+# megabyte blocks faster than it validates them.
 #
 # Gated rather than run only on a schedule: connecting to bitcoind and
 # reaching its tip took 0.11s measured against a local build of Bitcoin
 # Core v31.1.0 on an otherwise idle machine, well inside the few seconds
 # `bitcoin-core-rpc`'s own copy of this workflow spends per cell -- and
-# that repository's is a required check for exactly that reason. A run
-# can still go red on an unreachable bitcoincore.org or a runner slow
-# enough to miss bitcoind's own startup; that is a re-run, and it is the
-# price of the question.
+# that repository's is a required check for exactly that reason. The
+# megabyte chain the second module needs costs seconds too rather than
+# the minutes a wallet-mined fixture would: its blocks are built in the
+# test and handed over with `submitblock`, the reasoning being that
+# module's own. A run can still go red on an unreachable bitcoincore.org
+# or a runner slow enough to miss bitcoind's own startup; that is a
+# re-run, and it is the price of the question.
 #
 # Which workflow a required check comes from lives outside this
 # repository, in main's protection, and names it as a literal string --
