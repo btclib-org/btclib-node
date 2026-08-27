@@ -603,9 +603,30 @@ def advance_getdata(node: Node, conn: Connection, items: deque[Inventory]) -> bo
     and never touched by the function it calls out to for a block item.
 
     `conn.queued_send_bytes` is read the same way `advance_cfilters`
-    below reads it: written only on `P2pManager`'s own thread, inside
-    `async_send`, while this runs on `Node`'s, a plain `int` with one
-    writer and one reader rather than a value this needs a lock to see.
+    below reads it, and holds what `conn.send` has counted -- this
+    loop's own previous items among them, since it counts on this
+    thread before scheduling anything on `P2pManager`'s. A check
+    reading only what that loop had got round to writing would see none
+    of them and serve the whole request as fast as it can pop it, past
+    `MAX_QUEUED_SEND_BYTES` and into the drop, for a peer asking for
+    the blocks this node asks its own peers for
+    (btclib-org/btclib-node#512).
+
+    What the read can miss is either half of a count it did not make.
+    A drain is the loop's -- `conn.send` counts on this thread, but the
+    decrement once the write completes is not -- and that direction is
+    the safe one, an unseen decrement making the number too large and
+    this pause sooner. An increment can also be missed, and that one is
+    not: `P2pManager`'s thread reaches `_queue` too, through
+    `_prune_stale_connections`'s `send_ping`, so a read here can predate
+    a ping and pause later rather than sooner. What makes that
+    immaterial is the magnitude rather than the direction: one ping is a
+    bare envelope and a nonce, where the room `MAX_QUEUED_SEND_BYTES`
+    leaves above the worst peak both pacing bounds can reach together is
+    sized for a whole block (`connection.py`) -- so the read
+    needs no lock, and a torn one is not a risk to guard against either
+    (CPython never hands back a value that was not, at some point,
+    actually written).
 
     `notfound` batches whatever this call found missing, sent once this
     call is done serving -- whether `items` ran out or this paused --
@@ -859,17 +880,16 @@ def _filter_range(
 # which is one thread calling back into the same connection repeatedly.
 #
 # This node has no such loop to call back into: `get_cfilters` is one
-# call, made once, on `Node`'s own thread under `handle_p2p`; and
-# `conn.queued_send_bytes` -- what a pause point here has to read -- is
-# only ever written on `P2pManager`'s own thread, inside
-# `Connection.async_send`, never on this one. Core's "next call" is
-# therefore not `get_cfilters` called again: it is `resume_cfilters`
-# (`p2p.main`), invoked once every pass of `Node`'s own loop regardless
-# of whether this connection has sent anything meanwhile, since a peer
-# already served everything it asked for need not ask again for this
-# node to keep answering it. `advance_cfilters` below is the one piece
-# of logic both `get_cfilters` and `resume_cfilters` call, so the pacing
-# is the same whichever of the two resumes it.
+# call, made once, on `Node`'s own thread under `handle_p2p`, and what
+# it could not finish it has no second chance at from inside itself.
+# Core's "next call" is therefore not `get_cfilters` called again: it is
+# `resume_cfilters` (`p2p.main`), invoked once every pass of `Node`'s
+# own loop regardless of whether this connection has sent anything
+# meanwhile, since a peer already served everything it asked for need
+# not ask again for this node to keep answering it. `advance_cfilters`
+# below is the one piece of logic both `get_cfilters` and
+# `resume_cfilters` call, so the pacing is the same whichever of the two
+# resumes it.
 #
 # `MAX_CFILTERS_INFLIGHT_BYTES` is the pause point itself: how far ahead
 # of a peer's own draining `advance_cfilters` is allowed to schedule
@@ -926,16 +946,13 @@ def advance_cfilters(node: Node, conn: Connection, heights: deque[int]) -> bool:
     where the last one left off rather than resending or skipping a
     height. Answers whether `heights` is now empty.
 
-    Checked before every send rather than after: `conn.queued_send_bytes`
-    is written only on `P2pManager`'s own thread, inside `async_send`,
-    while this runs on `Node`'s -- a plain `int` attribute with one
-    writer thread and one reader, the same shape `conn.status` already
-    is here and elsewhere in this module. Neither is taken under a
-    lock: a torn read is not a risk (CPython never hands back a value
-    that was not, at some point, actually written), and a stale one is
-    not a bug to guard against here, because this only ever paces
-    production -- it does not have to see the drain the instant it
-    happens, only soon enough that a slow peer's queue stops growing.
+    Checked before every send rather than after, against the same field
+    `advance_getdata` above paces on, unlocked for the reason argued
+    there: `conn.send` counts a filter on this thread before scheduling
+    it, and what the read can still miss is a drain, which only ever
+    makes this pause sooner. `conn.status` beside it is read the same
+    way: seen one turn late it costs a filter serialized for a socket
+    already closed, which `Connection._send` suppresses.
     """
     active_chain = node.chainstate.block_index.active_chain
     filter_index = node.chainstate.filter_index

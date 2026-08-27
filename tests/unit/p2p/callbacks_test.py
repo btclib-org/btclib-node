@@ -1723,9 +1723,9 @@ def test_getdata_notfound_covers_only_what_a_call_actually_served() -> None:
 
     def send_then_fill(msg: Any) -> None:
         sent.append(msg)
-        # stands in for what `Connection.async_send` would actually do:
-        # this send is what fills the connection's own queue up to the
-        # bound, tripping the pause before `never_reached` is looked at
+        # stands in for what `Connection.send` would actually do: this
+        # send is what fills the connection's own queue up to the bound,
+        # tripping the pause before `never_reached` is looked at
         peer.queued_send_bytes = MAX_GETDATA_INFLIGHT_BYTES
 
     peer.send = send_then_fill
@@ -2280,13 +2280,13 @@ def test_a_getcfilters_past_the_pending_cap_is_silent() -> None:
 def test_get_cfilters_stops_once_the_connection_closes_mid_answer() -> None:
     """`get_cfilters` stops sending once the peer's own connection has closed.
 
-    What Connection.async_send's own send-buffer bound (#101) looks
-    like from here: conn.status turns P2pConnStatus.Closed partway
-    through the range, and nothing further in it is worth serializing.
+    What Connection.send's own send-buffer bound (#101) looks like
+    from here: conn.status turns P2pConnStatus.Closed partway through
+    the range, and nothing further in it is worth serializing.
     """
-    # what Connection.async_send's own send-buffer bound (#101) looks
-    # like from here: conn.status turns P2pConnStatus.Closed partway
-    # through the range, and nothing further in it is worth serializing
+    # what Connection.send's own send-buffer bound (#101) looks like
+    # from here: conn.status turns P2pConnStatus.Closed partway through
+    # the range, and nothing further in it is worth serializing
     node = a_filters_node(length=10)
     peer = a_peer()
     sent = peer.sent

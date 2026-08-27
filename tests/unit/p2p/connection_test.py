@@ -30,9 +30,10 @@ from btclib.p2p.message import Message
 
 from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus, P2pConnStatus
+from btclib_node.download import MAX_BLOCKS_PER_GETDATA_BURST
 from btclib_node.p2p import connection as connection_module
 from btclib_node.p2p.address import peer_address
-from btclib_node.p2p.callbacks import getdata, pong
+from btclib_node.p2p.callbacks import MAX_GETDATA_INFLIGHT_BYTES, getdata, pong
 from btclib_node.p2p.connection import Connection
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 from tests import log_recorder
@@ -609,7 +610,7 @@ def test_a_peer_already_at_the_send_bound_is_dropped_not_queued_further() -> Non
 
 
 def _message_overhead() -> int:
-    """Measure the wire octets `async_send` adds on top of one `filter_bytes`.
+    """Measure the wire octets a send adds on top of one `filter_bytes`.
 
     `Message`'s envelope, plus `CFilter`'s own filter type, block hash,
     and `filter_bytes`'s own `var_int` length prefix.
@@ -617,8 +618,9 @@ def _message_overhead() -> int:
     Measured, at a size in the range the two bursts below build,
     rather than assumed: `var_int` is five octets only above 65,536,
     which is a fact about the encoding and not about this module, so it
-    is read off a real `Message` built the way `async_send` builds one
-    instead of counted on to stay what it was last measured as.
+    is read off a real `Message` built the way `Connection._queue`
+    builds one instead of counted on to stay what it was last measured
+    as.
     """
     size = 98_000
     payload = CFilter(
@@ -631,8 +633,9 @@ def _message_overhead() -> int:
 def _burst_summing_to(total_wire_bytes: int, count: int) -> list[CFilter]:
     """Build `count` `CFilter`-shaped messages summing to `total_wire_bytes`.
 
-    What `async_send` actually counts toward `queued_send_bytes` is the whole
-    wire message, not merely the `filter_bytes` argument each is built from.
+    What `Connection._queue` actually counts toward `queued_send_bytes`
+    is the whole wire message, not merely the `filter_bytes` argument
+    each is built from.
     `CFilter` is a convenient, arbitrarily-sized payload to stand in for
     whatever a connection has queued -- a `getdata` answer's own blocks
     among them, since `count` here models how many separate messages one
@@ -640,7 +643,7 @@ def _burst_summing_to(total_wire_bytes: int, count: int) -> list[CFilter]:
     here could be one whole answer's size anyway, `Message.serialize`
     refusing a payload over `MAX_PROTOCOL_MESSAGE_LENGTH` regardless of
     `check_validity`. `filter_bytes` is not a real Golomb-Rice set:
-    `check_validity=False` on both the object and `async_send`'s own
+    `check_validity=False` on both the object and `_queue`'s own
     `serialize` call is what lets zeroed octets stand in for one, the way
     a wrong-shaped block already does elsewhere in this test tree.
     """
@@ -661,16 +664,14 @@ def _two_bursts_in_flight(
 ) -> tuple[Connection, list[int]]:
     """Put two bursts of messages in flight on the same connection together.
 
-    Each burst is scheduled the way a handler that calls `Connection.send`
-    several times in a row without anything else running in between
-    schedules its own messages -- `callbacks.advance_getdata` and
-    `advance_cfilters` each check `conn.queued_send_bytes` once per item
-    and not once per send, so either can still queue several messages
-    back to back before its own pacing bound stops it
-    (btclib-org/btclib-node#470, #442). The first burst is held open
-    on a socket write that never finishes, the way a real one would be by
-    a peer reading slower than this node can serialize. Returns the
-    connection and the sizes `_send` actually saw.
+    Between them the two bursts stand for what one connection can owe at
+    once with both pacing mechanisms mid-overshoot --
+    `callbacks.advance_getdata` and `advance_cfilters` each check their
+    own bound before popping the next item, so each can put one item
+    past it (btclib-org/btclib-node#470, #442). The first burst is held
+    open on a socket write that never finishes, the way a real one would
+    be by a peer reading slower than this node can serialize. Returns
+    the connection and the sizes `_send` actually saw.
     """
 
     async def drive() -> tuple[Connection, list[int]]:
@@ -689,9 +690,9 @@ def _two_bursts_in_flight(
             asyncio.ensure_future(connection.async_send(f)) for f in first_burst
         ]
         # one turn of the loop: every task in the burst runs its
-        # synchronous prefix -- the bound check and the reservation --
-        # before any of them reaches the (contended, after the first)
-        # send lock
+        # synchronous prefix -- the bound check and the reservation,
+        # under `_send_lock` -- before any of them reaches the
+        # (contended, after the first) `_write_lock`
         await asyncio.sleep(0)
         assert connection.queued_send_bytes  # the first answer is on the books
 
@@ -728,7 +729,7 @@ def _reachable_maximum(slack: int) -> tuple[list[CFilter], list[CFilter]]:
     both mechanisms at once.
 
     This is the low-level half of that argument only -- whether
-    `Connection.async_send`'s own comparison lets a total this size
+    `Connection._queue`'s own comparison lets a total this size
     through -- and says nothing about whether `getdata` or
     `get_cfilters` actually schedule this much in practice; that half is
     `test_a_realistic_getdata_burst_and_cfilters_headroom_are_not_dropped`
@@ -749,7 +750,7 @@ def _reachable_maximum(slack: int) -> tuple[list[CFilter], list[CFilter]]:
 def test_the_reachable_maximum_is_not_dropped() -> None:
     """`MAX_QUEUED_SEND_BYTES` holds the real reachable maximum of both.
 
-    A boundary check on `Connection.async_send`'s own comparison, at the
+    A boundary check on `Connection._queue`'s own comparison, at the
     exact total `connection.py`'s own comment argues the bound is sized
     for -- not a claim about what `getdata` or `get_cfilters` actually
     schedule, which the realistic test below covers instead.
@@ -783,7 +784,7 @@ class _FakeBigBlock:
 
     `advance_getdata` (`callbacks.py`) only ever calls `.serialize` on
     what `node.block_db` hands it, through `BlockPayload`'s own
-    `check_validity=False` path all the way to `Connection.async_send`'s
+    `check_validity=False` path all the way to `Connection._queue`'s
     own `payload.serialize` call -- so a synthetic size stands in for a
     real block's the same way `_burst_summing_to` above already stands a
     `CFilter` in for whatever a connection has queued.
@@ -835,18 +836,18 @@ def test_a_realistic_getdata_burst_and_cfilters_headroom_are_not_dropped() -> No
         connection._send = _send  # type: ignore[method-assign]
 
         getdata(connection.node, GetData(items).serialize(), connection)
-        # getdata schedules through Connection.send, which hops onto
-        # this same loop via run_coroutine_threadsafe rather than
-        # starting its task's own first step immediately the way a
-        # direct ensure_future in this coroutine's own frame would --
-        # several turns, not one, for every block's own reservation to
-        # land before the first of them blocks on release
-        for _ in range(50):
-            await asyncio.sleep(0)
-        # every block reserved its own share before any of them drained
+        # every block reserved its own share on this thread, before any
+        # turn of the loop and so before any of them drained
         assert connection.queued_send_bytes == pytest.approx(
             len(blocks) * size, rel=0.01
         )
+        # Connection.send schedules the write through
+        # run_coroutine_threadsafe rather than starting its task's own
+        # first step immediately the way a direct ensure_future in this
+        # coroutine's own frame would, so it takes several turns for
+        # every block to reach `release`
+        for _ in range(50):
+            await asyncio.sleep(0)
 
         second_tasks = [
             asyncio.ensure_future(connection.async_send(f)) for f in cfilters_headroom
@@ -861,6 +862,97 @@ def test_a_realistic_getdata_burst_and_cfilters_headroom_are_not_dropped() -> No
     connection, delivered = asyncio.run(drive())
     assert connection.status == P2pConnStatus.Open
     assert len(delivered) == len(items) + len(cfilters_headroom)
+    assert connection.queued_send_bytes == 0
+
+
+def test_send_counts_a_message_before_the_loop_has_written_it() -> None:
+    """`Connection.send` has counted the message by the time it returns.
+
+    The whole of what a caller pacing on `queued_send_bytes` between two
+    sends depends on: the count is taken on the calling thread, so it is
+    true of the connection before any turn of the loop the write is
+    scheduled on. btclib-org/btclib-node#512
+    """
+
+    async def drive() -> tuple[int, int, list[int]]:
+        loop = asyncio.get_running_loop()
+        connection = a_running_connection(loop, socket.socket())
+        delivered: list[int] = []
+
+        async def _send(data: bytes) -> None:
+            delivered.append(len(data))
+
+        connection._send = _send  # type: ignore[method-assign]
+
+        connection.send(Ping(1))
+        reserved = connection.queued_send_bytes
+        # the write itself is the loop's, and takes turns of it to
+        # happen: run_coroutine_threadsafe schedules rather than starts
+        for _ in range(10):
+            await asyncio.sleep(0)
+        connection.client.close()
+        return reserved, connection.queued_send_bytes, delivered
+
+    reserved, after, delivered = asyncio.run(drive())
+    (written,) = delivered
+    assert reserved == written
+    assert after == 0
+
+
+def test_a_getdata_answer_paces_on_what_it_has_already_handed_over() -> None:
+    """A `getdata` for more blocks than fit is paced, not dropped.
+
+    A whole `MAX_BLOCKS_PER_GETDATA_BURST` (`btclib_node/download.py`)
+    of megabyte blocks, which is the request this node makes of its own
+    peers and so an ordinary one to answer. The peer drains nothing, so
+    `advance_getdata` stops within one block of
+    `MAX_GETDATA_INFLIGHT_BYTES` -- the overshoot
+    `MAX_QUEUED_SEND_BYTES`'s own room above that bound is sized for --
+    and leaves the rest on `node.pending_getdata` for
+    `p2p.main.resume_getdata`, which is a peer paced rather than a peer
+    dropped. btclib-org/btclib-node#512
+    """
+    size = 1_000_000
+    blocks = {
+        bytes([i]) + b"\x00" * 31: _FakeBigBlock(size)
+        for i in range(MAX_BLOCKS_PER_GETDATA_BURST)
+    }
+    items = [Inventory(InventoryType.MSG_BLOCK, h) for h in blocks]
+
+    async def drive() -> tuple[Connection, int, int]:
+        loop = asyncio.get_running_loop()
+        connection = a_running_connection(loop, socket.socket())
+        connection.node.block_db = SimpleNamespace(get_block=blocks.get)  # type: ignore[assignment]
+        connection.node.mempool = SimpleNamespace(get_tx=lambda *a, **k: None)  # type: ignore[assignment]
+        connection.node.pending_getdata = {}
+        release = asyncio.Event()
+        delivered: list[int] = []
+
+        async def _send(data: bytes) -> None:
+            delivered.append(len(data))
+            await release.wait()
+
+        connection._send = _send  # type: ignore[method-assign]
+
+        getdata(connection.node, GetData(items).serialize(), connection)
+        # the whole answer this call committed to, before any turn of
+        # the loop has written a byte of it
+        peak = connection.queued_send_bytes
+        release.set()
+        for _ in range(50):
+            await asyncio.sleep(0)
+        connection.client.close()
+        return connection, peak, delivered[0]
+
+    connection, peak, one_message = asyncio.run(drive())
+    assert connection.status == P2pConnStatus.Open
+    # one message past the bound and no further, measured off a message
+    # this answer actually queued rather than assumed from `size`
+    assert peak < MAX_GETDATA_INFLIGHT_BYTES + one_message
+    # every block here serializes to the same length, so what the peak
+    # holds says how many of them were served
+    _conn, pending = connection.node.pending_getdata[connection.id]
+    assert list(pending) == items[peak // one_message :]
     assert connection.queued_send_bytes == 0
 
 

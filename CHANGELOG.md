@@ -52,6 +52,41 @@ to check the guess.
   the crashes nobody has described rather than about a classification
   already known and filed.
 
+### A pacing check counts what it has handed over (closes #512)
+
+- **`Connection.send` frames a message and counts it against
+  `queued_send_bytes` on the calling thread, and schedules only the
+  write** (closes #512): `advance_getdata` and `advance_cfilters`
+  (`p2p/callbacks.py`) pace an answer by reading that field between two
+  items, and both run on `Node`'s thread. Counted where the write
+  happens instead, the field says nothing about the items the same loop
+  has just handed over, so a `getdata` answer runs as far past
+  `MAX_GETDATA_INFLIGHT_BYTES` as the loop is behind — far enough, for
+  blocks of the size a peer in initial block download asks for, to
+  spend the room `MAX_QUEUED_SEND_BYTES` leaves above that bound and
+  reach the drop. A peer merely slow to drain is dropped that way for
+  asking for the blocks this node asks its own peers for, which is the
+  outcome `MAX_QUEUED_RECV_BYTES`'s own comment names as the wrong one
+  for a flood-control case. Counted at the hand-off, the room
+  `MAX_QUEUED_SEND_BYTES` leaves above each pacing bound holds what a
+  check made before its own send can put past it, which is what that
+  bound's own comment already says it is sized for.
+- **Serializing a message is the caller's cost rather than the loop's**
+  (closes #512): the thread that asks for a block has already parsed
+  that block out of `block_db` to build the payload, and how much of
+  that it does in one pass is what the pacing bound bounds. The
+  asyncio loop, shared by every connection, no longer serializes a
+  block between two socket reads.
+- **`queued_send_bytes` is guarded by a lock, the way `queued_recv_bytes`
+  already is** (closes #512): both `Node`'s thread and `P2pManager`'s
+  reach `Connection.send`, and the write's own completion decrements
+  from the loop. The two directions carry counters of one shape —
+  each incremented by the thread that hands the work over, before it
+  is offered anywhere else — so a reader who has met one has met the
+  other. What differs is only the granularity each is checked at: a
+  send is weighed one message at a time, where `parse_messages`
+  accumulates a whole pass and weighs it once at the end.
+
 ### Every backpressure bound is watched doing its job (closes #490, #492)
 
 - **`tests/functional/p2p/backpressure_test.py` drives the send-side
