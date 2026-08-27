@@ -248,15 +248,19 @@ jobs:
       # a version sort, so a tag pushed on a branch this history never
       # merged is not picked up as "previous". A rehearsal has no tag of
       # its own, so it asks from HEAD directly rather than HEAD^.
-      # v0.1.0 is excluded because it is not a release: it is a
-      # lightweight tag on the 2023 prototype, nothing was published
-      # from it and nobody installed it, so the surface it names is not
-      # a promise this repository ever made. Comparing against it
-      # reports the whole rewrite since as breakage, on a job both
-      # publish jobs need, which would fail every release until the
-      # second one. Excluded, the first release resolves no previous
-      # tag and the check below skips itself; from the second on, the
-      # previous tag is a release that was published
+      # v0.1.0 is excluded, and the exclusion has been inert since that
+      # tag was deleted on 2026-08-23 (btclib-org/.github#105,
+      # btclib-org/btclib-node#553): nothing was excluded on
+      # v2026.8.27, which resolved no previous tag and skipped its own
+      # comparison. It is kept rather than removed because removing it
+      # changes the behaviour of a path that runs twice a year and
+      # cannot be rehearsed against a second tag, in exchange for
+      # nothing: from v2026.8.27 on, that tag is the nearest one
+      # reachable from any later release, so a v0.1.0 re-cut tomorrow
+      # could not be resolved as "previous" whether this flag is here
+      # or not. What it prevented while the tag existed is comparing a
+      # release against a 2023 prototype nothing was published from,
+      # and reporting the whole rewrite since as breakage
       - name: Resolve the previous release
         id: previous
         env:
@@ -290,13 +294,14 @@ jobs:
       # version pin on the line below is what still keeps this
       # comparison from answering differently on two release days for a
       # reason that has nothing to do with either release.
-      # -s . -s src covers a layout this repository has moved once:
-      # the working tree keeps btclib_node/ under src/, where v0.1.0
-      # held it at the root. That tag is excluded above and is no
-      # longer a reference this job resolves, so -s . stands against a
-      # move of the same kind rather than against that one -- a search
-      # path that finds nothing in a reference is skipped in favour of
-      # the other, so keeping it costs nothing.
+      # -s . -s src covers a layout this repository has moved once: the
+      # working tree keeps btclib_node/ under src/, and the 2023
+      # prototype d0ac7646 held it at the root. No reference this job
+      # resolves reaches back that far -- the earliest is v2026.8.27 --
+      # so -s . stands against a move of the same kind rather than
+      # against that one, a search path that finds nothing in a
+      # reference being skipped in favour of the other, so keeping it
+      # costs nothing.
       # No base ref on a rehearsal: workflow_dispatch has no tag to check
       # a public surface at, so the comparison falls back to griffe's own
       # default, the current code

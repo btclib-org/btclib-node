@@ -386,6 +386,29 @@ dispatched from a branch on purpose. `RELEASING.md`'s *One-time setup*
 is where the rest of the argument is, self-review included -- allowed
 on both, the maintainer who pushes the tag being the reviewer.
 
+**What the pair has published**, read back rather than recalled — which
+is this file's own contract, and is what the bullet removed from *What
+is not configured, and why* stopped doing: it recorded a `v0.1.0` tag
+and a release page that were deleted on 2026-08-23, four days before
+this line was written, on the decision closing btclib-org/.github#105
+(btclib-org/btclib-node#553):
+
+```shell
+gh api repos/btclib-org/btclib-node/tags --jq '.[].name'
+# v2026.8.27
+gh api repos/btclib-org/btclib-node/releases \
+  --jq '.[] | "\(.tag_name) by \(.author.login), \(.assets|length) assets"'
+# v2026.8.27 by github-actions[bot], 4 assets
+curl -s -o /dev/null -w '%{http_code}\n' https://pypi.org/pypi/btclib-node/json
+# 200
+```
+
+The four assets are the wheel, the sdist, the CycloneDX bill of
+materials and the attestation bundle; `RELEASING.md` has what each is
+checked with. `author` being `github-actions[bot]` is the cheap second
+question that separates a release the workflow cut from one recreated
+by hand.
+
 **This pair is not the kind of setting whose absence a workflow would
 have reported.** An environment a workflow names and the settings do
 not carry is created by GitHub at the first deployment that references
@@ -402,14 +425,6 @@ boundary the Read the Docs bullet below sits on.
 
 ## What is not configured, and why
 
-- **A release path configured to the last step, and nothing published
-  on it yet.** `.github/workflows/release.yml` exists, the two
-  environments it names are the section above, and `CONTRIBUTING.md`'s
-  *A release path, and nothing published on it yet* is the whole of that
-  answer and carries the commands behind it. What is missing is the
-  release itself: there is a `v0.1.0` tag and a GitHub release with no
-  artifact attached to it, and `tag-integrity` already holds the
-  signature a tag would need.
 - **No Pages, and no Read the Docs project connected.**
   `gh api repos/btclib-org/btclib-node/pages` answers `404`. `docs/source/`
   and `.readthedocs.yaml` exist (issue #264) and `docs.yml` builds them

@@ -104,10 +104,12 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: Implementation :: CPython",
     "Typing :: Typed",
-    # the README's own claim, made of the 2023 prototype that `v0.1.0`
-    # tags and still made here: this node downloaded and validated the
-    # whole chain, which is past pre-alpha and short of what a beta
-    # would promise about its interfaces
+    # the README's own claim, made of the 2023 prototype and still made
+    # here: this node downloaded and validated the whole chain, which is
+    # past pre-alpha and short of what a beta would promise about its
+    # interfaces. The prototype is a commit, d0ac7646, rather than a
+    # tag: `v0.1.0` named it until that tag was deleted on 2026-08-23
+    # (btclib-org/.github#105, btclib-org/btclib-node#553)
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Natural Language :: English",
