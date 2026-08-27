@@ -22,7 +22,7 @@ on:
     # naming the day for the workflow and the minute for the repository.
     # Only the default branch schedules anything, so on any other branch
     # the dispatch below is the way in
-    - cron: "20 4 * * 1"
+    - cron: "20 4 * * 6"
   # the escape hatch, and the way to check a branch before merging a
   # documentation change that adds links
   workflow_dispatch:

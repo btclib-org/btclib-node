@@ -45,23 +45,21 @@ name: integration-bitcoind
 # not about the tree: the job below asks the same node the same question
 # about a tree nothing has touched, which is what it takes to notice
 # bitcoincore.org no longer serving the tarball pinned below rather than
-# a pull request discovering that by accident. `mutation.yml`'s own
-# header already reasons about the slot this takes -- Sunday, the hour
-# after it -- and the organization's own calendar
-# (btclib-org/.github's README) already names this workflow at that
-# slot, this repository's own minute.
+# a pull request discovering that by accident. The organization's own
+# calendar (section 10 of btclib-org/.github's README) names the day and
+# the hour, and this repository's own minute with them.
 
 on:
   push:
     branches: [main]
   schedule:
-    # Sunday 05:20 UTC: btclib-org/.github's own calendar names
-    # `integration-bitcoind` at Sunday, hour 05, and `btclib-node` at
-    # minute 20 -- `mutation.yml`'s own header already anticipates this
-    # slot. Cron runs from the default branch only, so this file gates
+    # weekly, at the day and hour btclib-org/.github's own calendar
+    # gives `integration-bitcoind` and the minute it gives
+    # `btclib-node`: one grid, in one file, and not this line's to
+    # restate. Cron runs from the default branch only, so this file gates
     # nothing until it reaches main -- elsewhere it is reachable through
     # the dispatch below and nowhere else.
-    - cron: "20 5 * * 0"
+    - cron: "20 5 * * 2"
   workflow_call:
   workflow_dispatch:
   pull_request:
