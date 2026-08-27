@@ -14,6 +14,35 @@ where this file was written rather than where anything was tagged.
 
 ## Unreleased
 
+### The Read the Docs bullet stops waiting on a met condition (closes #559)
+
+- **`REPOSITORY.md`'s Read the Docs bullet gave "this tree does not
+  publish -- the day it does" as the reason nothing is connected**
+  (closes #559), and `v2026.8.27` is that day. It now says what the
+  connection is actually waiting on: an action on Read the Docs' own
+  side, importing the project under the organization's account, which
+  no `gh api` call in that file can take or read back. Issue #563
+  tracks it.
+- **A reason naming a condition already met is worse than a stale
+  record** (closes #559). A stale record is wrong about the past; this
+  was wrong about what happens next, and the next reader takes the
+  section as saying the work is due and goes looking for the blocker.
+  It is also the same defect #556 fixed in the sibling bullet of that
+  same section two hours earlier and did not carry across -- #553's
+  own finding, arriving from a decision I made myself rather than from
+  somebody else's.
+- **The `homepage` bullet beside it loses a reason the release
+  falsified too** (closes #559): "there is no published site for it to
+  point at", where <https://pypi.org/project/btclib-node/> has been one
+  since the release. Whether to set it stays a decision of its own --
+  `btclib`'s own `homepage` is `https://btclib.org` rather than its
+  documentation site, so it is not something the Read the Docs
+  connection settles on its way past.
+- **The bullet carries the badge command and its control** (closes
+  #559): `btclib-node` answers `unknown` where `btclib` answers
+  `passing`, which is the difference between a project that does not
+  exist and one that does. Both were run against the live service.
+
 ### RELEASING.md's two steps that a release disproved (closes #554, closes #561)
 
 - **The bill-of-materials step describes the document the script
