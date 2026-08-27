@@ -7,9 +7,10 @@ choice instead, and those are in CONTRIBUTING.md, beside the prose that
 says how the choice is enforced. One badge per line keeps a change to one
 line and every line inside MD013, whose 80 columns bind only where a space
 follows them.
-The index badges answer "package or version not found" until a first
-release reaches PyPI, which CONTRIBUTING.md's *A release path, and
-nothing published on it yet* dates rather than explains away.
+The index badges resolve against a real project since v2026.8.27; they
+answered "package or version not found" before it, which
+CONTRIBUTING.md's *A release path, and what it has published* records
+along with the command that reads the index back.
 The OpenSSF Scorecard badge sits in the sentinels' calendar order like
 every other: section 10 of btclib-org/.github's README gives scorecard a
 day/hour row, and the exception that section states for it -- its
@@ -42,6 +43,22 @@ records with the reason. -->
 btclib-node is a full node bitcoin implementation written in Python and
 based on btclib.
 
+To install, or upgrade:
+
+```shell
+python -m pip install --upgrade btclib-node
+```
+
+Python 3.14 or newer: `pyproject.toml`'s `requires-python` says so and
+says why, and pip refuses the wheel below it rather than installing
+something that will not import. Read *Security* before running the node
+— the classifier is `3 - Alpha` and the JSON-RPC listener is not
+something to expose.
+
+A checkout of `main` is a cycle in progress, declaring the month with no
+day, so it is not the same thing as what pip installs;
+[CONTRIBUTING.md](./CONTRIBUTING.md) has how to work from one.
+
 ## Security
 
 The JSON-RPC listener binds every interface and authenticates nothing —
@@ -64,14 +81,13 @@ against.
 ## Links
 
 - Source: <https://github.com/btclib-org/btclib-node>
-- Releases: <https://github.com/btclib-org/btclib-node/releases> — none
-  yet, `RELEASING.md` has why
+- Releases: <https://github.com/btclib-org/btclib-node/releases>
 - [CHANGELOG.md](./CHANGELOG.md) for what changed, and
   [RELEASE_NOTES.md](./RELEASE_NOTES.md) for what a release asks a user
-  to act on. There is no release: what anybody runs is a checkout of
-  `main`, and `CONTRIBUTING.md`'s *A release path, and nothing published
-  on it yet* is what the version in `pyproject.toml` and the one tag are
-  for
+  to act on. `pyproject.toml` between releases declares the month a
+  cycle is open on rather than a version anybody can install, and
+  `CONTRIBUTING.md`'s *A release path, and what it has published* is
+  what that shape is for
 - [REPOSITORY.md](./REPOSITORY.md) for the settings that live outside the
   tree
 

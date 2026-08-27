@@ -14,30 +14,49 @@ both indices are configured to trust the workflow itself
 The same workflow, started by hand instead of by a tag, is a full
 rehearsal against TestPyPI. A rehearsal is never tagged.
 
-**No release has been cut yet.** `project.version` is `2026.8`: the
-scheme below, on the shape it takes between releases — a cycle open on a
-month, with no day for a release to be confused with. It replaced
-`0.1.0`, the placeholder from before this repository carried a release
-path at all, a version this repository had already tagged being a poor
-thing for a checkout of `main` to report itself as
+**`v2026.8.27` was the first release, and it is the only tag this
+repository has.** `project.version` is `2026.9`: the scheme below, on
+the shape it takes between releases — a cycle open on a month, with no
+day for a release to be confused with. It replaced `0.1.0`, the
+placeholder from before this repository carried a release path at all
 ([ISS btclib-org/btclib-node#504][iss-504]). This file is what replaced
 `CONTRIBUTING.md`'s former *A version, and no release* section,
-[ISS btclib-org/btclib-node#286][iss-286] carrying that decision. The
-`v0.1.0` tag `REPOSITORY.md` records is lightweight, has a release page
-with no artifact attached, and is not an ancestor this workflow's
-`version-check` job would accept, `git merge-base --is-ancestor` being
-the first thing it asks. The first release built with this file adds the
-day to the month already declared, in the same pull request that
-retitles `CHANGELOG.md` and `RELEASE_NOTES.md`.
+[ISS btclib-org/btclib-node#286][iss-286] carrying that decision. A
+release built with this file adds the day to the month already declared,
+in the same pull request that retitles `CHANGELOG.md` and
+`RELEASE_NOTES.md`.
+
+This file no longer argues from a `v0.1.0` tag. **It was deleted, with
+its release, on 2026-08-23**, on the maintainer's decision closing
+[ISS btclib-org/.github#105][gh-105]: a lightweight tag is a ref to a
+commit with no object of its own, so there is nothing on it to sign,
+and a repository publishing nothing had no release the tag was the
+record of. `portanode`'s `v2026.01.27` went the same way on the same
+day, and both release bodies were captured into that issue before
+anything was removed.
+
+What was left behind is this tree's own paperwork, which went on
+describing the tag for four days
+([ISS btclib-org/btclib-node#553][iss-553]) — a deletion decided in one
+repository's issue and never carried into another repository's files.
+`git tag` still answers `v0.1.0` in any clone fetched before that day,
+which is what kept it reading as true. Retiring `0.1.0` in #504 was
+right for its other reason, that a placeholder is a poor thing for a
+checkout of `main` to report itself as, and that reason never needed
+the tag.
 
 **A workflow GitHub has not registered cannot be dispatched, and it
 registers one only once its file has reached the default branch.** That
 makes `release.yml` — whose `push:` names tags and nothing else, so
 nothing else ever triggers it — answer `gh: Not Found (HTTP 404)` to `gh
-workflow run` until the pull request adding it is merged. It bites once,
-on the first release after it is written, and it inverts the order
-below: the TestPyPI rehearsal this file asks for *before* the merge can
-only happen after it, still before the tag.
+workflow run` until the pull request adding it is merged.
+
+**It bit once, on `v2026.8.27`, and did exactly what this paragraph
+predicted**: the order below inverted, and the TestPyPI rehearsal this
+file asks for *before* the merge ran after it, still before the tag.
+It cannot bite again while the file keeps its name; a rename or a
+second publishing workflow is what would bring it back, which is why
+the paragraph stays.
 
 ## Which version string is which
 
@@ -91,20 +110,21 @@ PEP 440 does.
 
 ## One-time setup
 
-This is done, and what a `gh api` call can read back of it —
-the two environments — is `REPOSITORY.md`'s *The two publishing
-environments*; its *What is not configured, and why* is what the rest
-of the release path is still down to, which is the release itself.
-What follows is kept as the record of what was configured and why,
-which is also what a second registration would need: a rotated account,
-a fork that publishes, or a project renamed on the index, a trusted
-publisher being attached to a project name.
+This is done, it has published, and what a `gh api` call can read back
+of it — the two environments — is `REPOSITORY.md`'s *The two publishing
+environments*. What follows is kept as the record of what was
+configured and why, which is also what a second registration would
+need: a rotated account, a fork that publishes, or a project renamed on
+the index, a trusted publisher being attached to a project name.
 
 Neither index held the project when these were added — an upload is
 what creates it — so both entries went in as *pending* publishers, on
 that same page: a publisher attached to a project can only be added to
 a project that exists, and a first upload has nothing else to
-authenticate with, there being no token anywhere.
+authenticate with, there being no token anywhere. Both stopped being
+pending on their first upload; a rename of the project on either index
+would put that index's entry back into the pending state and is the
+one change that makes this section live again.
 
 1. On [PyPI](https://pypi.org/manage/account/publishing/), add a trusted
    publisher: PyPI project name `btclib-node`, owner `btclib-org`,
@@ -185,10 +205,12 @@ explicitly. Before that fix a red `public-api` silently kept them from
 ever starting — no upload, no environment review, and nothing red
 except the job that was designed to be.
 
-On the first release it cannot be red at all: it resolves no previous
-tag — `v0.1.0` is excluded by name, being a lightweight tag nothing was
-published from — so the check skips itself and the job reports success.
-The first cycle that can actually exercise it is the second release.
+On `v2026.8.27` it could not be red at all, and was not: with no
+previous tag reachable it resolved none, skipped its own comparison and
+reported success in eight steps. **So the release that has run is the
+one that says least about this job.** The first one that exercises it is
+the next, comparing against `v2026.8.27`, and the first finding it
+reports will be the first one anybody here has read.
 
 ## Release to PyPI
 
@@ -516,3 +538,5 @@ reading a mismatch as tampering:
 
 [iss-286]: https://github.com/btclib-org/btclib-node/issues/286
 [iss-504]: https://github.com/btclib-org/btclib-node/issues/504
+[iss-553]: https://github.com/btclib-org/btclib-node/issues/553
+[gh-105]: https://github.com/btclib-org/.github/issues/105

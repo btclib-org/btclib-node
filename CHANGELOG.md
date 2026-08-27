@@ -5,12 +5,67 @@ Every change of a release, in full: what changed, why, and what it cost.
 what a user has to act on; this file is the record behind them, and is
 where a claim in those notes can be checked.
 
-The record starts here. `v0.1.0` was tagged before this file existed and
-nothing is reconstructed for it: a changelog written backwards from a git
-log is a guess at what somebody would have noticed, and there is no way
-to check the guess.
+The record starts here, and nothing is reconstructed for the years of
+work before it: a changelog written backwards from a git log is a guess
+at what somebody would have noticed, and there is no way to check the
+guess. This paragraph used to date that boundary to a `v0.1.0` tag,
+deleted on 2026-08-23 (#553, btclib-org/.github#105); the boundary is
+where this file was written rather than where anything was tagged.
 
 ## Unreleased
+
+### The tree's prose says what the forge holds (closes #553, closes #555)
+
+- **Four files no longer say nothing has been published** (closes
+  #555): `v2026.8.27` is on PyPI and on the forge, and `README.md`,
+  `CONTRIBUTING.md`, `RELEASING.md` and `REPOSITORY.md` each said it was
+  not. Two of them printed the pre-release answer beside a live command
+  — `README.md`'s badge comment, and `CONTRIBUTING.md`'s
+  `curl … # 404`, which answers `200` — and those are the two that cost
+  a reader something, since running the command is what the file asked
+  for and disagreeing with it is what the reader gets.
+- **`README.md` says how to install the package** (closes #555), which
+  it could not truthfully do until today and which a published
+  project's README not saying is a gap rather than a matter of taste.
+- **Eleven sites stop arguing from a `v0.1.0` tag that was deleted on
+  2026-08-23** (closes #553). The tag and its release were removed on
+  the maintainer's decision closing btclib-org/.github#105 — a
+  lightweight tag is a ref with no object of its own, so there is
+  nothing on it to sign, and a repository publishing nothing had no
+  release the tag was the record of; `portanode`'s `v2026.01.27` went
+  the same way the same day, both release bodies captured into that
+  issue first. This tree's files were never carried along, and went on
+  describing the tag for four days.
+- **What made it hard to see is that `git tag` answers locally**
+  (closes #553): the tag is still in every clone fetched before that
+  day, pointing at the real 2023 commit `d0ac7646`, so six files
+  agreeing with each other and with a local `git tag` is what a reader
+  checking them found. `gh api …/git/ref/tags/v0.1.0` answers `404`;
+  btclib-org/.github#105's own measurement four days earlier recorded
+  it answering `commit`, which is the pair that dates the deletion.
+- **The seven historical `CHANGELOG.md` entries are left as they
+  stand** (closes #553). #504's entry gives "a version this repository
+  had already tagged" as a reason for retiring `0.1.0`, and that was
+  true when it landed — the tag was deleted after it. A changelog
+  edited to agree with what happened afterwards stops being a record;
+  the correction is here, in the entry for the fix.
+- **`release.yml`'s `--exclude 'v0.1.0'` is kept and its comment made
+  checkable** (closes #553): the flag has been inert since the
+  deletion, and removing it would change the behaviour of a path that
+  runs twice a year and cannot be rehearsed against a second tag, in
+  exchange for nothing — from `v2026.8.27` on that tag is the nearest
+  one reachable from any later release, so a `v0.1.0` re-cut tomorrow
+  could not be resolved as "previous" either way.
+- **`RELEASING.md`'s `gh workflow run` 404 paragraph is a record rather
+  than a prediction** (closes #555). It said the 404 "bites once, on the
+  first release after it is written"; it bit once, on `v2026.8.27`,
+  and inverted the order exactly as written — the TestPyPI rehearsal
+  asked for before the merge ran after it, still before the tag.
+- **`RELEASING.md` says what `v2026.8.27` did and did not exercise**
+  (closes #555): `public-api` resolved no previous tag, skipped its own
+  comparison and reported success in eight steps, so the release that
+  has run is the one that says least about that job. The first one to
+  exercise it is the next.
 
 ## v2026.8.27
 
