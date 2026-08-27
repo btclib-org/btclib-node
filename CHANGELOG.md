@@ -14,6 +14,26 @@ where this file was written rather than where anything was tagged.
 
 ## Unreleased
 
+### CLAUDE.md's union bullet trusts the endpoint, not the cache (closes #565)
+
+- **CLAUDE.md's `merge=union` bullet told a session to "rebase and
+  look" past GitHub's `mergeable: CONFLICTING`, reading a local
+  rebase's silence as proof the merge was clean** (closes #565). A
+  driver built never to conflict cannot report one whether the merge it
+  produced is right or wrong, so the silence was never evidence of
+  anything.
+- **The rewrite does not swap one unmeasured trust for another**
+  (closes #565): `gh pr view --json mergeable` is an asynchronous,
+  cached read that can still answer `UNKNOWN` on a pull request already
+  `MERGED`, so a `CONFLICTING` seen there is not itself confirmed real.
+  The merge the endpoint actually attempts
+  (`gh api -X PUT .../merge`) is the one genuine three-way merge in
+  the pair, and its refusal is the true report. The bullet now points
+  at `RELEASING.md`'s step 3 reconstruction as the check that tells a
+  safe rebase from a fused one, and names `git merge-tree --write-tree`
+  as applying the same driver rather than being a dry run of the
+  question.
+
 ### RELEASING.md treats the simple API as the index's state (closes #545)
 
 - **`RELEASING.md` named the JSON API's staleness as a quirk of the

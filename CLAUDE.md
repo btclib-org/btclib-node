@@ -308,14 +308,26 @@ Do not use Fable unless explicitly instructed.
   forced a rename to fix rather than a `conf.py` setting;
   btclib-org/btclib-node#264's own `nitpick_ignore` list is the same
   wall met a second time.
-- **A `merge=union` file can make GitHub report a conflict a local
-  rebase resolves cleanly.** GitHub's server-side merge check does not
-  apply git's own `union` merge driver, so a pull request touching
-  only `CHANGELOG.md` can show `mergeable: CONFLICTING` while
-  `git rebase origin/main` in a worktree, with the same
-  `.gitattributes`, finds nothing to resolve by hand. Rebase and look,
-  rather than searching the file for a conflict the banner did not
-  actually find.
+- **A `merge=union` file makes a local rebase's silence no evidence at all,
+  whichever of the forge's own signals is read next.**
+  GitHub's server-side merge check does not apply git's own `union` merge
+  driver, so `git rebase origin/main` in a worktree, with the same
+  `.gitattributes` as a pull request touching only `CHANGELOG.md`, can find
+  nothing to resolve by hand where a real three-way merge under the same
+  anchor fails. That silence is the driver picking both sides, in an order
+  nobody chose, which is what `union` is for — a driver built never to
+  conflict cannot ever report one, clean or not. `git merge-tree --write-tree`
+  answers the same way and is not a dry run of this question either: it too
+  reads `.gitattributes` from the trees it merges and writes the fused blob at
+  exit `0`. Of the forge's own two signals, `gh pr view --json mergeable` is
+  not the one to trust: it is an asynchronous, cached read that can still
+  answer `UNKNOWN` on a pull request already `MERGED`, so a `CONFLICTING` seen
+  there is not yet confirmed real. The merge the endpoint actually attempts
+  (`gh api -X PUT .../merge`) is a genuine three-way merge computed at that
+  moment, and its refusal is the true report. `RELEASING.md`'s step 3 has the
+  check that tells a safe rebase from a fused one, by reconstructing the file
+  rather than reading the rebase's silence, and it is what a rebase across a
+  union file is checked against.
 
 ## Conventions to match
 
