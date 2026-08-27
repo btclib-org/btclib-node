@@ -2,9 +2,9 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""What `bitcoind_test.py` needs, and the switch that makes it skip.
+"""What every test in this package needs, and the switch that makes it skip.
 
-Two things have to hold before the test below actually runs: the opt-in
+Two things have to hold before a test here actually runs: the opt-in
 itself, and a real `bitcoind` to point it at. `bitcoind_path` is where
 both are asked for, an opt-in that failed for a missing binary being a
 defect report that is not one; its skip message names the switch, the
@@ -63,7 +63,7 @@ class Bitcoind:
     """
 
     def __init__(self, rpc_port: int, p2p_port: int, cookie_path: Path) -> None:
-        """Hold the two ports `bitcoind_test.py` needs and the cookie's path."""
+        """Hold the ports these tests need, and the cookie's path."""
         self.rpc_port = rpc_port
         self.p2p_port = p2p_port
         self._cookie_path = cookie_path
