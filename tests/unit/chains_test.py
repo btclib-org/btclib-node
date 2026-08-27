@@ -9,10 +9,12 @@ from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet
 CHAINS = (Main(), TestNet(), SigNet(), RegTest())
 
 # Bitcoin Core's chainparams.cpp, per chain: `consensus.powLimit` as
-# compact bits, `pchMessageStart` and the genesis block hash. Every
-# chain this package defines is named here, and the test below fails if
-# one is added without its entry -- naming only some is how a wrong
-# constant survives a green suite.
+# compact bits, `pchMessageStart`, the genesis block hash,
+# `fPowAllowMinDifficultyBlocks`, `fPowNoRetargeting`,
+# `nSubsidyHalvingInterval` and `BIP34Height`. Every chain this package
+# defines is named here, and the test below fails if one is added
+# without its entry -- naming only some is how a wrong constant
+# survives a green suite.
 EXPECTED = {
     "mainnet": {
         "pow_limit_bits": "1d00ffff",
@@ -20,6 +22,8 @@ EXPECTED = {
         "genesis": "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
         "pow_allow_min_difficulty_blocks": False,
         "pow_no_retargeting": False,
+        "subsidy_halving_interval": 210000,
+        "bip34_height": 227931,
     },
     "testnet": {
         "pow_limit_bits": "1d00ffff",
@@ -27,6 +31,8 @@ EXPECTED = {
         "genesis": "000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943",
         "pow_allow_min_difficulty_blocks": True,
         "pow_no_retargeting": False,
+        "subsidy_halving_interval": 210000,
+        "bip34_height": 21111,
     },
     "signet": {
         "pow_limit_bits": "1e0377ae",
@@ -34,6 +40,8 @@ EXPECTED = {
         "genesis": "00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6",
         "pow_allow_min_difficulty_blocks": False,
         "pow_no_retargeting": False,
+        "subsidy_halving_interval": 210000,
+        "bip34_height": 1,
     },
     "regtest": {
         "pow_limit_bits": "207fffff",
@@ -41,6 +49,8 @@ EXPECTED = {
         "genesis": "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206",
         "pow_allow_min_difficulty_blocks": True,
         "pow_no_retargeting": True,
+        "subsidy_halving_interval": 150,
+        "bip34_height": 1,
     },
 }
 
@@ -86,6 +96,22 @@ def test_pow_allow_min_difficulty_blocks_and_pow_no_retargeting() -> None:
             == expected["pow_allow_min_difficulty_blocks"]
         ), chain.name
         assert chain.pow_no_retargeting == expected["pow_no_retargeting"], chain.name
+
+
+def test_subsidy_halving_interval_and_bip34_height() -> None:
+    """Each chain's halving interval and BIP34 height match Core's own."""
+    # Bitcoin Core's nSubsidyHalvingInterval and BIP34Height, per chain:
+    # src/kernel/chainparams.cpp's CMainParams, CTestNetParams,
+    # SigNetParams and CRegTestParams, each setting both fields once in
+    # its constructor -- the same pair of files
+    # test_pow_allow_min_difficulty_blocks_and_pow_no_retargeting checks,
+    # for the immediately preceding pair of Core-sourced constants.
+    for chain in CHAINS:
+        expected = EXPECTED[chain.name]
+        assert chain.subsidy_halving_interval == expected["subsidy_halving_interval"], (
+            chain.name
+        )
+        assert chain.bip34_height == expected["bip34_height"], chain.name
 
 
 def test_magic() -> None:

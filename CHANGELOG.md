@@ -14,6 +14,25 @@ where this file was written rather than where anything was tagged.
 
 ## Unreleased
 
+### A block is checked against subsidy and BIP34 (closes #568, closes #571)
+
+- **`Chain` carries `subsidy_halving_interval` and `bip34_height`, one
+  per network** -- read from Core's `src/kernel/chainparams.cpp` at
+  bitcoin/bitcoin@204256c73f: mainnet, testnet3 and signet halve every
+  210000 blocks and regtest halves every 150; mainnet's coinbase must
+  commit to its height from block 227931, testnet3's from 21111, and
+  regtest's and signet's both from block 1.
+- **A block whose coinbase pays more than subsidy plus fees does not
+  connect** (closes #568). Core's `bad-cb-amount`
+  (`ConnectBlock`, `src/validation.cpp:2619-2621`,
+  at bitcoin/bitcoin@204256c73f): `nFees + GetBlockSubsidy(...)` is the
+  ceiling, and `Chain.subsidy` is this tree's own `GetBlockSubsidy`.
+- **`Block.assert_valid_contextual` is called where a block connects,
+  with the height it connects at** (closes #571), so a coinbase that
+  does not commit to it (BIP34's `bad-cb-height`) does not connect
+  either. Core's `ContextualCheckBlock`
+  (`src/validation.cpp:4170-4176`, at bitcoin/bitcoin@204256c73f).
+
 ### The user agent names the project, and its version (closes #580)
 
 - **`/Btclib/` becomes `/btclib:<version>/`** (closes #580), which is

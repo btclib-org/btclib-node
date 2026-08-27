@@ -34,7 +34,12 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import pytest
-from btclib.block import Block, BlockHeader, merkle_root_and_mutated_from_transactions
+from btclib.block import (
+    Block,
+    BlockHeader,
+    bip34_commitment,
+    merkle_root_and_mutated_from_transactions,
+)
 from btclib.block.proof_of_work import REGTEST_POW_LIMIT_BITS
 from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.block_filters import BlockFilterType, GetCFilters
@@ -112,14 +117,22 @@ _FILTERED_BLOCKS = 4
 
 
 def a_block(previous_block_hash: bytes, height: int, outputs: list[TxOut]) -> Block:
-    """Return a solved regtest block whose one transaction pays `outputs`."""
+    """Return a solved regtest block whose one transaction pays `outputs`.
+
+    `height` is the parent's, matching `tests.build_block`'s own
+    convention, so the coinbase commits (BIP34) to `height + 1` -- this
+    block's own real height, and what regtest enforces from height 1 on
+    for the one caller (`blocks_of`, below) that connects what it builds
+    rather than serving it straight out of `block_db`.
+    """
     coinbase = Tx(
         version=1,
         lock_time=0,
         vin=[
             TxIn(
                 prev_out=OutPoint(),
-                script_sig=script.serialize([secrets.token_bytes(32)]),
+                script_sig=bip34_commitment(height + 1)
+                + script.serialize([secrets.token_bytes(32)]),
                 sequence=0xFFFFFFFF,
             )
         ],

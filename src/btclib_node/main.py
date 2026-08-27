@@ -12,8 +12,10 @@ entered from a single transaction instead, for the RPC and p2p callbacks
 that relay one.
 """
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from btclib.block.block_context import BlockContext
 from btclib.exceptions import BTClibValueError
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
 from btclib.tx import TxOut
@@ -21,7 +23,11 @@ from btclib.tx import TxOut
 from btclib_node.chainstate.block_index import BlockIndex, BlockStatus
 from btclib_node.constants import NodeStatus
 from btclib_node.exceptions import ChainstateInconsistencyError, MissingPrevoutError
-from btclib_node.interpreter import check_transaction, check_transactions
+from btclib_node.interpreter import (
+    check_coinbase_value,
+    check_transaction,
+    check_transactions,
+)
 
 if TYPE_CHECKING:
     from btclib.block import Block
@@ -219,6 +225,26 @@ def _ready_fork(node: Node) -> tuple[list[bytes], list[bytes]] | None:
     return to_add_hash, to_remove_hash
 
 
+# update_chain's own per-block gate, once a candidate's spends and
+# creations are staged and its own height is known: script and amounts
+# (interpreter.check_transactions), a coinbase paying more than subsidy
+# plus fees (interpreter.check_coinbase_value), and the two rules a
+# height and a clock decide on their own (Block.assert_valid_contextual)
+# -- time-too-new, already checked on the header path
+# (chainstate/contextual.py), and bad-cb-height, wherever BIP34 binds
+# (Chain.bip34_height, per network). A function of its own rather than
+# four statements inline: update_chain's own trial loop is already long
+# enough that PLR0915 counts every statement gained here against it.
+def _validate_block(
+    node: Node, block: Block, transactions: list[tuple[list[TxOut], Tx]], index: int
+) -> None:
+    block.assert_valid_contextual(
+        BlockContext(index, datetime.now(UTC), node.chain.bip34_height)
+    )
+    check_transactions(transactions, index, node)
+    check_coinbase_value(block.transactions[0], transactions, index, node)
+
+
 def update_chain(node: Node) -> None:
     """Try the best ready fork block by block, and commit or roll it back.
 
@@ -314,7 +340,7 @@ def update_chain(node: Node) -> None:
             failed_hash = block_hash
             transactions, rev_patch = utxo_index.add_block(block)
             index = block_index.get_block_info(block_hash).index
-            check_transactions(transactions, index, node)
+            _validate_block(node, block, transactions, index)
 
             node.block_db.add_rev_block(rev_patch)
             # here and not on a pass of its own: the patch names the
