@@ -45,7 +45,7 @@ on:
     # anybody touching this repository, so the same tree is a different
     # answer this week than last. Only the default branch schedules
     # anything, so on any other branch the dispatch below is the way in
-    - cron: "20 4 * * 2"
+    - cron: "20 4 * * 0"
   # the escape hatch: the analysis on demand for a branch whose pull
   # request is not open yet, which the trigger above cannot reach
   workflow_dispatch:

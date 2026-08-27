@@ -46,7 +46,7 @@ on:
     # naming the day for the workflow and the minute for the repository.
     # Only the default branch schedules anything, so on any other branch
     # the dispatch below is the way in
-    - cron: "20 4 * * 6"
+    - cron: "20 5 * * 4"
   # the escape hatch: the platform on demand, for a branch that touches
   # the store, the lock, or anything a path reaches
   workflow_dispatch:

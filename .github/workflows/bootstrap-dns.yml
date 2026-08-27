@@ -31,7 +31,7 @@ on:
     # this line is not the place to restate it. Only the default branch
     # schedules anything, so on any other branch the dispatch below is
     # the way in
-    - cron: "20 5 * * 4"
+    - cron: "20 4 * * 1"
   # the escape hatch, and the way to check a branch before changing the
   # seed lists in src/btclib_node/chains.py
   workflow_dispatch:

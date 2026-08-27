@@ -23,15 +23,15 @@ on:
     # the action's, not section 10's general rule
     branches: [main]
   schedule:
-    # Saturday, hour 03: section 10's calendar, decided by
-    # btclib-org/.github#363 and landed via btclib-org/.github#382. The
-    # minute is this repository's own row in the same table.
-    # The time is section 10's grid in btclib-org/.github and not this
-    # file's to restate.
+    # weekly, at the day and hour section 10's calendar gives this
+    # workflow and the minute it gives this repository, and not this
+    # line's to restate. That row is the calendar's last, which is what
+    # section 2 puts the Scorecard badge at the head of the OpenSSF line
+    # for.
     # The push trigger above already runs the analysis on every push to
     # main, which is what feeds the badge and the published score between
     # scheduled runs; this covers what push cannot -- a week with none.
-    - cron: "20 3 * * 6"
+    - cron: "20 5 * * 0"
 
 # least privilege for the GITHUB_TOKEN at the workflow level, with one
 # elevation on the job below: the analysis reads the tree, requests a

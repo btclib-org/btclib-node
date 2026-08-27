@@ -33,14 +33,15 @@ name: fuzz
 
 on:
   schedule:
-    # Monday, hour 03, at this repository's own minute: section 10's
-    # grid in btclib-org/.github, and not this file's to restate.
+    # weekly, at the day and hour section 10's grid in btclib-org/.github
+    # gives this workflow and this repository's own minute: not this
+    # file's to restate.
     # Cron runs from the default branch only, so this file fuzzes
     # nothing until it reaches main -- elsewhere the dispatch below is
     # the way in
-    - cron: "20 3 * * 1"
+    - cron: "20 4 * * 2"
   # the escape hatch, and the way to ask for a fuzzing run before a
-  # release rather than on Monday
+  # release rather than waiting for the weekly one
   workflow_dispatch:
   # No pull_request trigger. Section 10 of the organization standard
   # would permit one -- a paths filter on fuzz/** and on this file is
@@ -56,7 +57,7 @@ on:
   # suppresses, and that is BTClibException alone -- the family
   # handle_p2p discourages a peer on. So an input Reject.parse refuses
   # any other way leaves fuzz_target and is reported as a crash, which
-  # is what makes a green Monday evidence about the parser
+  # is what makes a green run evidence about the parser
 
 # least privilege for the GITHUB_TOKEN: nothing here writes to the
 # repository. In particular no security-events: write -- a crash is read

@@ -26,7 +26,7 @@ on:
     # naming the day and the hour for the workflow and the minute for
     # the repository. Only the default branch schedules anything, so on
     # any other branch the dispatch below is the way in
-    - cron: "20 5 * * 1"
+    - cron: "20 3 * * 1"
   workflow_dispatch:
   # so a change to this file, to the script it runs, or to the README it
   # reads is checked by the thing it configures, for the same reason and

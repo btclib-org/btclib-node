@@ -14,6 +14,37 @@ where this file was written rather than where anything was tagged.
 
 ## Unreleased
 
+### The crons and the badges follow the reordered calendar (closes #520)
+
+- **Every `cron:` here names the instant section 10's calendar gives its
+  workflow at this repository's own minute** (issue
+  btclib-org/.github#480): that calendar orders its rows by what they
+  ask about, and the day and the hour are its to state, so no comment
+  here restates them. `deps-latest` is the one schedule this leaves
+  where it is, and `.github/dependabot.yml` is not touched: section 10
+  ties Dependabot's own run to it.
+- **A schedule comment names the cadence rather than a weekday** (issue
+  btclib-org/.github#480): a comment naming the day is one the next move
+  through the calendar falsifies while it stays grammatical, and the day
+  is not this tree's to state in the first place. `mutation.yml` loses
+  its reasoning about the emptiest day with it: the calendar groups by
+  family instead.
+- **`README.md`'s badge block is section 2's three groups** (closes
+  #520): what the software is, whether it works, and what the OpenSSF
+  makes of it -- the gates inside the second in the order a commit meets
+  them, then the sentinels in the calendar's order. The Scorecard badge
+  opens the third group rather than sitting among the sentinels, which
+  is what `scorecard` being the calendar's last row buys.
+- **The block's own comment points at section 2 rather than restating
+  it** (closes #520): the rule the block is kept to lives in the
+  organization standard, so a copy of it here is a second thing to keep
+  true, and this one had stopped being true.
+- **`github/v/release`, the licence and `wheel` are in the block**
+  (closes btclib-org/.github#496): `v2026.8.27` is on the index and on
+  the forge, so each of the three renders a measurement. The licence
+  badge is `LICENSE` read through `img.shields.io/github/license`, which
+  is the spelling that section asks for.
+
 ### The tree's prose says what the forge holds (closes #553, closes #555)
 
 - **Four files no longer say nothing has been published** (closes
