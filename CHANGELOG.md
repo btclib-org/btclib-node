@@ -14,6 +14,31 @@ to check the guess.
 
 ## Unreleased
 
+### RELEASING.md names `public-api`, and audits the run (closes #538)
+
+- **A *What a red `public-api` means* section, and a numbered post-tag
+  step that audits the run job by job** (closes #538): the job has been
+  in `release.yml` since #503 and the procedure never named it, though
+  it is the one job in the pipeline designed to exit 1 on an ordinary
+  cycle -- any public-API difference since the last release. What the
+  section says is that a red one is read rather than obeyed, each
+  finding checked by hand against `RELEASE_NOTES.md`'s own *Breaking
+  changes* list, the question being whether a break is announced rather
+  than whether it exists.
+- **The audit step looks for `skipped` with zero steps, not for red**
+  (closes #538): a failed job is loud and a skipped one is silent.
+  `btclib-org/btclib`'s own `v2026.8.27` published with its
+  post-publish sentinel never having run and the run reading as done
+  (btclib-org/btclib#1470, btclib-org/.github#484). The step carries the
+  `gh api` call that lists every job with its step count, and names the
+  one skip that is correct and would otherwise be cited as the defect:
+  `publish-testpypi` on a tag push, its guard being `workflow_dispatch`.
+  Neither gap can bite this repository's first release -- `public-api`
+  resolves no previous tag and cannot fail, and there is no
+  post-publish job here yet (#502) -- which is the argument for writing
+  both now rather than after: a post-tag audit that lands after the tag
+  documents a check nobody ran on the release it was written for.
+
 ### A reorg reaches this node from a real bitcoind (closes #513)
 
 - **`tests/integration/reorg_test.py` submits a competing branch to the
