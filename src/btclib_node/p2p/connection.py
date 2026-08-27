@@ -33,7 +33,10 @@ from btclib.p2p.message import Message
 from btclib_node.constants import P2pConnStatus, ProtocolVersion
 from btclib_node.exceptions import WrongNetworkMagicError
 from btclib_node.p2p.address import ip_and_port, network_address
-from btclib_node.p2p.callbacks import handshake_callbacks
+from btclib_node.p2p.callbacks import (
+    MAX_GETDATA_INFLIGHT_BYTES,
+    handshake_callbacks,
+)
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 
 if TYPE_CHECKING:
@@ -76,11 +79,48 @@ __all__ = ["MAX_QUEUED_RECV_BYTES", "MAX_QUEUED_SEND_BYTES", "Connection"]
 # after, so either can schedule one item past its own bound before the
 # next check catches it and pauses -- one more block, up to
 # `MAX_PROTOCOL_MESSAGE_LENGTH`, for `getdata`; one more filter,
-# `ONE_BUSY_MODERN_BLOCK_FILTER_BYTES`, for `get_cfilters`. So what this
-# bound has to hold is each pacing bound plus one maximum item of its
-# own kind, for both mechanisms at once: a peer pipelining a
-# `getcfilters` behind a `getdata` it has not finished draining can
-# have both mid-overshoot on the same connection together.
+# `ONE_BUSY_MODERN_BLOCK_FILTER_BYTES`, for `get_cfilters`.
+#
+# Those two overshoots do not add. Both loops pace on the one
+# `queued_send_bytes` field and neither reads anything else, so filters
+# a connection is already committed to leave a `getdata` answer that
+# much less room rather than adding to what that answer may commit; and
+# `MAX_CFILTERS_INFLIGHT_BYTES` being the lower of the two bounds,
+# `advance_cfilters` stops on its first check throughout a `getdata`
+# overshoot. A peer pipelining a `getcfilters` behind a `getdata` it has
+# not finished draining therefore has its filters counted inside that
+# answer's own peak, never on top of it. The peak either mechanism can
+# reach is its own bound plus one whole message of the kind that bound
+# paces, and the larger of the two -- `MAX_GETDATA_INFLIGHT_BYTES` and a
+# block -- is the first two terms below.
+# btclib-org/btclib-node#521
+#
+# The third term is room above that peak. Its floor is the wire envelope
+# those two terms leave out, `MAX_PROTOCOL_MESSAGE_LENGTH` bounding a
+# payload rather than a message; the rest of it is what a sender passing
+# no pacing check at all spends, since such a sender commits its whole
+# message on top of whatever this field already holds. There are several
+# -- the `notfound` closing a `getdata` answer, a transaction
+# announcement's `inv`, a `headers`, an `addr` -- and `Node.run` reaches
+# `_step_chain`, and so the announcements, in the same pass that
+# `_drain_message_queues` paused an answer in.
+#
+# What sizes that room is the filter answer's own peak -- three filters,
+# `MAX_CFILTERS_INFLIGHT_BYTES` pacing at two and `advance_cfilters`
+# overshooting by one -- kept here as room rather than added above as a
+# state the field reaches. It is written in filters rather than as that
+# constant because the constant rounds its own product down to a whole
+# number of bytes, and this sum would carry the rounding. None of those
+# senders sizes it, because none of them yields a constant: an `inv` of
+# `MAX_INV_SZ` entries and a `notfound` of `MAX_PENDING_GETDATA_ITEMS`
+# are each past this room on their own, and `_send_due_announcements`
+# (`download.py`) sends as many `MAX_INV_SZ` chunks in one pass as the
+# mempool has entries to announce. So a peer that has stopped draining
+# can be dropped here by a message no pacing check stands in front of,
+# where the bound above it would have paused an answer instead, and what
+# settles that is a pause point of the sender's own, the way `getdata`
+# and `get_cfilters` each got one.
+# btclib-org/btclib-node#529
 #
 # That the overshoot is one item, rather than one for every turn a
 # pacing loop takes, is what `_queue` below buys: it counts a message
@@ -88,9 +128,9 @@ __all__ = ["MAX_QUEUED_RECV_BYTES", "MAX_QUEUED_SEND_BYTES", "Connection"]
 # item that goes past a pacing bound is in that count before the same
 # loop's next check reads it (btclib-org/btclib-node#512).
 #
-# That puts this bound, ~12.3 MB, above both of Core's own flat,
-# content-blind per-connection figures: its send buffer default just
-# above (1,000,000 bytes) by more than an order of magnitude, and its
+# That puts this bound above both of Core's own flat, content-blind
+# per-connection figures: its send buffer default just above
+# (1,000,000 bytes) by more than an order of magnitude, and its
 # *receive* buffer default -- `recv_flood_size`
 # (`net.h:677`, `DEFAULT_MAXRECEIVEBUFFER * 1000` = 5,000,000 bytes,
 # `net.h:100`), Core's own judgement of how much of one peer's traffic
@@ -103,7 +143,9 @@ __all__ = ["MAX_QUEUED_RECV_BYTES", "MAX_QUEUED_SEND_BYTES", "Connection"]
 # so a bound this much larger than either of Core's flat figures is
 # what that difference in shape costs, not an oversight next to them.
 MAX_QUEUED_SEND_BYTES = int(
-    3 * MAX_PROTOCOL_MESSAGE_LENGTH + 3 * ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
+    MAX_GETDATA_INFLIGHT_BYTES
+    + MAX_PROTOCOL_MESSAGE_LENGTH
+    + 3 * ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 )
 
 # Core's own per-connection receive bound, `-maxreceivebuffer`
