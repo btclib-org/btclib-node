@@ -147,7 +147,7 @@ those checks passed to
 1. Check the upload, and optionally install it:
 
    ```shell
-   uv run --isolated --no-project \
+   uv run --isolated --no-project --python 3.14 \
      --index https://test.pypi.org/simple/ \
      --index-strategy unsafe-best-match \
      --with btclib-node==<version>.dev<run*100+attempt> \
@@ -332,7 +332,7 @@ this release included.
 1. Install what was just published, in an environment of its own:
 
    ```shell
-   uv run --isolated --no-project --with btclib-node \
+   uv run --isolated --no-project --python 3.14 --with btclib-node \
      python -c "from btclib_node import Node; print(Node)"
    ```
 
