@@ -192,6 +192,14 @@ wheels = [
 ]
 
 [[package]]
+name = "atheris"
+version = "3.1.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c3/ff/ae7a5bfe99033e510bea4ed09934e636d93777317a48147369bc0dc2b71f/atheris-3.1.0-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:315a0b5c819852b1ffe1ca72efc389c7724881f2c33e4aacb8c6bcec49bd5011", size = 36772569, upload-time = "2026-06-17T00:04:07.702Z" },
+]
+
+[[package]]
 name = "attrs"
 version = "26.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -285,6 +293,9 @@ docs = [
     { name = "myst-parser" },
     { name = "sphinx" },
 ]
+fuzz = [
+    { name = "atheris", marker = "sys_platform == 'linux'" },
+]
 harness = [
     { name = "pytest" },
     { name = "pytest-order" },
@@ -344,6 +355,7 @@ docs = [
     { name = "myst-parser" },
     { name = "sphinx" },
 ]
+fuzz = [{ name = "atheris", marker = "sys_platform == 'linux'", specifier = ">=3.1.0" }]
 harness = [
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-order", specifier = ">=1.5.0" },

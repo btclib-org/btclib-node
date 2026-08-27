@@ -295,7 +295,10 @@ review and its own header says it must not become a required check.
 `vendored-vectors.yml` re-checks `tests/_data/README.md`'s pin against
 upstream, `deps-latest.yml` upgrades every dependency and runs the suite
 and the lint gate against the result, and `mutation.yml` is its own
-section below.
+section below. `fuzz.yml` runs the atheris harnesses under `fuzz/`
+against octets nobody chose, and its own header says which parser this
+tree owns of what a peer reaches and why the harness is a script rather
+than the ClusterFuzzLite container the sibling libraries build.
 
 Which day each of the periodic ones runs is one calendar for the whole
 organization, in [section 10 of `btclib-org/.github`'s

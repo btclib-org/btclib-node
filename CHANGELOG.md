@@ -14,6 +14,44 @@ to check the guess.
 
 ## Unreleased
 
+### The fuzz sentinel, over the parser a peer reaches first (closes #402)
+
+- **`fuzz/fuzz_reject.py` fuzzes BIP61's `reject` payload parser, and
+  `fuzz.yml` runs it on the calendar row section 10 of
+  btclib-org/.github's README gives `fuzz`**: the property that section
+  keys the sentinel on is that nobody stands between a parser and an
+  adversary choosing the octets, and `p2p.callbacks.reject` reads what a
+  peer sent with no verification of any kind in front of it.
+  `Reject.parse` is what this tree owns of that surface: the rest of
+  what a peer's octets reach here is `btclib`'s codec, fuzzed by that
+  repository's own harnesses, or a method over a connection that owns a
+  socket, a manager and a node — which is issue #516 and not this
+  change.
+- **Atheris runs as an ordinary script rather than under
+  ClusterFuzzLite**, which is what `btclib` runs and would otherwise be
+  the port: that toolchain builds targets inside
+  `gcr.io/oss-fuzz-base/base-builder-python`, whose interpreter is the
+  `ENV PYTHON_VERSION 3.11.13` of google/oss-fuzz's own
+  `infra/base-images/base-builder/Dockerfile`, where `requires-python`
+  here is `>=3.14` — so the `pip3 install .` such a build begins with is
+  refused before a target is compiled. Atheris itself admits this tree:
+  the `fuzz` dependency group resolves its cp314 manylinux wheel, under
+  the platform marker its own wheel list forces.
+- **The seeds are a starting point and not a regression suite**:
+  `tests/fuzz_corpus_test.py` holds every file under `fuzz/corpus/` to
+  parsing and reserializing to itself, and says why an input a crash was
+  found on belongs in the ordinary suite instead — a hardened parser
+  refuses it, which is the opposite of what that module asserts. What
+  the test also asks is that a harness's declared entry point still
+  resolves, so a harness aimed at a name this tree has renamed fails on
+  the pull request that renamed it rather than on the sentinel's day.
+- **`Reject.parse` refuses a peer's own malformed payload with
+  `ValueError` where `handle_p2p` sorts a peer's fault from this node's
+  by `BTClibException`** (issue #515): the harness suppresses both
+  families and cites that issue, which is what keeps the sentinel about
+  the crashes nobody has described rather than about a classification
+  already known and filed.
+
 ### Every backpressure bound is watched doing its job (closes #490, #492)
 
 - **`tests/functional/p2p/backpressure_test.py` drives the send-side
