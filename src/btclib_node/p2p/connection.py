@@ -82,6 +82,12 @@ __all__ = ["MAX_QUEUED_RECV_BYTES", "MAX_QUEUED_SEND_BYTES", "Connection"]
 # `getcfilters` behind a `getdata` it has not finished draining can
 # have both mid-overshoot on the same connection together.
 #
+# That the overshoot is one item, rather than one for every turn a
+# pacing loop takes, is what `_queue` below buys: it counts a message
+# against `queued_send_bytes` on the thread that committed it, so the
+# item that goes past a pacing bound is in that count before the same
+# loop's next check reads it (btclib-org/btclib-node#512).
+#
 # That puts this bound, ~12.3 MB, above both of Core's own flat,
 # content-blind per-connection figures: its send buffer default just
 # above (1,000,000 bytes) by more than an order of magnitude, and its
@@ -317,14 +323,33 @@ class Connection:
 
         # What this connection currently owes the peer: every octet a
         # message has been serialized into and not yet handed to
-        # `sock_sendall` in full, counted from `async_send` and not from
-        # `send`, so a message still on another thread's way to the loop
-        # is not double-counted against the one this thread is about to
-        # queue. The lock is what makes "queued" true of the number: two
-        # `async_send` calls racing `sock_sendall` on the same socket
-        # would otherwise interleave their writes on the wire.
+        # `sock_sendall` in full. `_queue` below counts it, on whichever
+        # thread committed the message, before anything is scheduled on
+        # the loop -- so a caller that has just handed several messages
+        # over reads its own hand-off back rather than whatever the loop
+        # has got round to. That is what `advance_getdata` and
+        # `advance_cfilters` (`p2p/callbacks.py`) pace against, and the
+        # only number either could pace against and stay inside
+        # `MAX_QUEUED_SEND_BYTES`: counted on the loop instead, it would
+        # not hold the caller's own earlier sends, and a `getdata`
+        # answer would run as far past its own pacing bound as the loop
+        # is behind -- spending the room that bound leaves above it and
+        # dropping a peer that has committed no protocol violation
+        # (btclib-org/btclib-node#512).
+        #
+        # `_send_lock` is what makes each `+=` and `-=` one step.
+        # `_queue` is reached from `Node`'s own thread (the
+        # `p2p.callbacks` handlers) and from `P2pManager`'s
+        # (`manage_connections`, through `send_ping`), and `_deliver`
+        # decrements from the loop, so a `+=` or `-=` here is a real
+        # read-modify-write race rather than one thread's own sequential
+        # bookkeeping -- the reason `queued_recv_bytes` below carries a
+        # lock too. `_write_lock` guards something else entirely: two
+        # `_deliver` calls racing `sock_sendall` on the same socket
+        # would interleave their writes on the wire.
         self.queued_send_bytes: int = 0
-        self.send_lock = asyncio.Lock()
+        self._send_lock: threading.Lock = threading.Lock()
+        self._write_lock = asyncio.Lock()
 
         # The read-side mirror of `queued_send_bytes` above: every octet
         # of a message `parse_messages` has already handed to
@@ -349,7 +374,7 @@ class Connection:
         # `loop.call_soon_threadsafe` -- `asyncio.Event.set()` is not
         # itself safe to call from a thread other than the one running
         # the loop the event belongs to, the same reason `send` below
-        # reaches `async_send` through `run_coroutine_threadsafe` rather
+        # reaches `_deliver` through `run_coroutine_threadsafe` rather
         # than awaiting it directly.
         self._recv_resume: asyncio.Event = asyncio.Event()
         self._recv_resume.set()
@@ -430,9 +455,9 @@ class Connection:
                 # crosses `MAX_QUEUED_RECV_BYTES`, so a connection whose
                 # own messages are piling up unprocessed stops pulling
                 # more off the wire here rather than growing that queue
-                # further -- the receive-side mirror of `async_send`'s
-                # own refusal to queue past `MAX_QUEUED_SEND_BYTES`
-                # below, and of Core's own `fPauseRecv`
+                # further -- the receive-side mirror of `_queue`'s own
+                # refusal to queue past `MAX_QUEUED_SEND_BYTES` below,
+                # and of Core's own `fPauseRecv`
                 # (`MAX_QUEUED_RECV_BYTES`'s own comment).
                 # btclib-org/btclib-node#462
                 await self._recv_resume.wait()
@@ -477,13 +502,18 @@ class Connection:
         with contextlib.suppress(OSError):  # probably connection dropped
             await self.loop.sock_sendall(self.client, data)
 
-    async def async_send(self, payload: Payload) -> None:
-        """Frame `payload` and send it, dropping the connection past the bound.
+    def _queue(self, payload: Payload) -> bytes | None:
+        """Frame `payload` and count it, or refuse and return `None`.
 
-        Counts what it queues into `queued_send_bytes` before awaiting
-        the write, and refuses to queue at all -- stopping the
-        connection instead -- once that plus this message would exceed
-        `MAX_QUEUED_SEND_BYTES`.
+        The whole of what a send commits to before anything reaches the
+        loop, so that `queued_send_bytes` is true of this connection the
+        moment the caller's own call returns rather than whenever the
+        loop next runs -- the reason argued beside that field.
+
+        `None` twice over: for a payload this node cannot serialize,
+        which is logged and costs that one message; and for one that
+        would take this connection past `MAX_QUEUED_SEND_BYTES`, which
+        stops the connection.
         """
         self.node.logger.debug("Sending message: %s", payload.command)
 
@@ -514,37 +544,80 @@ class Connection:
         # into an arbitrary caller's own control flow
         except Exception as e:  # noqa: BLE001
             self.node.logger.warning("error in serializing message: %s", e)
-            return
+            return None
 
-        if self.queued_send_bytes + len(data) > MAX_QUEUED_SEND_BYTES:
+        with self._send_lock:
+            over_bound = self.queued_send_bytes + len(data) > MAX_QUEUED_SEND_BYTES
+            if not over_bound:
+                self.queued_send_bytes += len(data)
+        if over_bound:
             # Not queued at all, so this message never reaches
             # `queued_send_bytes`: a peer already over budget gets
             # dropped rather than pushed further past it. `stop`
             # cancels `self.task`, the recv loop, so nothing more is
-            # read from this peer either.
+            # read from this peer either, and it is called outside the
+            # lock above: it closes a socket and cancels a future, and
+            # neither wants a lock every send takes held across it.
+            #
+            # It runs on whichever thread called `send`, which for a
+            # `p2p.callbacks` sender is `Node`'s rather than the loop's.
+            # That is deliberately the shape `stop` already documents for
+            # `handle_p2p`, `handle_p2p_handshake` and `callbacks.pong`,
+            # not a new cross-thread close this bound introduces --
+            # btclib-org/btclib-node#518 is where ordering every such
+            # close onto the loop is decided, for all of them at once.
             self.node.logger.warning(
                 "send buffer bound exceeded, dropping connection: %r", self
             )
             self.stop()
-            return
+            return None
+        return data
 
-        self.queued_send_bytes += len(data)
+    async def _deliver(self, data: bytes) -> None:
+        """Write what `_queue` counted, and take it off the books after."""
         try:
-            async with self.send_lock:
+            async with self._write_lock:
                 await self._send(data)
         finally:
-            self.queued_send_bytes -= len(data)
+            with self._send_lock:
+                self.queued_send_bytes -= len(data)
         self.last_send = time.time()
 
+    async def async_send(self, payload: Payload) -> None:
+        """Frame `payload` and send it, dropping the connection past the bound.
+
+        What `send_version` awaits: it runs on the loop already, and
+        wants this node's own `version` on the wire before `run` reads
+        anything back. Every other sender in this tree reaches `send`
+        below instead.
+        """
+        data = self._queue(payload)
+        if data is not None:
+            await self._deliver(data)
+
     def send(self, msg: Payload) -> None:
-        """Schedule `async_send(msg)` onto this connection's own loop.
+        """Frame and count `msg` here, and schedule its write onto the loop.
 
         The synchronous entry point, safe to call from any thread:
         `run_coroutine_threadsafe` is what lets both `Node`'s own thread
         (through the `p2p.callbacks` handlers) and `P2pManager`'s own
-        (through `send_ping`) reach it without ever awaiting directly.
+        (through `send_ping`) reach the loop without ever awaiting
+        directly. Only the write is scheduled: `_queue` runs here, on
+        the caller's own thread, so that a caller sending several
+        messages in a row -- `advance_getdata` (`p2p/callbacks.py`)
+        serving one block per turn of its own loop and pacing on
+        `queued_send_bytes` between two of them -- reads its own
+        hand-off back rather than a count the loop has yet to make.
+
+        Serializing here rather than on the loop is what that costs, and
+        it is paid by the thread that asked for the message: for the
+        largest of them, a block, that is the thread which has just
+        parsed the same block out of `block_db` to build the payload at
+        all.
         """
-        asyncio.run_coroutine_threadsafe(self.async_send(msg), self.loop)
+        data = self._queue(msg)
+        if data is not None:
+            asyncio.run_coroutine_threadsafe(self._deliver(data), self.loop)
 
     async def send_version(self) -> None:
         """Build and send this node's own `version` message."""

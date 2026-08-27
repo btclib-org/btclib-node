@@ -79,15 +79,21 @@ _SUBSIDY = 50 * 10**8
 # One served block, and how many of them the `getdata` below asks for.
 # The product is several times `MAX_QUEUED_SEND_BYTES`, so the answer
 # cannot fit however much of it this node schedules ahead of the peer's
-# own draining; one block is a small enough fraction of the room between
-# `MAX_GETDATA_INFLIGHT_BYTES` and that bound that the pause takes
-# effect well inside it. That size matters, and
-# btclib-org/btclib-node#512 is where it is recorded: the pacing check
-# reads a counter another thread writes, so what it schedules past its
-# own bound is several items rather than the one the room is sized for,
-# and a block near `MAX_PROTOCOL_MESSAGE_LENGTH` spends that room before
-# the pause is reached.
-_SERVED_BLOCK_BYTES = 100_000
+# own draining.
+#
+# A megabyte is what makes the pause itself the subject rather than the
+# room above it: `MAX_QUEUED_SEND_BYTES` is sized for one block past
+# `MAX_GETDATA_INFLIGHT_BYTES` and no more (`p2p/connection.py`), so at
+# this size an answer scheduling items past its own bound spends that
+# room and gets the peer dropped --
+# btclib-org/btclib-node#512, and what
+# `test_a_getdata_answer_pauses_rather_than_filling_the_send_queue`
+# below stands against. It is an ordinary size to be asked for, too: a
+# peer in initial block download asks for
+# `MAX_BLOCKS_PER_GETDATA_BURST` blocks of up to
+# `MAX_PROTOCOL_MESSAGE_LENGTH` (`btclib_node/download.py`), which is
+# what this node asks its own peers for.
+_SERVED_BLOCK_BYTES = 1_000_000
 _BLOCKS_ASKED_FOR = 3 * MAX_QUEUED_SEND_BYTES // _SERVED_BLOCK_BYTES
 
 # What the filter test queues at the connection before it asks for a
@@ -101,7 +107,7 @@ _BLOCKS_ASKED_FOR = 3 * MAX_QUEUED_SEND_BYTES // _SERVED_BLOCK_BYTES
 # traffic is the same state, reached in seconds. Comfortably past that
 # bound, and comfortably short of `MAX_QUEUED_SEND_BYTES`, which would
 # drop the peer instead of pausing it.
-_BLOCKS_QUEUED_AHEAD = 20
+_BLOCKS_QUEUED_AHEAD = 4
 _FILTERED_BLOCKS = 4
 
 
@@ -274,10 +280,10 @@ def test_the_send_queue_bound_drops_a_peer_it_has_no_way_to_pace(
 
     Handed to `Connection.send` directly rather than asked for through a
     `getdata`: what this node sends of its own accord -- a block
-    announcement, an `addr`, a `headers` answer -- reaches `async_send`
-    with no pacing point in front of it, and this bound is the only thing
-    underneath. `queued_send_bytes` never crosses it, the refusal coming
-    before the message is counted.
+    announcement, an `addr`, a `headers` answer -- is counted against
+    this bound with no pacing point in front of it, and this bound is
+    the only thing underneath. `queued_send_bytes` never crosses it, the
+    refusal coming before the message is counted.
     """
     node, _, chain = deaf_peer
     connection = the_connection(node)
