@@ -14,6 +14,27 @@ to check the guess.
 
 ## Unreleased
 
+### A functional test waits for the status it is about (closes #525)
+
+- **`test_a_slow_manager_start_cannot_still_clobber_the_status_it_raced`
+  waits on `node.status`, in place of waiting on the chain length and
+  sampling the status after it** (closes #525): the two are separate
+  writes on the node's own loop thread -- `update_chain` commits the
+  fork, and `finish_sync` a few statements later moves the status --
+  so the chain reaching its new length says nothing about whether the
+  status has moved yet. The window is narrow and real on every
+  interpreter; it was hit on
+  [run 33092703719](https://github.com/btclib-org/btclib-node/actions/runs/33092703719),
+  the free-threaded job of the release pull request, with the suite
+  otherwise green and coverage at 100%.
+- **The wait still fails where the status is genuinely clobbered**
+  (closes #525), which is the regression #398 put the test there to
+  catch: a clobber leaves the status below `HeaderSynced`, `_ready_fork`
+  returns at its own first guard, `finish_sync` is never reached again
+  and the wait runs out. What changes is the failure's shape, a
+  `WaitTimeoutError` in place of an `AssertionError`, not what makes it
+  fail.
+
 ### The retry wraps the resolution, not a probe of it (closes #548)
 
 - **Both publish jobs retry the `uv run` itself, with `--refresh`, in

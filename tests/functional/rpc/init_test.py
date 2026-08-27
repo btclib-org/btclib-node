@@ -113,7 +113,17 @@ def test_a_slow_manager_start_cannot_still_clobber_the_status_it_raced(
             node.block_db.add_block(block)
             block_index.set_downloaded(block.header.hash)
 
-        wait_until(lambda: len(block_index.active_chain) == 1 + 1)
-        assert node.status == NodeStatus.BlockSynced
+        # The chain growing and the status reaching `BlockSynced` are
+        # two writes on the node's own thread, in that order and a few
+        # statements apart -- `update_chain` commits the fork, then
+        # calls `finish_sync` -- so waiting on the first and sampling
+        # the second reads the status the node had before it got there:
+        # btclib-org/btclib-node#525. The status is what this test is
+        # about, and waiting on it is what says the clobber did not
+        # happen. It still fails where the clobber does happen, as a
+        # timeout rather than as an assertion: `_ready_fork` returns at
+        # its own first guard for anything below `HeaderSynced`, so
+        # `finish_sync` is never reached again and the wait runs out.
+        wait_until(lambda: node.status == NodeStatus.BlockSynced)
     finally:
         node.stop()
