@@ -29,6 +29,7 @@ records with the reason. -->
 [![test workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/test.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/test.yml)
 [![vendored-vectors workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/vendored-vectors.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/vendored-vectors.yml)
 [![mutation workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/mutation.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/mutation.yml)
+[![fuzz workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/fuzz.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/fuzz.yml)
 [![lint workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/lint.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/lint.yml)
 [![links workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/links.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/links.yml)
 [![docs workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/docs.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/docs.yml)

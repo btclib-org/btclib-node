@@ -1,0 +1,135 @@
+---
+name: fuzz
+
+# What a stranger sends this node is octets nobody stands between: the
+# peer chooses them, and the parser reading them is reached before any
+# verification. Section 10 of btclib-org/.github's README is where the
+# sentinel is keyed on that property, and where the calendar row below
+# comes from; btclib-org/.github#342 is where the ranking of an entry
+# point reached ahead of verification over one reached after it is
+# argued. fuzz/fuzz_reject.py is what this repository owns of that
+# surface today, and its own docstring is where that is stated;
+# btclib-org/btclib-node#516 is the rest of the surface, behind objects
+# that own a socket, a manager or a node.
+#
+# Atheris run as an ordinary script, and not ClusterFuzzLite, which is
+# what `btclib` runs and would otherwise be the port. ClusterFuzzLite
+# builds the targets inside gcr.io/oss-fuzz-base/base-builder-python,
+# and that image installs one interpreter of its own --
+# `ENV PYTHON_VERSION 3.11.13` in google/oss-fuzz's own
+# infra/base-images/base-builder/Dockerfile, at 76917101a0 -- where
+# pyproject.toml's `requires-python` here is `>=3.14`, so the
+# `pip3 install .` such a build begins with is refused before a target
+# is compiled. Atheris itself is not what refuses it: the wheel this
+# runs is atheris 3.1.0's own cp314 manylinux build. What the container
+# would have bought is the corpus that outlives a run, and this job
+# starts from the committed seeds each time instead.
+#
+# A crash here is an issue against the parser and never a suppression,
+# and the input it was found on becomes a test in the ordinary suite
+# rather than a file under fuzz/corpus/: tests/fuzz_corpus_test.py holds
+# every seed there to being a valid serialization, which is the opposite
+# of what an input a hardened parser now refuses can be.
+
+on:
+  schedule:
+    # Monday, hour 03, at this repository's own minute: section 10's
+    # grid in btclib-org/.github, and not this file's to restate.
+    # Cron runs from the default branch only, so this file fuzzes
+    # nothing until it reaches main -- elsewhere the dispatch below is
+    # the way in
+    - cron: "20 3 * * 1"
+  # the escape hatch, and the way to ask for a fuzzing run before a
+  # release rather than on Monday
+  workflow_dispatch:
+  # No pull_request trigger. Section 10 of the organization standard
+  # would permit one -- a paths filter on fuzz/** and on this file is
+  # exactly the shape it allows, those being paths an ordinary branch
+  # does not touch -- so this is declined rather than unavailable: ten
+  # minutes of exploration is the sentinel's own work, and a branch that
+  # edits a harness is not the occasion to spend it. What a pull request
+  # does owe is the deterministic half -- every seed still parsing and
+  # reserializing to itself -- and that is a test in the suite,
+  # tests/fuzz_corpus_test.py, run by test.yml like any other.
+  #
+  # This row is expected to report nothing until btclib-org/btclib-node#515
+  # lands. The suppression below is contextlib.suppress(BTClibException,
+  # ValueError), and every refusal Reject.parse can reach is one of
+  # those or a UnicodeDecodeError it also suppresses, so no input can
+  # escape by construction. A green Monday is therefore not evidence
+  # about the parser until that suppression is narrowed
+
+# least privilege for the GITHUB_TOKEN: nothing here writes to the
+# repository. In particular no security-events: write -- a crash is read
+# off the artifact below and filed as an issue against the parser, which
+# is what section 10 asks for, rather than uploaded as an alert
+permissions:
+  contents: read
+
+# cancel superseded runs. Named literally rather than through
+# github.workflow, as everywhere else here: in a called workflow that
+# expression is the caller's name.
+# cancel-in-progress because a dispatch is how somebody asks for this
+# now, and waiting behind the scheduled run's own ten minutes would be
+# the opposite of an escape hatch
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    name: Fuzz the parsers a peer reaches
+    runs-on: ubuntu-latest
+    # -max_total_time below is what bounds the fuzzing itself; this
+    # bounds a job hung anywhere else, and is far above the sum of the
+    # steps
+    timeout-minutes: 30
+    steps:
+      # every action is pinned to a commit SHA, the tag in the comment: a
+      # tag, let alone a branch, is a name its owner can move
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # see the checkout of the coverage job in test.yml
+          persist-credentials: false
+      - name: Setup uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          # the wheels uv.lock pins do not change between runs, so the
+          # cache is the difference between a download and a copy
+          enable-cache: true
+          # what .python-version pins, for the reason test.yml writes it
+          # out rather than reading the file
+          python-version: "3.14"
+      # The seed directory is passed second and read only: libFuzzer
+      # writes the units it finds interesting into the first directory
+      # it is given, so an empty one there is what keeps the committed
+      # seeds exactly as they are checked in. That directory is
+      # discarded with the runner -- nothing here carries a corpus
+      # between runs, which is the trade the header states.
+      #
+      # -max_total_time is the arm, at ten minutes for the one harness
+      # this tree has; -timeout is what a single input may take before
+      # it counts as a hang, which is the finding a parser reading a
+      # length prefix off the wire is most likely to produce; and
+      # -artifact_prefix is what puts a crashing input where the upload
+      # below looks for it rather than in the working directory.
+      - name: Fuzz
+        run: |
+          mkdir -p corpus crashes
+          uv run --locked --no-default-groups --group fuzz \
+            python fuzz/fuzz_reject.py corpus fuzz/corpus/fuzz_reject \
+            -max_total_time=600 -timeout=25 -artifact_prefix=crashes/
+      # the input, and nothing else: a crashing unit is what reproduces
+      # the finding locally, and the log above is what says which
+      # exception it raised. if-no-files-found is deliberately quiet --
+      # a run that failed before the fuzzer started has no artifact and
+      # does not need a second red beside the first
+      - name: Upload the crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-crashes
+          path: crashes/
+          if-no-files-found: ignore
+          retention-days: 90

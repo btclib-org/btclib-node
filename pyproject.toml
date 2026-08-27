@@ -178,6 +178,15 @@ lint = [
 # consumer, and it asks for --group test as well, cosmic-ray shelling
 # out to pytest.
 mutation = ["cosmic-ray"]
+# what fuzz.yml runs the harnesses under fuzz/ with, and its own group
+# for the reason mutation above is one: no cell of the gate runs a
+# fuzzer, and the sentinel is the only consumer.
+# The marker is atheris's own wheel list rather than a claim about this
+# tree: the distribution is manylinux x86_64 wheels and no source
+# archive, so a resolution for macOS has nothing to take and `uv sync`
+# on a developer's machine would fail on a group it never runs.
+# fuzz.yml pins ubuntu-latest, which is what the marker admits.
+fuzz = ["atheris>=3.1.0; sys_platform == 'linux'"]
 # what `docs.yml` and `.readthedocs.yaml` both build `docs/source` with:
 # myst-parser for the root markdown files pulled into the toctree,
 # sphinx itself, and furo, the theme `docs/source/conf.py` sets as
@@ -352,6 +361,11 @@ source-include = [
 # pattern here takes out is not reported as one the sdist is missing, and
 # does not have to be named again in [tool.check-sdist] below
 source-exclude = [
+    # the one test that reads something outside tests/: fuzz/ is
+    # git-only below, so this module would collect from an unpacked
+    # sdist and fail on a directory that is not there. Anchored, for
+    # the reason the docs line below is.
+    "/tests/fuzz_corpus_test.py",
     # where sphinx-build writes, CONTRIBUTING.md's docs command and
     # docs.yml both naming docs/build/html: "docs/**" above reaches it,
     # so an sdist built after a local docs build would otherwise carry
@@ -386,6 +400,10 @@ source-exclude = [
 # [tool.uv.build-backend] above is where the omission is decided
 git-only = [
     ".claude/",
+    # the atheris harnesses and the seeds they start from, read by
+    # fuzz.yml and by tests/fuzz_corpus_test.py and by nothing a package
+    # installed from the sdist runs
+    "fuzz/",
     ".gitattributes",
     ".gitignore",
     ".vscode/",
@@ -428,15 +446,17 @@ ignore = ["W002"]
 package = ["src/btclib_node"]
 
 [tool.pytest.ini_options]
-# `tests/interpreters_test.py` is named on its own because it sits
-# beside the two directories rather than under either: it reads
-# pyproject.toml, .python-version and the CI files against one another,
-# so it mirrors no module of the package and drives no node. Naming it
-# is what collects it -- and [tool.coverage.run]'s `source` takes all
-# of tests/, so a module no run collects is a file the floor reports at
-# zero. `tests/integration/` stays out: it needs a bitcoind, which
-# integration-bitcoind.yml installs and a bare run has not got.
+# The two modules beside the directories rather than under either are
+# named on their own: `tests/interpreters_test.py` reads pyproject.toml,
+# .python-version and the CI files against one another, and
+# `tests/fuzz_corpus_test.py` reads fuzz/ -- so each mirrors no module of
+# the package and drives no node. Naming one is what collects it -- and
+# [tool.coverage.run]'s `source` takes all of tests/, so a module no run
+# collects is a file the floor reports at zero. `tests/integration/`
+# stays out: it needs a bitcoind, which integration-bitcoind.yml
+# installs and a bare run has not got.
 testpaths = [
+    "tests/fuzz_corpus_test.py",
     "tests/interpreters_test.py",
     "tests/unit",
     "tests/functional",
@@ -744,6 +764,10 @@ ignore = [
 # docstring on the __init__ too would repeat it rather than add
 # anything a reader does not already have (issue #373).
 "src/btclib_node/exceptions.py" = ["D107"]
+# fuzz.yml hands a harness to the interpreter as a script and nothing
+# imports one, so fuzz/ holds no __init__.py: adding one to satisfy this
+# rule would make the directory look like a package of this project
+"fuzz/*.py" = ["INP001"]
 
 [tool.ruff.lint.pycodestyle]
 max-doc-length = 80
@@ -777,7 +801,17 @@ builtin = "clear"
 # them. By extension rather than by directory, so that
 # tests/_data/README.md itself -- prose *about* the data, not the data
 # -- is still spell checked.
-skip = "*/_data/*.json,*/_data/*.csv,*/_data/*.txt,*/_data/*.bin"
+# fuzz/corpus/'s seeds join them, against the day one is readable rather
+# than because today's three are. pre-commit's own types: [text] filter
+# rejects a file carrying any byte in 0x00-0x06, 0x0E-0x1A, 0x1C-0x1F or
+# 0x7F -- not a NUL alone -- and each of the three seeds carries one, so
+# no speller opens them as things stand. A reject message whose code is
+# 0x40-0x43 and whose fields are long enough is constructible entirely
+# inside that text set, and would be read as prose by a tool that runs
+# with --write-changes. A "correction" inside one would invalidate the round
+# trip tests/fuzz_corpus_test.py holds it to, in a rewrite of a .bin
+# nobody reads a diff for.
+skip = "*/_data/*.json,*/_data/*.csv,*/_data/*.txt,*/_data/*.bin,fuzz/corpus/*"
 # a misspelling written on purpose goes in backticks, and that is a rule
 # rather than a preference: prose that configures a spell checker has to
 # be able to name what it catches, and the comment above costs this hook
@@ -798,6 +832,11 @@ extend-exclude = [
     "**/_data/*.csv",
     "**/_data/*.txt",
     "**/_data/*.bin",
+    # the same seeds [tool.codespell] skips above, for the reason given
+    # there. --force-exclude is what makes this entry reach the hook at
+    # all: pre-commit names files on the command line, and typos
+    # otherwise overrides an exclude for a path named that way
+    "fuzz/corpus/**",
 ]
 
 [tool.mypy]
@@ -809,6 +848,11 @@ extend-exclude = [
 # reads: the hook in .pre-commit-config.yaml passes no paths of its own,
 # for the reason given there. Section 6 of btclib-org/.github's README
 # states the scope as the package, the tests and .github/scripts.
+# fuzz/ is outside it because atheris is: the harnesses import a package
+# the `fuzz` dependency group installs and the lint environment does
+# not, so what mypy would report there is the import rather than the
+# harness. tests/fuzz_corpus_test.py is inside it, and reads a harness
+# without importing one.
 files = ["src/btclib_node", "tests", "scripts", ".github/scripts"]
 # the floor `project.requires-python` declares, and not the interpreter
 # that happens to be running: a name added to the standard library

@@ -71,6 +71,7 @@ _NAMES_ONE = (
     ".github/actions/dev-version/action.yml",
     ".github/workflows/bootstrap-dns.yml",
     ".github/workflows/deps-latest.yml",
+    ".github/workflows/fuzz.yml",
     ".github/workflows/mutation.yml",
     ".github/workflows/os-macos.yml",
     ".github/workflows/test.yml",
