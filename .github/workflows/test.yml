@@ -373,38 +373,38 @@ jobs:
       # today
       - name: Rate the packaging metadata
         run: uv run --locked --only-group check pyroma --min 10 dist/*.tar.gz
-      # what none of the three above does: install the wheel, alone,
-      # from an empty directory. `importlib.metadata.requires` reads the
-      # `Requires-Dist` the wheel carries, so a dependency this checkout
-      # resolves through [tool.uv.sources] -- btclib off its `main`
-      # branch -- is what the published wheel has to declare as an
-      # ordinary floor instead, PyPI refusing a direct reference in
-      # metadata; this is the check for it, since nothing before
-      # `publish-pypi` in release.yml otherwise reads the built wheel's
-      # own metadata rather than pyproject.toml's.
-      # --no-deps, and no import of btclib_node beyond this: PyPI's own
-      # btclib has no release carrying `btclib.p2p.negotiation`, which
-      # `src/btclib_node/download.py` imports unconditionally, so an
-      # ordinary `pip install btclib-node` cannot resolve today whatever
-      # floor is declared here -- issue #381 is that gap, filed rather
-      # than closed by this job, since no floor this table could name
-      # would make PyPI satisfy it. What this step still asserts is the
-      # wheel's own packaging: it installs on its own and its metadata
-      # names a real dependency rather than the git reference this
-      # checkout resolves through
+      # what none of the three above does: install the wheel, alone, from
+      # an empty directory, resolving `Requires-Dist` from PyPI exactly as
+      # `pip install btclib-node` would, and import `Node` from what that
+      # installs. A dependency this checkout resolves through
+      # [tool.uv.sources] -- btclib off its `main` branch -- is what the
+      # published wheel has to declare as an ordinary floor instead, PyPI
+      # refusing a direct reference in metadata; the assertions below are
+      # the check for it, since nothing before `publish-pypi` in
+      # release.yml otherwise reads the built wheel's own metadata rather
+      # than pyproject.toml's.
+      # This was `--no-deps`, metadata-only, from the day this job first
+      # landed until issue #381 closed: PyPI carried no release with
+      # `btclib.p2p.negotiation`, which `src/btclib_node/download.py`
+      # imports unconditionally, so no floor this table could declare
+      # would let an ordinary install resolve, and the fuller form below
+      # would have failed on every run for a reason no floor bump here
+      # could fix. #381's own "Done when" is what this step now clears.
       # After the upload too, for the reason its own comment gives:
       # installing a dependency executes its code, and a compromised one
       # must not reach a `dist/` that still has to be handed on
-      - name: Smoke-test the wheel's metadata, installed on its own
+      - name: Smoke-test the wheel, installed on its own
         run: |
           cd "$RUNNER_TEMP"
           uv venv
-          uv pip install --no-deps "$GITHUB_WORKSPACE"/dist/*.whl
+          uv pip install "$GITHUB_WORKSPACE"/dist/*.whl
           .venv/bin/python -c "
           from importlib.metadata import requires, version
 
+          from btclib_node import Node
+
           name = 'btclib-node'
-          print(version(name))
+          print(version(name), Node)
           reqs = requires(name) or []
           assert any(req.startswith('btclib') for req in reqs), reqs
           assert not any('@' in req for req in reqs), reqs

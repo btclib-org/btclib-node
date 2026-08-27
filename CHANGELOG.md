@@ -14,6 +14,22 @@ to check the guess.
 
 ## Unreleased
 
+### The btclib floor carries `p2p.negotiation` (closes #381)
+
+- **`btclib[secp256k1]>=2026.8.27` in place of `>=2026.8.21`, and
+  `test.yml`'s `dist` job installs the built wheel with no override and
+  imports `Node`, in place of `--no-deps` and a metadata-only read**
+  (closes #381): `src/btclib_node/download.py` imports
+  `btclib.p2p.negotiation.FeeFilter` unconditionally, and no PyPI
+  release before `2026.8.27` carried that module, so an ordinary `pip
+  install btclib-node` could not resolve regardless of the floor
+  declared — the smoke test was narrowed to what it could honestly
+  assert without a released btclib rather than block on a gap release
+  machinery could not close. Verified against the index rather than
+  assumed: installing `2026.8.27` in isolation and importing every
+  btclib module `src/` uses found none missing, and installing the
+  built wheel the same way and importing `Node` succeeded.
+
 ### A bare run collects the integration directory (closes #508)
 
 - **`tests/integration` is a `testpaths` entry** (closes #508): section

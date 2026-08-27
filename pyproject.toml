@@ -30,7 +30,14 @@ dependencies = [
     # The `secp256k1` extra, not an optional-dependencies table of this
     # package's own: btclib-org/btclib-node#361 is where dependency
     # versus extra was decided, and why.
-    "btclib[secp256k1]>=2026.8.21",
+    #
+    # 2026.8.27, not an older release still on the API this code is
+    # written to: `src/btclib_node/download.py` imports
+    # `btclib.p2p.negotiation.FeeFilter` unconditionally, and no PyPI
+    # release before this one carries that module, which is what left
+    # `test.yml`'s own packaging smoke test unable to do more than read
+    # the wheel's metadata (btclib-org/btclib-node#381).
+    "btclib[secp256k1]>=2026.8.27",
 ]
 # What this repository is about, in the order a reader ranks them:
 # PyPI shows keywords as the metadata gives them, and GitHub sorts its
