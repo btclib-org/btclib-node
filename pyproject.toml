@@ -1,11 +1,10 @@
 [project]
 name = "btclib-node"
-# The shape a checkout of `main` carries between releases: the month
-# the cycle is open on, and no day. `RELEASING.md`'s *Which version
-# string is which* has the three shapes one cycle takes and what each
-# means; `version-check` refuses this one on a tag, so it is a version
-# no release can be cut on. The day is added on release day.
-version = "2026.8"
+# Release day: the day added to the month the cycle was open on.
+# `RELEASING.md`'s *Which version string is which* has the three shapes
+# one cycle takes and what each means; this is the one that gets
+# published, and the tag has to say the same thing.
+version = "2026.8.27"
 description = "Bitcoin node in python"
 authors = [{ name = "Giacomo Caironi", email = "giacomo.caironi@gmail.com" }]
 readme = "README.md"
