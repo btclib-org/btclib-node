@@ -3,16 +3,14 @@
 Every change of a release, in full: what changed, why, and what it cost.
 [RELEASE_NOTES.md](./RELEASE_NOTES.md) has the release notes, which say
 what a user has to act on; this file is the record behind them, and is
-where a claim in those notes can be checked. No release has shipped yet
-— `RELEASING.md` has why the `## Unreleased` heading here still names no
-version — so `RELEASE_NOTES.md` opens the same way.
+where a claim in those notes can be checked.
 
 The record starts here. `v0.1.0` was tagged before this file existed and
 nothing is reconstructed for it: a changelog written backwards from a git
 log is a guess at what somebody would have noticed, and there is no way
 to check the guess.
 
-## Unreleased
+## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
 

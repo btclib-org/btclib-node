@@ -255,7 +255,7 @@ secp256k1 = [
 
 [[package]]
 name = "btclib-node"
-version = "2026.8"
+version = "2026.8.27"
 source = { editable = "." }
 dependencies = [
     { name = "btclib", extra = ["secp256k1"] },
