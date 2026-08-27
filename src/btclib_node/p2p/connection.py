@@ -20,6 +20,7 @@ import contextlib
 import secrets
 import threading
 import time
+from importlib.metadata import version
 from io import BytesIO
 from typing import TYPE_CHECKING, cast, override
 
@@ -238,6 +239,31 @@ MAX_QUEUED_RECV_BYTES = 5 * 1000 * 1000
 _HEADER_SIZE = 24
 _LENGTH_OFFSET = 16
 _LENGTH_SIZE = 4
+
+# BIP14's `/Name:Version/`, the shape Core builds in FormatSubVersion
+# (`src/clientversion.cpp:65-70`, at bitcoin/bitcoin@204256c73f) and sends
+# as `/Satoshi:29.0.0/` -- the one thing this node says about itself to
+# every peer it meets, and what a crawler reporting the composition of
+# the network parses.
+#
+# The version is read from the installed distribution rather than
+# written here. `RELEASING.md`'s *Which version string is which*
+# already tracks four spellings of one version, and a fifth that only a
+# peer ever sees is the one nothing in this tree would catch drifting:
+# no gate reads the wire. So this follows the cycle honestly -- a
+# checkout of `main` announces the month it is open on, and what pip
+# installs announces its release day.
+#
+# The name is the project's own, lowercase, and not the distribution's
+# `btclib-node`: it is the organization's name on the network, where
+# btclib is the library this node is a node over.
+#
+# A tree that was never installed has no metadata to read, and this
+# raises there rather than falling back on a placeholder: a user agent
+# is a claim, and one that says `unknown` where the version belongs is
+# worse than a node that says why it will not start.
+# btclib-org/btclib-node#580
+_USER_AGENT = f"/btclib:{version('btclib-node')}/".encode()
 
 
 class Connection:
@@ -709,7 +735,7 @@ class Connection:
             # octets and not text: Core reads the subversion into a
             # string it sanitizes only for the log, so btclib carries
             # what the peer sent rather than what decodes
-            user_agent=b"/Btclib/",
+            user_agent=_USER_AGENT,
             start_height=0,
             # Core's own `fRelay` is about the connection -- a
             # block-relay-only peer, a feeler, `-blocksonly`
