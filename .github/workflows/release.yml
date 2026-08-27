@@ -405,6 +405,14 @@ jobs:
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           repository-url: https://test.pypi.org/legacy/
+      # Inlined here rather than in a pypi-install.yml of its own, which
+      # is where btclib, btclib-secp256k1 and bitcoin-core-rpc each put
+      # their post-publish check: that file reads the index, so it has
+      # nothing to look at until something has been published, and this
+      # repository is cutting its first release. btclib-org/.github#488
+      # is where the organization's own silence on where this check
+      # lives is being settled; moving it there is #502's, once the
+      # index holds a release for it to install.
       # the smoke test runs again here, without constraints, after the
       # upload rather than before: installing a dependency executes its
       # code, and a compromised one must not reach a dist/ still to be
@@ -415,6 +423,21 @@ jobs:
       # index, which is why it is not run there -- it will fail exactly
       # as a real install would until #381 closes, and closing #381 is
       # what makes this step meaningful rather than what makes it exist
+      # the runner carries no uv, and the step below is the only thing in
+      # either publish job that needs one: these jobs download an
+      # artifact and call an action, where every other job in these
+      # workflows reaches uv through a `uses:` of its own. Caching off,
+      # as in version-check above and for the same reason -- this is a
+      # job holding an OIDC token an index accepts, so it downloads
+      # afresh rather than trusting a cache entry another run wrote.
+      # btclib-org/btclib-node#541 is where its absence was measured: a
+      # rehearsal uploaded, then exited 127 on `uv: command not found`,
+      # which on a tag push would have left a published version with
+      # `attest` and `github-release` skipped behind it
+      - name: Setup uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: false
       - name: Install from TestPyPI and use it
         run: |
           # read off the wheel this job just published rather than
@@ -463,6 +486,12 @@ jobs:
       # asserts against the index rather than against a wheel this job
       # already trusted. A scheduled sentinel that asks the same
       # question on its own cadence is left to btclib-org/btclib-node#287
+      # the same, and for the same reason: see publish-testpypi's own
+      # comment above
+      - name: Setup uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: false
       - name: Install from PyPI and use it
         run: |
           wheel=$(basename dist/*.whl)

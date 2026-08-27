@@ -14,6 +14,34 @@ to check the guess.
 
 ## Unreleased
 
+### Both publish jobs set up uv before running it (closes #541)
+
+- **`publish-testpypi` and `publish-pypi` each gain a `Setup uv` step,
+  ahead of the step that installs the published package from the index
+  and imports `Node`** (closes #541): neither job had one, and the
+  runner carries no uv. Measured rather than reasoned -- the first
+  TestPyPI rehearsal
+  ([run 33067874355](https://github.com/btclib-org/btclib-node/actions/runs/33067874355))
+  uploaded successfully and then exited `127` on
+  `uv: command not found`. On a tag push `publish-pypi` has the
+  identical shape, so the release would have put a version on PyPI --
+  a filename that index never accepts twice -- and then failed, taking
+  `attest` and `github-release` down as skipped behind it: published,
+  unattested, with no release page and no bill of materials, and
+  recoverable only by yanking and cutting a patch version. These two
+  jobs had never executed a step before today, `release.yml` having
+  landed with #503 and nothing ever having been published here, so
+  every belief about them was inference from reading the file.
+- **The inline post-publish check says why it is inline** (closes
+  #541): `btclib`, `btclib-secp256k1` and `bitcoin-core-rpc` each put
+  theirs in a `pypi-install.yml` of its own, and each provisions a
+  toolchain explicitly there. That file reads the index, so it has
+  nothing to install until a release exists, which is the case this
+  repository is in; btclib-org/.github#488 is where the standard's own
+  silence on the question is being settled, and #502 is where moving
+  it becomes possible. Without the comment the next reader moves this
+  onto the three-tree shape and loses what the inline step was for.
+
 ### RELEASING.md names `public-api`, and audits the run (closes #538)
 
 - **A *What a red `public-api` means* section, and a numbered post-tag
