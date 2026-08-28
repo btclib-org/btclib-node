@@ -10,6 +10,10 @@ its block has been validated; `get_download_candidates` and
 download is allowed to run, read from both `download.py` and here.
 `invalidate` is what a failed contextual check calls, through
 `main.update_header_index`, to drop a header and everything built on it.
+`stage_status` and `finalize` are `set_status` split into its two halves
+-- the in-memory move and the disk write -- so that `main._finalize_fork`
+can hold the second half back across more than one block; `db.py`'s own
+docstring is where that staging, shared with `UtxoIndex`, is argued.
 """
 
 import enum
@@ -189,6 +193,16 @@ class BlockIndex:
         # of scanning header_dict whole: btclib-org/btclib-node#125
         self.children: dict[bytes, list[bytes]] = {}
 
+        # a status `stage_status` has set in header_dict but not yet
+        # written to the store, the way FilterIndex.pending holds a
+        # filter (filter_index.py's own module docstring). Only
+        # `_finalize_fork`'s own to_add/to_remove loop stages here --
+        # every other caller of set_status writes straight through --
+        # so what accumulates is exactly the status change a block's
+        # own connection or disconnection made, for `finalize` below to
+        # write together with UtxoIndex's own flush. btclib-org/btclib-node#586
+        self.pending: dict[bytes, BlockInfo] = {}
+
         self.init_from_db()
 
     def init_from_db(self) -> None:
@@ -310,11 +324,13 @@ class BlockIndex:
                     self.header_index_pos[added_hash] = base + offset
                 header_index_set = set(self.header_index)
 
-    # `wb` is a write batch: given one, the database moves when that
-    # batch commits, where `header_dict` moves now either way
-    def _insert_block_info(
-        self, block_info: BlockInfo, wb: KeyValueStore | None = None
-    ) -> None:
+    # header_dict (and, the one time a hash is new, children) moving is
+    # not conditioned on anything below: a status staged rather than
+    # written straight through still has to be the one get_first_candidate,
+    # active_chain and every other in-memory reader see for the rest of
+    # this process's own life, `stage_status` below staging only the disk
+    # write and never this.
+    def _record_block_info(self, block_info: BlockInfo) -> None:
         block_hash = block_info.header.hash
         # a genuinely new hash, and not set_status/set_downloaded
         # overwriting the record already there for it: children is the
@@ -325,10 +341,15 @@ class BlockIndex:
                 block_hash
             )
         self.header_dict[block_hash] = block_info
-        key = b"blkinfo-" + block_hash
-        value = block_info.serialize()
+
+    # `wb` is a write batch: given one, the database moves when that
+    # batch commits, where `header_dict` moves now either way
+    def _insert_block_info(
+        self, block_info: BlockInfo, wb: KeyValueStore | None = None
+    ) -> None:
+        self._record_block_info(block_info)
         db = wb or self.db
-        db.put(key, value)
+        db.put(b"blkinfo-" + block_info.header.hash, block_info.serialize())
 
     # the fields a caller changes, read here rather than by the caller,
     # so that what goes back is the record the index holds now
@@ -339,6 +360,42 @@ class BlockIndex:
         self._insert_block_info(
             replace(self.get_block_info(block_hash), status=status), wb
         )
+
+    def stage_status(self, block_hash: bytes, status: BlockStatus) -> None:
+        """Set `block_hash`'s own status now, its own write staged for `finalize`.
+
+        `set_status` above writes through to the store (or to a caller's
+        own `wb`) the moment it is called; this stages the write into
+        `pending` instead, for `finalize` to write out whenever it next
+        runs -- `_finalize_fork`'s own to_add/to_remove loop is the one
+        caller, once per block a fork connects or disconnects, so that a
+        block's own status reaches disk only together with the UTXO
+        cache's flush rather than one write_batch per block. A later
+        call for the same hash before that flush -- a reorg undoing a
+        connection this process staged and never wrote -- simply
+        replaces the pending entry, which is correct: only the state
+        `finalize` is about to write ever needs to reach disk at all.
+        """
+        block_info = replace(self.get_block_info(block_hash), status=status)
+        self._record_block_info(block_info)
+        self.pending[block_info.header.hash] = block_info
+
+    def finalize(self, wb: KeyValueStore | None = None) -> None:
+        """Write every status `stage_status` staged, into `wb` if there is one.
+
+        Mirrors `FilterIndex.finalize`: a write_batch of its own when no
+        `wb` is given, one write inside a caller's own batch otherwise.
+        """
+        if wb is not None:
+            self._write(wb)
+            return
+        with self.db.write_batch() as batch:
+            self._write(batch)
+
+    def _write(self, db: KeyValueStore) -> None:
+        for block_hash, block_info in self.pending.items():
+            db.put(b"blkinfo-" + block_hash, block_info.serialize())
+        self.pending = {}
 
     def set_downloaded(self, block_hash: bytes, *, downloaded: bool = True) -> None:
         """Set `block_hash`'s `downloaded` flag, replacing its `BlockInfo`."""
