@@ -14,6 +14,16 @@ where this file was written rather than where anything was tagged.
 
 ## Unreleased
 
+### The three chain scripts guard their module body (closes #579)
+
+- **`scripts/chains/mainnet.py`, `testnet.py` and `signet.py` build and
+  start their `Node` under `if __name__ == "__main__":`.**
+  `Node.worker_pool` is a `multiprocessing.Pool`, and every start method
+  other than `fork` re-imports `__main__` in each worker
+  (`multiprocessing/spawn.py`'s own `import_main_path`), so an unguarded
+  script built a second `Node` on the same data directory in every pool
+  worker once block download warmed the pool.
+
 ### A rejection test asserts which rule refused a block (closes #587)
 
 - **`Node.last_rejected_block` pairs the hash `update_chain`'s trial
