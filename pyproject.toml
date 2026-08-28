@@ -138,7 +138,7 @@ classifiers = [
 # the project REPOSITORY.md's "Read the Docs, which is
 # btclib-node.readthedocs.io" reads back.
 [project.urls]
-homepage = "https://btclib.org"
+homepage = "https://btclib-node.readthedocs.io"
 documentation = "https://btclib-node.readthedocs.io"
 download = "https://github.com/btclib-org/btclib-node/releases"
 # RELEASE_NOTES.md and not CHANGELOG.md: this url is what an index puts

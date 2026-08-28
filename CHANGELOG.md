@@ -869,6 +869,22 @@ where this file was written rather than where anything was tagged.
   ordinary gate only collects this package and skips its tests without
   that switch and a daemon.
 
+### `[project.urls] homepage` names this tree's own documentation (closes btclib-org/.github#533)
+
+- **`[project.urls] homepage` reads `https://btclib-node.readthedocs.io`,
+  matching `documentation`.** A releasing tree provides documentation,
+  and its home is that documentation rather than `btclib.org`, a
+  sibling's project page. `documentation` stays: an index showing the
+  two fields as one link is cheaper than the field tools read for that
+  purpose specifically.
+- **`REPOSITORY.md`'s Read the Docs section records `.homepage`, read
+  back from the endpoint rather than from `pyproject.toml`'s own copy of
+  it.** The bullet in "What is not configured, and why" that called the
+  field unset is gone with it: the reason it gave for leaving the field
+  unset -- no published site to point at -- was already answered by
+  <https://pypi.org/project/btclib-node/>, and the field it argued was a
+  decision of its own now agrees with `documentation`.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

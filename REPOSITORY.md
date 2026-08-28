@@ -481,6 +481,18 @@ done
   measurement -- and adding it is an action on Read the Docs' own side
   that no `gh api` call in this file takes or reads back, the same
   boundary the trusted publishers above sit on.
+- **The repository's `.homepage` names this same site**, read back from
+  the endpoint rather than from `pyproject.toml`'s own copy of it
+  (issue btclib-org/.github#533):
+
+  ```shell
+  gh api repos/btclib-org/btclib-node --jq '.homepage'
+  # https://btclib-node.readthedocs.io
+  ```
+
+  `[project.urls] homepage` carries the identical string: a releasing
+  tree's home is its own documentation, not `btclib.org`, the sibling's
+  project page the field named before.
 
 ## What is not configured, and why
 
@@ -489,10 +501,3 @@ done
   Read the Docs project above already publishes; `btclib` runs Pages
   over its own repository root instead, which is a website rather than
   a second copy of its documentation.
-- **No `homepage`**, the answer to `.homepage` being empty. `btclib`'s
-  is `https://btclib.org` rather than its documentation site, so this
-  is a decision of its own and not something the Read the Docs section
-  above settles on its way past -- the reason recorded here used to be
-  "there is no published site for it to point at", which
-  <https://pypi.org/project/btclib-node/> has answered since
-  `v2026.8.27`.
