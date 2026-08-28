@@ -438,6 +438,59 @@ def test_a_relative_lock_satisfied_by_elapsed_blocks_connects(node: Node) -> Non
     assert len(block_index.active_chain) == connected + 1
 
 
+def test_reject_block_whose_time_based_relative_lock_is_not_satisfied(
+    node: Node,
+) -> None:
+    """A BIP68 time-based relative lock far in the future fails to connect.
+
+    Unlike the height-based pair above, this exercises `_validate_block`'s
+    own `ancestor_median_time_past` closure -- `header_at_height` walking
+    back through real headers rather than a stub -- since a height-based
+    lock never reaches it.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    connected = len(block_index.active_chain)
+
+    funding = chain[0].transactions[0]
+    type_flag = 1 << 22
+    unmet = relative_locked_spend(
+        funding, funding.vout[0].value, sequence=type_flag | 1000
+    )
+    bad = build_block(
+        chain[-1].header.hash,
+        [generate_coinbase(height=len(chain) + 1), unmet],
+        len(chain),
+    )
+    connect(node, [bad])
+
+    assert bad.header.hash not in block_index.active_chain
+    assert len(block_index.active_chain) == connected
+    rejected_because(node, bad, "bad-txns-nonfinal")
+
+
+def test_a_time_based_relative_lock_satisfied_by_elapsed_time_connects(
+    node: Node,
+) -> None:
+    """A BIP68 time-based relative lock of zero units connects immediately."""
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    connected = len(block_index.active_chain)
+
+    funding = chain[0].transactions[0]
+    type_flag = 1 << 22
+    met = relative_locked_spend(funding, funding.vout[0].value, sequence=type_flag | 0)
+    good = build_block(
+        chain[-1].header.hash,
+        [generate_coinbase(height=len(chain) + 1), met],
+        len(chain),
+    )
+    connect(node, [good])
+
+    assert good.header.hash in block_index.active_chain
+    assert len(block_index.active_chain) == connected + 1
+
+
 def test_reject_a_mempool_spend_that_is_not_final(node: Node) -> None:
     """`verify_mempool_acceptance` refuses the same non-final transaction.
 
@@ -493,6 +546,40 @@ def test_a_mempool_spend_whose_relative_lock_is_satisfied_is_accepted(
 
     funding = chain[0].transactions[0]
     met = relative_locked_spend(funding, funding.vout[0].value, sequence=50)
+    fee = verify_mempool_acceptance(node, met)
+    assert fee >= 0
+
+
+def test_reject_a_mempool_spend_whose_time_based_relative_lock_is_not_satisfied(
+    node: Node,
+) -> None:
+    """`verify_mempool_acceptance` refuses the same unmet time-based lock.
+
+    Exercises `verify_mempool_acceptance`'s own `ancestor_median_time_past`
+    closure, which the height-based pair above never reaches.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+
+    funding = chain[0].transactions[0]
+    type_flag = 1 << 22
+    unmet = relative_locked_spend(
+        funding, funding.vout[0].value, sequence=type_flag | 1000
+    )
+    with pytest.raises(BTClibValueError, match="bad-txns-nonfinal"):
+        verify_mempool_acceptance(node, unmet)
+
+
+def test_a_mempool_spend_whose_time_based_relative_lock_is_satisfied(
+    node: Node,
+) -> None:
+    """`verify_mempool_acceptance` accepts a satisfied time-based lock."""
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+
+    funding = chain[0].transactions[0]
+    type_flag = 1 << 22
+    met = relative_locked_spend(funding, funding.vout[0].value, sequence=type_flag | 0)
     fee = verify_mempool_acceptance(node, met)
     assert fee >= 0
 
