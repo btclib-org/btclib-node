@@ -11,6 +11,10 @@ which chain is active, `utxo_index.UtxoIndex` the spendable outputs on
 it, and `filter_index.FilterIndex` the BIP157/BIP158 filters served over
 p2p; `contextual.py` is the height- and time-dependent validation the
 first of those calls before extending the active chain.
+
+`flush` is what writes all three indexes' own staged changes in one
+batch, and `close` calls it before closing the store -- `db.py`'s
+docstring is where the crash this is the other half of is argued.
 """
 
 from typing import TYPE_CHECKING
@@ -53,7 +57,34 @@ class Chainstate:
 
         self.logger = logger
 
+    def flush(self) -> None:
+        """Write every index's own staged changes, in one atomic batch.
+
+        `main._finalize_fork` stages a connected or disconnected block's
+        own status (`BlockIndex.stage_status`) and its filter
+        (`FilterIndex.add_connected_block`) the same way `UtxoIndex`
+        already staged its spends and creations, across more than one
+        block; writing the three together here -- one `write_batch`, one
+        commit -- is what keeps a status or a filter from ever landing
+        on disk ahead of the UTXO set it was validated against. `db.py`'s
+        own docstring argues why that has to hold.
+        """
+        with self.db.write_batch() as wb:
+            self.block_index.finalize(wb)
+            self.utxo_index.finalize(wb)
+            self.filter_index.finalize(wb)
+
     def close(self) -> None:
-        """Close the shared store, for all three indexes at once."""
+        """Flush every staged index, then close the shared store.
+
+        A clean close loses nothing staged -- the crash this store has
+        to survive is one that never reaches this method at all, and
+        `db.py`'s docstring is where what that crash costs is decided.
+        Safe to call twice: `flush` needs the connection open, so a
+        second call skips it and reaches only `KeyValueStore.close`'s
+        own no-op on an already-closed store.
+        """
         self.logger.info("Closing Chainstate db")
+        if not self.db.closed:
+            self.flush()
         self.db.close()

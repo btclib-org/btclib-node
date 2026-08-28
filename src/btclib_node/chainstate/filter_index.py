@@ -63,6 +63,14 @@ class FilterIndex:
 
     The module docstring above is where the keying, the write-batch
     discipline and the lack of a reorg-time undo are all argued.
+
+    `pending` now survives more than one trial of `main.update_chain`,
+    the same way `UtxoIndex`'s own staging does, so `rollback` cannot
+    stay a blanket wipe either: `add_block` only ever adds a hash that
+    was not already a key (its own guard, checking `get_filter` first),
+    so `_trial_log` needs to remember only which hashes a trial added,
+    not what they replace -- `UtxoIndex`'s own `_undo_log` carries a
+    prior value for exactly the mutations here that never happen.
     """
 
     def __init__(self, parent_db: KeyValueStore, chain: Chain, logger: Logger) -> None:
@@ -71,6 +79,7 @@ class FilterIndex:
         self.logger = logger
 
         self.pending: dict[bytes, tuple[bytes, bytes]] = {}
+        self._trial_log: list[bytes] = []
 
         # no peer serves the genesis block and no `getdata` asks for it,
         # so its filter is built from the chain's own copy, here, rather
@@ -125,6 +134,7 @@ class FilterIndex:
             block_filter.serialize(check_validity=False),
             block_filter.header(previous_header),
         )
+        self._trial_log.append(block_hash)
 
     def add_connected_block(self, block: Block, rev_block: RevBlock) -> None:
         """Index a block from the reverse patch its connection produced.
@@ -199,7 +209,27 @@ class FilterIndex:
             db.put(_HEADER + block_hash, header)
             db.put(_FILTER + block_hash, filter_bytes)
         self.pending = {}
+        # everything just written is durable, so nothing recorded before
+        # now can ever be rolled back to -- UtxoIndex.finalize's own
+        # docstring argues the same clearing
+        self._trial_log = []
 
-    def rollback(self) -> None:
-        """Discard whatever `pending` holds, mirroring `finalize`."""
-        self.pending = {}
+    def trial_mark(self) -> int:
+        """A point in the trial log a failed trial can be rolled back to.
+
+        `UtxoIndex.trial_mark`'s own docstring is where the reason this
+        exists at all -- `pending` surviving more than one trial -- is
+        argued; `main.update_chain` is the one caller.
+        """
+        return len(self._trial_log)
+
+    def rollback(self, mark: int = 0) -> None:
+        """Discard whatever `pending` gained since `mark`.
+
+        `mark` defaults to the very start, which is every direct test
+        of this method: a fresh index, nothing pending before its own
+        trial. `UtxoIndex.rollback`'s own docstring is where a caller
+        with something to protect gets a real one from.
+        """
+        while len(self._trial_log) > mark:
+            del self.pending[self._trial_log.pop()]
