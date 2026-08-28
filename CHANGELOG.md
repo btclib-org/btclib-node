@@ -639,6 +639,44 @@ where this file was written rather than where anything was tagged.
 - **Nothing measures this field.** The standard says nothing about
   `[project].authors` and no test in this tree reads it, which is
   btclib-org/.github#534.
+### The UTXO cache survives across blocks, bounded and flushed with the rest of the chainstate (closes #586)
+
+- **`UtxoIndex.updated_utxo_set` and `removed_utxos` now stage several
+  connected blocks' own changes rather than one, up to
+  `UtxoIndex._FLUSH_BOUND` (500,000 entries), and `main._finalize_fork`
+  writes them only once `UtxoIndex.should_flush` says that bound is
+  reached.** Before, `_finalize_fork` flushed on every connected block
+  -- one sqlite read and one write per input for the length of the
+  chain, the larger half of a sync and the only one of the two this
+  node cannot make faster by adding cores, blocks connecting one at a
+  time on this store's single writer.
+- `BlockIndex.stage_status` and `FilterIndex`'s own `pending` are held
+  back the same way, and `Chainstate.flush` writes all three -- the
+  block a status names, the UTXO set it was validated against, and the
+  filter built from it -- into the one SQLite transaction this store
+  already gives a caller, so it never advances one of the three past
+  another. `Chainstate.close` flushes before closing, so a clean stop
+  loses nothing staged.
+- **What an unclean stop costs is decided rather than left implicit.**
+  The store reopens holding exactly the state of its last flush, and a
+  block validated since is simply offered to `update_chain` again --
+  `check_transactions` included -- the same way a block arriving for
+  the first time is, rather than through a replay path of its own.
+  `db.py`'s docstring argues this against Bitcoin Core's own
+  `FlushStateToDisk`/`ReplayBlocks`, which writes a separate block-tree
+  LevelDB and a separate coins LevelDB in sequence and reconciles a
+  crash landing between the two; this store's one shared, one-batch
+  write has no such gap to reconcile.
+- `UtxoIndex.rollback` and `FilterIndex.rollback` undo only the
+  mutations a failed trial itself made, through a small per-trial undo
+  log, rather than wiping every staged change: a trial rolled back
+  against an earlier, already-succeeded trial's own still-unflushed
+  state would otherwise discard that state too.
+- `UtxoIndex.get_coin` reads a coin through the staged dicts before the
+  store, and `main.verify_mempool_acceptance` calls it rather than
+  reading `UtxoIndex.db` directly, for the same reason the staging
+  exists at all: a coin several blocks' own worth of staging created is
+  real before `finalize` ever writes it out.
 
 ### `Connection.stop` closes the socket on the loop's own thread (closes #518)
 

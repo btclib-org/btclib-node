@@ -18,8 +18,9 @@ from btclib.tx.tx_out import TxOut
 
 from btclib_node import Node, main
 from btclib_node.chains import RegTest
-from btclib_node.chainstate import Chainstate
-from btclib_node.chainstate.block_index import BlockIndex, BlockStatus
+from btclib_node.chainstate import Chainstate, utxo_index as utxo_index_module
+from btclib_node.chainstate.block_index import BlockIndex, BlockInfo, BlockStatus
+from btclib_node.config import Config
 from btclib_node.constants import COINBASE_MATURITY, NodeStatus
 from btclib_node.exceptions import ChainstateInconsistencyError, MissingPrevoutError
 from btclib_node.interpreter import check_transactions
@@ -34,6 +35,7 @@ from tests import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
     from btclib.block import Block
 
@@ -1425,3 +1427,121 @@ def test_a_stop_mid_reorg_rolls_the_trial_back_without_invalidating_it(
     for _ in range(len(fork)):
         update_chain(node)
     assert block_index.active_chain[1:] == hashes(fork)
+
+
+def test_the_utxo_cache_stays_staged_until_the_bound_then_flushes_all_three(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Below `UtxoIndex`'s own bound nothing reaches disk; at it, all three do.
+
+    `_FLUSH_BOUND` is lowered to 2 rather than exercised at its real
+    size (btclib-org/btclib-node#586): each of these two blocks is a
+    bare coinbase, staging exactly one entry, so the first leaves the
+    bound unmet and the second reaches it -- the same shape a mainnet
+    block reaches it in, only smaller.
+    """
+    monkeypatch.setattr(utxo_index_module, "_FLUSH_BOUND", 2)
+    chain = generate_random_chain(2, RegTest().genesis.hash)
+    block_index = node.chainstate.block_index
+    filter_index = node.chainstate.filter_index
+    block_index.add_headers([block.header for block in chain])
+    for block in chain:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+
+    first_out = OutPoint(chain[0].transactions[0].id, 0).serialize(check_validity=False)
+    second_out = OutPoint(chain[1].transactions[0].id, 0).serialize(check_validity=False)
+
+    update_chain(node)
+    # one entry staged, one short of the bound: nothing below is on disk,
+    # even though the in-memory chain already reflects the connection
+    assert block_index.active_chain[1:] == [chain[0].header.hash]
+    assert node.chainstate.db.get(b"utxo-" + first_out) is None
+    stored = BlockInfo.deserialize(
+        node.chainstate.db.get(b"blkinfo-" + chain[0].header.hash), check_validity=False
+    )
+    assert stored.status == BlockStatus.valid_header
+    assert node.chainstate.db.get(b"cfilter-" + chain[0].header.hash) is None
+    # still answers correctly, staged rather than written
+    assert filter_index.get_filter(chain[0].header.hash) is not None
+
+    update_chain(node)
+    # the second block's own entry reaches the bound, and the flush that
+    # trips writes both blocks' status, both filters and both coins --
+    # never only the block that happened to cross it
+    assert node.chainstate.db.get(b"utxo-" + first_out) is not None
+    assert node.chainstate.db.get(b"utxo-" + second_out) is not None
+    for block in chain:
+        stored = BlockInfo.deserialize(
+            node.chainstate.db.get(b"blkinfo-" + block.header.hash), check_validity=False
+        )
+        assert stored.status == BlockStatus.in_active_chain
+        assert node.chainstate.db.get(b"cfilter-" + block.header.hash) is not None
+
+
+def test_a_store_closed_without_a_flush_redoes_only_what_was_never_flushed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unclean stop costs the blocks since the last flush, and nothing else.
+
+    `Chainstate.close` is what flushes on a clean stop -- skipped here,
+    on purpose, to stand in for a kill or a crash that never reaches it.
+    The reopened store is not corrupted by that: it simply holds
+    whatever the last actual flush wrote, `db.py`'s own docstring
+    argues why, and driving it through `update_chain` again reaches the
+    same chain a clean run would have, recomputed rather than read back.
+    """
+    monkeypatch.setattr(utxo_index_module, "_FLUSH_BOUND", 2)
+    config = Config(
+        chain="regtest", data_dir=tmp_path, allow_p2p=False, allow_rpc=False, debug=True
+    )
+    first = Node(config)
+    first.status = NodeStatus.HeaderSynced
+
+    chain = generate_random_chain(3, RegTest().genesis.hash)
+    block_index = first.chainstate.block_index
+    block_index.add_headers([block.header for block in chain])
+    for block in chain:
+        first.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    for _ in range(len(chain)):
+        update_chain(first)
+    # all three connected, in memory -- one flush happened along the way
+    # (the second block reached the bound), the third block's own entry
+    # left staged rather than written
+    assert block_index.active_chain[1:] == [block.header.hash for block in chain]
+
+    # an unclean stop: the connection closes with nothing flushed for
+    # it, unlike Chainstate.close, which always flushes first. Every
+    # other handle this node opened is still closed explicitly, the same
+    # teardown tests/conftest.py's own unstarted_node_context uses,
+    # since only the flush is what this test means to skip.
+    first._close_worker_pool()  # noqa: SLF001
+    first.p2p_manager.peer_db.close()
+    first.chainstate.db.close()
+    first.block_db.close()
+    first.p2p_manager.loop.close()
+    first.rpc_manager.loop.close()
+    first.logger.close()
+
+    reopened = Node(config)
+    reopened.status = NodeStatus.HeaderSynced
+    # the store opens without error, and reflects only the one flush
+    # that actually happened: fewer than all three blocks are durable
+    assert len(reopened.chainstate.block_index.active_chain) < len(chain) + 1
+
+    for _ in range(len(chain)):
+        update_chain(reopened)
+    assert reopened.chainstate.block_index.active_chain[1:] == [
+        block.header.hash for block in chain
+    ]
+    for block in chain:
+        assert reopened.chainstate.filter_index.get_filter(block.header.hash) is not None
+
+    reopened._close_worker_pool()  # noqa: SLF001
+    reopened.p2p_manager.peer_db.close()
+    reopened.chainstate.close()
+    reopened.block_db.close()
+    reopened.p2p_manager.loop.close()
+    reopened.rpc_manager.loop.close()
+    reopened.logger.close()
