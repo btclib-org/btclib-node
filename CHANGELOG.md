@@ -426,6 +426,61 @@ where this file was written rather than where anything was tagged.
   limit, since a resolver reintroduced without them would pass its own
   tests.
 
+### Two platform sentinels, and neither gates a merge (closes #528, issue #430)
+
+- **`.github/workflows/os-ubuntu.yml` runs the suite on `ubuntu-latest`
+  and `ubuntu-24.04-arm`, weekly** (closes #528), which is where aarch64
+  Linux is exercised at all. It is not a sweep over pure Python:
+  `pyproject.toml` depends on `btclib[secp256k1]`, so a compiled
+  libsecp256k1 is resolved and imported at run time, and an aarch64
+  runner selects a different published wheel of it from the one the
+  gate's cell installs.
+- **Its matrix is the image, and the interpreter axis is absent by
+  decision** -- which the header states, so that a single column does
+  not read as a matrix somebody left half written. `requires-python` is
+  `>=3.14` because an application takes the newest interpreter its
+  dependencies allow, which is what issue #507 settled, so that axis has
+  one value here and that value is the merge gate's own cell. The
+  sibling repositories that carry this workflow sweep interpreter
+  against image, and copying that shape would mean giving the axis
+  versions this package does not claim.
+- **`.github/workflows/os-windows.yml` runs the same suite on
+  `windows-latest`, weekly, and is expected to fail** (issue #430).
+  `loop.add_reader`, which `src/btclib_node/p2p/manager.py` and
+  `src/btclib_node/rpc/manager.py` both call, belongs to the selector
+  event loop rather than to the Proactor loop Windows takes by default;
+  `signal.SIGTSTP`, which `install_signal_handlers` passes to
+  `signal.signal`, does not exist there. Issue #429 records that pair and
+  calls it a lower bound. A sentinel reports where a gate refuses,
+  so it may land red, and its runs produce the list that prices the gate
+  cell issue #430 stays open for.
+- **No Windows classifier lands with it** (issue #430): a classifier is
+  a claim made to an index, and the claim would be that a pull request
+  is checked there, which is the gate cell rather than the sentinel.
+  `pyproject.toml`'s comment beside `Operating System :: POSIX` says
+  that, and names the two calls the suite reaches.
+- **Both cells pass `--no-cov`**, `test.yml`'s coverage job being where
+  the floor is measured and gated: the floor is a claim about one
+  interpreter on one image, and a cell held to it would report a
+  platform's own finding under the name of the coverage number.
+- **`tests/interpreters_test.py` gains both files**, its list of the CI
+  files that name an interpreter being written out rather than derived.
+- **The two badges sit after `os-macos`'s in `README.md`**, where
+  section 2's fixed order puts them, that order over the sentinels being
+  section 10's calendar.
+- **`test.yml`'s header names the three platform sentinels beside it**,
+  rewritten rather than extended: the paragraph's own subject was that
+  a Windows sentinel would be the support claim rather than its check.
+  `REPOSITORY.md`'s concurrent-job ceiling names the platform axis by
+  the sentinels that carry it rather than by `os-macos.yml` alone.
+  `CONTRIBUTING.md`'s walk of the workflows that only report names
+  both beside `os-macos.yml`. `release.yml`'s header said `os-macos.yml`
+  was this tree's only platform sentinel and that neither of these two
+  was here, and `RELEASING.md` named the one where there are now three:
+  both say the set rather than the member, and `release.yml`'s pointer
+  at `test.yml` resolves again, that header having said what each of the
+  two *would* ask and now saying what each of the three does.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

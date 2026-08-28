@@ -1,0 +1,108 @@
+---
+name: os-windows
+
+# The platform this package does not claim. What breaks there is known
+# from reading the source; this file is where it gets run.
+#
+# This is expected to fail, and the failure is the output. A red run
+# here is this workflow working: it is not a broken workflow to
+# disable, and it is not weakened into a green one either -- a job that
+# passed by skipping what breaks would answer the one question this
+# exists to ask with the word of whoever wrote the skip.
+#
+# What is already known to stand in the way, and where each of it is
+# called, is pyproject.toml's comment beside `Operating System ::
+# POSIX`, with issue #429 behind it. The list is what this file's runs
+# extend, so it is kept there rather than copied here.
+#
+# A sentinel is not the support claim. Issue #430 is where the
+# classifier and the test.yml gate cell that would carry it are
+# decided, and what this workflow's runs buy that issue is the price of
+# the cell -- a gate cannot be budgeted against a list nobody has.
+#
+# It gates no commit and no merge, which is what lets it land red at
+# all: btclib-org/.github#85 is the ceiling that keeps a platform row
+# out of the gate, and here the row could not be in the gate anyway.
+
+on:
+  schedule:
+    # section 10 of btclib-org/.github's README.md is the calendar, and
+    # this line is not the place to restate it: one grid, in one file,
+    # naming the day for the workflow and the minute for the repository.
+    # Only the default branch schedules anything, so on any other branch
+    # the dispatch below is the way in
+    - cron: "20 5 * * 5"
+  # the escape hatch: the platform on demand, for a branch that touches
+  # an event loop, a signal, a path, or a subprocess
+  workflow_dispatch:
+  # so a change to this file is checked by the thing it configures, the
+  # same way os-macos.yml is
+  pull_request:
+    # the type list every workflow here carries, for the reasons the same
+    # list carries in test.yml
+    types: [opened, reopened, synchronize, ready_for_review, closed]
+    paths:
+      - .github/workflows/os-windows.yml
+
+# least privilege for the GITHUB_TOKEN: everything running in a job can
+# read it, and nothing here writes
+permissions:
+  contents: read
+
+# cancel superseded runs. Named literally rather than through
+# github.workflow, and by the pull request's number where there is one,
+# for the reason test.yml's own group gives: neither the schedule nor a
+# dispatch carries pull_request context, so github.ref still groups
+# either of those, and a closed pull request cannot land in their group
+concurrency:
+  group: os-windows-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suite-windows:
+    name: Run the suite on Windows
+    # a draft pull request is work its author is not asking anyone to
+    # read yet, and spends no runner here either. A closed one spends
+    # none: the trigger above takes that event only so the landing
+    # supersedes a run this ref's group is still holding
+    if: ${{ !github.event.pull_request.draft && github.event.action != 'closed' }}
+    # one cell rather than two: the interpreter axis test.yml gates asks
+    # whether this code depends on the GIL, and this one asks whether it
+    # depends on POSIX. Crossing them asks neither a new question and
+    # spends a second slot at the ceiling above (issue #430)
+    runs-on: windows-latest
+    # the same bound test.yml sets on the same suite: what it bounds is
+    # a runner wedged before or between the tests, not the work. A
+    # failure this workflow is for arrives long before it
+    timeout-minutes: 30
+    steps:
+      # every action is pinned to a commit SHA, the tag in the comment: a
+      # tag, let alone a branch, is a name its owner can move, and these
+      # run in a job that can read the workflow token
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # for the reason test.yml's checkout gives: nothing here
+          # performs an authenticated git operation, so the token has no
+          # reason to stay in .git/config where a later step can read it
+          persist-credentials: false
+      - name: Setup uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          # the cache holds what uv.lock resolves: btclib_secp256k1 and
+          # cffi both publish a wheel for this interpreter on this
+          # platform, so an install failure here would be a finding of
+          # its own rather than the environment
+          enable-cache: true
+          # what .python-version pins, written out for the reason
+          # test.yml writes it out
+          python-version: "3.14"
+      # --no-cov, against the --cov pyproject.toml's addopts carries:
+      # the floor is a claim about one interpreter on one image, which
+      # test.yml's coverage job is where it is measured and gated. Here
+      # it would put a coverage percentage on top of the platform
+      # failures this job exists to report, and under the floor the run
+      # would fail for the wrong reason
+      - name: Run the suite
+        run: >
+          uv run --locked --no-default-groups --group test pytest --no-cov

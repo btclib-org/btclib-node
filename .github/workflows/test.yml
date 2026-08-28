@@ -19,16 +19,14 @@ name: test
 # ceiling and no extra wait, against a review that takes longer than
 # either cell does regardless.
 #
-# What the design still puts beside this file is a platform sentinel
-# each, and here that is one workflow rather than three. `ubuntu.yml`
-# would run this file's own image over the interpreter axis this gate
-# already covers, both of its cells. `windows.yml` would check a claim
-# this package does not make: pyproject.toml's own classifier comment
-# says why Windows is left out and what is already known to stand in
-# its way -- a sentinel here would be the claim rather than its check.
-# `os-macos.yml` is the one that asks something nothing here asks, and
-# its own header says what. Issue #33 tracks what is still missing
-# here.
+# What the design puts beside this file is a platform sentinel each,
+# and here that is three workflows, none of which gates a merge:
+# `os-macos.yml` runs this suite on Darwin, `os-ubuntu.yml` on aarch64
+# Linux beside the image this job uses, and `os-windows.yml` on the
+# platform pyproject.toml's classifiers do not name. Each header says
+# what its own image adds. The last of the three is expected red, and
+# the gate cell and the classifier that would answer it are issue
+# #430's rather than this file's.
 
 on:
   push:
