@@ -33,7 +33,15 @@ closed on the way out.
   manager and handler.
 - `src/btclib_node/chainstate/` is the block index, the UTXO set and the
   compact filter index; `src/btclib_node/block_db/` is the blocks and
-  their undo data.
+  their undo data. **Genesis sits at index 0 of the active chain**, so
+  `active_chain[i]` has height `i` and `len(active_chain)` is the
+  height a block extending the chain would connect at -- which is what
+  a mempool check wants, a transaction there being judged as if it were
+  in the next block, and is Core's own `GetSpendHeight`
+  (`m_chain.Height() + 1`). `verify_mempool_acceptance` carried
+  `len(active_chain) + 1` until btclib-org/btclib-node#569, harmless
+  only because every regtest activation height is 0 and the number had
+  never had to be right.
 - `src/btclib_node/db.py` is the ordered key-value store all of those
   are kept in. Its docstring is where the implementation is argued, and
   **key order is load-bearing**: a reader that stops at the first key
@@ -328,6 +336,54 @@ Do not use Fable unless explicitly instructed.
   check that tells a safe rebase from a fused one, by reconstructing the file
   rather than reading the rebase's silence, and it is what a rebase across a
   union file is checked against.
+
+  **The silence hides two defects and they do not travel together**, which
+  is why the reconstruction is owed even where one of them has stopped
+  being a defect. The driver places the arriving entry below the one
+  already there, and it eats the blank line before that entry's own
+  heading. The first is the *wanted* result under the organization's
+  bottom-append rule, section 9 of btclib-org/.github's README, and was
+  a defect only while the convention was newest-first; the second is
+  damage under either, and is what `markdownlint-cli2 --fix` writes back
+  on the next hook run. Measured three times in one morning: the two
+  rebases taken before that rule changed carried both, the one taken
+  after carried only the blank line. Reading the silence does not say
+  which happened.
+
+- **The docs build is a third gate, and it is the one a report leaves
+  out.** `CONTRIBUTING.md` names three; a report naming two reads as
+  complete, and the reader supplies the third from memory. What it
+  catches that nothing else does is RST: a closing backtick directly
+  followed by a bare letter -- `` `Coin`s `` -- is not a valid
+  end-string, so docutils reports the *opening* backtick as
+  unterminated and `sphinx-build -W` turns that warning into exit 1,
+  where `pytest` and the lint gate both stay green. It is latent rather
+  than obvious because autodoc never renders an underscore-prefixed
+  function's docstring, so the same pattern sat unreported in
+  `_default_worker_count` and `_tasks` until a branch put it on a class
+  in `__all__` (btclib-org/btclib-node#569).
+- **`caplog` cannot see anything this tree's logger emits, and fails
+  silently when asked to.** `Node.logger` is a `Logger(logging.Logger)`
+  instantiated directly rather than through `logging.getLogger()`, so
+  `logger.parent` is `None` and no record ever propagates to the root
+  logger pytest's capture handler sits on. `caplog.records` stays empty,
+  which means a test asserting against it passes by asserting nothing.
+  This is not a matter of the message needing to be parsed out of a
+  traceback: it is no visibility at all, in any test in this tree. A
+  test that has to observe this logger attaches a handler to it, or
+  reads back the file `log_path` names, and proves it can fail before
+  it is believed (btclib-org/btclib-node#587).
+- **Another session may be working this same tree at the same time, and
+  the tracker is not enough to tell.** Two sessions produced two
+  branches for one issue within two minutes, with near-identical diffs
+  and neither having skipped a check: the first ran `gh pr list` and
+  `git worktree list` before starting and found nothing, the other
+  branch not existing yet. `ListAgents` lists the peer sessions on the
+  machine and `SendMessage` reaches them, which is how that collision
+  was settled and how the two then divided the tracker between them.
+  This repository's own `git worktree list` is the cheapest live signal:
+  another session's worktrees are in it, under that session's own
+  scratchpad path.
 
 ## Conventions to match
 

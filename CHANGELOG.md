@@ -556,6 +556,33 @@ where this file was written rather than where anything was tagged.
   and `docs.yml`, which said read the docs builds this tree once a
   project is connected there.
 
+### CLAUDE.md records what this batch cost a round each to learn (closes #600)
+
+- **The docs build is named as the third gate, with what it alone
+  catches**: a closing backtick followed by a bare letter is not a
+  valid RST end-string, `sphinx-build -W` fails on it, and `pytest`
+  and the lint gate both stay green. Latent until it lands on a
+  rendered docstring, autodoc never reading an underscore-prefixed
+  function's own.
+- **`caplog` sees nothing this tree's logger emits**, `Node.logger`
+  being built without `logging.getLogger()` and so having no parent to
+  propagate to. A test asserting against `caplog.records` passes by
+  asserting nothing, which is why the entry says how to observe that
+  logger instead.
+- **A peer session may hold the same tree**, which the tracker does not
+  say and `git worktree list` does: two sessions produced two branches
+  for one issue within two minutes, each having checked first.
+- **The `union` driver's silence hides two defects that do not travel
+  together** -- the entry placed below the one already there, which
+  the organization's bottom-append rule wants, and the eaten blank
+  line, which is damage under either convention. Measured three times;
+  the reconstruction is owed because the silence does not say which
+  happened.
+- **`len(active_chain)` is the height a block extending the chain
+  would connect at**, genesis sitting at index 0, which is what a
+  mempool check wants and what an off-by-one in
+  `verify_mempool_acceptance` had wrong until #569.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
