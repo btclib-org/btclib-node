@@ -481,6 +481,47 @@ where this file was written rather than where anything was tagged.
   at `test.yml` resolves again, that header having said what each of the
   two *would* ask and now saying what each of the three does.
 
+### BIP30, finality and BIP68 gate a connecting block (closes #570, closes #572)
+
+- **A block that creates an output already unspent elsewhere on the
+  chain does not connect** (`UtxoIndex.add_block`'s own BIP30 check,
+  closes #570) -- Core's `bad-txns-BIP30` (`ConnectBlock`,
+  `src/validation.cpp:2401-2431`, at bitcoin/bitcoin@204256c73f),
+  CVE-2012-1909's shape: without it, a second block sharing an
+  already-mined, still-unspent txid silently overwrote the first
+  block's own coin, and a reorg away from the second deleted an output
+  the first block's own branch still carried. Checked over every
+  transaction the block carries, coinbase included, before either of
+  `add_block`'s own two loops stages a write -- against the state
+  exactly as it stood before this block, matching Core's own separate
+  pre-pass.
+- **`Chain.bip30_exceptions` carries the two 2010 mainnet blocks Core's
+  own `IsBIP30Repeat` exempts** (`src/validation.cpp:6218-6222`, same
+  commit), empty on every other network. Once BIP34 binds (#571), a
+  block's own coinbase commits to its own real height, which two
+  different heights can never share -- the property that makes a new
+  violation of this kind unreachable, and the reason the two 2010
+  blocks are the only ones this check will ever have to carve out.
+- **A transaction whose `lock_time` has not been reached does not
+  connect, and does not enter the mempool either**
+  (`interpreter.check_final_transactions`/`is_final_tx`, closes #572)
+  -- Core's `bad-txns-nonfinal` (`ContextualCheckBlock`,
+  `src/validation.cpp:4158-4166`, at bitcoin/bitcoin@204256c73f).
+  Checked against the previous block's median time past once BIP113
+  binds -- the same height `Chain.flags` already turns
+  `CHECKSEQUENCEVERIFY` on at, Core deploying both as one soft fork --
+  and against the block's own timestamp before that; the mempool path
+  checks unconditionally against the active chain tip's own median
+  time past, matching Core's own `CheckFinalTxAtTip`.
+- **A non-coinbase transaction whose BIP68 relative lock is not yet
+  satisfied does not connect, and does not enter the mempool either**
+  (`interpreter.check_sequence_locks`) -- Core's
+  `SequenceLocks`/`CalculateSequenceLocks`/`EvaluateSequenceLocks`
+  (`src/consensus/tx_verify.cpp:45-115`, same commit), over each
+  input's own `Coin.height` (#569). A relative lock binds a transaction
+  of version 2 or above only, and an input carrying the disable bit is
+  skipped, both matching BIP68.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
