@@ -589,6 +589,110 @@ _GETDATA_BLOCK_TYPES = (InventoryType.MSG_BLOCK, InventoryType.MSG_WITNESS_BLOCK
 # by hand the way Core's own count does.
 MAX_GETDATA_INFLIGHT_BYTES = int(2 * MAX_PROTOCOL_MESSAGE_LENGTH)
 
+# What one entry costs inside a `notfound`, read off `Inventory.serialize`
+# rather than hardcoded: a type code (four octets) and a hash (thirty-two),
+# fixed width whatever the entry names. `advance_getdata` below sums this
+# over every miss it has collected but not yet sent, so that a `notfound`
+# still being assembled counts against `MAX_GETDATA_INFLIGHT_BYTES` the
+# same way a block or a transaction already sent does -- nothing else made
+# a miss cost anything, and btclib-org/btclib-node#529 is a peer dropped by
+# a `notfound` for exactly that reason: every item this call could not
+# serve, batched with no pacing check in front of the send.
+#
+# `Message`'s own envelope and the `var_int` length prefix ahead of the
+# entries are both left out of this per-item figure: at
+# `MAX_GETDATA_INFLIGHT_BYTES`'s own scale (megabytes), the few dozen
+# octets either adds is immaterial to when the check below trips -- the
+# same magnitude argument this function's own docstring already makes
+# about a missed `queued_send_bytes` increment being one ping's worth
+# against a whole block's.
+_NOTFOUND_ITEM_BYTES = len(Inventory().serialize())
+
+
+def _notfound_pace(
+    conn: Connection, not_found_bytes: int, not_found_len: int
+) -> tuple[bool, bool]:
+    """Answer whether `advance_getdata`'s pending batch should flush or pause.
+
+    Pulled out of the loop below rather than inlined, alongside
+    `_serve_getdata_item`: `advance_getdata` itself is what ruff's own
+    complexity check counts branches against, and every `if` moved into
+    a helper is one fewer counted there, whichever helper it lands in.
+    Neither of the two questions here reads or writes anything the loop
+    itself needs to -- both are pure functions of the three numbers a
+    caller already has to hand. "Flush" wins over "pause" where both
+    would otherwise apply: sending what is already owed, even while
+    over budget, is what lets the very next check see a `not_found`
+    that is empty again, rather than looping on the same decision.
+
+    **This pacing has no counterpart in Bitcoin Core, and the reason is
+    a difference in what a full send buffer does.** Core's
+    `ProcessGetData` (`src/net_processing.cpp`,
+    at bitcoin/bitcoin@05e49b342f) checks `pfrom.fPauseSend` before every
+    item, hit or miss, but a miss only does `vNotFound.push_back` and
+    `fPauseSend` is driven by `m_send_memusage` -- bytes already handed
+    to the transport -- so a request answered entirely in misses costs
+    that signal nothing, and the `notfound` at the end of the loop is
+    pushed unconditionally. Core can afford that: `nSendBufferMaxSize`
+    is only ever read to set `fPauseSend`, which makes the node stop
+    *reading* from that peer, and nothing anywhere disconnects on send
+    volume. This tree's `MAX_QUEUED_SEND_BYTES`
+    (`p2p/connection.py`) does disconnect, so the same unbounded batch
+    that merely pauses Core drops an honest peer here
+    (btclib-org/btclib-node#529). The pause point is what this tree owes
+    for having that bound at all; it is not a rule Core has and this
+    tree was missing.
+    """
+    over_budget = conn.queued_send_bytes + not_found_bytes >= MAX_GETDATA_INFLIGHT_BYTES
+    should_flush = bool(not_found_len) and (over_budget or not_found_len >= MAX_INV_SZ)
+    return should_flush, over_budget
+
+
+def _serve_getdata_item(
+    node: Node,
+    conn: Connection,
+    item: Inventory,
+    not_found: list[Inventory],
+    not_found_bytes: int,
+) -> int:
+    """Serve one popped item, appending a miss to `not_found` in place.
+
+    The other half of `advance_getdata`'s own body pulled out for the
+    same reason `_notfound_pace` above was: what item type dispatches to
+    what answer does not need to be inline for the loop around it to
+    read correctly, and keeping it out is what holds `advance_getdata`
+    itself under ruff's own complexity bound. Returns the running
+    `not_found_bytes` total, grown by `_NOTFOUND_ITEM_BYTES` on a miss
+    and left alone otherwise -- `not_found` itself is mutated in place,
+    a `list` being one of the few values this tree passes that way
+    rather than returning a new one, since the caller's own loop already
+    holds no other reference to it worth preserving unmutated.
+    """
+    if item.type_code in _GETDATA_TX_TYPES:
+        if not conn.relay_tx:
+            return not_found_bytes
+        wtxid = item.type_code == InventoryType.MSG_WTX
+        tx = node.mempool.get_tx(item.hash, wtxid=wtxid)
+        if tx:
+            include_witness = item.type_code in (
+                InventoryType.MSG_WITNESS_TX,
+                InventoryType.MSG_WTX,
+            )
+            conn.send(TxMsg(tx, include_witness=include_witness))
+        else:
+            not_found.append(item)
+            not_found_bytes += _NOTFOUND_ITEM_BYTES
+    elif item.type_code in _GETDATA_BLOCK_TYPES:
+        block = node.block_db.get_block(item.hash)
+        if block:
+            include_witness = item.type_code == InventoryType.MSG_WITNESS_BLOCK
+            conn.send(
+                BlockMsg(block, include_witness=include_witness, check_validity=False)
+            )
+    # else: neither family, popped and otherwise ignored -- see the
+    # comment beside _GETDATA_TX_TYPES above.
+    return not_found_bytes
+
 
 def advance_getdata(node: Node, conn: Connection, items: deque[Inventory]) -> bool:
     """Serve from the front of `items` while `conn`'s own queue has room.
@@ -648,38 +752,56 @@ def advance_getdata(node: Node, conn: Connection, items: deque[Inventory]) -> bo
     rather than once for the whole original request: Core's own
     `vNotFound` is a per-call local too, built and sent fresh by every
     `ProcessGetData` call rather than carried across them.
+
+    **A miss is paced too, against the same bound, though nothing is
+    sent for one the moment it is found.** `not_found_bytes` is this
+    call's own running total of what a `notfound` batching every miss
+    collected so far would cost -- `_NOTFOUND_ITEM_BYTES` per entry,
+    counted the instant a miss joins `not_found` rather than once the
+    batch is finally sent. Read together with `conn.queued_send_bytes`
+    at the top of the loop, it is what makes a run of misses pause the
+    same way a run of blocks already does, rather than accumulating
+    for free and landing in one send with no pacing check in front of
+    it (btclib-org/btclib-node#529): before this, nothing charged a
+    miss anything, so `conn.queued_send_bytes` could still read zero
+    after fifty thousand of them, and the loop had no reason to stop
+    before popping every item this request named.
+
+    A batch is also flushed -- sent and reset, without pausing the
+    call -- once it reaches `MAX_INV_SZ` on its own, whatever
+    `conn.queued_send_bytes` reads: `NotFound.assert_valid` refuses
+    more entries than that, and `node.pending_getdata` can hand this
+    function a backlog of `MAX_PENDING_GETDATA_ITEMS` (`getdata` below),
+    twice `MAX_INV_SZ`, drawn from two stacked requests rather than the
+    one this bound was sized against. All of that many being misses is
+    an entirely mundane way to reach it -- every hash in both requests
+    having left the mempool between the first `getdata` and the second
+    is enough -- and at `_NOTFOUND_ITEM_BYTES` apiece the byte bound
+    above alone would let it happen: the whole backlog's own worth of
+    misses is still short of `MAX_GETDATA_INFLIGHT_BYTES`. Chunking on
+    the item count this class already enforces is what keeps that
+    backlog from reaching `NotFound`'s own constructor as one batch
+    that raises instead of one this connection can be paced on.
     """
     not_found: list[Inventory] = []
+    not_found_bytes = 0
     while items:
         if conn.status == P2pConnStatus.Closed:
             return True
-        if conn.queued_send_bytes >= MAX_GETDATA_INFLIGHT_BYTES:
+        should_flush, should_pause = _notfound_pace(
+            conn, not_found_bytes, len(not_found)
+        )
+        if should_flush:
+            conn.send(NotFound(not_found))
+            not_found = []
+            not_found_bytes = 0
+            continue
+        if should_pause:
             break
         item = items.popleft()
-        if item.type_code in _GETDATA_TX_TYPES:
-            if not conn.relay_tx:
-                continue
-            wtxid = item.type_code == InventoryType.MSG_WTX
-            tx = node.mempool.get_tx(item.hash, wtxid=wtxid)
-            if tx:
-                include_witness = item.type_code in (
-                    InventoryType.MSG_WITNESS_TX,
-                    InventoryType.MSG_WTX,
-                )
-                conn.send(TxMsg(tx, include_witness=include_witness))
-            else:
-                not_found.append(item)
-        elif item.type_code in _GETDATA_BLOCK_TYPES:
-            block = node.block_db.get_block(item.hash)
-            if block:
-                include_witness = item.type_code == InventoryType.MSG_WITNESS_BLOCK
-                conn.send(
-                    BlockMsg(
-                        block, include_witness=include_witness, check_validity=False
-                    )
-                )
-        # else: neither family, popped and otherwise ignored -- see the
-        # comment beside _GETDATA_TX_TYPES above.
+        not_found_bytes = _serve_getdata_item(
+            node, conn, item, not_found, not_found_bytes
+        )
     if not_found:
         conn.send(NotFound(not_found))
     return not items

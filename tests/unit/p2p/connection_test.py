@@ -27,7 +27,7 @@ from btclib.p2p.block_filters import BlockFilterType, CFilter
 from btclib.p2p.handshake import Verack, Version
 from btclib.p2p.inventory import GetData, Inventory, InventoryType
 from btclib.p2p.keepalive import Ping, Pong
-from btclib.p2p.limits import MAX_PROTOCOL_MESSAGE_LENGTH
+from btclib.p2p.limits import MAX_INV_SZ, MAX_PROTOCOL_MESSAGE_LENGTH
 from btclib.p2p.message import Message
 
 from btclib_node.chains import RegTest
@@ -1209,6 +1209,56 @@ def test_a_getdata_answer_paces_on_what_it_has_already_handed_over() -> None:
     _conn, pending = connection.node.pending_getdata[connection.id]
     assert list(pending) == items[peak // one_message :]
     assert connection.queued_send_bytes == 0
+
+
+def test_a_getdata_of_mostly_misses_does_not_drop_the_connection() -> None:
+    """A `getdata` answer's own trailing `notfound` is paced too.
+
+    One request, `MAX_INV_SZ` items, all but three a transaction this
+    node no longer has -- a peer whose asks raced an eviction round, not
+    a protocol violation -- and the last three blocks just under
+    `MAX_PROTOCOL_MESSAGE_LENGTH`. Before btclib-org/btclib-node#529 a
+    miss cost nothing against `MAX_GETDATA_INFLIGHT_BYTES`, so this
+    request's whole `notfound` landed on top of the three blocks and
+    past `MAX_QUEUED_SEND_BYTES`, dropping a connection the pacing bound
+    above it had already handled for the blocks alone.
+    """
+    block_size = MAX_PROTOCOL_MESSAGE_LENGTH - 100
+    blocks = {bytes([i]) + b"\x00" * 31: _FakeBigBlock(block_size) for i in range(3)}
+    misses = [
+        Inventory(InventoryType.MSG_WTX, i.to_bytes(4, "big") + b"\x01" * 28)
+        for i in range(MAX_INV_SZ - len(blocks))
+    ]
+    items = misses + [Inventory(InventoryType.MSG_BLOCK, h) for h in blocks]
+
+    async def drive() -> tuple[Connection, int]:
+        loop = asyncio.get_running_loop()
+        connection = a_running_connection(loop, socket.socket())
+        connection.node.block_db = SimpleNamespace(get_block=blocks.get)  # type: ignore[assignment]
+        connection.node.mempool = SimpleNamespace(get_tx=lambda *a, **k: None)  # type: ignore[assignment]
+        connection.node.pending_getdata = {}
+        release = asyncio.Event()
+
+        async def _send(data: bytes) -> None:
+            await release.wait()
+
+        connection._send = _send  # type: ignore[method-assign]
+
+        getdata(connection.node, GetData(items).serialize(), connection)
+        peak = connection.queued_send_bytes
+        release.set()
+        for _ in range(50):
+            await asyncio.sleep(0)
+        connection.client.close()
+        return connection, peak
+
+    connection, peak = asyncio.run(drive())
+    assert connection.status == P2pConnStatus.Open
+    assert peak < connection_module.MAX_QUEUED_SEND_BYTES
+    # the request was not served in full in this one call: at least the
+    # last block, popped only after the accumulated misses were flushed
+    # and the bound tripped, is left for `p2p.main.resume_getdata`
+    assert connection.id in connection.node.pending_getdata
 
 
 def test_send_ping_racing_pong_does_not_tear_the_ping_pair(

@@ -99,29 +99,55 @@ __all__ = ["MAX_QUEUED_RECV_BYTES", "MAX_QUEUED_SEND_BYTES", "Connection"]
 # The third term is room above that peak. Its floor is the wire envelope
 # those two terms leave out, `MAX_PROTOCOL_MESSAGE_LENGTH` bounding a
 # payload rather than a message; the rest of it is what a sender passing
-# no pacing check at all spends, since such a sender commits its whole
-# message on top of whatever this field already holds. There are several
-# -- the `notfound` closing a `getdata` answer, a transaction
-# announcement's `inv`, a `headers`, an `addr` -- and `Node.run` reaches
-# `_step_chain`, and so the announcements, in the same pass that
-# `_drain_message_queues` paused an answer in.
+# no pacing check at all still spends, since such a sender commits its
+# whole message on top of whatever this field already holds. `headers`
+# and `addr` are the two left in that shape: each answers one request
+# with everything it has in a single message, bounded by
+# `MAX_HEADERS_RESULTS` and `MAX_ADDR_TO_SEND` respectively -- a full
+# `headers` message some 162,000 wire octets, an `addr` 30,027 --
+# each a real `Message` built the way `_queue` below builds one rather
+# than the bare payload -- and infrequent enough, once per peer's own
+# header sync and once per `getaddr`, that the room below covers either
+# without a pacing point of its own.
 #
-# What sizes that room is the filter answer's own peak -- three filters,
-# `MAX_CFILTERS_INFLIGHT_BYTES` pacing at two and `advance_cfilters`
-# overshooting by one -- kept here as room rather than added above as a
-# state the field reaches. It is written in filters rather than as that
-# constant because the constant rounds its own product down to a whole
-# number of bytes, and this sum would carry the rounding. None of those
-# senders sizes it, because none of them yields a constant: an `inv` of
-# `MAX_INV_SZ` entries and a `notfound` of `MAX_PENDING_GETDATA_ITEMS`
-# are each past this room on their own, and `_send_due_announcements`
-# (`download.py`) sends as many `MAX_INV_SZ` chunks in one pass as the
-# mempool has entries to announce. So a peer that has stopped draining
-# can be dropped here by a message no pacing check stands in front of,
-# where the bound above it would have paused an answer instead, and what
-# settles that is a pause point of the sender's own, the way `getdata`
-# and `get_cfilters` each got one.
-# btclib-org/btclib-node#529
+# `notfound` -- a `getdata` answer's own trailing message -- is not one
+# of those any more: `advance_getdata` (`p2p/callbacks.py`) now paces a
+# miss the same way it paces a block or a transaction it does hold,
+# checked before every item rather than once the whole request is
+# served, so a `notfound` batching a request that named mostly misses is
+# inside `advance_getdata`'s own peak above rather than committed on top
+# of it. A transaction announcement's `inv` (`_send_due_announcements`,
+# `download.py`) is paced too now, against this same field and this same
+# `MAX_GETDATA_INFLIGHT_BYTES` bound, checked before every `MAX_INV_SZ`
+# chunk -- so a peer this node is mid-`getdata`-answer to, in the same
+# pass `Node.run` reaches `_step_chain` in, is not additionally charged
+# for its own announcements: whichever of the two ran first this turn
+# already left `queued_send_bytes` at or past this bound, and the second
+# sees that and backs off before committing anything, the same
+# displacement the paragraph above already gives `advance_cfilters`
+# against a `getdata` answer's own overshoot, both checking this one
+# field rather than a state either keeps of the other. Reusing the bound
+# rather than giving `inv` a smaller one of its own is what keeps this
+# room sized from filters and headers/addr alone, unchanged by that
+# pacing. btclib-org/btclib-node#529
+#
+# What sizes that room is therefore still the filter answer's own peak --
+# three filters, `MAX_CFILTERS_INFLIGHT_BYTES` pacing at two and
+# `advance_cfilters` overshooting by one -- kept here as room rather than
+# added above as a state the field reaches. It is written in filters
+# rather than as that constant because the constant rounds its own
+# product down to a whole number of bytes, and this sum would carry the
+# rounding. `headers` and `addr` both fit under it, together as well as
+# apart, though not by the margin the filter comparison above suggests:
+# a full `headers` message (~162,000 octets) is itself larger than one
+# filter, and a full `headers` and a full `addr` (30,027) together still
+# leave some 102,000 octets of this room spare -- more than one filter's
+# own size (98,079), but well short of the three this room is sized on.
+# `addr` is a thousand `TimestampedNetworkAddress`, thirty octets each
+# and not the twenty-six of the bare `NetworkAddress` inside one, plus
+# the count and the envelope: measured rather than added up, by
+# serializing `MAX_ADDR_TO_SEND` of them through btclib at the commit
+# `uv.lock` pins.
 #
 # That the overshoot is one item, rather than one for every turn a
 # pacing loop takes, is what `_queue` below buys: it counts a message

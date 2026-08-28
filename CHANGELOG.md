@@ -741,6 +741,25 @@ where this file was written rather than where anything was tagged.
   catch, which is how two branches in this batch reached review with
   the markdown gate red.
 
+### A `getdata` answer's `notfound`, and its `inv`, are paced (closes #529)
+
+- **`advance_getdata` (`p2p/callbacks.py`) paces a miss the same way it
+  already paces a block or a transaction it does hold**, checked before
+  every item rather than once the whole request is served. A miss used
+  to cost nothing against `MAX_GETDATA_INFLIGHT_BYTES`, so a `getdata`
+  naming mostly transactions this node no longer held committed its
+  whole `notfound` on top of whatever blocks in the same request had
+  already queued, past `MAX_QUEUED_SEND_BYTES` and into the drop -- for
+  a peer whose request had done nothing wrong.
+- **`_send_due_announcements` (`download.py`) paces a transaction
+  announcement's `inv` against the same bound**, checked before every
+  `MAX_INV_SZ` chunk, leaving what a pass could not commit queued for
+  its own next call rather than sending as many chunks as the mempool
+  had entries to announce, unpaced, in one pass.
+- Neither change alters what a well-behaved peer receives, only when a
+  large answer's tail arrives; a node that used to drop a connection in
+  either shape now paces it instead, which is not a compatibility break.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

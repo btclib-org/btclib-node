@@ -25,6 +25,7 @@ from btclib.p2p.negotiation import FeeFilter
 
 from btclib_node.chainstate.block_index import MAX_DOWNLOAD_WINDOW
 from btclib_node.constants import NodeStatus, P2pConnStatus
+from btclib_node.p2p.callbacks import MAX_GETDATA_INFLIGHT_BYTES
 
 if TYPE_CHECKING:
     from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
@@ -448,20 +449,67 @@ class DownloadManager:
                     for wtxid in conn.tx_announce_queue
                     if wtxid in self.node.mempool.transactions
                 ]
+                # Paced the way `advance_getdata` (`p2p/callbacks.py`)
+                # paces a `getdata` answer's own blocks: checked before
+                # every chunk rather than after, against the same field
+                # and the same bound, so a peer this node is already
+                # answering a `getdata` on is not additionally charged
+                # for its own announcements -- whichever of the two ran
+                # first this turn has already pushed `queued_send_bytes`
+                # toward `MAX_GETDATA_INFLIGHT_BYTES`, and the second
+                # sees that and backs off before committing anything, the
+                # same displacement `p2p/connection_test.py` already
+                # measures between a `getdata` answer and `get_cfilters`.
+                # Nothing bounds how large `queue` itself can grow between
+                # two trickles -- every transaction accepted while this
+                # connection lives is appended to it, and this node
+                # answers no BIP35 `mempool` request that would dump the
+                # whole mempool in at once, but nothing refuses one that
+                # grows this queue by hand across many turns either --
+                # and before this check, nothing paced sending it in one
+                # piece regardless of size. Core's own tx-inventory loop
+                # in `SendMessages` (`src/net_processing.cpp`,
+                # at bitcoin/bitcoin@05e49b342f) has no such check --
+                # it pushes an `INV` every time `vInv` reaches
+                # `MAX_INV_SZ`, as many chunks as one call needs. The
+                # divergence is this tree's to own rather than Core's to
+                # answer for, and `_notfound_pace`
+                # (`p2p/callbacks.py`) is where it is argued: Core's full
+                # send buffer only stops it reading from that peer, where
+                # `MAX_QUEUED_SEND_BYTES` here drops the connection.
+                # btclib-org/btclib-node#529
+                sent_through = 0
                 for start in range(0, len(queue), MAX_INV_SZ):
+                    if conn.queued_send_bytes >= MAX_GETDATA_INFLIGHT_BYTES:
+                        break
                     chunk = queue[start : start + MAX_INV_SZ]
                     conn.send(
                         Inv(
                             [Inventory(InventoryType.MSG_WTX, wtxid) for wtxid in chunk]
                         )
                     )
-                conn.tx_announce_queue = []
-            if conn.inbound:
-                conn.next_inv_send_time = self._next_inbound_inv_time(conn.address, now)
-            else:
-                conn.next_inv_send_time = now + _rng.expovariate(
-                    1 / _OUTBOUND_TX_ANNOUNCE_INTERVAL
-                )
+                    sent_through = start + len(chunk)
+                # Only the entries this call actually served leave the
+                # queue: what a chunk past the bound above left behind is
+                # still owed, and stays for this same function's next
+                # call -- `DownloadManager.step` runs every turn of
+                # `Node`'s own loop, the resume cadence `resume_getdata`
+                # and `resume_cfilters` (`p2p/main.py`) already have.
+                conn.tx_announce_queue = queue[sent_through:]
+            # A schedule is only redrawn once this connection's queue is
+            # actually empty: redrawing it while a chunk is still owed
+            # would push the next attempt out to this trickle's own mean
+            # delay instead of the very next turn, which is the resume
+            # cadence the comment above relies on.
+            if not conn.tx_announce_queue:
+                if conn.inbound:
+                    conn.next_inv_send_time = self._next_inbound_inv_time(
+                        conn.address, now
+                    )
+                else:
+                    conn.next_inv_send_time = now + _rng.expovariate(
+                        1 / _OUTBOUND_TX_ANNOUNCE_INTERVAL
+                    )
 
     def _send_due_feefilters(self) -> None:
         """Tell every connected peer this node's own current relay floor.
