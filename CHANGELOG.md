@@ -602,6 +602,44 @@ where this file was written rather than where anything was tagged.
   `NODE_NETWORK_LIMITED`, and deletes a block file once it is more than
   `MIN_BLOCKS_TO_KEEP` (288 blocks) behind the tip.
 
+### The declared authors are the collective the tree names (closes #598)
+
+- **`pyproject.toml`'s `[project].authors` is `The btclib developers
+  <devs@btclib.org>`**, which is what `btclib`, `btclib-secp256k1`,
+  `btclib-benchmarks` and `bitcoin-core-rpc` declare in the same field.
+- **The archive around it names that collective.** `license-files`
+  ships `LICENSE`, whose notice reads `Copyright (c) The btclib
+  developers`, and `AUTHORS.md`, which points at the contributor graph
+  rather than listing anybody; `docs/source/conf.py` gives `author` and
+  `project_copyright` the same name.
+- **The notice every source file opens with is a gate rather than a
+  convention**: ruff's `CPY001` is selected here, and what it checks the
+  head of each file against is `notice-rgx` in this file, which spells
+  the holder out -- a header naming anyone else is reported
+  `missing-copyright-notice`.
+- **`authors` is the field an index displays**, and an index shows what
+  the version it holds was uploaded with:
+
+  ```shell
+  curl -s https://pypi.org/pypi/btclib-node/json \
+    | jq -r '.info | .author, .author_email'
+  ```
+
+  answers for `v2026.8.27`, so the page moves with the release cut from
+  this cycle rather than with this change. Both fields, because newer
+  core metadata puts a name-and-address entry in `Author-email` and
+  leaves `Author` unset -- `btclib-secp256k1` and `bitcoin-core-rpc`
+  answer `null` to the first under this same value, so reading `author`
+  alone would report a change that landed as one that did not.
+- **The field records who publishes, not who wrote the node.** Giacomo
+  Caironi wrote it and the revision history holds that permanently;
+  `AUTHORS.md` is where the archive says the members of the collective
+  are listed, and section 3 of the organization standard is what puts it
+  in `license-files` for that purpose.
+- **Nothing measures this field.** The standard says nothing about
+  `[project].authors` and no test in this tree reads it, which is
+  btclib-org/.github#534.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

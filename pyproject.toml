@@ -8,7 +8,7 @@ name = "btclib-node"
 # release's own pull request, on the day it is cut.
 version = "2026.9"
 description = "Bitcoin node in python"
-authors = [{ name = "Giacomo Caironi", email = "giacomo.caironi@gmail.com" }]
+authors = [{ name = "The btclib developers", email = "devs@btclib.org" }]
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE", "AUTHORS.md"]
