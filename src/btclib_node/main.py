@@ -421,7 +421,16 @@ def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
     block_index = node.chainstate.block_index
     utxo_index = node.chainstate.utxo_index
     mempool = node.mempool
-    spend_height = len(block_index.active_chain) + 1
+    # the height a block extending the active chain would connect at:
+    # active_chain[i] is the block at real height i (BlockIndex.__init__
+    # seeds it with the genesis at index 0), so its own length already
+    # is the tip's height plus one -- a further "+ 1" here would answer
+    # one block past the real next height, invisible everywhere else
+    # this reaches (get_flags below) only because every regtest flag
+    # activates at height 0 regardless, and wrong by exactly one block
+    # for check_coinbase_maturity, which is what surfaced it
+    # (btclib-org/btclib-node#569)
+    spend_height = len(block_index.active_chain)
 
     for tx_in in tx.vin:
         prevout_bytes = tx_in.prev_out.serialize(check_validity=False)

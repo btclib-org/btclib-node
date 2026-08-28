@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
+from btclib.exceptions import BTClibValueError
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
 from btclib.script import script
 from btclib.tx.out_point import OutPoint
@@ -19,7 +20,7 @@ from btclib_node import Node, main
 from btclib_node.chains import RegTest
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import BlockIndex, BlockStatus
-from btclib_node.constants import NodeStatus
+from btclib_node.constants import COINBASE_MATURITY, NodeStatus
 from btclib_node.exceptions import ChainstateInconsistencyError, MissingPrevoutError
 from btclib_node.interpreter import check_transactions
 from btclib_node.main import update_chain, verify_mempool_acceptance
@@ -119,12 +120,15 @@ def test_reject_block_that_prints_money(node: Node) -> None:
     """A block whose output exceeds its input's value fails to connect."""
     # Script validation never reads the amounts except through the
     # sig_hash, so nothing in the engine notices an output larger than
-    # the input it spends.
-    chain = generate_random_chain(2, RegTest().genesis.hash)
+    # the input it spends. The chain is COINBASE_MATURITY long and the
+    # spend is chain[0]'s own coinbase, not chain[-1]'s: a fresher one
+    # would be refused for prematurity before ever reaching the rule
+    # this test is about.
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
     block_index = connect(node, chain)
     connected = len(block_index.active_chain)
 
-    funding = chain[-1].transactions[0]
+    funding = chain[0].transactions[0]
     bad = build_block(
         chain[-1].header.hash,
         [
@@ -144,12 +148,14 @@ def test_reject_block_with_a_failing_script(node: Node) -> None:
     """A block with an input that fails script validation fails to connect."""
     # An input that does not verify has to fail the block. It used to be
     # written to errors/ and swallowed, inside a worker pool, so nothing
-    # reached update_chain and the block was connected anyway.
-    chain = generate_random_chain(2, RegTest().genesis.hash)
+    # reached update_chain and the block was connected anyway. The chain
+    # is COINBASE_MATURITY long and the spend is chain[0]'s own coinbase
+    # for the same reason as the sibling test above.
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
     block_index = connect(node, chain)
     connected = len(block_index.active_chain)
 
-    funding = chain[-1].transactions[0]
+    funding = chain[0].transactions[0]
     unspendable = spend(
         funding,
         funding.vout[0].value,
@@ -208,9 +214,80 @@ def test_reject_block_whose_coinbase_does_not_commit_to_its_height(
     rejected_because(node, bad, "invalid coinbase height")
 
 
+def test_reject_block_spending_a_coinbase_one_short_of_maturity(node: Node) -> None:
+    """A spend of a coinbase `COINBASE_MATURITY - 1` blocks old fails to connect.
+
+    ISS 569: the UTXO record carried neither a coin's height nor whether
+    it came from a coinbase, so nothing on this path could tell a fresh
+    coinbase from one old enough to spend -- this connected exactly as
+    the one `COINBASE_MATURITY` blocks old does in the test right after
+    this one.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY - 1, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    connected = len(block_index.active_chain)
+
+    funding = chain[0].transactions[0]
+    bad = build_block(
+        chain[-1].header.hash,
+        [
+            generate_coinbase(height=len(chain) + 1),
+            spend(funding, funding.vout[0].value),
+        ],
+        len(chain),
+    )
+    connect(node, [bad])
+
+    assert bad.header.hash not in block_index.active_chain
+    assert len(block_index.active_chain) == connected
+    rejected_because(node, bad, "bad-txns-premature-spend-of-coinbase")
+
+
+def test_a_coinbase_spend_at_exactly_maturity_connects(node: Node) -> None:
+    """A spend of a coinbase exactly `COINBASE_MATURITY` blocks old connects."""
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    connected = len(block_index.active_chain)
+
+    funding = chain[0].transactions[0]
+    good = build_block(
+        chain[-1].header.hash,
+        [
+            generate_coinbase(height=len(chain) + 1),
+            spend(funding, funding.vout[0].value),
+        ],
+        len(chain),
+    )
+    connect(node, [good])
+
+    assert good.header.hash in block_index.active_chain
+    assert len(block_index.active_chain) == connected + 1
+
+
+def test_reject_a_mempool_spend_of_an_immature_coinbase(node: Node) -> None:
+    """`verify_mempool_acceptance` refuses the same premature spend.
+
+    Core enforces `COINBASE_MATURITY` at both call sites -- `ConnectBlock`
+    and mempool acceptance's own `AcceptToMemoryPoolWorker`
+    (`src/validation.cpp:897` and `:2544`, at bitcoin/bitcoin@204256c73f)
+    -- so a mempool that only enforced it on the block-connection path
+    would relay a spend no peer accepting it into a block ever will.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY - 1, RegTest().genesis.hash)
+    connect(node, chain)
+
+    funding = chain[0].transactions[0]
+    premature = generate_random_transaction(funding.id, value=funding.vout[0].value)
+    with pytest.raises(BTClibValueError, match="bad-txns-premature-spend-of-coinbase"):
+        verify_mempool_acceptance(node, premature)
+
+
 def test_add_tx(node: Node) -> None:
     """`verify_mempool_acceptance` accepts a prevout from chain or mempool."""
-    chain = generate_random_chain(10, RegTest().genesis.hash)
+    # COINBASE_MATURITY long, and tx1 spends chain[0]'s own coinbase: a
+    # fresher one would be refused for prematurity, which is a different
+    # test (test_reject_a_mempool_spend_of_an_immature_coinbase, below).
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
     headers = [block.header for block in chain]
     block_index = node.chainstate.block_index
     block_index.add_headers(headers)
@@ -225,7 +302,7 @@ def test_add_tx(node: Node) -> None:
     with pytest.raises(MissingPrevoutError):
         verify_mempool_acceptance(node, invalid_tx)
 
-    tx1 = generate_random_transaction(chain[-1].transactions[0].id)
+    tx1 = generate_random_transaction(chain[0].transactions[0].id)
     tx2 = generate_random_transaction(tx1.id)
 
     verify_mempool_acceptance(node, tx1)
@@ -406,18 +483,25 @@ def test_a_reorg_evicts_a_transaction_the_reorg_itself_invalidated(
 ) -> None:
     """A reorg does not re-add a tx whose own coinbase it just abandoned."""
     # only once the node is synced: while it is still catching up, a
-    # transaction from a block it steps off is not worth relaying
+    # transaction from a block it steps off is not worth relaying.
+    # first stays short: orphaned is never connected, only handed
+    # straight to verify_mempool_acceptance below, so its own maturity
+    # never enters into it -- first[-1]'s coinbase disappearing once
+    # its whole branch is abandoned is what MissingPrevoutError answers.
     first = generate_random_chain(2, RegTest().genesis.hash)
     connect(node, first)
     assert node.status == NodeStatus.BlockSynced
 
-    orphaned = first[-1].transactions[1]
+    orphaned = generate_random_transaction(first[-1].transactions[0].id)
     assert not node.mempool.contains_tx(orphaned)
 
     # held before the reorg and confirmed by it, so that taking it out
     # of the mempool is something the reorg has to do rather than
-    # something that was never needed
-    second = generate_random_chain(3, RegTest().genesis.hash)
+    # something that was never needed. second is COINBASE_MATURITY + 1
+    # long: that is what makes its own tip's second transaction -- the
+    # one that has to be confirmed, physically, into a block -- a spend
+    # this rule actually accepts.
+    second = generate_random_chain(COINBASE_MATURITY + 1, RegTest().genesis.hash)
     confirmed = second[-1].transactions[1]
     node.mempool.add_tx(confirmed)
     assert node.mempool.contains_tx(confirmed)
@@ -479,13 +563,18 @@ def test_a_reorg_still_resurrects_a_transaction_its_prevout_survives(
     # #85's fix checks every re-added transaction rather than trusting
     # it: this is the other side of that, a transaction that spent an
     # output the reorg does not touch and is still good on the chain
-    # that replaces the one it was confirmed on
-    common = generate_random_chain(1, RegTest().genesis.hash)
+    # that replaces the one it was confirmed on. common is
+    # COINBASE_MATURITY long so that resurrectable, spending its own
+    # first block's coinbase once abandoned extends past the tip, is a
+    # spend this rule accepts rather than one it refuses on its own.
+    common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
     block_index = connect(node, common)
 
     resurrectable = generate_random_transaction(common[0].transactions[0].id)
     abandoned = build_block(
-        common[0].header.hash, [generate_coinbase(height=2), resurrectable], 1
+        common[-1].header.hash,
+        [generate_coinbase(height=len(common) + 1), resurrectable],
+        len(common),
     )
     fork = [*common, abandoned]
     block_index.add_headers([block.header for block in fork])
@@ -495,7 +584,7 @@ def test_a_reorg_still_resurrects_a_transaction_its_prevout_survives(
     settle(node)
     assert block_index.active_chain[1:] == hashes(fork)
 
-    heavier = [*common, *_extend(common[0].header.hash, 1, 2)]
+    heavier = [*common, *_extend(common[-1].header.hash, len(common), 2)]
     block_index.add_headers([block.header for block in heavier[1:]])
     for block in heavier[1:]:
         node.block_db.add_block(block)
@@ -518,14 +607,25 @@ def test_a_reorg_re_adds_abandoned_transactions_parent_first(
     # child is checked before the parent it depends on ever returns,
     # and verify_mempool_acceptance drops it as a missing prevout for
     # good; Core's own MaybeUpdateMempoolForReorg re-adds oldest first
-    # for the same reason (src/validation.cpp)
-    common = generate_random_chain(1, RegTest().genesis.hash)
+    # for the same reason (src/validation.cpp). common is
+    # COINBASE_MATURITY long for the same reason as the sibling test
+    # above: parent spends its own first block's coinbase, and that has
+    # to be old enough by the time older connects.
+    common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
     block_index = connect(node, common)
 
     parent = generate_random_transaction(common[0].transactions[0].id)
-    older = build_block(common[0].header.hash, [generate_coinbase(height=2), parent], 1)
+    older = build_block(
+        common[-1].header.hash,
+        [generate_coinbase(height=len(common) + 1), parent],
+        len(common),
+    )
     child = generate_random_transaction(parent.id)
-    newer = build_block(older.header.hash, [generate_coinbase(height=3), child], 2)
+    newer = build_block(
+        older.header.hash,
+        [generate_coinbase(height=len(common) + 2), child],
+        len(common) + 1,
+    )
     fork = [*common, older, newer]
     block_index.add_headers([block.header for block in fork])
     for block in fork:
@@ -534,7 +634,7 @@ def test_a_reorg_re_adds_abandoned_transactions_parent_first(
     settle(node)
     assert block_index.active_chain[1:] == hashes(fork)
 
-    heavier = [*common, *_extend(common[0].header.hash, 1, 3)]
+    heavier = [*common, *_extend(common[-1].header.hash, len(common), 3)]
     block_index.add_headers([block.header for block in heavier[1:]])
     for block in heavier[1:]:
         node.block_db.add_block(block)
@@ -626,16 +726,17 @@ def test_a_refused_branch_invalidates_only_the_block_that_failed(
     active = generate_random_chain(2, RegTest().genesis.hash)
     block_index = connect(node, active)
 
+    # a coinbase paying more than its own subsidy, not a spend of
+    # below's own tip: that coinbase is not yet COINBASE_MATURITY deep,
+    # and a spend of it would be refused for prematurity before ever
+    # reaching the block-index machinery this test is about
     below = generate_random_chain(2, RegTest().genesis.hash)
-    prints_money = build_block(
+    bad_tip = build_block(
         below[-1].header.hash,
-        [
-            generate_coinbase(height=len(below) + 1),
-            spend(below[-1].transactions[0], 50 * 10**8 + 1),
-        ],
+        [generate_coinbase(50 * 10**8 + 1, height=len(below) + 1)],
         len(below),
     )
-    fork = [*below, prints_money]
+    fork = [*below, bad_tip]
     block_index.add_headers([block.header for block in fork])
     for block in fork:
         node.block_db.add_block(block)
@@ -643,7 +744,7 @@ def test_a_refused_branch_invalidates_only_the_block_that_failed(
 
     candidate = block_index.get_first_candidate()
     assert candidate is not None
-    assert candidate.header.hash == prints_money.header.hash
+    assert candidate.header.hash == bad_tip.header.hash
 
     update_chain(node)
     assert block_index.active_chain[1:] == hashes(active)
@@ -651,7 +752,7 @@ def test_a_refused_branch_invalidates_only_the_block_that_failed(
         info = block_index.get_block_info(block.header.hash)
         assert info.status == BlockStatus.valid_header
     assert (
-        block_index.get_block_info(prints_money.header.hash).status
+        block_index.get_block_info(bad_tip.header.hash).status
         == BlockStatus.invalid
     )
     # the doomed tip no longer weighs on what get_first_candidate offers
@@ -663,7 +764,7 @@ def test_a_refused_branch_invalidates_only_the_block_that_failed(
         info = reopened.block_index.get_block_info(block.header.hash)
         assert info.status == BlockStatus.valid_header
     assert (
-        reopened.block_index.get_block_info(prints_money.header.hash).status
+        reopened.block_index.get_block_info(bad_tip.header.hash).status
         == BlockStatus.invalid
     )
     reopened.close()
@@ -674,23 +775,24 @@ def test_a_refused_branch_leaves_no_reverse_patches_in_the_block_store(
 ) -> None:
     """A rolled-back trial leaves no reverse patch behind for any block."""
     # active outweighs below's own two blocks individually, so only
-    # prints_money -- the fork's tip -- is its own candidate and the
+    # bad_tip -- the fork's tip -- is its own candidate and the
     # whole fork connects in one trial. below's two blocks validate and
-    # each generate a reverse patch before prints_money fails and the
+    # each generate a reverse patch before bad_tip fails and the
     # trial is rolled back: btclib-org/btclib-node#200
     active = generate_random_chain(2, RegTest().genesis.hash)
     block_index = connect(node, active)
 
+    # a coinbase paying more than its own subsidy, not a spend of
+    # below's own tip: that coinbase is not yet COINBASE_MATURITY deep,
+    # and a spend of it would be refused for prematurity before ever
+    # reaching the block-index machinery this test is about
     below = generate_random_chain(2, RegTest().genesis.hash)
-    prints_money = build_block(
+    bad_tip = build_block(
         below[-1].header.hash,
-        [
-            generate_coinbase(height=len(below) + 1),
-            spend(below[-1].transactions[0], 50 * 10**8 + 1),
-        ],
+        [generate_coinbase(50 * 10**8 + 1, height=len(below) + 1)],
         len(below),
     )
-    fork = [*below, prints_money]
+    fork = [*below, bad_tip]
     block_index.add_headers([block.header for block in fork])
     for block in fork:
         node.block_db.add_block(block)
@@ -698,7 +800,7 @@ def test_a_refused_branch_leaves_no_reverse_patches_in_the_block_store(
 
     candidate = block_index.get_first_candidate()
     assert candidate is not None
-    assert candidate.header.hash == prints_money.header.hash
+    assert candidate.header.hash == bad_tip.header.hash
 
     update_chain(node)
 
@@ -723,42 +825,43 @@ def test_a_refused_branch_invalidates_headers_that_were_never_candidates(
     active = generate_random_chain(6, RegTest().genesis.hash)
     block_index = connect(node, active)
 
+    # a coinbase paying more than its own subsidy, not a spend of
+    # below's own tip: that coinbase is not yet COINBASE_MATURITY deep,
+    # and a spend of it would be refused for prematurity before ever
+    # reaching the block-index machinery this test is about
     below = generate_random_chain(2, RegTest().genesis.hash)
-    prints_money = build_block(
+    bad_tip = build_block(
         below[-1].header.hash,
-        [
-            generate_coinbase(height=len(below) + 1),
-            spend(below[-1].transactions[0], 50 * 10**8 + 1),
-        ],
+        [generate_coinbase(50 * 10**8 + 1, height=len(below) + 1)],
         len(below),
     )
     # more, structurally fine, blocks on top of the doomed one -- their
     # combined chainwork is what makes the branch's tip outweigh active,
-    # not prints_money on its own. Built with an explicit, increasing
+    # not bad_tip on its own. Built with an explicit, increasing
     # height rather than generate_random_chain's own (which restarts at
     # 0 for any start): a header's timestamp has to beat the median of
     # its ancestors, and build_block's is derived from the height alone
     continuation: list[Block] = []
-    previous = prints_money
+    previous = bad_tip
     for height in range(len(below) + 1, len(below) + 5):
         previous = build_block(previous.header.hash, [generate_coinbase()], height)
         continuation.append(previous)
-    fork = [*below, prints_money, *continuation]
+    fork = [*below, bad_tip, *continuation]
     block_index.add_headers([block.header for block in fork])
     for block in fork:
         node.block_db.add_block(block)
         block_index.set_downloaded(block.header.hash)
 
-    # a sibling of the continuation, off prints_money, real and indexed
+    # a sibling of the continuation, off bad_tip, real and indexed
     # but never downloaded and never its own block_candidates entry
     sibling = generate_random_header_chain(
-        1, prints_money.header.hash, prints_money.header.time
+        1, bad_tip.header.hash, bad_tip.header.time
     )
     block_index.add_headers(sibling)
     # the branch's own tip is the one candidate entry: everything below
-    # it, prints_money included, never individually outweighed active
+    # it, bad_tip included, never individually outweighed active
     # on its own
-    hidden = {prints_money.header.hash, sibling[0].hash}
+    hidden = {bad_tip.header.hash, sibling[0].hash}
     hidden.update(block.header.hash for block in continuation[:-1])
     assert not hidden & {h for h, _ in block_index.block_candidates}
 
