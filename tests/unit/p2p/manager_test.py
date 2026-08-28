@@ -24,12 +24,15 @@ from btclib.p2p.keepalive import Ping
 
 from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus, P2pConnStatus
+from btclib_node.log import Logger
 from btclib_node.p2p import manager as manager_module
 from btclib_node.p2p.address import PeerDB, endpoint_key, peer_address
+from btclib_node.p2p.main import handle_p2p_handshake
 from btclib_node.p2p.manager import P2pManager
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
+    from pathlib import Path
 
     from btclib.p2p.payload import Payload
 
@@ -38,6 +41,7 @@ from tests import (
     WaitTimeoutError,
     generate_random_transaction,
     get_random_port,
+    log_recorder,
     wait_until,
     wait_until_listening,
 )
@@ -1079,6 +1083,87 @@ def test_a_peer_that_answers_the_dial_becomes_a_connection(
         # connection's loop on. asyncio.run would build a second one and
         # leave the manager holding a loop the fixture then never closes
         manager.loop.run_until_complete(dial())
+
+
+@pytest.mark.parametrize(("inbound", "verb"), [(True, "Accepted"), (False, "Dialled")])
+def test_create_connection_logs_the_id_beside_the_address(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    inbound: bool,
+    verb: str,
+) -> None:
+    """#611: the id a connection is given is logged beside its address.
+
+    The earliest point every path into a connection shares, dialled or
+    accepted, before any wire message is parsed -- proved directly here
+    rather than only through `callbacks.verack`'s own line, which a
+    handshake failure can leave unreached.
+    """
+    logged, info = log_recorder()
+    manager = a_manager()
+    monkeypatch.setattr(manager.logger, "info", info)
+    ours, theirs = socket.socketpair()
+    address = peer_address("1.2.3.4", 18444)
+
+    async def create() -> None:
+        manager.create_connection(ours, address, inbound=inbound)
+        (conn,) = manager.pending_connections.values()
+        assert conn.task is not None
+        conn.task.cancel()
+        await asyncio.sleep(0)
+
+    with ours, theirs:
+        manager.loop.run_until_complete(create())
+
+    assert logged == [f"{verb} 1.2.3.4:18444, connection 0"]
+
+
+def test_a_connections_id_still_resolves_to_its_address_when_the_handshake_fails_before_verack(
+    a_manager: AManagerFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#611: a malformed `version` raises strictly before `verack` ever runs.
+
+    `callbacks.verack`'s own id-address pairing (#526) never reaches a
+    connection dropped this way. Reading `create_connection`'s own line
+    back beside `handle_p2p_handshake`'s own exception line (also #526)
+    is what still resolves the id either of them names to the address
+    the first one names -- proved end to end, against the real
+    `version` callback raising on the malformed bytes the issue itself
+    reproduces with, rather than against a stand-in that raises on cue.
+    """
+    log_path = tmp_path / "debug.log"
+    logger = Logger(log_path, debug=True)
+    manager = a_manager()
+    monkeypatch.setattr(manager, "logger", logger)
+    monkeypatch.setattr(manager.node, "logger", logger)
+    monkeypatch.setattr(manager.node, "p2p_manager", manager, raising=False)
+    ours, theirs = socket.socketpair()
+    address = peer_address("1.2.3.4", 18444)
+
+    async def create() -> Any:
+        manager.create_connection(ours, address, inbound=True)
+        (conn,) = manager.pending_connections.values()
+        assert conn.task is not None
+        conn.task.cancel()
+        await asyncio.sleep(0)
+        return conn
+
+    with ours, theirs:
+        conn = manager.loop.run_until_complete(create())
+        manager.handshake_messages.append(("version", b"garbage", conn.id, 7))
+        handle_p2p_handshake(manager.node)
+    logger.close()
+
+    lines = log_path.read_text(encoding="utf-8").splitlines()
+    (created,) = [line for line in lines if "Accepted 1.2.3.4:18444" in line]
+    (failed,) = [line for line in lines if "Handling version from connection" in line]
+    assert f"connection {conn.id}" in created
+    assert f"connection {conn.id} failed" in failed
+    # the fact #526's own comment argues: the failing line never repeats
+    # the address, so `created` above is what makes `conn.id` resolvable
+    # at all
+    assert "1.2.3.4" not in failed
 
 
 def a_running_manager(a_manager: AManagerFactory, port: int) -> P2pManager:

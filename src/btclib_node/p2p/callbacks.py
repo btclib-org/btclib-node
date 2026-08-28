@@ -257,11 +257,11 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     # at bitcoin/bitcoin@05e49b342f) writes `peer=%d` alone and appends
     # `peeraddr=` only under `fLogIPs`, whose default is off. This tree
     # logs the address here already, so withholding the id bought no
-    # privacy and only cost the correlation. Here rather than
-    # everywhere: a handshake that raises before this statement leaves
-    # its own id unpaired, which is btclib-org/btclib-node#611 and a
-    # decision about the accept and dial path rather than about this
-    # line
+    # privacy and only cost the correlation. What this line marks is the
+    # handshake completing, not the pairing: `P2pManager.create_connection`
+    # logs the same id beside the same address as soon as the connection
+    # exists, which is what makes an id resolvable for a handshake that
+    # never gets this far (btclib-org/btclib-node#611)
     node.logger.info(
         "Connected to %s, connection %s",
         ip_and_port(sockaddr[0], sockaddr[1]),
