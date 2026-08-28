@@ -1054,11 +1054,10 @@ MAX_CFILTERS_INFLIGHT_BYTES = int(2 * ONE_BUSY_MODERN_BLOCK_FILTER_BYTES)
 # of its own kind, and BIP157 says nothing about how many `getcfilters`
 # one connection may have outstanding at once for a reader to diverge
 # from either. Two full requests -- `MAX_GETCFILTERS_SIZE` apiece -- is
-# what `connection.py`'s own `MAX_QUEUED_SEND_BYTES` already names as
-# legitimate pipelining ("the next request a peer sends without waiting
-# for the first to finish"), so extending up to that many heights keeps
-# both requests this node already tolerates rather than dropping either
-# of them. Past it, a third stacked request is silence -- `_filter_range`
+# the room this bound gives on its own terms: enough for a `getcfilters`
+# already draining and a second one the same peer sends before the first
+# finishes to both extend the one pending entry, rather than have either
+# dropped. Past it, a third stacked request is silence -- `_filter_range`
 # below already answers this way for a request it declines on other
 # grounds, and a peer pipelining past what two full answers cover is the
 # same kind of request: one this node will not serve, with no refusal
