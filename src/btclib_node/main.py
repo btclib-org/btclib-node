@@ -19,6 +19,7 @@ from btclib.block.block_context import BlockContext
 from btclib.exceptions import BTClibValueError
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
 
+from btclib_node.block_db import Coin
 from btclib_node.chainstate.block_index import BlockIndex, BlockStatus
 from btclib_node.chainstate.contextual import (
     block_time,
@@ -46,7 +47,7 @@ if TYPE_CHECKING:
     from btclib.tx.tx_out import TxOut
 
     from btclib_node import Node
-    from btclib_node.block_db import Coin, RevBlock
+    from btclib_node.block_db import RevBlock
     from btclib_node.chainstate.filter_index import FilterIndex
     from btclib_node.chainstate.utxo_index import UtxoIndex
 
@@ -221,7 +222,8 @@ def _finalize_fork(node: Node, to_add: list[Block], to_remove: list[RevBlock]) -
 # already-succeeded trial's own staged changes, unflushed, and a rollback
 # on failure must undo only what this trial itself stages --
 # UtxoIndex.trial_mark's own docstring argues why a blanket wipe is no
-# longer safe once staging survives more than one trial (btclib-org/btclib-node#586).
+# longer safe once staging survives more than one trial
+# (btclib-org/btclib-node#586).
 def _pre_trial_marks(
     utxo_index: UtxoIndex, filter_index: FilterIndex
 ) -> tuple[int, int]:
