@@ -910,6 +910,26 @@ where this file was written rather than where anything was tagged.
   required checks.** It carries neither a `pull_request` trigger nor
   `workflow_dispatch`, so unlike the other four a required check on it
   could never be satisfied by any pull request at all.
+### An I/O fault trying a block is not the block's own fault (closes #620)
+
+- **`update_chain`'s trial loop tells a content failure from a storage one
+  by exception type, not by which call raised it.** `_CONTENT_FAILURE`
+  (`main.py`) is `BTClibValueError`, `InvalidBlockInputError` and
+  `PrevoutCountMismatchError` -- what `_validate_block` and
+  `utxo_index.add_block`'s own BIP30/double-spend checks raise to refuse
+  a candidate's own content. Everything else the trial's `to_add` loop
+  raises -- a `KeyValueStore` read or write failing inside
+  `utxo_index.add_block` or `filter_index.add_connected_block`, or
+  `ChainstateInconsistencyError` -- rolls the trial back and then
+  propagates out of `update_chain`, rather than invalidating the block it
+  happened to land on.
+- **Core keeps the same split inside `ConnectBlock`** (`src/validation.cpp`,
+  at bitcoin/bitcoin@b91d983f66): an ordinary `CheckBlock` failure is
+  rejected, a `BLOCK_MUTATED` one is `FatalError`.
+- A propagated exception reaches `Node._step_chain`, whose own existing
+  catch stops the main loop and closes every database, the same path a
+  failure out of `_blocks_to_add`, `_rev_blocks_to_remove` or
+  `_finalize_fork` already took.
 
 ### The rpc listener's default port is Core's own, not `p2p_port + 1` (closes #605)
 
