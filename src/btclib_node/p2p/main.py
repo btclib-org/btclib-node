@@ -86,9 +86,29 @@ def handle_p2p_handshake(node: Node) -> None:
             conn.stop()
             # discouraged for a parse failure, `handle_p2p`'s own
             # `except` below explaining which exceptions count as one
-            if isinstance(e, BTClibException):
+            discourage = isinstance(e, BTClibException)
+            if discourage:
                 manager.discourage(conn.address)
-            node.logger.exception("Exception occurred")
+            # `conn_id`, not `conn.address`: this line is what
+            # distinguishes the two branches above on disk (#526), and
+            # the verdict and the command are what that takes -- the
+            # peer's own address is not, on a line every exception here
+            # writes to `debug.log` whether or not this peer is at
+            # fault. Core keys the same judgment the same way:
+            # `PeerManagerImpl::Misbehaving` (`src/net_processing.cpp`,
+            # at bitcoin/bitcoin@05e49b342f) logs `peer=%d` and nothing
+            # else, and `CNode::LogPeer` appends the address only under
+            # `fLogIPs`, off by default. `verack` logs the pair, so an
+            # id here resolves to a peer for any connection that
+            # finished its handshake -- and only for those, this being
+            # the block a handshake that raised before `verack` lands
+            # in (btclib-org/btclib-node#611)
+            node.logger.exception(
+                "Handling %s from connection %s failed, %s",
+                msg_type,
+                conn_id,
+                "peer discouraged" if discourage else "peer not discouraged",
+            )
 
 
 def handle_p2p(node: Node) -> None:
@@ -148,9 +168,17 @@ def handle_p2p(node: Node) -> None:
             # filter for a block on the active chain" among them -- and
             # not cause to discourage the peer that merely triggered it.
             # btclib-org/btclib-node#283
-            if isinstance(e, BTClibException):
+            discourage = isinstance(e, BTClibException)
+            if discourage:
                 manager.discourage(conn.address)
-            node.logger.exception("Exception occurred")
+            # `conn_id`, not `conn.address`: same reasoning as
+            # `handle_p2p_handshake` above (#526)
+            node.logger.exception(
+                "Handling %s from connection %s failed, %s",
+                msg_type,
+                conn_id,
+                "peer discouraged" if discourage else "peer not discouraged",
+            )
 
 
 def resume_cfilters(node: Node) -> bool:
@@ -194,9 +222,16 @@ def resume_cfilters(node: Node) -> bool:
             conn.stop()
             done.append(conn_id)
             progressed = True
-            if isinstance(e, BTClibException):
+            discourage = isinstance(e, BTClibException)
+            if discourage:
                 manager.discourage(conn.address)
-            node.logger.exception("Exception occurred")
+            # `conn_id`, not `conn.address`: same reasoning as
+            # `handle_p2p_handshake` above (#526)
+            node.logger.exception(
+                "Resuming cfilters for connection %s failed, %s",
+                conn_id,
+                "peer discouraged" if discourage else "peer not discouraged",
+            )
         if len(heights) != before:
             progressed = True
     for conn_id in done:
@@ -232,9 +267,16 @@ def resume_getdata(node: Node) -> bool:
             conn.stop()
             done.append(conn_id)
             progressed = True
-            if isinstance(e, BTClibException):
+            discourage = isinstance(e, BTClibException)
+            if discourage:
                 manager.discourage(conn.address)
-            node.logger.exception("Exception occurred")
+            # `conn_id`, not `conn.address`: same reasoning as
+            # `handle_p2p_handshake` above (#526)
+            node.logger.exception(
+                "Resuming getdata for connection %s failed, %s",
+                conn_id,
+                "peer discouraged" if discourage else "peer not discouraged",
+            )
         if len(items) != before:
             progressed = True
     for conn_id in done:

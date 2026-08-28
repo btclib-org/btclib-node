@@ -670,6 +670,49 @@ where this file was written rather than where anything was tagged.
   with `stop` called from the thread running the test, neither one the
   loop's.
 
+### The peer-versus-node verdict is in the line it logs (closes #526)
+
+- **`handle_p2p_handshake`, `handle_p2p`, `resume_cfilters` and
+  `resume_getdata` (`src/btclib_node/p2p/main.py`) each log which of the
+  two an exception was decided to be**, rather than the same
+  `"Exception occurred"` regardless: the command and the connection
+  that raised, and whether that connection was discouraged for it. The
+  traceback under the old line answered what raised; it never answered
+  whose fault the node decided that was, and that verdict -- the
+  `isinstance(e, BTClibException)` check the line sits beside -- existed
+  only in memory. `conn_id`, not the peer's own address, is what each
+  line carries: Core keys the same judgment the same way, its
+  `PeerManagerImpl::Misbehaving` (`src/net_processing.cpp`,
+  at bitcoin/bitcoin@05e49b342f) logging `peer=%d` and nothing else,
+  and `CNode::LogPeer` appending the address only under `fLogIPs`,
+  which is off by default. An address on a line every exception writes,
+  whether or not the peer is at fault, is a privacy cost for nothing.
+- **The handshake's own `Connected to` line now carries that id beside
+  the address** (`p2p/callbacks.py`), which is what makes an id-keyed
+  line resolvable back to a peer at all. Core pairs them the other way
+  round and only on request; this tree logged the address here
+  unconditionally already, so withholding the id bought no privacy and
+  only cost the correlation -- an operator could read that connection
+  42 was discouraged and never learn which peer 42 was.
+- **The other six sites this issue named but did not file are
+  unchanged**: none of them weighs a peer's own fault against this
+  node's, so none has a verdict to lose. Named by file rather than by
+  line, the issue's own numbers having been read at its creation-time
+  commit and moved twice since -- `grep -rn "Exception occurred"
+  src/btclib_node/` re-derives them, where a number here would go
+  stale again.
+- **The paragraph above each of the four sites, arguing the
+  `BTClibException` split (#283, #515), is left as it was**: it argues
+  *why* the split is drawn, which the log line does not restate -- the
+  line reports which way the split fell on one run, not why the code
+  draws it there at all.
+- **Read back from a real `Logger` writing to a file, not from
+  `caplog`**: `Node.logger` is built directly from `logging.Logger`
+  rather than through `logging.getLogger`, so nothing it emits reaches
+  the root logger pytest's capture handler sits on, and an assertion
+  against `caplog.records` would pass on every one of the four having
+  logged nothing at all.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

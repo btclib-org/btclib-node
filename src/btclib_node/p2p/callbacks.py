@@ -250,7 +250,23 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     block_locators = node.chainstate.block_index.get_block_locator_hashes()
     conn.send(GetHeaders(ProtocolVersion, block_locators, b"\x00" * 32))
     sockaddr = conn.client.getpeername()
-    node.logger.info("Connected to %s", ip_and_port(sockaddr[0], sockaddr[1]))
+    # the connection id beside the address, once, is what makes the
+    # id-keyed lines everywhere else resolvable back to a peer -- #526's
+    # own four verdict lines among them. Core pairs them the other way
+    # round and only on request: `CNode::LogPeer` (`src/net.cpp`,
+    # at bitcoin/bitcoin@05e49b342f) writes `peer=%d` alone and appends
+    # `peeraddr=` only under `fLogIPs`, whose default is off. This tree
+    # logs the address here already, so withholding the id bought no
+    # privacy and only cost the correlation. Here rather than
+    # everywhere: a handshake that raises before this statement leaves
+    # its own id unpaired, which is btclib-org/btclib-node#611 and a
+    # decision about the accept and dial path rather than about this
+    # line
+    node.logger.info(
+        "Connected to %s, connection %s",
+        ip_and_port(sockaddr[0], sockaddr[1]),
+        conn.id,
+    )
 
 
 def wtxidrelay(node: Node, msg: bytes, conn: Connection) -> None:
