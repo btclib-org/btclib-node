@@ -893,6 +893,16 @@ where this file was written rather than where anything was tagged.
   workflow that section names, so it is also the one reporting workflow
   with no way to ask about a branch at all.
 
+### `MAX_PENDING_CFILTERS_HEIGHTS` no longer quotes a stale sentence (closes #537)
+
+- **The comment beside `MAX_PENDING_CFILTERS_HEIGHTS` quoted a sentence
+  `connection.py`'s `MAX_QUEUED_SEND_BYTES` no longer carries** --
+  rewritten away when `get_cfilters` gained its own pacing bound
+  (#442), the same commit that added the quotation here. The paragraph
+  now argues the two-full-requests room on its own terms instead of
+  citing a sibling constant's reasoning; the bound's own value is
+  unchanged.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
