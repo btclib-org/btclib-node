@@ -337,18 +337,38 @@ Do not use Fable unless explicitly instructed.
   rather than reading the rebase's silence, and it is what a rebase across a
   union file is checked against.
 
-  **The silence hides two defects and they do not travel together**, which
-  is why the reconstruction is owed even where one of them has stopped
-  being a defect. The driver places the arriving entry below the one
-  already there, and it eats the blank line before that entry's own
-  heading. The first is the *wanted* result under the organization's
-  bottom-append rule, section 9 of btclib-org/.github's README, and was
-  a defect only while the convention was newest-first; the second is
-  damage under either, and is what `markdownlint-cli2 --fix` writes back
-  on the next hook run. Measured three times in one morning: the two
-  rebases taken before that rule changed carried both, the one taken
-  after carried only the blank line. Reading the silence does not say
-  which happened.
+  **The blank line it eats is what later inverts the order**, so the two
+  are one defect and not two. The driver drops the blank line before the
+  arriving entry's own heading -- damage on its own, and what
+  `markdownlint-cli2 --fix` writes back on the next hook run, leaving a
+  worktree dirty after a gate already reported clean. A branch carrying
+  that loss into a *second* rebase across the same boundary then has its
+  entry placed **above** the one already there rather than below,
+  because the missing line is the context the driver orders on. Measured
+  seven times in one day: six carried their blank line and landed below,
+  the seventh had already lost it and landed above. Isolated on the real
+  case -- restoring that one line in the branch's own commit, changing
+  nothing else, and rebasing onto the same base puts the entry back
+  below (btclib-org/btclib-node#610).
+
+  That the order is *mechanical* rather than arbitrary is what makes it
+  worth stating: an entry that arrives above one already there is not
+  bad luck, it is a report that this branch was rebased twice and lost
+  its blank line the first time.
+
+  **The repair is a rebuild, and the check is a full comparison.**
+  Reconstruct the file as `origin/main` plus exactly the lines the
+  branch adds over it, appended at the end of the open section, and
+  compare the whole thing byte for byte -- **not** merely that nothing
+  was *removed* from the base, which a misordering passes, having
+  repositioned rather than deleted; `RELEASING.md`'s step 3 is where
+  that same insufficiency is already argued. Run a control that mutates
+  the reconstruction too, since a comparison that cannot see a
+  difference reports a match for the wrong reason: an expected file
+  built by copying the arriving block rather than by normalizing it
+  inherits the missing blank line and matches the damage it was meant to
+  catch, which is how two branches reached review with the markdown gate
+  red.
 
 - **The docs build is a third gate, and it is the one a report leaves
   out.** `CONTRIBUTING.md` names three; a report naming two reads as

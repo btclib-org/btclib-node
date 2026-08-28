@@ -713,6 +713,34 @@ where this file was written rather than where anything was tagged.
   against `caplog.records` would pass on every one of the four having
   logged nothing at all.
 
+### The union driver's two defects are one (closes #610)
+
+- **`CLAUDE.md`'s `merge=union` bullet said the driver "places the
+  arriving entry below the one already there" and called that the
+  *wanted* result under the organization's bottom-append rule.** Hours
+  after that landed, on this same tree, an arriving entry went
+  **above** the one already there.
+- **The two are not independent, and the blank line is the cause.** A
+  branch that lost its blank line to an earlier rebase carries that
+  loss as context into the next one, and the driver orders on it.
+  Isolated on the real case: restoring that one line in the branch's
+  own commit, changing nothing else, and rebasing onto the same base
+  moves the entry back below. Seven rebases in one day fit it -- six
+  carried the blank line and landed below, the seventh had lost it and
+  landed above.
+- **So an inverted order is a report rather than bad luck**: it says
+  this branch was rebased twice and lost its blank line the first
+  time. That is worth more than "arbitrary", which was the first
+  correction and was wrong.
+- **The check has to be a full comparison, not a nothing-was-removed
+  assertion.** A misordering repositions rather than deletes, so it
+  passes that weaker test -- `RELEASING.md`'s step 3 already argues the
+  same insufficiency. And the reconstruction must *normalize* the
+  arriving block rather than copy it: an expected file built by copying
+  inherits the missing blank line and matches the damage it exists to
+  catch, which is how two branches in this batch reached review with
+  the markdown gate red.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
