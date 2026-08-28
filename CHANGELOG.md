@@ -387,6 +387,45 @@ where this file was written rather than where anything was tagged.
   than that, or spending its own tip rather than its root, is adjusted
   to a shape this rule actually accepts.
 
+### `Node.__init__` refuses inside a re-imported `__main__` (closes #589)
+
+- **`Node()` raises `ReimportedMainProcessError` where `multiprocessing`
+  re-imported `__main__` to build it** -- `current_process().name` is
+  not `"MainProcess"` and the active start method is not `fork` --
+  rather than leaving that solely to the module-body
+  `if __name__ == "__main__":` guard `scripts/chains/*.py` now carries
+  (#579): a caller that forgets the guard used to build a second `Node`
+  on the same data directory in every worker its own `worker_pool`
+  spawned, silently, with no exception from either `multiprocessing` or
+  this tree.
+- **`allow_reimported_main=True` opts a caller out of that refusal**:
+  the two calls it reads cannot tell an unguarded module top level from
+  a supervisor deliberately building a `Node` inside its own pool
+  worker, so the distinction is the caller's to state rather than
+  `__init__`'s to guess.
+- **`tests/unit/scripts_test.py` parses `scripts/chains/*.py` with
+  `ast`** and asserts every `Node(...)` call sits lexically inside the
+  `__main__` guard's own lines, resolved through whatever name `Node`
+  is actually bound to rather than the literal string `"Node"` -- an
+  aliased import still reads as compliant, and a wrapped call is still
+  found. Closes the gap `scripts/` sitting outside `testpaths` would
+  otherwise leave: nothing else in the suite would catch a future
+  flattening of one of the three shipped scripts.
+- **Lexically, and nothing beyond it**, which refuses `def main():
+  Node(...)` called from the guard -- correct code, refused. A version
+  of this test did follow a bare `name()` call into the function it
+  named, and four review rounds each found a different way to make that
+  answer *guarded* for a `Node(...)` that really does run unguarded on
+  the re-import: two `def`s sharing a name, then a `def` nested in the
+  guard shadowing a module-level one, then a `lambda`, a `class` and an
+  `import ... as` doing the same without being a `def` at all. Deciding
+  which definition a name reaches is Python's own binding semantics and
+  `ast` does not model them; `symtable` does not answer it either,
+  reporting a plain `def` as assigned exactly as it reports one
+  shadowed by a `lambda`. The five shapes are kept as tests of the
+  limit, since a resolver reintroduced without them would pass its own
+  tests.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

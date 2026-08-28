@@ -13,6 +13,7 @@ messages directly and what it does with them does not depend on
 scheduling.
 """
 
+import multiprocessing
 import os
 import re
 import signal
@@ -33,7 +34,7 @@ from btclib_node import Node, install_signal_handlers
 from btclib_node.chains import RegTest
 from btclib_node.config import Config
 from btclib_node.constants import NodeStatus
-from btclib_node.exceptions import NodeShutdownTimeoutError
+from btclib_node.exceptions import NodeShutdownTimeoutError, ReimportedMainProcessError
 from btclib_node.interpreter import warm
 from btclib_node.main import update_chain
 from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
@@ -387,6 +388,89 @@ def test_building_a_node_touches_no_process_signal_state(
     with unstarted_node_context(tmp_path):
         pass
     assert not calls
+
+
+def test_node_refuses_to_build_inside_a_reimported_main(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`Node()` refuses where `multiprocessing` re-imported `__main__` (#589).
+
+    The two calls `__init__` reads are monkeypatched rather than driven
+    through a real `Pool`: a real one reproduces the shape correctly
+    only when the caller *lacks* the guard `scripts/chains/*.py` now
+    carries (issue #579), and building one here to prove that would
+    fork-bomb the machine for no more information than these two calls
+    already give. `SpawnPoolWorker-3` and `spawn` are measured, not
+    invented -- a real `multiprocessing.get_context("spawn").Pool`
+    worker reports exactly that shape for `current_process().name`, and
+    a real `ctx.Process` re-importing this module raises exactly this
+    error before ever reaching a target function.
+    """
+    monkeypatch.setattr(
+        multiprocessing,
+        "current_process",
+        lambda: SimpleNamespace(name="SpawnPoolWorker-3"),
+    )
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda: "spawn")
+    with pytest.raises(ReimportedMainProcessError, match="SpawnPoolWorker-3"):
+        a_node(tmp_path)
+
+
+def test_node_builds_under_fork_even_off_the_main_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`fork` never re-imports `__main__`, so the refusal above excludes it.
+
+    A `fork` pool worker's own `current_process().name` is not
+    `"MainProcess"` either (measured directly: `ForkPoolWorker-N`), but
+    `fork` copies memory instead of re-running the module, so a `Node`
+    built at module scope under it is built exactly once regardless of
+    how many workers a pool fed from it goes on to spawn.
+    """
+    monkeypatch.setattr(
+        multiprocessing,
+        "current_process",
+        lambda: SimpleNamespace(name="ForkPoolWorker-5"),
+    )
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda: "fork")
+    with unstarted_node_context(tmp_path):
+        pass
+
+
+def test_node_allows_a_deliberate_reimported_main_opt_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`allow_reimported_main=True` opts a caller out of the refusal above.
+
+    The reviewer's own counter-case for issue #589: a supervisor that
+    deliberately builds a `Node` inside its own pool worker looks
+    identical, from `__init__`'s own two calls, to the accident the
+    refusal exists for -- there is no way to tell them apart from in
+    here, which is why the caller has to say which one this is.
+    """
+    monkeypatch.setattr(
+        multiprocessing,
+        "current_process",
+        lambda: SimpleNamespace(name="SpawnPoolWorker-7"),
+    )
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda: "spawn")
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            allow_rpc=False,
+            debug=True,
+        ),
+        allow_reimported_main=True,
+    )
+    node._close_worker_pool()
+    node.p2p_manager.peer_db.close()
+    node.chainstate.close()
+    node.block_db.close()
+    node.p2p_manager.loop.close()
+    node.rpc_manager.loop.close()
+    node.logger.close()
 
 
 def test_a_second_node_does_not_disown_the_first(tmp_path: Path) -> None:

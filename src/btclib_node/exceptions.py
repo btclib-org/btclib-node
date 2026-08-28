@@ -39,6 +39,7 @@ __all__ = [
     "MissingPrevoutError",
     "NodeShutdownTimeoutError",
     "PrevoutCountMismatchError",
+    "ReimportedMainProcessError",
     "StoreClosedError",
     "UnknownChainError",
     "UnsupportedAddressTypeError",
@@ -116,6 +117,38 @@ class NodeShutdownTimeoutError(TimeoutError):
 
     def __init__(self, message: str) -> None:
         super().__init__(message)
+
+
+class ReimportedMainProcessError(RuntimeError):
+    """`Node()` ran off the main process without saying that was meant.
+
+    Raised where `multiprocessing.current_process().name` is not
+    `"MainProcess"` and the active start method is not `fork` -- exactly
+    the shape a `Pool` worker's own bootstrap produces
+    (`multiprocessing.spawn.import_main_path` re-importing `__main__` to
+    find the target it was asked to run), which is what let
+    `scripts/chains/*.py` build a second `Node` on the same data
+    directory in every worker `Node.worker_pool` spawned before those
+    three scripts guarded their own module body (issue #579). This is
+    the same failure caught one layer up, for every caller rather than
+    only the three this tree ships (issue #589) -- unless the caller
+    passed `Node(..., allow_reimported_main=True)`, which this class
+    never sees raised against, since `Node.__init__` checks that flag
+    before either of the two calls this docstring names. A caller that
+    reaches this exception has not opted in, so the two things the
+    message offers -- a module-body guard, or that same flag -- are
+    both live for it, whichever this actually was.
+    """
+
+    def __init__(self, process_name: str) -> None:
+        super().__init__(
+            f"Node built inside process {process_name!r}, which "
+            "multiprocessing re-imported __main__ to create. If this is "
+            'unintended, guard the caller with `if __name__ == "__main__":`; '
+            "if it is deliberate -- a supervisor building a Node inside its "
+            "own pool worker, say -- pass "
+            "`Node(..., allow_reimported_main=True)`."
+        )
 
 
 class StoreClosedError(ValueError):

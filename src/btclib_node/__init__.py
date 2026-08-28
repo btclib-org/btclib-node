@@ -15,6 +15,7 @@ an asyncio loop of their own; this module is what calls into them and
 what they hand work back to.
 """
 
+import multiprocessing
 import os
 import signal
 import sys
@@ -29,7 +30,7 @@ from btclib_node.chainstate import Chainstate
 from btclib_node.config import Config
 from btclib_node.constants import NodeStatus
 from btclib_node.download import DownloadManager
-from btclib_node.exceptions import NodeShutdownTimeoutError
+from btclib_node.exceptions import NodeShutdownTimeoutError, ReimportedMainProcessError
 from btclib_node.interpreter import warm
 from btclib_node.log import Logger
 from btclib_node.main import update_chain
@@ -192,11 +193,80 @@ class Node(threading.Thread):
     Building one touches no process-wide state: `install_signal_handlers`
     below is the separate, explicit call a caller makes for that, and
     this object never makes it on its own behalf (issue #436).
+
+    `__init__` also refuses outright inside a re-imported `__main__`
+    (`ReimportedMainProcessError` below) unless `allow_reimported_main`
+    says otherwise, rather than leaving that to a module-body
+    `if __name__ == "__main__":` guard every future caller has to
+    remember on its own (issue #589). The check cannot tell the
+    accident that guard prevents from a deliberate supervisor building
+    a `Node` inside its own pool worker -- both look identical from
+    inside `__init__`, so the distinction has to come from the caller,
+    and `allow_reimported_main=True` is how it says so.
     """
 
-    def __init__(self, config: Config | None = None) -> None:
-        """Open every database `config` names, and wire the two managers up."""
+    def __init__(
+        self, config: Config | None = None, *, allow_reimported_main: bool = False
+    ) -> None:
+        """Open every database `config` names, and wire the two managers up.
+
+        `allow_reimported_main` opts out of the check below: pass it
+        where building a `Node` off the main process, under a start
+        method that re-imports `__main__`, is deliberate -- a
+        supervisor's own pool worker calling back into this
+        constructor, say -- rather than the module-body guard simply
+        having been forgotten.
+
+        Passed on a caller that has merely forgotten the guard, it
+        readmits issue #579 in full -- `ReimportedMainProcessError`
+        below is where that cost is spelled out. So the question
+        this flag asks is whether the caller meant to be off the main
+        process, not whether the exception is inconvenient, and the
+        exception's own message naming the flag is what makes it the
+        easiest thing to reach for after hitting one: reach for the
+        guard first.
+        """
         super().__init__()
+
+        # Every start method but `fork` re-imports `__main__` to find
+        # what a worker was asked to run
+        # (`multiprocessing.spawn.import_main_path`), which is what
+        # made `scripts/chains/*.py` build a second `Node` on the same
+        # data directory inside every worker `warm_worker_pool` spawned,
+        # before those three scripts guarded their own module body
+        # (issue #579): nothing about that re-import is specific to
+        # them, so an unguarded caller this tree does not ship
+        # reproduces it exactly the same way, silently -- CPython raises
+        # nothing for it. `current_process().name` is `"MainProcess"`
+        # only for the process that was never bootstrapped through that
+        # re-import; measured directly (not assumed) under `spawn`, a
+        # `Pool` worker's own is `"SpawnPoolWorker-N"`, and under
+        # `forkserver` it is `"ForkServerPoolWorker-N"`. A `pytest-xdist`
+        # worker is a subprocess too, but `spawn`/`forkserver` never
+        # re-import `__main__` inside *it* -- xdist forks or spawns its
+        # own workers directly from a running interpreter rather than
+        # bootstrapping them the way a `Pool` worker is -- so it reports
+        # `"MainProcess"` the same way, measured the same way, which is
+        # why every functional test can build a `Node` inside one
+        # without tripping this. `fork` is excluded rather than folded
+        # into the same check: it copies memory instead of re-running
+        # the module, so a `Node` built at module scope under it is
+        # built exactly once no matter how many workers a pool it feeds
+        # goes on to spawn.
+        #
+        # `allow_reimported_main` is read first and short-circuits the
+        # rest: the two calls below cannot tell an unguarded module top
+        # level from a supervisor's own worker deliberately calling
+        # back into this constructor, since both report the same
+        # process name and the same start method by the time any Python
+        # code -- including a dispatched task -- runs in the child. That
+        # distinction is the caller's to make, not this check's.
+        if (
+            not allow_reimported_main
+            and multiprocessing.current_process().name != "MainProcess"
+            and multiprocessing.get_start_method() != "fork"
+        ):
+            raise ReimportedMainProcessError(multiprocessing.current_process().name)
 
         if config is None:
             config = Config()
