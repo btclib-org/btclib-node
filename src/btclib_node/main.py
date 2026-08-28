@@ -359,7 +359,15 @@ def update_chain(node: Node) -> None:
                 break
             failed_hash = block_hash
             index = block_index.get_block_info(block_hash).index
-            transactions, rev_patch = utxo_index.add_block(block, index)
+            # (index, block_hash) rather than an unconditional True: the
+            # two 2010 blocks Chain.bip30_exceptions names are the only
+            # ones this node ever lets past its own BIP30 check --
+            # add_block's own docstring is where that check and the
+            # exception are argued
+            check_bip30 = (index, block_hash) not in node.chain.bip30_exceptions
+            transactions, rev_patch = utxo_index.add_block(
+                block, index, check_bip30=check_bip30
+            )
             _validate_block(node, block, transactions, index)
 
             node.block_db.add_rev_block(rev_patch)

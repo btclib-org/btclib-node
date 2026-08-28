@@ -42,6 +42,7 @@ __all__ = [
     "ParentOf",
     "assert_valid_in_context",
     "block_time",
+    "header_at_height",
     "median_time_past",
     "next_bits_required",
 ]
@@ -79,6 +80,26 @@ def median_time_past(header: BlockHeader, height: int, parent_of: ParentOf) -> i
         times.append(block_time(header))
     times.sort()
     return times[len(times) // 2]
+
+
+def header_at_height(
+    header: BlockHeader, height: int, target_height: int, parent_of: ParentOf
+) -> BlockHeader:
+    """Walk back from `header`, at `height`, to its ancestor at `target_height`.
+
+    Core's `CBlockIndex::GetAncestor` over a skip list; this walks
+    `parent_of` one header at a time, which is the same cost
+    `median_time_past` below already pays to reach its own eleventh
+    ancestor -- unbounded here rather than capped at ten, since a
+    caller asking for a BIP68 time-locked input's own coin height can
+    name any past height, not only one within the last eleven blocks.
+    `main.py`'s own callers are where that cost is paid, once per
+    input actually carrying a time-based relative lock rather than once
+    per block regardless.
+    """
+    for _ in range(height - target_height):
+        header = parent_of(header)
+    return header
 
 
 def _min_difficulty_bits(

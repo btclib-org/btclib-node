@@ -26,7 +26,7 @@ from btclib_node.constants import COINBASE_MATURITY
 from btclib_node.exceptions import PrevoutCountMismatchError
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from btclib.tx.tx import Tx
     from btclib.tx.tx_out import TxOut
@@ -38,12 +38,34 @@ if TYPE_CHECKING:
 __all__ = [
     "check_coinbase_maturity",
     "check_coinbase_value",
+    "check_final_transactions",
+    "check_sequence_locks",
     "check_transaction",
     "check_transactions",
     "f",
     "get_flags",
+    "is_final_tx",
     "warm",
 ]
+
+# Core's `LOCKTIME_THRESHOLD` (`src/script/script.h:48`,
+# at bitcoin/bitcoin@204256c73f): a `lock_time` below this is a block
+# height, at or above it a unix timestamp. btclib's own
+# `op_checklocktimeverify`/`op_checksequenceverify`
+# (`script/engine/script_op_codes.py`) inline this threshold and the
+# sequence bit layout below as bare literals rather than naming them;
+# this module names them once since `is_final_tx` and
+# `check_sequence_locks` below each read more than one of them.
+_LOCKTIME_THRESHOLD = 500_000_000
+_SEQUENCE_FINAL = 0xFFFFFFFF
+# Core's `CTxIn::SEQUENCE_LOCKTIME_*` (`src/primitives/transaction.h:93-114`,
+# same commit): bit 31 opts a whole input out of BIP68, bit 22 picks
+# time over block-height units, and the low sixteen bits are the actual
+# relative lock, in whichever unit bit 22 named.
+_SEQUENCE_LOCKTIME_DISABLE_FLAG = 1 << 31
+_SEQUENCE_LOCKTIME_TYPE_FLAG = 1 << 22
+_SEQUENCE_LOCKTIME_MASK = 0x0000FFFF
+_SEQUENCE_LOCKTIME_GRANULARITY = 9
 
 
 def get_flags(config: Config, index: int) -> tuple[str, ...]:
@@ -223,4 +245,111 @@ def check_coinbase_maturity(prevouts: list[Coin], spend_height: int) -> None:
     for coin in prevouts:
         if coin.is_coinbase and spend_height - coin.height < COINBASE_MATURITY:
             err_msg = "bad-txns-premature-spend-of-coinbase"
+            raise BTClibValueError(err_msg)
+
+
+def is_final_tx(tx: Tx, height: int, block_time: int) -> bool:
+    """Whether `tx` is final at `height`, against a cutoff of `block_time`.
+
+    Core's `IsFinalTx` (`src/consensus/tx_verify.cpp:23-42`,
+    at bitcoin/bitcoin@204256c73f): a zero `lock_time` is always final;
+    otherwise it is a block height below `_LOCKTIME_THRESHOLD` and a
+    unix timestamp at or above it, and `tx` is final once `height` or
+    `block_time` -- whichever `lock_time`'s own units name -- has passed
+    it. Still final regardless, if every one of `tx`'s own inputs opts
+    out of `lock_time` by carrying `_SEQUENCE_FINAL`: OP_CHECKLOCKTIMEVERIFY
+    depends on this escape hatch never firing for an input it itself
+    guards, which is why it also refuses a final sequence on its own
+    input (`btclib.script.engine.script_op_codes.op_checklocktimeverify`).
+    """
+    if tx.lock_time == 0:
+        return True
+    cutoff = height if tx.lock_time < _LOCKTIME_THRESHOLD else block_time
+    if tx.lock_time < cutoff:
+        return True
+    return all(tx_in.sequence == _SEQUENCE_FINAL for tx_in in tx.vin)
+
+
+def check_final_transactions(
+    transactions: list[Tx], height: int, block_time: int
+) -> None:
+    """Refuse a block carrying a transaction that is not final.
+
+    Core's `bad-txns-nonfinal` (`ContextualCheckBlock`,
+    `src/validation.cpp:4158-4166`, at bitcoin/bitcoin@204256c73f): every
+    transaction the block carries, coinbase included -- unlike
+    `check_sequence_locks` below, which Core itself only ever asks of
+    the non-coinbase ones. `block_time` is the cutoff `is_final_tx`
+    checks `lock_time` against: `main._validate_block`'s and
+    `main.verify_mempool_acceptance`'s own docstrings say what each
+    passes and why.
+    """
+    for tx in transactions:
+        if not is_final_tx(tx, height, block_time):
+            err_msg = "bad-txns-nonfinal"
+            raise BTClibValueError(err_msg)
+
+
+def check_sequence_locks(
+    transaction_data: list[tuple[list[Coin], Tx]],
+    height: int,
+    *,
+    enforce_bip68: bool,
+    tip_median_time_past: int,
+    ancestor_median_time_past: Callable[[int], int],
+) -> None:
+    """Refuse a non-coinbase transaction whose BIP68 relative lock is unmet.
+
+    Core's `SequenceLocks`/`CalculateSequenceLocks`/`EvaluateSequenceLocks`
+    (`src/consensus/tx_verify.cpp:45-115`, at bitcoin/bitcoin@204256c73f),
+    over each input's own `Coin.height` rather than a freshly-read
+    `CCoinsViewCache` -- the same prevouts `check_transactions` above
+    already carries per transaction, so this reads them rather than
+    asking the UTXO set again.
+
+    `enforce_bip68` is Core's own
+    `DeploymentActiveAt(pindex, ..., DEPLOYMENT_CSV)`: this tree has no
+    BIP9 deployment tracking of its own, so `main.py`'s own callers pass
+    whether `"CHECKSEQUENCEVERIFY"` is active in `Chain.flags` instead --
+    sound because Core deploys BIP68, BIP112 and BIP113 together as one
+    soft fork, so the height that turns on the opcode is the height that
+    turns on this. A transaction below version 2, or an input whose
+    sequence carries `_SEQUENCE_LOCKTIME_DISABLE_FLAG`, is skipped rather
+    than refused, matching BIP68.
+
+    `tip_median_time_past` is Core's own `block.pprev->GetMedianTimePast()`
+    -- the reference a height-based lock is compared against directly,
+    and a time-based one after `ancestor_median_time_past` has already
+    turned each input's own relative lock into an absolute one.
+    `ancestor_median_time_past(h)` returns the median time past of the
+    block at height `h`; time-based locks are measured from the block
+    before the one that confirmed the coin (`max(coin.height - 1, 0)`),
+    matching Core's own comment on why -- "the smallest allowed
+    timestamp of the block containing the txout being spent".
+    """
+    if not enforce_bip68:
+        return
+    for prevouts, tx in transaction_data:
+        if tx.version < 2:  # noqa: PLR2004
+            continue
+        min_height = -1
+        min_time = -1
+        for tx_in, coin in zip(tx.vin, prevouts, strict=True):
+            sequence = tx_in.sequence
+            if sequence & _SEQUENCE_LOCKTIME_DISABLE_FLAG:
+                continue
+            if sequence & _SEQUENCE_LOCKTIME_TYPE_FLAG:
+                coin_time = ancestor_median_time_past(max(coin.height - 1, 0))
+                min_time = max(
+                    min_time,
+                    coin_time
+                    + ((sequence & _SEQUENCE_LOCKTIME_MASK) << _SEQUENCE_LOCKTIME_GRANULARITY)
+                    - 1,
+                )
+            else:
+                min_height = max(
+                    min_height, coin.height + (sequence & _SEQUENCE_LOCKTIME_MASK) - 1
+                )
+        if min_height >= height or min_time >= tip_median_time_past:
+            err_msg = "bad-txns-nonfinal"
             raise BTClibValueError(err_msg)

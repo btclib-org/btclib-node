@@ -118,6 +118,14 @@ class Chain:
     # own height (BIP34, bad-cb-height). Read by main.update_chain,
     # through BlockContext.bip34_height.
     bip34_height: int
+    # Core's `IsBIP30Repeat` (`src/validation.cpp:6218-6222`,
+    # at bitcoin/bitcoin@204256c73f): the (height, block hash) of every
+    # block this chain's own history already carries a BIP30 violation
+    # in, exempted from `chainstate.utxo_index.UtxoIndex.add_block`'s own
+    # BIP30 check rather than failing it. Empty on every leaf but `Main`,
+    # since the two blocks that violate it are two specific mainnet
+    # blocks mined in 2010, not a property of the rule.
+    bip30_exceptions: list[tuple[int, bytes]]
 
     @property
     def genesis(self) -> BlockHeader:
@@ -197,6 +205,20 @@ class Main(Chain):
         self.pow_no_retargeting = False
         self.subsidy_halving_interval = 210000
         self.bip34_height = 227931
+        self.bip30_exceptions = [
+            (
+                91842,
+                bytes.fromhex(
+                    "00000000000a4d0a398161ffc163c503763b1f4360639393e0e4c8e300e0caec"
+                ),
+            ),
+            (
+                91880,
+                bytes.fromhex(
+                    "00000000000743f190a18c5577a3c2d2a1f610ae9601ac046a38084ccb7cd721"
+                ),
+            ),
+        ]
 
 
 @dataclass
@@ -231,6 +253,7 @@ class TestNet(Chain):
         self.pow_no_retargeting = False
         self.subsidy_halving_interval = 210000
         self.bip34_height = 21111
+        self.bip30_exceptions = []
 
 
 @dataclass
@@ -264,6 +287,7 @@ class SigNet(Chain):
         self.pow_no_retargeting = False
         self.subsidy_halving_interval = 210000
         self.bip34_height = 1
+        self.bip30_exceptions = []
 
 
 @dataclass
@@ -296,3 +320,4 @@ class RegTest(Chain):
         self.pow_no_retargeting = True
         self.subsidy_halving_interval = 150
         self.bip34_height = 1
+        self.bip30_exceptions = []

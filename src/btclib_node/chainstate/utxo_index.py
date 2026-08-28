@@ -45,8 +45,24 @@ class UtxoIndex:
 
         self.logger = logger
 
+    def _bip30_violation(self, out_point_bytes: bytes) -> bool:
+        """Whether `out_point_bytes` already names a still-unspent coin.
+
+        `add_block` below asks this of every output the block is about
+        to create, before staging any of them -- the same "not yet
+        mutated" state `add_block`'s own prevout resolution reads, so a
+        transaction earlier in this same block being processed can never
+        make a later one's check see its own not-yet-applied write.
+        """
+        if out_point_bytes in self.removed_utxos:
+            return False
+        return (
+            out_point_bytes in self.updated_utxo_set
+            or bool(self.db.get(b"utxo-" + out_point_bytes))
+        )
+
     def add_block(
-        self, block: Block, height: int
+        self, block: Block, height: int, *, check_bip30: bool = True
     ) -> tuple[list[tuple[list[Coin], Tx]], RevBlock]:
         """Apply `block`'s own spends and creations, staged rather than written.
 
@@ -57,10 +73,43 @@ class UtxoIndex:
         a `Coin` exactly as this call staged it for removal, height and
         coinbase bit included, rather than recomputing either.
 
+        `check_bip30` refuses a block that "overwrites" an output still
+        unspent from anywhere earlier on the chain -- Core's own
+        `bad-txns-BIP30` (`ConnectBlock`, `src/validation.cpp:2401-2431`,
+        at bitcoin/bitcoin@204256c73f), CVE-2012-1909's shape: without
+        it, a coinbase sharing an already-mined, still-unspent txid
+        overwrites that output in place, and a reorg away from the
+        second block deletes an output the first block's own branch
+        still carries. Checked over every transaction the block carries,
+        coinbase included, matching Core's own loop -- and before either
+        of the two loops below stages a single write, since Core's own
+        check runs against the view exactly as it stood before this
+        block, coinbase and ordinary spends alike. `False` only for the
+        two 2010 blocks `Chain.bip30_exceptions` names, which predate
+        BIP34 (btclib-org/btclib-node#571) and so predate the property
+        that makes a new violation of this kind unreachable once BIP34
+        binds: a block's own coinbase commits to its own real height,
+        which two different heights can never share, so the outpoint a
+        block's own coinbase creates cannot already belong to an earlier
+        block's coinbase -- and `UtxoIndex.add_block` un-stages an
+        entire block atomically on any raise, this one included, so a
+        refused duplicate never reaches the two loops below that would
+        otherwise stage a write over it.
+
         Returns each non-coinbase transaction paired with the prevouts
         its own inputs consumed -- what `interpreter.check_transactions`
         validates against -- and the `RevBlock` that undoes this call.
         """
+        if check_bip30:
+            for tx in block.transactions:
+                for i in range(len(tx.vout)):
+                    out_point_bytes = OutPoint(tx.id, i, check_validity=False).serialize(
+                        check_validity=False
+                    )
+                    if self._bip30_violation(out_point_bytes):
+                        err_msg = "bad-txns-BIP30"
+                        raise InvalidBlockInputError(err_msg)
+
         removed: list[tuple[OutPoint, Coin]] = []
         added: list[OutPoint] = []
         complete_transactions: list[tuple[list[Coin], Tx]] = []
