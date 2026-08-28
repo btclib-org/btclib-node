@@ -71,6 +71,14 @@ section fills in one landed change at a time — what a user of
   migrate: pass `pruned=False`, or drop the argument, until pruning
   itself is built (issue #601).
 
+- **The rpc listener's default port is now Core's own, not the p2p
+  port plus one** (issue #605). `v2026.8.27` listened on 8334, 18334,
+  38334 and 18445 for mainnet, testnet, signet and regtest; it now
+  listens on Core's 8332, 18332, 38332 and 18443, which is where
+  `bitcoin-cli` and anything else written against Core looks. A client
+  or a firewall rule pointed at an old default has to move; a caller
+  passing `rpc_port=` explicitly is unaffected.
+
 ## v2026.8.27
 
 **The first release of btclib-node.** Nothing here is an upgrade: no

@@ -97,6 +97,19 @@ class Chain:
 
     name: str
     port: int
+    # Core's own rpc port for this chain, `CreateBaseChainParams`
+    # (`src/chainparamsbase.cpp`, at bitcoin/bitcoin@05e49b342f): one
+    # below `port` on every leaf below, not `port + 1` -- the client on
+    # the other end is `bitcoin-cli` or another program written against
+    # Core, so CLAUDE.md's own `Following Bitcoin Core` is what decides
+    # this rather than any pattern internal to this file.
+    # `config.py`'s `Config.__init__` used to compute `port + 1`
+    # instead (btclib-org/btclib-node#605), which happens to be Core's
+    # own *Tor* incoming-connection port for each of these four chains
+    # (the comment directly above `CreateBaseChainParams` names them:
+    # 8334/18334/38334/18445), a port this node does not listen on at
+    # all.
+    rpc_port: int
     addresses: list[str]
     genesis_block: Block
     # (height, name) pairs, each read by interpreter.get_flags as the
@@ -178,6 +191,7 @@ class Main(Chain):
     def __init__(self) -> None:  # noqa: D107
         self.name = "mainnet"
         self.port = 8333
+        self.rpc_port = 8332
         self.addresses = [
             "seed.bitcoin.sipa.be",
             "dnsseed.bluematt.me",
@@ -231,6 +245,7 @@ class TestNet(Chain):
     def __init__(self) -> None:  # noqa: D107
         self.name = "testnet"
         self.port = 18333
+        self.rpc_port = 18332
         self.addresses = [
             "testnet-seed.bitcoin.jonasschnelli.ch",
             "seed.tbtc.petertodd.org",
@@ -270,6 +285,7 @@ class SigNet(Chain):
     def __init__(self) -> None:  # noqa: D107
         self.name = "signet"
         self.port = 38333
+        self.rpc_port = 38332
         self.addresses = ["178.128.221.177"]
         self.genesis_block = create_genesis(
             1598918400, 52613770, 0x1E0377AE, 1, 50 * 10**8
@@ -305,6 +321,7 @@ class RegTest(Chain):
     def __init__(self) -> None:  # noqa: D107
         self.name = "regtest"
         self.port = 18444
+        self.rpc_port = 18443
         self.addresses = []
         self.genesis_block = create_genesis(1296688602, 2, 0x207FFFFF, 1, 50 * 10**8)
         self.flags = [
