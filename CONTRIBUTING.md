@@ -288,10 +288,15 @@ Everything else reports. `codeql.yml` follows a value from a peer's
 message or an RPC request body to where it is used, which no hook here
 does. `os-macos.yml` runs the suite on the one platform
 `pyproject.toml` classifies that no other workflow runs, and its header
-says what differs beneath it. `links.yml` asks whether somebody else's
-server answered, and `bootstrap-dns.yml` asks the same question of the
-DNS seeds `src/btclib_node/chains.py` names. `claude-review.yml` writes the
-review and its own header says it must not become a required check.
+says what differs beneath it. `os-ubuntu.yml` runs it on
+`ubuntu-24.04-arm` beside the gate's own image, which is where aarch64
+Linux is exercised at all. `os-windows.yml` runs it on the platform
+`pyproject.toml` does not classify and is expected to fail: the red run
+is its output rather than a defect, and its own header says why.
+`links.yml` asks whether somebody else's server answered, and
+`bootstrap-dns.yml` asks the same question of the DNS seeds
+`src/btclib_node/chains.py` names. `claude-review.yml` writes the review
+and its own header says it must not become a required check.
 `vendored-vectors.yml` re-checks `tests/_data/README.md`'s pin against
 upstream, `deps-latest.yml` upgrades every dependency and runs the suite
 and the lint gate against the result, and `mutation.yml` is its own

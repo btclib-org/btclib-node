@@ -349,7 +349,7 @@ the same allowance. So a matrix on every commit here is a slot a reviewer
 in a sibling repository waits behind, which is the argument for keeping
 most of a matrix out of the merge gate and into a weekly sweep instead
 ([btclib-org/.github#85](https://github.com/btclib-org/.github/issues/85))
--- the platform axis `os-macos.yml` covers, among them.
+-- the platform axis the `os-*` sentinels cover, among them.
 
 `test.yml`'s own interpreter axis is the row this repository gates
 instead of sweeping, and that file's own header carries the argument

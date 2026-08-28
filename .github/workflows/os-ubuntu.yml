@@ -1,0 +1,125 @@
+---
+name: os-ubuntu
+
+# The architecture the merge gate does not reach. test.yml runs the
+# suite on `ubuntu-latest`, which is x86-64, and this file is where
+# aarch64 Linux is asked about at all -- the architecture a full node
+# meets on a Raspberry Pi and on Graviton.
+#
+# One axis, and it is the image. The sibling repositories that carry
+# this workflow sweep interpreter against image; here the interpreter
+# axis has one value, and that is a decision rather than a matrix left
+# half written. `requires-python` is `>=3.14` because an application
+# takes the newest interpreter its dependencies allow, which is what
+# issue #507 settled, so the axis has nothing else to hold and a second
+# column would schedule a weekly re-run of the cell every pull request
+# already spends. Widening this back to the sibling shape means giving
+# that axis versions this package does not claim.
+#
+# What the second image buys is not the pure Python, which is the same
+# on both. pyproject.toml depends on `btclib[secp256k1]`, so a compiled
+# libsecp256k1 is resolved and imported at run time, and an aarch64
+# runner selects a different published wheel of it from the one the
+# gate's cell installs. The pin uv.lock carries publishes aarch64
+# wheels for the interpreter below, so this resolves one rather than
+# building the library on the runner -- which the run reads back, being
+# the only thing that can.
+#
+# It gates no commit and no merge. An aarch64 regression sits on main
+# for at most a week, and that is the trade btclib-org/.github#85 makes
+# for every row that is not one of the first four: at the
+# organization's ceiling on concurrent jobs, an image earns a place
+# before a review only if waiting for it costs less than the review
+# does.
+
+on:
+  schedule:
+    # section 10 of btclib-org/.github's README.md is the calendar, and
+    # this line is not the place to restate it: one grid, in one file,
+    # naming the day for the workflow and the minute for the repository.
+    # Only the default branch schedules anything, so on any other branch
+    # the dispatch below is the way in
+    - cron: "20 4 * * 5"
+  # the escape hatch: the architectures on demand, for a branch that
+  # touches the lock, the dependency floor, or anything reaching a
+  # compiled extension
+  workflow_dispatch:
+  # so a change to this file is checked by the thing it configures, the
+  # same way os-macos.yml is
+  pull_request:
+    # the type list every workflow here carries, for the reasons the same
+    # list carries in test.yml
+    types: [opened, reopened, synchronize, ready_for_review, closed]
+    paths:
+      - .github/workflows/os-ubuntu.yml
+
+# least privilege for the GITHUB_TOKEN: everything running in a job can
+# read it, and nothing here writes
+permissions:
+  contents: read
+
+# cancel superseded runs. Named literally rather than through
+# github.workflow, and by the pull request's number where there is one,
+# for the reason test.yml's own group gives: neither the schedule nor a
+# dispatch carries pull_request context, so github.ref still groups
+# either of those, and a closed pull request cannot land in their group
+concurrency:
+  group: os-ubuntu-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suite-ubuntu:
+    name: Run the suite on ${{ matrix.os }}
+    # a draft pull request is work its author is not asking anyone to
+    # read yet, and spends no runner here either. A closed one spends
+    # none: the trigger above takes that event only so the landing
+    # supersedes a run this ref's group is still holding
+    if: ${{ !github.event.pull_request.draft && github.event.action != 'closed' }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # each cell answers for its own architecture, and a red one says
+      # nothing about the other, so the first failure does not take the
+      # answer to the second with it
+      fail-fast: false
+      matrix:
+        # the gate's own image is here rather than excluded: a matrix
+        # with the gate's cell cut out of it is one nobody can read the
+        # shape of, and whoever asked what ran would have to re-derive
+        # the hole from another file
+        os:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+    # the same bound test.yml sets on the same suite: what it bounds is
+    # a runner wedged before or between the tests, not the work
+    timeout-minutes: 30
+    steps:
+      # every action is pinned to a commit SHA, the tag in the comment: a
+      # tag, let alone a branch, is a name its owner can move, and these
+      # run in a job that can read the workflow token
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # for the reason test.yml's checkout gives: nothing here
+          # performs an authenticated git operation, so the token has no
+          # reason to stay in .git/config where a later step can read it
+          persist-credentials: false
+      - name: Setup uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          # the cache holds what uv.lock resolves, which on both images
+          # is wheels and no build: what this job spends its time on is
+          # the suite
+          enable-cache: true
+          # what .python-version pins, written out because this file
+          # reads it from nowhere: the one value the interpreter axis
+          # has, and the header says why it has one
+          python-version: "3.14"
+      # --no-cov, against the --cov pyproject.toml's addopts carries:
+      # the floor is a claim about one interpreter on one image, which
+      # test.yml's coverage job is where it is measured and gated, and
+      # what this asks is whether the architecture changes the answer.
+      # A cell holding the floor would report the architecture's own
+      # finding under the name of the coverage number
+      - name: Run the suite
+        run: >
+          uv run --locked --no-default-groups --group test pytest --no-cov

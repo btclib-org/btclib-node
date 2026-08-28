@@ -87,17 +87,17 @@ keywords = [
 # 3.14. `Implementation :: CPython` is that bound restated where an
 # index reads it, and it needs no dependency to justify it.
 #
-# No `OS Independent` either, and nothing in the dependencies argues
-# against it any more: what this installs is btclib and what btclib
-# pulls in, `btclib-secp256k1` and `cffi` among them now compiled
-# rather than pure Python, but wheeled for macOS, Linux and Windows
-# alike and carrying an sdist besides, over a store that is now the
-# standard library's `sqlite3`. Nothing here is known to need a POSIX
-# system. What is missing is not a reason to think it does, it is a run
-# on the platforms this does not name: the suite runs on `ubuntu-latest`
-# before every merge and on `macos-latest` weekly, which is the two
-# classifiers below and no more. `OS Independent` is a claim about every
-# platform, and this is a claim about where the code has been run.
+# No `OS Independent` either, and the dependencies are not what argues
+# against it: what this installs is btclib and what btclib pulls in,
+# `btclib-secp256k1` and `cffi` among them compiled rather than pure
+# Python, but wheeled for macOS, Linux and Windows alike and carrying
+# an sdist besides, over a store that is the standard library's
+# `sqlite3`. What argues against it is this package's own code, the
+# comment below naming the two POSIX calls and where they are reached.
+# `OS Independent` is a claim about every platform; the two
+# classifiers below are a claim about where the suite is run, which is
+# `ubuntu-latest` before every merge and `ubuntu-24.04-arm` and
+# `macos-latest` weekly.
 classifiers = [
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3",
@@ -113,16 +113,17 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Natural Language :: English",
-    # where this gets developed and where it gets run: nothing here has
-    # ever run on Windows, and at least two things are already known to
-    # stop it. `loop.add_reader`, which both p2p/manager.py and
+    # where this gets developed, and where a merge waits for the suite.
+    # `os-windows.yml` runs the suite on Windows weekly and is expected
+    # red: `loop.add_reader`, which both p2p/manager.py and
     # rpc/manager.py call, is not implemented by the Proactor event
-    # loop that is Windows' default. `signal.SIGTSTP` does not exist
-    # there either; it is reached only by the three scripts/chains
-    # entry points, which call install_signal_handlers, and not by
-    # building a Node itself (issue #429). The list is a lower bound,
-    # not an inventory, and whether to support Windows at all is issue
-    # #430's to decide.
+    # loop that is Windows' default, and `signal.SIGTSTP`, which
+    # `install_signal_handlers` passes to `signal.signal`, does not
+    # exist there (issue #429). That pair is a lower bound rather than
+    # an inventory, and the sentinel's runs are what extend it. No
+    # Windows classifier until the suite passes there and test.yml
+    # gates a cell on it: a classifier is a claim made to an index, and
+    # a weekly red is not one (issue #430).
     "Operating System :: POSIX",
     "Operating System :: MacOS",
     "Topic :: Internet",
