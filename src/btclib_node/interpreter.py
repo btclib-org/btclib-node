@@ -343,7 +343,10 @@ def check_sequence_locks(
                 min_time = max(
                     min_time,
                     coin_time
-                    + ((sequence & _SEQUENCE_LOCKTIME_MASK) << _SEQUENCE_LOCKTIME_GRANULARITY)
+                    + (
+                        (sequence & _SEQUENCE_LOCKTIME_MASK)
+                        << _SEQUENCE_LOCKTIME_GRANULARITY
+                    )
                     - 1,
                 )
             else:

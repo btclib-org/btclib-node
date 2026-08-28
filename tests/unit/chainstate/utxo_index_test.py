@@ -230,3 +230,93 @@ def test_a_rev_block_that_removes_what_the_batch_already_spent_is_refused(
             RevBlock(hash=b"\x08" * 32, to_add=[], to_remove=[out])
         )
     chainstate.close()
+
+
+def test_a_block_that_duplicates_an_unspent_output_is_refused(tmp_path: Path) -> None:
+    """A block whose coinbase duplicates a still-unspent txid is refused.
+
+    Core's `bad-txns-BIP30` (`ConnectBlock`, `src/validation.cpp:2401-2431`,
+    at bitcoin/bitcoin@204256c73f), CVE-2012-1909's shape: without this
+    check, the second block's own write silently overwrote the first's,
+    and a reorg away from it deleted an output the first block's own
+    branch still carries.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    duplicate = coinbase(b"\x09")
+    utxo_index.add_block(one_tx_block([duplicate], b"\x09" * 32), 1)
+    utxo_index.finalize()
+
+    with pytest.raises(InvalidBlockInputError, match="bad-txns-BIP30"):
+        utxo_index.add_block(one_tx_block([duplicate], b"\x0a" * 32), 2)
+    chainstate.close()
+
+
+def test_a_block_that_duplicates_a_spent_output_connects(tmp_path: Path) -> None:
+    """Reusing a txid whose original output is already spent is no violation.
+
+    BIP30 is about an outpoint still *unspent* -- Core's own `HaveCoin`
+    check -- not about a txid ever having existed at all. The spend is
+    left staged rather than finalized, so the duplicate coinbase's own
+    check reads the outpoint out of `removed_utxos` rather than finding
+    it simply absent from both `updated_utxo_set` and the database --
+    the other way `_bip30_violation` answers "no".
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    duplicate = coinbase(b"\x0b")
+    utxo_index.add_block(one_tx_block([duplicate], b"\x0b" * 32), 1)
+    utxo_index.finalize()
+
+    out = OutPoint(duplicate.id, 0)
+    utxo_index.add_block(
+        one_tx_block([coinbase(b"\x0c"), spending(out, b"\x0c")], b"\x0c" * 32), 2
+    )
+    assert out.serialize(check_validity=False) in utxo_index.removed_utxos
+
+    # the original output is gone, so the same coinbase reappearing
+    # duplicates nothing still on the chain
+    utxo_index.add_block(one_tx_block([duplicate], b"\x0d" * 32), 3)
+    chainstate.close()
+
+
+def test_a_refused_duplicate_leaves_the_original_output_untouched(
+    tmp_path: Path,
+) -> None:
+    """A refused duplicate leaves the original output untouched.
+
+    The actual danger CVE-2012-1909 names is not the refusal by itself:
+    it is a reorg away from a *connected* duplicate deleting an output
+    still on the chain. Refusing before either loop below stages
+    anything is what leaves no rev_block for such a reorg to ever apply.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    duplicate = coinbase(b"\x0e")
+    utxo_index.add_block(one_tx_block([duplicate], b"\x0e" * 32), 1)
+    utxo_index.finalize()
+
+    with pytest.raises(InvalidBlockInputError, match="bad-txns-BIP30"):
+        utxo_index.add_block(one_tx_block([duplicate], b"\x0f" * 32), 2)
+
+    out = OutPoint(duplicate.id, 0)
+    key = out.serialize(check_validity=False)
+    assert utxo_index.db.get(b"utxo-" + key) is not None
+    chainstate.close()
+
+
+def test_add_block_skips_bip30_when_asked_to(tmp_path: Path) -> None:
+    """`check_bip30=False` is what `Chain.bip30_exceptions`' two blocks use.
+
+    A block reused rather than a real historical one: regtest carries
+    no chain deep enough to name one of its own, and what this proves is
+    the skip itself, not which specific block it is for.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    duplicate = coinbase(b"\x10")
+    utxo_index.add_block(one_tx_block([duplicate], b"\x10" * 32), 1)
+    utxo_index.finalize()
+
+    utxo_index.add_block(one_tx_block([duplicate], b"\x11" * 32), 2, check_bip30=False)
+    chainstate.close()

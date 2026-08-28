@@ -48,18 +48,36 @@ class UtxoIndex:
     def _bip30_violation(self, out_point_bytes: bytes) -> bool:
         """Whether `out_point_bytes` already names a still-unspent coin.
 
-        `add_block` below asks this of every output the block is about
-        to create, before staging any of them -- the same "not yet
-        mutated" state `add_block`'s own prevout resolution reads, so a
-        transaction earlier in this same block being processed can never
-        make a later one's check see its own not-yet-applied write.
+        `_check_bip30` below asks this of every output the block is
+        about to create, before staging any of them -- the same "not
+        yet mutated" state `add_block`'s own prevout resolution reads,
+        so a transaction earlier in this same block being processed can
+        never make a later one's check see its own not-yet-applied
+        write.
         """
         if out_point_bytes in self.removed_utxos:
             return False
-        return (
-            out_point_bytes in self.updated_utxo_set
-            or bool(self.db.get(b"utxo-" + out_point_bytes))
+        return out_point_bytes in self.updated_utxo_set or bool(
+            self.db.get(b"utxo-" + out_point_bytes)
         )
+
+    def _check_bip30(self, block: Block) -> None:
+        """Refuse `block` if it duplicates a still-unspent output.
+
+        A method of its own rather than a loop inline in `add_block`,
+        which ruff's own `complex-structure`/`too-many-branches` already
+        count every statement here against -- `add_block`'s own
+        docstring is where the check itself, its ordering and its two
+        historical exceptions are all argued.
+        """
+        for tx in block.transactions:
+            for i in range(len(tx.vout)):
+                out_point_bytes = OutPoint(tx.id, i, check_validity=False).serialize(
+                    check_validity=False
+                )
+                if self._bip30_violation(out_point_bytes):
+                    err_msg = "bad-txns-BIP30"
+                    raise InvalidBlockInputError(err_msg)
 
     def add_block(
         self, block: Block, height: int, *, check_bip30: bool = True
@@ -101,14 +119,7 @@ class UtxoIndex:
         validates against -- and the `RevBlock` that undoes this call.
         """
         if check_bip30:
-            for tx in block.transactions:
-                for i in range(len(tx.vout)):
-                    out_point_bytes = OutPoint(tx.id, i, check_validity=False).serialize(
-                        check_validity=False
-                    )
-                    if self._bip30_violation(out_point_bytes):
-                        err_msg = "bad-txns-BIP30"
-                        raise InvalidBlockInputError(err_msg)
+            self._check_bip30(block)
 
         removed: list[tuple[OutPoint, Coin]] = []
         added: list[OutPoint] = []
