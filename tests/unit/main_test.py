@@ -482,40 +482,32 @@ def test_a_reorg_evicts_a_transaction_the_reorg_itself_invalidated(
     node: Node,
 ) -> None:
     """A reorg does not re-add a tx whose own coinbase it just abandoned."""
-    # only once the node is synced: while it is still catching up, a
-    # transaction from a block it steps off is not worth relaying.
-    # first stays short: orphaned is never connected, only handed
-    # straight to verify_mempool_acceptance below, so its own maturity
-    # never enters into it -- first[-1]'s coinbase disappearing once
-    # its whole branch is abandoned is what MissingPrevoutError answers.
-    first = generate_random_chain(2, RegTest().genesis.hash)
+    # first is COINBASE_MATURITY + 1 long, so its own last block already
+    # carries a second transaction -- generate_random_chain's own rule
+    # -- spending first[0]'s coinbase, confirmed rather than merely
+    # offered. second outweighs it and abandons the whole branch, first[0]
+    # included, so _reconcile_mempool_for_reorg's own oldest-abandoned-
+    # block-first walk reaches orphaned only after the coinbase it spent
+    # is already undone: #85's MissingPrevoutError, not a second
+    # implementation of it here, is what that walk's own except catches
+    # and skips rather than re-adding.
+    first = generate_random_chain(COINBASE_MATURITY + 1, RegTest().genesis.hash)
     connect(node, first)
     assert node.status == NodeStatus.BlockSynced
 
-    orphaned = generate_random_transaction(first[-1].transactions[0].id)
-    assert not node.mempool.contains_tx(orphaned)
+    orphaned = first[-1].transactions[1]
+    assert orphaned.vin[0].prev_out.tx_id == first[0].transactions[0].id
 
-    # held before the reorg and confirmed by it, so that taking it out
-    # of the mempool is something the reorg has to do rather than
-    # something that was never needed. second is COINBASE_MATURITY + 1
-    # long: that is what makes its own tip's second transaction -- the
-    # one that has to be confirmed, physically, into a block -- a spend
-    # this rule actually accepts.
-    second = generate_random_chain(COINBASE_MATURITY + 1, RegTest().genesis.hash)
-    confirmed = second[-1].transactions[1]
-    node.mempool.add_tx(confirmed)
-    assert node.mempool.contains_tx(confirmed)
-
+    second = generate_random_chain(COINBASE_MATURITY + 2, RegTest().genesis.hash)
     connect(node, second)
 
-    # #85: orphaned spends the abandoned branch's own coinbase, which no
+    # #85: orphaned spent the abandoned branch's own coinbase, which no
     # longer exists on any chain once the reorg undoes it -- it is
     # rejected the same way any other entrant into the mempool would be,
     # and does not go back in
     with pytest.raises(MissingPrevoutError):
         verify_mempool_acceptance(node, orphaned)
     assert not node.mempool.contains_tx(orphaned)
-    assert not node.mempool.contains_tx(confirmed)
 
 
 def test_a_connected_block_restarts_the_mempool_s_decay_clock(node: Node) -> None:

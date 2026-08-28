@@ -125,6 +125,35 @@ def test_a_datadir_from_before_this_store_is_refused(tmp_path: Path) -> None:
         KeyValueStore(directory)
 
 
+def test_a_pre_versioning_sqlite_store_with_data_is_refused(tmp_path: Path) -> None:
+    """A version-0 store that already holds a row is refused, not silently kept.
+
+    Version 0 is also what a brand-new file answers before anything has
+    stamped it -- `kv` already holding a row is what tells the two apart,
+    the module docstring's own argument for keeping the version out of
+    `kv` in the first place. A store from before this schema version
+    existed is simulated here rather than fixture data, since nothing in
+    this tree still writes one on purpose.
+    """
+    store = a_store(tmp_path)
+    store.put(b"k", b"v")
+    store._run("PRAGMA user_version = 0")
+    store.close()
+
+    with pytest.raises(IncompatibleStoreError, match="version 0 store"):
+        a_store(tmp_path)
+
+
+def test_a_store_from_a_newer_schema_version_is_refused(tmp_path: Path) -> None:
+    """A store already stamped with a version this code does not know is refused."""
+    store = a_store(tmp_path)
+    store._run("PRAGMA user_version = 999")
+    store.close()
+
+    with pytest.raises(IncompatibleStoreError, match="version 999 store"):
+        a_store(tmp_path)
+
+
 def test_a_closed_store_refuses_to_be_used(tmp_path: Path) -> None:
     """A closed store reports `closed`; `get` raises `StoreClosedError`."""
     # the flag alone is what a close that closed nothing would also set.

@@ -133,6 +133,14 @@ class KeyValueStore:
         written before this existed -- `kv` already holding a row is
         what tells the two apart, the module docstring's own argument
         for keeping the version out of `kv` in the first place.
+
+        A refusal closes the connection it just opened before raising:
+        `__init__` never hands this object back to whoever asked for
+        one, so nothing else is left holding a reference to close it,
+        and an open, unclosed connection is what a bare raise here
+        would leave for the garbage collector to find on its own time
+        -- CPython's own sqlite3 warns rather than closing quietly when
+        that happens.
         """
         ((version,),) = self._rows("PRAGMA user_version")
         if version == _SCHEMA_VERSION:
@@ -143,6 +151,7 @@ class KeyValueStore:
         err_msg = f"{self.path} holds a version {version} store, which this "
         err_msg += f"version ({_SCHEMA_VERSION}) cannot read: delete the "
         err_msg += "directory and sync again"
+        self.close()
         raise IncompatibleStoreError(err_msg)
 
     def _run(self, statement: str, parameters: tuple[bytes, ...] = ()) -> None:
