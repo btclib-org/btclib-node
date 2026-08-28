@@ -824,6 +824,25 @@ where this file was written rather than where anything was tagged.
   this: a change made without a demonstrated mechanism behind it would
   be believed and could hide the next occurrence.
 
+### `bitcoin-core-rpc` is declared where it is used (closes #606)
+
+- **`tests/functional/rpc/chain_test.py` and `tx_test.py` import
+  `bitcoin_core_rpc` at module top, and `pyproject.toml` said nothing
+  about it**: the package arrived transitively, as one of btclib's own
+  dependencies. The reasoning for those top-level imports lived only in
+  this file, in the entry that made them -- so if btclib ever dropped or
+  gated that dependency, the suite would break with nothing in this
+  repository's own metadata to say why, and no lockfile diff here to
+  point at.
+- **`>=2026.8.20` in the `test` group, which is the version `uv.lock`
+  already pinned.** The floor is deliberately the resolved version and
+  not a newer one: this declares what the tree relies on rather than
+  deciding to move onto something. The re-lock adds only the dependency
+  edges, no package entry having had to move.
+- `tests/integration/conftest.py` still hand-rolls that client instead
+  of importing it, which is a separate change (issue #607) and is not
+  closed here.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

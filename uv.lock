@@ -269,6 +269,7 @@ check = [
     { name = "twine" },
 ]
 dev = [
+    { name = "bitcoin-core-rpc" },
     { name = "check-sdist" },
     { name = "check-wheel-contents" },
     { name = "cosmic-ray" },
@@ -312,6 +313,7 @@ mutation = [
     { name = "cosmic-ray" },
 ]
 test = [
+    { name = "bitcoin-core-rpc" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-order" },
@@ -331,6 +333,7 @@ check = [
     { name = "twine" },
 ]
 dev = [
+    { name = "bitcoin-core-rpc", specifier = ">=2026.8.20" },
     { name = "check-sdist" },
     { name = "check-wheel-contents" },
     { name = "cosmic-ray" },
@@ -370,6 +373,7 @@ lint = [
 ]
 mutation = [{ name = "cosmic-ray" }]
 test = [
+    { name = "bitcoin-core-rpc", specifier = ">=2026.8.20" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "pytest-order", specifier = ">=1.5.0" },
