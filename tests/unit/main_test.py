@@ -48,7 +48,14 @@ def node(regtest_node: Callable[[], Node]) -> Node:
 
 
 def connect(node: Node, chain: list[Block]) -> BlockIndex:
-    """Offer a chain to the node and drive it to connect what it will."""
+    """Offer a chain to the node, drive it to connect what it will, and flush.
+
+    The flush is what most callers of this helper actually want: a
+    result on disk, staged nowhere, to make assertions against --
+    `Chainstate.flush`'s own bound (`UtxoIndex._FLUSH_BOUND`) is a
+    throughput question for a real sync and not one this helper's own
+    short chains are testing.
+    """
     block_index = node.chainstate.block_index
     block_index.add_headers([block.header for block in chain])
     for block_hash in block_index.header_dict:
@@ -57,6 +64,7 @@ def connect(node: Node, chain: list[Block]) -> BlockIndex:
         node.block_db.add_block(block)
     for _ in range(len(chain)):
         update_chain(node)
+    node.chainstate.flush()
     return block_index
 
 
