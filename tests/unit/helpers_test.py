@@ -25,6 +25,7 @@ from btclib.exceptions import BTClibValueError
 from btclib.p2p.addrv2 import BIP155Network
 
 from btclib_node.chains import RegTest
+from btclib_node.constants import COINBASE_MATURITY
 from tests import (
     WaitTimeoutError,
     brute_force_nonce,
@@ -174,8 +175,8 @@ def test_a_generated_header_chain_links_and_holds_up() -> None:
         header.assert_valid_pow(RegTest().pow_limit_bits)
 
 
-def test_a_generated_block_chain_spends_what_the_block_before_it_made() -> None:
-    """`generate_random_chain` links blocks, roots match, and spends chain."""
+def test_a_generated_block_chain_links_and_its_roots_match() -> None:
+    """`generate_random_chain` links its blocks and each root matches."""
     chain = generate_random_chain(3, RegTest().genesis.hash)
     for block in chain:
         # btclib's, not a second implementation of it written here: the
@@ -187,8 +188,34 @@ def test_a_generated_block_chain_spends_what_the_block_before_it_made() -> None:
     assert chain[0].header.previous_block_hash == RegTest().genesis.hash
     for previous, block in pairwise(chain):
         assert block.header.previous_block_hash == previous.header.hash
+
+
+def test_a_generated_chain_carries_no_coinbase_spend_before_maturity() -> None:
+    """Every block up to `COINBASE_MATURITY` is its own coinbase alone.
+
+    Nothing a chain this short has made is old enough yet to spend --
+    `COINBASE_MATURITY` is not relaxed for regtest either, so there is
+    no shorter chain that could honestly carry one.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    for block in chain:
+        assert len(block.transactions) == 1
+
+
+def test_a_generated_chain_spends_what_it_made_once_that_is_mature() -> None:
+    """Past `COINBASE_MATURITY`, each block spends the chain's own history.
+
+    `chain[0]`'s own coinbase is spent the first time it is old enough
+    to be, and every block after that spends the one before it's own
+    spend -- never a coinbase again, so nothing past that first spend
+    has any maturity left to wait out.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY + 2, RegTest().genesis.hash)
+    first_spend = chain[COINBASE_MATURITY].transactions[1]
+    assert first_spend.vin[0].prev_out.tx_id == chain[0].transactions[0].id
+    for previous, block in pairwise(chain[COINBASE_MATURITY:]):
         spend = block.transactions[1]
-        assert spend.vin[0].prev_out.tx_id == previous.transactions[0].id
+        assert spend.vin[0].prev_out.tx_id == previous.transactions[1].id
 
 
 def test_a_coinbase_spends_nothing() -> None:

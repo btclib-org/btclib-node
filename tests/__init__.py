@@ -46,6 +46,7 @@ from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
 from btclib_node.chains import RegTest
+from btclib_node.constants import COINBASE_MATURITY
 from btclib_node.p2p.address import peer_address
 
 if TYPE_CHECKING:
@@ -260,12 +261,7 @@ def build_block(
 
 
 def generate_random_chain(length: int, start: bytes) -> list[Block]:
-    """Return `length` solved blocks extending `start`, each spending the last.
-
-    Every block after the first carries a second transaction spending
-    its predecessor's coinbase, so the chain is not just height -- a
-    reader can also walk it as a spend history, which is what
-    `block_db_test.py`'s undo-data tests need it for.
+    """Return `length` solved blocks extending `start`.
 
     `start` is assumed to be its own chain's genesis (height 0), so the
     block built at loop position `x` sits at real height `x + 1` --
@@ -273,22 +269,36 @@ def generate_random_chain(length: int, start: bytes) -> list[Block]:
     offered to `update_chain` (`filter_index_test.py`'s own
     `orphan`) -- which is the height each coinbase commits to (BIP34):
     regtest enforces it from height 1, and a chain meant to connect has
-    to carry one that does. Each coinbase pays its own height's real
-    subsidy rather than a flat fifty bitcoin, and the transaction
-    spending the one before it pays exactly what that one paid: past
-    regtest's own hundred-and-fiftieth-block halving, a flat amount on
-    either side of that spend would be a coinbase printing money or a
-    transaction printing money instead, one rule swapped for the other.
+    to carry one that does.
+
+    Every block up to `COINBASE_MATURITY` carries its own coinbase and
+    nothing else: nothing this chain has made is old enough yet for a
+    second transaction to spend, `COINBASE_MATURITY` a bare constant
+    Bitcoin Core does not relax for regtest either
+    (`constants.COINBASE_MATURITY`'s own docstring), so there is no
+    shorter, honestly-spendable chain to build instead. From
+    `COINBASE_MATURITY + 1` on, every block carries a second transaction
+    spending the oldest output this chain has made spendable -- `chain[0]`'s
+    own coinbase, the first time, and that spend's own output every block
+    after, which is never a coinbase's and so carries no maturity of its
+    own left to wait out. Each value paid is exactly what its own source
+    was worth: past regtest's own hundred-and-fiftieth-block halving, a
+    flat amount on either side of a spend would be a coinbase printing
+    money or a transaction printing money instead, one rule swapped for
+    the other.
     """
     chain: list[Block] = []
+    spendable: Tx | None = None
     for x in range(length):
         previous_block_hash = chain[-1].header.hash if chain else start
-        transactions = [generate_coinbase(value=RegTest().subsidy(x + 1), height=x + 1)]
-        if chain:
-            tx = generate_random_transaction(
-                chain[x - 1].transactions[0].id, value=RegTest().subsidy(x)
-            )
+        height = x + 1
+        transactions = [generate_coinbase(value=RegTest().subsidy(height), height=height)]
+        if spendable is None and height > COINBASE_MATURITY:
+            spendable = chain[0].transactions[0]
+        if spendable is not None:
+            tx = generate_random_transaction(spendable.id, value=spendable.vout[0].value)
             transactions.append(tx)
+            spendable = tx
         chain.append(build_block(previous_block_hash, transactions, x))
     return chain
 
