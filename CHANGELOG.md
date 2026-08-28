@@ -903,6 +903,14 @@ where this file was written rather than where anything was tagged.
   citing a sibling constant's reasoning; the bound's own value is
   unchanged.
 
+### REPOSITORY.md's must-not-require list names `scorecard.yml` (closes #626)
+
+- **`scorecard.yml` joins `links.yml`, `os-macos.yml`, `bootstrap-dns.yml`
+  and `claude-review.yml` in the list of workflows that must not become
+  required checks.** It carries neither a `pull_request` trigger nor
+  `workflow_dispatch`, so unlike the other four a required check on it
+  could never be satisfied by any pull request at all.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
