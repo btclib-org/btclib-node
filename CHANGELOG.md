@@ -885,6 +885,14 @@ where this file was written rather than where anything was tagged.
   <https://pypi.org/project/btclib-node/>, and the field it argued was a
   decision of its own now agrees with `documentation`.
 
+### CONTRIBUTING.md's reporting walk names `scorecard.yml` too (closes #595)
+
+- **`.github/workflows/scorecard.yml` is now among the workflows *What
+  gates a merge, and what only reports* walks.** It carries neither a
+  `pull_request` trigger nor `workflow_dispatch`, unlike every other
+  workflow that section names, so it is also the one reporting workflow
+  with no way to ask about a branch at all.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
