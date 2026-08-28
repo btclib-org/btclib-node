@@ -494,6 +494,63 @@ class Connection:
         self.status = P2pConnStatus.Closed
         if self.task and cancel_task:
             self.task.cancel()
+        # Not closed here, on whichever thread called `stop`: closing
+        # `self.client` while a reader or a writer is still registered
+        # for it races `BaseSelectorEventLoop`'s own bookkeeping.
+        # `_close` below does the closing, and does it on the loop's
+        # own thread instead -- the comment beside it argues why that
+        # is where this has to happen. btclib-org/btclib-node#518
+        self.loop.call_soon_threadsafe(self._close)
+
+    def _close(self) -> None:
+        """Unregister `self.client`'s reader and writer, then close it.
+
+        Runs on `self.loop`'s own thread, scheduled there by `stop`
+        above through `call_soon_threadsafe` regardless of which
+        thread called `stop` -- the loop's own selector is not safe to
+        touch from any other one, which is the reason this is a
+        separate step and not inlined into `stop` itself.
+
+        The ordering is the fix for btclib-org/btclib-node#518.
+        `BaseSelectorEventLoop.sock_recv` and `sock_sendall`
+        (`asyncio/selector_events.py`, read on this tree's own
+        `3.14`) each register a reader or a writer for `self.client`'s
+        fd and add `_sock_read_done`/`_sock_write_done` as a done
+        callback on the future they await, and that callback calls
+        `remove_reader`/`remove_writer` in turn. `_remove_reader` reads
+        `self._selector.get_map()` for the fd and, finding a writer
+        still registered alongside the reader being dropped, calls
+        `self._selector.modify(fd, ...)` rather than `unregister` --
+        `modify` unregisters and re-registers, and re-registering a
+        closed fd raises `OSError: Bad file descriptor` from
+        `KqueueSelector.register`'s own `control()` call.
+        `KqueueSelector.unregister`, the path taken when no writer is
+        left to preserve, swallows exactly that error; `modify` does
+        not carry the same guard, which is why the traceback in the
+        issue only ever appears with a writer sharing the descriptor.
+        `_send`'s own `sock_sendall` is that writer -- `async_send`
+        reaches it through `_deliver`, two frames up -- so a peer not
+        draining its send queue at the moment this closes is exactly
+        the case that used to raise.
+        Closing the fd before either callback has had a chance to run
+        is what raises: this method removes the reader and the writer
+        itself, before closing, so that fd is unregistered by the time
+        anything might otherwise have tried to re-register it. Once
+        removed here, `_sock_read_done`/`_sock_write_done`'s own later
+        call is a no-op -- `_remove_reader`/`_remove_writer` cancel the
+        stored handle as part of removing it, and `_sock_read_done`
+        checks `handle.cancelled()` before calling `remove_reader`
+        again, so the second call never reaches the selector at all.
+
+        A fd of -1 is `self.client` already closed -- `stop`'s own
+        idempotency (argued there) can schedule this twice -- and nothing
+        is registered against a socket already closed, so there is
+        nothing to remove either.
+        """
+        fd = self.client.fileno()
+        if fd != -1:
+            self.loop.remove_reader(fd)
+            self.loop.remove_writer(fd)
         self.client.close()
 
     async def run(self) -> None:

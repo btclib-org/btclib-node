@@ -640,6 +640,36 @@ where this file was written rather than where anything was tagged.
   `[project].authors` and no test in this tree reads it, which is
   btclib-org/.github#534.
 
+### `Connection.stop` closes the socket on the loop's own thread (closes #518)
+
+- **`stop`, called from a thread that is not `self.loop`'s, no longer
+  closes `self.client` itself.** It schedules a new method, `_close`,
+  onto the loop through `call_soon_threadsafe`, and `_close` removes any
+  reader and any writer registered for the socket's fd before closing
+  it. `BaseSelectorEventLoop._sock_read_done` (`asyncio/selector_events.py`)
+  calls `remove_reader` once `run`'s own `sock_recv` future completes or
+  is cancelled, and `_remove_reader` takes `_selector.modify` rather than
+  `unregister` where a writer is still registered on the same fd --
+  `Connection._send`'s own `sock_sendall`, which `async_send` reaches
+  through `_deliver`, for a peer not draining its send queue. `modify`
+  re-registers, and registering an fd already closed raises
+  `OSError: Bad file descriptor` from `KqueueSelector`'s own
+  `control()` call; `unregister` alone swallows exactly that error,
+  which is why the traceback only ever surfaced with a writer sharing
+  the descriptor. Removing both before closing means neither callback
+  finds anything left to remove by the time it runs.
+- **Reproduced without the fix at 30 of 30 rounds**, on both the GIL
+  build and `3.14t`, with a writer registered on the same descriptor as
+  a pending `sock_recv`; 0 of 30 with no writer registered. `stop` is
+  called from `handle_p2p`, `handle_p2p_handshake`, `callbacks.pong` and
+  every other caller that drops a peer for cause, all on `Node`'s own
+  thread rather than `P2pManager`'s loop, which is what put every one of
+  those calls on the losing side of the race.
+- **`tests/unit/p2p/connection_test.py` gains a test driving this from a
+  real second thread running the loop** -- `P2pManager`'s own shape --
+  with `stop` called from the thread running the test, neither one the
+  loop's.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
