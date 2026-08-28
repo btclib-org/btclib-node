@@ -1110,8 +1110,8 @@ def test_finalize_with_no_batch_opens_its_own_and_writes_pending(
     block_index.finalize()
 
     assert block_index.pending == {}
-    stored = BlockInfo.deserialize(
-        block_index.db.get(b"blkinfo-" + header.hash), check_validity=False
-    )
+    data = block_index.db.get(b"blkinfo-" + header.hash)
+    assert data is not None
+    stored = BlockInfo.deserialize(data, check_validity=False)
     assert stored.status == BlockStatus.in_active_chain
     chainstate.close()

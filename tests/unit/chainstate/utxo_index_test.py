@@ -273,7 +273,7 @@ def test_rollback_restores_a_set_entry_a_second_mutation_had_overwritten(
     utxo_index.removed_utxos.add(key)
 
     mark = utxo_index.trial_mark()
-    utxo_index._mark_removed(key)  # noqa: SLF001
+    utxo_index._mark_removed(key)
     utxo_index.rollback(mark)
 
     assert key in utxo_index.removed_utxos

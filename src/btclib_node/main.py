@@ -19,7 +19,6 @@ from btclib.block.block_context import BlockContext
 from btclib.exceptions import BTClibValueError
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
 
-from btclib_node.block_db import Coin
 from btclib_node.chainstate.block_index import BlockIndex, BlockStatus
 from btclib_node.constants import NodeStatus
 from btclib_node.exceptions import ChainstateInconsistencyError, MissingPrevoutError
@@ -36,7 +35,9 @@ if TYPE_CHECKING:
     from btclib.tx.tx_out import TxOut
 
     from btclib_node import Node
-    from btclib_node.block_db import RevBlock
+    from btclib_node.block_db import Coin, RevBlock
+    from btclib_node.chainstate.filter_index import FilterIndex
+    from btclib_node.chainstate.utxo_index import UtxoIndex
 
 __all__ = ["update_chain", "verify_mempool_acceptance"]
 
@@ -204,6 +205,31 @@ def _finalize_fork(node: Node, to_add: list[Block], to_remove: list[RevBlock]) -
     node.logger.debug("End chainstate finalize")
 
 
+# update_chain's own trial marks, taken before a trial starts: should_flush
+# may have left utxo_index and filter_index each holding an earlier,
+# already-succeeded trial's own staged changes, unflushed, and a rollback
+# on failure must undo only what this trial itself stages --
+# UtxoIndex.trial_mark's own docstring argues why a blanket wipe is no
+# longer safe once staging survives more than one trial (btclib-org/btclib-node#586).
+def _pre_trial_marks(
+    utxo_index: UtxoIndex, filter_index: FilterIndex
+) -> tuple[int, int]:
+    """Read the rollback marks this trial would undo to, if it fails."""
+    return utxo_index.trial_mark(), filter_index.trial_mark()
+
+
+# update_chain's own failure path: block_db whole, the other two back to
+# the marks _pre_trial_marks read before the trial started. block_db
+# needs no mark of its own: _finalize_fork calls block_db.finalize on
+# every success, unconditionally, so pending_rev_blocks is always empty
+# by the time a new trial starts.
+def _rollback_trial(node: Node, utxo_mark: int, filter_mark: int) -> None:
+    """Undo a failed trial, without touching an earlier trial's own staging."""
+    node.block_db.rollback()
+    node.chainstate.utxo_index.rollback(utxo_mark)
+    node.chainstate.filter_index.rollback(filter_mark)
+
+
 # update_chain's own leading gate: whether there is a fork to try at
 # all, and whether every block it would need has actually arrived.
 # `finish_sync` is called here rather than merely signalled, since a
@@ -346,16 +372,7 @@ def update_chain(node: Node) -> None:
     # invalidates below. Never set by the to_remove loop -- a rollback
     # failing there is not a new block being bad.
     failed_hash: bytes | None = None
-    # taken before either index is touched, and not after: should_flush
-    # may have left both holding an earlier, already-succeeded trial's
-    # own staged changes, unflushed, and rollback below must undo only
-    # what this trial itself stages -- UtxoIndex.trial_mark's own
-    # docstring argues why a blanket wipe is no longer safe.
-    # block_db.rollback needs no mark of its own: _finalize_fork below
-    # calls block_db.finalize on every success, unconditionally, so
-    # pending_rev_blocks is always empty by the time a new trial starts.
-    utxo_mark = utxo_index.trial_mark()
-    filter_mark = filter_index.trial_mark()
+    utxo_mark, filter_mark = _pre_trial_marks(utxo_index, filter_index)
     # the block index's database write moves into the batch below and
     # nowhere in here: a status written on the way through reaches the
     # database before the branch is known to connect, and refusing the
@@ -400,9 +417,7 @@ def update_chain(node: Node) -> None:
             _finalize_fork(node, to_add, to_remove)
         else:
             node.logger.debug("Start chainstate rollback")
-            node.block_db.rollback()
-            utxo_index.rollback(utxo_mark)
-            filter_index.rollback(filter_mark)
+            _rollback_trial(node, utxo_mark, filter_mark)
             node.logger.debug("End chainstate rollback")
 
     node.logger.info("End block validation")
