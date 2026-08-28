@@ -86,7 +86,7 @@ resource #586 is about spending less of.
 
 Bitcoin Core pays a narrower version of the same cost differently,
 because its own equivalent of these three indexes is not one store. Its
-block index (`CBlockTreeDB`) and its coins cache (`CCoinsViewDB`) are two
+block index (`BlockTreeDB`) and its coins cache (`CCoinsViewDB`) are two
 separate LevelDB instances, and `Chainstate::FlushStateToDisk`
 (`validation.cpp`, read at bitcoin/bitcoin@05e49b342f) writes them in
 sequence rather than together -- `WriteBlockIndexDB()` first,
