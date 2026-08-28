@@ -215,7 +215,7 @@ class FilterIndex:
         self._trial_log = []
 
     def trial_mark(self) -> int:
-        """A point in the trial log a failed trial can be rolled back to.
+        """Return a point in the trial log a failed trial can be rolled back to.
 
         `UtxoIndex.trial_mark`'s own docstring is where the reason this
         exists at all -- `pending` surviving more than one trial -- is

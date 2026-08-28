@@ -362,7 +362,7 @@ class BlockIndex:
         )
 
     def stage_status(self, block_hash: bytes, status: BlockStatus) -> None:
-        """Set `block_hash`'s own status now, its own write staged for `finalize`.
+        """Set `block_hash`'s status now, its write staged for `finalize`.
 
         `set_status` above writes through to the store (or to a caller's
         own `wb`) the moment it is called; this stages the write into
