@@ -134,10 +134,9 @@ classifiers = [
 # btclib, btclib-secp256k1 and bitcoin-core-rpc key them, so the index
 # reports the same spelling across every published sibling.
 # `documentation` follows the same `<repository>.readthedocs.io` pattern
-# those three already answer to rather than a guess: it is not connected
-# yet -- REPOSITORY.md's "No Pages and no Read the Docs" -- and the link
-# 404s until it is, docs/ (issue #264) being what a project has to exist
-# before one can be connected to it.
+# those three already answer to rather than a guess, and it is served by
+# the project REPOSITORY.md's "Read the Docs, which is
+# btclib-node.readthedocs.io" reads back.
 [project.urls]
 homepage = "https://btclib.org"
 documentation = "https://btclib-node.readthedocs.io"

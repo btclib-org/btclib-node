@@ -23,11 +23,7 @@ says how the choice is enforced.
 The index badges resolve against a real project since v2026.8.27; they
 answered "package or version not found" before it, which
 CONTRIBUTING.md's *A release path, and what it has published* records
-along with the command that reads the index back.
-
-No Read the Docs badge: no project there is connected to this
-repository, which REPOSITORY.md's *What is not configured, and why*
-records with the reason. -->
+along with the command that reads the index back. -->
 [![PyPI version](https://img.shields.io/pypi/v/btclib-node.svg?logo=pypi)](https://pypi.python.org/pypi/btclib-node/)
 [![GitHub release](https://img.shields.io/github/v/release/btclib-org/btclib-node.svg)](https://github.com/btclib-org/btclib-node/releases)
 [![development status](https://img.shields.io/pypi/status/btclib-node.svg)](https://pypi.python.org/pypi/btclib-node/)
@@ -41,6 +37,7 @@ records with the reason. -->
 [![lint workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/lint.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/lint.yml)
 [![test workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/test.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/test.yml)
 [![docs workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/docs.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/docs.yml)
+[![documentation build](https://app.readthedocs.org/projects/btclib-node/badge/?version=latest)](https://btclib-node.readthedocs.io)
 [![vendored-vectors workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/vendored-vectors.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/vendored-vectors.yml)
 [![bootstrap-dns workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/bootstrap-dns.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/bootstrap-dns.yml)
 [![mutation workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/mutation.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/mutation.yml)

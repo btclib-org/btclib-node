@@ -522,6 +522,40 @@ where this file was written rather than where anything was tagged.
   of version 2 or above only, and an input carrying the disable bit is
   skipped, both matching BIP68.
 
+### Read the Docs is recorded, and README.md carries its badge (closes #563)
+
+- **`README.md` carries the Read the Docs badge** (closes #563), after
+  the `docs` workflow badge and before the sentinels, which is the
+  position section 2 of `btclib-org/.github`'s `README.md` fixes for
+  it. It answers `passing` where a fabricated project name answers
+  `unknown`, so it reports a state rather than an absence, which is
+  what the badge block's own rule asks of a badge.
+- **`REPOSITORY.md` records the project in a section of its own**
+  (closes #563), "Read the Docs, which is btclib-node.readthedocs.io",
+  which is the shape the bullet it replaces said this file would take:
+  what `latest` and `stable` follow, read back from the project API,
+  the `read-the-docs-community` GitHub App the connection runs through
+  rather than a webhook of this repository's own, and the 404 on
+  `/en/v2026.8.27/` beside the 200s on `/en/latest/` and `/en/stable/`.
+  Activating a release tag needs an automation rule on Read the Docs'
+  own side, which #596 tracks, so the section records the tag's absence
+  rather than a pull request fixing it.
+- **"What is not configured, and why" keeps the Pages half** (closes
+  #563) of the bullet that described the two together, `gh api
+  repos/btclib-org/btclib-node/pages` still answering `404`. The
+  `homepage` bullet beside it is untouched: it is a decision of its
+  own, and btclib-org/.github#533 is where the rule for it is being
+  settled.
+- **The comments that pointed at that bullet point at the section**
+  (closes #563): `.readthedocs.yaml` on which versions run the build it
+  configures, `pyproject.toml` beside `[project.urls] documentation`,
+  whose link it said would 404 until a project was connected,
+  `release.yml` on the job it does not have --
+  bitcoin-core-rpc's `documented`, which polls `/en/<tag>/` until that
+  tag is served and here would wait on a version no rule activates --
+  and `docs.yml`, which said read the docs builds this tree once a
+  project is connected there.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

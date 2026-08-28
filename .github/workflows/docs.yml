@@ -2,10 +2,9 @@
 name: docs
 
 # the third gate, and a question of its own: does the documentation build.
-# Without it nothing in CI builds it, only read the docs does once a
-# project is connected there, with -W -- so invalid reStructuredText in a
-# docstring fails after the merge on a service whose failure is not a
-# check on the pull request.
+# Without it nothing in CI builds it, only read the docs does, with -W
+# -- so invalid reStructuredText in a docstring fails after the merge on
+# a service whose failure is not a check on the pull request.
 #
 # No hook can take this over: markdownlint does not read .rst, and
 # ruff's pydocstyle rules check the form of a docstring rather than
