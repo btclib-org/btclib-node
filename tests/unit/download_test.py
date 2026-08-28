@@ -29,6 +29,7 @@ from btclib_node.download import DownloadManager
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import peer_address
+from btclib_node.p2p.callbacks import MAX_GETDATA_INFLIGHT_BYTES
 from tests import generate_random_transaction
 
 if TYPE_CHECKING:
@@ -57,6 +58,7 @@ def a_conn(
     status: Any = P2pConnStatus.Connected,
     feefilter_sent: int = 0,
     next_feefilter_send_time: float = 0.0,
+    queued_send_bytes: int = 0,
 ) -> Any:
     """Build a fake connection, recording every message handed to `send`."""
     sent: list[Any] = []
@@ -78,6 +80,13 @@ def a_conn(
         status=status,
         feefilter_sent=feefilter_sent,
         next_feefilter_send_time=next_feefilter_send_time,
+        # what a real `Connection` starts every fresh connection at
+        # (`p2p/connection.py`), and what `_send_due_announcements` now
+        # paces an `Inv` chunk against the same way `advance_getdata`
+        # paces a `getdata` answer's blocks: never written here unless a
+        # test asks for it, so it never trips that check, the same way a
+        # real connection whose peer reads promptly never would.
+        queued_send_bytes=queued_send_bytes,
     )
 
 
@@ -339,6 +348,37 @@ def test_a_queue_at_exactly_max_inv_sz_is_sent_as_one_inv() -> None:
     manager._send_due_announcements()
     (only_inv,) = only(other, Inv)
     assert len(only_inv.items) == MAX_INV_SZ
+
+
+def test_announcements_pause_once_the_queue_is_full_and_leave_the_rest_queued() -> None:
+    """`_send_due_announcements` paces on `queued_send_bytes` too.
+
+    A connection already at `MAX_GETDATA_INFLIGHT_BYTES` -- whatever put
+    it there, a `getdata` answer this same turn among the plausible
+    causes -- gets no `Inv` at all: nothing is sent, every wtxid stays on
+    `conn.tx_announce_queue`, and the schedule is not redrawn, so the very
+    next call (the cadence `resume_getdata` and `resume_cfilters` already
+    have) tries again rather than waiting for this trickle's own mean
+    delay. Before btclib-org/btclib-node#529 nothing checked this field
+    here at all: an already-full connection was sent the whole queue
+    regardless, on top of whatever already put it at the bound.
+    """
+    other = a_conn(1, queued_send_bytes=MAX_GETDATA_INFLIGHT_BYTES)
+    manager = make_manager([other])
+    other.tx_announce_queue = [a_hash(n) for n in range(MAX_INV_SZ + 1)]
+    hold(manager, *other.tx_announce_queue)
+    manager._send_due_announcements()
+    assert not only(other, Inv)
+    assert other.tx_announce_queue == [a_hash(n) for n in range(MAX_INV_SZ + 1)]
+    assert other.next_inv_send_time == 0.0
+
+    other.queued_send_bytes = 0
+    manager._send_due_announcements()
+    first, second = only(other, Inv)
+    assert len(first.items) == MAX_INV_SZ
+    assert len(second.items) == 1
+    assert other.tx_announce_queue == []
+    assert other.next_inv_send_time > 0.0
 
 
 def test_a_queued_announcement_evicted_before_its_own_schedule_is_not_sent() -> None:
