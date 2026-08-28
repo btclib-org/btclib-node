@@ -32,7 +32,7 @@ records with the reason. -->
 [![GitHub release](https://img.shields.io/github/v/release/btclib-org/btclib-node.svg)](https://github.com/btclib-org/btclib-node/releases)
 [![development status](https://img.shields.io/pypi/status/btclib-node.svg)](https://pypi.python.org/pypi/btclib-node/)
 [![license](https://img.shields.io/github/license/btclib-org/btclib-node.svg)](https://github.com/btclib-org/btclib-node/blob/main/LICENSE)
-[![downloads](https://static.pepy.tech/badge/btclib-node)](https://pepy.tech/project/btclib-node)
+[![downloads](https://static.pepy.tech/badge/btclib-node)](https://pepy.tech/projects/btclib-node)
 [![supported Python versions](https://img.shields.io/pypi/pyversions/btclib-node.svg?logo=python)](https://pypi.python.org/pypi/btclib-node/)
 [![implementation](https://img.shields.io/pypi/implementation/btclib-node.svg)](https://pypi.python.org/pypi/btclib-node/)
 [![wheel](https://img.shields.io/pypi/wheel/btclib-node.svg)](https://pypi.python.org/pypi/btclib-node/)

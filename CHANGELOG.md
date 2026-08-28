@@ -331,6 +331,16 @@ where this file was written rather than where anything was tagged.
   has run is the one that says least about that job. The first one to
   exercise it is the next.
 
+### The downloads badge links to the plural pepy path (closes #578)
+
+- **`README.md`'s downloads badge now links to
+  `https://pepy.tech/projects/btclib-node`**, the plural path section 2
+  of the organization standard fixes; the singular
+  `https://pepy.tech/project/btclib-node` it linked to before answers a
+  redirect rather than the page itself. The badge image URL,
+  `https://static.pepy.tech/badge/btclib-node`, is unchanged: section 2
+  already fixes that spelling.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
