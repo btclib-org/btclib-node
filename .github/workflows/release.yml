@@ -27,10 +27,12 @@ name: release
 # exists and is a required check on every pull request, so the ancestry
 # check below -- the tag has to be merged into the default branch -- is
 # what already carries its answer for the tree being released.
-# There is no ReadTheDocs project connected yet either -- REPOSITORY.md's
-# "No Pages, and no Read the Docs project connected" -- so there is no
-# sentinel here waiting on one the way bitcoin-core-rpc's `documented`
-# job does; that job is what connecting one would add.
+# Nor a job waiting on Read the Docs the way bitcoin-core-rpc's
+# `documented` job does, which polls /en/<tag>/ until that tag's
+# documentation is served: no automation rule activates a tag on this
+# project, so the URL such a job would wait for is a 404 --
+# REPOSITORY.md's "Read the Docs, which is btclib-node.readthedocs.io"
+# reads that back, and #596 is where the rule is tracked.
 on:
   push:
     tags: ["v*"]

@@ -11,11 +11,9 @@
 # docs/requirements.txt" install therefore publishes a bare module title
 # with no API beneath it, silently.
 #
-# What this file cannot say is *which* versions run it. This repository
-# is not on Read the Docs yet -- REPOSITORY.md's own "No Pages and no
-# Read the Docs" is what #264 leaves this file to answer for the day
-# that changes, since a build config has to exist before a project can
-# be connected to one.
+# What this file cannot say is *which* versions run it: that is
+# settings on the project's own side, which REPOSITORY.md's "Read the
+# Docs, which is btclib-node.readthedocs.io" reads back.
 
 # Required
 version: 2

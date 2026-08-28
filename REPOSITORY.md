@@ -421,40 +421,77 @@ back here rather than inferred from `release.yml` naming the two
 
 The trusted publishers these are named by live on the two indices'
 own side, where no `gh api` call here reads them back -- the same
-boundary the Read the Docs bullet below sits on.
+boundary the Read the Docs section below sits on.
+
+## Read the Docs, which is btclib-node.readthedocs.io
+
+**The documentation is published by a project on Read the Docs**,
+`btclib-node` on <https://app.readthedocs.org/projects/btclib-node/>.
+`.readthedocs.yaml` says how a build runs; *which* versions run it is
+settings there, and nothing in the tree records them:
+
+```shell
+curl -s https://app.readthedocs.org/api/v3/projects/btclib-node/ \
+  | python3 -c 'import json, sys; p = json.load(sys.stdin); \
+      print(p["default_branch"], p["default_version"])'
+# main latest
+curl -s https://app.readthedocs.org/api/v3/projects/btclib-node/versions/ \
+  | python3 -c 'import json, sys
+for v in json.load(sys.stdin)["results"]:
+    if v["type"] == "tag":
+        print(v["slug"], v["active"], v["built"])'
+# v2026.8.27 False False
+# stable True True
+for v in latest stable v2026.8.27; do
+  printf '%s ' "$v"
+  curl -s -o /dev/null -w '%{http_code}\n' \
+    "https://btclib-node.readthedocs.io/en/$v/"
+done
+# latest 200
+# stable 200
+# v2026.8.27 404
+```
+
+- **`latest` follows the default branch, which is `main`**, and
+  `default_version` is `latest`, so the root of the site serves the
+  development tip. Both are Read the Docs' settings rather than the
+  forge's, so a branch renamed here leaves `latest` following one that
+  does not exist.
+- **`stable` is the highest semantic-version tag**, chosen and moved by
+  Read the Docs rather than by a setting of its own, and it is what
+  `/en/stable/` serves.
+- **What connects the project is the `read-the-docs-community` GitHub
+  App**, installed on the organization for every repository, so this
+  repository carries no webhook of its own and none to give a secret
+  to:
+
+  ```shell
+  gh api orgs/btclib-org/installations \
+    --jq '.installations[] | select(.app_slug == "read-the-docs-community")
+          | [.app_slug, .repository_selection]'
+  # ["read-the-docs-community","all"]
+  gh api repos/btclib-org/btclib-node/hooks --jq 'length'
+  # 0
+  ```
+
+- **A release tag has no URL of its own.** The version created for
+  `v2026.8.27` is inactive and unbuilt, which is the 404 above. What
+  activates each new tag is an automation rule the sibling projects
+  carry and this one does not -- issue #596 has its form and the
+  measurement -- and adding it is an action on Read the Docs' own side
+  that no `gh api` call in this file takes or reads back, the same
+  boundary the trusted publishers above sit on.
 
 ## What is not configured, and why
 
-- **No Pages, and no Read the Docs project connected.**
-  `gh api repos/btclib-org/btclib-node/pages` answers `404`.
-  `docs/source/` and `.readthedocs.yaml` exist (issue #264), `docs.yml`
-  builds them with `-W -n --keep-going` on every pull request and
-  `release.yml` builds them again on the tag. **What is left is an
-  action on Read the Docs' own side** -- importing the project under
-  the organization's account and pointing it here -- which no `gh api`
-  call in this file can take or read back, which is why this is
-  recorded rather than fixed. Issue #563 is where it is tracked.
-
-  ```shell
-  rtd=https://app.readthedocs.org/projects
-  strip () { sed -e 's/<[^>]*>/|/g' | tr -s '|' '\n' | grep -v '^$'; }
-  for p in btclib-node btclib; do
-    curl -s "$rtd/$p/badge/?version=latest" | strip | tail -2 | head -1
-  done
-  # unknown
-  # passing        <- the control, and the shape this file will take:
-  #                   `btclib`'s own "Read the Docs, which is
-  #                   btclib.readthedocs.io" section
-  ```
-
-  This bullet used to give the reason as *this tree does not publish --
-  the day it does*, and `v2026.8.27` is that day. A reason that names a
-  condition already met is worse than a stale record, because the next
-  reader takes the section as saying the work is now due and looks for
-  what is blocking it: issue #559.
+- **No Pages**, `gh api repos/btclib-org/btclib-node/pages` answering
+  `404`. What it would serve is `docs/source/` (issue #264), which the
+  Read the Docs project above already publishes; `btclib` runs Pages
+  over its own repository root instead, which is a website rather than
+  a second copy of its documentation.
 - **No `homepage`**, the answer to `.homepage` being empty. `btclib`'s
   is `https://btclib.org` rather than its documentation site, so this
-  is a decision of its own and not something the Read the Docs bullet
+  is a decision of its own and not something the Read the Docs section
   above settles on its way past -- the reason recorded here used to be
   "there is no published site for it to point at", which
   <https://pypi.org/project/btclib-node/> has answered since
