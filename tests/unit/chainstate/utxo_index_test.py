@@ -230,3 +230,51 @@ def test_a_rev_block_that_removes_what_the_batch_already_spent_is_refused(
             RevBlock(hash=b"\x08" * 32, to_add=[], to_remove=[out])
         )
     chainstate.close()
+
+
+def test_get_coin_answers_none_for_something_removed_in_this_batch(
+    tmp_path: Path,
+) -> None:
+    """`get_coin` reads `removed_utxos` too: a batch's own spend hides a coin.
+
+    Without this check `get_coin` would fall through to the store, which
+    still holds the coin until `finalize` deletes it, and answer a spend
+    already staged as though it had never happened.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    funding = coinbase(b"\x09")
+    utxo_index.add_block(one_tx_block([funding], b"\x09" * 32), 1)
+    utxo_index.finalize()
+
+    out = OutPoint(funding.id, 0)
+    utxo_index.add_block(
+        one_tx_block([coinbase(b"\x0a"), spending(out, b"\x0a")], b"\x0a" * 32), 2
+    )
+    assert utxo_index.get_coin(out.serialize(check_validity=False)) is None
+    chainstate.close()
+
+
+def test_rollback_restores_a_set_entry_a_second_mutation_had_overwritten(
+    tmp_path: Path,
+) -> None:
+    """Undoing a mark that overwrote an already-present set entry keeps it.
+
+    `_mark_removed` itself carries no guard against marking a key twice
+    -- that guard lives in `add_block`/`apply_rev_block`'s own callers,
+    which never call it for a key already in `removed_utxos` -- so
+    nothing in ordinary use reaches this. `rollback`'s own undo log
+    still has to answer it correctly rather than assume it never
+    happens: this is that branch, tripped directly.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    key = b"\x0b" * 36
+    utxo_index.removed_utxos.add(key)
+
+    mark = utxo_index.trial_mark()
+    utxo_index._mark_removed(key)  # noqa: SLF001
+    utxo_index.rollback(mark)
+
+    assert key in utxo_index.removed_utxos
+    chainstate.close()

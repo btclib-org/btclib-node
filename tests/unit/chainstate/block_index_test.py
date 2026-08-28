@@ -1088,3 +1088,30 @@ def test_the_locators_of_a_node_that_holds_only_the_genesis_block(
     block_index = chainstate.block_index
     assert block_index.get_block_locator_hashes() == [RegTest().genesis.hash]
     chainstate.close()
+
+
+def test_finalize_with_no_batch_opens_its_own_and_writes_pending(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """`finalize()`, called with no `wb`, still writes and clears `pending`.
+
+    `main._finalize_fork` always hands `finalize` the batch
+    `UtxoIndex`/`FilterIndex` share (`Chainstate.flush`), so this is the
+    other path: a caller with no batch of its own, mirroring
+    `FilterIndex.finalize`'s own bare form.
+    """
+    chainstate = a_chainstate(None)
+    block_index = chainstate.block_index
+    (header,) = generate_random_header_chain(1, RegTest().genesis.hash)
+    block_index.add_headers([header])
+    block_index.stage_status(header.hash, BlockStatus.in_active_chain)
+    assert header.hash in block_index.pending
+
+    block_index.finalize()
+
+    assert block_index.pending == {}
+    stored = BlockInfo.deserialize(
+        block_index.db.get(b"blkinfo-" + header.hash), check_validity=False
+    )
+    assert stored.status == BlockStatus.in_active_chain
+    chainstate.close()
