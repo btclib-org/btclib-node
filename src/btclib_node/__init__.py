@@ -222,6 +222,18 @@ class Node(threading.Thread):
         )
         self.mempool = Mempool(self.logger)
 
+        # update_chain's own record of the most recent block its trial
+        # loop refused and why: the hash failed_hash already names
+        # there, paired with the exception _validate_block or
+        # check_transactions raised, rather than only the fixed line the
+        # except block logs. Never cleared on a success, so it is the
+        # last rejection this node has hit rather than this call's own
+        # outcome -- read by nothing in this tree but a rejection test,
+        # taken right after the one connect() call meant to trip it,
+        # which is the only reading that needs telling apart from a
+        # stale one. btclib-org/btclib-node#587
+        self.last_rejected_block: tuple[bytes, BaseException] | None = None
+
         # A `getcfilters` answer `p2p.callbacks.get_cfilters` could not
         # finish scheduling under its own pacing bound, keyed by
         # connection id: the connection itself and the heights still

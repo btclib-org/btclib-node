@@ -245,6 +245,21 @@ def _validate_block(
     check_coinbase_value(block.transactions[0], transactions, index, node)
 
 
+def _record_rejection(
+    node: Node, failed_hash: bytes | None, exc: BaseException
+) -> None:
+    """Record the block `failed_hash` names as refused, and why.
+
+    `Node.__init__`'s own comment beside `last_rejected_block` says who
+    reads it: a rejection test, asserting the rule that refused a block
+    rather than only that one did. Never set on a raise before any
+    block in this fork started -- `failed_hash` is still `None` there,
+    the same guard `update_header_index`'s own call below reads.
+    """
+    if failed_hash is not None:
+        node.last_rejected_block = (failed_hash, exc)
+
+
 def update_chain(node: Node) -> None:
     """Try the best ready fork block by block, and commit or roll it back.
 
@@ -351,9 +366,10 @@ def update_chain(node: Node) -> None:
             filter_index.add_connected_block(block, rev_patch)
             failed_hash = None
 
-    except Exception:
+    except Exception as exc:
         node.logger.exception("Exception occurred")
         success = False
+        _record_rejection(node, failed_hash, exc)
     finally:
         if success:
             _finalize_fork(node, to_add, to_remove)

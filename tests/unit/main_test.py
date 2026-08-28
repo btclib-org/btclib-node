@@ -58,6 +58,26 @@ def connect(node: Node, chain: list[Block]) -> BlockIndex:
     return block_index
 
 
+def rejected_because(node: Node, block: Block, phrase: str) -> None:
+    """Assert `block` is `node`'s own last rejection, and that `phrase` is why.
+
+    `Node.last_rejected_block` pairs the hash `update_chain`'s trial
+    loop was on with the exception it raised; matching both is what
+    tells a block refused for its own rule apart from one refused for a
+    different rule ranked ahead of it in the same per-block gate --
+    the gap btclib-org/btclib-node#587 is about, where any raise
+    anywhere in `_validate_block`/`check_transactions` satisfied a bare
+    `not in active_chain`. `phrase` is checked with `in` rather than
+    `==`: the exact wording is btclib's or this tree's own to change,
+    not an interface either promises to keep, and a substring naming
+    the rule is what a future rewording is least likely to break.
+    """
+    assert node.last_rejected_block is not None
+    failed_hash, exc = node.last_rejected_block
+    assert failed_hash == block.header.hash
+    assert phrase in str(exc), str(exc)
+
+
 def test_chain(node: Node) -> None:
     """A chain of headers added in batches of at most 2000 all connect."""
     length = 2000 * 1  # 2000
@@ -117,6 +137,7 @@ def test_reject_block_that_prints_money(node: Node) -> None:
 
     assert bad.header.hash not in block_index.active_chain
     assert len(block_index.active_chain) == connected
+    rejected_because(node, bad, "Invalid transaction amounts")
 
 
 def test_reject_block_with_a_failing_script(node: Node) -> None:
@@ -143,6 +164,7 @@ def test_reject_block_with_a_failing_script(node: Node) -> None:
 
     assert bad.header.hash not in block_index.active_chain
     assert len(block_index.active_chain) == connected
+    rejected_because(node, bad, "OP_RETURN")
 
 
 def test_reject_block_whose_coinbase_pays_more_than_subsidy_plus_fees(
@@ -165,6 +187,7 @@ def test_reject_block_whose_coinbase_pays_more_than_subsidy_plus_fees(
 
     assert bad.header.hash not in block_index.active_chain
     assert len(block_index.active_chain) == connected
+    rejected_because(node, bad, "coinbase pays too much")
 
 
 def test_reject_block_whose_coinbase_does_not_commit_to_its_height(
@@ -182,6 +205,7 @@ def test_reject_block_whose_coinbase_does_not_commit_to_its_height(
 
     assert bad.header.hash not in block_index.active_chain
     assert len(block_index.active_chain) == connected
+    rejected_because(node, bad, "invalid coinbase height")
 
 
 def test_add_tx(node: Node) -> None:
@@ -342,6 +366,39 @@ def test_a_reorg_refuses_a_missing_removed_block(node: Node) -> None:
         ChainstateInconsistencyError, match="block just removed is missing"
     ):
         connect(node, second)
+
+
+def test_a_reorg_whose_own_undo_raises_names_no_new_block(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rollback failing on the fork's own undo leaves no block blamed.
+
+    `_record_rejection` (`main.py`) never sets `Node.last_rejected_block`
+    on a raise here: `failed_hash` is still `None` at this point in the
+    trial, exactly as `update_header_index`'s own guard reads it below --
+    undoing a block already on the active chain failing is this node's
+    own bookkeeping, not a new block being bad.
+    """
+    active = generate_random_chain(2, RegTest().genesis.hash)
+    block_index = connect(node, active)
+    active_chain_before = list(block_index.active_chain)
+
+    heavier = generate_random_chain(3, RegTest().genesis.hash)
+    block_index.add_headers([block.header for block in heavier])
+    for block in heavier:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+
+    def boom(rev_block: object) -> None:
+        err_msg = "boom"
+        raise ChainstateInconsistencyError(err_msg)
+
+    monkeypatch.setattr(node.chainstate.utxo_index, "apply_rev_block", boom)
+
+    update_chain(node)
+
+    assert block_index.active_chain == active_chain_before
+    assert node.last_rejected_block is None
 
 
 def test_a_reorg_evicts_a_transaction_the_reorg_itself_invalidated(

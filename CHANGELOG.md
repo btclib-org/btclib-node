@@ -14,6 +14,35 @@ where this file was written rather than where anything was tagged.
 
 ## Unreleased
 
+### A rejection test asserts which rule refused a block (closes #587)
+
+- **`Node.last_rejected_block` pairs the hash `update_chain`'s trial
+  loop was on with the exception it raised**, once its `except`
+  catches one -- alongside `failed_hash` (`src/btclib_node/main.py`),
+  which it already tracked and only logged. `update_chain` catches
+  `Exception` generically, so a rejection test asserting only
+  `hash not in active_chain` was satisfied by any raise anywhere in
+  the per-block gate: a new rule ranked ahead of an older one there
+  could retire the older one's own end-to-end test silently, with the
+  suite green at its 100% coverage floor. Measured on #568/#571's own
+  branch, where two tests built their bad block with a coinbase that,
+  before that branch, committed to no height, and after it were
+  refused for BIP34 before either ever reached the rule it was written
+  for.
+- **The exception is captured rather than matched from a log line**:
+  `update_chain` already logs it, but only behind a fixed message and
+  the logging module's own formatting, neither of which a test should
+  have to parse to ask what actually raised.
+- **`tests/unit/main_test.py`'s `rejected_because(node, block, phrase)`
+  asserts both halves**: that `block` is the node's own last
+  rejection, and that `phrase` -- a substring of the exception's own
+  message, not an exact match, since the wording is btclib's or this
+  tree's own to change rather than an interface either promises to
+  keep -- is why. `tests/unit/chainstate/filter_index_test.py` imports
+  it the way it already imports `connect` and `spend`. Applied to
+  every rejection test in both files that used to assert only the
+  outcome.
+
 ### A block is checked against subsidy and BIP34 (closes #568, closes #571)
 
 - **`Chain` carries `subsidy_halving_interval` and `bip34_height`, one
