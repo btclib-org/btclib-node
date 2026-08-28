@@ -63,6 +63,14 @@ section fills in one landed change at a time — what a user of
   that being the first release there was. `CHANGELOG.md`'s own entry
   has what changed and why; this one is only what a user has to do.
 
+- **`Config(pruned=True)` used to construct and do nothing; it now
+  raises `PruningNotImplementedError`** (issue #574). A caller relying
+  on the old, silently-ignored value was getting a full node that
+  wrote every block to disk regardless of what it asked for --
+  `pruned=False`, the default, is unaffected. There is nothing to
+  migrate: pass `pruned=False`, or drop the argument, until pruning
+  itself is built (issue #601).
+
 ## v2026.8.27
 
 **The first release of btclib-node.** Nothing here is an upgrade: no

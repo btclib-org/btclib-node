@@ -583,6 +583,25 @@ where this file was written rather than where anything was tagged.
   mempool check wants and what an off-by-one in
   `verify_mempool_acceptance` had wrong until #569.
 
+### `Config(pruned=True)` raises rather than being silently ignored (closes #574)
+
+- **`Config.__init__` refuses `pruned=True` with the new
+  `PruningNotImplementedError`** (`src/btclib_node/exceptions.py`)
+  instead of storing it and doing nothing with it: `BlockDB` never
+  deletes a file, so the previous behaviour wrote every block of
+  mainnet to `data_dir` for a caller who had asked it not to.
+  `pruned=False`, the default, still constructs.
+- **The parameter and the field stay** -- `pruned` is public API, and
+  nothing here is removed for it -- with a field comment on
+  `Config.pruned` explaining the refusal, in place of the two comments
+  that used to cite `pruned` as an ordinary, freely settable example
+  alongside `debug` and the other booleans.
+- **btclib-org/btclib-node#601 is where pruning itself gets built.**
+  The exception's own docstring cites what Bitcoin Core does instead --
+  drops `NODE_NETWORK` from its advertised services, keeps only
+  `NODE_NETWORK_LIMITED`, and deletes a block file once it is more than
+  `MIN_BLOCKS_TO_KEEP` (288 blocks) behind the tip.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

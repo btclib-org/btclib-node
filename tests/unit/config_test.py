@@ -11,6 +11,7 @@ from btclib.fee import FeeRate
 
 from btclib_node.chains import Main, RegTest, SigNet, TestNet
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE, Config
+from btclib_node.exceptions import PruningNotImplementedError
 
 
 def test_chain_selection() -> None:
@@ -63,6 +64,18 @@ def test_rpc_host_defaults_to_localhost_not_every_interface() -> None:
         Config(chain="regtest", rpc_host="0.0.0.0").rpc_host  # noqa: S104
         == "0.0.0.0"  # noqa: S104
     )
+
+
+def test_pruned_true_raises_not_implemented() -> None:
+    """`pruned=True` refuses rather than silently pruning nothing."""
+    with pytest.raises(PruningNotImplementedError, match="pruning is not implemented"):
+        Config(chain="regtest", pruned=True)
+
+
+def test_pruned_false_still_constructs() -> None:
+    """`pruned=False`, the default, builds a `Config` as before."""
+    assert Config(chain="regtest").pruned is False
+    assert Config(chain="regtest", pruned=False).pruned is False
 
 
 def test_a_disallowed_port_is_none_rather_than_some_other_number() -> None:

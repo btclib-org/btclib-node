@@ -5,10 +5,11 @@
 """`Config`, the settings one `Node` is built from.
 
 Which chain to join, where its data lives, which listeners to start and
-on which interfaces, whether it prunes, and the feerate floor it tells a
-peer about in `feefilter` -- `DEFAULT_MIN_RELAY_FEERATE` below, Core's
-own `DEFAULT_MIN_RELAY_TX_FEE`. `_resolve_chain` is what turns a chain
+on which interfaces, and the feerate floor it tells a peer about in
+`feefilter` -- `DEFAULT_MIN_RELAY_FEERATE` below, Core's own
+`DEFAULT_MIN_RELAY_TX_FEE`. `_resolve_chain` is what turns a chain
 already built, or a network's name, into the `Chain` a `Config` carries.
+`pruned` is reserved rather than honoured: see its own field comment.
 """
 
 from dataclasses import dataclass
@@ -17,7 +18,11 @@ from pathlib import Path
 from btclib.fee import FeeRate
 
 from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet
-from btclib_node.exceptions import InvalidChainTypeError, UnknownChainError
+from btclib_node.exceptions import (
+    InvalidChainTypeError,
+    PruningNotImplementedError,
+    UnknownChainError,
+)
 
 __all__ = ["DEFAULT_MIN_RELAY_FEERATE", "Config"]
 
@@ -84,13 +89,20 @@ class Config:
     # P2pManager.server binds every interface unconditionally, and is
     # right to, since a peer listener is supposed to accept a stranger.
     rpc_host: str
+    # always `False`: `__init__` below refuses `True` with
+    # `PruningNotImplementedError` (btclib-org/btclib-node#574) rather
+    # than accepting it and pruning nothing. The field stays, and so
+    # does the parameter below, because nothing is removed from
+    # `Config`'s public API -- only the one value that would have
+    # written every block of the chain to disk while a caller believed
+    # it would not.
     pruned: bool
     debug: bool
     min_relay_feerate: FeeRate
 
     # every parameter here is one independent setting, not a group of
     # related ones this signature happens to expose together: `chain` is
-    # not `data_dir`'s business, `pruned` is not `debug`'s, and nesting
+    # not `data_dir`'s business, `rpc_host` is not `debug`'s, and nesting
     # them into sub-objects would only move each still-independent knob
     # behind one more name for every caller, all of which already read
     # this constructor by keyword (`grep -rn "Config(" tests/
@@ -120,7 +132,7 @@ class Config:
         log_path: str | None = "history.log",
         min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
     ) -> None:
-        """Resolve `chain`, and `allow_p2p`/`allow_rpc` to a port or `None`."""
+        """Resolve `chain` and ports, and refuse `pruned=True`."""
         self.chain = _resolve_chain(chain)
 
         data_dir = Path(data_dir) if data_dir else Path.home() / ".btclib"
@@ -140,6 +152,8 @@ class Config:
 
         self.rpc_host = rpc_host
 
+        if pruned:
+            raise PruningNotImplementedError
         self.pruned = pruned
 
         self.debug = debug
