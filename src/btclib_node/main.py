@@ -253,6 +253,17 @@ def _parent_of(node: Node) -> Callable[[BlockHeader], BlockHeader]:
     return parent_of
 
 
+# the two 2010 blocks Chain.bip30_exceptions names are the only ones
+# this node ever lets past UtxoIndex.add_block's own BIP30 check --
+# add_block's own docstring is where that check and the exception are
+# argued. A function of its own rather than inline in update_chain,
+# which ruff's own too-many-statements already counts every statement
+# gained here against.
+def _check_bip30(node: Node, index: int, block_hash: bytes) -> bool:
+    """Whether `block_hash`, connecting at `index`, is checked for BIP30."""
+    return (index, block_hash) not in node.chain.bip30_exceptions
+
+
 # update_chain's own per-block gate, once a candidate's spends and
 # creations are staged and its own height is known: script and amounts
 # (interpreter.check_transactions), a coinbase paying more than subsidy
@@ -269,17 +280,6 @@ def _parent_of(node: Node) -> Callable[[BlockHeader], BlockHeader]:
 # exceptions are argued. A function of its own rather than statements
 # inline: update_chain's own trial loop is already long enough that
 # PLR0915 counts every statement gained here against it.
-# the two 2010 blocks Chain.bip30_exceptions names are the only ones
-# this node ever lets past UtxoIndex.add_block's own BIP30 check --
-# add_block's own docstring is where that check and the exception are
-# argued. A function of its own rather than inline in update_chain,
-# which ruff's own too-many-statements already counts every statement
-# gained here against.
-def _check_bip30(node: Node, index: int, block_hash: bytes) -> bool:
-    """Whether `block_hash`, connecting at `index`, is checked for BIP30."""
-    return (index, block_hash) not in node.chain.bip30_exceptions
-
-
 def _validate_block(
     node: Node, block: Block, transactions: list[tuple[list[Coin], Tx]], index: int
 ) -> None:
