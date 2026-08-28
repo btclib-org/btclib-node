@@ -22,6 +22,7 @@ from btclib.script import script
 import btclib_node.chainstate.filter_index as filter_index_module
 from btclib_node import Node
 from btclib_node.chains import RegTest, TestNet
+from btclib_node.constants import COINBASE_MATURITY
 from btclib_node.exceptions import ChainstateInconsistencyError
 from btclib_node.main import update_chain
 from tests import (
@@ -115,9 +116,13 @@ def test_the_filter_holds_what_the_block_pays_to_and_what_it_spends(
     from the spending block alone would miss it, and a client watching
     that address would never be told to fetch the block that emptied it.
     """
+    # COINBASE_MATURITY + 1 long: generate_random_chain does not embed a
+    # spend of chain[0]'s own coinbase before it is that deep, and a
+    # shorter chain has nothing else spendable to make the filter's own
+    # match-what-it-spends property observable
     node = regtest_node()
-    chain = a_chain(node, 2)
-    spending = chain[1]
+    chain = a_chain(node, COINBASE_MATURITY + 1)
+    spending = chain[-1]
     filter_index = node.chainstate.filter_index
     spending_filter = filter_index.get_filter(spending.header.hash)
     assert spending_filter is not None
@@ -401,11 +406,14 @@ def test_a_block_that_does_not_connect_leaves_no_filter_behind(
     held for a block the chain does not have would be answered to a
     peer asking about the block that did connect at that height.
     """
+    # COINBASE_MATURITY long, spending chain[0]'s own coinbase: a
+    # fresher one would be refused for prematurity before ever reaching
+    # the OP_RETURN this test is about
     node = regtest_node()
-    chain = a_chain(node, 2)
+    chain = a_chain(node, COINBASE_MATURITY)
     filter_index = node.chainstate.filter_index
 
-    funding = chain[-1].transactions[0]
+    funding = chain[0].transactions[0]
     unspendable = spend(
         funding, funding.vout[0].value, script_sig=script.serialize(["OP_RETURN"])
     )
@@ -431,16 +439,21 @@ def test_a_batch_that_fails_partway_leaves_nothing_of_the_blocks_before_it(
     Several blocks reach the chainstate in one write batch only as a
     fork: a block on the tip is a candidate on its own and connects by
     itself. So the node is put on a short chain and offered a heavier
-    branch whose last block does not validate -- the two before it are
-    indexed and pending when it raises, and the whole batch has to go,
-    filters included.
+    branch whose last block does not validate -- every block before it
+    is indexed and pending when it raises, and the whole batch has to
+    go, filters included.
     """
     node = regtest_node()
-    a_chain(node, 2)
+    # on_chain and branch are the same length so branch alone never
+    # outweighs it -- only branch *with* bad appended does, which is what
+    # keeps the switch decided on the whole batch rather than partway
+    # through it. COINBASE_MATURITY long besides, spending branch[0]'s
+    # own coinbase, for the same reason as the sibling test above
+    a_chain(node, COINBASE_MATURITY)
     on_chain = list(node.chainstate.block_index.active_chain)
 
-    branch = generate_random_chain(2, GENESIS.hash)
-    funding = branch[-1].transactions[0]
+    branch = generate_random_chain(COINBASE_MATURITY, GENESIS.hash)
+    funding = branch[0].transactions[0]
     unspendable = spend(
         funding, funding.vout[0].value, script_sig=script.serialize(["OP_RETURN"])
     )
