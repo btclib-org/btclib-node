@@ -271,6 +271,36 @@ Do not use Fable unless explicitly instructed.
   The load average `uptime` gives at the run, not read back afterward, is
   the number ISS 372 records beside each of its runs, and the one worth
   recording here too.
+- **The coverage floor can also fail by losing a whole worker's share of
+  one file, at ordinary load, and not reproduce.**
+  [ISS 617](https://github.com/btclib-org/btclib-node/issues/617) is
+  where that happened once: dozens of pre-existing lines across many
+  unrelated functions of `main.py` reported missing, every test green,
+  `uptime` ordinary (2.20) rather than the load ISS 372's own run
+  carried (~19) — the shape neither ISS 372 nor
+  [ISS 319](https://github.com/btclib-org/btclib-node/issues/319)
+  is, both of those being one line or branch tied to the timing of one
+  function. The candidate mechanism is `xdist`/`pytest-cov`'s own
+  parallel-data combine silently losing one worker's `.coverage.*` file
+  — and that silence is real: `pytest-cov`'s `DistMaster` never passes
+  `messages=True` to the `coverage.Coverage()` it drives its `combine()`
+  through, so a dropped or duplicate-skipped file changes nothing a
+  stock run prints, in either direction. Seven whole-suite runs on this
+  repository's ten-core machine, five at the default `-n auto` and two
+  at an oversubscribed `-n 20`, each with `COVERAGE_DEBUG=dataio,combine`
+  and `COVERAGE_DEBUG_FILE` pointed outside the rootdir, every one
+  combining exactly one file per worker plus the master's own and
+  losing none of them, did not reproduce it — on the same
+  coverage 7.15.4 / pytest-cov 7.1.0 / pytest-xdist 3.8.0 this tree
+  pinned at ISS 617's own sha, so this is not something a version bump
+  already fixed underneath the report. Nothing here is changed for it:
+  ISS 617 itself carries the argument for why a config change with no
+  demonstrated mechanism behind it is worse than the flake. Where this
+  shape recurs — many lines across several functions of one file
+  missing, at ordinary load, every test passing, every other file whole
+  — rerun once before trusting it, and rerun with that same
+  `COVERAGE_DEBUG` pair set if it persists, since that is the only way
+  a dropped file leaves a mark a plain `uv run pytest` does not.
 - **A mutation applied outside the runner's own process never reaches an
   `-n auto` worker, and the guarded test passes.** A wrapper that
   monkeypatches an attribute and then calls `pytest.main` mutates the

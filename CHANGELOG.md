@@ -803,6 +803,27 @@ where this file was written rather than where anything was tagged.
   has already returned a live socket, so this runs once per connection
   actually made, never once per dial attempt.
 
+### The 100% floor's `main.py` loss did not reproduce (closes #617)
+
+- **Seven whole-suite runs on this repository's ten-core machine — five
+  at the default `-n auto`, two at an oversubscribed `-n 20` — with
+  `COVERAGE_DEBUG=dataio,combine` and `COVERAGE_DEBUG_FILE` pointed
+  outside the rootdir, each combined exactly one data file per worker
+  plus the master's own, losing none of them.** The candidate mechanism
+  named in #617 — `xdist`/`pytest-cov`'s own parallel-data combine
+  dropping a worker's `.coverage.*` file — was not caught in the act,
+  on the same coverage 7.15.4 / pytest-cov 7.1.0 / pytest-xdist 3.8.0
+  pins the tree already carried at #617's own sha.
+- **The silence such a drop would leave is real, whether or not it
+  happened here**: `pytest-cov`'s `DistMaster` never passes
+  `messages=True` to the `coverage.Coverage()` it drives its
+  `combine()` through, so a dropped or duplicate-skipped file changes
+  nothing a stock run prints. `CLAUDE.md`'s *Non-obvious facts* carries
+  the discriminator against ISS 372 and ISS 319, and what to do if the
+  shape recurs. Nothing in the coverage configuration is changed by
+  this: a change made without a demonstrated mechanism behind it would
+  be believed and could hide the next occurrence.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
