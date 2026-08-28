@@ -22,6 +22,7 @@ from btclib.exceptions import BTClibValueError
 from btclib.script.engine import verify_amounts, verify_input, verify_transaction
 from btclib.script.sig_hash import PrecomputedTxData
 
+from btclib_node.constants import COINBASE_MATURITY
 from btclib_node.exceptions import PrevoutCountMismatchError
 
 if TYPE_CHECKING:
@@ -31,9 +32,11 @@ if TYPE_CHECKING:
     from btclib.tx.tx_out import TxOut
 
     from btclib_node import Node
+    from btclib_node.block_db import Coin
     from btclib_node.config import Config
 
 __all__ = [
+    "check_coinbase_maturity",
     "check_coinbase_value",
     "check_transaction",
     "check_transactions",
@@ -85,7 +88,7 @@ def warm() -> None:
 
 
 def _tasks(
-    transaction_data: list[tuple[list[TxOut], Tx]], flags: tuple[str, ...]
+    transaction_data: list[tuple[list[Coin], Tx]], flags: tuple[str, ...]
 ) -> Iterator[tuple[list[TxOut], Tx, int, tuple[str, ...], PrecomputedTxData]]:
     """One `f` task per input, carrying its own transaction's precomputed data.
 
@@ -121,12 +124,13 @@ def _tasks(
     assumed of it (btclib-org/btclib-node#388).
     """
     for prevouts, tx in transaction_data:
-        precomputed = PrecomputedTxData(tx, prevouts)
-        yield from ((prevouts, tx, i, flags, precomputed) for i in range(len(prevouts)))
+        tx_outs = [coin.tx_out for coin in prevouts]
+        precomputed = PrecomputedTxData(tx, tx_outs)
+        yield from ((tx_outs, tx, i, flags, precomputed) for i in range(len(tx_outs)))
 
 
 def check_transactions(
-    transaction_data: list[tuple[list[TxOut], Tx]], index: int, node: Node
+    transaction_data: list[tuple[list[Coin], Tx]], index: int, node: Node
 ) -> None:
     """Verify a candidate block's own transactions, fanned out across the pool.
 
@@ -134,7 +138,11 @@ def check_transactions(
     `main.update_chain`'s own caller is what rolls the chainstate back
     and leaves the block off the active chain once this does. Amounts
     are checked here, per transaction and outside the pool, since
-    script validation alone never reads them.
+    script validation alone never reads them. `transaction_data` carries
+    each prevout as a `Coin` -- what `check_coinbase_maturity` below
+    needs of it -- and every btclib call here wants a bare `TxOut`, so
+    each is unwrapped where it is used rather than threaded through as
+    two parallel lists.
     """
     if not transaction_data:
         return
@@ -148,7 +156,7 @@ def check_transactions(
     # their prevouts separately or a block may print money. Per
     # transaction, and cheap, so it stays out of the worker pool.
     for prevouts, tx in transaction_data:
-        verify_amounts(prevouts, tx)
+        verify_amounts([coin.tx_out for coin in prevouts], tx)
 
     # Raising is the point: an input that does not verify has to reach
     # main.update_chain, which rolls the chainstate back and leaves the
@@ -174,7 +182,7 @@ def check_transaction(prevouts: list[TxOut], tx: Tx, index: int, node: Node) -> 
 
 def check_coinbase_value(
     coinbase: Tx,
-    transaction_data: list[tuple[list[TxOut], Tx]],
+    transaction_data: list[tuple[list[Coin], Tx]],
     index: int,
     node: Node,
 ) -> None:
@@ -188,7 +196,7 @@ def check_coinbase_value(
     threaded out of `verify_amounts` above, which returns nothing.
     """
     fees = sum(
-        sum(x.value for x in prevouts) - sum(x.value for x in tx.vout)
+        sum(coin.tx_out.value for coin in prevouts) - sum(x.value for x in tx.vout)
         for prevouts, tx in transaction_data
     )
     coinbase_value = sum(x.value for x in coinbase.vout)
@@ -196,3 +204,23 @@ def check_coinbase_value(
     if coinbase_value > ceiling:
         err_msg = f"coinbase pays too much: {coinbase_value} instead of {ceiling}"
         raise BTClibValueError(err_msg)
+
+
+def check_coinbase_maturity(prevouts: list[Coin], spend_height: int) -> None:
+    """Refuse a spend of a coinbase output not yet `COINBASE_MATURITY` deep.
+
+    Core's `bad-txns-premature-spend-of-coinbase` (`Consensus::CheckTxInputs`,
+    `src/consensus/tx_verify.cpp:185-186`, at bitcoin/bitcoin@204256c73f):
+    `nSpendHeight - coin.nHeight < COINBASE_MATURITY`. Called once per
+    transaction rather than once per block, because `spend_height` is not
+    the same number for both of this tree's own callers: `main._validate_block`
+    passes the height of the block connecting the spend, and
+    `main.verify_mempool_acceptance` passes one past the active chain's own
+    tip -- the height a mempool transaction would have if it were mined
+    next, matching Core's own `AcceptToMemoryPoolWorker`
+    (`src/validation.cpp:897`, same commit).
+    """
+    for coin in prevouts:
+        if coin.is_coinbase and spend_height - coin.height < COINBASE_MATURITY:
+            err_msg = "bad-txns-premature-spend-of-coinbase"
+            raise BTClibValueError(err_msg)

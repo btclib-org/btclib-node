@@ -28,8 +28,11 @@ from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
+from btclib_node.block_db import Coin
 from btclib_node.chains import RegTest
+from btclib_node.constants import COINBASE_MATURITY
 from btclib_node.interpreter import (
+    check_coinbase_maturity,
     check_transaction,
     check_transactions,
     f,
@@ -67,6 +70,17 @@ def prevout(script_pub_key: bytes | None = None, value: int = 50 * 10**8) -> TxO
         value=value,
         script_pub_key=script_pub_key or script.serialize([b"\x33" * 32]),
     )
+
+
+def coins(tx_outs: list[TxOut], *, is_coinbase: bool = False) -> list[Coin]:
+    """Wrap plain prevouts as `Coin`s, the shape `check_transactions` takes.
+
+    A height old enough that none of these tests trips over
+    `check_coinbase_maturity` by accident -- that rule has its own tests
+    below, and every other test here is about script and amounts, not
+    about maturity.
+    """
+    return [Coin(tx_out, height=1, is_coinbase=is_coinbase) for tx_out in tx_outs]
 
 
 def _precomputed_for(prevouts: list[TxOut], tx: Tx) -> sig_hash.PrecomputedTxData:
@@ -130,7 +144,7 @@ def test_a_transaction_that_prints_money_is_refused() -> None:
     """An output worth more than its prevout raises before script checks run."""
     tx = spend(script.serialize([b"\x11" * 32]), value=51 * 10**8)
     with pytest.raises(BTClibValueError, match="Invalid transaction amounts"):
-        check_transactions([([prevout()], tx)], 1, make_node())
+        check_transactions([(coins([prevout()]), tx)], 1, make_node())
 
 
 _PRV = 0x1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF
@@ -267,7 +281,7 @@ def _multi_input_p2wpkh_spend(n: int) -> tuple[list[TxOut], Tx]:
 def test_check_transactions_verifies_every_input_of_a_multi_input_transaction() -> None:
     """`check_transactions` raises nothing when every input verifies."""
     prevouts, tx = _multi_input_p2wpkh_spend(3)
-    check_transactions([(prevouts, tx)], 1, make_node())
+    check_transactions([(coins(prevouts), tx)], 1, make_node())
 
 
 def test_check_transactions_still_raises_when_one_input_does_not_verify() -> None:
@@ -278,7 +292,7 @@ def test_check_transactions_still_raises_when_one_input_does_not_verify() -> Non
     sig, pub = tx.vin[2].script_witness.stack
     tx.vin[2].script_witness = Witness([bytes([sig[0] ^ 1]) + sig[1:], pub])
     with pytest.raises(ScriptError):
-        check_transactions([(prevouts, tx)], 1, make_node())
+        check_transactions([(coins(prevouts), tx)], 1, make_node())
 
 
 def _count_transaction_wide_serializations(
@@ -342,9 +356,12 @@ def test_check_transactions_builds_the_precomputed_data_once_per_transaction(
     # control above: building signs every input, and that signing is not
     # what this measures
     transaction_data = [
-        _multi_input_p2wpkh_spend(1),
-        _multi_input_p2wpkh_spend(7),
-        _multi_input_p2wpkh_spend(20),
+        (coins(prevouts), tx)
+        for prevouts, tx in (
+            _multi_input_p2wpkh_spend(1),
+            _multi_input_p2wpkh_spend(7),
+            _multi_input_p2wpkh_spend(20),
+        )
     ]
     count = _count_transaction_wide_serializations(monkeypatch)
     check_transactions(transaction_data, 1, make_node())
@@ -352,3 +369,22 @@ def test_check_transactions_builds_the_precomputed_data_once_per_transaction(
     # transaction by PrecomputedTxData.__init__ -- not once per input,
     # whichever of the 1, 7 or 20 inputs each transaction carries
     assert count() == len(transaction_data) * 3
+
+
+def test_a_coinbase_one_short_of_maturity_is_refused() -> None:
+    """A coinbase spent `COINBASE_MATURITY - 1` blocks after it is refused."""
+    coin = Coin(prevout(), height=10, is_coinbase=True)
+    with pytest.raises(BTClibValueError, match="bad-txns-premature-spend-of-coinbase"):
+        check_coinbase_maturity([coin], spend_height=10 + COINBASE_MATURITY - 1)
+
+
+def test_a_coinbase_exactly_at_maturity_connects() -> None:
+    """A coinbase spent exactly `COINBASE_MATURITY` blocks after it raises nothing."""
+    coin = Coin(prevout(), height=10, is_coinbase=True)
+    check_coinbase_maturity([coin], spend_height=10 + COINBASE_MATURITY)
+
+
+def test_a_non_coinbase_coin_has_no_maturity_to_wait_out() -> None:
+    """A non-coinbase coin may be spent the block after it was created."""
+    coin = Coin(prevout(), height=10, is_coinbase=False)
+    check_coinbase_maturity([coin], spend_height=10)

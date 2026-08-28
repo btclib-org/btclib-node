@@ -130,9 +130,15 @@ class FilterIndex:
         """Index a block from the reverse patch its connection produced.
 
         `RevBlock.to_add` is the output every input of the block spent,
-        which is what a filter needs and a block does not carry.
+        which is what a filter needs and a block does not carry --
+        `prevout_scripts_from_utxos` wants a bare `TxOut` per outpoint,
+        one step short of what `RevBlock.to_add` now carries alongside
+        it (`Coin`'s own docstring, `block_db/__init__.py`), so it is
+        unwrapped here rather than asking that function to know about a
+        type outside its own package.
         """
-        self.add_block(block, prevout_scripts_from_utxos(block, dict(rev_block.to_add)))
+        utxos = {out_point: coin.tx_out for out_point, coin in rev_block.to_add}
+        self.add_block(block, prevout_scripts_from_utxos(block, utxos))
 
     def catch_up(self, active_chain: list[bytes], block_db: BlockDB) -> int:
         """Index every block of the active chain that has no filter yet.
