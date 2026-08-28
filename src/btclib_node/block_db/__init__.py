@@ -106,7 +106,7 @@ class RevBlock:
     reason `Coin` exists at all: a coin a reorg restores is a coin the
     maturity rule has to be able to judge again, and only a `Coin`
     still carries what that needs. Core does the same for the same
-    reason -- its own `CTxUndo` holds `Coin`s, not `CTxOut`s.
+    reason -- its own `CTxUndo` holds a `Coin` rather than a `CTxOut`.
     """
 
     hash: bytes
