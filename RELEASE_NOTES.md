@@ -70,6 +70,17 @@ section fills in one landed change at a time — what a user of
   `pruned=False`, the default, is unaffected. There is nothing to
   migrate: pass `pruned=False`, or drop the argument, until pruning
   itself is built (issue #601).
+- **A kill, a crash, or anything else that stops the node without
+  going through a clean shutdown can now cost revalidating up to a few
+  dozen of the most recently connected blocks the next time it starts**
+  (issue #586). A datadir this happens to is not corrupted and needs no
+  repair: the node simply offers those blocks to itself again, the same
+  way it would a block arriving for the first time, and the store never
+  ends up holding a UTXO set, a block status or a filter more advanced
+  than the other two. A clean stop -- `SIGINT`, `SIGTERM`, or the `stop`
+  RPC -- is unaffected and loses nothing: the store is flushed before it
+  closes either way, and this cost is only ever paid by the shutdown
+  that skips that step.
 
 ## v2026.8.27
 
