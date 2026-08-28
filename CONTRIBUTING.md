@@ -304,6 +304,11 @@ section below. `fuzz.yml` runs the atheris harnesses under `fuzz/`
 against octets nobody chose, and its own header says which parser this
 tree owns of what a peer reaches and why the harness is a script rather
 than the ClusterFuzzLite container the sibling libraries build.
+`scorecard.yml` runs OpenSSF's third-party audit of the repository's
+supply-chain posture, on push to `main` and on a weekly schedule. Unlike
+every other workflow above, it carries neither a `pull_request` trigger
+nor `workflow_dispatch`, so there is no way to ask about a branch at
+all -- its own header says why.
 
 Which day each of the periodic ones runs is one calendar for the whole
 organization, in [section 10 of `btclib-org/.github`'s
