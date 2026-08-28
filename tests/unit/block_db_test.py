@@ -107,7 +107,7 @@ def test_a_rev_patch_carries_its_coin_s_height_and_coinbase_bit_intact() -> None
 
 
 def test_a_coin_survives_the_wire() -> None:
-    """`Coin.parse` undoes `Coin.serialize`, height and coinbase bit included."""
+    """`Coin.parse` undoes `Coin.serialize`, height and coinbase bit alike."""
     tx_out = TxOut(value=5_000_000_000, script_pub_key=script.serialize([b"\x11"]))
     coin = Coin(tx_out, height=201, is_coinbase=True)
     back = Coin.parse(coin.serialize())

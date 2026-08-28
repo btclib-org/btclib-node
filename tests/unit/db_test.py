@@ -145,7 +145,7 @@ def test_a_pre_versioning_sqlite_store_with_data_is_refused(tmp_path: Path) -> N
 
 
 def test_a_store_from_a_newer_schema_version_is_refused(tmp_path: Path) -> None:
-    """A store already stamped with a version this code does not know is refused."""
+    """A store stamped with a version this code does not know is refused."""
     store = a_store(tmp_path)
     store._run("PRAGMA user_version = 999")
     store.close()

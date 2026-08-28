@@ -379,7 +379,7 @@ def test_a_coinbase_one_short_of_maturity_is_refused() -> None:
 
 
 def test_a_coinbase_exactly_at_maturity_connects() -> None:
-    """A coinbase spent exactly `COINBASE_MATURITY` blocks after it raises nothing."""
+    """A coinbase spent exactly `COINBASE_MATURITY` deep raises nothing."""
     coin = Coin(prevout(), height=10, is_coinbase=True)
     check_coinbase_maturity([coin], spend_height=10 + COINBASE_MATURITY)
 

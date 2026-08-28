@@ -79,6 +79,7 @@ class Coin:
         out += self.tx_out.serialize(check_validity=check_validity)
         return out
 
+
 # A file's byte offset or length, and the store's own file-rotation
 # counter, are this store's bookkeeping about itself, not a count of
 # items an untrusted peer handed it -- so none of the three needs

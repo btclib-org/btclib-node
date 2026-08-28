@@ -82,7 +82,6 @@ class UtxoIndex:
                 if prevout_bytes in self.removed_utxos:
                     err_msg = "prevout already spent in this batch"
                     raise InvalidBlockInputError(err_msg)
-                coin: Coin
                 if prevout_bytes in self.updated_utxo_set:
                     coin = self.updated_utxo_set[prevout_bytes]
                     prev_coins.append(coin)
@@ -101,8 +100,8 @@ class UtxoIndex:
 
             for i, tx_out in enumerate(tx.vout):
                 out_point = OutPoint(tx_id, i, check_validity=False)
-                self.updated_utxo_set[out_point.serialize(check_validity=False)] = (
-                    Coin(tx_out, height, is_coinbase=False)
+                self.updated_utxo_set[out_point.serialize(check_validity=False)] = Coin(
+                    tx_out, height, is_coinbase=False
                 )
                 added.append(out_point)
 

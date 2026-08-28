@@ -292,11 +292,15 @@ def generate_random_chain(length: int, start: bytes) -> list[Block]:
     for x in range(length):
         previous_block_hash = chain[-1].header.hash if chain else start
         height = x + 1
-        transactions = [generate_coinbase(value=RegTest().subsidy(height), height=height)]
+        transactions = [
+            generate_coinbase(value=RegTest().subsidy(height), height=height)
+        ]
         if spendable is None and height > COINBASE_MATURITY:
             spendable = chain[0].transactions[0]
         if spendable is not None:
-            tx = generate_random_transaction(spendable.id, value=spendable.vout[0].value)
+            tx = generate_random_transaction(
+                spendable.id, value=spendable.vout[0].value
+            )
             transactions.append(tx)
             spendable = tx
         chain.append(build_block(previous_block_hash, transactions, x))

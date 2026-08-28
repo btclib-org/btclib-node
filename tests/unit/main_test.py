@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 
     from btclib.block import Block
 
+    from btclib_node.block_db import Coin
     from btclib_node.p2p.connection import Connection
 
 
@@ -215,7 +216,7 @@ def test_reject_block_whose_coinbase_does_not_commit_to_its_height(
 
 
 def test_reject_block_spending_a_coinbase_one_short_of_maturity(node: Node) -> None:
-    """A spend of a coinbase `COINBASE_MATURITY - 1` blocks old fails to connect.
+    """A spend of a coinbase `COINBASE_MATURITY - 1` deep fails to connect.
 
     ISS 569: the UTXO record carried neither a coin's height nor whether
     it came from a coinbase, so nothing on this path could tell a fresh
@@ -743,10 +744,7 @@ def test_a_refused_branch_invalidates_only_the_block_that_failed(
     for block in below:
         info = block_index.get_block_info(block.header.hash)
         assert info.status == BlockStatus.valid_header
-    assert (
-        block_index.get_block_info(bad_tip.header.hash).status
-        == BlockStatus.invalid
-    )
+    assert block_index.get_block_info(bad_tip.header.hash).status == BlockStatus.invalid
     # the doomed tip no longer weighs on what get_first_candidate offers
     assert block_index.get_first_candidate() is None
 
@@ -846,9 +844,7 @@ def test_a_refused_branch_invalidates_headers_that_were_never_candidates(
 
     # a sibling of the continuation, off bad_tip, real and indexed
     # but never downloaded and never its own block_candidates entry
-    sibling = generate_random_header_chain(
-        1, bad_tip.header.hash, bad_tip.header.time
-    )
+    sibling = generate_random_header_chain(1, bad_tip.header.hash, bad_tip.header.time)
     block_index.add_headers(sibling)
     # the branch's own tip is the one candidate entry: everything below
     # it, bad_tip included, never individually outweighed active
@@ -903,7 +899,7 @@ def test_a_stop_mid_reorg_rolls_the_trial_back_without_invalidating_it(
     calls = 0
 
     def stop_after_the_second_block(
-        transaction_data: list[tuple[list[TxOut], Tx]], index: int, node: Node
+        transaction_data: list[tuple[list[Coin], Tx]], index: int, node: Node
     ) -> None:
         nonlocal calls
         calls += 1
