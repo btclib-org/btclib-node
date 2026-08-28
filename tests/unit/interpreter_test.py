@@ -33,10 +33,13 @@ from btclib_node.chains import RegTest
 from btclib_node.constants import COINBASE_MATURITY
 from btclib_node.interpreter import (
     check_coinbase_maturity,
+    check_final_transactions,
+    check_sequence_locks,
     check_transaction,
     check_transactions,
     f,
     get_flags,
+    is_final_tx,
     warm,
 )
 
@@ -388,3 +391,194 @@ def test_a_non_coinbase_coin_has_no_maturity_to_wait_out() -> None:
     """A non-coinbase coin may be spent the block after it was created."""
     coin = Coin(prevout(), height=10, is_coinbase=False)
     check_coinbase_maturity([coin], spend_height=10)
+
+
+def locked_tx(
+    lock_time: int = 0, sequences: list[int] | None = None, version: int = 2
+) -> Tx:
+    """Return a transaction naming `lock_time`, one input per `sequences`.
+
+    One final (`0xFFFFFFFF`) input by default -- `is_final_tx`'s own
+    escape hatch, and `check_sequence_locks`' own per-input loop, both
+    read `sequence` off whichever inputs `sequences` names.
+    """
+    sequences = sequences if sequences is not None else [0xFFFFFFFF]
+    return Tx(
+        version=version,
+        lock_time=lock_time,
+        vin=[
+            TxIn(
+                prev_out=OutPoint(b"\x11" * 32, i),
+                script_sig=script.serialize([b"\x11" * 32]),
+                sequence=sequence,
+            )
+            for i, sequence in enumerate(sequences)
+        ],
+        vout=[TxOut(value=1, script_pub_key=script.serialize([b"\x22" * 32]))],
+    )
+
+
+def test_a_zero_lock_time_is_always_final() -> None:
+    """`lock_time` of zero is final regardless of height, time or sequence."""
+    assert is_final_tx(locked_tx(lock_time=0, sequences=[0]), height=0, block_time=0)
+
+
+def test_a_height_locked_tx_is_not_final_before_its_own_height() -> None:
+    """A height-locked, non-final-sequence tx is refused before its height."""
+    tx = locked_tx(lock_time=100, sequences=[1])
+    assert not is_final_tx(tx, height=100, block_time=0)
+
+
+def test_a_height_locked_tx_is_final_once_past_its_own_height() -> None:
+    """A height-locked tx connects once the height has strictly passed it."""
+    tx = locked_tx(lock_time=100, sequences=[1])
+    assert is_final_tx(tx, height=101, block_time=0)
+
+
+def test_a_time_locked_tx_is_not_final_before_its_own_cutoff() -> None:
+    """A timestamp lock_time (>= the threshold) is read against block_time."""
+    tx = locked_tx(lock_time=600_000_000, sequences=[1])
+    assert not is_final_tx(tx, height=10**9, block_time=600_000_000)
+
+
+def test_a_time_locked_tx_is_final_once_past_its_own_cutoff() -> None:
+    """A timestamp lock_time connects once block_time has strictly passed it."""
+    tx = locked_tx(lock_time=600_000_000, sequences=[1])
+    assert is_final_tx(tx, height=0, block_time=600_000_001)
+
+
+def test_an_unsatisfied_lock_time_is_final_anyway_if_every_input_opts_out() -> None:
+    """`SEQUENCE_FINAL` on every input is Core's own escape hatch for lock_time.
+
+    OP_CHECKLOCKTIMEVERIFY depends on this never firing for an input it
+    itself guards, which is why it also refuses a final sequence on its
+    own input (btclib's `op_checklocktimeverify`).
+    """
+    tx = locked_tx(lock_time=600_000_000, sequences=[0xFFFFFFFF, 0xFFFFFFFF])
+    assert is_final_tx(tx, height=0, block_time=0)
+
+
+def test_check_final_transactions_passes_every_final_transaction() -> None:
+    """A block of nothing but final transactions raises nothing."""
+    check_final_transactions(
+        [locked_tx(lock_time=0), locked_tx(lock_time=100, sequences=[1])],
+        height=200,
+        block_time=0,
+    )
+
+
+def test_check_final_transactions_refuses_the_first_non_final_one() -> None:
+    """A block carrying one non-final transaction is refused, Core's phrase."""
+    good = locked_tx(lock_time=0)
+    bad = locked_tx(lock_time=100, sequences=[1])
+    with pytest.raises(BTClibValueError, match="bad-txns-nonfinal"):
+        check_final_transactions([good, bad], height=1, block_time=0)
+
+
+def test_check_sequence_locks_skips_everything_when_bip68_is_not_enforced() -> None:
+    """`enforce_bip68=False` is a no-op, whatever the sequences would demand."""
+    coin = Coin(prevout(), height=1000, is_coinbase=False)
+    tx = locked_tx(sequences=[0xFFFF])  # would fail height 1 if evaluated
+    check_sequence_locks(
+        [([coin], tx)],
+        1,
+        enforce_bip68=False,
+        tip_median_time_past=0,
+        ancestor_median_time_past=lambda height: 0,
+    )
+
+
+def test_check_sequence_locks_skips_a_transaction_below_version_2() -> None:
+    """BIP68 binds version 2 transactions and above only."""
+    coin = Coin(prevout(), height=1000, is_coinbase=False)
+    tx = locked_tx(sequences=[0xFFFF], version=1)
+    check_sequence_locks(
+        [([coin], tx)],
+        1,
+        enforce_bip68=True,
+        tip_median_time_past=0,
+        ancestor_median_time_past=lambda height: 0,
+    )
+
+
+def test_check_sequence_locks_skips_a_disabled_input() -> None:
+    """The disable bit (31) takes an input out of BIP68 entirely."""
+    disabled = (1 << 31) | 0xFFFF  # would fail height 1 if evaluated
+    coin = Coin(prevout(), height=1000, is_coinbase=False)
+    tx = locked_tx(sequences=[disabled])
+    check_sequence_locks(
+        [([coin], tx)],
+        1,
+        enforce_bip68=True,
+        tip_median_time_past=0,
+        ancestor_median_time_past=lambda height: 0,
+    )
+
+
+def test_check_sequence_locks_height_based_lock_satisfied() -> None:
+    """A height-based relative lock connects once its own height has passed."""
+    coin = Coin(prevout(), height=10, is_coinbase=False)
+    tx = locked_tx(sequences=[5])
+    # min_height = coin.height + 5 - 1 = 14, satisfied once index > 14
+    check_sequence_locks(
+        [([coin], tx)],
+        15,
+        enforce_bip68=True,
+        tip_median_time_past=0,
+        ancestor_median_time_past=lambda height: 0,
+    )
+
+
+def test_check_sequence_locks_height_based_lock_unsatisfied() -> None:
+    """A height-based relative lock is refused before its own height."""
+    coin = Coin(prevout(), height=10, is_coinbase=False)
+    tx = locked_tx(sequences=[5])
+    with pytest.raises(BTClibValueError, match="bad-txns-nonfinal"):
+        check_sequence_locks(
+            [([coin], tx)],
+            14,
+            enforce_bip68=True,
+            tip_median_time_past=0,
+            ancestor_median_time_past=lambda height: 0,
+        )
+
+
+def test_check_sequence_locks_time_based_lock_satisfied() -> None:
+    """A time-based relative lock connects once the tip's median time passes.
+
+    The ancestor asked for is `coin.height - 1` -- the block before the
+    one that confirmed the coin, matching Core's own comment on why.
+    """
+    coin = Coin(prevout(), height=10, is_coinbase=False)
+    type_flag = 1 << 22
+    tx = locked_tx(sequences=[type_flag | 5])  # 5 * 512 seconds
+    asked: list[int] = []
+
+    def ancestor_median_time_past(height: int) -> int:
+        asked.append(height)
+        return 1000
+
+    # min_time = 1000 + (5 << 9) - 1 = 3559, satisfied once tip mtp > 3559
+    check_sequence_locks(
+        [([coin], tx)],
+        1,
+        enforce_bip68=True,
+        tip_median_time_past=3560,
+        ancestor_median_time_past=ancestor_median_time_past,
+    )
+    assert asked == [9]
+
+
+def test_check_sequence_locks_time_based_lock_unsatisfied() -> None:
+    """A time-based relative lock is refused ahead of the tip's median time."""
+    coin = Coin(prevout(), height=10, is_coinbase=False)
+    type_flag = 1 << 22
+    tx = locked_tx(sequences=[type_flag | 5])
+    with pytest.raises(BTClibValueError, match="bad-txns-nonfinal"):
+        check_sequence_locks(
+            [([coin], tx)],
+            1,
+            enforce_bip68=True,
+            tip_median_time_past=3559,
+            ancestor_median_time_past=lambda height: 1000,
+        )

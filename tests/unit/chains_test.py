@@ -4,6 +4,8 @@
 
 """Every `Chain` subclass's constants, checked against Bitcoin Core's own."""
 
+from typing import cast
+
 from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet
 
 CHAINS = (Main(), TestNet(), SigNet(), RegTest())
@@ -24,6 +26,19 @@ EXPECTED = {
         "pow_no_retargeting": False,
         "subsidy_halving_interval": 210000,
         "bip34_height": 227931,
+        # Core's IsBIP30Repeat (src/validation.cpp:6218-6222,
+        # at bitcoin/bitcoin@204256c73f): the two mainnet blocks that
+        # violate BIP30 for good, mined before BIP34 closed the gap.
+        "bip30_exceptions": [
+            (
+                91842,
+                "00000000000a4d0a398161ffc163c503763b1f4360639393e0e4c8e300e0caec",
+            ),
+            (
+                91880,
+                "00000000000743f190a18c5577a3c2d2a1f610ae9601ac046a38084ccb7cd721",
+            ),
+        ],
     },
     "testnet": {
         "pow_limit_bits": "1d00ffff",
@@ -33,6 +48,7 @@ EXPECTED = {
         "pow_no_retargeting": False,
         "subsidy_halving_interval": 210000,
         "bip34_height": 21111,
+        "bip30_exceptions": [],
     },
     "signet": {
         "pow_limit_bits": "1e0377ae",
@@ -42,6 +58,7 @@ EXPECTED = {
         "pow_no_retargeting": False,
         "subsidy_halving_interval": 210000,
         "bip34_height": 1,
+        "bip30_exceptions": [],
     },
     "regtest": {
         "pow_limit_bits": "207fffff",
@@ -51,6 +68,7 @@ EXPECTED = {
         "pow_no_retargeting": True,
         "subsidy_halving_interval": 150,
         "bip34_height": 1,
+        "bip30_exceptions": [],
     },
 }
 
@@ -141,3 +159,11 @@ def test_the_genesis_block_carries_the_coinbase_its_header_commits_to() -> None:
         # one transaction, so the merkle root is its own id
         assert chain.genesis.merkle_root == coinbase.id, chain.name
         assert coinbase.vout[0].script_pub_key.script, chain.name
+
+
+def test_bip30_exceptions() -> None:
+    """Each chain's `bip30_exceptions` matches Core's `IsBIP30Repeat`."""
+    for chain in CHAINS:
+        raw = cast("list[tuple[int, str]]", EXPECTED[chain.name]["bip30_exceptions"])
+        expected = [(height, bytes.fromhex(block_hash)) for height, block_hash in raw]
+        assert chain.bip30_exceptions == expected, chain.name

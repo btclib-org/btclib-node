@@ -21,17 +21,28 @@ from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
 
 from btclib_node.block_db import Coin
 from btclib_node.chainstate.block_index import BlockIndex, BlockStatus
+from btclib_node.chainstate.contextual import (
+    block_time,
+    header_at_height,
+    median_time_past,
+)
 from btclib_node.constants import NodeStatus
 from btclib_node.exceptions import ChainstateInconsistencyError, MissingPrevoutError
 from btclib_node.interpreter import (
     check_coinbase_maturity,
     check_coinbase_value,
+    check_final_transactions,
+    check_sequence_locks,
     check_transaction,
     check_transactions,
+    get_flags,
+    is_final_tx,
 )
 
 if TYPE_CHECKING:
-    from btclib.block import Block
+    from collections.abc import Callable
+
+    from btclib.block import Block, BlockHeader
     from btclib.tx.tx import Tx
     from btclib.tx.tx_out import TxOut
 
@@ -227,23 +238,84 @@ def _ready_fork(node: Node) -> tuple[list[bytes], list[bytes]] | None:
     return to_add_hash, to_remove_hash
 
 
+# both _validate_block and verify_mempool_acceptance below need a way to
+# walk from a known header back to an ancestor's, for median_time_past:
+# header_dict holds every header this node has ever indexed, active
+# chain or not, so this reaches a trial fork's own earlier blocks as
+# readily as long-committed history -- unlike active_chain, which still
+# reads as the chain before this trial until _finalize_fork runs
+def _parent_of(node: Node) -> Callable[[BlockHeader], BlockHeader]:
+    header_dict = node.chainstate.block_index.header_dict
+
+    def parent_of(header: BlockHeader) -> BlockHeader:
+        return header_dict[header.previous_block_hash].header
+
+    return parent_of
+
+
+# the two 2010 blocks Chain.bip30_exceptions names are the only ones
+# this node ever lets past UtxoIndex.add_block's own BIP30 check --
+# add_block's own docstring is where that check and the exception are
+# argued. A function of its own rather than inline in update_chain,
+# which ruff's own too-many-statements already counts every statement
+# gained here against.
+def _check_bip30(node: Node, index: int, block_hash: bytes) -> bool:
+    """Whether `block_hash`, connecting at `index`, is checked for BIP30."""
+    return (index, block_hash) not in node.chain.bip30_exceptions
+
+
 # update_chain's own per-block gate, once a candidate's spends and
 # creations are staged and its own height is known: script and amounts
 # (interpreter.check_transactions), a coinbase paying more than subsidy
 # plus fees (interpreter.check_coinbase_value), a spend of a coinbase not
-# yet COINBASE_MATURITY deep (interpreter.check_coinbase_maturity), and
-# the two rules a height and a clock decide on their own
+# yet COINBASE_MATURITY deep (interpreter.check_coinbase_maturity), the
+# two rules a height and a clock decide on their own
 # (Block.assert_valid_contextual) -- time-too-new, already checked on the
 # header path (chainstate/contextual.py), and bad-cb-height, wherever
-# BIP34 binds (Chain.bip34_height, per network). A function of its own
-# rather than statements inline: update_chain's own trial loop is already
-# long enough that PLR0915 counts every statement gained here against it.
+# BIP34 binds (Chain.bip34_height, per network) -- and now every
+# transaction's own finality (interpreter.check_final_transactions,
+# BIP113-aware) and BIP68 relative lock (interpreter.check_sequence_locks).
+# BIP30 runs earlier still, inside utxo_index.add_block, before this is
+# ever called: its own docstring is where that ordering and the two 2010
+# exceptions are argued. A function of its own rather than statements
+# inline: update_chain's own trial loop is already long enough that
+# PLR0915 counts every statement gained here against it.
 def _validate_block(
     node: Node, block: Block, transactions: list[tuple[list[Coin], Tx]], index: int
 ) -> None:
     block.assert_valid_contextual(
         BlockContext(index, datetime.now(UTC), node.chain.bip34_height)
     )
+
+    block_index = node.chainstate.block_index
+    parent_header = block_index.header_dict[block.header.previous_block_hash].header
+    parent_height = index - 1
+    parent_of = _parent_of(node)
+    parent_mtp = median_time_past(parent_header, parent_height, parent_of)
+
+    # Core deploys BIP68, BIP112 (the CHECKSEQUENCEVERIFY opcode) and
+    # BIP113 (this cutoff) together, as one soft fork -- this tree has
+    # no BIP9 deployment tracking of its own, so the height Chain.flags
+    # already turns the opcode on at is read here too, rather than a
+    # second activation table naming the same height for the same fork.
+    # interpreter.check_sequence_locks' own docstring argues this the
+    # same way.
+    bip113_active = "CHECKSEQUENCEVERIFY" in get_flags(node.config, index)
+    lock_time_cutoff = parent_mtp if bip113_active else block_time(block.header)
+    check_final_transactions(block.transactions, index, lock_time_cutoff)
+
+    def ancestor_median_time_past(height: int) -> int:
+        header = header_at_height(parent_header, parent_height, height, parent_of)
+        return median_time_past(header, height, parent_of)
+
+    check_sequence_locks(
+        transactions,
+        index,
+        enforce_bip68=bip113_active,
+        tip_median_time_past=parent_mtp,
+        ancestor_median_time_past=ancestor_median_time_past,
+    )
+
     for prevouts, _tx in transactions:
         check_coinbase_maturity(prevouts, index)
     check_transactions(transactions, index, node)
@@ -359,7 +431,9 @@ def update_chain(node: Node) -> None:
                 break
             failed_hash = block_hash
             index = block_index.get_block_info(block_hash).index
-            transactions, rev_patch = utxo_index.add_block(block, index)
+            transactions, rev_patch = utxo_index.add_block(
+                block, index, check_bip30=_check_bip30(node, index, block_hash)
+            )
             _validate_block(node, block, transactions, index)
 
             node.block_db.add_rev_block(rev_patch)
@@ -410,6 +484,15 @@ def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
     `prev_outputs` this function built for that call, rather than
     threaded back out of btclib's engine, which returns nothing.
     btclib-org/btclib-node#260
+
+    Checks finality and BIP68 against the tip Core's own mempool policy
+    does (`CheckFinalTxAtTip`/`STANDARD_LOCKTIME_VERIFY_FLAGS`,
+    `src/validation.cpp:156-175` and `policy/policy.h:137`,
+    at bitcoin/bitcoin@204256c73f), both unconditionally rather than
+    gated on any activation height, unlike `main._validate_block`'s own
+    block-connect path: a mempool never holds a transaction from before
+    a soft fork it has already activated, so Core's own mempool code
+    does not ask either.
     """
     prev_outputs: list[TxOut] = []
     # only the prevouts this reads off the UTXO set, since a mempool
@@ -417,6 +500,16 @@ def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
     # null prevout resolves through neither branch below and so never
     # reaches the mempool for check_coinbase_maturity to skip
     coins_from_utxo_set: list[Coin] = []
+    # every prevout, coinbase or mempool-parented alike, aligned with
+    # tx.vin one for one -- what check_sequence_locks below needs and
+    # coins_from_utxo_set above does not carry, since it drops a
+    # mempool-parented input rather than pairing it with a placeholder.
+    # A mempool parent's own height is not yet real, so it is stood in
+    # for with spend_height itself: Core's own MEMPOOL_HEIGHT convention
+    # (CalculatePrevHeights, src/validation.cpp:203-206, same commit) --
+    # "assume all mempool transaction confirm in the next block" -- and
+    # spend_height below is exactly that next block's own height.
+    prevout_coins: list[Coin] = []
 
     block_index = node.chainstate.block_index
     utxo_index = node.chainstate.utxo_index
@@ -439,13 +532,39 @@ def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
             coin = Coin.parse(serialized_coin, check_validity=False)
             coins_from_utxo_set.append(coin)
             prev_outputs.append(coin.tx_out)
+            prevout_coins.append(coin)
         else:
             previous_tx = mempool.get_tx(tx_in.prev_out.tx_id)
             if previous_tx:
-                prev_outputs.append(previous_tx.vout[tx_in.prev_out.vout])
+                tx_out = previous_tx.vout[tx_in.prev_out.vout]
+                prev_outputs.append(tx_out)
+                prevout_coins.append(Coin(tx_out, spend_height, is_coinbase=False))
             else:
                 raise MissingPrevoutError
 
     check_coinbase_maturity(coins_from_utxo_set, spend_height)
     check_transaction(prev_outputs, tx, spend_height, node)
+
+    tip_hash = block_index.active_chain[-1]
+    tip_header = block_index.header_dict[tip_hash].header
+    tip_height = spend_height - 1
+    parent_of = _parent_of(node)
+    tip_mtp = median_time_past(tip_header, tip_height, parent_of)
+
+    if not is_final_tx(tx, spend_height, tip_mtp):
+        err_msg = "bad-txns-nonfinal"
+        raise BTClibValueError(err_msg)
+
+    def ancestor_median_time_past(height: int) -> int:
+        header = header_at_height(tip_header, tip_height, height, parent_of)
+        return median_time_past(header, height, parent_of)
+
+    check_sequence_locks(
+        [(prevout_coins, tx)],
+        spend_height,
+        enforce_bip68=True,
+        tip_median_time_past=tip_mtp,
+        ancestor_median_time_past=ancestor_median_time_past,
+    )
+
     return sum(x.value for x in prev_outputs) - sum(x.value for x in tx.vout)

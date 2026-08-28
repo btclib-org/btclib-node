@@ -283,6 +283,352 @@ def test_reject_a_mempool_spend_of_an_immature_coinbase(node: Node) -> None:
         verify_mempool_acceptance(node, premature)
 
 
+def locked_spend(
+    prevout_tx: Tx, value: int, lock_time: int, sequence: int, version: int = 1
+) -> Tx:
+    """Return a transaction spending `prevout_tx`'s first output."""
+    return Tx(
+        version=version,
+        lock_time=lock_time,
+        vin=[
+            TxIn(
+                prev_out=OutPoint(prevout_tx.id, 0),
+                script_sig=script.serialize([b"\x11" * 32]),
+                sequence=sequence,
+            )
+        ],
+        vout=[
+            TxOut(value=value, script_pub_key=script.serialize([b"\x22" * 32])),
+        ],
+    )
+
+
+def relative_locked_spend(prevout_tx: Tx, value: int, sequence: int) -> Tx:
+    """Return a version-2 transaction spending `prevout_tx`, sequence set.
+
+    Version 2, not 1: BIP68 binds a relative lock only from that version
+    on (`interpreter.check_sequence_locks`' own docstring says why).
+    """
+    return locked_spend(prevout_tx, value, lock_time=0, sequence=sequence, version=2)
+
+
+def test_reject_block_whose_coinbase_duplicates_an_unspent_txid(node: Node) -> None:
+    """Two blocks sharing a coinbase: the second is refused for BIP30.
+
+    ISS 570 / CVE-2012-1909's shape: nothing checked whether a
+    coinbase's own txid already named an unspent output, so the second
+    block's own write silently overwrote the first's, and a reorg away
+    from it would have deleted an output the first block's own branch
+    still carries. `UtxoIndex.add_block`'s own BIP30 check runs before
+    `block.assert_valid_contextual` (BIP34), so this is refused for
+    BIP30 regardless of whether the reused coinbase would also fail
+    BIP34's own `bad-cb-height` at this height.
+    """
+    genesis_hash = RegTest().genesis.hash
+    duplicate = generate_coinbase(height=1)
+    first = build_block(genesis_hash, [duplicate], 0)
+    connect(node, [first])
+    block_index = node.chainstate.block_index
+    assert first.header.hash in block_index.active_chain
+
+    bad = build_block(first.header.hash, [duplicate], 1)
+    connect(node, [bad])
+
+    assert bad.header.hash not in block_index.active_chain
+    rejected_because(node, bad, "bad-txns-BIP30")
+
+    # the first block's own coinbase output survives the refused
+    # duplicate -- the CVE's actual danger, and not covered by the
+    # refusal alone
+    out_point = OutPoint(duplicate.id, 0)
+    key = b"utxo-" + out_point.serialize(check_validity=False)
+    assert node.chainstate.utxo_index.db.get(key) is not None
+
+
+def test_reject_block_with_a_transaction_locked_to_the_future(node: Node) -> None:
+    """A transaction locked to a 2033 timestamp fails to connect.
+
+    ISS 572's own probe: `sequence=0` -- not `SEQUENCE_FINAL` -- so
+    Core's own escape hatch does not rescue it.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    connected = len(block_index.active_chain)
+
+    funding = chain[0].transactions[0]
+    nonfinal = locked_spend(
+        funding, funding.vout[0].value, lock_time=2_000_000_000, sequence=0
+    )
+    bad = build_block(
+        chain[-1].header.hash,
+        [generate_coinbase(height=len(chain) + 1), nonfinal],
+        len(chain),
+    )
+    connect(node, [bad])
+
+    assert bad.header.hash not in block_index.active_chain
+    assert len(block_index.active_chain) == connected
+    rejected_because(node, bad, "bad-txns-nonfinal")
+
+
+def test_a_transaction_locked_to_an_already_reached_height_connects(
+    node: Node,
+) -> None:
+    """A transaction whose height-based lock_time has passed connects."""
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    connected = len(block_index.active_chain)
+
+    funding = chain[0].transactions[0]
+    final = locked_spend(funding, funding.vout[0].value, lock_time=1, sequence=0)
+    good = build_block(
+        chain[-1].header.hash,
+        [generate_coinbase(height=len(chain) + 1), final],
+        len(chain),
+    )
+    connect(node, [good])
+
+    assert good.header.hash in block_index.active_chain
+    assert len(block_index.active_chain) == connected + 1
+
+
+def test_reject_block_whose_relative_lock_is_not_satisfied(node: Node) -> None:
+    """A BIP68 relative lock a hundred blocks away fails to connect.
+
+    `funding` is `COINBASE_MATURITY` blocks old by the time this
+    connects -- exactly mature enough to spend, and not old enough for
+    a relative lock fifty blocks past that.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    connected = len(block_index.active_chain)
+
+    funding = chain[0].transactions[0]
+    unmet = relative_locked_spend(
+        funding, funding.vout[0].value, sequence=COINBASE_MATURITY + 50
+    )
+    bad = build_block(
+        chain[-1].header.hash,
+        [generate_coinbase(height=len(chain) + 1), unmet],
+        len(chain),
+    )
+    connect(node, [bad])
+
+    assert bad.header.hash not in block_index.active_chain
+    assert len(block_index.active_chain) == connected
+    rejected_because(node, bad, "bad-txns-nonfinal")
+
+
+def test_a_relative_lock_satisfied_by_elapsed_blocks_connects(node: Node) -> None:
+    """A BIP68 relative lock already satisfied by elapsed blocks connects."""
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    connected = len(block_index.active_chain)
+
+    funding = chain[0].transactions[0]
+    met = relative_locked_spend(funding, funding.vout[0].value, sequence=50)
+    good = build_block(
+        chain[-1].header.hash,
+        [generate_coinbase(height=len(chain) + 1), met],
+        len(chain),
+    )
+    connect(node, [good])
+
+    assert good.header.hash in block_index.active_chain
+    assert len(block_index.active_chain) == connected + 1
+
+
+def test_reject_block_whose_time_based_relative_lock_is_not_satisfied(
+    node: Node,
+) -> None:
+    """A BIP68 time-based relative lock far in the future fails to connect.
+
+    Unlike the height-based pair above, this exercises `_validate_block`'s
+    own `ancestor_median_time_past` closure -- `header_at_height` walking
+    back through real headers rather than a stub -- since a height-based
+    lock never reaches it.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    connected = len(block_index.active_chain)
+
+    funding = chain[0].transactions[0]
+    type_flag = 1 << 22
+    unmet = relative_locked_spend(
+        funding, funding.vout[0].value, sequence=type_flag | 1000
+    )
+    bad = build_block(
+        chain[-1].header.hash,
+        [generate_coinbase(height=len(chain) + 1), unmet],
+        len(chain),
+    )
+    connect(node, [bad])
+
+    assert bad.header.hash not in block_index.active_chain
+    assert len(block_index.active_chain) == connected
+    rejected_because(node, bad, "bad-txns-nonfinal")
+
+
+def test_a_time_based_relative_lock_satisfied_by_elapsed_time_connects(
+    node: Node,
+) -> None:
+    """A BIP68 time-based relative lock of zero units connects immediately."""
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    connected = len(block_index.active_chain)
+
+    funding = chain[0].transactions[0]
+    type_flag = 1 << 22
+    met = relative_locked_spend(funding, funding.vout[0].value, sequence=type_flag | 0)
+    good = build_block(
+        chain[-1].header.hash,
+        [generate_coinbase(height=len(chain) + 1), met],
+        len(chain),
+    )
+    connect(node, [good])
+
+    assert good.header.hash in block_index.active_chain
+    assert len(block_index.active_chain) == connected + 1
+
+
+def test_reject_a_mempool_spend_that_is_not_final(node: Node) -> None:
+    """`verify_mempool_acceptance` refuses the same non-final transaction.
+
+    Core checks finality in the mempool too, against the tip rather
+    than the connecting block -- a mempool that skipped this would
+    relay a transaction it would then refuse to connect.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+
+    funding = chain[0].transactions[0]
+    nonfinal = locked_spend(
+        funding, funding.vout[0].value, lock_time=2_000_000_000, sequence=0
+    )
+    with pytest.raises(BTClibValueError, match="bad-txns-nonfinal"):
+        verify_mempool_acceptance(node, nonfinal)
+
+
+def test_a_mempool_spend_locked_to_an_already_reached_height_is_accepted(
+    node: Node,
+) -> None:
+    """`verify_mempool_acceptance` accepts a transaction already final."""
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+
+    funding = chain[0].transactions[0]
+    final = locked_spend(funding, funding.vout[0].value, lock_time=1, sequence=0)
+    fee = verify_mempool_acceptance(node, final)
+    assert fee >= 0
+
+
+def test_reject_a_mempool_spend_whose_relative_lock_is_not_satisfied(
+    node: Node,
+) -> None:
+    """`verify_mempool_acceptance` refuses the same unmet BIP68 lock."""
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+
+    funding = chain[0].transactions[0]
+    unmet = relative_locked_spend(
+        funding, funding.vout[0].value, sequence=COINBASE_MATURITY + 50
+    )
+    with pytest.raises(BTClibValueError, match="bad-txns-nonfinal"):
+        verify_mempool_acceptance(node, unmet)
+
+
+def test_a_mempool_spend_whose_relative_lock_is_satisfied_is_accepted(
+    node: Node,
+) -> None:
+    """`verify_mempool_acceptance` accepts a satisfied BIP68 relative lock."""
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+
+    funding = chain[0].transactions[0]
+    met = relative_locked_spend(funding, funding.vout[0].value, sequence=50)
+    fee = verify_mempool_acceptance(node, met)
+    assert fee >= 0
+
+
+def test_reject_a_mempool_spend_whose_time_based_relative_lock_is_not_satisfied(
+    node: Node,
+) -> None:
+    """`verify_mempool_acceptance` refuses the same unmet time-based lock.
+
+    Exercises `verify_mempool_acceptance`'s own `ancestor_median_time_past`
+    closure, which the height-based pair above never reaches.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+
+    funding = chain[0].transactions[0]
+    type_flag = 1 << 22
+    unmet = relative_locked_spend(
+        funding, funding.vout[0].value, sequence=type_flag | 1000
+    )
+    with pytest.raises(BTClibValueError, match="bad-txns-nonfinal"):
+        verify_mempool_acceptance(node, unmet)
+
+
+def test_a_mempool_spend_whose_time_based_relative_lock_is_satisfied(
+    node: Node,
+) -> None:
+    """`verify_mempool_acceptance` accepts a satisfied time-based lock."""
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+
+    funding = chain[0].transactions[0]
+    type_flag = 1 << 22
+    met = relative_locked_spend(funding, funding.vout[0].value, sequence=type_flag | 0)
+    fee = verify_mempool_acceptance(node, met)
+    assert fee >= 0
+
+
+def test_a_mempool_chained_spend_s_zero_relative_lock_is_satisfied(
+    node: Node,
+) -> None:
+    """A relative lock of zero against an unconfirmed parent is trivially met.
+
+    `verify_mempool_acceptance`'s own `prevout_coins` stands an
+    unconfirmed parent's own height in for Core's `MEMPOOL_HEIGHT`
+    convention -- assumed to confirm in the very next block, i.e. at
+    `spend_height` itself.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+
+    funding = chain[0].transactions[0]
+    parent = generate_random_transaction(funding.id, value=funding.vout[0].value)
+    verify_mempool_acceptance(node, parent)
+    node.mempool.add_tx(parent)
+
+    child = relative_locked_spend(parent, parent.vout[0].value, sequence=0)
+    fee = verify_mempool_acceptance(node, child)
+    assert fee >= 0
+
+
+def test_a_mempool_chained_spend_s_relative_lock_cannot_yet_be_met(
+    node: Node,
+) -> None:
+    """A nonzero relative lock against an unconfirmed parent is never met.
+
+    The parent is assumed to confirm alongside this transaction at the
+    earliest, so any lock asking for a block *after* that can never be
+    satisfied while the parent is still unconfirmed.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+
+    funding = chain[0].transactions[0]
+    parent = generate_random_transaction(funding.id, value=funding.vout[0].value)
+    verify_mempool_acceptance(node, parent)
+    node.mempool.add_tx(parent)
+
+    child = relative_locked_spend(parent, parent.vout[0].value, sequence=1)
+    with pytest.raises(BTClibValueError, match="bad-txns-nonfinal"):
+        verify_mempool_acceptance(node, child)
+
+
 def test_add_tx(node: Node) -> None:
     """`verify_mempool_acceptance` accepts a prevout from chain or mempool."""
     # COINBASE_MATURITY long, and tx1 spends chain[0]'s own coinbase: a

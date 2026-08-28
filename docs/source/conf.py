@@ -109,7 +109,13 @@ intersphinx_mapping = {
 #   annotation, BlockHeader included. __annotationlib_name_1__ is the
 #   same defect once more, surfacing as Python 3.14's own placeholder
 #   for a name a *compound* annotation could not resolve, rather than as
-#   that name itself
+#   that name itself. __annotationlib_name_2__ is the same placeholder a
+#   second time, over a different compound annotation: main.py's own
+#   _parent_of returns `Callable[[BlockHeader], BlockHeader]`, and
+#   interpreter.py's own check_sequence_locks takes
+#   `Callable[[int], int]` -- Callable itself is what each file imports
+#   under TYPE_CHECKING, so the whole subscript is unresolved regardless
+#   of BlockHeader already being granted its own entry above
 # - asyncio.AbstractEventLoop, spelled that way everywhere this tree
 #   uses it (p2p/manager.py, rpc/manager.py, rpc/connection.py):
 #   autodoc reads the qualified name back off the class itself once
@@ -132,6 +138,7 @@ nitpick_ignore = [
     ("py:class", "datetime"),
     ("py:class", "BtclibTx"),
     ("py:class", "__annotationlib_name_1__"),
+    ("py:class", "__annotationlib_name_2__"),
     ("py:class", "asyncio.events.AbstractEventLoop"),
     ("py:class", "ParentOf"),
     ("py:class", "BinaryData"),
