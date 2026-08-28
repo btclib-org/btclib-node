@@ -14,6 +14,20 @@ download is allowed to run, read from both `download.py` and here.
 -- the in-memory move and the disk write -- so that `main._finalize_fork`
 can hold the second half back across more than one block; `db.py`'s own
 docstring is where that staging, shared with `UtxoIndex`, is argued.
+
+`set_status` and `set_downloaded` still write straight through, and
+neither ever targets a hash `pending` already holds: `set_downloaded`
+only ever runs before a hash is staged at all, since `_ready_fork`
+requires `downloaded` on every hash it offers as a candidate, and
+`invalidate`'s two callers -- a block failing proof of work in
+`p2p.callbacks.block`, a block failing `_validate_block` inside
+`main.update_chain`'s own trial -- only ever fire on a hash that has
+not yet connected in this process's own life. A hash `stage_status`
+already staged once connected successfully, and revalidating the same
+block against the same ancestry cannot answer differently the next
+time it is tried. A write-through landing on a hash `pending` also
+holds would otherwise be lost the next time `finalize` writes that
+stale entry over it.
 """
 
 import enum
