@@ -336,7 +336,9 @@ def get_peer_info(
             # `.name` and not a lookup that tolerates a bare int: a
             # BIP155 id no member names reaches PeerDB but cannot reach
             # a Connection, `peer_address` building only the two IP
-            # networks and `dial` refusing everything but IPv4. An
+            # networks and `dial` refusing every id outside those two
+            # -- it opens an `AF_INET` socket for one and an `AF_INET6`
+            # socket for the other. An
             # address of a network this node learns to speak has to
             # come through here, which is where that is noticed. Cast
             # rather than asserted: a test double stands in for the
