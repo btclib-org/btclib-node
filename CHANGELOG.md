@@ -802,6 +802,7 @@ where this file was written rather than where anything was tagged.
   `_maybe_dial_more_peers` only reach `create_connection` once `dial`
   has already returned a live socket, so this runs once per connection
   actually made, never once per dial attempt.
+
 ### The UTXO cache survives across connected blocks (closes #586)
 
 - **`UtxoIndex.updated_utxo_set` and `removed_utxos` now stage several
