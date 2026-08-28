@@ -98,11 +98,12 @@ def handle_p2p_handshake(node: Node) -> None:
             # `PeerManagerImpl::Misbehaving` (`src/net_processing.cpp`,
             # at bitcoin/bitcoin@05e49b342f) logs `peer=%d` and nothing
             # else, and `CNode::LogPeer` appends the address only under
-            # `fLogIPs`, off by default. `verack` logs the pair, so an
-            # id here resolves to a peer for any connection that
-            # finished its handshake -- and only for those, this being
-            # the block a handshake that raised before `verack` lands
-            # in (btclib-org/btclib-node#611)
+            # `fLogIPs`, off by default. An id here resolves to a
+            # peer whether or not the handshake ever finished:
+            # `P2pManager.create_connection` logs it beside the address
+            # as soon as the connection exists, which is what this
+            # block -- where a handshake that raised before `verack`
+            # lands -- needs it to (btclib-org/btclib-node#611)
             node.logger.exception(
                 "Handling %s from connection %s failed, %s",
                 msg_type,

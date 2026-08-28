@@ -778,6 +778,31 @@ where this file was written rather than where anything was tagged.
   the code beside it, which is what a reader checks the cast
   against.
 
+### A connection's id is logged beside its address at creation (closes #611)
+
+- **`P2pManager.create_connection` now logs the id it mints beside the
+  address the connection was accepted from or dialled to**, before any
+  wire message is parsed. `callbacks.verack`'s own pairing (#526) is the
+  last statement `verack` executes, so a handshake exception raised
+  before it -- a malformed `version`, the most common one, among them --
+  left the id `handle_p2p_handshake`'s own except block logs unpaired
+  with any address anywhere in the tree. `create_connection` is the one
+  point every path into a connection shares, dialled or accepted, ahead
+  of that exception.
+- **Unconditional on the address, like `verack`'s own line and for the
+  same reason, argued there rather than twice here**: Core's analogous
+  site, `CNode`'s own constructor (`src/net.cpp`, at
+  bitcoin/bitcoin@05e49b342f), gates the address on `fLogIPs`, off by
+  default.
+- **`verack`'s own line is kept, not removed**: it marks the handshake
+  completing, this one marks the connection existing, and the two moments
+  are what an operator needs told apart to place where a connection that
+  disappeared between them actually got to.
+- **`info`, matching `verack`'s own line**: `async_connect` and
+  `_maybe_dial_more_peers` only reach `create_connection` once `dial`
+  has already returned a live socket, so this runs once per connection
+  actually made, never once per dial attempt.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

@@ -22,7 +22,14 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, override
 
 from btclib_node.constants import NodeStatus, P2pConnStatus
-from btclib_node.p2p.address import PeerDB, dial, endpoint_key, peer_address
+from btclib_node.p2p.address import (
+    PeerDB,
+    dial,
+    endpoint_key,
+    ip_and_port,
+    network_address,
+    peer_address,
+)
 from btclib_node.p2p.connection import Connection
 
 if TYPE_CHECKING:
@@ -207,9 +214,51 @@ class P2pManager(threading.Thread):
     def create_connection(
         self, client: socket.socket, address: NetworkAddressV2, *, inbound: bool
     ) -> None:
-        """Build a `Connection` for `client`, hold it pending, and start it."""
+        """Build a `Connection` for `client`, hold it pending, and start it.
+
+        Logs the id this connection is given beside the address it was
+        accepted from or dialled to -- the one point every path into a
+        connection shares, before any wire message is parsed, and so
+        the only point at which a handshake exception raised before
+        `callbacks.verack` reaches its own pairing (`p2p/callbacks.py`)
+        still leaves this id resolvable to a peer. `verack`'s own line
+        is not redundant with this one despite both naming an address:
+        that one marks the handshake completing, this one marks the
+        connection existing, and an operator reading `debug.log` wants
+        both moments where a connection dies between them.
+        btclib-org/btclib-node#611
+
+        `network_address` never raises building that address here: an
+        inbound `address` only ever comes from `peer_address` (`server`
+        below), which only ever returns the two IP networks
+        `network_address` accepts, and an outbound one only reaches
+        this method once `dial` (`p2p/address.py`) has already returned
+        a live socket for it, which `dial` itself never does for
+        anything else (`UnsupportedAddressTypeError`) -- `random_address`
+        (`p2p/address.py`) filtering `_maybe_dial_more_peers`'s own draw
+        to the same two networks first is belt on top of that braces,
+        not what does the guarding.
+
+        `info`, matching `verack`'s own line: this runs once per
+        connection actually made, dialled or accepted, never once per
+        attempt -- `async_connect` and `_maybe_dial_more_peers` below
+        only call this once `dial` has already returned a socket, so a
+        dial that goes nowhere never reaches here to begin with.
+
+        Unconditional on the address, like `verack`'s own line and for
+        the same reason -- argued there rather than twice here: Core's
+        analogous site, `CNode`'s own constructor (`src/net.cpp`, at
+        bitcoin/bitcoin@05e49b342f), gates the address on `fLogIPs`.
+        """
         client.settimeout(0.0)
         self.last_connection_id += 1
+        endpoint = network_address(address)
+        self.logger.info(
+            "%s %s, connection %s",
+            "Accepted" if inbound else "Dialled",
+            ip_and_port(str(endpoint.ip), endpoint.port),
+            self.last_connection_id,
+        )
         conn = Connection(
             self, client, address, self.last_connection_id, inbound=inbound
         )
