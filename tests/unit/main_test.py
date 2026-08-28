@@ -18,7 +18,8 @@ from btclib.tx.tx_out import TxOut
 
 from btclib_node import Node, main
 from btclib_node.chains import RegTest
-from btclib_node.chainstate import Chainstate, utxo_index as utxo_index_module
+from btclib_node.chainstate import Chainstate
+from btclib_node.chainstate import utxo_index as utxo_index_module
 from btclib_node.chainstate.block_index import BlockIndex, BlockInfo, BlockStatus
 from btclib_node.config import Config
 from btclib_node.constants import COINBASE_MATURITY, NodeStatus
@@ -1429,6 +1430,19 @@ def test_a_stop_mid_reorg_rolls_the_trial_back_without_invalidating_it(
     assert block_index.active_chain[1:] == hashes(fork)
 
 
+def stored_status(chainstate: Chainstate, block_hash: bytes) -> BlockStatus:
+    """Read a block's own status off the store, not off `header_dict`.
+
+    `KeyValueStore.get` answers `bytes | None`, and a caller of this
+    helper already knows the record is there -- the point of every one
+    below is that it either is or is not yet, never that it might not
+    parse.
+    """
+    data = chainstate.db.get(b"blkinfo-" + block_hash)
+    assert data is not None
+    return BlockInfo.deserialize(data, check_validity=False).status
+
+
 def test_the_utxo_cache_stays_staged_until_the_bound_then_flushes_all_three(
     node: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1450,17 +1464,18 @@ def test_the_utxo_cache_stays_staged_until_the_bound_then_flushes_all_three(
         block_index.set_downloaded(block.header.hash)
 
     first_out = OutPoint(chain[0].transactions[0].id, 0).serialize(check_validity=False)
-    second_out = OutPoint(chain[1].transactions[0].id, 0).serialize(check_validity=False)
+    second_out = OutPoint(chain[1].transactions[0].id, 0).serialize(
+        check_validity=False
+    )
 
     update_chain(node)
     # one entry staged, one short of the bound: nothing below is on disk,
     # even though the in-memory chain already reflects the connection
     assert block_index.active_chain[1:] == [chain[0].header.hash]
     assert node.chainstate.db.get(b"utxo-" + first_out) is None
-    stored = BlockInfo.deserialize(
-        node.chainstate.db.get(b"blkinfo-" + chain[0].header.hash), check_validity=False
+    assert (
+        stored_status(node.chainstate, chain[0].header.hash) == BlockStatus.valid_header
     )
-    assert stored.status == BlockStatus.valid_header
     assert node.chainstate.db.get(b"cfilter-" + chain[0].header.hash) is None
     # still answers correctly, staged rather than written
     assert filter_index.get_filter(chain[0].header.hash) is not None
@@ -1472,10 +1487,10 @@ def test_the_utxo_cache_stays_staged_until_the_bound_then_flushes_all_three(
     assert node.chainstate.db.get(b"utxo-" + first_out) is not None
     assert node.chainstate.db.get(b"utxo-" + second_out) is not None
     for block in chain:
-        stored = BlockInfo.deserialize(
-            node.chainstate.db.get(b"blkinfo-" + block.header.hash), check_validity=False
+        assert (
+            stored_status(node.chainstate, block.header.hash)
+            == BlockStatus.in_active_chain
         )
-        assert stored.status == BlockStatus.in_active_chain
         assert node.chainstate.db.get(b"cfilter-" + block.header.hash) is not None
 
 
@@ -1516,7 +1531,7 @@ def test_a_store_closed_without_a_flush_redoes_only_what_was_never_flushed(
     # other handle this node opened is still closed explicitly, the same
     # teardown tests/conftest.py's own unstarted_node_context uses,
     # since only the flush is what this test means to skip.
-    first._close_worker_pool()  # noqa: SLF001
+    first._close_worker_pool()
     first.p2p_manager.peer_db.close()
     first.chainstate.db.close()
     first.block_db.close()
@@ -1536,9 +1551,11 @@ def test_a_store_closed_without_a_flush_redoes_only_what_was_never_flushed(
         block.header.hash for block in chain
     ]
     for block in chain:
-        assert reopened.chainstate.filter_index.get_filter(block.header.hash) is not None
+        assert (
+            reopened.chainstate.filter_index.get_filter(block.header.hash) is not None
+        )
 
-    reopened._close_worker_pool()  # noqa: SLF001
+    reopened._close_worker_pool()
     reopened.p2p_manager.peer_db.close()
     reopened.chainstate.close()
     reopened.block_db.close()

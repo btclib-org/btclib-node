@@ -640,6 +640,7 @@ where this file was written rather than where anything was tagged.
   `[project].authors` and no test in this tree reads it, which is
   btclib-org/.github#534.
 ### The UTXO cache survives across blocks, bounded and flushed with the rest of the chainstate (closes #586)
+### The UTXO cache survives across connected blocks (closes #586)
 
 - **`UtxoIndex.updated_utxo_set` and `removed_utxos` now stage several
   connected blocks' own changes rather than one, up to

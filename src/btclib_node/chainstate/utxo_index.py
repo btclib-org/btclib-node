@@ -127,7 +127,7 @@ class UtxoIndex:
                     raise InvalidBlockInputError(err_msg)
 
     def trial_mark(self) -> int:
-        """A point in the undo log a failed trial can be rolled back to.
+        """Return a point in the undo log a failed trial can be rolled back to.
 
         Taken before `add_block`/`apply_rev_block` are ever called for
         that trial; `rollback` undoes back to exactly this point,
@@ -138,7 +138,11 @@ class UtxoIndex:
     def _put(self, out_point_bytes: bytes, coin: Coin) -> None:
         """`updated_utxo_set[out_point_bytes] = coin`, logged for `rollback`."""
         self._undo_log.append(
-            (self.updated_utxo_set, out_point_bytes, self.updated_utxo_set.get(out_point_bytes, _UNSET))
+            (
+                self.updated_utxo_set,
+                out_point_bytes,
+                self.updated_utxo_set.get(out_point_bytes, _UNSET),
+            )
         )
         self.updated_utxo_set[out_point_bytes] = coin
 
