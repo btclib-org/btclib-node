@@ -170,15 +170,15 @@ test = [
     # No "toml" extra: pytest-cov absorbed it and warns on the name now.
     "pytest-cov>=7.1.0",
     "requests>=2.34.2",
-    # tests/functional/rpc imports this at module top, against this
-    # node's own rpc surface. It arrives already, transitively, as one
-    # of btclib's own dependencies -- true today and declared nowhere
-    # before this line, so nothing here noticed if btclib ever dropped
-    # or gated it. The floor is the version uv.lock already pinned, so
-    # this declares a reliance rather than deciding a version
-    # (btclib-org/btclib-node#606). tests/integration/conftest.py
-    # re-implements the same client by hand instead of importing it,
-    # which is btclib-org/btclib-node#607 and is not closed here.
+    # tests/functional/rpc and tests/integration/conftest.py both
+    # import this at module top, the former against this node's own rpc
+    # surface and the latter as the client for a real bitcoind. It
+    # arrives already, transitively, as one of btclib's own
+    # dependencies -- true today and declared nowhere before this line,
+    # so nothing here noticed if btclib ever dropped or gated it. The
+    # floor is the version uv.lock already pinned, so this declares a
+    # reliance rather than deciding a version (btclib-org/btclib-node#606,
+    # extended to the integration client by btclib-org/btclib-node#607).
     "bitcoin-core-rpc>=2026.8.20",
 ]
 # mypy runs from this environment rather than from a hook's own --

@@ -843,6 +843,32 @@ where this file was written rather than where anything was tagged.
   of importing it, which is a separate change (issue #607) and is not
   closed here.
 
+### `tests/integration/conftest.py` imports `bitcoin_core_rpc` (closes #607)
+
+- **`Bitcoind.rpc` was `requests.post` with `auth=(user, password)`, the
+  cookie parsed by hand with `.partition(":")`, its path assembled by
+  hand as `datadir / "regtest" / ".cookie"`, and its errors raised as
+  `RuntimeError`** -- `bitcoin_core_rpc`'s own `BitcoinCoreRpcClient`,
+  `cookie_auth` and `cookie_path_from_chain` rewritten against a real
+  bitcoind, that library's home ground. `Bitcoind.rpc` is now a thin
+  wrapper over `BitcoinCoreRpcClient.call`, built with the
+  explicit-url constructor rather than `from_chain`: the fixture starts
+  bitcoind on a port `get_random_port` drew, not Core's regtest
+  default.
+- **The comment defending the copy -- "the cookie is read again on
+  every call rather than cached at construction" -- described the
+  library's own behaviour and not something the copy did differently**:
+  `cookie_auth` re-reads the file at every call already, so importing
+  the client keeps that property rather than losing it.
+- **`_wait_for_rpc` waited on a bare `except Exception`; it now waits on
+  `FetchError`**, `bitcoin_core_rpc`'s own base for a cookie not yet
+  written (`CookieNotFoundError`) or an rpc socket not yet listening.
+- Exercised against a real `bitcoind` v31.1.0 with
+  `BTCLIB_NODE_INTEGRATION=1` (`tests/integration/bitcoind_test.py`,
+  `backpressure_test.py` and `reorg_test.py`, 3 passed), since the
+  ordinary gate only collects this package and skips its tests without
+  that switch and a daemon.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

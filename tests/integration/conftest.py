@@ -18,7 +18,7 @@ import time
 from typing import TYPE_CHECKING
 
 import pytest
-import requests
+from bitcoin_core_rpc import BitcoinCoreRpcClient, FetchError, cookie_path_from_chain
 
 from tests import get_random_port
 
@@ -59,40 +59,29 @@ class Bitcoind:
 
     `p2p_port` is read once, by the caller, to build the address
     `P2pManager.connect` dials; `rpc` is everything else this fixture is
-    for.
+    for -- a thin wrapper over `bitcoin_core_rpc.BitcoinCoreRpcClient`,
+    the family's own client for exactly this exchange, so the cookie
+    parsing, the request shape and the exceptions are that module's and
+    not a second copy of them here.
     """
 
     def __init__(self, rpc_port: int, p2p_port: int, cookie_path: Path) -> None:
-        """Hold the ports these tests need, and the cookie's path."""
+        """Hold the ports these tests need, and build the rpc client.
+
+        The explicit-url constructor, not `from_chain`: this bitcoind is
+        started with `-rpcport=` set to a port `get_random_port` drew, so
+        the default `from_chain` would build the url from -- regtest's
+        18443 -- is not necessarily the one listening.
+        """
         self.rpc_port = rpc_port
         self.p2p_port = p2p_port
-        self._cookie_path = cookie_path
+        self._client = BitcoinCoreRpcClient(
+            f"http://127.0.0.1:{rpc_port}", cookie_path=cookie_path
+        )
 
     def rpc(self, method: str, params: list[object] | None = None) -> object:
-        """Call `method` over bitcoind's JSON-RPC, and return its result.
-
-        The cookie is read again on every call rather than cached at
-        construction: bitcoind writes that file only once its RPC server
-        is already listening, which is exactly the interval `_wait_for`
-        below polls through.
-        """
-        user, _, password = self._cookie_path.read_text(encoding="utf-8").partition(":")
-        response = requests.post(
-            f"http://127.0.0.1:{self.rpc_port}/",
-            json={
-                "jsonrpc": "1.0",
-                "id": "btclib-node-integration",
-                "method": method,
-                "params": params or [],
-            },
-            auth=(user, password),
-            timeout=_STARTUP_TIMEOUT,
-        )
-        response.raise_for_status()
-        body = response.json()
-        if body["error"]:
-            raise RuntimeError(body["error"])
-        return body["result"]
+        """Call `method` over bitcoind's JSON-RPC, and return its result."""
+        return self._client.call(method, params)
 
 
 def _wait_for_rpc(node: Bitcoind, process: subprocess.Popen[bytes]) -> None:
@@ -103,10 +92,12 @@ def _wait_for_rpc(node: Bitcoind, process: subprocess.Popen[bytes]) -> None:
             pytest.fail(f"bitcoind exited with {process.returncode}")
         try:
             node.rpc("getblockchaininfo")
-        # every failure before the node is up is the same failure: the
-        # cookie file `rpc` reads is not written yet, or the socket
-        # behind it is not listening
-        except Exception:  # noqa: BLE001
+        # every failure before the node is up is a FetchError: the
+        # cookie file `cookie_auth` reads is not written yet
+        # (`CookieNotFoundError`, a FetchError of its own), or the rpc
+        # socket behind it is not listening yet (a connection refused,
+        # which `http_request` turns into the same base FetchError)
+        except FetchError:
             time.sleep(0.1)
         else:
             return
@@ -141,7 +132,7 @@ def bitcoind(bitcoind_path: str, tmp_path: Path) -> Iterator[Bitcoind]:
             "-printtoconsole=0",
         ],
     )
-    node = Bitcoind(rpc_port, p2p_port, datadir / "regtest" / ".cookie")
+    node = Bitcoind(rpc_port, p2p_port, cookie_path_from_chain("regtest", datadir))
     try:
         _wait_for_rpc(node, process)
         yield node
