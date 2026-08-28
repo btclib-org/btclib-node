@@ -760,6 +760,24 @@ where this file was written rather than where anything was tagged.
   large answer's tail arrives; a node that used to drop a connection in
   either shape now paces it instead, which is not a compatibility break.
 
+### `dial` refuses every non-IP network, not every non-IPv4 one (closes #616)
+
+- **`get_peer_info`'s comment (`rpc/callbacks.py`) said `dial` refuses
+  "everything but IPv4"**, arguing from that why a BIP155 id no member
+  names can reach `PeerDB` but never a `Connection`. `dial`
+  (`p2p/address.py`) refuses every id outside
+  `_IP_NETWORKS = (IPV4, IPV6)` and then picks `AF_INET6` for the
+  second, opening a real socket on it -- an IPv6 peer is dialled, not
+  refused. Both halves are already exercised: `manager_test.py`'s IPv6
+  accept inbound, and `address_test.py`'s own
+  `test_a_v6_peer_that_is_listening_is_connected_to` outbound, which
+  binds a real `AF_INET6` listener and asserts the family `dial` opened.
+- **The conclusion the comment draws was never wrong, only its
+  reason**: the guard is the two IP networks rather than IPv4 alone, so
+  the cast below it still stands. What is corrected is a claim about
+  the code beside it, which is what a reader checks the cast
+  against.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
