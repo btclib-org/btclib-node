@@ -103,8 +103,8 @@ def test_subsidy_halving_interval_and_bip34_height() -> None:
     # Bitcoin Core's nSubsidyHalvingInterval and BIP34Height, per chain:
     # src/kernel/chainparams.cpp's CMainParams, CTestNetParams,
     # SigNetParams and CRegTestParams, each setting both fields once in
-    # its constructor -- the same pair of files
-    # test_pow_allow_min_difficulty_blocks_and_pow_no_retargeting checks,
+    # its constructor -- the same file
+    # test_pow_allow_min_difficulty_blocks_and_pow_no_retargeting reads,
     # for the immediately preceding pair of Core-sourced constants.
     for chain in CHAINS:
         expected = EXPECTED[chain.name]

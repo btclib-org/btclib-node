@@ -31,7 +31,7 @@ from tests import (
     load,
     vector_id,
 )
-from tests.unit.main_test import connect, spend
+from tests.unit.main_test import connect, rejected_because, spend
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -417,6 +417,7 @@ def test_a_block_that_does_not_connect_leaves_no_filter_behind(
     connect(node, [bad])
 
     assert bad.header.hash not in node.chainstate.block_index.active_chain
+    rejected_because(node, bad, "OP_RETURN")
     assert not filter_index.pending
     assert filter_index.get_filter(bad.header.hash) is None
     assert filter_index.get_header(bad.header.hash) is None
@@ -454,6 +455,7 @@ def test_a_batch_that_fails_partway_leaves_nothing_of_the_blocks_before_it(
 
     filter_index = node.chainstate.filter_index
     assert node.chainstate.block_index.active_chain == on_chain
+    rejected_because(node, bad, "OP_RETURN")
     assert not filter_index.pending
     for block in (*branch, bad):
         assert filter_index.get_filter(block.header.hash) is None
