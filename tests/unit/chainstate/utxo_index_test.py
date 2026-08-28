@@ -232,6 +232,48 @@ def test_a_rev_block_that_removes_what_the_batch_already_spent_is_refused(
     chainstate.close()
 
 
+def test_a_rev_block_that_restores_a_written_output_unmarks_it_removed(
+    tmp_path: Path,
+) -> None:
+    """Restoring a durable prevout clears it from removed_utxos too.
+
+    The prevout was durable (on disk, not in `updated_utxo_set`) when
+    the block being undone spent it, so `add_block` staged that spend
+    with `_mark_removed`. `apply_rev_block`'s own `to_add` loop restores
+    it into `updated_utxo_set`, and used to stop there -- leaving the
+    same outpoint bytes in `removed_utxos` too, a stale flag nothing
+    then erased, because staging now survives across trial boundaries
+    (btclib-org/btclib-node#586) rather than being wiped by a per-trial
+    `finalize` the way it used to be. A block later, legitimately
+    re-spending the restored output must not be refused as a double
+    spend by `add_block`'s own `removed_utxos` guard, which is what this
+    pins directly, one level below the reorg that reaches it.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    funding = coinbase(b"\x12")
+    utxo_index.add_block(one_tx_block([funding], b"\x12" * 32), 1)
+    utxo_index.finalize()
+
+    out = OutPoint(funding.id, 0)
+    key = out.serialize(check_validity=False)
+    _, rev_block = utxo_index.add_block(
+        one_tx_block([coinbase(b"\x13"), spending(out, b"\x13")], b"\x13" * 32), 2
+    )
+    assert key in utxo_index.removed_utxos
+
+    utxo_index.apply_rev_block(rev_block)
+    assert key in utxo_index.updated_utxo_set
+    assert key not in utxo_index.removed_utxos
+
+    # a later, legitimate re-spend of the restored output is accepted
+    # rather than refused as "prevout already spent in this batch"
+    utxo_index.add_block(
+        one_tx_block([coinbase(b"\x14"), spending(out, b"\x14")], b"\x14" * 32), 3
+    )
+    chainstate.close()
+
+
 def test_a_block_that_duplicates_an_unspent_output_is_refused(tmp_path: Path) -> None:
     """A block whose coinbase duplicates a still-unspent txid is refused.
 

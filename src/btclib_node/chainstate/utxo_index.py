@@ -165,6 +165,22 @@ class UtxoIndex:
         )
         self.removed_utxos.add(out_point_bytes)
 
+    def _unmark_removed(self, out_point_bytes: bytes) -> None:
+        """`removed_utxos.discard(out_point_bytes)`, logged for `rollback`.
+
+        `apply_rev_block` below is the one caller: restoring a prevout a
+        block spent has to undo whichever of `_pop` or `_mark_removed`
+        `add_block` used to stage that spend, and only `_mark_removed`
+        touches `removed_utxos` -- so this runs unconditionally, the same
+        way `_mark_removed` itself logs unconditionally, and is a no-op
+        precisely when the spend it undoes never reached `removed_utxos`
+        in the first place.
+        """
+        self._undo_log.append(
+            (self.removed_utxos, out_point_bytes, out_point_bytes in self.removed_utxos)
+        )
+        self.removed_utxos.discard(out_point_bytes)
+
     def should_flush(self) -> bool:
         """Whether the staged size has reached `_FLUSH_BOUND`.
 
@@ -283,6 +299,25 @@ class UtxoIndex:
 
         Removes every outpoint it created and restores every prevout it
         spent, staged the same way `add_block` stages its own changes.
+
+        A restored prevout is unmarked from `removed_utxos` before it is
+        put back, not merely put back: `add_block` staged that spend
+        with `_mark_removed` whenever the prevout was already durable
+        (found in `self.db` rather than in `updated_utxo_set`), and
+        leaving that flag set here would put the same outpoint bytes in
+        both `removed_utxos` and `updated_utxo_set` at once -- still
+        "removed" as far as a later `add_block` call's own guard is
+        concerned, even though this call just made it spendable again.
+        Staging now survives across trials (this outpoint can sit
+        restored for up to `_FLUSH_BOUND` entries' worth of blocks
+        before `finalize` clears both dicts), so a stale flag here is no
+        longer erased by the next trial boundary the way the old,
+        per-trial `finalize` used to erase it -- it stays wrong until a
+        legitimate later spend of the same output hits `add_block`'s
+        `"prevout already spent in this batch"` guard and gets rejected
+        as a double spend, invalidating that block and, through
+        `update_header_index` -> `BlockIndex.invalidate`, everything
+        built on it (btclib-org/btclib-node#586).
         """
         for out_point in rev_block.to_remove:
             out_point_bytes = out_point.serialize(check_validity=False)
@@ -299,7 +334,9 @@ class UtxoIndex:
                 raise ChainstateInconsistencyError(err_msg)
 
         for out_point, coin in rev_block.to_add:
-            self._put(out_point.serialize(check_validity=False), coin)
+            out_point_bytes = out_point.serialize(check_validity=False)
+            self._unmark_removed(out_point_bytes)
+            self._put(out_point_bytes, coin)
 
     def get_coin(self, prevout_bytes: bytes) -> Coin | None:
         """Return the `Coin` a serialized outpoint still resolves to, or `None`.

@@ -1562,3 +1562,84 @@ def test_a_store_closed_without_a_flush_redoes_only_what_was_never_flushed(
     reopened.p2p_manager.loop.close()
     reopened.rpc_manager.loop.close()
     reopened.logger.close()
+
+
+def test_a_reorg_restored_prevout_can_be_legitimately_spent_again(node: Node) -> None:
+    """A reorg's own restore does not strand a later, heavier fork as invalid.
+
+    `apply_rev_block` restoring a prevout that was durable when the
+    block being undone spent it left the outpoint marked in
+    `removed_utxos` even after putting it back into `updated_utxo_set` --
+    staging now survives across trial boundaries (this is ISS 586's own
+    point), so nothing erases that stale flag at the next trial's own
+    boundary the way the old, per-trial `finalize` used to. A later,
+    legitimate spend of the same output then hit `add_block`'s own
+    "prevout already spent in this batch" guard, and
+    `update_header_index` invalidated the block carrying it -- and
+    everything built on it -- for good, stranding the node on a fork it
+    could never leave (btclib-org/btclib-node#586). common is
+    COINBASE_MATURITY long so that common[0]'s own coinbase, `funding`,
+    is mature and spendable the moment a fork extends it.
+
+    Three forks off `common`'s own tip, each heavier than the last:
+    `fork_a` spends `funding` and connects; `fork_b`, two blocks not
+    touching `funding`, outweighs it and reorgs it away, restoring
+    `funding` -- staged, unflushed; `fork_c`, three blocks whose first
+    legitimately re-spends the now-restored `funding`, outweighs
+    `fork_b` in turn and has to connect rather than being refused as a
+    double spend and invalidated.
+    """
+    common = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, common)
+    funding = common[0].transactions[0]
+
+    fork_a = [
+        *common,
+        build_block(
+            common[-1].header.hash,
+            [
+                generate_coinbase(height=len(common) + 1),
+                generate_random_transaction(funding.id),
+            ],
+            len(common),
+        ),
+    ]
+    block_index.add_headers([block.header for block in fork_a])
+    for block in fork_a:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    settle(node)
+    assert block_index.active_chain[1:] == hashes(fork_a)
+
+    fork_b = [*common, *_extend(common[-1].header.hash, len(common), 2)]
+    block_index.add_headers([block.header for block in fork_b])
+    for block in fork_b:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    settle(node)
+    assert block_index.active_chain[1:] == hashes(fork_b)
+
+    fork_c_first = build_block(
+        common[-1].header.hash,
+        [
+            generate_coinbase(height=len(common) + 1),
+            generate_random_transaction(funding.id),
+        ],
+        len(common),
+    )
+    fork_c = [
+        *common,
+        fork_c_first,
+        *_extend(fork_c_first.header.hash, len(common) + 1, 2),
+    ]
+    block_index.add_headers([block.header for block in fork_c])
+    for block in fork_c:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    settle(node)
+
+    assert block_index.active_chain[1:] == hashes(fork_c)
+    assert (
+        block_index.get_block_info(fork_c_first.header.hash).status
+        != BlockStatus.invalid
+    )

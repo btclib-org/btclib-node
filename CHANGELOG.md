@@ -803,65 +803,6 @@ where this file was written rather than where anything was tagged.
   has already returned a live socket, so this runs once per connection
   actually made, never once per dial attempt.
 
-### The UTXO cache survives across connected blocks (closes #586)
-
-- **`UtxoIndex.updated_utxo_set` and `removed_utxos` now stage several
-  connected blocks' own changes rather than one, up to
-  `UtxoIndex._FLUSH_BOUND` (500,000 entries), and `main._finalize_fork`
-  writes them only once `UtxoIndex.should_flush` says that bound is
-  reached.** Before, `_finalize_fork` flushed on every connected block
-  -- one sqlite read and one write per input for the length of the
-  chain, the larger half of a sync and the only one of the two this
-  node cannot make faster by adding cores, blocks connecting one at a
-  time on this store's single writer.
-- `BlockIndex.stage_status` and `FilterIndex`'s own `pending` are held
-  back the same way, and `Chainstate.flush` writes all three -- the
-  block a status names, the UTXO set it was validated against, and the
-  filter built from it -- into the one SQLite transaction this store
-  already gives a caller, so it never advances one of the three past
-  another. `Chainstate.close` flushes before closing, so a clean stop
-  loses nothing staged.
-- **What an unclean stop costs is decided rather than left implicit.**
-  The store reopens holding exactly the state of its last flush, and a
-  block validated since is simply offered to `update_chain` again --
-  `check_transactions` included -- the same way a block arriving for
-  the first time is, rather than through a replay path of its own.
-  `db.py`'s docstring argues this against Bitcoin Core's own
-  `FlushStateToDisk`/`ReplayBlocks`, which writes a separate block-tree
-  LevelDB and a separate coins LevelDB in sequence and reconciles a
-  crash landing between the two; this store's one shared, one-batch
-  write has no such gap to reconcile.
-- `UtxoIndex.rollback` and `FilterIndex.rollback` undo only the
-  mutations a failed trial itself made, through a small per-trial undo
-  log, rather than wiping every staged change: a trial rolled back
-  against an earlier, already-succeeded trial's own still-unflushed
-  state would otherwise discard that state too.
-- `UtxoIndex.get_coin` reads a coin through the staged dicts before the
-  store, and `main.verify_mempool_acceptance` calls it rather than
-  reading `UtxoIndex.db` directly, for the same reason the staging
-  exists at all: a coin several blocks' own worth of staging created is
-  real before `finalize` ever writes it out.
-- **`BlockIndex.set_status` -- and so `invalidate`, its own caller --
-  routes through `pending` rather than writing straight through where
-  `pending` already holds the hash being set.** `update_chain` sets
-  `failed_hash` to a block across `utxo_index.add_block`,
-  `_validate_block`, `block_db.add_rev_block` and
-  `filter_index.add_connected_block` alike, so a fault in either of the
-  last two -- an I/O failure, nothing to do with the block's own
-  content -- invalidates a block exactly as a real validation failure
-  would, and can reach a hash a chain-tip flip-flop already staged in
-  `pending` (disconnected, then offered again). A write-through there
-  used to be undone by the very next `finalize`, which still held the
-  stale pending entry and wrote it back over the invalidation, with no
-  crash needed. `tests/unit/chainstate/block_index_test.py`'s
-  `test_invalidate_after_stage_status_is_not_undone_by_a_later_finalize`
-  reproduces it against the write-through and passes against the fix.
-- **`utxo_index.py`'s own entries bound is now argued with a measured
-  figure**: 500,000 `(serialized OutPoint, Coin)` pairs held in a plain
-  dict, measured with `tracemalloc`, come to about 229 MB -- the same
-  order as Core's own 450 MiB `-dbcache` default the comment already
-  cites for contrast.
-
 ### The 100% floor's `main.py` loss did not reproduce (closes #617)
 
 - **Seven whole-suite runs on this repository's ten-core machine — five
@@ -986,6 +927,75 @@ where this file was written rather than where anything was tagged.
   node's own `Config`** — every functional rpc test passes an explicit
   `rpc_port` of its own, so none of them exercised the default this
   issue was about.
+### The UTXO cache survives across connected blocks (closes #586)
+
+- **`UtxoIndex.updated_utxo_set` and `removed_utxos` now stage several
+  connected blocks' own changes rather than one, up to
+  `UtxoIndex._FLUSH_BOUND` (500,000 entries), and `main._finalize_fork`
+  writes them only once `UtxoIndex.should_flush` says that bound is
+  reached.** Before, `_finalize_fork` flushed on every connected block
+  -- one sqlite read and one write per input for the length of the
+  chain, the larger half of a sync and the only one of the two this
+  node cannot make faster by adding cores, blocks connecting one at a
+  time on this store's single writer.
+- `BlockIndex.stage_status` and `FilterIndex`'s own `pending` are held
+  back the same way, and `Chainstate.flush` writes all three -- the
+  block a status names, the UTXO set it was validated against, and the
+  filter built from it -- into the one SQLite transaction this store
+  already gives a caller, so it never advances one of the three past
+  another. `Chainstate.close` flushes before closing, so a clean stop
+  loses nothing staged.
+- **What an unclean stop costs is decided rather than left implicit.**
+  The store reopens holding exactly the state of its last flush, and a
+  block validated since is simply offered to `update_chain` again --
+  `check_transactions` included -- the same way a block arriving for
+  the first time is, rather than through a replay path of its own.
+  `db.py`'s docstring argues this against Bitcoin Core's own
+  `FlushStateToDisk`/`ReplayBlocks`, which writes a separate block-tree
+  LevelDB and a separate coins LevelDB in sequence and reconciles a
+  crash landing between the two; this store's one shared, one-batch
+  write has no such gap to reconcile.
+- `UtxoIndex.rollback` and `FilterIndex.rollback` undo only the
+  mutations a failed trial itself made, through a small per-trial undo
+  log, rather than wiping every staged change: a trial rolled back
+  against an earlier, already-succeeded trial's own still-unflushed
+  state would otherwise discard that state too.
+- `UtxoIndex.get_coin` reads a coin through the staged dicts before the
+  store, and `main.verify_mempool_acceptance` calls it rather than
+  reading `UtxoIndex.db` directly, for the same reason the staging
+  exists at all: a coin several blocks' own worth of staging created is
+  real before `finalize` ever writes it out.
+- **`BlockIndex.set_status` -- and so `invalidate`, its own caller --
+  routes through `pending` rather than writing straight through where
+  `pending` already holds the hash being set.** `update_chain` sets
+  `failed_hash` to a block across `utxo_index.add_block`,
+  `_validate_block`, `block_db.add_rev_block` and
+  `filter_index.add_connected_block` alike, so a fault in either of the
+  last two -- an I/O failure, nothing to do with the block's own
+  content -- invalidates a block exactly as a real validation failure
+  would, and can reach a hash a chain-tip flip-flop already staged in
+  `pending` (disconnected, then offered again). A write-through there
+  used to be undone by the very next `finalize`, which still held the
+  stale pending entry and wrote it back over the invalidation, with no
+  crash needed. `tests/unit/chainstate/block_index_test.py`'s
+  `test_invalidate_after_stage_status_is_not_undone_by_a_later_finalize`
+  reproduces it against the write-through and passes against the fix.
+- **`utxo_index.py`'s own entries bound is now argued with a measured
+  figure**: 500,000 `(serialized OutPoint, Coin)` pairs held in a plain
+  dict, measured with `tracemalloc`, come to about 229 MB -- the same
+  order as Core's own 450 MiB `-dbcache` default the comment already
+  cites for contrast.
+- **`UtxoIndex.apply_rev_block` unmarks a restored prevout from
+  `removed_utxos`, not only puts it back into `updated_utxo_set`.** A
+  reorg restoring a prevout that was durable when the block being
+  undone spent it left the outpoint in both: `add_block` had staged
+  that spend with `_mark_removed`, and `apply_rev_block`'s own restore
+  never cleared it. A later, legitimate spend of the same output then
+  hit `add_block`'s own double-spend guard and the block carrying it
+  was invalidated for good, stranding the node on a lighter fork. This
+  was unreachable before staging crossed trial boundaries -- the old,
+  per-trial `finalize` wiped both dicts, and the stale flag along with
+  them, before a second trial could ever see it.
 
 ### An I/O fault trying a block is not the block's own fault (closes #620)
 
