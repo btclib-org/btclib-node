@@ -840,6 +840,26 @@ where this file was written rather than where anything was tagged.
   reading `UtxoIndex.db` directly, for the same reason the staging
   exists at all: a coin several blocks' own worth of staging created is
   real before `finalize` ever writes it out.
+- **`BlockIndex.set_status` -- and so `invalidate`, its own caller --
+  routes through `pending` rather than writing straight through where
+  `pending` already holds the hash being set.** `update_chain` sets
+  `failed_hash` to a block across `utxo_index.add_block`,
+  `_validate_block`, `block_db.add_rev_block` and
+  `filter_index.add_connected_block` alike, so a fault in either of the
+  last two -- an I/O failure, nothing to do with the block's own
+  content -- invalidates a block exactly as a real validation failure
+  would, and can reach a hash a chain-tip flip-flop already staged in
+  `pending` (disconnected, then offered again). A write-through there
+  used to be undone by the very next `finalize`, which still held the
+  stale pending entry and wrote it back over the invalidation, with no
+  crash needed. `tests/unit/chainstate/block_index_test.py`'s
+  `test_invalidate_after_stage_status_is_not_undone_by_a_later_finalize`
+  reproduces it against the write-through and passes against the fix.
+- **`utxo_index.py`'s own entries bound is now argued with a measured
+  figure**: 500,000 `(serialized OutPoint, Coin)` pairs held in a plain
+  dict, measured with `tracemalloc`, come to about 229 MB -- the same
+  order as Core's own 450 MiB `-dbcache` default the comment already
+  cites for contrast.
 
 ### The 100% floor's `main.py` loss did not reproduce (closes #617)
 

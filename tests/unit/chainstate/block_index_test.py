@@ -1115,3 +1115,36 @@ def test_finalize_with_no_batch_opens_its_own_and_writes_pending(
     stored = BlockInfo.deserialize(data, check_validity=False)
     assert stored.status == BlockStatus.in_active_chain
     chainstate.close()
+
+
+def test_invalidate_after_stage_status_is_not_undone_by_a_later_finalize(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """A write-through invalidate on a staged hash must survive the next flush.
+
+    `stage_status` stages a hash in `pending` without writing it. If
+    `invalidate` (through `set_status`) then targeted that same hash --
+    reachable in `main.update_chain` through a chain-tip flip-flop, or
+    through an I/O fault in `block_db.add_rev_block` or
+    `filter_index.add_connected_block` that has nothing to do with the
+    block's own content -- writing straight through used to leave
+    `pending` holding a stale entry that the next `finalize` wrote back
+    over the invalidation, undoing it silently. btclib-org/btclib-node#586.
+    """
+    chainstate = a_chainstate(None)
+    block_index = chainstate.block_index
+    (header,) = generate_random_header_chain(1, RegTest().genesis.hash)
+    block_index.add_headers([header])
+    block_index.stage_status(header.hash, BlockStatus.in_active_chain)
+    assert header.hash in block_index.pending
+
+    block_index.invalidate(header.hash)
+
+    block_index.finalize()
+
+    assert block_index.pending == {}
+    data = block_index.db.get(b"blkinfo-" + header.hash)
+    assert data is not None
+    stored = BlockInfo.deserialize(data, check_validity=False)
+    assert stored.status == BlockStatus.invalid
+    chainstate.close()

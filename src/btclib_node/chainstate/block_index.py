@@ -15,19 +15,29 @@ download is allowed to run, read from both `download.py` and here.
 can hold the second half back across more than one block; `db.py`'s own
 docstring is where that staging, shared with `UtxoIndex`, is argued.
 
-`set_status` and `set_downloaded` still write straight through, and
-neither ever targets a hash `pending` already holds: `set_downloaded`
-only ever runs before a hash is staged at all, since `_ready_fork`
-requires `downloaded` on every hash it offers as a candidate, and
-`invalidate`'s two callers -- a block failing proof of work in
-`p2p.callbacks.block`, a block failing `_validate_block` inside
-`main.update_chain`'s own trial -- only ever fire on a hash that has
-not yet connected in this process's own life. A hash `stage_status`
-already staged once connected successfully, and revalidating the same
-block against the same ancestry cannot answer differently the next
-time it is tried. A write-through landing on a hash `pending` also
-holds would otherwise be lost the next time `finalize` writes that
-stale entry over it.
+`set_downloaded` writes straight through unconditionally, and correctly
+so: its one caller, `p2p.callbacks.block`, only ever runs it on a hash
+not yet downloaded, and every hash `stage_status` puts in `pending` came
+from `_finalize_fork`'s own to_add/to_remove loop, which only ever
+offers `main.update_chain` a hash already downloaded -- `_ready_fork`
+requires it. So a hash `set_downloaded` targets is never one `pending`
+holds.
+
+`set_status` cannot make that same assumption, because `invalidate`'s
+own caller can name a hash that already connected once. `update_chain`
+sets `failed_hash` to a block across `utxo_index.add_block`,
+`_validate_block`, `block_db.add_rev_block` and
+`filter_index.add_connected_block` alike, so a fault in either of the
+last two -- an I/O failure, nothing to do with the block's own content
+-- invalidates a block exactly as an actual validation failure would.
+Reached during a chain-tip flip-flop -- a hash `stage_status` staged,
+disconnected by a later trial that re-stages it there, then offered
+again -- that is a hash `pending` still holds, unflushed. `set_status`
+therefore checks `pending` itself: a hash already staged there is
+updated in `pending`, exactly as `stage_status` would leave it, rather
+than written straight through, so the next `finalize` writes the
+invalidation instead of clobbering it with the stale entry write-through
+would otherwise race against. btclib-org/btclib-node#586.
 """
 
 import enum
@@ -365,22 +375,43 @@ class BlockIndex:
         db = wb or self.db
         db.put(b"blkinfo-" + block_info.header.hash, block_info.serialize())
 
+    # what stage_status and set_status's own pending branch below both
+    # reduce to: record the change in memory now, and leave its write
+    # for finalize to make later
+    def _stage(self, block_info: BlockInfo) -> None:
+        self._record_block_info(block_info)
+        self.pending[block_info.header.hash] = block_info
+
     # the fields a caller changes, read here rather than by the caller,
     # so that what goes back is the record the index holds now
     def set_status(
         self, block_hash: bytes, status: BlockStatus, wb: KeyValueStore | None = None
     ) -> None:
-        """Set `block_hash`'s own status, replacing its stored `BlockInfo`."""
-        self._insert_block_info(
-            replace(self.get_block_info(block_hash), status=status), wb
-        )
+        """Set `block_hash`'s own status, replacing its stored `BlockInfo`.
+
+        Writes straight through to the store (or to a caller's own
+        `wb`) unless `pending` already holds this hash -- in which case
+        the change is folded into that pending entry instead, exactly
+        as `stage_status` below would leave it, and `wb` goes unused:
+        the write is deferred to `finalize`'s own flush rather than
+        happening now at all, since a write-through here would only be
+        undone the next time `finalize` writes that pending entry's
+        stale value over it. The module docstring argues why this
+        happens -- `invalidate`'s own caller, `update_chain`.
+        """
+        block_info = replace(self.get_block_info(block_hash), status=status)
+        if block_info.header.hash in self.pending:
+            self._stage(block_info)
+            return
+        self._insert_block_info(block_info, wb)
 
     def stage_status(self, block_hash: bytes, status: BlockStatus) -> None:
         """Set `block_hash`'s status now, its write staged for `finalize`.
 
         `set_status` above writes through to the store (or to a caller's
-        own `wb`) the moment it is called; this stages the write into
-        `pending` instead, for `finalize` to write out whenever it next
+        own `wb`) the moment it is called, unless `pending` already
+        holds the hash; this stages the write into `pending`
+        unconditionally, for `finalize` to write out whenever it next
         runs -- `_finalize_fork`'s own to_add/to_remove loop is the one
         caller, once per block a fork connects or disconnects, so that a
         block's own status reaches disk only together with the UTXO
@@ -390,9 +421,7 @@ class BlockIndex:
         replaces the pending entry, which is correct: only the state
         `finalize` is about to write ever needs to reach disk at all.
         """
-        block_info = replace(self.get_block_info(block_hash), status=status)
-        self._record_block_info(block_info)
-        self.pending[block_info.header.hash] = block_info
+        self._stage(replace(self.get_block_info(block_hash), status=status))
 
     def finalize(self, wb: KeyValueStore | None = None) -> None:
         """Write every status `stage_status` staged, into `wb` if there is one.
