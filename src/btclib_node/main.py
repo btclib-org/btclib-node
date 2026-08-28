@@ -18,12 +18,13 @@ from typing import TYPE_CHECKING
 from btclib.block.block_context import BlockContext
 from btclib.exceptions import BTClibValueError
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
-from btclib.tx import TxOut
 
+from btclib_node.block_db import Coin
 from btclib_node.chainstate.block_index import BlockIndex, BlockStatus
 from btclib_node.constants import NodeStatus
 from btclib_node.exceptions import ChainstateInconsistencyError, MissingPrevoutError
 from btclib_node.interpreter import (
+    check_coinbase_maturity,
     check_coinbase_value,
     check_transaction,
     check_transactions,
@@ -32,6 +33,7 @@ from btclib_node.interpreter import (
 if TYPE_CHECKING:
     from btclib.block import Block
     from btclib.tx.tx import Tx
+    from btclib.tx.tx_out import TxOut
 
     from btclib_node import Node
     from btclib_node.block_db import RevBlock
@@ -228,19 +230,22 @@ def _ready_fork(node: Node) -> tuple[list[bytes], list[bytes]] | None:
 # update_chain's own per-block gate, once a candidate's spends and
 # creations are staged and its own height is known: script and amounts
 # (interpreter.check_transactions), a coinbase paying more than subsidy
-# plus fees (interpreter.check_coinbase_value), and the two rules a
-# height and a clock decide on their own (Block.assert_valid_contextual)
-# -- time-too-new, already checked on the header path
-# (chainstate/contextual.py), and bad-cb-height, wherever BIP34 binds
-# (Chain.bip34_height, per network). A function of its own rather than
-# four statements inline: update_chain's own trial loop is already long
-# enough that PLR0915 counts every statement gained here against it.
+# plus fees (interpreter.check_coinbase_value), a spend of a coinbase not
+# yet COINBASE_MATURITY deep (interpreter.check_coinbase_maturity), and
+# the two rules a height and a clock decide on their own
+# (Block.assert_valid_contextual) -- time-too-new, already checked on the
+# header path (chainstate/contextual.py), and bad-cb-height, wherever
+# BIP34 binds (Chain.bip34_height, per network). A function of its own
+# rather than statements inline: update_chain's own trial loop is already
+# long enough that PLR0915 counts every statement gained here against it.
 def _validate_block(
-    node: Node, block: Block, transactions: list[tuple[list[TxOut], Tx]], index: int
+    node: Node, block: Block, transactions: list[tuple[list[Coin], Tx]], index: int
 ) -> None:
     block.assert_valid_contextual(
         BlockContext(index, datetime.now(UTC), node.chain.bip34_height)
     )
+    for prevouts, _tx in transactions:
+        check_coinbase_maturity(prevouts, index)
     check_transactions(transactions, index, node)
     check_coinbase_value(block.transactions[0], transactions, index, node)
 
@@ -353,8 +358,8 @@ def update_chain(node: Node) -> None:
                 success = False
                 break
             failed_hash = block_hash
-            transactions, rev_patch = utxo_index.add_block(block)
             index = block_index.get_block_info(block_hash).index
+            transactions, rev_patch = utxo_index.add_block(block, index)
             _validate_block(node, block, transactions, index)
 
             node.block_db.add_rev_block(rev_patch)
@@ -407,17 +412,33 @@ def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
     btclib-org/btclib-node#260
     """
     prev_outputs: list[TxOut] = []
+    # only the prevouts this reads off the UTXO set, since a mempool
+    # ancestor's own output can never be a coinbase's: a coinbase's
+    # null prevout resolves through neither branch below and so never
+    # reaches the mempool for check_coinbase_maturity to skip
+    coins_from_utxo_set: list[Coin] = []
 
     block_index = node.chainstate.block_index
     utxo_index = node.chainstate.utxo_index
     mempool = node.mempool
+    # the height a block extending the active chain would connect at:
+    # active_chain[i] is the block at real height i (BlockIndex.__init__
+    # seeds it with the genesis at index 0), so its own length already
+    # is the tip's height plus one -- a further "+ 1" here would answer
+    # one block past the real next height, invisible everywhere else
+    # this reaches (get_flags below) only because every regtest flag
+    # activates at height 0 regardless, and wrong by exactly one block
+    # for check_coinbase_maturity, which is what surfaced it
+    # (btclib-org/btclib-node#569)
+    spend_height = len(block_index.active_chain)
 
     for tx_in in tx.vin:
         prevout_bytes = tx_in.prev_out.serialize(check_validity=False)
-        serialized_txout = utxo_index.db.get(b"utxo-" + prevout_bytes)
-        if serialized_txout:
-            txout = TxOut.parse(serialized_txout, check_validity=False)
-            prev_outputs.append(txout)
+        serialized_coin = utxo_index.db.get(b"utxo-" + prevout_bytes)
+        if serialized_coin:
+            coin = Coin.parse(serialized_coin, check_validity=False)
+            coins_from_utxo_set.append(coin)
+            prev_outputs.append(coin.tx_out)
         else:
             previous_tx = mempool.get_tx(tx_in.prev_out.tx_id)
             if previous_tx:
@@ -425,5 +446,6 @@ def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
             else:
                 raise MissingPrevoutError
 
-    check_transaction(prev_outputs, tx, len(block_index.active_chain) + 1, node)
+    check_coinbase_maturity(coins_from_utxo_set, spend_height)
+    check_transaction(prev_outputs, tx, spend_height, node)
     return sum(x.value for x in prev_outputs) - sum(x.value for x in tx.vout)

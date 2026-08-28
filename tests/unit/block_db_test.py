@@ -22,7 +22,7 @@ from btclib.script import script
 from btclib.tx.out_point import OutPoint
 from btclib.tx.tx_out import TxOut
 
-from btclib_node.block_db import BlockDB, BlockLocation, FileMetadata, RevBlock
+from btclib_node.block_db import BlockDB, BlockLocation, Coin, FileMetadata, RevBlock
 from btclib_node.chains import RegTest
 from btclib_node.exceptions import ChainstateInconsistencyError
 from btclib_node.log import Logger
@@ -39,9 +39,10 @@ def a_rev_block(tag: int = 1, block_hash: bytes | None = None) -> RevBlock:
     """Build a `RevBlock` adding one prevout and removing another."""
     out_point = OutPoint(bytes([tag]) * 32, tag)
     tx_out = TxOut(value=tag * 10**8, script_pub_key=script.serialize([bytes([tag])]))
+    coin = Coin(tx_out, height=tag, is_coinbase=tag % 2 == 1)
     return RevBlock(
         hash=block_hash if block_hash is not None else bytes([tag]) * 32,
-        to_add=[(out_point, tx_out)],
+        to_add=[(out_point, coin)],
         to_remove=[OutPoint(bytes([tag + 1]) * 32, 0)],
     )
 
@@ -86,6 +87,36 @@ def test_a_rev_patch_survives_the_wire() -> None:
     """`RevBlock.deserialize` undoes `RevBlock.serialize` exactly."""
     rev_block = a_rev_block()
     assert RevBlock.deserialize(rev_block.serialize()) == rev_block
+
+
+def test_a_rev_patch_carries_its_coin_s_height_and_coinbase_bit_intact() -> None:
+    """A `RevBlock` round-tripped through the wire keeps every `Coin` whole.
+
+    `a_rev_block`'s own `tag` is odd here, giving a coinbase `Coin` --
+    the case `test_a_rev_patch_survives_the_wire` above does not by
+    itself distinguish from a non-coinbase one, since equality alone
+    does not say which field carried the round trip.
+    """
+    rev_block = a_rev_block(tag=3)
+    back = RevBlock.deserialize(rev_block.serialize())
+    (_, coin) = rev_block.to_add[0]
+    (_, back_coin) = back.to_add[0]
+    assert back_coin.height == coin.height == 3
+    assert back_coin.is_coinbase == coin.is_coinbase is True
+    assert back_coin.tx_out == coin.tx_out
+
+
+def test_a_coin_survives_the_wire() -> None:
+    """`Coin.parse` undoes `Coin.serialize`, height and coinbase bit alike."""
+    tx_out = TxOut(value=5_000_000_000, script_pub_key=script.serialize([b"\x11"]))
+    coin = Coin(tx_out, height=201, is_coinbase=True)
+    back = Coin.parse(coin.serialize())
+    assert back == coin
+    assert back.height == 201
+    assert back.is_coinbase is True
+
+    non_coinbase = Coin(tx_out, height=7, is_coinbase=False)
+    assert Coin.parse(non_coinbase.serialize()) == non_coinbase
 
 
 def test_a_write_from_another_thread_cannot_land_inside_get_blocks_seek_and_read(

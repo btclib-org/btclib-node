@@ -1,5 +1,16 @@
 # Release notes
 
+<!-- markdownlint-configure-file
+  {
+    // MD024/no-duplicate-heading - "Breaking changes" is the heading of a
+    // subsection under every release that has one, which is what keeps
+    // the page readable scrolling down it; only a duplicate under the
+    // same release heading would be the accident this rule looks for.
+    // btclib's own RELEASE_NOTES.md carries this comment verbatim
+    "MD024": { "siblings_only": true }
+  }
+-->
+
 Notable changes are documented here.
 [CHANGELOG.md](./CHANGELOG.md) is the record behind them: this file says
 what a user has to act on, that one says what changed and why.
@@ -17,6 +28,40 @@ The `2026.9` cycle is open and nothing has been cut from it. This
 section fills in one landed change at a time — what a user of
 `v2026.8.27` would have to act on to move to it — and `RELEASING.md`'s
 *Release to PyPI* is what retitles it to the version on release day.
+
+### Breaking changes
+
+- **A data directory written by `v2026.8.27` is refused** (issue #569).
+  A node upgrading past this change will not start against its
+  existing one, and says so rather than reading it wrongly -- one
+  line, wrapped here to fit the page:
+
+  ```text
+  btclib_node.exceptions.IncompatibleStoreError: <data directory>
+  holds a version 0 store, which this version (1) cannot read:
+  delete the directory and sync again
+  ```
+
+  Delete the data directory and sync again; nothing outside it has to
+  be touched, the blocks, the undo data, the chainstate and the log
+  all living under it. There is no migration to run instead, and the
+  reason is the change itself: `COINBASE_MATURITY` was enforced
+  nowhere because the record could not express it, a stored output
+  carrying no height for anything to ask how deep the coinbase that
+  created it was. The record and the undo data now carry each coin's
+  height and its coinbase bit, and both are on-disk formats a
+  directory written by `v2026.8.27` does not hold. Recovering the
+  missing height means reading every block again in order, which is
+  the sync under another name.
+
+  The store now carries a schema version so that an old directory
+  fails on the first read rather than misparsing a record deep into
+  one. The released version wrote no such stamp, which is exactly what
+  the refusal recognises.
+
+  This is the first change to break an installation of `v2026.8.27`,
+  that being the first release there was. `CHANGELOG.md`'s own entry
+  has what changed and why; this one is only what a user has to do.
 
 ## v2026.8.27
 

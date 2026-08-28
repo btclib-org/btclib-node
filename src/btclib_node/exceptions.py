@@ -134,8 +134,12 @@ class StoreClosedError(ValueError):
 class IncompatibleStoreError(RuntimeError):
     """A data directory holds a store this version cannot open.
 
-    Currently the one case that is: a LevelDB directory, the format the
-    store this replaced (#107) used and this one cannot read.
+    Two cases raise this: a LevelDB directory, the format the store
+    `db.KeyValueStore` replaced (#107) used and this one cannot read,
+    and a `KeyValueStore` written by a version that kept a different
+    shape under one of its keys or in a `block_db` flat file --
+    `db.py`'s own `_SCHEMA_VERSION` is where that second case is
+    checked and argued.
     """
 
     def __init__(self, message: str) -> None:

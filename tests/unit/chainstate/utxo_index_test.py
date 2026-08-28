@@ -41,8 +41,8 @@ def test_long_init(tmp_path: Path) -> None:
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index
     chain = generate_random_chain(20000, RegTest().genesis.hash)
-    for block in chain:
-        utxo_index.add_block(block)
+    for height, block in enumerate(chain, start=1):
+        utxo_index.add_block(block, height)
     utxo_index.finalize()
     utxo_dict = dict(utxo_index.db)
     chainstate.close()
@@ -64,8 +64,8 @@ def test_rev_patch(tmp_path: Path) -> None:
     utxo_index = chainstate.utxo_index
     chain = generate_random_chain(20000, RegTest().genesis.hash)
     rev_patches = []
-    for block in chain:
-        _, rev_patch = utxo_index.add_block(block)
+    for height, block in enumerate(chain, start=1):
+        _, rev_patch = utxo_index.add_block(block, height)
         rev_patches.append(rev_patch)
     rev_patches.reverse()
     for rev_patch in rev_patches:
@@ -111,16 +111,16 @@ def test_spending_an_output_the_batch_already_spent_is_refused(tmp_path: Path) -
     utxo_index = chainstate.utxo_index
 
     funding = coinbase(b"\x01")
-    utxo_index.add_block(one_tx_block([funding], b"\x01" * 32))
+    utxo_index.add_block(one_tx_block([funding], b"\x01" * 32), 1)
     utxo_index.finalize()
 
     out = OutPoint(funding.id, 0)
     utxo_index.add_block(
-        one_tx_block([coinbase(b"\x02"), spending(out, b"\x02")], b"\x02" * 32)
+        one_tx_block([coinbase(b"\x02"), spending(out, b"\x02")], b"\x02" * 32), 2
     )
     with pytest.raises(InvalidBlockInputError, match="already spent"):
         utxo_index.add_block(
-            one_tx_block([coinbase(b"\x03"), spending(out, b"\x03")], b"\x03" * 32)
+            one_tx_block([coinbase(b"\x03"), spending(out, b"\x03")], b"\x03" * 32), 3
         )
     chainstate.close()
 
@@ -136,7 +136,7 @@ def test_spending_an_output_nobody_has_is_refused(tmp_path: Path) -> None:
     nowhere = OutPoint(b"\x11" * 32, 0)
     with pytest.raises(InvalidBlockInputError, match="not found"):
         utxo_index.add_block(
-            one_tx_block([coinbase(b"\x04"), spending(nowhere, b"\x04")])
+            one_tx_block([coinbase(b"\x04"), spending(nowhere, b"\x04")]), 1
         )
     chainstate.close()
 
@@ -170,7 +170,7 @@ def test_a_rev_block_that_removes_a_pending_output_takes_it_back(
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index
     funding = coinbase(b"\x05")
-    utxo_index.add_block(one_tx_block([funding], b"\x05" * 32))
+    utxo_index.add_block(one_tx_block([funding], b"\x05" * 32), 1)
     # not finalized: the output is in updated_utxo_set, not the database
     added = OutPoint(funding.id, 0)
     key = added.serialize(check_validity=False)
@@ -194,7 +194,7 @@ def test_a_rev_block_that_removes_a_written_output_marks_it_removed(
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index
     funding = coinbase(b"\x06")
-    utxo_index.add_block(one_tx_block([funding], b"\x06" * 32))
+    utxo_index.add_block(one_tx_block([funding], b"\x06" * 32), 1)
     utxo_index.finalize()
     added = OutPoint(funding.id, 0)
     key = added.serialize(check_validity=False)
@@ -217,12 +217,12 @@ def test_a_rev_block_that_removes_what_the_batch_already_spent_is_refused(
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     utxo_index = chainstate.utxo_index
     funding = coinbase(b"\x07")
-    utxo_index.add_block(one_tx_block([funding], b"\x07" * 32))
+    utxo_index.add_block(one_tx_block([funding], b"\x07" * 32), 1)
     utxo_index.finalize()
 
     out = OutPoint(funding.id, 0)
     utxo_index.add_block(
-        one_tx_block([coinbase(b"\x08"), spending(out, b"\x08")], b"\x08" * 32)
+        one_tx_block([coinbase(b"\x08"), spending(out, b"\x08")], b"\x08" * 32), 2
     )
     assert out.serialize(check_validity=False) in utxo_index.removed_utxos
     with pytest.raises(ChainstateInconsistencyError, match="already removed"):

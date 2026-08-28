@@ -27,9 +27,58 @@ from btclib_node.db import KeyValueStore
 from btclib_node.exceptions import ChainstateInconsistencyError
 
 if TYPE_CHECKING:
+    from btclib.alias import BinaryData
+
     from btclib_node.log import Logger
 
-__all__ = ["BlockDB", "BlockLocation", "FileMetadata", "RevBlock"]
+__all__ = ["BlockDB", "BlockLocation", "Coin", "FileMetadata", "RevBlock"]
+
+
+@dataclass
+class Coin:
+    """One UTXO row: an output paired with when it was made and how.
+
+    Core's `Coin` (`src/coins.h`, at bitcoin/bitcoin@204256c73f) is the
+    shape matched -- a varint packing `(height << 1) | coinbase`, ahead
+    of the output itself -- and not matched in full: Core's own version
+    additionally runs the output through `TxOutCompression`, a space
+    optimisation this class does not reproduce, so the two do not agree
+    byte for byte and are not meant to. `KeyValueStore`'s own store is
+    measured write-dominated rather than read-dominated -- a modern
+    block's own reads costing on the order of 3us each against 17us for
+    a delete or a put at eight million rows (btclib-org/btclib-node#586)
+    -- which argues for a varint kept as tight as `var_int` already makes
+    it, not for folding in a second space optimisation on top of it.
+
+    `height` is the height of the block whose own transaction created
+    this output, and `is_coinbase` is whether that transaction was the
+    block's own coinbase. `UtxoIndex.add_block` sets both when an output
+    is first created; `UtxoIndex.apply_rev_block` restores a `Coin`
+    exactly as `add_block` staged it for removal, so a coin a reorg
+    brings back carries the height and the coinbase bit it was created
+    with, never the height of the block being disconnected or of the one
+    reconnecting it.
+    """
+
+    tx_out: TxOut
+    height: int
+    is_coinbase: bool
+
+    @classmethod
+    def parse(cls, data: BinaryData, *, check_validity: bool = True) -> Coin:
+        """Build a `Coin` by parsing the bytes `serialize` produced."""
+        stream = bytesio_from_binarydata(data)
+        packed = var_int.parse(stream)
+        tx_out = TxOut.parse(stream, check_validity=check_validity)
+        return cls(tx_out, packed >> 1, is_coinbase=bool(packed & 1))
+
+    def serialize(self, *, check_validity: bool = True) -> bytes:
+        """Serialize this `Coin` to the bytes kept under a `utxo-` key."""
+        packed = (self.height << 1) | int(self.is_coinbase)
+        out = var_int.serialize(packed)
+        out += self.tx_out.serialize(check_validity=check_validity)
+        return out
+
 
 # A file's byte offset or length, and the store's own file-rotation
 # counter, are this store's bookkeeping about itself, not a count of
@@ -53,11 +102,15 @@ class RevBlock:
     reversal; `to_remove` is every outpoint the block itself created,
     dropped on reversal. `UtxoIndex.add_block` builds one alongside the
     block it applies, and `UtxoIndex.apply_rev_block` is what walks it
-    back.
+    back. `to_add` carries a `Coin`, not a bare `TxOut`, for the same
+    reason `Coin` exists at all: a coin a reorg restores is a coin the
+    maturity rule has to be able to judge again, and only a `Coin`
+    still carries what that needs. Core does the same for the same
+    reason -- its own `CTxUndo` holds a `Coin` rather than a `CTxOut`.
     """
 
     hash: bytes
-    to_add: list[tuple[OutPoint, TxOut]]
+    to_add: list[tuple[OutPoint, Coin]]
     to_remove: list[OutPoint]
 
     @classmethod
@@ -65,11 +118,11 @@ class RevBlock:
         """Parse a `RevBlock` from the bytes `serialize` produced."""
         stream = bytesio_from_binarydata(data)
         block_hash = stream.read(32)
-        to_add: list[tuple[OutPoint, TxOut]] = []
+        to_add: list[tuple[OutPoint, Coin]] = []
         for _ in range(var_int.parse(stream)):
             out_point = OutPoint.parse(stream, check_validity=check_validity)
-            tx_out = TxOut.parse(stream, check_validity=check_validity)
-            to_add.append((out_point, tx_out))
+            coin = Coin.parse(stream, check_validity=check_validity)
+            to_add.append((out_point, coin))
         to_remove: list[OutPoint] = []
         for _ in range(var_int.parse(stream)):
             out_point = OutPoint.parse(stream, check_validity=check_validity)
@@ -80,9 +133,9 @@ class RevBlock:
         """Serialize this reverse patch to the bytes stored in a `.rev` file."""
         out = self.hash
         out += var_int.serialize(len(self.to_add))
-        for out_point, tx_out in self.to_add:
+        for out_point, coin in self.to_add:
             out += out_point.serialize(check_validity=check_validity)
-            out += tx_out.serialize(check_validity=check_validity)
+            out += coin.serialize(check_validity=check_validity)
         out += var_int.serialize(len(self.to_remove))
         for out_point in self.to_remove:
             out += out_point.serialize(check_validity=check_validity)

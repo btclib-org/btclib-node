@@ -29,6 +29,25 @@ into its own tree and wrapped by `CDBWrapper` -- which is the strongest
 argument for the other choice and is answered in that issue: Core
 compiles its own, so the packaging problem this store exists to remove
 is not one Core has.
+
+**`_SCHEMA_VERSION` guards the shape of what is inside the table, not
+the table itself.** SQLite's own `PRAGMA user_version` -- four bytes in
+the file header, untouched by anything this class writes into `kv` --
+is where it is kept, rather than a row: a row would sit inside the very
+key order the paragraph above depends on, and `BlockIndex.init_from_db`
+stopping at the first key that is not a `blkinfo-` is exactly the kind
+of reader a stray version key could confuse. A fresh `user_version` of
+`0` is not on its own evidence of anything -- SQLite starts every new
+file there -- so what tells an empty store from one written before
+this class carried a version at all is whether `kv` already holds a
+row: empty, `__init__` stamps `_SCHEMA_VERSION` in; non-empty, it is a
+store this class predates, refused the same way the LevelDB marker
+above is. btclib-org/btclib-node#569 is the first thing this had to
+guard: the coin record `chainstate/utxo_index.py` keeps under a
+`utxo-` key, and the `RevBlock` `block_db/__init__.py` keeps in a
+`.rev` file, both changed shape there, and neither a `TxOut.parse` nor
+a `RevBlock.deserialize` written for the new shape says why it fails
+against the old one.
 """
 
 import sqlite3
@@ -55,6 +74,13 @@ _SCHEMA = "CREATE TABLE IF NOT EXISTS kv (k BLOB PRIMARY KEY, v BLOB NOT NULL)"
 # rowid table with a separate index, and the key order below becomes a
 # lookup per row instead of the order the table is already in
 _SCHEMA += " WITHOUT ROWID"
+
+# Bumped whenever a caller changes the shape of what it keeps under a
+# key, or the shape a file this class does not itself hold (block_db's
+# own .blk/.rev files) is read against. The module docstring above is
+# where checking it against PRAGMA user_version, rather than a row, is
+# argued.
+_SCHEMA_VERSION = 1
 
 
 class KeyValueStore:
@@ -97,6 +123,36 @@ class KeyValueStore:
         self._connection.execute("PRAGMA journal_mode=WAL")
         self._connection.execute("PRAGMA synchronous=NORMAL")
         self._connection.execute(_SCHEMA)
+        self._check_schema_version()
+
+    def _check_schema_version(self) -> None:
+        """Refuse a store this version's own shape cannot make sense of.
+
+        `PRAGMA user_version` answers `0` for a file SQLite has never
+        been asked to stamp, which is both a brand-new store and one
+        written before this existed -- `kv` already holding a row is
+        what tells the two apart, the module docstring's own argument
+        for keeping the version out of `kv` in the first place.
+
+        A refusal closes the connection it just opened before raising:
+        `__init__` never hands this object back to whoever asked for
+        one, so nothing else is left holding a reference to close it,
+        and an open, unclosed connection is what a bare raise here
+        would leave for the garbage collector to find on its own time
+        -- CPython's own sqlite3 warns rather than closing quietly when
+        that happens.
+        """
+        ((version,),) = self._rows("PRAGMA user_version")
+        if version == _SCHEMA_VERSION:
+            return
+        if version == 0 and not self._rows("SELECT 1 FROM kv LIMIT 1"):
+            self._run(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+            return
+        err_msg = f"{self.path} holds a version {version} store, which this "
+        err_msg += f"version ({_SCHEMA_VERSION}) cannot read: delete the "
+        err_msg += "directory and sync again"
+        self.close()
+        raise IncompatibleStoreError(err_msg)
 
     def _run(self, statement: str, parameters: tuple[bytes, ...] = ()) -> None:
         """Execute a statement that answers nothing."""

@@ -341,6 +341,52 @@ where this file was written rather than where anything was tagged.
   `https://static.pepy.tech/badge/btclib-node`, is unchanged: section 2
   already fixes that spelling.
 
+### A coin knows its own height, coinbase bit and maturity (closes #569)
+
+- **The UTXO record is a `Coin`, not a bare `TxOut`**
+  (`src/btclib_node/block_db/__init__.py`): the height of the block
+  whose transaction created the output, and whether that transaction
+  was the block's own coinbase, alongside the output itself. Matches
+  Core's own `Coin` (`src/coins.h`, at bitcoin/bitcoin@204256c73f) --
+  a varint packing `(height << 1) | coinbase` ahead of the output --
+  except for Core's own `TxOutCompression`, a space optimisation this
+  class does not reproduce: `KeyValueStore` is measured
+  write-dominated, not read-dominated (btclib-org/btclib-node#586),
+  which argues for the varint staying tight and not for a second
+  optimisation on top of it. `RevBlock.to_add` (same file) carries
+  `Coin`s rather than `TxOut`s for the same reason Core's own
+  `CTxUndo` does: a reorg that restores a spent output has to bring
+  back the height and coinbase bit it was created with, not the
+  height of whichever block the restore runs at.
+- **A spend of a coinbase output not yet `COINBASE_MATURITY` blocks
+  deep does not connect, and does not enter the mempool either**
+  (`interpreter.check_coinbase_maturity`, called from both
+  `main._validate_block` and `main.verify_mempool_acceptance`). Core's
+  `bad-txns-premature-spend-of-coinbase`
+  (`Consensus::CheckTxInputs`, `src/consensus/tx_verify.cpp:185-186`,
+  same commit), checked at both of Core's own call sites
+  (`ConnectBlock` and `AcceptToMemoryPoolWorker`) because both reach
+  the same rule against a different spend height. `COINBASE_MATURITY`
+  (`src/btclib_node/constants.py`) is Core's own bare `100`, not part
+  of `Chain` and not relaxed for regtest, matching Core's own
+  `consensus.h`.
+- **`KeyValueStore` refuses a store from before this schema version
+  existed, rather than misreading it** (`src/btclib_node/db.py`):
+  `PRAGMA user_version` is stamped on a fresh store and checked on
+  every open, kept out of the `kv` table itself so a version marker
+  never sits inside the key order `BlockIndex.init_from_db` depends
+  on. A version-0 store already holding a row is what a datadir from
+  before this existed looks like, told apart from a genuinely fresh
+  one, which starts at the same `0`.
+- **`tests/__init__.py`'s `generate_random_chain` no longer embeds a
+  spend younger than `COINBASE_MATURITY`**: every block up to that
+  depth carries its own coinbase alone, and every block past it spends
+  the oldest output the chain has made spendable -- `chain[0]`'s own
+  coinbase the first time, and that spend's own output after, since
+  neither is ever a coinbase again. Every test built on a chain shorter
+  than that, or spending its own tip rather than its root, is adjusted
+  to a shape this rule actually accepts.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

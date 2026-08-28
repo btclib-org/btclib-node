@@ -13,9 +13,8 @@ block would need to undo it.
 from typing import TYPE_CHECKING
 
 from btclib.tx.out_point import OutPoint
-from btclib.tx.tx_out import TxOut
 
-from btclib_node.block_db import RevBlock
+from btclib_node.block_db import Coin, RevBlock
 from btclib_node.exceptions import ChainstateInconsistencyError, InvalidBlockInputError
 
 if TYPE_CHECKING:
@@ -42,30 +41,40 @@ class UtxoIndex:
         self.db = parent_db
 
         self.removed_utxos: set[bytes] = set()
-        self.updated_utxo_set: dict[bytes, TxOut] = {}
+        self.updated_utxo_set: dict[bytes, Coin] = {}
 
         self.logger = logger
 
-    def add_block(self, block: Block) -> tuple[list[tuple[list[TxOut], Tx]], RevBlock]:
+    def add_block(
+        self, block: Block, height: int
+    ) -> tuple[list[tuple[list[Coin], Tx]], RevBlock]:
         """Apply `block`'s own spends and creations, staged rather than written.
+
+        `height` is this block's own height, on whichever branch it is
+        being tried -- what every output it creates is stamped with, coin
+        and coinbase alike, and never the height a later reorg
+        disconnects or reconnects it at: `apply_rev_block` below restores
+        a `Coin` exactly as this call staged it for removal, height and
+        coinbase bit included, rather than recomputing either.
 
         Returns each non-coinbase transaction paired with the prevouts
         its own inputs consumed -- what `interpreter.check_transactions`
         validates against -- and the `RevBlock` that undoes this call.
         """
-        removed: list[tuple[OutPoint, TxOut]] = []
+        removed: list[tuple[OutPoint, Coin]] = []
         added: list[OutPoint] = []
-        complete_transactions: list[tuple[list[TxOut], Tx]] = []
+        complete_transactions: list[tuple[list[Coin], Tx]] = []
 
         for i, tx_out in enumerate(block.transactions[0].vout):
             out_point = OutPoint(block.transactions[0].id, i, check_validity=False)
-            self.updated_utxo_set[out_point.serialize(check_validity=False)] = tx_out
+            coin = Coin(tx_out, height, is_coinbase=True)
+            self.updated_utxo_set[out_point.serialize(check_validity=False)] = coin
             added.append(out_point)
 
         for tx in block.transactions[1:]:
             tx_id = tx.id
 
-            prev_outputs: list[TxOut] = []
+            prev_coins: list[Coin] = []
 
             for tx_in in tx.vin:
                 prevout_bytes = tx_in.prev_out.serialize(check_validity=False)
@@ -73,31 +82,30 @@ class UtxoIndex:
                 if prevout_bytes in self.removed_utxos:
                     err_msg = "prevout already spent in this batch"
                     raise InvalidBlockInputError(err_msg)
-                prevout: TxOut
                 if prevout_bytes in self.updated_utxo_set:
-                    prevout = self.updated_utxo_set[prevout_bytes]
-                    prev_outputs.append(prevout)
+                    coin = self.updated_utxo_set[prevout_bytes]
+                    prev_coins.append(coin)
                     self.updated_utxo_set.pop(prevout_bytes)
                 else:
                     prevout_data = self.db.get(b"utxo-" + prevout_bytes)
                     if prevout_data:
-                        prevout = TxOut.parse(prevout_data, check_validity=False)
-                        prev_outputs.append(prevout)
+                        coin = Coin.parse(prevout_data, check_validity=False)
+                        prev_coins.append(coin)
                         self.removed_utxos.add(prevout_bytes)
                     else:
                         err_msg = "prevout not found"
                         raise InvalidBlockInputError(err_msg)
 
-                removed.append((tx_in.prev_out, prevout))
+                removed.append((tx_in.prev_out, coin))
 
             for i, tx_out in enumerate(tx.vout):
                 out_point = OutPoint(tx_id, i, check_validity=False)
-                self.updated_utxo_set[out_point.serialize(check_validity=False)] = (
-                    tx_out
+                self.updated_utxo_set[out_point.serialize(check_validity=False)] = Coin(
+                    tx_out, height, is_coinbase=False
                 )
                 added.append(out_point)
 
-            complete_transactions.append((prev_outputs, tx))
+            complete_transactions.append((prev_coins, tx))
 
         rev_block = RevBlock(hash=block.header.hash, to_add=removed, to_remove=added)
 
@@ -123,16 +131,16 @@ class UtxoIndex:
                 err_msg = "output not found"
                 raise ChainstateInconsistencyError(err_msg)
 
-        for out_point, tx_out in rev_block.to_add:
-            self.updated_utxo_set[out_point.serialize(check_validity=False)] = tx_out
+        for out_point, coin in rev_block.to_add:
+            self.updated_utxo_set[out_point.serialize(check_validity=False)] = coin
 
     def finalize(self, wb: KeyValueStore | None = None) -> None:
         """Write every staged change into `wb`, or into `self.db` if none."""
         db = wb or self.db
         for x in self.removed_utxos:
             db.delete(b"utxo-" + x)
-        for out_point_bytes, tx_out in self.updated_utxo_set.items():
-            db.put(b"utxo-" + out_point_bytes, tx_out.serialize())
+        for out_point_bytes, coin in self.updated_utxo_set.items():
+            db.put(b"utxo-" + out_point_bytes, coin.serialize())
         self.removed_utxos = set()
         self.updated_utxo_set = {}
 

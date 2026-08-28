@@ -18,7 +18,7 @@ from bitcoin_core_rpc import BitcoinCoreRpcClient
 from btclib.fetch.bitcoin_core import BitcoinCoreFetcher
 
 from btclib_node.chains import RegTest
-from btclib_node.constants import NodeStatus
+from btclib_node.constants import COINBASE_MATURITY, NodeStatus
 from tests import (
     generate_random_chain,
     generate_random_transaction,
@@ -42,7 +42,11 @@ def test_add_tx(rpc_node: Node) -> None:
     node = rpc_node
 
     wait_until_listening(node.rpc_manager)
-    chain = generate_random_chain(10, RegTest().genesis.hash)
+    # COINBASE_MATURITY long -- exactly that and no more, so nothing in
+    # the chain itself spends chain[0]'s coinbase first, leaving it for
+    # tx1 below, which is old enough to spend it the moment this
+    # chain's tip connects (btclib-org/btclib-node#569)
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
     header_chain = [block.header for block in chain]
     block_index = node.chainstate.block_index
     block_index.add_headers(header_chain)
@@ -50,7 +54,7 @@ def test_add_tx(rpc_node: Node) -> None:
     for block in chain:
         node.block_db.add_block(block)
         block_index.set_downloaded(block.header.hash)
-    wait_until(lambda: len(block_index.active_chain) == 11)
+    wait_until(lambda: len(block_index.active_chain) == len(chain) + 1)
 
     invalid_tx = generate_random_transaction()
 
@@ -90,7 +94,7 @@ def test_add_tx(rpc_node: Node) -> None:
     assert not response["result"][0]["allowed"]
     assert response["result"][0]["reject-reason"] == "Missing prevouts"
 
-    tx1 = generate_random_transaction(chain[-1].transactions[0].id)
+    tx1 = generate_random_transaction(chain[0].transactions[0].id)
     tx2 = generate_random_transaction(tx1.id)
 
     response = json.loads(
@@ -213,16 +217,17 @@ def test_get_raw_transaction_is_what_btclib_s_fetcher_gets(rpc_node: Node) -> No
     node = rpc_node
     wait_until_listening(node.rpc_manager)
 
-    chain = generate_random_chain(1, RegTest().genesis.hash)
+    # COINBASE_MATURITY long, for the same reason as test_add_tx above
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
     block_index = node.chainstate.block_index
     block_index.add_headers([block.header for block in chain])
     node.status = NodeStatus.HeaderSynced
     for block in chain:
         node.block_db.add_block(block)
         block_index.set_downloaded(block.header.hash)
-    wait_until(lambda: len(block_index.active_chain) == 1 + 1)
+    wait_until(lambda: len(block_index.active_chain) == len(chain) + 1)
 
-    tx = generate_random_transaction(chain[-1].transactions[0].id)
+    tx = generate_random_transaction(chain[0].transactions[0].id)
     requests.post(
         url=f"http://127.0.0.1:{node.rpc_port}",
         data=json.dumps(
