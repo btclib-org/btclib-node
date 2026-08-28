@@ -10,7 +10,7 @@ import btclib_node.download as download_module
 from btclib_node import Node
 from btclib_node.chains import RegTest
 from btclib_node.config import Config
-from btclib_node.constants import NodeStatus, P2pConnStatus
+from btclib_node.constants import COINBASE_MATURITY, NodeStatus, P2pConnStatus
 from tests import (
     generate_random_chain,
     generate_random_transaction,
@@ -66,18 +66,22 @@ def test_send_tx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     wait_until_listening(node1.p2p_manager)
     wait_until_listening(node2.p2p_manager)
 
-    # Add one block
-    block = generate_random_chain(1, RegTest().genesis.hash)[0]
+    # COINBASE_MATURITY long -- exactly that and no more, so nothing in
+    # the chain itself spends chain[0]'s coinbase first, leaving it for
+    # this test's own tx below, which is old enough to spend it the
+    # moment this chain's tip connects (btclib-org/btclib-node#569)
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
     for node in (node1, node2):
         block_index = node.chainstate.block_index
-        node.chainstate.block_index.add_headers([block.header])
+        node.chainstate.block_index.add_headers([block.header for block in chain])
         node.status = NodeStatus.HeaderSynced
-        node.block_db.add_block(block)
-        block_index.set_downloaded(block.header.hash)
+        for block in chain:
+            node.block_db.add_block(block)
+            block_index.set_downloaded(block.header.hash)
         # both lambdas below are safe despite B023: wait_until resolves
         # each one before the loop rebinds block_index/node, see
         # wait_until's own comment
-        wait_until(lambda: len(block_index.active_chain) == 2)  # noqa: B023
+        wait_until(lambda: len(block_index.active_chain) == len(chain) + 1)  # noqa: B023
         # and not merely the chain being connected: callbacks.tx drops
         # a transaction that arrives before this node is block synced,
         # whatever its own version told the peer. btclib-org/btclib-node#129
@@ -94,7 +98,7 @@ def test_send_tx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     connection = node2.p2p_manager.connections[0]
     wait_until(lambda: connection.status == P2pConnStatus.Connected)
 
-    tx = generate_random_transaction(block.transactions[0].id)
+    tx = generate_random_transaction(chain[0].transactions[0].id)
 
     assert node1.mempool.size == 0
 
