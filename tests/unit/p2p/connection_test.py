@@ -11,6 +11,7 @@ a peer answered past what this connection will queue for it.
 """
 
 import asyncio
+import logging
 import socket
 import threading
 import time
@@ -483,6 +484,150 @@ def test_a_connections_own_task_cancelled_directly_still_closes_its_socket() -> 
     ours = asyncio.run(drive())
     # a closed socket's own fileno is -1; still >= 0 is still open
     assert ours.fileno() == -1
+
+
+def test_stop_from_another_thread_does_not_raise_past_a_registered_writer(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`stop`, called off the loop's thread, does not crash a live reader.
+
+    btclib-org/btclib-node#518: `self.client.close()` used to run
+    directly on whichever thread called `stop`, and `stop`'s own comment
+    names callers on both -- `handle_p2p`, `handle_p2p_handshake` and
+    every callback that drops a peer for cause, on `Node`'s thread;
+    `_prune_stale_connections` through `remove_connection`, on
+    `P2pManager`'s, which is the loop's own. The race is therefore the
+    ordering rather than the thread, and both halves of it are covered:
+    this test calls `stop` from off the loop, the one after it from
+    the loop's own thread. Closing the fd, while `run`'s own `sock_recv` still
+    had a reader registered for it, raced `BaseSelectorEventLoop`'s
+    bookkeeping: `_sock_read_done`'s later `remove_reader` found a writer
+    also registered -- `Connection._send`'s own `sock_sendall`, for a
+    peer not draining its send queue -- and took `_selector.modify`
+    rather than `unregister`, and `modify` re-registers a fd that
+    `KqueueSelector.unregister` alone would have tolerated closed.
+    Reproduced here with a real second thread running the loop, the
+    shape `P2pManager` itself runs in, and `stop` called from the thread
+    running the test -- the caller not the loop's own. No custom exception
+    handler is installed on the loop: the raise this guards against is
+    from inside an asyncio callback, which the loop's own default
+    handler logs rather than propagates, so `caplog` on that logger's
+    own `ERROR` is what would have caught it, not an assertion on a
+    value this test would otherwise have to fabricate a branch to reach.
+    """
+    caplog.set_level(logging.ERROR, logger="asyncio")
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    ours, theirs = socket.socketpair()
+    ours.setblocking(False)
+    try:
+        connection = a_running_connection(loop, ours)
+        connection.task = asyncio.run_coroutine_threadsafe(connection.run(), loop)
+        # theirs never reads, so this fills ours's own send buffer and
+        # leaves a writer registered on the same fd sock_recv reads from
+        send = asyncio.run_coroutine_threadsafe(
+            connection._send(b"x" * (16 * 1024 * 1024)), loop
+        )
+        time.sleep(0.15)
+        connection.stop()
+        time.sleep(0.15)
+    finally:
+        # cancels _send's own sock_sendall, still pending because theirs
+        # never drained it; not awaited synchronously back on this
+        # thread, so the loop stopping just after can still log its own
+        # harmless "Task was destroyed but it is pending!" for it
+        send.cancel()
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+        loop.close()
+        theirs.close()
+
+    assert connection.status == P2pConnStatus.Closed
+    # a closed socket's own fileno is -1; still >= 0 is still open
+    assert ours.fileno() == -1
+    assert "Bad file descriptor" not in caplog.text
+
+
+def test_stop_on_the_loop_s_own_thread_does_not_raise_past_a_registered_writer(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The same race, reached from the loop's own thread rather than off it.
+
+    `_prune_stale_connections` drops an idle peer through
+    `remove_connection`, which calls `conn.stop()`; `manage_connections`
+    is a coroutine `P2pManager.run` schedules onto its own loop, so that
+    whole path runs on the loop's thread. Nothing about the ordering
+    changes there -- closing the fd before the reader is removed is what
+    raced, not which thread did it -- so the fix is scheduling `_close`
+    rather than which thread scheduled it, and this is the half the test
+    above cannot reach: `call_soon_threadsafe` from off the loop is
+    already how a call arrives from another thread, where here `stop`
+    itself runs inside the loop and schedules onto the loop it is on.
+
+    What this catches is the synchronous close, which is what `stop`
+    did before the fix. Measured: removing `_close`'s own
+    `remove_reader`/`remove_writer` while leaving the scheduling in
+    place leaves this test green -- `_sock_read_done` gets its
+    `remove_reader` in before the scheduled `_close` runs, so there is
+    no closed fd for `modify` to re-register. The test above fails on
+    that narrower mutation and this one does not, which is the whole
+    reason both are here rather than either alone.
+    """
+    caplog.set_level(logging.ERROR, logger="asyncio")
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    ours, theirs = socket.socketpair()
+    ours.setblocking(False)
+    try:
+        connection = a_running_connection(loop, ours)
+        connection.task = asyncio.run_coroutine_threadsafe(connection.run(), loop)
+        send = asyncio.run_coroutine_threadsafe(
+            connection._send(b"x" * (16 * 1024 * 1024)), loop
+        )
+        time.sleep(0.15)
+        # not connection.stop(): this runs stop itself on the loop's
+        # thread, which is where _prune_stale_connections reaches it
+        loop.call_soon_threadsafe(connection.stop)
+        time.sleep(0.15)
+    finally:
+        send.cancel()
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+        loop.close()
+        theirs.close()
+
+    assert connection.status == P2pConnStatus.Closed
+    assert ours.fileno() == -1
+    assert "Bad file descriptor" not in caplog.text
+
+
+def test_close_on_an_already_closed_socket_touches_neither_reader_nor_writer() -> None:
+    """`_close`'s `fd != -1` guard: nothing is registered to remove twice.
+
+    `stop`'s own idempotency (#360) can reach `_close` a second time for
+    one connection -- through two racing callers, or through `run`'s own
+    `finally` after `stop` already ran. `self.client.fileno()` on the
+    second call is already -1, and `remove_reader`/`remove_writer` for
+    that fd would be meaningless; the stub loop below raises if either
+    is called, so this fails were the guard removed rather than merely
+    left untested.
+    """
+    client = socket.socket()
+    client.close()
+    connection, _ = a_connection(client)
+
+    def boom(_fd: int) -> bool:
+        # never reached: the guard in _close is the point of this test
+        raise AssertionError("no")  # pragma: no cover
+
+    connection.loop = cast(
+        "asyncio.AbstractEventLoop",
+        SimpleNamespace(remove_reader=boom, remove_writer=boom),
+    )
+    connection._close()
+    assert client.fileno() == -1
 
 
 def _wire_ping(nonce: int = 1) -> bytes:
