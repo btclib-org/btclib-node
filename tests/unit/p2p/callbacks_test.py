@@ -800,7 +800,7 @@ def test_the_handshake_logs_the_endpoint_getpeerinfo_answers_with(
         client=SimpleNamespace(getpeername=lambda: (host, 18444)),
     )
     verack(node, b"", peer)
-    assert logged == [f"Connected to {endpoint}"]
+    assert logged == [f"Connected to {endpoint}, connection 0"]
 
 
 def test_the_handshake_asks_the_socket_for_the_peer_once() -> None:

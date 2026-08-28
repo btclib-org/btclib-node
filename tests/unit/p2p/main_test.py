@@ -18,6 +18,7 @@ from btclib.exceptions import BTClibValueError
 from btclib.p2p.addrv2 import NetworkAddressV2
 
 from btclib_node.constants import P2pConnStatus
+from btclib_node.log import Logger
 from btclib_node.p2p import main as main_module
 from btclib_node.p2p.callbacks import callbacks, handshake_callbacks
 from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
@@ -29,6 +30,8 @@ from btclib_node.p2p.main import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import pytest
 
     from btclib_node import Node
@@ -46,6 +49,7 @@ def make_node(
     present: bool = True,
     pending: bool = False,
     queued_recv_bytes: int = 0,
+    logger: Any = None,
 ) -> tuple[Any, list[bool]]:
     """Build a node stand-in, one queued `item` on a `Connection` at `status`.
 
@@ -56,8 +60,11 @@ def make_node(
     every stub connection carries whether or not a given test exercises it --
     `_recv_lock` a real lock, matching `Connection`'s own, and `loop` a stand-in
     whose `call_soon_threadsafe` runs its argument immediately rather than
-    through a real event loop, `handle_p2p` never awaiting the result. Returns
-    the node alongside the list `conn.stop` was told to record onto.
+    through a real event loop, `handle_p2p` never awaiting the result. `logger`
+    defaults to a stand-in recording nothing, but a real `Logger` is what
+    #526's own tests below hand in instead, `Node.logger` never reaching
+    `caplog` for `log.py`'s own reason. Returns the node alongside the list
+    `conn.stop` was told to record onto.
     """
     stopped: list[bool] = []
     discouraged: list[Any] = []
@@ -83,7 +90,9 @@ def make_node(
     getattr(manager, queue_name).append(item)
     node = SimpleNamespace(
         p2p_manager=manager,
-        logger=SimpleNamespace(
+        logger=logger
+        if logger is not None
+        else SimpleNamespace(
             info=lambda *a: None, debug=lambda *a: None, exception=lambda *a: None
         ),
     )
@@ -465,18 +474,23 @@ def test_handle_p2p_does_not_resume_a_connection_still_over_the_bound() -> None:
     assert not stopped
 
 
-def a_pending_node(conn: Any, heights: deque[int]) -> tuple[Any, list[Any], list[Any]]:
+def a_pending_node(
+    conn: Any, heights: deque[int], *, logger: Any = None
+) -> tuple[Any, list[Any], list[Any]]:
     """Build a node stand-in with one connection on `pending_cfilters`.
 
     Returns the node alongside the lists its `p2p_manager.discourage` and
-    `logger.exception` calls are recorded into.
+    `logger.exception` calls are recorded into -- `logged` stays empty
+    where `logger` is a real `Logger`, since nothing appends to it then.
     """
     discouraged: list[Any] = []
     logged: list[Any] = []
     node = SimpleNamespace(
         pending_cfilters={conn.id: (conn, heights)},
         p2p_manager=SimpleNamespace(discourage=discouraged.append),
-        logger=SimpleNamespace(exception=logged.append),
+        logger=logger
+        if logger is not None
+        else SimpleNamespace(exception=lambda *a: logged.append(a)),
     )
     return node, discouraged, logged
 
@@ -614,7 +628,7 @@ def test_resume_cfilters_discourages_the_peer_on_a_btclib_exception(
 
 
 def a_pending_getdata_node(
-    conn: Any, items: deque[Any]
+    conn: Any, items: deque[Any], *, logger: Any = None
 ) -> tuple[Any, list[Any], list[Any]]:
     """Build a node stand-in with one connection on `pending_getdata`.
 
@@ -628,7 +642,9 @@ def a_pending_getdata_node(
     node = SimpleNamespace(
         pending_getdata={conn.id: (conn, items)},
         p2p_manager=SimpleNamespace(discourage=discouraged.append),
-        logger=SimpleNamespace(exception=logged.append),
+        logger=logger
+        if logger is not None
+        else SimpleNamespace(exception=lambda *a: logged.append(a)),
     )
     return node, discouraged, logged
 
@@ -763,3 +779,167 @@ def test_resume_getdata_discourages_the_peer_on_a_btclib_exception(
     assert stopped == [True]
     assert discouraged == [_AN_ADDRESS]
     assert logged
+
+
+# #526: the four tests below are what actually reads the line each of the
+# four handlers logs, rather than a stand-in's record of having been
+# called. `Node.logger` is a `Logger(logging.Logger)` built directly
+# (`log.py`), never through `logging.getLogger`, so it has no `parent`
+# and no record from it ever reaches the root logger `caplog` sits on --
+# asserting against `caplog.records` here would pass empty, on every one
+# of these four handlers, whether or not the line below was ever
+# written. A real `Logger` writing to a real file, read back after, is
+# what actually observes it, the same way `log_test.py` already proves
+# `Logger` itself against a file rather than against `caplog`.
+#
+# Proven against a mutation, run and reverted by hand rather than
+# argued from the diff: reducing `handle_p2p_handshake`'s own site back
+# to the shared `node.logger.exception("Exception occurred")` this issue
+# opened against makes `test_handle_p2p_handshake_log_line_...` below
+# fail, both lines in the file it reads back becoming the same one.
+
+
+def test_handle_p2p_handshake_log_line_distinguishes_the_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A discouraged run and one that is not read back as two different lines.
+
+    Done when (#526): the two runs below are told apart from the log
+    alone, not from a second channel a real `debug.log` does not carry.
+    """
+    log_path = tmp_path / "debug.log"
+    logger = Logger(log_path, debug=True)
+    for exc in (RuntimeError("no"), BTClibValueError("no")):
+
+        def raiser(*_a: Any, exc: Exception = exc) -> None:
+            raise exc
+
+        monkeypatch.setitem(handshake_callbacks, "verack", raiser)
+        node, _stopped = make_node(
+            "handshake_messages",
+            ("verack", b"", 0, 1),
+            status=P2pConnStatus.Open,
+            logger=logger,
+        )
+        handle_p2p_handshake(node)
+    logger.close()
+    lines = [
+        line
+        for line in log_path.read_text(encoding="utf-8").splitlines()
+        if "Handling verack from connection 0 failed" in line
+    ]
+    assert len(lines) == 2
+    not_discouraged, discouraged = lines
+    assert "peer not discouraged" in not_discouraged
+    assert "peer not discouraged" not in discouraged
+    assert "peer discouraged" in discouraged
+    assert not_discouraged != discouraged
+
+
+def test_handle_p2p_log_line_distinguishes_the_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same proof as `handle_p2p_handshake`'s, for `handle_p2p`."""
+    log_path = tmp_path / "debug.log"
+    logger = Logger(log_path, debug=True)
+    for exc in (RuntimeError("no"), BTClibValueError("no")):
+
+        def raiser(*_a: Any, exc: Exception = exc) -> None:
+            raise exc
+
+        monkeypatch.setitem(callbacks, "ping", raiser)
+        node, _stopped = make_node(
+            "messages",
+            ("ping", b"", 0, 1),
+            status=P2pConnStatus.Connected,
+            logger=logger,
+        )
+        handle_p2p(node)
+    logger.close()
+    lines = [
+        line
+        for line in log_path.read_text(encoding="utf-8").splitlines()
+        if "Handling ping from connection 0 failed" in line
+    ]
+    assert len(lines) == 2
+    not_discouraged, discouraged = lines
+    assert "peer not discouraged" in not_discouraged
+    assert "peer not discouraged" not in discouraged
+    assert "peer discouraged" in discouraged
+    assert not_discouraged != discouraged
+
+
+def test_resume_cfilters_log_line_distinguishes_the_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same proof as `handle_p2p_handshake`'s, for `resume_cfilters`."""
+    log_path = tmp_path / "debug.log"
+    logger = Logger(log_path, debug=True)
+    for conn_id, exc in ((1, RuntimeError("no")), (2, BTClibValueError("no"))):
+        conn = SimpleNamespace(
+            id=conn_id,
+            status=P2pConnStatus.Open,
+            address=_AN_ADDRESS,
+            stop=lambda: None,
+        )
+        node, _discouraged, _logged = a_pending_node(conn, deque([1]), logger=logger)
+
+        def boom(*_a: Any, exc: Exception = exc) -> bool:
+            raise exc
+
+        monkeypatch.setattr(main_module, "advance_cfilters", boom)
+        resume_cfilters(node)
+    logger.close()
+    text = log_path.read_text(encoding="utf-8")
+    (not_discouraged,) = [
+        line
+        for line in text.splitlines()
+        if "Resuming cfilters for connection 1 failed" in line
+    ]
+    (discouraged,) = [
+        line
+        for line in text.splitlines()
+        if "Resuming cfilters for connection 2 failed" in line
+    ]
+    assert "peer not discouraged" in not_discouraged
+    assert "peer discouraged" in discouraged
+    assert "peer not discouraged" not in discouraged
+
+
+def test_resume_getdata_log_line_distinguishes_the_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same proof as `handle_p2p_handshake`'s, for `resume_getdata`."""
+    log_path = tmp_path / "debug.log"
+    logger = Logger(log_path, debug=True)
+    for conn_id, exc in ((1, RuntimeError("no")), (2, BTClibValueError("no"))):
+        conn = SimpleNamespace(
+            id=conn_id,
+            status=P2pConnStatus.Open,
+            address=_AN_ADDRESS,
+            stop=lambda: None,
+        )
+        node, _discouraged, _logged = a_pending_getdata_node(
+            conn, deque([1]), logger=logger
+        )
+
+        def boom(*_a: Any, exc: Exception = exc) -> bool:
+            raise exc
+
+        monkeypatch.setattr(main_module, "advance_getdata", boom)
+        resume_getdata(node)
+    logger.close()
+    text = log_path.read_text(encoding="utf-8")
+    (not_discouraged,) = [
+        line
+        for line in text.splitlines()
+        if "Resuming getdata for connection 1 failed" in line
+    ]
+    (discouraged,) = [
+        line
+        for line in text.splitlines()
+        if "Resuming getdata for connection 2 failed" in line
+    ]
+    assert "peer not discouraged" in not_discouraged
+    assert "peer discouraged" in discouraged
+    assert "peer not discouraged" not in discouraged
