@@ -230,10 +230,13 @@ class RpcManager(threading.Thread):
                     client, _ = await accepted.get()
                     self.last_connection_id += 1
                     conn = self.create_connection(self.loop, client)
-                    task: Future[None] = asyncio.run_coroutine_threadsafe(
-                        conn.run(), self.loop
-                    )
-                    conn.task = task
+                    # The `Future` this returns is not kept: nothing
+                    # reads it, the way `RpcConnection.send` already
+                    # discards `async_send`'s own for the same reason,
+                    # and `RpcConnection.close`'s own docstring is where
+                    # keeping one used to seem worth it and turned out
+                    # not to be (issue #714).
+                    asyncio.run_coroutine_threadsafe(conn.run(), self.loop)
             finally:
                 # Already cancelled directly by `stop`'s own sweep
                 # whenever that is how this task ends too -- both are in

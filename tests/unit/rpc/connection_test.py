@@ -706,34 +706,29 @@ def test_a_raw_json_value_does_not_swallow_a_field_containing_its_own_mark() -> 
     assert json.loads(body) == {"result": "RawJSONx", "extra": 1.0, "id": "x"}
 
 
-def test_close_cancels_the_task_it_was_given() -> None:
-    """`close` cancels the running task it was handed."""
+def test_a_connection_carries_no_task_handle_for_close_to_cancel() -> None:
+    """A connection holds no `task` attribute of its own, past construction.
 
-    async def main() -> bool:
-        ours, theirs = socket.socketpair()
-        ours.setblocking(False)
-        loop = asyncio.get_running_loop()
+    An earlier version did (`self.task`), set once at accept and never
+    again, so `close` cancelling it did nothing for any request after a
+    kept-alive connection's first (issue #714) -- `RpcManager.stop`'s
+    own `asyncio.all_tasks(self.loop)` sweep is what actually cancels
+    whatever is live, run before `close` is ever called, which is what
+    `close`'s own docstring argues rather than a handle this class
+    would have to keep current across every request to make good on.
+    """
+    ours, theirs = socket.socketpair()
+    try:
         conn = RpcConnection(
-            loop,
+            cast("asyncio.AbstractEventLoop", None),
             ours,
             cast("RpcManager", SimpleNamespace(messages=[], connections={})),
             0,
         )
-
-        async def forever() -> None:
-            await asyncio.sleep(60)
-
-        task = asyncio.ensure_future(forever())
-        conn.task = task  # type: ignore[assignment]
-        # let it start, so that what is cancelled is a running task
-        await asyncio.sleep(0)
-        conn.close()
-        await asyncio.sleep(0)
-        cancelled = bool(task.cancelled() or task.cancelling())
+        assert not hasattr(conn, "task")
+    finally:
+        ours.close()
         theirs.close()
-        return cancelled
-
-    assert asyncio.run(main())
 
 
 def test_repr_names_the_peer_and_says_so_when_there_is_none() -> None:
@@ -790,8 +785,8 @@ def test_repr_brackets_an_ipv6_peer(host: str, endpoint: str) -> None:
     assert repr(conn) == f"Connection to {endpoint}"
 
 
-def test_close_without_a_task_closes_the_socket_anyway() -> None:
-    """`close` still closes the socket for a connection whose task is None."""
+def test_close_closes_the_socket() -> None:
+    """`close` closes `client`, unconditionally."""
     ours, theirs = socket.socketpair()
     conn = RpcConnection(
         cast("asyncio.AbstractEventLoop", None),
@@ -799,7 +794,6 @@ def test_close_without_a_task_closes_the_socket_anyway() -> None:
         cast("RpcManager", SimpleNamespace(messages=[], connections={})),
         0,
     )
-    assert conn.task is None
     conn.close()
     assert ours.fileno() == -1
     theirs.close()
