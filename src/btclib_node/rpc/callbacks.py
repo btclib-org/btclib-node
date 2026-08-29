@@ -18,9 +18,10 @@ from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.p2p.address import ServiceFlags
 from btclib.tx import Tx
 
+from btclib_node.chainstate.contextual import block_time, median_time_past
 from btclib_node.constants import P2pConnStatus
 from btclib_node.exceptions import MissingPrevoutError
-from btclib_node.main import verify_mempool_acceptance
+from btclib_node.main import parent_lookup, verify_mempool_acceptance
 from btclib_node.p2p.address import ip_and_port
 from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import RpcError, RpcErrorCode, bool_param, type_error
@@ -83,20 +84,115 @@ _CORE_CHAIN_NAMES = {
 def get_blockchain_info(
     node: Node, conn: RpcConnection, _: list[Any]
 ) -> dict[str, Any]:
-    """Answer `getblockchaininfo` with the one member a caller checks.
+    """Answer `getblockchaininfo` with Core's own members this node can answer.
 
-    `BitcoinCoreFetcher.assert_network` (btclib) and
+    `chain`: `BitcoinCoreFetcher.assert_network` (btclib) and
     `BitcoinCoreRpcClient.assert_chain` (`bitcoin_core_rpc`) call this
     once before their first fetch, by default, and read `chain` alone --
     proven by asking a real client of a real node here for
     `get_best_block_id` before this callback existed: the very first
     call failed `-32601 Method not found` on `getblockchaininfo`, not on
-    the method it asked for. `SigNet` here carries no configurable
-    challenge (chains.py's own genesis is the one public signet), so
-    the `signet_challenge` member `assert_chain` also reads on that
-    chain is not answered.
+    the method it asked for. That is why `chain` could not be left out,
+    not a reason the rest stayed absent.
+
+    `blocks` is `active_chain`'s own last index, matching
+    `get_block_count` above: Core's own "the height of the most-work
+    fully-validated chain" (src/rpc/blockchain.cpp:1427, at
+    bitcoin/bitcoin@ca7162cde5). `headers` is `header_index`'s own last
+    index the same way -- `header_index` is this node's own best known
+    header chain, tracked separately from `active_chain` (`BlockIndex`'s
+    own class docstring) the way Core's `m_best_header` is tracked
+    separately from `ActiveChain()`'s own tip, and answered the same way
+    Core answers it: `chainman.m_best_header->nHeight` (src/rpc/
+    blockchain.cpp:1428, at bitcoin/bitcoin@ca7162cde5). `bestblockhash`
+    is `active_chain`'s own tip, matching `get_best_block_hash` above
+    (src/rpc/blockchain.cpp:1429, at bitcoin/bitcoin@ca7162cde5) -- both
+    already the display byte order Core's own `GetHex()` answers,
+    `BlockHeader.hash` (btclib) being the reversed hash rather than the
+    wire's own, confirmed against a real `bitcoind`'s identical
+    expression at `tests/integration/bitcoind_test.py:66`.
+
+    `bits` is the tip header's own compact target, `header.bits`, hex
+    (Core's `strprintf("%08x", tip.nBits)`, src/rpc/blockchain.cpp:1430,
+    at bitcoin/bitcoin@ca7162cde5). `target` is `header.target`
+    (btclib), 32 bytes already in the same big-endian order Core's own
+    `GetTarget(...).GetHex()` answers (src/rpc/blockchain.cpp:1431, same
+    commit) -- `target_from_bits` (`btclib.block.proof_of_work`) is
+    Core's `SetCompact`, and `arith_uint256::GetHex` writes each 32-bit
+    limb little-endian into a `base_blob` and then reverses that whole
+    blob (`src/arith_uint256.cpp:141`, `src/uint256.cpp:11`, same
+    commit), which is a plain big-endian print of the magnitude and not
+    the reversal a hash's own `GetHex` answers. `difficulty` is
+    `header.target`'s ratio against the genesis target, `header.difficulty`
+    (btclib) -- the same ratio Core's own `GetDifficulty` computes by
+    repeated `*=`/`/=` 256.0 from the compact exponent
+    (src/rpc/blockchain.cpp:106, same commit), verified bit for bit
+    against that literal loop on regtest's own genesis bits `0x207fffff`
+    in this callback's own unit test.
+
+    `time` is the tip header's own timestamp, `contextual.block_time`
+    (Core's `CBlockHeader::GetBlockTime`, src/rpc/blockchain.cpp:1433,
+    same commit). `mediantime` is `contextual.median_time_past` of the
+    tip, over `main.parent_lookup`'s own walk -- the same call
+    `main.verify_mempool_acceptance` already makes of the tip, for
+    Core's own `CBlockIndex::GetMedianTimePast` (src/rpc/blockchain.cpp
+    :1434, same commit). `chainwork` is `block_index.chainwork`'s own
+    entry for the tip, hex and zero-padded to 64 digits the way Core's
+    `nChainWork.GetHex()` prints a plain magnitude (src/rpc/
+    blockchain.cpp:1450, same commit) -- unlike `get_block_header`
+    above, whose own `chainwork` is the same int un-encoded, a
+    pre-existing divergence from Core this callback does not carry
+    forward (btclib-org/btclib-node#658).
+
+    `initialblockdownload` is `node.is_initial_block_download`,
+    `main.update_ibd_status`'s own latch, matching Core's own
+    `IsInitialBlockDownload` (src/rpc/blockchain.cpp:1436, at
+    bitcoin/bitcoin@ca7162cde5) field for field: chain work against
+    `Chain.minimum_chain_work` and tip age against `MAX_TIP_AGE`, not
+    merely whether this node has run out of candidates to try.
+    `pruned` is `Config.pruned`, always `False`: `Config.__init__`
+    refuses `pruned=True` outright rather than accepting it and pruning
+    nothing (src/rpc/blockchain.cpp:1452, at bitcoin/bitcoin@ca7162cde5).
+
+    Absent, each for its own reason rather than by oversight:
+    `verificationprogress`, Core's own `GuessVerificationProgress`
+    (src/validation.cpp:5519, at bitcoin/bitcoin@ca7162cde5)
+    extrapolating from `ChainTxData`, an assumed transaction rate for
+    the chain as a whole, against each block's own accumulated
+    transaction count (`CBlockIndex::m_chain_tx_count`) -- `chains.py`
+    carries neither the per-chain assumption nor a per-block count, so
+    answering this member under Core's own name would answer a number
+    carrying none of Core's meaning behind it, rather than a truthful
+    one; `warnings`, this node raising none of its own; `size_on_disk`,
+    nothing here yet totals the block and undo files' own bytes on
+    disk; `signet_challenge`, `SigNet` here carrying no configurable
+    challenge (chains.py's own genesis is the one public signet);
+    `pruneheight`, `automatic_pruning` and `prune_target_size`, each
+    optional on Core's own side and present only where pruning is
+    enabled, which `pruned`'s own paragraph above already answers
+    `False` for; `backgroundvalidation`, present on Core's own side only
+    behind an assumeutxo snapshot this node has no counterpart to.
     """
-    return {"chain": _CORE_CHAIN_NAMES[node.chain.name]}
+    block_index = node.chainstate.block_index
+    active_chain = block_index.active_chain
+    tip_hash = active_chain[-1]
+    tip_header = block_index.header_dict[tip_hash].header
+    tip_height = len(active_chain) - 1
+    tip_mtp = median_time_past(tip_header, tip_height, parent_lookup(node))
+    return {
+        "chain": _CORE_CHAIN_NAMES[node.chain.name],
+        "blocks": tip_height,
+        "headers": len(block_index.header_index) - 1,
+        "bestblockhash": tip_hash,
+        "bits": tip_header.bits,
+        "target": tip_header.target,
+        "difficulty": tip_header.difficulty,
+        "time": block_time(tip_header),
+        "mediantime": tip_mtp,
+        "chainwork": f"{block_index.chainwork[tip_hash]:064x}",
+        "initialblockdownload": node.is_initial_block_download,
+        "pruned": node.config.pruned,
+    }
 
 
 def get_block_hash(node: Node, conn: RpcConnection, params: list[Any]) -> bytes:

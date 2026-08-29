@@ -340,6 +340,11 @@ class Node(threading.Thread):
         self._worker_pool_warmup: threading.Thread | None = None
 
         self.status = NodeStatus.Starting
+        # `main.update_ibd_status`'s own latch, read by
+        # `rpc.callbacks.get_blockchain_info`: Core's own
+        # `m_cached_is_ibd{true}` (`src/validation.h:1054`, at
+        # bitcoin/bitcoin@ca7162cde5) starts true the same way.
+        self.is_initial_block_download = True
 
         self.download_manager = DownloadManager(self, self.logger)
 

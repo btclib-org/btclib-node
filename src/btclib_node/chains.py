@@ -139,6 +139,12 @@ class Chain:
     # since the two blocks that violate it are two specific mainnet
     # blocks mined in 2010, not a property of the rule.
     bip30_exceptions: list[tuple[int, bytes]]
+    # Core's `nMinimumChainWork` (`src/kernel/chainparams.cpp`,
+    # at bitcoin/bitcoin@ca7162cde5), read as `int(hex_string, 16)`: the
+    # chain work below which `main.update_ibd_status` will not leave
+    # `IsInitialBlockDownload`, whatever the tip's own age. Each leaf's
+    # own `__init__` below cites the line its value comes from.
+    minimum_chain_work: int
 
     @property
     def genesis(self) -> BlockHeader:
@@ -233,6 +239,10 @@ class Main(Chain):
                 ),
             ),
         ]
+        # src/kernel/chainparams.cpp:141, at bitcoin/bitcoin@ca7162cde5
+        self.minimum_chain_work = int(
+            "0000000000000000000000000000000000000001128750f82f4c366153a3a030", 16
+        )
 
 
 @dataclass
@@ -269,6 +279,10 @@ class TestNet(Chain):
         self.subsidy_halving_interval = 210000
         self.bip34_height = 21111
         self.bip30_exceptions = []
+        # src/kernel/chainparams.cpp:265, at bitcoin/bitcoin@ca7162cde5
+        self.minimum_chain_work = int(
+            "0000000000000000000000000000000000000000000017dde1c649f3708d14b6", 16
+        )
 
 
 @dataclass
@@ -304,6 +318,13 @@ class SigNet(Chain):
         self.subsidy_halving_interval = 210000
         self.bip34_height = 1
         self.bip30_exceptions = []
+        # the default public signet's own value, not the empty one a
+        # custom signet's challenge carries: src/kernel/chainparams.cpp
+        # :457, at bitcoin/bitcoin@ca7162cde5, this class's own docstring
+        # above already arguing which of the two this leaf is
+        self.minimum_chain_work = int(
+            "00000000000000000000000000000000000000000000000000000b463ea0a4b8", 16
+        )
 
 
 @dataclass
@@ -338,3 +359,9 @@ class RegTest(Chain):
         self.subsidy_halving_interval = 150
         self.bip34_height = 1
         self.bip30_exceptions = []
+        # src/kernel/chainparams.cpp:593, at bitcoin/bitcoin@ca7162cde5:
+        # an empty `uint256{}`, zero -- a regtest node counts as caught
+        # up on work alone, the way every regtest activation height
+        # already being 0 lets this leaf skip every other consensus
+        # ramp-up too
+        self.minimum_chain_work = 0

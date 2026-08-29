@@ -542,12 +542,30 @@ class DownloadManager:
         here has cleared that floor already.
         """
         now = time.time()
-        # Core's own `IsInitialBlockDownload()`: while still syncing,
-        # `handle_p2p_handshake`'s own `tx` handler already drops
-        # anything received rather than queue it (btclib-org/btclib-node#129),
-        # so this is telling a peer what this node already does rather
-        # than computing a real minimum there is not yet a synced
-        # mempool to have one.
+        # Core's own `MaybeSendFeefilter` (`net_processing.cpp`, at
+        # bitcoin/bitcoin@ca7162cde5) gates this same decision on
+        # `m_chainman.IsInitialBlockDownload()`, which `main.
+        # update_ibd_status`'s own `node.is_initial_block_download` now
+        # answers faithfully (btclib-org/btclib-node#575) -- tried here
+        # in place of the comparison below, and reverted: Core's flag
+        # requires the tip to be no older than `MAX_TIP_AGE`, which a
+        # regtest chain built with `GENESIS_TIME`-relative timestamps
+        # (`tests/__init__.py`'s own `build_block`, the default every
+        # functional test but one uses) never satisfies, so a node that
+        # has validated its whole known chain would still announce
+        # `_max_feefilter` to every peer forever. A peer receiving that
+        # then refuses to announce anything back below it
+        # (`_queue_announcements_for_received_txs`'s own `meets_fee_rate`
+        # check), which is what actually broke
+        # `tests/functional/p2p/tx_test.py::test_send_tx` under this
+        # swap -- measured, not guessed, by running the whole suite with
+        # the swap in and finding that one functional test newly red,
+        # `origin/main` clean under the same run. `NodeStatus.BlockSynced`
+        # is this node's own readiness signal instead: whether there is
+        # a synced mempool worth pricing against at all, which is what
+        # `p2p.callbacks`'s own `tx` handler already gates incoming
+        # relay on (btclib-org/btclib-node#129) -- not Core's own
+        # IsInitialBlockDownload, and not claimed to be one anymore.
         ibd = self.node.status < NodeStatus.BlockSynced
         current_filter = (
             self._max_feefilter

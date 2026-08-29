@@ -6,14 +6,29 @@
 
 `ProtocolVersion`, `P2pConnStatus` for a single peer connection's own
 handshake state, `NodeStatus` for what stage of startup, sync or
-shutdown the node as a whole is in, and `COINBASE_MATURITY`.
+shutdown the node as a whole is in, `COINBASE_MATURITY`, and
+`MAX_TIP_AGE`.
 """
 
 import enum
+from datetime import timedelta
 
-__all__ = ["COINBASE_MATURITY", "NodeStatus", "P2pConnStatus", "ProtocolVersion"]
+__all__ = [
+    "COINBASE_MATURITY",
+    "MAX_TIP_AGE",
+    "NodeStatus",
+    "P2pConnStatus",
+    "ProtocolVersion",
+]
 
 ProtocolVersion = 70016
+
+# Core's own `DEFAULT_MAX_TIP_AGE` (`src/kernel/chainstatemanager_opts.h`
+# :24, at bitcoin/bitcoin@ca7162cde5): how old the active chain's own
+# tip may be and still count as recent, half of what
+# `main.update_ibd_status` reads to decide `IsInitialBlockDownload` --
+# the other half is `Chain.minimum_chain_work` (chains.py).
+MAX_TIP_AGE = timedelta(hours=24)
 
 # Core's own `COINBASE_MATURITY` (`src/consensus/consensus.h`,
 # at bitcoin/bitcoin@204256c73f): how many blocks a coinbase output has

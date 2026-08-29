@@ -4,6 +4,7 @@
 
 """`update_chain`/`verify_mempool_acceptance`: connect, reorg, reject."""
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -22,7 +23,7 @@ from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate import utxo_index as utxo_index_module
 from btclib_node.chainstate.block_index import BlockIndex, BlockInfo, BlockStatus
 from btclib_node.config import Config
-from btclib_node.constants import COINBASE_MATURITY, NodeStatus
+from btclib_node.constants import COINBASE_MATURITY, MAX_TIP_AGE, NodeStatus
 from btclib_node.exceptions import ChainstateInconsistencyError, MissingPrevoutError
 from btclib_node.interpreter import check_transactions
 from btclib_node.main import update_chain, verify_mempool_acceptance
@@ -1679,3 +1680,64 @@ def test_a_reorg_restored_prevout_can_be_legitimately_spent_again(node: Node) ->
         block_index.get_block_info(fork_c_first.header.hash).status
         != BlockStatus.invalid
     )
+
+
+def an_ibd_node(
+    *,
+    chainwork: int,
+    tip_time: datetime,
+    minimum_chain_work: int = 0,
+    is_initial_block_download: bool = True,
+) -> Node:
+    """Build a node carrying just what `main.update_ibd_status` reads."""
+    tip_hash = b"\x11" * 32
+    return cast(
+        "Node",
+        SimpleNamespace(
+            chain=SimpleNamespace(minimum_chain_work=minimum_chain_work),
+            chainstate=SimpleNamespace(
+                block_index=SimpleNamespace(
+                    active_chain=[tip_hash],
+                    chainwork={tip_hash: chainwork},
+                    header_dict={
+                        tip_hash: SimpleNamespace(header=SimpleNamespace(time=tip_time))
+                    },
+                )
+            ),
+            is_initial_block_download=is_initial_block_download,
+        ),
+    )
+
+
+def test_update_ibd_status_stays_true_below_the_chain_s_minimum_work() -> None:
+    """Below `Chain.minimum_chain_work`, the tip's own age is never read."""
+    node = an_ibd_node(chainwork=5, minimum_chain_work=10, tip_time=datetime.now(UTC))
+    main.update_ibd_status(node)
+    assert node.is_initial_block_download is True
+
+
+def test_update_ibd_status_stays_true_past_max_tip_age() -> None:
+    """Enough work, but a tip older than `MAX_TIP_AGE`: still in IBD."""
+    node = an_ibd_node(
+        chainwork=10,
+        minimum_chain_work=10,
+        tip_time=datetime.now(UTC) - MAX_TIP_AGE - timedelta(seconds=1),
+    )
+    main.update_ibd_status(node)
+    assert node.is_initial_block_download is True
+
+
+def test_update_ibd_status_latches_off_and_never_back_as_the_tip_ages() -> None:
+    """Both conditions met flips the latch; a stale re-check cannot undo it."""
+    node = an_ibd_node(chainwork=10, minimum_chain_work=10, tip_time=datetime.now(UTC))
+    main.update_ibd_status(node)
+    assert node.is_initial_block_download is False
+
+    # the tip itself never moves in this test; only time passes, past
+    # what MAX_TIP_AGE would tolerate on a fresh check -- and
+    # update_ibd_status's own first line returns before it reads the
+    # tip a second time once the flag is already False
+    stale_header = node.chainstate.block_index.header_dict[b"\x11" * 32].header
+    stale_header.time = datetime.now(UTC) - MAX_TIP_AGE - timedelta(days=1)
+    main.update_ibd_status(node)
+    assert node.is_initial_block_download is False

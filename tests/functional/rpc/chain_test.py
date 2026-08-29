@@ -6,9 +6,13 @@
 
 `getbestblockhash`, `getblockhash`, `getblockcount`, `getblockheader`
 and `getblockchaininfo`, each driven against a node that has actually
-validated and connected the chain it is asked about.
+validated and connected the chain it is asked about -- except for
+`getblockchaininfo`'s own `headers` member, which the header-sync test
+below drives against a node given headers and no blocks at all, that
+gap being the member's whole reason for existing.
 """
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import BitcoinCoreRpcClient
@@ -19,6 +23,8 @@ from btclib_node.chains import RegTest
 from btclib_node.config import Config
 from btclib_node.constants import NodeStatus
 from tests import (
+    build_block,
+    generate_coinbase,
     generate_random_chain,
     generate_random_header_chain,
     get_random_port,
@@ -114,7 +120,72 @@ def test_blockchain_info_names_the_chain_btclib_s_fetcher_checks(
     wait_until_listening(node.rpc_manager)
 
     _, body = rpc_client(node).call_raw("getblockchaininfo", jsonrpc="1.0")
-    assert body["result"] == {"chain": "regtest"}
+    assert body["result"]["chain"] == "regtest"
+
+
+def test_blockchain_info_s_headers_moves_during_header_sync_while_blocks_does_not(
+    rpc_node: Node,
+) -> None:
+    """Header sync is observable in `headers` alone, which is issue #575.
+
+    Ten headers are indexed and none of their blocks downloaded, so
+    `active_chain` never grows past the genesis while `header_index`
+    grows by every one of them -- the same gap `getblockcount` alone
+    cannot show, `blocks` not moving at all while a sync it has nothing
+    to do with the active chain is in progress.
+    """
+    node = rpc_node
+    wait_until_listening(node.rpc_manager)
+
+    _, before = rpc_client(node).call_raw("getblockchaininfo", jsonrpc="1.0")
+    assert before["result"]["blocks"] == 0
+    assert before["result"]["headers"] == 0
+    assert before["result"]["initialblockdownload"] is True
+
+    header_chain = generate_random_header_chain(10, RegTest().genesis.hash)
+    node.chainstate.block_index.add_headers(header_chain)
+
+    wait_until(lambda: len(node.chainstate.block_index.header_index) == 10 + 1)
+
+    _, after = rpc_client(node).call_raw("getblockchaininfo", jsonrpc="1.0")
+    assert after["result"]["blocks"] == 0
+    assert after["result"]["headers"] == 10
+    assert after["result"]["initialblockdownload"] is True
+
+
+def test_blockchain_info_s_initialblockdownload_flips_off_once_caught_up_and_recent(
+    rpc_node: Node,
+) -> None:
+    """A regtest node leaves IBD once its own tip is actually recent.
+
+    `RegTest.minimum_chain_work` is 0, trivially met by any block, so
+    the tip's own age against `MAX_TIP_AGE` is what this test is
+    actually exercising -- `generate_random_chain`'s own blocks all
+    carry `GENESIS_TIME`'s 2011 timestamp, which the header-sync test
+    above is content with and this one is not: its own single block is
+    built directly, timestamped against the real clock.
+    """
+    node = rpc_node
+    wait_until_listening(node.rpc_manager)
+
+    genesis = RegTest().genesis
+    block = build_block(
+        genesis.hash,
+        [generate_coinbase(value=RegTest().subsidy(1), height=1)],
+        0,
+        time=datetime.now(UTC),
+    )
+    block_index = node.chainstate.block_index
+    block_index.add_headers([block.header])
+    node.status = NodeStatus.HeaderSynced
+    node.block_db.add_block(block)
+    block_index.set_downloaded(block.header.hash)
+
+    wait_until(lambda: node.is_initial_block_download is False)
+
+    _, body = rpc_client(node).call_raw("getblockchaininfo", jsonrpc="1.0")
+    assert body["result"]["blocks"] == 1
+    assert body["result"]["initialblockdownload"] is False
 
 
 def test_bitcoin_core_fetcher_works_against_this_node_unchanged(

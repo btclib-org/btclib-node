@@ -1318,6 +1318,44 @@ where this file was written rather than where anything was tagged.
   written by the sqlite3 store cannot be read by this version, and is
   refused by name rather than silently started over as an empty chain.
 
+### `getblockchaininfo` answers a sync in progress (closes #575)
+
+- **`blocks`, `headers`, `bestblockhash`, `bits`, `target`, `difficulty`,
+  `time`, `mediantime`, `chainwork`, `initialblockdownload` and `pruned`
+  join `chain`**, each with Core's own meaning
+  (`src/rpc/blockchain.cpp`, at bitcoin/bitcoin@ca7162cde5). `headers`
+  is `BlockIndex.header_index`'s own height, tracked separately from
+  the validated `active_chain` `blocks` answers -- the gap between the
+  two is a header sync in progress, invisible until now to anything
+  that could only read `getblockcount`.
+- **`initialblockdownload` is `Node.is_initial_block_download`, a new
+  one-way latch on `Node` that reproduces Core's own
+  `IsInitialBlockDownload`** (`src/validation.cpp`, at
+  bitcoin/bitcoin@ca7162cde5): the active chain's work must reach a new
+  per-`Chain` `minimum_chain_work` (`chains.py`, cited to
+  `chainparams.cpp`) *and* its tip must be no older than a new
+  `MAX_TIP_AGE` of 24 hours (`constants.py`, cited to
+  `DEFAULT_MAX_TIP_AGE`), checked in `main.update_ibd_status`. This
+  replaced a first pass that read `NodeStatus`'s own latch to
+  `BlockSynced` instead, a second, looser definition of the same Core
+  concept the review of this closing round caught.
+  `download.py`'s `_send_due_feefilters` keeps reading
+  `NodeStatus.BlockSynced` rather than moving onto the new latch: tried
+  the other way once, and reverted, because a regtest chain built with
+  this tree's own default, `GENESIS_TIME`-relative timestamps never
+  satisfies `MAX_TIP_AGE`, so a node that had validated its entire known
+  chain would advertise the top `feefilter` bucket to every peer
+  forever, and one measured functional test regression back that up
+  (`tests/functional/p2p/tx_test.py::test_send_tx`, timing out against a
+  peer refusing to announce a transaction below that bucket).
+  `verificationprogress` stays absent: Core's own
+  `GuessVerificationProgress` extrapolates from `ChainTxData`, an
+  assumed per-chain transaction rate this tree does not carry, and
+  answering a different number under Core's own name would be
+  answering the wrong thing under it. `get_blockchain_info`'s own
+  docstring (`src/btclib_node/rpc/callbacks.py`) has the citation for
+  every member answered and every member still left out.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
