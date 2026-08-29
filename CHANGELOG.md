@@ -1197,6 +1197,16 @@ where this file was written rather than where anything was tagged.
   seam. `uv.lock`'s git pin moves to btclib's `main` past that
   release, which is what the suite exercises.
 
+### `dev` reaches every group this tree declares (issue btclib-org/.github#498)
+
+- **`pyproject.toml`'s `dev` group now includes `fuzz` alongside `test`,
+  `lint`, `mutation`, `docs` and `check`.** Section 1 of the organization
+  standard's dependency-group table gives `dev` as every group above, and
+  `fuzz` carried no exception to it: its `sys_platform == 'linux'` marker
+  is what makes `uv sync` on another platform resolve the group rather
+  than refuse it, so a developer off Linux gets a `dev` sync that installs
+  nothing from `fuzz` instead of one that fails. `uv.lock` moves with it.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
