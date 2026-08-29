@@ -114,7 +114,7 @@ classifiers = [
     # It is not a claim that this node runs faster with the GIL off.
     # Script validation is the half that scales across cores, but the
     # UTXO store is the larger half in wall clock and is serial, one
-    # sqlite writer whatever the caller does, so the dominant cost gets
+    # writer whatever the caller does, so the dominant cost gets
     # nothing from free threading (issue #576).
     "Programming Language :: Python :: Free Threading :: 3 - Stable",
     "Typing :: Typed",

@@ -48,8 +48,12 @@ compiled dependency returns, narrowing "wherever Python runs" to
 and a block cache, sized below the way Core's own `-dbcache` sizes the
 same knobs, and tunable the same way); `rocksdict`'s own exceptions
 arrive untyped, a bare `Exception` string-matched into this tree's own
-`StoreCorruptionError` (`exceptions.py`); and one datadir migration, the
-same shape #107 itself already cost once. None of that is a departure
+`StoreCorruptionError` (`exceptions.py`); a reader in another process,
+which sqlite3's WAL let in beside the writer, is refused outright by
+RocksDB's own directory `LOCK` -- nothing in this tree opens the store
+from a second process, so what is given up is a capability and not a
+caller; and one datadir migration, the same shape #107 itself already
+cost once. None of that is a departure
 from *Following Bitcoin Core* -- it is Core's own choice, reached this
 time by measurement rather than assumed, and the packaging half of it
 is the "Python-native" axis `CLAUDE.md` already carves out for this
@@ -83,7 +87,7 @@ benchmark could have fallen into).
 bitcoin/bitcoin@ca7162cde5:
 
 - `options.compression = leveldb::kNoCompression`
-  (`src/dbwrapper.cpp:144`) -> `DBCompressionType.none()`. Compression is
+  (`src/dbwrapper.cpp:145`) -> `DBCompressionType.none()`. Compression is
   not network-visible, so it could in principle be a local choice, but
   the rule this file is written under is match unless something forces
   otherwise, and nothing does -- it is also what keeps a corrupted
@@ -393,7 +397,7 @@ def _make_options() -> Options:
     # paranoid_checks = true (dbwrapper.cpp:150,162),
     # at bitcoin/bitcoin@ca7162cde5
     options.set_paranoid_checks(True)
-    # compression = kNoCompression (dbwrapper.cpp:144),
+    # compression = kNoCompression (dbwrapper.cpp:145),
     # at bitcoin/bitcoin@ca7162cde5
     options.set_compression_type(DBCompressionType.none())
     # write_buffer_size = nCacheSize / 4 (dbwrapper.cpp:143),
@@ -647,11 +651,19 @@ class KeyValueStore:
         `__init__` opened it, well before any batch, so there is no
         window for a second writer to find open here that opening this
         store at all has not already closed.
+
+        A batch does not nest. One slot holds the pending batch, so an
+        inner `write_batch` would commit its own writes on its own exit,
+        outside the outer block's atomicity and with nothing to say so;
+        it raises instead, the way SQLite's own nested `BEGIN` did.
         """
         with self._lock:
             self._ensure_open()
+            if self._pending_batch is not None:
+                err_msg = "write_batch does not nest"
+                raise RuntimeError(err_msg)
             batch = WriteBatch(raw_mode=True)
-            previous, self._pending_batch = self._pending_batch, batch
+            self._pending_batch = batch
             try:
                 yield self
             except BaseException:
@@ -659,9 +671,9 @@ class KeyValueStore:
                 # or a cancelled task through here would otherwise leave
                 # `self._pending_batch` set to a batch nothing ever
                 # commits or clears
-                self._pending_batch = previous
+                self._pending_batch = None
                 raise
-            self._pending_batch = previous
+            self._pending_batch = None
             self._db.write(batch, write_opt=_WRITE_OPTIONS)
 
     def close(self) -> None:

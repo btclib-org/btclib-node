@@ -96,11 +96,11 @@ citation inside a docstring rather than a comment needs none of this:
 `ERA001` only ever walks comment ranges.
 
 `src/btclib_node/db.py`'s docstring is the worked example of that same
-axis, not an exception to it: choosing stdlib `sqlite3` over Core's
-vendored LevelDB is a stdlib-versus-compiled-dependency choice, the
-packaging half of Python-native rather than a design taken against
-Core's, and the docstring argues the store against Core's on exactly
-those terms.
+axis, not an exception to it: taking LevelDB's own fork through
+`rocksdict`, a typed wheel on this tree's interpreter, over Core's
+vendored LevelDB is a packaging choice, the packaging half of
+Python-native rather than a design taken against Core's, and the
+docstring argues the store against Core's on exactly those terms.
 
 Mimicry is of the observed behaviour end to end, not of a local
 `catch`: where a layer below differs, the same behaviour can need
@@ -113,10 +113,11 @@ Core's behaviour, not departing from it.
 
 A capability Core has that this tree lacks is a gap to close, not a
 constraint to design around, wherever the reason is a library fact
-rather than a decision: stdlib `sqlite3` shipping no checksummed VFS
-(btclib-org/btclib-node#637, btclib-org/btclib-node#641) is a reason to
-close that gap in a Python-native way, not licence to treat its absence
-as this tree's own design.
+rather than a decision: the store's per-block checksum is RocksDB's own
+(btclib-org/btclib-node#641), taken in place of a stdlib `sqlite3` that
+ships no checksummed VFS (btclib-org/btclib-node#637) rather than
+designed around, that absence never having been this tree's own
+design.
 
 **A convention of this tree is not on that axis.** Where Core defines
 the surface — an RPC's field names and what they mean, a message's
@@ -340,10 +341,12 @@ Do not use Fable unless explicitly instructed.
   `python -c "import btclib_node; print(btclib_node.__file__)"`, run
   with the same interpreter, `cwd` and environment as the test
   invocation, and read before the result rather than after.
-- **The store is `sqlite3` from the standard library**, since
-  btclib-org/btclib-node#107. A datadir written by the LevelDB this
-  replaced cannot be read; `src/btclib_node/db.py` is where that is
-  handled and where the choice is argued against Bitcoin Core's.
+- **The store is RocksDB through `rocksdict`**, since
+  btclib-org/btclib-node#641, which reversed btclib-org/btclib-node#107's
+  stdlib `sqlite3`. A datadir written by the sqlite3 store, marked by
+  its `index.sqlite`, cannot be read and is refused by name;
+  `src/btclib_node/db.py` is where that is handled and where the choice
+  is argued against Bitcoin Core's.
 - **`gh api`'s `-f` always sends a string, even for a boolean field.**
   `gh api -X PATCH .../required_status_checks -f strict=true` fails
   with `"true" is not a boolean`, because `-f`/`--raw-field` encodes

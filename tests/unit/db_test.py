@@ -151,6 +151,19 @@ def test_a_batch_is_written_whole(tmp_path: Path) -> None:
     store.close()
 
 
+def test_a_batch_does_not_nest(tmp_path: Path) -> None:
+    """An inner batch would commit outside the outer one's atomicity."""
+    store = KeyValueStore(tmp_path)
+    with store.write_batch() as batch:
+        batch.put(b"k", b"v")
+        with pytest.raises(RuntimeError, match="does not nest"), store.write_batch():
+            pass  # pragma: no cover -- never entered
+        batch.put(b"k2", b"v2")
+    assert store.get(b"k") == b"v"
+    assert store.get(b"k2") == b"v2"
+    store.close()
+
+
 def test_a_batch_that_raises_leaves_nothing_behind(tmp_path: Path) -> None:
     """An exception inside `write_batch` rolls back every write it made."""
     # what the chainstate needs of it: a block that fails validation

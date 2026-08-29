@@ -1223,6 +1223,44 @@ where this file was written rather than where anything was tagged.
   `ActivateBestChainStep` (`src/validation.cpp`, at
   bitcoin/bitcoin@b91d983f66).
 
+### The suite passing free-threaded is now a claim the metadata makes (closes #593)
+
+- **`pyproject.toml` declares `Programming Language :: Python :: Free
+  Threading :: 3 - Stable`.** `test.yml`'s `coverage` job runs the whole
+  suite on `3.14t`, at the 100% coverage floor, on every merge, and the
+  classifier is that claim made to an index. The comment beside it says
+  the claim is about the free-threaded build working and not about
+  throughput: the UTXO store is the larger half in wall clock and is
+  serial regardless of the interpreter build (issue #576).
+
+### pypi-install installs from the index (closes #502, closes #287)
+
+- **`.github/workflows/pypi-install.yml` installs `btclib-node` from PyPI
+  weekly, at this repository's own slot in section 10's calendar, and
+  checks it past a bare import.** A bare import cannot see this
+  package's own runtime path: `btclib[secp256k1]` is an unconditional
+  dependency, and a broken pair on the index degrades silently to the
+  Python arithmetic rather than failing, so one step asserts the
+  bindings serve and a second builds and starts a `Node` on regtest, the
+  same shape `tests/conftest.py`'s own `node_context` already exercises
+  against a source tree. The image matrix is every platform this
+  repository's own `os-*` sentinels already sample, `windows-latest`
+  included: a stranger can install this from the index regardless of
+  what `pyproject.toml`'s classifiers claim, and `os-windows.yml`'s own
+  accepted-red convention is what that cell inherits rather than
+  re-decides.
+- **`release.yml`'s `publish-pypi` job calls the new workflow instead of
+  carrying its own inline install-and-import check**, `needs:
+  publish-pypi` paired with its own `always()` and an explicit
+  `needs.publish-pypi.result == 'success'` -- a bare `needs:` here reads
+  back through `publish-pypi`'s own `needs:` to `public-api` two hops
+  away, which a real breaking-change failure there would then skip
+  silently despite `publish-pypi` itself having succeeded
+  (btclib-org/btclib#1470 is where that shape was measured on a tag).
+  `publish-testpypi` uploads and stops, with no install-verify step of
+  its own: `pypi-install.yml` reads `pypi.org` and has nothing to say
+  about `test.pypi.org`, matching every other repository that publishes.
+
 ### The store moves to RocksDB, through `rocksdict` (closes #637, closes #641)
 
 - **`src/btclib_node/db.py`'s `KeyValueStore` moves from the standard
@@ -1279,44 +1317,6 @@ where this file was written rather than where anything was tagged.
 - **`RELEASE_NOTES.md` carries the action this forces**: a datadir
   written by the sqlite3 store cannot be read by this version, and is
   refused by name rather than silently started over as an empty chain.
-
-### The suite passing free-threaded is now a claim the metadata makes (closes #593)
-
-- **`pyproject.toml` declares `Programming Language :: Python :: Free
-  Threading :: 3 - Stable`.** `test.yml`'s `coverage` job runs the whole
-  suite on `3.14t`, at the 100% coverage floor, on every merge, and the
-  classifier is that claim made to an index. The comment beside it says
-  the claim is about the free-threaded build working and not about
-  throughput: the UTXO store is the larger half in wall clock and is
-  serial regardless of the interpreter build (issue #576).
-
-### pypi-install installs from the index (closes #502, closes #287)
-
-- **`.github/workflows/pypi-install.yml` installs `btclib-node` from PyPI
-  weekly, at this repository's own slot in section 10's calendar, and
-  checks it past a bare import.** A bare import cannot see this
-  package's own runtime path: `btclib[secp256k1]` is an unconditional
-  dependency, and a broken pair on the index degrades silently to the
-  Python arithmetic rather than failing, so one step asserts the
-  bindings serve and a second builds and starts a `Node` on regtest, the
-  same shape `tests/conftest.py`'s own `node_context` already exercises
-  against a source tree. The image matrix is every platform this
-  repository's own `os-*` sentinels already sample, `windows-latest`
-  included: a stranger can install this from the index regardless of
-  what `pyproject.toml`'s classifiers claim, and `os-windows.yml`'s own
-  accepted-red convention is what that cell inherits rather than
-  re-decides.
-- **`release.yml`'s `publish-pypi` job calls the new workflow instead of
-  carrying its own inline install-and-import check**, `needs:
-  publish-pypi` paired with its own `always()` and an explicit
-  `needs.publish-pypi.result == 'success'` -- a bare `needs:` here reads
-  back through `publish-pypi`'s own `needs:` to `public-api` two hops
-  away, which a real breaking-change failure there would then skip
-  silently despite `publish-pypi` itself having succeeded
-  (btclib-org/btclib#1470 is where that shape was measured on a tag).
-  `publish-testpypi` uploads and stops, with no install-verify step of
-  its own: `pypi-install.yml` reads `pypi.org` and has nothing to say
-  about `test.pypi.org`, matching every other repository that publishes.
 
 ## v2026.8.27
 
