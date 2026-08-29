@@ -13,7 +13,7 @@ that relay one.
 """
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from btclib.block.block_context import BlockContext
 from btclib.exceptions import BTClibValueError
@@ -365,19 +365,20 @@ def _validate_block(
     check_coinbase_value(block.transactions[0], transactions, index, node)
 
 
-def _record_rejection(
-    node: Node, failed_hash: bytes | None, exc: BaseException
-) -> None:
+def _record_rejection(node: Node, failed_hash: bytes, exc: BaseException) -> None:
     """Record the block `failed_hash` names as refused, and why.
 
     `Node.__init__`'s own comment beside `last_rejected_block` says who
     reads it: a rejection test, asserting the rule that refused a block
-    rather than only that one did. Never set on a raise before any
-    block in this fork started -- `failed_hash` is still `None` there,
-    the same guard `update_header_index`'s own call below reads.
+    rather than only that one did. `_resolve_trial_exception`'s own
+    call below is this function's only caller, and reaches it only once
+    `isinstance(exc, _CONTENT_FAILURE)` already holds, which never
+    happens before the to_add loop's own iteration has set
+    `failed_hash` -- so unlike before btclib-org/btclib-node#623, there
+    is no longer a raise this can be reached on where `failed_hash` is
+    still `None`, and nothing here has to guard against one.
     """
-    if failed_hash is not None:
-        node.last_rejected_block = (failed_hash, exc)
+    node.last_rejected_block = (failed_hash, exc)
 
 
 # What the trial loop's to_add iteration deliberately raises to say a
@@ -417,19 +418,35 @@ def _resolve_trial_exception(
     A function of its own and not the `if`/`else` inline in `update_chain`'s
     own except -- ruff's own `too-many-branches`/`complex-structure`
     already count a branch gained there against a ceiling that call is
-    already at. `failed_hash is None` is exactly the to_remove loop above
-    `update_chain`'s own trial, where `_record_rejection`'s own guard
-    already turns this into a no-op regardless; `isinstance(exc,
-    _CONTENT_FAILURE)` is the to_add loop's own exceptions, argued where
-    `_CONTENT_FAILURE` is declared. `raise exc` and not a bare `raise`:
-    this is not itself an except block, so a bare `raise` here has no
-    currently-handled exception of its own to reach for -- `exc` already
-    carries the traceback `update_chain`'s own except caught it with, and
-    raising it explicitly extends that same traceback rather than
-    starting a new one.
+    already at. `isinstance(exc, _CONTENT_FAILURE)` is the to_add loop's
+    own exceptions, argued where `_CONTENT_FAILURE` is declared, and is
+    the only case this records and swallows; `cast` and not a runtime
+    check narrows `failed_hash` for that call, because the to_add
+    loop's own iteration always sets it before raising one of those
+    three, the same invariant `_record_rejection`'s own docstring
+    argues. The to_remove loop above `update_chain`'s own trial never
+    raises one of those three -- `apply_rev_block` raises only
+    `ChainstateInconsistencyError` or a storage failure -- so
+    `failed_hash is None` here always falls to `raise exc` below, same
+    as any other non-content failure from the to_add loop: undoing an
+    already-connected block failing is this node's own bookkeeping,
+    never a verdict on a new block, so nothing here would ever have
+    recorded a rejection for it, but the raise itself no longer stops
+    there either. Core's own equivalent -- `DisconnectTip` returning
+    false is fatal one level up, in `ActivateBestChainStep`
+    (`src/validation.cpp`, at bitcoin/bitcoin@b91d983f66) -- stops
+    rather than keeps trying on top of storage it just proved
+    inconsistent, the same conclusion already drawn above
+    `to_add`/`to_remove` themselves for a read failure at the same
+    citation. `raise exc` and not a bare `raise`: this is not itself an
+    except block, so a bare `raise` here has no currently-handled
+    exception of its own to reach for -- `exc` already carries the
+    traceback `update_chain`'s own except caught it with, and raising
+    it explicitly extends that same traceback rather than starting a
+    new one.
     """
-    if failed_hash is None or isinstance(exc, _CONTENT_FAILURE):
-        _record_rejection(node, failed_hash, exc)
+    if isinstance(exc, _CONTENT_FAILURE):
+        _record_rejection(node, cast("bytes", failed_hash), exc)
         return
     raise exc
 

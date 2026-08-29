@@ -827,16 +827,24 @@ def test_a_reorg_refuses_a_missing_removed_block(node: Node) -> None:
         connect(node, second)
 
 
-def test_a_reorg_whose_own_undo_raises_names_no_new_block(
+def test_a_reorg_whose_own_undo_raises_propagates_and_names_no_new_block(
     node: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A rollback failing on the fork's own undo leaves no block blamed.
+    """A rollback failing on the fork's own undo stops the node, blames nothing.
 
-    `_record_rejection` (`main.py`) never sets `Node.last_rejected_block`
-    on a raise here: `failed_hash` is still `None` at this point in the
-    trial, exactly as `update_header_index`'s own guard reads it below --
-    undoing a block already on the active chain failing is this node's
-    own bookkeeping, not a new block being bad.
+    `_resolve_trial_exception` (`main.py`) re-raises here rather than
+    swallowing: `ChainstateInconsistencyError` is not one of
+    `_CONTENT_FAILURE`'s three types, so this is this node's own
+    storage proving itself inconsistent, not a new candidate's content,
+    the same distinction `_CONTENT_FAILURE`'s own comment and Core's
+    `ActivateBestChainStep` (`src/validation.cpp`, at
+    bitcoin/bitcoin@b91d983f66) draw for a failed `DisconnectTip`. The
+    rollback still runs first -- `active_chain_before` is unchanged --
+    and `_resolve_trial_exception` never reaches `_record_rejection`
+    here, so `Node.last_rejected_block` stays unset the same as
+    `failed_hash` -- still `None` at this point in the trial, exactly
+    as `update_header_index`'s own guard reads it, so none of the
+    fork's own candidate blocks is invalidated either.
     """
     active = generate_random_chain(2, RegTest().genesis.hash)
     block_index = connect(node, active)
@@ -854,10 +862,14 @@ def test_a_reorg_whose_own_undo_raises_names_no_new_block(
 
     monkeypatch.setattr(node.chainstate.utxo_index, "apply_rev_block", boom)
 
-    update_chain(node)
+    with pytest.raises(ChainstateInconsistencyError, match="boom"):
+        update_chain(node)
 
     assert block_index.active_chain == active_chain_before
     assert node.last_rejected_block is None
+    for block in heavier:
+        info = block_index.get_block_info(block.header.hash)
+        assert info.status != BlockStatus.invalid
 
 
 def test_an_io_fault_writing_the_reverse_patch_does_not_invalidate_the_block(
