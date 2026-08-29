@@ -1070,6 +1070,45 @@ where this file was written rather than where anything was tagged.
 - `src/btclib_node/download.py`'s own docstring carried the same
   "possible and reasonable" wording and is corrected to match.
 
+### The suites drive the seams bitcoin-core-rpc ships (closes #632, closes #633)
+
+- **The test-group floor moves to `bitcoin-core-rpc>=2026.8.29`**, for
+  `call_raw`, `call_batch` and `SessionTransport`.
+- **`tests/functional/rpc/*.py`'s hand-rolled `requests.post` envelopes
+  are built through `BitcoinCoreRpcClient.call_raw` wherever it can
+  express the case** -- the protocol marker as an argument, the reply
+  read exactly as far as `call_raw` reads before interpreting it. What
+  stays on `tests/__init__.py`'s own `post` helper: a request missing
+  `method` or `id`, since `call_raw` always carries both; a `method`
+  that is not a string, since `call_raw` refuses to build one; and the
+  bare `[]` empty batch, which neither `call_raw` (one object per post)
+  nor `call_batch` (refuses an empty `calls`) can send. No well-formed,
+  multi-member batch is posted anywhere in the suite, so `call_batch`
+  itself has no existing case to convert.
+- **`requests` is gone from the `test` dependency group.** `post` is
+  rebuilt on `bitcoin_core_rpc.http_request`, the same seam `call_raw`
+  itself posts through, so a raw envelope no longer needs a second HTTP
+  client to stay raw. `types-requests` goes with it from `lint`.
+- **`tests/integration/conftest.py`'s `Bitcoind` wrapper drives its
+  client through a `SessionTransport`.** A real bitcoind keeps an rpc
+  connection alive across calls, unlike this node's own listener, and
+  `reorg_test.py` and `backpressure_test.py` each submit their chain
+  one `bitcoind.rpc` call per block. Measured directly against a live
+  regtest bitcoind, one connection kept open across many sequential
+  calls answers each measurably faster than a fresh connection would;
+  neither integration module's own wall time moves, both being
+  dominated by bitcoind's own block validation rather than by the rpc
+  round trip.
+- **A functional test drives several calls through one `SessionTransport`
+  against this node's own listener and pins what it does with the
+  connection**: `RpcConnection.async_send` closes its socket
+  unconditionally after every reply, with no idling and no keep-alive
+  for `SessionTransport`'s own probe to find, so the transport
+  reconnects on every call rather than reusing one -- the harness stays
+  on the default transport here, the measurement above being what
+  argues for `SessionTransport` at the integration client and not for
+  the functional one.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

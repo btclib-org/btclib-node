@@ -10,10 +10,8 @@ is held in the mempool -- and checks `BitcoinCoreFetcher.get_tx` against
 this node unchanged.
 """
 
-import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-import requests
 from bitcoin_core_rpc import BitcoinCoreRpcClient
 from btclib.fetch.bitcoin_core import BitcoinCoreFetcher
 
@@ -22,6 +20,7 @@ from btclib_node.constants import COINBASE_MATURITY, NodeStatus
 from tests import (
     generate_random_chain,
     generate_random_transaction,
+    rpc_client,
     wait_until,
     wait_until_listening,
 )
@@ -40,6 +39,7 @@ def test_add_tx(rpc_node: Node) -> None:
     reports the parent's own presence.
     """
     node = rpc_node
+    client = rpc_client(node)
 
     wait_until_listening(node.rpc_manager)
     # COINBASE_MATURITY long -- exactly that and no more, so nothing in
@@ -58,152 +58,57 @@ def test_add_tx(rpc_node: Node) -> None:
 
     invalid_tx = generate_random_transaction()
 
-    response = json.loads(
-        requests.post(
-            url=f"http://127.0.0.1:{node.rpc_port}",
-            data=json.dumps(
-                {
-                    "jsonrpc": "1.0",
-                    "id": "pytest",
-                    "method": "testmempoolaccept",
-                    "params": [["00"]],
-                }
-            ).encode(),
-            headers={"Content-Type": "text/plain"},
-            timeout=2,
-        ).text
-    )
-    assert not response["result"][0]["allowed"]
-    assert response["result"][0]["reject-reason"] == "Invalid serialization"
+    def accept(*hexes: str) -> Any:
+        _, body = client.call_raw(
+            "testmempoolaccept", [list(hexes)], jsonrpc="1.0", request_timeout=2
+        )
+        return body["result"][0]
 
-    response = json.loads(
-        requests.post(
-            url=f"http://127.0.0.1:{node.rpc_port}",
-            data=json.dumps(
-                {
-                    "jsonrpc": "1.0",
-                    "id": "pytest",
-                    "method": "testmempoolaccept",
-                    "params": [[invalid_tx.serialize(include_witness=True).hex()]],
-                }
-            ).encode(),
-            headers={"Content-Type": "text/plain"},
-            timeout=2,
-        ).text
-    )
-    assert not response["result"][0]["allowed"]
-    assert response["result"][0]["reject-reason"] == "Missing prevouts"
+    result = accept("00")
+    assert not result["allowed"]
+    assert result["reject-reason"] == "Invalid serialization"
+
+    result = accept(invalid_tx.serialize(include_witness=True).hex())
+    assert not result["allowed"]
+    assert result["reject-reason"] == "Missing prevouts"
 
     tx1 = generate_random_transaction(chain[0].transactions[0].id)
     tx2 = generate_random_transaction(tx1.id)
 
-    response = json.loads(
-        requests.post(
-            url=f"http://127.0.0.1:{node.rpc_port}",
-            data=json.dumps(
-                {
-                    "jsonrpc": "1.0",
-                    "id": "pytest",
-                    "method": "testmempoolaccept",
-                    "params": [[tx1.serialize(include_witness=True).hex()]],
-                }
-            ).encode(),
-            headers={"Content-Type": "text/plain"},
-            timeout=2,
-        ).text
-    )
-    assert response["result"][0]["allowed"]
+    result = accept(tx1.serialize(include_witness=True).hex())
+    assert result["allowed"]
 
-    response = json.loads(
-        requests.post(
-            url=f"http://127.0.0.1:{node.rpc_port}",
-            data=json.dumps(
-                {
-                    "jsonrpc": "1.0",
-                    "id": "pytest",
-                    "method": "testmempoolaccept",
-                    "params": [[tx2.serialize(include_witness=True).hex()]],
-                }
-            ).encode(),
-            headers={"Content-Type": "text/plain"},
-            timeout=2,
-        ).text
-    )
-    assert not response["result"][0]["allowed"]
-    assert response["result"][0]["reject-reason"] == "Missing prevouts"
+    result = accept(tx2.serialize(include_witness=True).hex())
+    assert not result["allowed"]
+    assert result["reject-reason"] == "Missing prevouts"
 
-    response = json.loads(
-        requests.post(
-            url=f"http://127.0.0.1:{node.rpc_port}",
-            data=json.dumps(
-                {
-                    "jsonrpc": "1.0",
-                    "id": "pytest",
-                    "method": "sendrawtransaction",
-                    "params": [tx1.serialize(include_witness=True).hex()],
-                }
-            ).encode(),
-            headers={"Content-Type": "text/plain"},
-            timeout=2,
-        ).text
+    _, body = client.call_raw(
+        "sendrawtransaction",
+        [tx1.serialize(include_witness=True).hex()],
+        jsonrpc="1.0",
+        request_timeout=2,
     )
-    assert response["result"] == tx1.id.hex()
+    assert body["result"] == tx1.id.hex()
 
     # one whose prevouts are nowhere -- not in the chain, not in the
     # mempool -- is answered with an error, not with the txid of
     # something this node has neither kept nor sent
-    response = json.loads(
-        requests.post(
-            url=f"http://127.0.0.1:{node.rpc_port}",
-            data=json.dumps(
-                {
-                    "jsonrpc": "1.0",
-                    "id": "pytest",
-                    "method": "sendrawtransaction",
-                    "params": [invalid_tx.serialize(include_witness=True).hex()],
-                }
-            ).encode(),
-            headers={"Content-Type": "text/plain"},
-            timeout=2,
-        ).text
+    _, body = client.call_raw(
+        "sendrawtransaction",
+        [invalid_tx.serialize(include_witness=True).hex()],
+        jsonrpc="1.0",
+        request_timeout=2,
     )
-    assert "result" not in response
-    assert response["error"]["code"] == -25
-    assert response["error"]["message"] == "Missing prevouts"
+    assert "result" not in body
+    assert body["error"]["code"] == -25
+    assert body["error"]["message"] == "Missing prevouts"
 
-    response = json.loads(
-        requests.post(
-            url=f"http://127.0.0.1:{node.rpc_port}",
-            data=json.dumps(
-                {
-                    "jsonrpc": "1.0",
-                    "id": "pytest",
-                    "method": "getmempoolinfo",
-                }
-            ).encode(),
-            headers={"Content-Type": "text/plain"},
-            timeout=2,
-        ).text
-    )
-    assert response["result"]["size"] == 1
+    _, body = client.call_raw("getmempoolinfo", jsonrpc="1.0", request_timeout=2)
+    assert body["result"]["size"] == 1
 
     # Now that the transaction is in the mempool it should not fail
-    response = json.loads(
-        requests.post(
-            url=f"http://127.0.0.1:{node.rpc_port}",
-            data=json.dumps(
-                {
-                    "jsonrpc": "1.0",
-                    "id": "pytest",
-                    "method": "testmempoolaccept",
-                    "params": [[tx2.serialize(include_witness=True).hex()]],
-                }
-            ).encode(),
-            headers={"Content-Type": "text/plain"},
-            timeout=2,
-        ).text
-    )
-    assert response["result"][0]["allowed"]
+    result = accept(tx2.serialize(include_witness=True).hex())
+    assert result["allowed"]
 
 
 def test_get_raw_transaction_is_what_btclib_s_fetcher_gets(rpc_node: Node) -> None:
@@ -211,8 +116,8 @@ def test_get_raw_transaction_is_what_btclib_s_fetcher_gets(rpc_node: Node) -> No
 
     The mempool is the only source this fetcher's own call can reach --
     it never passes a blockhash -- so this is the shape #21 actually
-    asks for, and not the wider `getrawtransaction` this file's own raw
-    requests already cover through `params`.
+    asks for, and not the wider `getrawtransaction` this file's own
+    `call_raw` calls already cover through `params`.
     """
     node = rpc_node
     wait_until_listening(node.rpc_manager)
@@ -228,24 +133,22 @@ def test_get_raw_transaction_is_what_btclib_s_fetcher_gets(rpc_node: Node) -> No
     wait_until(lambda: len(block_index.active_chain) == len(chain) + 1)
 
     tx = generate_random_transaction(chain[0].transactions[0].id)
-    requests.post(
-        url=f"http://127.0.0.1:{node.rpc_port}",
-        data=json.dumps(
-            {
-                "jsonrpc": "1.0",
-                "id": "pytest",
-                "method": "sendrawtransaction",
-                "params": [tx.serialize(include_witness=True).hex()],
-            }
-        ).encode(),
-        timeout=2,
-    )
 
+    # no cookie file on disk here, so credentials rather than
+    # `cookie_path` -- this node checks neither, having no
+    # authentication of its own (#27's own finding)
     client = BitcoinCoreRpcClient(
         f"http://127.0.0.1:{node.rpc_port}",
         user="pytest",
         password="pytest",  # noqa: S106
     )
+    client.call_raw(
+        "sendrawtransaction",
+        [tx.serialize(include_witness=True).hex()],
+        jsonrpc="1.0",
+        request_timeout=2,
+    )
+
     fetcher = BitcoinCoreFetcher(client, network="regtest")
     fetched = fetcher.get_tx(tx.id)
     assert fetched.id == tx.id

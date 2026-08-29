@@ -4,11 +4,8 @@
 
 """The stop RPC, and a node's own shutdown through it, over a real node."""
 
-import json
 import time
 from typing import TYPE_CHECKING
-
-import requests
 
 from btclib_node import Node
 from btclib_node.chains import RegTest
@@ -18,6 +15,7 @@ from btclib_node.rpc.manager import RpcManager
 from tests import (
     generate_random_chain,
     get_random_port,
+    rpc_client,
     wait_until,
     wait_until_listening,
 )
@@ -45,22 +43,9 @@ def test_init(tmp_path: Path) -> None:
 
     wait_until_listening(node.rpc_manager)
 
-    response = json.loads(
-        requests.post(
-            url=f"http://127.0.0.1:{node.rpc_port}",
-            data=json.dumps(
-                {
-                    "jsonrpc": "1.0",
-                    "id": "pytest",
-                    "method": "stop",
-                }
-            ).encode(),
-            headers={"Content-Type": "text/plain"},
-            timeout=2,
-        ).text
-    )
+    _, body = rpc_client(node).call_raw("stop", jsonrpc="1.0", request_timeout=2)
 
-    assert response["result"] == "Btclib node stopping"
+    assert body["result"] == "Btclib node stopping"
 
     node.stop()
 
