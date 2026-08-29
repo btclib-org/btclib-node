@@ -1233,6 +1233,34 @@ where this file was written rather than where anything was tagged.
   throughput: the UTXO store is the larger half in wall clock and is
   serial regardless of the interpreter build (issue #576).
 
+### pypi-install installs from the index (closes #502, closes #287)
+
+- **`.github/workflows/pypi-install.yml` installs `btclib-node` from PyPI
+  weekly, at this repository's own slot in section 10's calendar, and
+  checks it past a bare import.** A bare import cannot see this
+  package's own runtime path: `btclib[secp256k1]` is an unconditional
+  dependency, and a broken pair on the index degrades silently to the
+  Python arithmetic rather than failing, so one step asserts the
+  bindings serve and a second builds and starts a `Node` on regtest, the
+  same shape `tests/conftest.py`'s own `node_context` already exercises
+  against a source tree. The image matrix is every platform this
+  repository's own `os-*` sentinels already sample, `windows-latest`
+  included: a stranger can install this from the index regardless of
+  what `pyproject.toml`'s classifiers claim, and `os-windows.yml`'s own
+  accepted-red convention is what that cell inherits rather than
+  re-decides.
+- **`release.yml`'s `publish-pypi` job calls the new workflow instead of
+  carrying its own inline install-and-import check**, `needs:
+  publish-pypi` paired with its own `always()` and an explicit
+  `needs.publish-pypi.result == 'success'` -- a bare `needs:` here reads
+  back through `publish-pypi`'s own `needs:` to `public-api` two hops
+  away, which a real breaking-change failure there would then skip
+  silently despite `publish-pypi` itself having succeeded
+  (btclib-org/btclib#1470 is where that shape was measured on a tag).
+  `publish-testpypi` uploads and stops, with no install-verify step of
+  its own: `pypi-install.yml` reads `pypi.org` and has nothing to say
+  about `test.pypi.org`, matching every other repository that publishes.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

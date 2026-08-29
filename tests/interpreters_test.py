@@ -76,11 +76,11 @@ _NAMES_ONE = (
     ".github/workflows/os-macos.yml",
     ".github/workflows/os-ubuntu.yml",
     ".github/workflows/os-windows.yml",
-    # release.yml joined this list with btclib-org/btclib-node#543: its
-    # two publish jobs install the published package from the index and
-    # import it, and the runner's own default is below this project's
-    # `requires-python`, so each names the interpreter uv resolves for
-    ".github/workflows/release.yml",
+    # pypi-install.yml installs the published package from the index and
+    # imports it, the runner's own default interpreter being below this
+    # project's `requires-python`, so it names the one uv resolves
+    # (btclib-org/btclib-node#502)
+    ".github/workflows/pypi-install.yml",
     ".github/workflows/test.yml",
 )
 

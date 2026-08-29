@@ -411,86 +411,11 @@ jobs:
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           repository-url: https://test.pypi.org/legacy/
-      # Inlined here rather than in a pypi-install.yml of its own, which
-      # is where btclib, btclib-secp256k1 and bitcoin-core-rpc each put
-      # their post-publish check: that file reads the index, so it has
-      # nothing to look at until something has been published, and this
-      # repository is cutting its first release. btclib-org/.github#488
-      # is where the organization's own silence on where this check
-      # lives is being settled; moving it there is #502's, once the
-      # index holds a release for it to install.
-      # the smoke test runs again here, without constraints, after the
-      # upload rather than before: installing a dependency executes its
-      # code, and a compromised one must not reach a dist/ still to be
-      # handed on. test.yml's own smoke test installs the wheel this job
-      # just uploaded, --no-deps and metadata-only for the reason beside
-      # it (issue #381: PyPI's own btclib does not satisfy this tree's
-      # floor yet); this one resolves the real dependency graph from the
-      # index, which is why it is not run there -- it will fail exactly
-      # as a real install would until #381 closes, and closing #381 is
-      # what makes this step meaningful rather than what makes it exist
-      # the runner carries no uv, and the step below is the only thing in
-      # either publish job that needs one: these jobs download an
-      # artifact and call an action, where every other job in these
-      # workflows reaches uv through a `uses:` of its own. Caching off,
-      # as in version-check above and for the same reason -- this is a
-      # job holding an OIDC token an index accepts, so it downloads
-      # afresh rather than trusting a cache entry another run wrote.
-      # btclib-org/btclib-node#541 is where its absence was measured: a
-      # rehearsal uploaded, then exited 127 on `uv: command not found`,
-      # which on a tag push would have left a published version with
-      # `attest` and `github-release` skipped behind it
-      - name: Setup uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          enable-cache: false
-      # --python 3.14 and not the runner's own: `requires-python` here is
-      # >=3.14 and ubuntu-latest defaults to 3.12, so uv resolves against
-      # an interpreter the published package excludes and reports the
-      # requirement as unsatisfiable -- after the upload, this step
-      # running where it does. btclib-org/btclib-node#543 is where that
-      # was measured, on the rehearsal that #542's own fix first let get
-      # this far. RELEASING.md's *Rebuild a release from its tag* already
-      # named an interpreter for the same reason
-      - name: Install from TestPyPI and use it
-        run: |
-          # read off the wheel this job just published rather than
-          # redeclared: neither this job nor the download step above
-          # ever checked pyproject.toml out, and the wheel's own name is
-          # {distribution}-{version}-... regardless
-          wheel=$(basename dist/*.whl)
-          version=$(echo "$wheel" | cut -d- -f2)
-          # the index does not serve a new file the instant the upload
-          # returns, and it is served through a cache whose edges
-          # disagree: btclib-org/btclib-node#546 is the race, and
-          # btclib-org/btclib-node#548 is what a probe in front of it
-          # got wrong -- a `curl` GET confirmed the version and `uv`
-          # failed on it one second later, the two not being served the
-          # same index.
-          # So the retry wraps the resolution itself. What is retried is
-          # the operation this step exists to perform, so a pass means
-          # that operation passed rather than that a proxy for it did.
-          # --refresh because the CDN is not the only cache in the path:
-          # uv keeps its own copy of an index response, and a resolution
-          # that failed once must not be answered from it.
-          # btclib-org/btclib's own pypi-install.yml waits against a
-          # failure this tree cannot have, its step installing whatever
-          # the resolver picks so that starting early tests the previous
-          # version and reports a pass for it; the `==$version` here
-          # makes that a loud failure, and this retry makes it neither
-          for attempt in $(seq 20); do
-            if uv run --isolated --no-project --python 3.14 --refresh \
-                --index https://test.pypi.org/simple/ \
-                --index-strategy unsafe-best-match \
-                --with "btclib-node==$version" \
-                python -c "from btclib_node import Node; print(Node)"; then
-              exit 0
-            fi
-            echo "attempt $attempt: $version is not installable yet"
-            sleep 15
-          done
-          echo "::error::$version never became installable from the index"
-          exit 1
+      # No install-verify step here, matching every other repository
+      # that publishes: pypi-install.yml, below the pypi-install job past
+      # publish-pypi, reads pypi.org and has nothing to say about
+      # test.pypi.org, a rehearsal being a check on the publish step
+      # itself rather than on what the index then serves
 
   publish-pypi:
     name: Publish to PyPI
@@ -522,39 +447,30 @@ jobs:
       # generates PEP 740 attestations by default
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
-      # the same reason as the TestPyPI job's own step above: this
-      # asserts against the index rather than against a wheel this job
-      # already trusted. A scheduled sentinel that asks the same
-      # question on its own cadence is left to btclib-org/btclib-node#287
-      # the same, and for the same reason: see publish-testpypi's own
-      # comment above
-      - name: Setup uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          enable-cache: false
-      # the interpreter is named here for the reason publish-testpypi's
-      # own comment gives, and this is the copy that matters: this step
-      # runs after PyPI has the files
-      - name: Install from PyPI and use it
-        run: |
-          wheel=$(basename dist/*.whl)
-          version=$(echo "$wheel" | cut -d- -f2)
-          # the same retry publish-testpypi's own comment argues for,
-          # on this job's own index and with no `--index` flag, PyPI
-          # being uv's default. This is the copy that matters: PyPI has
-          # accepted the filename by the time this runs and will never
-          # accept it again
-          for attempt in $(seq 20); do
-            if uv run --isolated --no-project --python 3.14 --refresh \
-                --with "btclib-node==$version" \
-                python -c "from btclib_node import Node; print(Node)"; then
-              exit 0
-            fi
-            echo "attempt $attempt: $version is not installable yet"
-            sleep 15
-          done
-          echo "::error::$version never became installable from the index"
-          exit 1
+
+  # what RELEASING.md used to ask for by hand: the sentinel on what the
+  # index serves, against the version this run just published. It waits
+  # for the file to be served before installing, so it cannot pass by
+  # testing the previous release, and it runs beside github-release
+  # rather than before it -- a release announcing files that do not
+  # install is worse than a release announced a minute later, but the
+  # announcement is not what makes them installable
+  pypi-install:
+    name: Run the pypi-install workflow
+    needs: publish-pypi
+    # publish-pypi's own always() opts it back in past public-api's
+    # designed failure, but does not carry this job with it: a bare
+    # needs: here still reads back through publish-pypi's own needs:,
+    # public-api two hops away skipping this job even though its one
+    # listed dependency succeeded -- measured on a sibling repository's
+    # own copy of this file (btclib-org/btclib#1470), where the sentinel
+    # never ran on the tag that followed #1461's own fix to publish-pypi
+    # itself. Guarded against here from this job's first day rather than
+    # after it recurs
+    if: always() && needs.publish-pypi.result == 'success'
+    uses: ./.github/workflows/pypi-install.yml
+    with:
+      version: ${{ github.ref_name }}
 
   # the same files reach users by two routes and only one of them carried
   # provenance: the publish action above generates PEP 740 attestations
