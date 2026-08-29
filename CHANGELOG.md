@@ -2024,6 +2024,33 @@ where this file was written rather than where anything was tagged.
   path, measured directly by opening a `Node` against a directory
   copied this way.
 
+### db.py records that a closed store's LOCK releases synchronously (issue #703)
+
+- **`src/btclib_node/db.py`'s lock section says what `close()` does to
+  the directory `LOCK`, source to source, and what one Windows run
+  measured.** [ISS 703](https://github.com/btclib-org/btclib-node/issues/703)
+  was filed on one `windows-latest` run of a branch of #683 in which
+  the three `LOCK` files were still held immediately after every
+  store's own `close()` had returned. Read at the versions `uv.lock`
+  pins -- `rocksdict` 0.3.29, its `rust-rocksdb` fork at
+  Congyuwang/rust-rocksdb@4cf3c68a993b807bc54ff1c5293cdf49e62aaf72,
+  RocksDB at facebook/rocksdb@44e95d8af5d7ec503b3f1d5754c3379ab6c29a9d
+  -- every link from `Rdict.close()` to `::CloseHandle` on the lock is a
+  synchronous call on the calling thread: `DbReferenceHolder::close`
+  drops the last `Arc` clone, `DBCommon::drop` reaches
+  `ffi::rocksdb_close`, `DBImpl::CloseHelper` waits out background
+  compaction and flush before `env_->UnlockFile`, and
+  `WinFileSystem::UnlockFile` is a bare `delete` into
+  `WinFileLock::~WinFileLock`. Measured once on `windows-latest` with a
+  bounded, timed retry around a reopen straight after `close()` (run
+  33274969391): reopened at the first attempt, in 0.091 s. Nothing here
+  is deferred to a background thread or to the garbage collector, so
+  the one held lock reads as contention on a loaded runner rather than
+  a defect this tree or `rocksdict` owes a fix for; the issue is closed
+  on that measurement and the section records it, so the next reader
+  of a `WinError 32` on a `LOCK` file starts from the trace rather than
+  from the guess.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
