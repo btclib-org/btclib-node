@@ -2091,6 +2091,48 @@ where this file was written rather than where anything was tagged.
   failing standalone on, at a load issue #664 had read as ordinary
   contention** -- that docstring is corrected to say so.
 
+### A 2 s wait's own bound survives a kernel tick (closes #704)
+
+- **`test_send_and_wait_gives_up_rather_than_blocking_forever` asserts
+  `waited >= 2 - _WINDOWS_TIMER_TICK`, not `waited >= 2`**, after two
+  Windows runs failed at `1.9998... >= 2`, a few hundred microseconds
+  short. `send_and_wait`'s `future.result(timeout=2)` reaches
+  `_thread.lock.acquire(True, 2)`, which CPython 3.14 implements as
+  `lock_PyThread_acquire_lock` (`Modules/_threadmodule.c:814-833`)
+  calling `_PyMutex_LockTimed` (`Python/lock.c:53`, read at
+  python/cpython@v3.14.0) -- not the legacy `PyThread_acquire_lock_timed`
+  in `Python/thread_nt.h` that an earlier version of this fix cited,
+  which `_thread.Lock` no longer reaches in 3.14. `_PyMutex_LockTimed`'s
+  own deadline reads `PyTime_MonotonicRaw`
+  (`lock.c:67,148`; on Windows `QueryPerformanceCounter`,
+  `Python/pytime.c:1065-1090`), the same clock `time.monotonic()`
+  itself reads (`PyTime_Monotonic`, `pytime.c:1223-1225`) -- so the
+  lock's own deadline and the test's own measurement are not two
+  different clocks, contrary to that earlier fix's own claim. On
+  Windows the wait parks through `_PyParkingLot_Park` into
+  `_PySemaphore_PlatformWait`, which calls `WaitForMultipleObjects`
+  (`Python/parking_lot.c:95-133`, the call at `:130`) with a
+  millisecond count from `_PyTime_AsMilliseconds(timeout,
+  _PyTime_ROUND_TIMEOUT)` (`parking_lot.c:105`) -- not
+  `WaitForSingleObject`. The real gap is one level deeper: between that
+  millisecond count and the interrupt-time tick clock the OS kernel
+  actually satisfies the wait against, which Microsoft's own Remarks
+  for `Sleep` describe for the same tick-based wait timer
+  (`WaitForMultipleObjects` documents no accuracy of its own): "The
+  system clock 'ticks' at a constant rate... If dwMilliseconds is
+  greater than one tick but less than two, the wait can be anywhere
+  between one and two ticks, and so on."
+  (<https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-sleep>).
+  A 2000ms wait can therefore be satisfied up to one tick early on the
+  QPC-backed clock `time.monotonic()` reads. `_WINDOWS_TIMER_TICK` is
+  set to 15.625ms, the documented default tick -- generous next to the
+  two measured shortfalls and small next to the two-second bound
+  itself. A review round caught the first version of this fix citing a
+  Windows call path (`Python/thread_nt.h`'s `WaitForSingleObject`) that
+  is real code at that sha but not the one `_thread.Lock` reaches in
+  3.14, and a "two clocks" story the source does not support -- fixed
+  here to the call path and deadline arithmetic actually traced.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
