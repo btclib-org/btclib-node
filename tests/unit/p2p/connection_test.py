@@ -19,7 +19,7 @@ from collections import deque
 from contextlib import suppress
 from importlib.metadata import version
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import pytest
 from btclib.hashes import hash256
@@ -449,6 +449,50 @@ def test_a_peer_that_hangs_up_is_dropped() -> None:
     assert not discouraged_of(connection)
 
 
+def test_a_reset_connection_is_dropped_not_raised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`sock_recv` raising is the same hangup an empty read is, not a crash.
+
+    `test_a_peer_that_hangs_up_is_dropped` above is the graceful half --
+    `theirs.close()` on a POSIX `socket.socketpair()`, a kernel-backed
+    pipe that always answers a local close with an empty read. What it
+    cannot reach on this platform is the other half `run`'s own `except
+    OSError` answers: a peer whose reset reaches `sock_recv` as a raised
+    `ConnectionResetError`/`ConnectionAbortedError` rather than an empty
+    `b""` -- `socket.socketpair()`'s own Windows fallback, a real TCP
+    loopback pair rather than a kernel pipe, answering exactly that way
+    to an abrupt `close()` (btclib-org/btclib-node#430) -- so `sock_recv`
+    is monkeypatched to raise it directly instead.
+    """
+
+    async def drive() -> tuple[Connection, bool]:
+        loop = asyncio.get_running_loop()
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        connection = a_running_connection(loop, ours)
+
+        async def reset(sock: socket.socket, nbytes: int) -> bytes:
+            raise ConnectionResetError
+
+        monkeypatch.setattr(loop, "sock_recv", reset)
+        task = asyncio.ensure_future(asyncio.sleep(60))
+        connection.task = task  # type: ignore[assignment]
+        await connection.run()
+        left_alone = not task.cancelling()
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+        theirs.close()
+        return connection, left_alone
+
+    connection, left_alone = asyncio.run(drive())
+    assert connection.status == P2pConnStatus.Closed
+    assert left_alone
+    # a reset connection is not one that broke the protocol either: #283
+    assert not discouraged_of(connection)
+
+
 def test_a_connections_own_task_cancelled_directly_still_closes_its_socket() -> None:
     """A cancelled `run` task still closes `self.client` on the way out.
 
@@ -625,6 +669,32 @@ def test_close_on_an_already_closed_socket_touches_neither_reader_nor_writer() -
     connection.loop = cast(
         "asyncio.AbstractEventLoop",
         SimpleNamespace(remove_reader=boom, remove_writer=boom),
+    )
+    connection._close()
+    assert client.fileno() == -1
+
+
+def test_close_still_closes_where_the_loop_has_no_reader_or_writer_to_remove() -> None:
+    """`_close` reaches `self.client.close()` where `remove_reader` raises.
+
+    Windows' own Proactor loop raises `NotImplementedError` from both
+    `remove_reader` and `remove_writer` unconditionally, registration or
+    none: `sock_recv`/`sock_sendall` never register either there, unlike
+    on a selector loop, so this is not a registration `_close` has to
+    reach the selector to undo, only a call this loop family answers by
+    raising rather than by no-op (btclib-org/btclib-node#430). The stub
+    loop below reproduces that shape on this platform, which does not
+    carry it.
+    """
+    client = socket.socket()
+    connection, _ = a_connection(client)
+
+    def not_implemented(_fd: int) -> NoReturn:
+        raise NotImplementedError
+
+    connection.loop = cast(
+        "asyncio.AbstractEventLoop",
+        SimpleNamespace(remove_reader=not_implemented, remove_writer=not_implemented),
     )
     connection._close()
     assert client.fileno() == -1

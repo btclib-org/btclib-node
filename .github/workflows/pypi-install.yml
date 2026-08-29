@@ -240,12 +240,16 @@ jobs:
       # gets created, both listeners bound on regtest's fixed ports and
       # closed again -- the one thing every functional test in this
       # repository already exercises against a source tree. On
-      # windows-latest this is expected to fail, and the failure is the
-      # output: os-windows.yml's own header already names
-      # `loop.add_reader`, which P2pManager and RpcManager both call, as
-      # unimplemented by the Proactor event loop that is Windows'
-      # default, and this step is what makes that reachable from the
-      # index rather than only from a checkout
+      # windows-latest this passes regardless of the listener defect
+      # issue #430 argues from a live run, not despite it: `P2pManager`
+      # and `RpcManager` each schedule `server` on a background thread
+      # through `run_coroutine_threadsafe`, and neither `node.start()`
+      # nor `node.stop()` below ever reads the `concurrent.futures.Future`
+      # that scheduling returns, so the `NotImplementedError`
+      # `loop.add_reader` used to raise there never reached this script
+      # at all -- this step's pass names nothing about whether the
+      # installed release's own listener actually accepts a connection,
+      # only that starting and stopping a `Node` does not raise
       - name: Verify a Node starts and stops on regtest
         shell: bash
         run: |

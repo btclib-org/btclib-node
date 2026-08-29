@@ -1649,6 +1649,42 @@ where this file was written rather than where anything was tagged.
   before `manage_connections` is scheduled, rather than at
   construction time, when the gap to `start()` is unknown.
 
+### `P2pManager`/`RpcManager` accept off a task, not a reader (issue #430)
+
+- **`server`'s own accept loop no longer calls `loop.add_reader`**,
+  which Windows' default Proactor loop does not implement at all,
+  raising `NotImplementedError` on every bind. A task awaiting
+  `loop.sock_accept` in a retry loop replaces it, on both managers,
+  reachable by `stop`'s own `asyncio.all_tasks` sweep the same way the
+  reader callback's own shielded task was.
+- **That task's own failure is logged rather than left for asyncio's
+  "Task exception was never retrieved" warning**, timed to whenever the
+  garbage collector reaches it rather than to the failure itself:
+  `run` now attaches `_report_server_failure` to `server`'s own
+  scheduled task.
+- **`Connection._close` no longer raises where the loop it is closing
+  has no reader or writer to remove** -- `remove_reader`/`remove_writer`
+  share `add_reader`'s own absence on Proactor, so a connection's socket
+  went uncleaned on every close attempted there.
+- **`install_signal_handlers` no longer registers `SIGTSTP`
+  unconditionally** -- the signal does not exist on Windows, and the
+  bare `signal.signal` call raised `AttributeError` looking it up before
+  ever reaching `signal.signal`.
+- **`Connection.run`'s read loop treats a `sock_recv` that raises
+  `OSError` -- `ConnectionResetError`, `ConnectionAbortedError` -- the
+  same hangup an empty read already was**, rather than letting it
+  propagate: `socket.socketpair()`'s own Windows fallback, a real TCP
+  loopback pair rather than a kernel-backed one, answers an abrupt local
+  close with a hard reset a POSIX pair never sends, matching Core's own
+  `SocketHandler` treating every `Recv` failure that is not
+  `WOULDBLOCK`/`MSGSIZE`/`EINTR`/`EINPROGRESS` as a disconnect rather
+  than a crash.
+- **The gate cell and classifier `os-windows.yml`'s own header points
+  at stay this issue's rather than landing here**: dispatched runs
+  against this branch still fail on real-node functional tests unrelated
+  to this listener defect, filed as their own issues rather than guessed
+  at here, so this closes none of what #430 asks for closed.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

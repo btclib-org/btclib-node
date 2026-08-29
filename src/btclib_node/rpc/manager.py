@@ -17,6 +17,7 @@ import asyncio
 import socket
 import threading
 from collections import deque
+from concurrent.futures import CancelledError
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, override
 
@@ -79,10 +80,14 @@ class RpcManager(threading.Thread):
         # `server`'s own accept queue, kept here rather than only local
         # to `server`'s own frame so the two `manager_test.py` tests
         # naming btclib-org/btclib-node#391 can land a connection into
-        # the live queue directly -- the seam `loop.sock_accept`'s own
-        # future used to give their own predecessors before this fix
-        # replaced it. Nothing in this class reads it outside `server`
-        # itself.
+        # the live queue directly -- the seam a bare `await
+        # loop.sock_accept` gave their own predecessors before that fix,
+        # and gives `_accept_loop` again below
+        # (btclib-org/btclib-node#430): what changed is what fills the
+        # queue, a task rather than a reader callback, kept behind this
+        # same queue so `server`'s own consumption of it is unaffected.
+        # Nothing in this class reads it outside `server` and
+        # `_accept_loop`.
         self._accept_queue: (
             asyncio.Queue[tuple[socket.socket, tuple[str, int]]] | None
         ) = None
@@ -124,78 +129,102 @@ class RpcManager(threading.Thread):
         self.listening.set()
         return server_socket
 
-    def _accept_one(
+    async def _accept_loop(
         self,
         server_socket: socket.socket,
         accepted: asyncio.Queue[tuple[socket.socket, tuple[str, int]]],
     ) -> None:
-        """`server`'s own reader callback, a method rather than a closure.
+        """`server`'s own producer: one kernel accept at a time, queued.
 
-        A unit test can call it directly against a socket of its own --
-        real, or one that only duck-types `.accept()` -- to cover the
-        two exception arms without a live listener.
+        A unit test can land a connection directly in `accepted` --
+        `_accept_queue` is kept for exactly that, `server`'s own
+        docstring says where -- and cover this loop's `OSError` arm by
+        handing it a socket that only duck-types `.accept()`, without a
+        live listener.
+
+        `loop.sock_accept` retries a `BlockingIOError`/`InterruptedError`
+        internally on both loop families this node runs on (a selector
+        loop's own reader callback, a Windows Proactor loop's overlapped
+        `AcceptEx`) and raises anything else -- `ECONNABORTED` being the
+        ordinary way, a peer resetting the connection between the kernel
+        reporting it readable and the accept reaching it -- which is what
+        the `except OSError` below answers exactly as `server`'s own
+        former reader callback used to.
+
+        `sock_accept`'s own internal future is already resolved with
+        that exception by the time this coroutine's `await` reaches it
+        where the failure is synchronous rather than a readiness wait --
+        an unbound or otherwise permanently broken socket being the
+        degenerate case -- so nothing suspends this task between one
+        attempt and the next unless something makes it: the `sleep(0)`
+        below is that yield, without which this loop would spin the
+        thread's CPU core solid on such a socket and could never be
+        cancelled, `Task.cancel` reaching a task only on its next step.
         """
-        try:
-            sock, sockaddr = server_socket.accept()
-        except BlockingIOError, InterruptedError:
-            return
-        except OSError:
-            self.logger.exception("Accepting an inbound connection failed")
-            return
-        sock.settimeout(0.0)
-        accepted.put_nowait((sock, sockaddr))
+        while True:
+            try:
+                sock, sockaddr = await asyncio.get_running_loop().sock_accept(
+                    server_socket
+                )
+            except OSError:
+                self.logger.exception("Accepting an inbound connection failed")
+                await asyncio.sleep(0)
+                continue
+            sock.settimeout(0.0)
+            accepted.put_nowait((sock, sockaddr))
 
     async def server(
         self, loop: asyncio.AbstractEventLoop, server_socket: socket.socket
     ) -> None:
         """Accept connections off `server_socket` until cancelled by `stop`.
 
-        Registers `_accept_one` as `server_socket`'s own reader callback
-        and awaits `_accept_queue` for what it accepts, one `RpcConnection`
-        and one `conn.run` task per socket -- the queue, not a bare
-        `loop.sock_accept`, being what keeps a socket already accepted
-        from being discarded by a cancel landing between the accept and
-        this coroutine's own next step; see `_accept_queue`'s own
-        comment above for the history that forced it.
+        Awaits `_accept_queue` for what `_accept_loop`, a task of its
+        own, fills, one `RpcConnection` and one `conn.run` task per
+        socket -- rather than a bare `await loop.sock_accept(server_socket)`
+        right here, which does not have the property the comment below
+        argues for.
         """
         with server_socket:
-            # A plain reader callback stores what it accepts in a
-            # queue: the socket sits in a plain deque the instant
-            # `on_readable` runs, a callback rather than a task and so
-            # never itself a `Task.cancel` target, and the `finally`
-            # below closes whatever cancellation leaves in the queue --
-            # `server`'s own task included -- on whichever pass reaches
-            # it.
+            # The queue is what keeps a shutdown from discarding an
+            # already-accepted socket reaching `server`'s own consumption
+            # below: an item lands in its deque through `put_nowait`, a
+            # plain call rather than an await, so nothing this
+            # coroutine's own suspension on `accepted.get()` is cancelled
+            # out of can ever lose an item already there -- the `finally`
+            # closes whatever is left in it on whichever pass reaches
+            # this task. That half of btclib-org/btclib-node#391 still
+            # holds exactly as it did.
             #
-            # A bare `await loop.sock_accept(server_socket)` does not
-            # have that property: that call's own future can already
-            # carry a connection when something cancels the task
-            # suspended on it, and `Task.cancel` cannot cancel a future
-            # that is already done -- it throws `CancelledError` in on
-            # the next step regardless, discarding whatever the kernel
-            # handed over with nothing left holding it. Wrapping that
-            # await in a task of its own, shielded from an outer cancel,
-            # is what btclib-org/btclib-node#323 fixed this discard with
-            # for a cancel arriving through this coroutine's own await;
-            # it could not fix a cancel reaching that inner task
-            # directly, which is what `stop`'s own blanket sweep over
-            # `asyncio.all_tasks` does on every call, and no fixed
-            # number of grace steps before that sweep closes the gap --
-            # the kernel is free to resolve the future in the exact
-            # window between a check and the cancel that follows it
-            # (btclib-org/btclib-node#391, `P2pManager.server`'s own
-            # identical fix, btclib-org/btclib-node#386, measured
-            # against a live listener under load rather than only the
-            # deterministic race the tests construct).
+            # What no longer holds is the other half, for `_accept_loop`
+            # itself: `loop.add_reader`, which #391 chose over
+            # `loop.sock_accept` because the reader callback it registers
+            # is never itself a `Task.cancel` target, is not implemented
+            # by Windows' own default Proactor loop
+            # (btclib-org/btclib-node#430) -- so accepting there has to
+            # go back through a task awaiting `loop.sock_accept`, and
+            # that task is reachable by `stop`'s own blanket sweep over
+            # `asyncio.all_tasks` exactly as #323's shielded task was:
+            # `Task.cancel` cannot cancel a future that is already done,
+            # so a cancel landing in the narrow window between the
+            # kernel resolving one `sock_accept` and `_accept_loop`'s own
+            # next step still throws `CancelledError` in regardless,
+            # before that socket ever reaches `put_nowait`. CPython's own
+            # reference counting is what bounds the cost of that window
+            # rather than eliminating it: nothing else holds the
+            # discarded socket once its frame unwinds, so it is closed by
+            # its own `__del__` -- a `ResourceWarning`, not a leaked
+            # descriptor -- in place of the graceful close `finally`
+            # gives every item that did reach the queue. A client that
+            # dials in that exact instant of shutdown loses the
+            # connection it just opened; nothing during ordinary
+            # operation reaches this window at all, `_accept_loop` never
+            # otherwise stopping. `P2pManager.server` carries the
+            # identical fix, for the identical reason.
             accepted: asyncio.Queue[tuple[socket.socket, tuple[str, int]]] = (
                 asyncio.Queue()
             )
             self._accept_queue = accepted
-
-            def on_readable() -> None:
-                self._accept_one(server_socket, accepted)
-
-            loop.add_reader(server_socket.fileno(), on_readable)
+            accept_task = loop.create_task(self._accept_loop(server_socket, accepted))
             try:
                 while True:
                     client, _ = await accepted.get()
@@ -206,10 +235,53 @@ class RpcManager(threading.Thread):
                     )
                     conn.task = task
             finally:
-                loop.remove_reader(server_socket.fileno())
+                # Already cancelled directly by `stop`'s own sweep
+                # whenever that is how this task ends too -- both are in
+                # the same `asyncio.all_tasks` snapshot -- so this is for
+                # the caller that cancels `server` alone, such as a test
+                # exercising it outside `stop`, where nothing else would
+                # ever join this task.
+                accept_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await accept_task
                 self._accept_queue = None
                 while not accepted.empty():
                     accepted.get_nowait()[0].close()
+
+    def _report_server_failure(self, future: Future[None]) -> None:
+        """Log what `server`'s own scheduled task ends on, loudly.
+
+        `run` below schedules `server` through `run_coroutine_threadsafe`
+        and never awaits the `concurrent.futures.Future` it returns --
+        deliberately, `server` running for this manager's whole lifetime
+        rather than returning -- so an exception it raises before ever
+        reaching its own accept loop would otherwise surface only
+        through asyncio's own "Task exception was never retrieved"
+        warning: timed to whenever the garbage collector reaches that
+        future rather than to the failure itself, and written to the
+        `asyncio` logger rather than this node's own.
+        `btclib-org/btclib-node#88` fixed the identical shape for `_bind`
+        by making the bind synchronous instead, which `server` cannot be,
+        it being this manager's own listener for as long as it runs.
+
+        `stop`'s own sweep ending this task on purpose is not logged, in
+        two different ways depending on how the cancellation actually
+        unwound: the ordinary one is `future` itself in the cancelled
+        state, `Task.cancelled()` being true because `server` ended on
+        the exact `CancelledError` `Task.cancel()` threw in, which
+        `future.exception()` answers by raising rather than returning --
+        the `with suppress` below is what that arm is. The `isinstance`
+        arm below it is for a `CancelledError` `future.exception()`
+        returns instead of raising: `server`'s own coroutine chain
+        catching and re-raising a `CancelledError` that was not the one
+        `Task.cancel()` threw would leave `Task.cancelled()` false while
+        still ending on that same exception type, and this is what
+        keeps that from being logged as a failure too.
+        """
+        with suppress(CancelledError):
+            exc = future.exception()
+            if exc is not None and not isinstance(exc, asyncio.CancelledError):
+                self.logger.error("RPC listener's accept loop ended", exc_info=exc)
 
     @override
     def run(self) -> None:
@@ -222,7 +294,9 @@ class RpcManager(threading.Thread):
             self.logger.exception("Could not bind the RPC listener")
             raise
         self._server_socket = server_socket
-        asyncio.run_coroutine_threadsafe(self.server(loop, server_socket), loop)
+        asyncio.run_coroutine_threadsafe(
+            self.server(loop, server_socket), loop
+        ).add_done_callback(self._report_server_failure)
         loop.run_forever()
 
     def stop(self) -> None:
@@ -314,8 +388,12 @@ class RpcManager(threading.Thread):
         # `server`'s own shield; this loop's own former blanket sweep,
         # for one reaching that task directly). `server` no longer has
         # such a task to protect: what it accepts sits in a queue
-        # instead, immune to that discard regardless of when the cancel
-        # below reaches it (btclib-org/btclib-node#391). `stop_handle.cancel()`
+        # instead, and `server`'s own consumption of that queue is
+        # immune to that discard regardless of when the cancel below
+        # reaches it (btclib-org/btclib-node#391). `_accept_loop`'s own
+        # production side of the same queue is not -- `server`'s own
+        # docstring has the reason and the bound on what it costs
+        # (btclib-org/btclib-node#430). `stop_handle.cancel()`
         # above already closed the other reason an earlier version of
         # this step existed, a `RuntimeError` this loop could raise
         # running `pending`'s own already-scheduled tasks on a loop
