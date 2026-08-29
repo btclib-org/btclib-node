@@ -53,6 +53,8 @@ if TYPE_CHECKING:
 
     from btclib_node import Node
     from btclib_node.block_db import RevBlock
+    from btclib_node.chainstate.filter_index import FilterIndex
+    from btclib_node.chainstate.utxo_index import UtxoIndex
 
 __all__ = ["update_chain", "verify_mempool_acceptance"]
 
@@ -189,25 +191,61 @@ def _reconcile_mempool_for_reorg(
 # held-until-known-good treatment: the reverse patches add_rev_block
 # buffered during the trial only reach disk once the branch they belong
 # to is the one that connected. btclib-org/btclib-node#200
+#
+# block_index's own status change is staged, not written, on every
+# call -- stage_status rather than set_status -- and chainstate.flush
+# only runs once utxo_index.should_flush says the staged UTXO cache has
+# reached its own bound, writing block_index and filter_index in the
+# same batch the UTXO cache flushes in rather than once per block. This
+# is what btclib-org/btclib-node#586 is about, and db.py's own docstring
+# is where what a crash before that flush costs is decided: block_db's
+# own rev patches above are not held back the same way, and do not need
+# to be -- the docstring argues why. add_rev_block is idempotent against
+# a hash already on disk, which is what a redo after such a crash relies
+# on rather than anything special this function does for it.
 def _finalize_fork(node: Node, to_add: list[Block], to_remove: list[RevBlock]) -> None:
     block_index = node.chainstate.block_index
     utxo_index = node.chainstate.utxo_index
-    filter_index = node.chainstate.filter_index
     node.logger.debug("Start chainstate finalize")
     node.block_db.finalize()
-    with node.chainstate.db.write_batch() as wb:
-        for rev_block in to_remove:
-            block_index.remove_from_active_chain(rev_block.hash)
-            block_index.set_status(rev_block.hash, BlockStatus.valid, wb)
-            node.logger.debug("Removed block %s", rev_block.hash.hex())
-        for block in to_add:
-            block_hash = block.header.hash
-            block_index.add_to_active_chain(block_hash)
-            block_index.set_status(block_hash, BlockStatus.in_active_chain, wb)
-            node.logger.info("Added block %s", block_hash.hex())
-        utxo_index.finalize(wb)
-        filter_index.finalize(wb)
+    for rev_block in to_remove:
+        block_index.remove_from_active_chain(rev_block.hash)
+        block_index.stage_status(rev_block.hash, BlockStatus.valid)
+        node.logger.debug("Removed block %s", rev_block.hash.hex())
+    for block in to_add:
+        block_hash = block.header.hash
+        block_index.add_to_active_chain(block_hash)
+        block_index.stage_status(block_hash, BlockStatus.in_active_chain)
+        node.logger.info("Added block %s", block_hash.hex())
+    if utxo_index.should_flush():
+        node.chainstate.flush()
     node.logger.debug("End chainstate finalize")
+
+
+# update_chain's own trial marks, taken before a trial starts: should_flush
+# may have left utxo_index and filter_index each holding an earlier,
+# already-succeeded trial's own staged changes, unflushed, and a rollback
+# on failure must undo only what this trial itself stages --
+# UtxoIndex.trial_mark's own docstring argues why a blanket wipe is no
+# longer safe once staging survives more than one trial
+# (btclib-org/btclib-node#586).
+def _pre_trial_marks(
+    utxo_index: UtxoIndex, filter_index: FilterIndex
+) -> tuple[int, int]:
+    """Read the rollback marks this trial would undo to, if it fails."""
+    return utxo_index.trial_mark(), filter_index.trial_mark()
+
+
+# update_chain's own failure path: block_db whole, the other two back to
+# the marks _pre_trial_marks read before the trial started. block_db
+# needs no mark of its own: _finalize_fork calls block_db.finalize on
+# every success, unconditionally, so pending_rev_blocks is always empty
+# by the time a new trial starts.
+def _rollback_trial(node: Node, utxo_mark: int, filter_mark: int) -> None:
+    """Undo a failed trial, without touching an earlier trial's own staging."""
+    node.block_db.rollback()
+    node.chainstate.utxo_index.rollback(utxo_mark)
+    node.chainstate.filter_index.rollback(filter_mark)
 
 
 # update_chain's own leading gate: whether there is a fork to try at
@@ -470,6 +508,7 @@ def update_chain(node: Node) -> None:
     # invalidates below. Never set by the to_remove loop -- a rollback
     # failing there is not a new block being bad.
     failed_hash: bytes | None = None
+    utxo_mark, filter_mark = _pre_trial_marks(utxo_index, filter_index)
     # the block index's database write moves into the batch below and
     # nowhere in here: a status written on the way through reaches the
     # database before the branch is known to connect, and refusing the
@@ -516,9 +555,7 @@ def update_chain(node: Node) -> None:
             _finalize_fork(node, to_add, to_remove)
         else:
             node.logger.debug("Start chainstate rollback")
-            node.block_db.rollback()
-            utxo_index.rollback()
-            filter_index.rollback()
+            _rollback_trial(node, utxo_mark, filter_mark)
             node.logger.debug("End chainstate rollback")
 
     node.logger.info("End block validation")
@@ -589,9 +626,13 @@ def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
 
     for tx_in in tx.vin:
         prevout_bytes = tx_in.prev_out.serialize(check_validity=False)
-        serialized_coin = utxo_index.db.get(b"utxo-" + prevout_bytes)
-        if serialized_coin:
-            coin = Coin.parse(serialized_coin, check_validity=False)
+        # UtxoIndex.get_coin, and not a bare self.db.get: a coin several
+        # blocks' own worth of staging created or already spent is real
+        # before UtxoIndex.finalize ever writes it out, staying staged
+        # across more than one block being what btclib-org/btclib-node#586
+        # is about.
+        coin = utxo_index.get_coin(prevout_bytes)
+        if coin:
             coins_from_utxo_set.append(coin)
             prev_outputs.append(coin.tx_out)
             prevout_coins.append(coin)

@@ -10,7 +10,7 @@ validates against -- and the `block_db.RevBlock` a reorg away from this
 block would need to undo it.
 """
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from btclib.exceptions import BTClibValueError
 from btclib.tx.out_point import OutPoint
@@ -27,6 +27,43 @@ if TYPE_CHECKING:
 
 __all__ = ["UtxoIndex"]
 
+# What `_undo_log` records in place of a dict entry's own prior value,
+# for a key `_set` finds absent -- `None` cannot stand in for this, a
+# `Coin` being a legitimate value nothing else ever stores under a key
+# and `None` still being a distinct, real "was there" answer for the
+# set entries `_add` logs the same way.
+_UNSET = object()
+
+# how many entries removed_utxos and updated_utxo_set may hold together
+# before should_flush says it is time to write them out. In entries and
+# not in bytes: Core's own -dbcache bounds CCoinsViewCache in memory,
+# 450 MiB by default (validation.h, DEFAULT_DB_CACHE), but what backs
+# these two here is a pair of plain Python dicts, and a dict entry's
+# real footprint -- the Coin, the key, the object header, the table
+# slot -- is not one a reader can check the way an entry count can be
+# counted directly off should_flush's own two len() calls. A wrong
+# bound in entries costs memory or flushes; a wrong bound in bytes,
+# believed as bytes, costs a reader trusting an estimate nobody can
+# verify against the object it is about.
+#
+# Measured rather than estimated: 500,000 (serialized OutPoint, Coin)
+# pairs in a plain dict, built and held while `tracemalloc` traces the
+# process, come to about 229 MB -- the same order as Core's own 450 MiB
+# default above, and the bound this tree chose costs proportionately
+# less because `updated_utxo_set` never holds a whole UTXO set at once,
+# only what has connected since the last flush.
+#
+# 500,000, sized against the block this tree has actually measured
+# (btclib-org/btclib-node#586): height 964,000 staged 7,778 deletes and
+# 8,100 puts, 15,878 entries, so the bound holds a little over thirty
+# blocks that dense before a flush is due -- amortizing each flush's own
+# fixed cost (one write_batch, one BlockIndex/FilterIndex write) across
+# that many blocks instead of one. A block far earlier in the chain, an
+# order of magnitude smaller, holds proportionally more of them staged
+# at once, which is the other side of the same bound rather than a
+# second one: what it costs on a crash is argued in db.py's docstring.
+_FLUSH_BOUND = 500_000
+
 
 class UtxoIndex:
     """The set of spendable outputs, staged in memory until `finalize`.
@@ -34,7 +71,21 @@ class UtxoIndex:
     `removed_utxos` and `updated_utxo_set` hold what a batch of
     `add_block`/`apply_rev_block` calls has changed since the last
     `finalize`; the module docstring above is where `add_block`'s own
-    return value is argued.
+    return value is argued. The staging now survives more than one
+    block -- `should_flush` is what tells a caller it is time to stop
+    piling more of it on and write, and `db.py`'s docstring is where
+    what a crash before that costs is decided.
+
+    That survival is what makes `rollback` unable to stay a blanket
+    wipe: a trial `main.update_chain` rolls back may run against
+    staging several *earlier*, already-succeeded blocks left behind,
+    unflushed, and wiping the two dicts to empty would discard those
+    too -- state a failed trial never touched and has no claim over.
+    `_undo_log` is what tells the two apart: every mutation `add_block`
+    and `apply_rev_block` make is recorded there as it happens, and
+    `rollback(mark)` undoes only what was recorded since `mark`
+    (`trial_mark`'s own reading, taken before the trial that might fail
+    began), in reverse, leaving anything recorded before it standing.
     """
 
     def __init__(self, parent_db: KeyValueStore, logger: Logger) -> None:
@@ -43,6 +94,7 @@ class UtxoIndex:
 
         self.removed_utxos: set[bytes] = set()
         self.updated_utxo_set: dict[bytes, Coin] = {}
+        self._undo_log: list[tuple[dict[bytes, Any] | set[bytes], bytes, Any]] = []
 
         self.logger = logger
 
@@ -55,6 +107,18 @@ class UtxoIndex:
         so a transaction earlier in this same block being processed can
         never make a later one's check see its own not-yet-applied
         write.
+
+        Checking `removed_utxos` before `updated_utxo_set` is safe only
+        because the two are disjoint: no outpoint bytes value is ever
+        staged in both at once, because every `_put` call site in this
+        module -- `apply_rev_block`'s own `to_add` loop and both of
+        `add_block`'s own creation loops -- runs `_unmark_removed` on
+        that same key first. A key that reaches `_put` still marked
+        removed would otherwise answer `False` here on that account
+        alone, before this order ever reaches `updated_utxo_set` or the
+        store, hiding a genuine BIP30 duplicate of that prevout rather
+        than only the double-spend-guard failure `apply_rev_block`'s own
+        docstring names (btclib-org/btclib-node#586).
         """
         if out_point_bytes in self.removed_utxos:
             return False
@@ -79,6 +143,65 @@ class UtxoIndex:
                 if self._bip30_violation(out_point_bytes):
                     err_msg = "bad-txns-BIP30"
                     raise InvalidBlockInputError(err_msg)
+
+    def trial_mark(self) -> int:
+        """Return a point in the undo log a failed trial can be rolled back to.
+
+        Taken before `add_block`/`apply_rev_block` are ever called for
+        that trial; `rollback` undoes back to exactly this point,
+        `main.update_chain`'s own docstring above being the one caller.
+        """
+        return len(self._undo_log)
+
+    def _put(self, out_point_bytes: bytes, coin: Coin) -> None:
+        """`updated_utxo_set[out_point_bytes] = coin`, logged for `rollback`."""
+        self._undo_log.append(
+            (
+                self.updated_utxo_set,
+                out_point_bytes,
+                self.updated_utxo_set.get(out_point_bytes, _UNSET),
+            )
+        )
+        self.updated_utxo_set[out_point_bytes] = coin
+
+    def _pop(self, out_point_bytes: bytes) -> Coin:
+        """`updated_utxo_set.pop(out_point_bytes)`, logged for `rollback`."""
+        coin = self.updated_utxo_set.pop(out_point_bytes)
+        self._undo_log.append((self.updated_utxo_set, out_point_bytes, coin))
+        return coin
+
+    def _mark_removed(self, out_point_bytes: bytes) -> None:
+        """`removed_utxos.add(out_point_bytes)`, logged for `rollback`."""
+        self._undo_log.append(
+            (self.removed_utxos, out_point_bytes, out_point_bytes in self.removed_utxos)
+        )
+        self.removed_utxos.add(out_point_bytes)
+
+    def _unmark_removed(self, out_point_bytes: bytes) -> None:
+        """`removed_utxos.discard(out_point_bytes)`, logged for `rollback`.
+
+        `apply_rev_block` below is the one caller: restoring a prevout a
+        block spent has to undo whichever of `_pop` or `_mark_removed`
+        `add_block` used to stage that spend, and only `_mark_removed`
+        touches `removed_utxos` -- so this runs unconditionally, the same
+        way `_mark_removed` itself logs unconditionally, and is a no-op
+        precisely when the spend it undoes never reached `removed_utxos`
+        in the first place.
+        """
+        self._undo_log.append(
+            (self.removed_utxos, out_point_bytes, out_point_bytes in self.removed_utxos)
+        )
+        self.removed_utxos.discard(out_point_bytes)
+
+    def should_flush(self) -> bool:
+        """Whether the staged size has reached `_FLUSH_BOUND`.
+
+        `main._finalize_fork` is the one caller, and it is not asking
+        this alone: `Chainstate.flush` writes `BlockIndex` and
+        `FilterIndex` in the same batch this triggers, which is what
+        keeps the three in step (`db.py`'s own docstring argues why).
+        """
+        return len(self.removed_utxos) + len(self.updated_utxo_set) >= _FLUSH_BOUND
 
     def add_block(
         self, block: Block, height: int, *, check_bip30: bool = True
@@ -115,6 +238,20 @@ class UtxoIndex:
         refused duplicate never reaches the two loops below that would
         otherwise stage a write over it.
 
+        Both loops below call `_unmark_removed` on an outpoint's own
+        bytes before every `_put` of it, the same order
+        `apply_rev_block`'s own `to_add` loop uses to restore one: a key
+        this call creates can coincide with one `removed_utxos` still
+        carries only when the two share a txid, `check_bip30` above
+        being what refuses that for every case but the two historical
+        exceptions -- so the unmark is a no-op everywhere else, and is
+        what keeps `removed_utxos` and `updated_utxo_set` disjoint
+        rather than leaving a recreated outpoint staged in both at once
+        (`_bip30_violation`'s own docstring is where that invariant is
+        used, and btclib-org/btclib-node#586 is where staging it in
+        both broke a later `apply_rev_block` on a coin that was
+        legitimately unspent).
+
         Returns each non-coinbase transaction paired with the prevouts
         its own inputs consumed -- what `interpreter.check_transactions`
         validates against -- and the `RevBlock` that undoes this call.
@@ -129,7 +266,9 @@ class UtxoIndex:
         for i, tx_out in enumerate(block.transactions[0].vout):
             out_point = OutPoint(block.transactions[0].id, i, check_validity=False)
             coin = Coin(tx_out, height, is_coinbase=True)
-            self.updated_utxo_set[out_point.serialize(check_validity=False)] = coin
+            out_point_bytes = out_point.serialize(check_validity=False)
+            self._unmark_removed(out_point_bytes)
+            self._put(out_point_bytes, coin)
             added.append(out_point)
 
         for tx in block.transactions[1:]:
@@ -144,9 +283,8 @@ class UtxoIndex:
                     err_msg = "prevout already spent in this batch"
                     raise InvalidBlockInputError(err_msg)
                 if prevout_bytes in self.updated_utxo_set:
-                    coin = self.updated_utxo_set[prevout_bytes]
+                    coin = self._pop(prevout_bytes)
                     prev_coins.append(coin)
-                    self.updated_utxo_set.pop(prevout_bytes)
                 else:
                     prevout_data = self.db.get(b"utxo-" + prevout_bytes)
                     if prevout_data:
@@ -163,7 +301,7 @@ class UtxoIndex:
                             err_msg = "stored utxo- record failed to parse"
                             raise ChainstateInconsistencyError(err_msg) from exc
                         prev_coins.append(coin)
-                        self.removed_utxos.add(prevout_bytes)
+                        self._mark_removed(prevout_bytes)
                     else:
                         err_msg = "prevout not found"
                         raise InvalidBlockInputError(err_msg)
@@ -172,9 +310,9 @@ class UtxoIndex:
 
             for i, tx_out in enumerate(tx.vout):
                 out_point = OutPoint(tx_id, i, check_validity=False)
-                self.updated_utxo_set[out_point.serialize(check_validity=False)] = Coin(
-                    tx_out, height, is_coinbase=False
-                )
+                out_point_bytes = out_point.serialize(check_validity=False)
+                self._unmark_removed(out_point_bytes)
+                self._put(out_point_bytes, Coin(tx_out, height, is_coinbase=False))
                 added.append(out_point)
 
             complete_transactions.append((prev_coins, tx))
@@ -188,6 +326,30 @@ class UtxoIndex:
 
         Removes every outpoint it created and restores every prevout it
         spent, staged the same way `add_block` stages its own changes.
+
+        A restored prevout is unmarked from `removed_utxos` before it is
+        put back, not merely put back: `add_block` staged that spend
+        with `_mark_removed` whenever the prevout was already durable
+        (found in `self.db` rather than in `updated_utxo_set`), and
+        leaving that flag set here would put the same outpoint bytes in
+        both `removed_utxos` and `updated_utxo_set` at once -- still
+        "removed" as far as a later `add_block` call's own guard is
+        concerned, even though this call just made it spendable again.
+        Staging now survives across trials (this outpoint can sit
+        restored for up to `_FLUSH_BOUND` entries' worth of blocks
+        before `finalize` clears both dicts), so a stale flag here is no
+        longer erased by the next trial boundary the way the old,
+        per-trial `finalize` used to erase it -- it stays wrong until a
+        legitimate later spend of the same output hits `add_block`'s
+        `"prevout already spent in this batch"` guard and gets rejected
+        as a double spend, invalidating that block and, through
+        `update_header_index` -> `BlockIndex.invalidate`, everything
+        built on it. Independently of that, the same stale flag hides a
+        genuine BIP30 duplicate too: `_bip30_violation` reads
+        `removed_utxos` first and answers "no violation" on a hit, so a
+        block recreating the restored outpoint -- still unspent once
+        this call has put it back -- would connect instead of being
+        refused `bad-txns-BIP30` (btclib-org/btclib-node#586).
         """
         for out_point in rev_block.to_remove:
             out_point_bytes = out_point.serialize(check_validity=False)
@@ -196,18 +358,46 @@ class UtxoIndex:
                 err_msg = "output already removed"
                 raise ChainstateInconsistencyError(err_msg)
             if out_point_bytes in self.updated_utxo_set:
-                self.updated_utxo_set.pop(out_point_bytes)
+                self._pop(out_point_bytes)
             elif self.db.get(b"utxo-" + out_point_bytes):
-                self.removed_utxos.add(out_point_bytes)
+                self._mark_removed(out_point_bytes)
             else:
                 err_msg = "output not found"
                 raise ChainstateInconsistencyError(err_msg)
 
         for out_point, coin in rev_block.to_add:
-            self.updated_utxo_set[out_point.serialize(check_validity=False)] = coin
+            out_point_bytes = out_point.serialize(check_validity=False)
+            self._unmark_removed(out_point_bytes)
+            self._put(out_point_bytes, coin)
+
+    def get_coin(self, prevout_bytes: bytes) -> Coin | None:
+        """Return the `Coin` a serialized outpoint still resolves to, or `None`.
+
+        Checks `updated_utxo_set` and `removed_utxos` first, the same
+        order `add_block` and `apply_rev_block` already read staged
+        state in, before falling to the store: a coin several blocks'
+        own worth of staging have created or already taken is real
+        regardless of whether `finalize` has written it out yet, and a
+        caller reading `self.db` directly -- `main.verify_mempool_acceptance`
+        used to -- would miss exactly what staying staged across more
+        than one block (btclib-org/btclib-node#586) makes ordinary.
+        """
+        if prevout_bytes in self.updated_utxo_set:
+            return self.updated_utxo_set[prevout_bytes]
+        if prevout_bytes in self.removed_utxos:
+            return None
+        coin_data = self.db.get(b"utxo-" + prevout_bytes)
+        if coin_data is None:
+            return None
+        return Coin.parse(coin_data, check_validity=False)
 
     def finalize(self, wb: KeyValueStore | None = None) -> None:
-        """Write every staged change into `wb`, or into `self.db` if none."""
+        """Write every staged change into `wb`, or into `self.db` if none.
+
+        Everything staged is durable after this, so nothing recorded
+        before it can ever be rolled back to: `_undo_log` is cleared
+        along with the two dicts it was tracking.
+        """
         db = wb or self.db
         for x in self.removed_utxos:
             db.delete(b"utxo-" + x)
@@ -215,8 +405,24 @@ class UtxoIndex:
             db.put(b"utxo-" + out_point_bytes, coin.serialize())
         self.removed_utxos = set()
         self.updated_utxo_set = {}
+        self._undo_log = []
 
-    def rollback(self) -> None:
-        """Discard every staged change, mirroring `finalize`."""
-        self.removed_utxos = set()
-        self.updated_utxo_set = {}
+    def rollback(self, mark: int = 0) -> None:
+        """Undo every mutation recorded since `mark`, in reverse.
+
+        `mark` defaults to the very start -- a caller with nothing
+        staged before its own trial began, which is every direct test
+        of this method -- and `trial_mark`'s own docstring is where a
+        caller with something to protect gets a real one from.
+        """
+        while len(self._undo_log) > mark:
+            container, key, prior = self._undo_log.pop()
+            if isinstance(container, set):
+                if prior:
+                    container.add(key)
+                else:
+                    container.discard(key)
+            elif prior is _UNSET:
+                container.pop(key, None)
+            else:
+                container[key] = prior
