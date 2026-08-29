@@ -498,6 +498,36 @@ def test_build_config_prune_nonzero_raises_pruning_not_implemented() -> None:
         cli.build_config(["-regtest", "-prune", "550"])
 
 
+def test_build_config_blocksdir_reaches_config(tmp_path: Path) -> None:
+    """`-blocksdir` on the command line resolves through to `Config`."""
+    config = cli.build_config(["-regtest", "-blocksdir", str(tmp_path)])
+    assert config.blocks_dir == tmp_path.absolute() / "regtest"
+
+
+def test_build_config_without_blocksdir_leaves_it_none(tmp_path: Path) -> None:
+    """No `-blocksdir`: `Config`'s own default, `None`."""
+    config = cli.build_config(["-datadir", str(tmp_path)])
+    assert config.blocks_dir is None
+
+
+def test_build_config_blocksdir_missing_raises(tmp_path: Path) -> None:
+    """`-blocksdir` naming a directory that does not exist is fatal."""
+    missing = tmp_path / "nope"
+    with pytest.raises(ValueError, match="does not exist"):
+        cli.build_config(["-regtest", "-blocksdir", str(missing)])
+
+
+def test_build_config_reads_blocksdir_from_the_file(tmp_path: Path) -> None:
+    """`blocksdir=` in `bitcoin.conf` resolves the same way the flag does."""
+    blocks_dir = tmp_path / "elsewhere"
+    blocks_dir.mkdir()
+    (tmp_path / "bitcoin.conf").write_text(
+        f"regtest=1\nblocksdir={blocks_dir}\n", encoding="utf-8"
+    )
+    config = cli.build_config(["-datadir", str(tmp_path)])
+    assert config.blocks_dir == blocks_dir.absolute() / "regtest"
+
+
 def test_build_config_connect_and_addnode_reach_config() -> None:
     """`-connect`/`-addnode` on the command line resolve through to `Config`."""
     config = cli.build_config(

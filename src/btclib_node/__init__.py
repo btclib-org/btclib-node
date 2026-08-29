@@ -281,7 +281,7 @@ class Node(threading.Thread):
         self.logger = Logger(log_path, debug=config.debug)
 
         self.chainstate = Chainstate(self.data_dir, self.chain, self.logger)
-        self.block_db = BlockDB(self.data_dir, self.logger)
+        self.block_db = BlockDB(self.data_dir, self.logger, config.blocks_dir)
         # the two halves of a filter live in different databases -- the
         # block and its reverse patch in one, the index in the other --
         # so catching up is here, where both are built, and before

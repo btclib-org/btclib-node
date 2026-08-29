@@ -1616,6 +1616,21 @@ where this file was written rather than where anything was tagged.
   can still actually raise for this node's own storage now that
   #650 stopped `UtxoIndex.get_coin` raising the former.
 
+### `-blocksdir` puts `BlockDB`'s own files on a disk of their own (closes #652)
+
+- **`Config` gains `blocks_dir`, `None` unless a caller names one**,
+  chain-suffixed and made absolute the same way `data_dir` already is;
+  `BlockDB.__init__` takes it as an optional third argument and falls
+  back to `data_dir` when it is not given, Core's own `"default:
+  <datadir>"` (`-blocksdir=<dir>`'s own help text). `-blocksdir` naming
+  a directory that does not already exist is fatal, `Config`'s own
+  refusal, matching Core's "Specified blocks directory ... does not
+  exist" rather than creating one silently.
+- **`-blocksdir=<dir>` reaches the command line and `bitcoin.conf`**
+  (`_RECOGNIZED_KEYS`, not network-only, matching Core's own
+  registration): unlike `-datadir`, it never decides which file is
+  read, so nothing stops it being set inside that same file.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
