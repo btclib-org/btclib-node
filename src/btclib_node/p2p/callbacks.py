@@ -501,6 +501,35 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
     A no-op if this block is already marked downloaded. Invalidates it
     first and re-raises on a failed check, so the next peer offering
     the same block is refused before being asked for it.
+
+    An unsolicited block whose own header this node has never indexed
+    is not read as though `getdata` or `headers` already vouched for
+    it: `PeerManagerImpl::ProcessMessage`'s own `NetMsgType::BLOCK` arm
+    (`net_processing.cpp`, at bitcoin/bitcoin@ca7162cde5) runs every
+    block through `ChainstateManager::AcceptBlock`, which calls
+    `AcceptBlockHeader` (`validation.cpp`, same sha) on the block's own
+    header before anything else -- a header already known is accepted
+    outright, and one that is not has its own parent looked up, refused
+    with `BLOCK_MISSING_PREV` where that parent is unknown too. Core
+    punishes that refusal: `MaybePunishNodeForBlock`'s own switch
+    (`net_processing.cpp`, same sha) calls `Misbehaving` for
+    `BLOCK_MISSING_PREV`, unlike an unconnecting *headers* batch, which
+    `ProcessHeadersMessage`'s own `HandleUnconnectingHeaders` answers by
+    asking for more rather than by punishing -- the same asymmetry this
+    file already carries between `headers` below, which never
+    discourages a batch connecting to nothing this node knows
+    (btclib-org/btclib-node#233), and this function, which does.
+    `block_index.add_headers([block.header])` is `AcceptBlockHeader`'s
+    own shape: it indexes the header where the parent is known, raises
+    a `BTClibException` where the header itself is invalid -- `main.
+    handle_p2p`'s own `except` already drops and discourages the peer
+    for either, the same way it already does for a block failing its
+    own proof of work below -- and, for a single header whose parent is
+    missing, returns `None` rather than raising, which is `headers`'s
+    own "ask again" case and not this one's: `BTClibValueError` is
+    raised here instead, for `main.handle_p2p`'s same `except` to
+    discourage the peer over, matching `Misbehaving`.
+    btclib-org/btclib-node#711
     """
     # btclib's BlockPayload validates against mainnet's pow limit by
     # default, which no regtest or signet block meets. Its own docstring
@@ -515,7 +544,18 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
     conn.last_block_timestamp = time.time()
     conn.pending_eviction = False
 
-    block_info = node.chainstate.block_index.get_block_info(block_hash)
+    block_index = node.chainstate.block_index
+    if (
+        block_hash not in block_index.header_dict
+        and block_index.add_headers([block.header]) is None
+    ):
+        err_msg = (
+            f"block {block_hash.hex()} has prev block not found: "
+            f"{block.header.previous_block_hash.hex()}"
+        )
+        raise BTClibValueError(err_msg)
+
+    block_info = block_index.get_block_info(block_hash)
 
     if not block_info.downloaded:
         # a block that does not hold up is nobody's: the raise reaches
@@ -525,11 +565,11 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
         try:
             block.assert_valid(node.chain.pow_limit_bits)
         except BTClibException:
-            node.chainstate.block_index.invalidate(block_hash)
+            block_index.invalidate(block_hash)
             raise
         node.block_db.add_block(block)
         node.logger.info("Received new block with hash:%s", block_hash.hex())
-        node.chainstate.block_index.set_downloaded(block_hash)
+        block_index.set_downloaded(block_hash)
 
 
 def inv(node: Node, msg: bytes, conn: Connection) -> None:

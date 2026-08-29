@@ -2213,6 +2213,26 @@ where this file was written rather than where anything was tagged.
 - **`fuzz.yml`'s own `-max_total_time` is now split four ways** rather
   than three, unchanged in total.
 
+### An unsolicited block with an unknown header is not a KeyError (closes #711)
+
+- **`p2p/callbacks.py`'s `block` indexes an unrecognised header through
+  `BlockIndex.add_headers` before looking up the block's info**, rather
+  than reading `block_index.header_dict` on a hash nothing had entered
+  there yet. Matching Core's own `NetMsgType::BLOCK` path
+  (`net_processing.cpp`, at bitcoin/bitcoin@ca7162cde5): every block
+  runs through `AcceptBlockHeader` (`validation.cpp`, same sha) first,
+  which accepts a header whose parent is already known and refuses one
+  whose parent is not with `BLOCK_MISSING_PREV`; `MaybePunishNodeForBlock`
+  then calls `Misbehaving` for that refusal, unlike an unconnecting
+  `headers` batch, which this file already answers by asking for more
+  rather than by discouraging the peer (#233). A block extending a
+  known parent but never separately indexed by a prior `headers` round
+  is now accepted and stored instead of raising `KeyError`; a block
+  naming a parent this node has never heard of now raises
+  `BTClibValueError`, which `p2p/main.py`'s `handle_p2p` already
+  discourages and drops the peer for -- where the pre-fix `KeyError`
+  was neither.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
