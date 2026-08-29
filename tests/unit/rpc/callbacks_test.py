@@ -28,8 +28,10 @@ from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
 import btclib_node.rpc.callbacks as cb
+from btclib_node.block_db import Coin
 from btclib_node.chains import Chain, Main, RegTest
 from btclib_node.chainstate.block_index import calculate_work
+from btclib_node.chainstate.muhash import CoinStats
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import P2pConnStatus
 from btclib_node.exceptions import MissingPrevoutError, StoreCorruptionError
@@ -46,6 +48,7 @@ from btclib_node.rpc.callbacks import (
     get_peer_info,
     get_raw_mempool,
     get_raw_transaction,
+    get_tx_out_set_info,
     ping,
     send_raw_transaction,
     service_names,
@@ -494,6 +497,135 @@ def test_a_raw_mempool_parameter_of_the_wrong_json_type_is_named() -> None:
         'Wrong type passed:\n{\n    "Position 2 (mempool_sequence)": "JSON '
         'value of type number is not of expected type bool"\n}'
     )
+
+
+def _a_coin_stats_coin(value: int = 1000) -> tuple[bytes, Coin]:
+    out_point_bytes = OutPoint(b"\x33" * 32, 0, check_validity=False).serialize(
+        check_validity=False
+    )
+    tx_out = TxOut(value=value, script_pub_key=script.serialize(["OP_1"]))
+    return out_point_bytes, Coin(tx_out, height=1, is_coinbase=False)
+
+
+def a_coin_stats_node(coin_stats: CoinStats, chain: list[bytes]) -> Any:
+    """Build a node whose chainstate carries a real `CoinStats`.
+
+    `get_tx_out_set_info` reads `chainstate.block_index.active_chain`
+    for `height`/`bestblock` and `chainstate.utxo_index.coin_stats` for
+    everything else, matching `a_chain_index_node`'s own minimal shape.
+    """
+    return SimpleNamespace(
+        chainstate=SimpleNamespace(
+            block_index=SimpleNamespace(active_chain=chain),
+            utxo_index=SimpleNamespace(coin_stats=coin_stats),
+        )
+    )
+
+
+def test_tx_out_set_info_answers_core_s_own_field_names() -> None:
+    """`gettxoutsetinfo` answers height, bestblock, txouts, bogosize, amount.
+
+    `hash_type: "muhash"` also carries `muhash`, the digest reversed to
+    match `uint256::GetHex()` rather than `CoinStats.digest()`'s own
+    byte order.
+    """
+    coin_stats = CoinStats()
+    coin_stats.insert(*_a_coin_stats_coin(value=5_000_000_000))
+    chain = [b"\x11" * 32, b"\x22" * 32]
+    node = a_coin_stats_node(coin_stats, chain)
+
+    result = get_tx_out_set_info(node, _CONN, ["muhash"])
+    assert result["height"] == 1
+    assert result["bestblock"] == chain[-1]
+    assert result["txouts"] == 1
+    assert result["bogosize"] == coin_stats.bogo_size
+    assert result["total_amount"].text == "50.00000000"
+    assert result["muhash"] == coin_stats.digest()[::-1]
+
+
+def test_tx_out_set_info_hash_type_none_omits_the_muhash_field() -> None:
+    """`hash_type: "none"` answers every field but `muhash` itself."""
+    coin_stats = CoinStats()
+    coin_stats.insert(*_a_coin_stats_coin())
+    node = a_coin_stats_node(coin_stats, [b"\x11" * 32])
+
+    result = get_tx_out_set_info(node, _CONN, ["none"])
+    assert "muhash" not in result
+    assert result["txouts"] == 1
+
+
+def test_tx_out_set_info_defaults_to_hash_serialized_3_and_refuses_it() -> None:
+    """With no `hash_type` given, the default is Core's own, and refused.
+
+    This tree answers only from `CoinStats`, never from a live scan, so
+    `hash_serialized_3` -- Core's own default -- has nothing to compute
+    it from.
+    """
+    node = a_coin_stats_node(CoinStats(), [b"\x11" * 32])
+    with pytest.raises(RpcError) as raised:
+        get_tx_out_set_info(node, _CONN, [])
+    assert raised.value.code == RpcErrorCode.INVALID_PARAMETER
+    assert raised.value.message == "'hash_serialized_3' is not a valid hash_type"
+
+
+def test_tx_out_set_info_refuses_an_unknown_hash_type_by_name() -> None:
+    """An unrecognized `hash_type` is refused and named back."""
+    node = a_coin_stats_node(CoinStats(), [b"\x11" * 32])
+    with pytest.raises(RpcError) as raised:
+        get_tx_out_set_info(node, _CONN, ["not_a_real_type"])
+    assert raised.value.code == RpcErrorCode.INVALID_PARAMETER
+    assert raised.value.message == "'not_a_real_type' is not a valid hash_type"
+
+
+def test_tx_out_set_info_hash_type_of_the_wrong_json_type_is_named() -> None:
+    """A non-string `hash_type` is named the way `type_error` names it."""
+    node = a_coin_stats_node(CoinStats(), [b"\x11" * 32])
+    with pytest.raises(RpcError) as raised:
+        get_tx_out_set_info(node, _CONN, [1])
+    assert raised.value.code == RpcErrorCode.TYPE_ERROR
+    assert raised.value.message == (
+        'Wrong type passed:\n{\n    "Position 1 (hash_type)": "JSON value '
+        'of type number is not of expected type string"\n}'
+    )
+
+
+def test_tx_out_set_info_refuses_a_specific_block_the_way_an_unindexed_node_does() -> (
+    None
+):
+    """`hash_or_height` is refused: no index keeps an earlier block's stats.
+
+    The same refusal an ordinary `bitcoind`, run without
+    `-coinstatsindex`, already answers with.
+    """
+    node = a_coin_stats_node(CoinStats(), [b"\x11" * 32])
+    with pytest.raises(RpcError) as raised:
+        get_tx_out_set_info(node, _CONN, ["muhash", 5])
+    assert raised.value.code == RpcErrorCode.INVALID_PARAMETER
+    assert raised.value.message == (
+        "Querying specific block heights requires coinstatsindex"
+    )
+
+
+def test_tx_out_set_info_use_index_is_type_checked_but_changes_nothing() -> None:
+    """`use_index` is validated like Core's own BOOL argument, then ignored.
+
+    There is no non-indexed path in this tree for it to switch onto --
+    `CoinStats` is the only one there is, so a valid boolean changes no
+    field of the answer, and an invalid one is still refused by type.
+    """
+    coin_stats = CoinStats()
+    coin_stats.insert(*_a_coin_stats_coin())
+    node = a_coin_stats_node(coin_stats, [b"\x11" * 32])
+
+    with_index = get_tx_out_set_info(node, _CONN, ["none", None, True])
+    without_index = get_tx_out_set_info(node, _CONN, ["none", None, False])
+    with_index["total_amount"] = with_index["total_amount"].text
+    without_index["total_amount"] = without_index["total_amount"].text
+    assert with_index == without_index
+
+    with pytest.raises(RpcError) as raised:
+        get_tx_out_set_info(node, _CONN, ["none", None, "true"])
+    assert raised.value.code == RpcErrorCode.TYPE_ERROR
 
 
 def a_tx_lookup_node(

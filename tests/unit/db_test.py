@@ -568,13 +568,14 @@ def test_a_non_corruption_exception_is_never_reclassified(
 ) -> None:
     """Only a message beginning `Corruption:` becomes `StoreCorruptionError`.
 
-    Exercised at each of the five points `db.py` reads through
+    Exercised at each of the six points `db.py` reads through
     `_raise_if_corrupted`: the open itself, the schema-version check's
-    own read, `_has_any_data`'s own scan, `get`, and `__iter__`. A
-    genuine defect this guards against: swallowing an unrelated fault
-    -- a disk-full `OSError`, a permission error -- under the same
-    classification as a checksummed corruption would hide it from
-    whoever reads the log for the name that is supposed to be specific.
+    own read, `_has_any_data`'s own scan, `get`, `get_meta`, and
+    `__iter__`. A genuine defect this guards against: swallowing an
+    unrelated fault -- a disk-full `OSError`, a permission error --
+    under the same classification as a checksummed corruption would
+    hide it from whoever reads the log for the name that is supposed
+    to be specific.
     """
 
     def boom(*args: object, **kwargs: object) -> None:
@@ -604,6 +605,13 @@ def test_a_non_corruption_exception_is_never_reclassified(
         patched.setattr(Rdict, "get", boom)
         with pytest.raises(RuntimeError, match="boom"):
             store.get(b"k")
+
+    with monkeypatch.context() as patched:
+        # `Rdict.get` patched at the class level reaches `self._meta`
+        # too, since `get_column_family` hands back another `Rdict`
+        patched.setattr(Rdict, "get", boom)
+        with pytest.raises(RuntimeError, match="boom"):
+            store.get_meta(b"k")
 
     with monkeypatch.context() as patched:
         patched.setattr(RdictIter, "status", boom)

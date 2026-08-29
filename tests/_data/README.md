@@ -97,3 +97,55 @@ no upstream copy to fall out of step with:
 ```shell
 uv run pytest tests/unit/chainstate/filter_index_test.py -k scale
 ```
+
+## `tests/unit/chainstate/_data/chacha20_vectors.json` and `muhash_vectors.json`
+
+Not vendored — derived, both from one file: `src/test/crypto_tests.cpp`
+(bitcoin/bitcoin@ca7162cde5, blob
+`b348793bfb6397ebde806961b6783b1540a33804`), a Boost.Test `.cpp` file
+rather than a `src/test/data/*.json` Core publishes on its own, so there
+is no upstream blob shaped like either JSON file here to pin against
+directly.
+
+`chacha20_vectors.json` is every `TestChaCha20(...)` call inside
+`BOOST_AUTO_TEST_CASE(chacha20_testvector)` (21, RFC 7539/8439's own
+Appendix A.1/A.2/A.4 vectors among them, cited in that test case's own
+comments) parsed out of the call's five arguments -- `message`, `key`,
+`nonce_first`/`nonce_second` (`ChaCha20::Nonce96`), `seek` (the block
+counter `Seek` starts from) and `keystream_or_ciphertext`, the last
+being ciphertext when `message` is non-empty and raw keystream when it
+is empty, matching `TestChaCha20`'s own two modes. Every top-level comma
+in each call was split outside string literals and parentheses, and
+every adjacent C++ string literal concatenated, by a small script run
+once against the pinned commit rather than committed here -- reproduced
+by parsing the same five-argument calls out of that test case again at
+the same sha and diffing the result against this file, byte for byte.
+
+`muhash_vectors.json` is `muhash_tests`' own three numeric checks: the
+`FromInt(0)*FromInt(1)/FromInt(2)` cancellation (`insert`/`remove`,
+`digest_uint256_hex`, a `uint256{"..."}` literal -- reversed relative to
+the raw digest, `chainstate/muhash.py`'s own docstring is where that
+convention is read off `uint256.h`'s own comment), the serialization
+vector (`ser_exp`) and the overflow vector (`ss_max`'s `DataStream`
+input, and `out4`'s digest read through `HexStr` directly rather than
+`GetHex()` -- **not** reversed, the one place in this file the two
+conventions differ, confirmed against `crypto_tests.cpp`'s own two
+different assertion macros rather than assumed uniform). `FromInt(i)` is
+expanded here to the full 32-byte element (`i` then 31 zero bytes) each
+vector inserts or removes, rather than left as the bare integer
+`crypto_tests.cpp` passes to its own local helper, since this file has
+no such helper to call.
+
+Both are read by `tests/unit/chainstate/muhash_test.py`.
+
+Re-checked by re-deriving both files against the pinned commit and
+diffing byte for byte -- there is no single upstream blob either
+matches to compare a hash against instead:
+
+```shell
+git -C <bitcoin checkout> show ca7162cde5:src/test/crypto_tests.cpp \
+  | git hash-object --stdin
+```
+
+answers `b348793bfb6397ebde806961b6783b1540a33804` if the source file
+this derivation reads has not moved since.

@@ -877,6 +877,12 @@ skip = "*/_data/*.json,*/_data/*.csv,*/_data/*.txt,*/_data/*.bin,fuzz/corpus/*"
 # hides is what is written inside backticks, which is identifiers and
 # quoted strings -- typos' half of the work, not this hook's.
 ignore-regex = '`[^`]*`'
+# "ser", as `[tool.typos.default.extend-words]`'s own comment on the
+# identical word already argues -- codespell's dictionary makes the
+# same mistake, and the word appears bare (not backtick-quoted, since
+# it is TOML syntax rather than prose) on that config's own `ser =
+# "ser"` line, which backticks cannot protect.
+ignore-words-list = "ser"
 
 [tool.typos.files]
 # the vendored data [tool.codespell] skips above, for the reason given
@@ -993,3 +999,15 @@ enable_error_code = [
 # ruff's copyright rule, not the misspelling of COPY or CPU that typos'
 # dictionary offers -- .pre-commit-config.yaml names it in a comment.
 CPY = "CPY"
+# the abbreviation `Coin.serialize` and Core's own `TxOutSer` share --
+# `tx_out_ser`, `ser_exp`, `TxOutSer` -- not the misspelling of "set"
+# typos' dictionary offers for the bare token. codespell's own
+# dictionary makes the identical mistake on this exact line, which is
+# why [tool.codespell]'s own `ignore-words-list` below names "ser" too
+# -- without it, codespell's own --write-changes rewrites the line
+# below to "set = \"set\"", the wrong fix for the wrong tool applied to
+# the right one's own config.
+ser = "ser"
+# ChaCha20Aligned::Seek, past tense -- not the misspelling of "sought"
+# typos' dictionary offers for ordinary English usage.
+seeked = "seeked"

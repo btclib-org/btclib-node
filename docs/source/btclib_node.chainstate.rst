@@ -25,6 +25,13 @@ btclib\_node.chainstate.filter\_index module
    :members:
    :show-inheritance:
 
+btclib\_node.chainstate.muhash module
+----------------------------------------
+
+.. automodule:: btclib_node.chainstate.muhash
+   :members:
+   :show-inheritance:
+
 btclib\_node.chainstate.utxo\_index module
 ---------------------------------------------
 

@@ -45,6 +45,7 @@ __all__ = [
     "get_peer_info",
     "get_raw_mempool",
     "get_raw_transaction",
+    "get_tx_out_set_info",
     "ping",
     "send_raw_transaction",
     "service_names",
@@ -586,6 +587,96 @@ def get_mempool_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     }
 
 
+# ParseHashType's own two names this tree can answer
+# (src/rpc/blockchain.cpp:977-987, at bitcoin/bitcoin@ca7162cde5).
+# "hash_serialized_3" is a third name Core itself accepts but this tree
+# does not implement -- get_tx_out_set_info's own docstring is where
+# that refusal, reusing ParseHashType's own error text for a value Core
+# would otherwise accept, is argued.
+_TX_OUT_SET_HASH_TYPES = {"muhash", "none"}
+
+
+def get_tx_out_set_info(
+    node: Node, conn: RpcConnection, params: list[Any]
+) -> dict[str, Any]:
+    """Answer `gettxoutsetinfo` from `UtxoIndex`'s own running `CoinStats`.
+
+    Core's own default path recomputes every field from a live scan of
+    the coins database (`ComputeUTXOStats`, `kernel/coinstats.cpp`) on
+    every call, unless `-coinstatsindex` is running, in which case the
+    incrementally-maintained `CoinStatsIndex` answers instead
+    (`index/coinstatsindex.cpp`) -- `chainstate/muhash.py`'s own module
+    docstring is where `CoinStats` is argued as this tree's equivalent
+    of that second path, the only one it implements. `height`,
+    `bestblock`, `txouts`, `bogosize`, `total_amount` and (for
+    `hash_type: "muhash"`) `muhash` are Core's own field names and
+    units, `total_amount` in BTC through `_btc_amount` the way
+    `get_mempool_info`'s own `mempoolminfee` already is; `muhash` itself
+    is the raw digest bytes reversed before this returns, matching
+    `uint256::GetHex()`'s own convention rather than this class's
+    `digest()` (`chainstate/muhash.py`'s own comment beside
+    `is_bip30_unspendable` is where that reversal is confirmed against
+    the well-known genesis hash rather than assumed).
+
+    `hash_type: "hash_serialized_3"` -- Core's own default, the legacy
+    double-SHA256 scan -- is refused with `ParseHashType`'s own error
+    text (`RPC_INVALID_PARAMETER`, `'%s' is not a valid hash_type`),
+    reused here for a value Core itself accepts but this tree has no
+    accumulator for: this node answers only from `CoinStats`, never
+    from a live scan, so there is no second computation to answer that
+    hash type with. `hash_type: "none"` answers every field but
+    `muhash` itself, the way Core's own `CoinStatsHashType::NONE` does.
+
+    `hash_or_height` is refused the way an ordinary `bitcoind`, run
+    without `-coinstatsindex`, already refuses it -- `!g_coin_stats_index`
+    (`src/rpc/blockchain.cpp:1091-1092`) is Core's own gate, and this
+    tree has no such index either: `CoinStats` only ever holds the
+    *current* best block's own commitment, nothing keyed by an earlier
+    height. `use_index` is read and type-checked the way Core's own
+    `RPCArg::Type::BOOL` argument is, but changes nothing here: there is
+    no non-indexed path for it to switch this tree onto, `CoinStats`
+    being the only one there is.
+
+    `transactions` and `disk_size` are left out of every answer, the way
+    Core's own indexed answer already leaves them out
+    (`src/rpc/blockchain.cpp:1131-1134`, `if (!stats.index_used) {...}`):
+    both are an O(n) count over the whole set, which an incrementally
+    maintained accumulator exists specifically to avoid paying on every
+    call. `total_unspendable_amount` and `block_info`, `CoinStatsIndex`'s
+    own two fields this tree could in principle also answer, are left
+    out for a different reason: they need bookkeeping (the subsidy
+    schedule, the BIP30/genesis/unclaimed-reward split) this branch does
+    not add, and issue #639's own "Not in scope" does not ask for them.
+    """
+    hash_type = params[0] if params and params[0] is not None else "hash_serialized_3"
+    if not isinstance(hash_type, str):
+        raise type_error(1, "hash_type", hash_type, "string")
+    if hash_type not in _TX_OUT_SET_HASH_TYPES:
+        err_msg = f"'{hash_type}' is not a valid hash_type"
+        raise RpcError(RpcErrorCode.INVALID_PARAMETER, err_msg)
+
+    if len(params) > 1 and params[1] is not None:
+        err_msg = "Querying specific block heights requires coinstatsindex"
+        raise RpcError(RpcErrorCode.INVALID_PARAMETER, err_msg)
+
+    # type-checked and otherwise unused -- this method's own docstring
+    # argues why
+    bool_param(params, 2, name="use_index", default=True)
+
+    active_chain = node.chainstate.block_index.active_chain
+    coin_stats = node.chainstate.utxo_index.coin_stats
+    result: dict[str, Any] = {
+        "height": len(active_chain) - 1,
+        "bestblock": active_chain[-1],
+        "txouts": coin_stats.transaction_output_count,
+        "bogosize": coin_stats.bogo_size,
+    }
+    if hash_type == "muhash":
+        result["muhash"] = coin_stats.digest()[::-1]
+    result["total_amount"] = _btc_amount(coin_stats.total_amount)
+    return result
+
+
 def get_raw_mempool(
     node: Node, conn: RpcConnection, params: list[Any]
 ) -> dict[str, Any] | list[str]:
@@ -988,6 +1079,7 @@ callbacks = {
     "getmempoolinfo": get_mempool_info,
     "getrawmempool": get_raw_mempool,
     "getrawtransaction": get_raw_transaction,
+    "gettxoutsetinfo": get_tx_out_set_info,
     "testmempoolaccept": test_mempool_accept,
     "sendrawtransaction": send_raw_transaction,
     "ping": ping,
