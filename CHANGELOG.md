@@ -1794,6 +1794,32 @@ where this file was written rather than where anything was tagged.
   only ever feeds `pytest.mark.parametrize`'s own `ids=`, a display
   string nothing compares against a literal, so it is left as `str()`.
 
+### `REPOSITORY.md` says which settings it covers (issue btclib-org/.github#551)
+
+- **Its opening claims the settings the standard asks about, in place of
+  the whole of what is set outside the tree**: the ones [section 16's
+  checklist](https://github.com/btclib-org/.github#16-checklists) sets on
+  a new repository, and the ones a section of the standard states a rule
+  for, together with whatever a call quoted for one of those answers
+  alongside. That is the scope [section 11 of the organization
+  standard](https://github.com/btclib-org/.github#11-github-settings)
+  fixes, and the claim it rejects is the one no command checks: the
+  repository document answers with fields the standard states no rule
+  about, and telling those from the settings a repository decides is a
+  reading rather than a call.
+- **A *What this file passes over* section at the foot is the other edge
+  of that scope**, each part of it with the call that reads it back: the
+  document fields no section quotes and the standard asks nothing of,
+  the facilities that answer empty, and `CLAUDE_CODE_OAUTH_TOKEN`, which
+  the organization holds and this repository sets nothing for. Every
+  block carries a control that answers non-zero, so a zero beside it is
+  an absence rather than a pattern that cannot match.
+- **`use_squash_pr_title_as_default` is read back in *Merge methods*,
+  beside `squash_merge_commit_title`**: GitHub's own API description
+  marks the first as closing down in favour of the second, and section
+  11 of the standard states a rule about the squash title, so the older
+  spelling of it is not a field the standard is silent about.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

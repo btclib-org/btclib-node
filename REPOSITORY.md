@@ -5,8 +5,15 @@ and the answer that call gives today. A setting recorded as prose alone
 is one nobody can check; recorded this way, a drift is one command away
 from being seen.
 
-The rules and the settings live *outside* the tree, so this file is the
-whole of them: nothing below is recoverable by reading the repository.
+The rules and the settings live *outside* the tree: nothing below is
+recoverable by reading the repository. What is recorded is the settings
+[the standard](https://github.com/btclib-org/.github) asks about — the
+ones [section 16's
+checklist](https://github.com/btclib-org/.github#16-checklists) sets on a
+new repository, and the ones a section of the standard states a rule
+for — together with whatever a call quoted for one of those answers
+alongside it. Where that scope ends is *What this file passes over*, at
+the foot.
 
 ## Required checks on main
 
@@ -203,10 +210,11 @@ gh api repos/btclib-org/btclib-node \
          rebase: .allow_rebase_merge, auto: .allow_auto_merge,
          delete_on_merge: .delete_branch_on_merge,
          title: .squash_merge_commit_title,
-         message: .squash_merge_commit_message}'
+         message: .squash_merge_commit_message,
+         old_title: .use_squash_pr_title_as_default}'
 # {"auto":true,"delete_on_merge":true,"merge":false,
-#  "message":"COMMIT_MESSAGES","rebase":false,"squash":true,
-#  "title":"COMMIT_OR_PR_TITLE"}
+#  "message":"COMMIT_MESSAGES","old_title":false,"rebase":false,
+#  "squash":true,"title":"COMMIT_OR_PR_TITLE"}
 ```
 
 Squash is the only method, and `main-self-merge` names it too, so the
@@ -217,6 +225,11 @@ number, or the subject of the single commit where a branch has one, which
 the convention of writing the two alike keeps the same text.
 `COMMIT_MESSAGES` is the body — which is why a commit message here is
 prose this tree ships.
+
+`use_squash_pr_title_as_default` is the older spelling of the title
+setting, which GitHub's own API description marks as closing down in
+favour of `squash_merge_commit_title`. Section 11 states a rule about the
+title, so both spellings are read back here.
 
 `delete_branch_on_merge` fires on its own, every landing being a merged
 pull request, so a branch still standing is one that was closed rather
@@ -520,3 +533,91 @@ done
   Read the Docs project above already publishes; `btclib` runs Pages
   over its own repository root instead, which is a website rather than
   a second copy of its documentation.
+
+## What this file passes over
+
+*What is not configured, and why* above records what this repository
+decided against. This section is the other edge of the scope at the top:
+what the API answers for and no section here reads back. What another
+service decides and no call here reaches — the trusted publishers on the
+two indices, the Read the Docs automation rule that would build a release
+tag — is named where each of those arises above instead.
+
+**What no call sets.** `gh api repos/btclib-org/btclib-node` answers the
+whole repository document, and most of it is URLs, counts and state
+GitHub derives from the tree rather than anything anybody sets. Nothing
+here reads those back.
+
+**A field the standard states no rule about, and no call above answers
+alongside one it does.** `allow_forking`, `allow_update_branch`,
+`archived`, `description`, `has_discussions`, `has_downloads`,
+`has_pull_requests`, `is_template`, `pull_request_creation_policy` and
+`web_commit_signoff_required` are in the repository document and in none
+of the `--jq` objects here:
+
+```shell
+std=$(gh api repos/btclib-org/.github/contents/README.md --jq .content \
+  | base64 -d)
+for f in allow_forking allow_update_branch archived has_discussions \
+         has_downloads has_pull_requests is_template \
+         pull_request_creation_policy web_commit_signoff_required; do
+  printf '%s %s\n' "$f" "$(printf '%s' "$std" | grep -c -- "$f")"
+done
+# each name, then 0
+printf '%s' "$std" | grep -c '\.description'   # 0
+printf '%s' "$std" | grep -c 'default branch'  # not 0
+printf '%s' "$std" | grep -c '\.homepage'      # not 0
+```
+
+`description` is asked with its field spelling, the bare word being
+ordinary prose in that file, and `\.homepage` is the control for that
+same shape. The two controls are what make the zeros absences rather than
+a pattern that cannot match, and feeding the loop `topics` answers
+non-zero, which is what says it can still fail. Recording a field on no
+rule grows this file with GitHub's API rather than with the standard.
+
+`merge_commit_title` and `merge_commit_message` are the same case reached
+from the other end: they compose a merge commit *Merge methods* above
+reads back as a button this repository does not offer.
+
+**A facility nobody reached for.** Actions variables, Dependabot secrets,
+self-hosted runners, deploy keys, autolinks and custom property values
+each answer empty, and an empty answer records no decision:
+
+```shell
+for e in actions/variables dependabot/secrets actions/runners \
+         keys autolinks properties/values; do
+  gh api "repos/btclib-org/btclib-node/$e" \
+    --jq 'if type=="array" then length else .total_count end'
+done
+# 0, once per endpoint
+gh api repos/btclib-org/btclib-node/environments --jq .total_count
+# 2
+```
+
+The last call is the control: an endpoint of this repository's that
+answers non-empty, so the zeros above it are absences rather than a
+call that reports nothing. Webhooks are not among them: *Read
+the Docs* above reads that endpoint back, an empty answer there being
+what says the integration is the GitHub App rather than a hook of this
+repository's.
+
+**A credential the organization holds.** `claude-review.yml` runs on
+`CLAUDE_CODE_OAUTH_TOKEN`, an organization secret visible to every
+repository, so this repository sets nothing for it and has nothing of its
+own to read back:
+
+```shell
+gh api orgs/btclib-org/actions/secrets \
+  --jq '.secrets[] | "\(.name) \(.visibility)"'
+# CLAUDE_CODE_OAUTH_TOKEN all
+gh api repos/btclib-org/btclib-node/actions/secrets --jq '.total_count'
+# 0
+```
+
+The pair is what says the repository's own zero is inheritance rather
+than a credential it lacks.
+
+The price of the scope is a silent flip. A change to any of the above
+shows up in nothing here, and what would find it is somebody reading the
+repository document against this file rather than a command.
