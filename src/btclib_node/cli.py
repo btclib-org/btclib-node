@@ -161,6 +161,7 @@ from typing import TYPE_CHECKING
 
 from btclib_node import Node, install_signal_handlers
 from btclib_node.config import Config, split_host_port
+from btclib_node.constants import MIN_PRUNE_TARGET_MIB
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -553,11 +554,12 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help=(
-            "Reduce storage requirements by pruning old blocks: any nonzero value "
-            "keeps the last 288 blocks and their undo data (about two days) and "
-            "deletes the rest as the chain advances; Core's own -prune=<n> MiB "
-            "target is not read, only whether <n> is zero; a negative <n> refuses "
-            "to start, matching Core"
+            "Reduce storage requirements by pruning old blocks: <n> at or above "
+            f"{MIN_PRUNE_TARGET_MIB} automatically prunes to roughly <n> MiB on "
+            "disk, Core's own target; any other nonzero <n> keeps the last 288 "
+            "blocks and their undo data (about two days) and deletes the rest as "
+            "the chain advances, Core's own manual-pruning RPC not yet read; a "
+            "negative <n> refuses to start, matching Core"
         ),
     )
     parser.add_argument(
@@ -683,6 +685,9 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
         # start rather than treating a negative value as "pruning is on".
         err_msg = "Prune cannot be configured with a negative value."
         raise ValueError(err_msg)
+    prune_target_mib = (
+        prune if prune is not None and prune >= MIN_PRUNE_TARGET_MIB else None
+    )
     debug = _resolve_bool(args.debug, "debug", default_section)
     connect = _resolve_list(args.connect, collected, "connect")
     listen = _resolve_listen(args.listen, default_section, connect_given=bool(connect))
@@ -696,6 +701,7 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
         rpc_port=rpc_port,
         rpc_host=rpc_host,
         pruned=bool(prune),
+        prune_target_mib=prune_target_mib,
         debug=debug,
         connect=connect,
         addnode=_resolve_list(args.addnode, collected, "addnode"),

@@ -12,6 +12,7 @@ import pytest
 
 from btclib_node import cli
 from btclib_node.chains import RegTest
+from btclib_node.constants import MIN_PRUNE_TARGET_MIB
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -533,14 +534,41 @@ def test_build_config_rpcbind_without_a_port_leaves_rpcport_alone() -> None:
 
 
 def test_build_config_prune_nonzero_reaches_config_pruned() -> None:
-    """A nonzero `-prune` builds a `Config` with `pruned` set, any value alike.
-
-    `Config.pruned` is a flat bool: `cli.py`'s own `-prune` help text is
-    where the collapse of Core's own MiB target down to "zero or not" is
-    argued.
-    """
+    """A nonzero `-prune` builds a `Config` with `pruned` set, any value."""
     assert cli.build_config(["-regtest", "-prune", "550"]).pruned is True
     assert cli.build_config(["-regtest", "-prune", "1"]).pruned is True
+
+
+def test_build_config_prune_at_or_above_the_minimum_sets_the_mib_target() -> None:
+    """`-prune=<n>` for `n >= MIN_PRUNE_TARGET_MIB` reaches `prune_target_mib`.
+
+    Core's own automatic pruning: `<n>` itself is the MiB target, not
+    collapsed to a fixed depth -- `node::ApplyArgsManOptions`
+    (`node/blockmanager_args.cpp:27-35`, at bitcoin/bitcoin@ca7162cde5)
+    stores `nPruneArg * 1_MiB` verbatim as `opts.prune_target` for every
+    `<n>` this branch reaches.
+    """
+    assert (
+        cli.build_config(
+            ["-regtest", "-prune", str(MIN_PRUNE_TARGET_MIB)]
+        ).prune_target_mib
+        == MIN_PRUNE_TARGET_MIB
+    )
+    assert cli.build_config(["-regtest", "-prune", "700"]).prune_target_mib == 700
+
+
+def test_build_config_prune_below_the_minimum_leaves_the_mib_target_unset() -> None:
+    """`-prune=<n>` for `1 <= n < MIN_PRUNE_TARGET_MIB` sets no MiB target.
+
+    `main._prune_chain` reads `prune_target_mib is None` as every nonzero
+    `-prune=<n>` in this range currently does, its own bound
+    `MIN_BLOCKS_TO_KEEP` never crossed -- Core's own split of this same
+    range into manual pruning (`-prune=1`) and a refusal
+    (`2 <= n < MIN_PRUNE_TARGET_MIB`) is btclib-org/btclib-node#705's own
+    other half.
+    """
+    assert cli.build_config(["-regtest", "-prune", "1"]).prune_target_mib is None
+    assert cli.build_config(["-regtest", "-prune", "100"]).prune_target_mib is None
 
 
 def test_build_config_prune_zero_leaves_pruned_false() -> None:

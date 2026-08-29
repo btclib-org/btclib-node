@@ -605,6 +605,58 @@ def test_prune_up_to_reclaims_a_file_once_every_block_in_it_is_pruned(
     assert (block_db.data_dir / "000002.blk").exists()
 
 
+def test_current_usage_is_zero_for_an_empty_store(
+    a_db: Callable[[Path | None], BlockDB],
+) -> None:
+    """Nothing written, nothing to sum."""
+    block_db = a_db(None)
+    assert block_db.current_usage() == 0
+
+
+def test_current_usage_sums_every_still_tracked_file(
+    a_db: Callable[[Path | None], BlockDB],
+) -> None:
+    """`current_usage` matches `files`' own sizes, blocks and patches alike."""
+    block_db = a_db(None)
+    chain = generate_random_chain(6, RegTest().genesis.hash)
+    _hashes_and_rev_blocks(block_db, chain)
+
+    assert block_db.current_usage() == sum(f.size for f in block_db.files.values())
+    assert block_db.current_usage() > 0
+
+
+def test_current_usage_drops_once_a_fully_pruned_file_is_unlinked(
+    a_db: Callable[[Path | None], BlockDB],
+) -> None:
+    """Unlinking a `.blk` file (`_release`) is what actually frees its bytes.
+
+    The same rotation-by-hand scenario
+    `test_prune_up_to_reclaims_a_file_once_every_block_in_it_is_pruned`
+    (above) reclaims a file in: pruning through height 2 leaves
+    `000001.blk` still live, so `current_usage` still counts it; pruning
+    through height 3 empties and unlinks it, and the sum drops by
+    exactly its own size.
+    """
+    block_db = a_db(None)
+    chain = generate_random_chain(6, RegTest().genesis.hash)
+    hashes: list[bytes] = [b"\x00" * 32]
+    for block in chain[:3]:
+        block_db.add_block(block)
+        hashes.append(block.header.hash)
+    block_db.files["000001.blk"].size = MAX_FILE_SIZE + 1
+    for block in chain[3:]:
+        block_db.add_block(block)
+        hashes.append(block.header.hash)
+
+    block_db.prune_up_to(2, hashes.__getitem__)
+    usage_before = block_db.current_usage()
+    assert "000001.blk" in block_db.files
+
+    block_db.prune_up_to(3, hashes.__getitem__)
+    assert "000001.blk" not in block_db.files
+    assert block_db.current_usage() == usage_before - (MAX_FILE_SIZE + 1)
+
+
 def test_prune_up_to_never_unlinks_the_file_still_open_for_writing(
     a_db: Callable[[Path | None], BlockDB],
 ) -> None:

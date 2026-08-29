@@ -17,6 +17,7 @@ __all__ = [
     "COINBASE_MATURITY",
     "MAX_TIP_AGE",
     "MIN_BLOCKS_TO_KEEP",
+    "MIN_PRUNE_TARGET_MIB",
     "NodeStatus",
     "P2pConnStatus",
     "ProtocolVersion",
@@ -52,6 +53,16 @@ COINBASE_MATURITY = 100
 # below-threshold disconnect share this one name rather than carrying
 # two constants that only happen to agree today.
 MIN_BLOCKS_TO_KEEP = 288
+
+# Core's own `MIN_DISK_SPACE_FOR_BLOCK_FILES` (`src/validation.h:87`, at
+# bitcoin/bitcoin@ca7162cde5): the smallest `-prune=<n>` MiB target Core
+# accepts for automatic pruning -- `node::ApplyArgsManOptions`
+# (`node/blockmanager_args.cpp:28-34`, same sha) treats `<n>` between 2
+# and this value minus one as too small to run a node on and refuses to
+# start, in Core's own words, rather than rounding it up; `<n>` of
+# exactly 1 is manual pruning instead of a MiB target at all, the same
+# special case `cli.py`'s own `-prune` parsing carries.
+MIN_PRUNE_TARGET_MIB = 550
 
 
 # The service bits are `btclib.p2p.address.ServiceFlags`, not a table

@@ -1685,6 +1685,8 @@ def a_blockchain_info_node(
     is_initial_block_download: bool = False,
     pruned: bool = False,
     pruned_up_to: int = -1,
+    prune_target_mib: int | None = None,
+    current_usage: int = 0,
 ) -> Node:
     """Build a node carrying just what `get_blockchain_info` reads.
 
@@ -1721,8 +1723,10 @@ def a_blockchain_info_node(
                 )
             ),
             is_initial_block_download=is_initial_block_download,
-            config=SimpleNamespace(pruned=pruned),
-            block_db=SimpleNamespace(pruned_up_to=pruned_up_to),
+            config=SimpleNamespace(pruned=pruned, prune_target_mib=prune_target_mib),
+            block_db=SimpleNamespace(
+                pruned_up_to=pruned_up_to, current_usage=lambda: current_usage
+            ),
         ),
     )
 
@@ -1825,12 +1829,25 @@ def test_blockchain_info_s_initialblockdownload_reads_the_node_s_own_latch() -> 
     assert get_blockchain_info(node, _CONN, [])["initialblockdownload"] is False
 
 
+def test_blockchain_info_s_size_on_disk_reads_current_usage_unconditionally() -> None:
+    """`size_on_disk` is `block_db.current_usage`, present either way.
+
+    Core's own member is unconditional too, computed before the `pruned`
+    branch it sits beside (`rpc/blockchain.cpp:1450-1452`, at
+    bitcoin/bitcoin@ca7162cde5).
+    """
+    node = a_blockchain_info_node(pruned=False, current_usage=12345)
+    assert get_blockchain_info(node, _CONN, [])["size_on_disk"] == 12345
+
+
 def test_blockchain_info_s_pruned_reads_config() -> None:
     """`pruned` is `Config.pruned`, with no `pruneheight` when `False`."""
     node = a_blockchain_info_node(pruned=False)
     result = get_blockchain_info(node, _CONN, [])
     assert result["pruned"] is False
     assert "pruneheight" not in result
+    assert "automatic_pruning" not in result
+    assert "prune_target_size" not in result
 
 
 def test_blockchain_info_s_pruneheight_is_the_first_unpruned_block() -> None:
@@ -1841,6 +1858,27 @@ def test_blockchain_info_s_pruneheight_is_the_first_unpruned_block() -> None:
     """
     node = a_blockchain_info_node(pruned=True, pruned_up_to=41)
     assert get_blockchain_info(node, _CONN, [])["pruneheight"] == 42
+
+
+def test_blockchain_info_s_automatic_pruning_is_whether_a_mib_target_is_set() -> None:
+    """`automatic_pruning` is `Config.prune_target_mib is not None`.
+
+    Core's own `GetPruneTarget() != PRUNE_TARGET_MANUAL`
+    (`rpc/blockchain.cpp:1457`, at bitcoin/bitcoin@ca7162cde5); no
+    `prune_target_size` where it is `False`.
+    """
+    node = a_blockchain_info_node(pruned=True, prune_target_mib=None)
+    result = get_blockchain_info(node, _CONN, [])
+    assert result["automatic_pruning"] is False
+    assert "prune_target_size" not in result
+
+
+def test_blockchain_info_s_prune_target_size_is_in_bytes() -> None:
+    """`prune_target_size` is `prune_target_mib` in bytes, Core's own unit."""
+    node = a_blockchain_info_node(pruned=True, prune_target_mib=550)
+    result = get_blockchain_info(node, _CONN, [])
+    assert result["automatic_pruning"] is True
+    assert result["prune_target_size"] == 550 * 1024 * 1024
 
 
 def a_chain_index_node(chain: list[bytes]) -> Node:

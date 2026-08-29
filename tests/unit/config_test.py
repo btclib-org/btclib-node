@@ -115,6 +115,18 @@ def test_pruned_false_still_constructs() -> None:
     assert Config(chain="regtest", pruned=False).pruned is False
 
 
+def test_prune_target_mib_defaults_to_none() -> None:
+    """Unset, `prune_target_mib` is `None`, matching every earlier caller."""
+    assert Config(chain="regtest").prune_target_mib is None
+    assert Config(chain="regtest", pruned=True).prune_target_mib is None
+
+
+def test_prune_target_mib_reaches_config_unchanged() -> None:
+    """An explicit `prune_target_mib` constructs rather than being collapsed."""
+    config = Config(chain="regtest", pruned=True, prune_target_mib=700)
+    assert config.prune_target_mib == 700
+
+
 def test_a_disallowed_port_is_none_rather_than_some_other_number() -> None:
     """`allow_p2p=False`/`allow_rpc=False` force the matching port to `None`.
 

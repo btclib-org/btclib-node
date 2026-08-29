@@ -150,12 +150,19 @@ def get_blockchain_info(
     bitcoin/bitcoin@ca7162cde5) field for field: chain work against
     `Chain.minimum_chain_work` and tip age against `MAX_TIP_AGE`, not
     merely whether this node has run out of candidates to try.
+    `size_on_disk` is `block_db.BlockDB.current_usage`, Core's own
+    `CalculateCurrentUsage` (src/rpc/blockchain.cpp:1450, same commit).
     `pruned` is `Config.pruned` (src/rpc/blockchain.cpp:1452, same
     commit); `pruneheight`, present only where `pruned` is true, is the
     first height `block_db.BlockDB.prune_up_to` has not deleted --
     `pruned_up_to + 1`, Core's own "the first block unpruned, all
     previous blocks were pruned" (src/rpc/blockchain.cpp:1455, same
-    commit, `prune_height.value() + 1`).
+    commit, `prune_height.value() + 1`). `automatic_pruning`, present
+    alongside it, is whether `Config.prune_target_mib` is set -- Core's
+    own `GetPruneTarget() != PRUNE_TARGET_MANUAL`
+    (src/rpc/blockchain.cpp:1457, same commit); `prune_target_size`,
+    present only where that is true, is `prune_target_mib` in bytes,
+    Core's own unit for the member of the same name.
 
     Absent, each for its own reason rather than by oversight:
     `verificationprogress`, Core's own `GuessVerificationProgress`
@@ -166,16 +173,11 @@ def get_blockchain_info(
     carries neither the per-chain assumption nor a per-block count, so
     answering this member under Core's own name would answer a number
     carrying none of Core's meaning behind it, rather than a truthful
-    one; `warnings`, this node raising none of its own; `size_on_disk`,
-    nothing here yet totals the block and undo files' own bytes on
-    disk; `signet_challenge`, `SigNet` here carrying no configurable
-    challenge (chains.py's own genesis is the one public signet);
-    `automatic_pruning` and `prune_target_size`, Core's own `-prune=<n>`
-    MiB-target axis, which `config.py`'s own `pruned` field comment
-    argues this tree does not implement -- pruning here has no manual
-    vs. automatic distinction to answer either half of for;
-    `backgroundvalidation`, present on Core's own side only behind an
-    assumeutxo snapshot this node has no counterpart to.
+    one; `warnings`, this node raising none of its own; `signet_challenge`,
+    `SigNet` here carrying no configurable challenge (chains.py's own
+    genesis is the one public signet); `backgroundvalidation`, present
+    on Core's own side only behind an assumeutxo snapshot this node has
+    no counterpart to.
     """
     block_index = node.chainstate.block_index
     active_chain = block_index.active_chain
@@ -195,10 +197,15 @@ def get_blockchain_info(
         "mediantime": tip_mtp,
         "chainwork": f"{block_index.chainwork[tip_hash]:064x}",
         "initialblockdownload": node.is_initial_block_download,
+        "size_on_disk": node.block_db.current_usage(),
         "pruned": node.config.pruned,
     }
     if node.config.pruned:
         out["pruneheight"] = node.block_db.pruned_up_to + 1
+        prune_target_mib = node.config.prune_target_mib
+        out["automatic_pruning"] = prune_target_mib is not None
+        if prune_target_mib is not None:
+            out["prune_target_size"] = prune_target_mib * 1024 * 1024
     return out
 
 
