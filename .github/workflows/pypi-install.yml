@@ -63,8 +63,8 @@ on:
         default: ""
   workflow_dispatch:
   # so a change to this file is checked by the thing it configures, the
-  # same way os-macos.yml and os-windows.yml are. closed is deliberately
-  # absent, unlike those two: the concurrency block below cancels
+  # same way os-macos.yml is. closed is deliberately absent, unlike that
+  # one: the concurrency block below cancels
   # nothing, this workflow's own runs each being a sample worth keeping
   # rather than one superseding another, so a closed event here would
   # supersede no run whichever group it landed in -- it would only add
@@ -101,21 +101,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # every image one of this repository's own platform sentinels
-        # already runs, and nothing beyond it: os-ubuntu.yml's own
-        # header is why aarch64 Linux is here at all -- this package
+        # every image one of this repository's own platform sentinels or
+        # gate cells already runs, and nothing beyond it: os-ubuntu.yml's
+        # own header is why aarch64 Linux is here at all -- this package
         # resolves a different published btclib_secp256k1 wheel there
         # from the one ubuntu-latest installs -- os-macos.yml's is why
         # there is one macOS image and not two ("what a macOS cell
         # answers is the start method, which is the platform's and not
         # the architecture's, and the Intel runner would answer it
-        # twice"), and os-windows.yml's is why windows-latest is here
-        # despite pyproject.toml's own classifiers naming only POSIX and
-        # MacOS: a stranger can `pip install` this from the index today
-        # regardless of what the classifiers claim, and os-windows.yml's
-        # own header already accepts that cell running red rather than
-        # hiding the gap -- this workflow inherits that acceptance
-        # rather than re-deciding it
+        # twice"), and test.yml's `windows` job is why windows-latest is
+        # here: this package's classifiers now name Windows too (issue
+        # #430), and this workflow checks that claim against the index
+        # the way it already checks the other two
         os:
           - ubuntu-latest
           - ubuntu-24.04-arm

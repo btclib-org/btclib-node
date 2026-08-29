@@ -400,13 +400,27 @@ the same allowance. So a matrix on every commit here is a slot a reviewer
 in a sibling repository waits behind, which is the argument for keeping
 most of a matrix out of the merge gate and into a weekly sweep instead
 ([btclib-org/.github#85](https://github.com/btclib-org/.github/issues/85))
--- the platform axis the `os-*` sentinels cover, among them.
+-- the platform axis the `os-*` sentinels cover, `os-macos.yml` and
+`os-ubuntu.yml` among them.
 
-`test.yml`'s own interpreter axis is the row this repository gates
-instead of sweeping, and that file's own header carries the argument
-rather than this section repeating it: the two cells run as parallel
-jobs, so the second costs one more slot at the ceiling and no additional
-wait, against a review that costs more than the wait regardless.
+`test.yml`'s own interpreter axis and its `windows-latest` cell are the
+rows this repository gates instead of sweeping, and that file's own
+header carries the argument for each rather than this section repeating
+it: every cell runs as a parallel job, so each one past the first costs
+one more slot at the ceiling and no additional wait, against a review
+that costs more than the wait regardless. Windows had a weekly sentinel
+of its own, `os-windows.yml`, whose runs priced this trade before the
+cell existed; the cell now runs what the sentinel ran, so the sentinel
+is gone rather than kept beside a gate cell duplicating it
+([issue #430](https://github.com/btclib-org/btclib-node/issues/430)).
+
+Gating a cell inside `test.yml` cost no change to the ruleset: *Required
+checks on main* above names `test.yml`'s aggregate job, not any cell by
+name, so the `windows` job reached that aggregate's own `needs:` by
+being added to the workflow, the same way `3.14t` did for
+[issue #387](https://github.com/btclib-org/btclib-node/issues/387).
+Re-run that section's own first command to confirm the required checks
+still hold; its answer, not this paragraph, is what is true today.
 
 ## The two publishing environments
 

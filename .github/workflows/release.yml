@@ -18,12 +18,13 @@ name: release
 # publish-testpypi's and publish-pypi's own `needs:` for that reason.
 #
 # What else this does not call, unlike a sibling repository's own
-# release.yml: the three platform sentinels -- os-macos.yml,
-# os-ubuntu.yml and os-windows.yml -- gate no commit and no merge
-# today (os-macos.yml's header has why: a platform row earns a place
-# before a review only where waiting for it costs less than the review
-# does; test.yml's says what each of the three adds), and a release is
-# not carved out as the one place that changes. integration-bitcoind.yml
+# release.yml: the two platform sentinels beside the test workflow --
+# os-macos.yml and os-ubuntu.yml -- gate no commit and no merge today
+# (os-macos.yml's header has why: a platform row earns a place before a
+# review only where waiting for it costs less than the review does;
+# test.yml's own header says what each sentinel adds and what its own
+# windows-latest cell adds instead, issue #430), and a release is not
+# carved out as the one place that changes. integration-bitcoind.yml
 # exists and is a required check on every pull request, so the ancestry
 # check below -- the tag has to be merged into the default branch -- is
 # what already carries its answer for the tree being released.

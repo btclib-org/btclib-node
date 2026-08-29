@@ -267,9 +267,10 @@ there is and reasoned about where it is set.
 `lint.yml` runs the hooks `.pre-commit-config.yaml` declares, so there
 is no second list of tools and versions to keep in step; its invocation
 differs from the one above only in being `--locked` and in printing what
-a fixing hook would have written. `test.yml` runs the suite on one image
-and one interpreter, held to the coverage floor `pyproject.toml`
-declares. A pull request that touches
+a fixing hook would have written. `test.yml` runs the suite over the
+interpreter and platform axes its own header argues, held to the
+coverage floor `pyproject.toml` declares on its `ubuntu-latest` cells.
+A pull request that touches
 only the root prose skips the suite and reports the skip as a pass, which
 is what keeps an aggregate check from blocking on a run that never
 happened. `docs.yml` runs the same build the environment section above
@@ -287,13 +288,11 @@ anything.
 Everything else reports. `codeql.yml` follows a value from a peer's
 message or an RPC request body to where it is used, which no hook here
 does. `os-macos.yml` runs the suite on the one platform
-`pyproject.toml` classifies that no other workflow runs, and its header
+`pyproject.toml` classifies that the gate does not run, and its header
 says what differs beneath it. `os-ubuntu.yml` runs it on
 `ubuntu-24.04-arm` beside the gate's own image, which is where aarch64
-Linux is exercised at all. `os-windows.yml` runs it on the platform
-`pyproject.toml` does not classify and is expected to fail: the red run
-is its output rather than a defect, and its own header says why.
-`links.yml` asks whether somebody else's server answered, and
+Linux is exercised at all. `links.yml` asks whether somebody else's
+server answered, and
 `bootstrap-dns.yml` asks the same question of the DNS seeds
 `src/btclib_node/chains.py` names. `claude-review.yml` writes the review
 and its own header says it must not become a required check.

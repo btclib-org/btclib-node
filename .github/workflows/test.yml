@@ -9,24 +9,37 @@ name: test
 # a second interpreter the package claims to support, it is the one it
 # already claims, run a second time with the GIL off (issue #387).
 #
+# A platform cell runs beside them, `windows-latest` at `3.14` alone --
+# not crossed with `3.14t`, which would spend a second slot asking the
+# GIL question again rather than the platform one. It gates on the
+# suite passing rather than on the floor above: the floor is a claim
+# about the one image this paragraph opens on, and this cell asks a
+# different question -- whether the suite runs at all on a platform
+# nothing here exercised before -- rather than extending that claim to
+# a second image (issue #430).
+#
 # The organization's own design keeps a gate to one image and one
 # interpreter, at the ceiling the plan puts on the organization's
-# concurrent jobs: a row earns a place in the gate only where waiting
-# for it costs less than the review does -- `os-macos.yml`'s own header
-# states the rule, for the platform row it keeps out of this file. Here
-# it puts the row in instead: the two cells run as parallel jobs rather
-# than in sequence, so the second cell's cost is one more job at the
-# ceiling and no extra wait, against a review that takes longer than
-# either cell does regardless.
+# concurrent jobs, and a platform row belongs in the weekly calendar
+# under that design -- `os-macos.yml`'s own header states the rule, for
+# the row it keeps out of this file, and btclib-org/.github#390 tracks
+# this file's own growing divergence from it, the interpreter cell
+# above having opened it. Here it puts the Windows row in too: every
+# cell above runs as a parallel job rather than in sequence, so each
+# one's cost is one more job at the ceiling and no extra wait, against a
+# review that takes longer than any of them does regardless -- and for
+# this row specifically, a platform with no history here has no
+# regressions yet, only defects, which a week's sentinel wait would
+# leave unnoticed for a week rather than caught at the pull request
+# that introduced them (issue #430).
 #
-# What the design puts beside this file is a platform sentinel each,
-# and here that is three workflows, none of which gates a merge:
-# `os-macos.yml` runs this suite on Darwin, `os-ubuntu.yml` on aarch64
-# Linux beside the image this job uses, and `os-windows.yml` on the
-# platform pyproject.toml's classifiers do not name. Each header says
-# what its own image adds. The last of the three is expected red, and
-# the gate cell and the classifier that would answer it are issue
-# #430's rather than this file's.
+# What the design puts beside this file is a platform sentinel each for
+# what stays out of the gate: `os-macos.yml` runs this suite on Darwin,
+# and `os-ubuntu.yml` on aarch64 Linux beside the image this job uses.
+# Each header says what its own image adds. Windows had a third,
+# `os-windows.yml`, whose runs priced the cell above before it existed;
+# that cell now runs what the sentinel ran, so the sentinel is gone
+# rather than kept beside a gate cell duplicating it (issue #430).
 
 on:
   push:
@@ -255,6 +268,47 @@ jobs:
         run: >
           uv run --locked --no-default-groups --group test pytest
 
+  # the platform cell this file's own header argues: the same suite, on
+  # the platform nothing above runs it, at the one interpreter cell the
+  # axis above already claims -- not crossed with `3.14t`, a second slot
+  # asking the GIL question this cell is not about
+  windows:
+    name: Run the suite (windows-latest)
+    if: >-
+      ${{ !github.event.pull_request.draft
+      && github.event.action != 'closed'
+      && needs.changes.outputs.code == 'true' }}
+    needs: changes
+    runs-on: windows-latest
+    # the same bound the coverage job above sets on the same suite: what
+    # it bounds is a runner wedged before or between the tests, not the
+    # work
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          # the cache holds what uv.lock resolves: btclib_secp256k1 and
+          # cffi both publish a wheel for this interpreter on this
+          # platform, so an install failure here would be a finding of
+          # its own rather than the environment
+          enable-cache: true
+          # `3.14` alone, for the reason this file's own header gives
+          # the cell as a whole
+          python-version: "3.14"
+      # --no-cov, against the --cov pyproject.toml's addopts carries:
+      # the floor above is a claim about one interpreter on one image,
+      # and this cell asks a different question -- whether the suite
+      # passes on a second platform -- so a run here that hit the floor
+      # would fail for the wrong reason
+      - name: Run the suite
+        run: >
+          uv run --locked --no-default-groups --group test pytest --no-cov
+
   # the packaging metadata is checked on every pull request, not only on
   # the tag that ships it: a release is the one place where finding a
   # problem is too late, a version being consumed by the upload that
@@ -431,7 +485,7 @@ jobs:
     # job -- the job is the check there -- and the day it grows a second
     # one, this pattern and a change to the rule are what that costs
     name: "test: every job passed"
-    needs: [changes, coverage, dist]
+    needs: [changes, coverage, windows, dist]
     # not success(): a job whose dependencies failed is skipped, and a
     # skipped check reports "skipped", which a ruleset counts as
     # satisfied. The gate has to run to be able to fail.
