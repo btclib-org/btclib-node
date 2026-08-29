@@ -265,6 +265,11 @@ def _finalize_fork(node: Node, to_add: list[Block], to_remove: list[RevBlock]) -
         block_index.add_to_active_chain(block_hash)
         block_index.stage_status(block_hash, BlockStatus.in_active_chain)
         node.logger.info("Added block %s", block_hash.hex())
+    # `Node.best_height`'s own comment (`__init__.py`) is where reading
+    # this cross-thread, off `active_chain` rather than off a lock, is
+    # argued -- this call is the "tip changed" moment that comment cites.
+    # btclib-org/btclib-node#722
+    node.best_height = len(block_index.active_chain) - 1
     if utxo_index.should_flush():
         node.chainstate.flush()
     node.logger.debug("End chainstate finalize")

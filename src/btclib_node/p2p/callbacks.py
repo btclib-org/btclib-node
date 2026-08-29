@@ -142,10 +142,12 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
 
     conn.version_message = version_msg
     # `Connection.best_known_height`'s own docstring (connection.py) is
-    # where reading `start_height` here despite it being 0 on every
-    # connection this tree itself opens (btclib-org/btclib-node#722) is
-    # argued: a taller value off headers this peer actually sends
-    # (below) replaces it once there is one. btclib-org/btclib-node#706
+    # where reading `start_height` here is argued: `send_version`
+    # (connection.py) carries this node's own real tip as of
+    # btclib-org/btclib-node#722, so between two btclib-node peers this
+    # already seeds at the peer's own real height, and a taller value
+    # off headers this peer actually sends (below) only ever raises it
+    # further. btclib-org/btclib-node#706
     conn.best_known_height = version_msg.start_height
     # Every refusal below is discouraged, and not only a protocol
     # violation: Core's own discouragement covers "incompatible or

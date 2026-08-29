@@ -438,19 +438,24 @@ class Connection:
         # chainwork and updated off inv/headers announcements alone; this
         # tree keeps no per-peer chainwork-ranked index for `download.py`
         # to rank against, so height off what this peer has itself sent
-        # stands in for it. `start_height` is not the useful seed Core's
-        # own field is in practice: every connection this tree's own
-        # `send_version` opens sends the literal `0` there regardless of
-        # this node's real height (btclib-org/btclib-node#722), so
-        # between two btclib-node peers this starts at 0 and stays there
-        # until that peer's own `headers` update it -- which
-        # `_reachable_blocks` (download.py) already treats as "nothing
-        # ruled out yet" rather than "confirmed at height 0", the
-        # threshold it computes from a low `best_known_height` excluding
-        # nothing a real download window holds. 0 until callbacks.version
-        # writes here, which every connection `DownloadManager` ever sees
-        # has already done by the time it is promoted (`callbacks.verack`
-        # refuses one that has not). btclib-org/btclib-node#706
+        # stands in for it. `start_height` is the useful seed Core's own
+        # field is in practice between two btclib-node peers, once
+        # `Connection.send_version` carries this node's own real tip
+        # (`Node.best_height`) rather than the literal `0` it used to
+        # send unconditionally (btclib-org/btclib-node#722): the peer on
+        # the other end of a fresh handshake seeds `best_known_height`
+        # at that peer's own real height already, and `headers` below
+        # only ever raises it further as that peer's own tip grows past
+        # what its `version` reported. A peer running software that
+        # still sends a literal `0`, or that has not extended its chain
+        # since connecting, is exactly the case `_reachable_blocks`
+        # (download.py) already treats as "nothing ruled out yet" rather
+        # than "confirmed at height 0", the threshold it computes from a
+        # low `best_known_height` excluding nothing a real download
+        # window holds. 0 until callbacks.version writes here, which
+        # every connection `DownloadManager` ever sees has already done
+        # by the time it is promoted (`callbacks.verack` refuses one
+        # that has not). btclib-org/btclib-node#706
         self.best_known_height: int = 0
 
         # Set by callbacks.getaddr the first time it answers this
@@ -936,7 +941,10 @@ class Connection:
             # string it sanitizes only for the log, so btclib carries
             # what the peer sent rather than what decodes
             user_agent=_USER_AGENT,
-            start_height=0,
+            # `Node.best_height`'s own comment (`__init__.py`) is where
+            # reading this here, off `Node`'s own thread's writes without
+            # a lock, is argued. btclib-org/btclib-node#722
+            start_height=self.manager.node.best_height,
             # Core's own `fRelay` is about the connection -- a
             # block-relay-only peer, a feeler, `-blocksonly`
             # (`RejectIncomingTxs`, src/net_processing.cpp) -- and never

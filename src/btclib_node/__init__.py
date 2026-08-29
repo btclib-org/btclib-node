@@ -346,6 +346,31 @@ class Node(threading.Thread):
         # bitcoin/bitcoin@ca7162cde5) starts true the same way.
         self.is_initial_block_download = True
 
+        # This node's own active-chain tip height, at the moment
+        # `main._finalize_fork` last moved it -- read by
+        # `p2p.connection.Connection.send_version`, on `P2pManager`'s own
+        # asyncio loop rather than this thread, the same way Core's own
+        # `PushNodeVersion` (`net_processing.cpp:1673`, at
+        # bitcoin/bitcoin@ca7162cde5) reads `m_best_height` from the net
+        # processing thread rather than validation's. Core declares that
+        # field `std::atomic<int>` (`net_processing.cpp:873`) rather than
+        # guarding it with `cs_main`, and writes it from
+        # `PeerManagerImpl::SetBestBlock` (`:610-613`) off
+        # `UpdatedBlockTip` (`:2288`), the validation-interface callback
+        # fired once a tip change actually commits -- `main._finalize_fork`
+        # writing this attribute is this tree's equivalent moment. A plain `int`
+        # attribute is the equivalent here rather than a `threading.Lock`
+        # (`PeerDB`'s own two, `p2p/address.py`): CPython's GIL makes one
+        # attribute's read and write each a single, uninterruptible step,
+        # which is the same freedom from a torn value `std::atomic<int>`
+        # buys Core without a mutex -- a lock earns its cost where a
+        # write is several steps that must land together (`PeerDB`'s own
+        # dict-and-index pair), not over one scalar written by exactly
+        # one thread and read by another. 0 until `_finalize_fork` first
+        # runs, matching genesis already sitting at `active_chain`'s own
+        # index 0. btclib-org/btclib-node#722
+        self.best_height = len(self.chainstate.block_index.active_chain) - 1
+
         self.download_manager = DownloadManager(self, self.logger)
 
         self.p2p_port: int | None

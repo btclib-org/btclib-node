@@ -177,6 +177,10 @@ def a_manager() -> Iterator[AManagerFactory]:
                 listen=listen,
                 pruned=False,
             ),
+            # `Connection.send_version`'s own `start_height`
+            # (btclib-org/btclib-node#722), 0 matching a fresh `Node`'s
+            # own initial value (`__init__.py`).
+            best_height=0,
         )
         # a peer db that refuses to be asked by default: a test that
         # should not reach for a peer proves it by the log staying quiet

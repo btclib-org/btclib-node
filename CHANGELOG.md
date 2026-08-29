@@ -2351,6 +2351,22 @@ where this file was written rather than where anything was tagged.
   node on, rather than the fixed 288-block depth every such value used
   to collapse to.
 
+### `send_version` carries this node's own tip height (closes #722)
+
+- **`send_version`'s own `version` message carries `Node.best_height` as
+  `start_height`, not the literal `0` every connection sent regardless
+  of how synced this node actually was**, matching Core's own
+  `PushNodeVersion` (`net_processing.cpp:1673`, at
+  bitcoin/bitcoin@ca7162cde5), which fills the same field from
+  `m_best_height`.
+- **`Node.best_height` is a plain `int`, not a lock-guarded field.**
+  `main._finalize_fork` writes it on `Node`'s own thread, once per tip
+  change, and `Connection.send_version` reads it cross-thread, on
+  `P2pManager`'s own asyncio loop -- the same freedom from a torn read
+  Core's own `std::atomic<int> m_best_height` (`net_processing.cpp:873`)
+  gives `PushNodeVersion` without `cs_main`, CPython's GIL making a
+  single attribute's read and write each one uninterruptible step.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
