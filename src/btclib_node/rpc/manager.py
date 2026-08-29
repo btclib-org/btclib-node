@@ -4,11 +4,13 @@
 
 """`RpcManager`, the thread listening for JSON-RPC connections.
 
-Runs its own asyncio loop, accepting a `RpcConnection` per request and
-queuing what each one parses onto `messages` for `Node`'s own thread to
-read in `rpc.main.handle_rpc`. `listening` is set once `run` has
-actually bound the socket, which is what a caller waits on rather than
-`is_alive()` alone -- that flag is true before anything is bound.
+Runs its own asyncio loop, accepting a `RpcConnection` per accepted
+socket -- one request or several, `connection.RpcConnection`'s own
+docstring has the keep-alive that decides which -- and queuing what
+each one parses onto `messages` for `Node`'s own thread to read in
+`rpc.main.handle_rpc`. `listening` is set once `run` has actually bound
+the socket, which is what a caller waits on rather than `is_alive()`
+alone -- that flag is true before anything is bound.
 """
 
 import asyncio

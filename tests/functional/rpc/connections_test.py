@@ -4,10 +4,12 @@
 
 """RpcManager.connections does not grow without bound, over a real node.
 
-Every entry sheds once answered, and never survives to be reused: this
-node's own `RpcConnection.async_send` closes its socket unconditionally
-after one reply, so a client pooling a connection across several calls
-still pays a fresh accept every time.
+Every entry sheds once its own connection closes, and a request asking
+for `Connection: close` -- every request `tests.rpc_client`'s default
+transport sends, `urllib`'s own `do_open` setting the header
+unconditionally -- gets exactly that (`rpc.connection.RpcConnection`'s
+own module docstring is where a kept-alive request instead is argued,
+matching Core's HTTP/1.1 default).
 """
 
 import socket
@@ -22,12 +24,13 @@ if TYPE_CHECKING:
 
 
 def test_connections_do_not_outlive_the_answer_they_carried(rpc_node: Node) -> None:
-    """A live node's own connections table sheds every entry once answered.
+    """A live node's own connections table sheds every entry once closed.
 
-    Every request used to open a connection that was answered and had
-    its socket closed by `async_send`, and the entry in
-    `RpcManager.connections` stayed anyway -- an unbounded dict keyed on
-    a counter that only grows. The port binds every interface with no
+    Every request here asks for `Connection: close` (the default
+    transport's own choice, not this test's), so each one closes its
+    socket once answered -- and used to leave its entry in
+    `RpcManager.connections` behind anyway, an unbounded dict keyed on a
+    counter that only grows. The port binds every interface with no
     authentication (issue #27), so this was a leak any client could
     drive, not just an internal bookkeeping detail (issue #64).
     """
@@ -82,21 +85,19 @@ def test_a_client_that_sends_nothing_is_dropped_within_the_deadline(
     assert body["result"]
 
 
-def test_one_session_transport_still_opens_a_socket_per_call(rpc_node: Node) -> None:
-    """One `SessionTransport`, three calls: the listener is asked for three.
+def test_one_session_transport_keeps_one_socket_across_calls(rpc_node: Node) -> None:
+    """One `SessionTransport`, three calls: all three answered on one socket.
 
     `SessionTransport` keeps a connection open across calls and probes
     it before reusing it (its own docstring), which is what lets a
     caller against Core skip a handshake per call -- Core keeps an rpc
     connection alive and drops an idle one with a plain `close()`. This
-    node's own `RpcConnection.async_send` closes its socket
-    unconditionally after every reply, with no idling and no keep-alive
-    to probe for, so the same `SessionTransport` instance still pays a
-    fresh accept on every call: the probe evicts the connection this
-    node already closed and reconnects rather than finding one to reuse.
-    `RpcManager.last_connection_id` is incremented once per accepted
-    socket (`rpc/manager.py`), so three distinct values across three
-    calls is three distinct connections, not one kept open.
+    node's own `RpcConnection.async_send` now does the same by default
+    (issue #640), so the same `SessionTransport` instance finds its
+    pooled connection still open on every later call rather than paying
+    a fresh accept: `RpcManager.last_connection_id` is incremented once
+    per accepted socket (`rpc/manager.py`), so it stays at the one value
+    the first call gave it.
     """
     node = rpc_node
     wait_until_listening(node.rpc_manager)
@@ -105,16 +106,10 @@ def test_one_session_transport_still_opens_a_socket_per_call(rpc_node: Node) -> 
     transport = SessionTransport()
     client.transport = transport
 
-    accepted: list[int] = []
     try:
         for _ in range(3):
             _, body = client.call_raw("getbestblockhash", jsonrpc="2.0")
             assert body["result"]
-            # waited for before the next call, so the next call's own
-            # probe meets a socket this node has already closed rather
-            # than racing the close still in flight
-            wait_until(lambda: not node.rpc_manager.connections)
-            accepted.append(node.rpc_manager.last_connection_id)
     finally:
         # otherwise the pooled connection's own socket is closed only
         # when the garbage collector reaches it, which is what
@@ -122,4 +117,41 @@ def test_one_session_transport_still_opens_a_socket_per_call(rpc_node: Node) -> 
         # bare `ResourceWarning` on that late a close into
         transport.close()
 
-    assert accepted == [0, 1, 2]
+    assert node.rpc_manager.last_connection_id == 0
+
+
+def test_many_unpaced_calls_over_one_session_transport_do_not_reset(
+    rpc_node: Node,
+) -> None:
+    """Hundreds of back-to-back calls over one `SessionTransport`, no reset.
+
+    ISS 640: every reply used to close its socket outright, so a pooled
+    client's next call could land in the narrow window between this
+    node's own close and `SessionTransport`'s own pre-reuse probe seeing
+    it -- a bare `ConnectionResetError` out of `getresponse()`, which
+    `SessionTransport`'s own docstring says it does not try to recover
+    from. Keeping the connection open across replies (`rpc.connection.
+    RpcConnection.async_send`) removes the close this race needed: with
+    nothing intervening between one reply and the next request on the
+    same socket, there is no window left for the probe to race, which
+    `last_connection_id` staying put across every one of these calls is
+    what confirms -- not a statistical absence of the old failure, which
+    this many unpaced calls was never enough to reliably reproduce
+    either (the issue's own report is one failure in roughly two
+    thousand).
+    """
+    node = rpc_node
+    wait_until_listening(node.rpc_manager)
+
+    client = rpc_client(node)
+    transport = SessionTransport()
+    client.transport = transport
+
+    try:
+        for _ in range(300):
+            _, body = client.call_raw("getbestblockhash", jsonrpc="2.0")
+            assert body["result"]
+    finally:
+        transport.close()
+
+    assert node.rpc_manager.last_connection_id == 0

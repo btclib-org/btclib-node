@@ -1408,6 +1408,69 @@ where this file was written rather than where anything was tagged.
   btclib-org/btclib-node#651 for the same reason: each dials once, at
   startup, and Core keeps redialling either forever.
 
+### An RPC connection stays open across replies (closes #640, closes #642)
+
+- **`RpcConnection.async_send` keeps its socket open across replies
+  now, following Core's own per-version keep-alive default**
+  (`HTTPRequest::WriteReply`, `src/httpserver.cpp:557-575`, at
+  bitcoin/bitcoin@ca7162cde5), rather than closing unconditionally
+  after every one: HTTP/1.1 stays open unless the request carried
+  `Connection: close`, HTTP/1.0 closes unless it carried an explicit
+  `Connection: keep-alive` -- `run`'s own `_wants_keep_alive` is where
+  the two are told apart, off the request line's own trailing token,
+  which used to be discarded entirely. `bitcoin_core_rpc.
+  SessionTransport` pools a connection across calls and probes it
+  before reuse, which the unconditional close made race: the probe
+  could find the socket not yet readable and reuse it into the narrow
+  window between this node's own close and the client's next request,
+  surfacing a bare `ConnectionResetError` `SessionTransport`'s own
+  docstring already argues it does not retry.
+- **A malformed body's own `PARSE_ERROR` reply honours the same
+  keep-alive rule as any other reply, and no longer answers it from
+  inside `run`'s own call frame.** It used to force a close regardless
+  of what the request asked, because the reply was awaited inline
+  rather than scheduled the way a dispatched reply's `async_send`
+  already is -- honouring keep-alive there would have `run` call back
+  into itself, unbounded, for a run of malformed bodies sent one after
+  another over one kept-alive connection, eventually hitting Python's
+  own recursion limit, caught by `run`'s own blind exception handler
+  and closed with nothing logged. Scheduling the reply as its own task
+  instead keeps every one of those frames independent, and is what
+  makes honouring keep-alive here safe, matching Core's own
+  `HTTPReq_JSONRPC` (`src/httprpc.cpp:232-244`, at
+  bitcoin/bitcoin@ca7162cde5), which negotiates keep-alive on a parse
+  error exactly like any other reply.
+- **That same reply now schedules through `self.loop.create_task`
+  rather than `run_coroutine_threadsafe`, and its connection is no
+  longer popped out of `manager.connections` until it is actually
+  done.** `run_coroutine_threadsafe`, called from `run`'s own thread --
+  which is already `self.loop`'s own thread, unlike `send`'s cross-thread
+  call to the same seam -- only queues the Task's creation for a later
+  turn of that loop, leaving it briefly absent from
+  `asyncio.all_tasks()`; `RpcManager.stop` reads that set exactly once
+  to build what it cancels, and a connection already popped out of
+  `manager.connections` besides was unreachable by either of the two
+  collections `stop` sweeps, for a turn where nothing had scheduled it
+  yet. `create_task` makes the `Task` exist immediately, and leaving the
+  connection in `manager.connections` until `async_send` itself pops it
+  keeps `stop`'s own socket-closing sweep able to reach it regardless.
+- **`REQUEST_TIMEOUT` -- Core's own `DEFAULT_HTTP_SERVER_TIMEOUT`,
+  unchanged -- now also bounds the idle wait for a kept-alive
+  connection's next request**, matching Core spending that one setting
+  on both bounds rather than adding a second constant for the same
+  fact.
+- **`tests/functional/rpc/connections_test.py`'s own
+  `test_one_session_transport_still_opens_a_socket_per_call`, which
+  paced its calls to dodge the race above, is rewritten to assert the
+  opposite: one `SessionTransport` instance keeps one connection across
+  calls, and hundreds of unpaced ones do not reset it.**
+- **`tests/functional/rpc/batch_test.py` drives a well-formed,
+  multi-member JSON-RPC 2.0 batch through a real socket, through
+  `BitcoinCoreRpcClient.call_batch`** -- answer ordering, a mixed
+  valid/invalid batch, `handle_rpc`'s own stop-anywhere-in-the-batch
+  rule, and a batch sharing its connection with the call after it --
+  none of which any test below `tests/unit/rpc/` reached before this.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

@@ -196,6 +196,57 @@ def test_a_body_that_is_not_json_answers_parse_error_and_forgets_the_client(
         manager.join(timeout=10)
 
 
+def test_stop_still_closes_a_connection_mid_parse_error_reply(
+    a_manager: AManagerFactory,
+) -> None:
+    """`stop`, right as a parse error's own reply is scheduled, still closes it.
+
+    Nothing paces `stop` against `run`'s own parse-error branch the way
+    `manager.messages` paces a well-formed request through `handle_rpc`:
+    that branch answers on the spot, scheduling `async_send` as its own
+    task rather than awaiting it inline (issue #640 review round 2).
+    `stop`'s own two sweeps -- `asyncio.all_tasks(self.loop)`, cancelled,
+    and `self.connections`, closed directly -- are read exactly once,
+    right after `run`'s own task has finished scheduling that reply and
+    before either of them has taken a single further step; this is that
+    exact instant, made deterministic by driving the loop by hand rather
+    than racing it from a second thread the way the real listener would.
+
+    `run_coroutine_threadsafe` -- what a fix that scheduled through the
+    wrong seam looks like here -- only queues the `Task`'s own creation
+    for a turn after this one, so it is neither in `all_tasks()` for
+    `stop`'s cancel sweep nor, if popped by `run` the way a dispatched
+    reply is, still in `self.connections` for its close sweep either:
+    the coroutine is torn down unawaited, with nothing to answer this
+    socket and nothing to close it, so the client sees neither a reply
+    nor a clean end-of-file, only a hang until its own timeout.
+    """
+    manager = a_manager(get_random_port())
+    loop = manager.loop
+    ours, theirs = socket.socketpair()
+    try:
+        conn = manager.create_connection(loop, ours)
+        body = b"not json"
+        head = b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n" % len(body)
+        theirs.sendall(head + body)
+        run_task = loop.create_task(conn.run())
+        # One full batch of whatever is already ready, then stop --
+        # `run`'s own task, scheduled at creation, is the only thing
+        # ready the first time through, so this is that task's own
+        # first and only step, landing it on `except ValueError` and
+        # back out again without ever suspending a second time.
+        while not run_task.done():
+            loop.call_soon(loop.stop)
+            loop.run_forever()
+        manager.stop()
+        theirs.settimeout(5)
+        assert theirs.recv(4096) == b""
+        # a closed socket's own fileno is -1; still >= 0 is still open
+        assert ours.fileno() == -1
+    finally:
+        theirs.close()
+
+
 @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
 def test_a_manager_that_cannot_bind_stops_being_alive(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
