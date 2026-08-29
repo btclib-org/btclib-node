@@ -113,7 +113,18 @@ _PIN = next(
     (line.strip() for line in _LINES if line.strip() and line.lstrip()[0] != "#"), ""
 ).removesuffix("t")
 
-_RUN = {str(path.relative_to(_ROOT)): _named(path.read_text("utf-8")) for path in _CI}
+# `as_posix()`, not `str()`: a `PurePath`'s own `__str__` renders with
+# `os.sep`, backslashes on a `WindowsPath` (`pathlib`'s own
+# documentation for `PurePath.__str__`), while `_NAMES_ONE` above is
+# written with forward slashes -- so `str()` here compared a Windows
+# path against a POSIX literal on `windows-latest` and nowhere else,
+# `_NAMING == _NAMES_ONE` below false for every entry despite naming
+# the same file. `as_posix()` renders with `/` on every platform
+# `pathlib` runs on, POSIX included, so this is nothing more than what
+# `str()` already did there (btclib-org/btclib-node#663).
+_RUN = {
+    path.relative_to(_ROOT).as_posix(): _named(path.read_text("utf-8")) for path in _CI
+}
 _NAMING = tuple(sorted(path for path, versions in _RUN.items() if versions))
 _CPYTHON = tuple(
     sorted({version.removesuffix("t") for name in _NAMING for version in _RUN[name]})
