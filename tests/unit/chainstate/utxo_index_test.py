@@ -291,9 +291,27 @@ def test_a_restored_output_is_a_bip30_violation_again(tmp_path: Path) -> None:
     every other BIP30 test in this file exercises the check at, below
     -- and asserts only the raise, not `removed_utxos` itself, which
     `test_a_rev_block_that_restores_a_written_output_unmarks_it_removed`
-    above already pins, so a mutation dropping `_unmark_removed` fails
-    this test specifically for not raising `bad-txns-BIP30`, rather
-    than for the unmark that test already covers
+    above already pins.
+
+    It does not, however, catch a mutation dropping
+    `apply_rev_block`'s own `_unmark_removed` call: the `finalize`
+    below, which is what makes this test's path genuine, clears
+    `removed_utxos` outright on its way out, so by the time
+    `apply_rev_block` runs there is nothing left for that call to
+    unmark and the test passes either way. The sibling test above,
+    which has no intervening `finalize`, is what fails under that
+    mutation. So this one pins the rule and that one pins the call
+    (btclib-org/btclib-node#586).
+
+    The spend is finalized before the rev block undoes it, so `out`'s
+    own `utxo-` record is genuinely deleted from the store by the time
+    the rev block restores it into `updated_utxo_set` rather than
+    writing it straight back to disk. Without this finalize, `out`'s
+    record from height 1 is still durable and never deleted, so
+    `_bip30_violation`'s `self.db.get(...)` fallback alone would answer
+    `True` for it regardless of `updated_utxo_set` -- the assertion
+    below would still pass with `updated_utxo_set` never consulted at
+    all, pinning nothing about the path this test is named for
     (btclib-org/btclib-node#586).
     """
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
@@ -303,15 +321,60 @@ def test_a_restored_output_is_a_bip30_violation_again(tmp_path: Path) -> None:
     utxo_index.finalize()
 
     out = OutPoint(funding.id, 0)
+    key = out.serialize(check_validity=False)
     _, rev_block = utxo_index.add_block(
         one_tx_block([coinbase(b"\x16"), spending(out, b"\x16")], b"\x16" * 32), 2
     )
+    utxo_index.finalize()
+    assert utxo_index.db.get(b"utxo-" + key) is None
     utxo_index.apply_rev_block(rev_block)
+    assert utxo_index.db.get(b"utxo-" + key) is None
+    assert key in utxo_index.updated_utxo_set
 
     # the coinbase that originally created `out` duplicates a still-unspent
     # output, restored by the rev block just applied
     with pytest.raises(InvalidBlockInputError, match="bad-txns-BIP30"):
         utxo_index.add_block(one_tx_block([funding], b"\x17" * 32), 3)
+    chainstate.close()
+
+
+def test_add_blocks_own_creation_loops_keep_the_two_dicts_disjoint(
+    tmp_path: Path,
+) -> None:
+    """A block recreating a still-staged spend's own txid stays disjoint.
+
+    `_bip30_violation` reads `removed_utxos` before `updated_utxo_set`
+    on the claim that no outpoint bytes value is ever staged in both at
+    once. Fund an output and finalize it, spend it -- staged only, via
+    `_mark_removed`, with no finalize or rev block in between -- then
+    add a later block whose own transaction shares that spent output's
+    exact txid. Before `add_block`'s own two creation loops called
+    `_unmark_removed` themselves, the recreated outpoint's `_put`
+    landed in `updated_utxo_set` while `removed_utxos` still carried it
+    from the spend, and a later `apply_rev_block` undoing that
+    recreation raised `ChainstateInconsistencyError("output already
+    removed")` on a coin that was legitimately staged and unspent
+    (btclib-org/btclib-node#586).
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    funding = coinbase(b"\x18")
+    utxo_index.add_block(one_tx_block([funding], b"\x18" * 32), 1)
+    utxo_index.finalize()
+
+    out = OutPoint(funding.id, 0)
+    key = out.serialize(check_validity=False)
+    utxo_index.add_block(
+        one_tx_block([coinbase(b"\x19"), spending(out, b"\x19")], b"\x19" * 32), 2
+    )
+    assert key in utxo_index.removed_utxos
+
+    _, rev_block = utxo_index.add_block(one_tx_block([funding], b"\x1a" * 32), 3)
+    assert not (key in utxo_index.removed_utxos and key in utxo_index.updated_utxo_set)
+
+    # undoing the recreation does not trip "output already removed" on a
+    # coin that is legitimately staged and unspent
+    utxo_index.apply_rev_block(rev_block)
     chainstate.close()
 
 

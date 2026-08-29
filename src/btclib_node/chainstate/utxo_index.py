@@ -110,11 +110,11 @@ class UtxoIndex:
 
         Checking `removed_utxos` before `updated_utxo_set` is safe only
         because the two are disjoint: no outpoint bytes value is ever
-        staged in both at once, `_unmark_removed` running before every
-        `_put` that could restore one (`apply_rev_block`'s own docstring
-        argues this invariant). A restored prevout that stayed in
-        `removed_utxos` instead -- as one used to, before `_unmark_removed`
-        ran unconditionally -- would answer `False` here on that account
+        staged in both at once, because every `_put` call site in this
+        module -- `apply_rev_block`'s own `to_add` loop and both of
+        `add_block`'s own creation loops -- runs `_unmark_removed` on
+        that same key first. A key that reaches `_put` still marked
+        removed would otherwise answer `False` here on that account
         alone, before this order ever reaches `updated_utxo_set` or the
         store, hiding a genuine BIP30 duplicate of that prevout rather
         than only the double-spend-guard failure `apply_rev_block`'s own
@@ -238,6 +238,20 @@ class UtxoIndex:
         refused duplicate never reaches the two loops below that would
         otherwise stage a write over it.
 
+        Both loops below call `_unmark_removed` on an outpoint's own
+        bytes before every `_put` of it, the same order
+        `apply_rev_block`'s own `to_add` loop uses to restore one: a key
+        this call creates can coincide with one `removed_utxos` still
+        carries only when the two share a txid, `check_bip30` above
+        being what refuses that for every case but the two historical
+        exceptions -- so the unmark is a no-op everywhere else, and is
+        what keeps `removed_utxos` and `updated_utxo_set` disjoint
+        rather than leaving a recreated outpoint staged in both at once
+        (`_bip30_violation`'s own docstring is where that invariant is
+        used, and btclib-org/btclib-node#586 is where staging it in
+        both broke a later `apply_rev_block` on a coin that was
+        legitimately unspent).
+
         Returns each non-coinbase transaction paired with the prevouts
         its own inputs consumed -- what `interpreter.check_transactions`
         validates against -- and the `RevBlock` that undoes this call.
@@ -252,7 +266,9 @@ class UtxoIndex:
         for i, tx_out in enumerate(block.transactions[0].vout):
             out_point = OutPoint(block.transactions[0].id, i, check_validity=False)
             coin = Coin(tx_out, height, is_coinbase=True)
-            self._put(out_point.serialize(check_validity=False), coin)
+            out_point_bytes = out_point.serialize(check_validity=False)
+            self._unmark_removed(out_point_bytes)
+            self._put(out_point_bytes, coin)
             added.append(out_point)
 
         for tx in block.transactions[1:]:
@@ -294,10 +310,9 @@ class UtxoIndex:
 
             for i, tx_out in enumerate(tx.vout):
                 out_point = OutPoint(tx_id, i, check_validity=False)
-                self._put(
-                    out_point.serialize(check_validity=False),
-                    Coin(tx_out, height, is_coinbase=False),
-                )
+                out_point_bytes = out_point.serialize(check_validity=False)
+                self._unmark_removed(out_point_bytes)
+                self._put(out_point_bytes, Coin(tx_out, height, is_coinbase=False))
                 added.append(out_point)
 
             complete_transactions.append((prev_coins, tx))

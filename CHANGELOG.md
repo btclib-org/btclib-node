@@ -1025,6 +1025,22 @@ where this file was written rather than where anything was tagged.
   refused `bad-txns-BIP30` -- CVE-2012-1909's own shape, independently
   of the double-spend-guard consequence above; `_unmark_removed`
   running unconditionally fixes both at once.
+- **`UtxoIndex.add_block`'s own two creation loops now unmark a
+  recreated outpoint from `removed_utxos` before staging it, the same
+  order `apply_rev_block`'s own restore already used.** Spending a
+  durable output stages it into `removed_utxos` alone; a later block,
+  still uncommitted, recreating that exact outpoint's own txid then
+  staged the recreation into `updated_utxo_set` while `removed_utxos`
+  still carried it, leaving the outpoint in both at once. A subsequent
+  `apply_rev_block` undoing that recreation raised
+  `ChainstateInconsistencyError("output already removed")` on a coin
+  that was legitimately staged and unspent. Unreachable through the
+  node's own production caller, which validates a candidate block's
+  BIP34 commitment before this staging could ever be reached a second
+  time for the same coinbase, and a non-coinbase duplicate txid is
+  already a plain double spend caught elsewhere -- so this is a
+  private-method invariant made to hold by construction rather than a
+  reachable fault.
 
 ## v2026.8.27
 
