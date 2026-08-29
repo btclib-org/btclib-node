@@ -66,6 +66,26 @@ def test_download(tmp_path: Path) -> None:
     for _ in range(len(chain)):
         update_chain(bootstrap_node)
     assert bootstrap_node.status == NodeStatus.BlockSynced
+
+    # `_finalize_fork` only calls `Chainstate.flush` once
+    # `UtxoIndex.should_flush` says the staged UTXO cache has grown
+    # past its own bound (`main.py`), which this chain of coinbase-only
+    # blocks never reaches: everything `BlockIndex.stage_status` and
+    # `FilterIndex`'s own `pending` hold (`db.py`'s docstring) is still
+    # Python state, never written to the store, so a copy taken without
+    # this call would carry nothing past genesis -- measured directly,
+    # `Chainstate.flush` runs zero times over the loop above without it
+    # (closes #710). Called here rather than through `close()`:
+    # `bootstrap_node` stays running and is never closed, so nothing
+    # here reopens btclib-org/btclib-node#703's own Windows question.
+    # Core's own `TestFramework._initialize_chain`
+    # (`test/functional/test_framework/test_framework.py`) fully stops
+    # its cache node before copying its datadir to seed every other
+    # one, read at bitcoin/bitcoin@ca7162cde5, rather than flushing a
+    # node it leaves running -- this test diverges because
+    # `bootstrap_node` has to stay a live peer for the rest of it,
+    # which a stopped cache node never needs to be.
+    bootstrap_node.chainstate.flush()
     bootstrap_node.start()
     wait_until_listening(bootstrap_node.p2p_manager)
 
@@ -91,6 +111,12 @@ def test_download(tmp_path: Path) -> None:
                 allow_rpc=False,
             )
         )
+        # Each copy is asserted whole on its own, before it ever talks
+        # to a peer: `main_node`'s own final assertion below is
+        # satisfiable through `bootstrap_node` alone, so it cannot
+        # answer whether the other nine copies carry the chain they are
+        # meant to (closes #710).
+        assert len(node.chainstate.block_index.active_chain) == length + 1
         node.start()
         wait_until_listening(node.p2p_manager)
         download_nodes.append(node)

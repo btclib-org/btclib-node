@@ -2051,6 +2051,23 @@ where this file was written rather than where anything was tagged.
   of a `WinError 32` on a `LOCK` file starts from the trace rather than
   from the guess.
 
+### `test_download`'s copies now hold the whole chain (closes #710)
+
+- **`test_download` flushes `bootstrap_node`'s chainstate before
+  copying its directory.** `_finalize_fork` only calls
+  `Chainstate.flush` once `UtxoIndex.should_flush` says the staged
+  UTXO cache has grown past its own bound (`src/btclib_node/main.py`),
+  a bound this test's own chain of coinbase-only blocks never
+  reaches: `BlockIndex.stage_status` and `FilterIndex`'s own `pending`
+  held everything in Python state, never written to the store, so the
+  nine copies taken from `bootstrap_node`'s directory opened on
+  essentially empty stores -- genesis alone -- while the test still
+  passed, `bootstrap_node` itself answering every request as the same
+  live Python object regardless of what had reached disk. Each copy
+  now asserts its own chain length right after it opens, before it
+  ever talks to a peer, rather than relying on the final assertion
+  against `main_node`, which `bootstrap_node` alone already satisfies.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
