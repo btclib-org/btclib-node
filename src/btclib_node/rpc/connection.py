@@ -235,6 +235,21 @@ class RpcConnection:
         # reads this once a reply is ready, to decide whether to close
         # the socket or read another request off it (issue #640).
         self.keep_alive = False
+        # Recomputed by `run` alongside `keep_alive`, off the same
+        # request: whether the JSON `run` just parsed was a non-empty
+        # array, which is what `async_send` below reads instead of its
+        # own former `len(response) == 1` to decide whether to answer
+        # as a bare object or keep the array shape the client sent
+        # (issue #653). `len(body) > 0` rather than `isinstance(body,
+        # list)` alone -- unlike Core's own `isArray()`
+        # (`HTTPReq_JSONRPC`, `src/httprpc.cpp:114`, at
+        # bitcoin/bitcoin@ca7162cde5), which draws no such line -- is
+        # this tree's own, separate, already-tested choice to answer an
+        # empty `[]` batch as a single `Invalid request` object
+        # (`rpc.main.handle_rpc`'s own docstring has why); ISS 653 is
+        # about a batch of one, not that one, so this keeps it as it
+        # was rather than deciding it here.
+        self.is_batch = False
         # A parse error's own reply, set by `run` below and never read
         # back: `asyncio.Task` only holds a *weak* reference to itself
         # in the loop's own bookkeeping, so a `Task` nothing else
@@ -400,6 +415,13 @@ class RpcConnection:
                 # in this class, `create_task` returns an `Awaitable`,
                 # which mypy's own `unused-awaitable` flags as a
                 # likely-missing `await` when discarded outright.
+                # A body `json.loads` could not even parse is never a
+                # batch, whatever it superficially looked like -- and
+                # this is set unconditionally rather than left at
+                # whatever a previous request on a kept-alive connection
+                # last set it to, which this reply would otherwise
+                # inherit.
+                self.is_batch = False
                 self._parse_error_reply = self.loop.create_task(
                     self.async_send(
                         [error_msg(RpcErrorCode.PARSE_ERROR, "Parse error")]
@@ -407,6 +429,7 @@ class RpcConnection:
                 )
                 return
 
+            self.is_batch = isinstance(body, list) and len(body) > 0
             if not isinstance(body, list):
                 body = [body]
             self.manager.messages.append((body, self.id))
@@ -447,9 +470,14 @@ class RpcConnection:
         happens once the reply is on the wire: `client` closes, or this
         reads another request off the same socket, matching Core's own
         per-version keep-alive default either way (issue #640).
+        `self.is_batch`, set by `run` off the same request, decides
+        whether `response` stays an array here: unwrapping it purely
+        from `len(response) == 1` used to answer a one-member batch
+        with the same bare object a lone request gets, with nothing
+        left in `response` by then to tell the two apart (issue #653).
         """
         body: list[dict[str, Any]] | dict[str, Any] = response
-        if len(response) == 1:
+        if not self.is_batch:
             body = response[0]
         # A fresh token per call, not a fixed word: RawJSON's own
         # docstring has why -- a legitimate string value containing a
