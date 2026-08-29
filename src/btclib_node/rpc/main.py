@@ -58,8 +58,33 @@ def handle_rpc(node: Node) -> None:
     with a JSON-RPC error rather than raising past `Node`'s own loop --
     except a `stop` request, whose own reply is waited on before
     `node.stop()` runs, so the client sees it before the loop it arrived
-    on is torn down. `conn_id` is popped off `manager.connections`
-    either way, once answered.
+    on is torn down.
+
+    `conn_id` is left in `manager.connections` -- `RpcConnection.async_send`
+    is what removes it, on the branch that actually closes `conn`, once
+    `conn` is done answering rather than the instant this function has
+    merely scheduled that answer. This function used to pop it here,
+    unconditionally, on the theory that every reply eventually closes;
+    once a reply could keep the connection open instead (issue #640),
+    that pop raced `async_send`'s own re-entry into `RpcConnection.run`
+    for the *next* request on the same kept-alive connection, on
+    `RpcManager`'s own thread -- `conn.send` below only schedules
+    `async_send`, it does not wait for it, so nothing orders this
+    function's own next line against how far across that coroutine the
+    other thread has already run by the time it executes. Where
+    `async_send` won the race -- wrote the reply, re-armed `conn` and
+    read the next request whole, all inside one burst neither
+    `sock_sendall` nor an already-buffered `sock_recv` had to suspend
+    for -- this function's pop then removed the entry `async_send` had
+    just put back for that next request's own benefit, not the stale one
+    it was meant to remove, and the request already queued behind it was
+    answered by nobody: `rpc.main.get_connection` found no connection
+    for it and `handle_rpc` silently returned, which is what a client
+    pooling one connection across many calls
+    (`tests/functional/rpc/connections_test.py`'s
+    `test_many_unpaced_calls_over_one_session_transport_do_not_reset`)
+    saw as one call in a few hundred stalling for its own full timeout
+    with nothing logged on either side (issue #688).
     """
     data, conn_id = node.rpc_manager.messages.popleft()
     conn = get_connection(node.rpc_manager, conn_id)
@@ -123,4 +148,3 @@ def handle_rpc(node: Node) -> None:
     else:
         conn.send(response)
     node.logger.debug("Finished rpc\n")
-    node.rpc_manager.connections.pop(conn_id)

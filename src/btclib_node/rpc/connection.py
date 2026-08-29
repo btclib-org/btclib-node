@@ -481,20 +481,17 @@ class RpcConnection:
                 # synchronously, in time for that one read to find it.
                 #
                 # Left in `manager.connections` rather than popped here,
-                # unlike a dispatched reply's own pop in
-                # `rpc.main.handle_rpc`: that pop is safe precisely
-                # because it runs on `Node`'s own thread, the same one
-                # `stop` is called from, so the two cannot interleave
-                # (issue #640 review round 2) -- this method runs on
-                # `self.loop`'s own thread instead, where a pop here could
-                # still race `stop`'s own socket-closing sweep of
-                # `manager.connections`, the second collection that sweep
-                # reads, the same way popping raced its first. Leaving the
-                # entry in place keeps that sweep able to close this
-                # connection's own socket even on a turn where the task
-                # above never gets to run at all; `async_send` below pops
-                # it once it does, on the branch that closes rather than
-                # keeps this connection.
+                # so that `stop`'s own socket-closing sweep of that dict
+                # can still reach this connection even on a turn where
+                # the task above never gets to run at all; `async_send`
+                # below pops it once it does, on the branch that closes
+                # rather than keeps this connection. `rpc.main.handle_rpc`
+                # carried a pop of its own once, on `Node`'s thread, that
+                # this comment used to be contrasted against as the
+                # thread-safe side of the same dict -- issue #688 is where
+                # that pop turned out not to be safe after all, racing not
+                # `stop` but `async_send`'s own re-entry into `run` for
+                # this same connection's next request, and removed it.
                 # Assigned to `self._parse_error_reply` (its own
                 # docstring above has why) rather than left a bare
                 # statement: unlike `run_coroutine_threadsafe` elsewhere
@@ -601,18 +598,21 @@ class RpcConnection:
         http_response += "\n"
         await self.loop.sock_sendall(self.client, http_response.encode())
         if self.keep_alive:
-            # Back in `manager.connections` before the read below can
-            # possibly complete: `handle_rpc`'s own call into `send`,
-            # which scheduled this coroutine, already popped this id out
-            # unconditionally once it did, on the assumption every reply
-            # closes -- true of every reply but this one now.
-            self.manager.connections[self.id] = self
+            # No re-insertion into `manager.connections` here: unlike an
+            # earlier version of this method, nothing removed this id on
+            # the way to this point. `create_connection` puts it in once,
+            # at accept, and the only things that ever take it back out
+            # are this method's own close branch below, `run`'s own
+            # `except Exception` and `RpcManager.stop`'s shutdown sweep --
+            # `rpc.main.handle_rpc`'s own docstring is where the earlier,
+            # racy alternative (an eager pop there, compensated by a
+            # re-insertion here) is argued against (issue #688).
             await self.run()
         else:
             self.client.close()
-            # A no-op, `pop`'s own default absorbing it, for a dispatched
-            # reply: `handle_rpc` already popped this id out once it
-            # scheduled this coroutine. The parse-error branch of `run`
+            # The only place besides `run`'s own `except Exception` above
+            # and `RpcManager.stop`'s shutdown sweep that removes this id
+            # from `manager.connections`: the parse-error branch of `run`
             # above pops nothing itself, deliberately, so this is what
             # removes its entry once this connection is actually done
             # rather than only kept reachable for `RpcManager.stop`'s own

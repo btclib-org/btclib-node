@@ -140,29 +140,41 @@ def test_many_unpaced_calls_over_one_session_transport_do_not_reset(
     either (the issue's own report is one failure in roughly two
     thousand).
 
-    Failure discriminator (issue #664): this is 300 sequential real
-    round trips over one socket, each on `bitcoin_core_rpc.transport`'s
-    own fresh, per-call timeout rather than one shared across all 300,
-    so a single-test `FetchError: ... timed out` here means one of 300
-    individually stalled that long, not merely ordinary `-n auto`
-    contention from this suite's own workers -- a far larger exposure to
-    external load than any other test carries, for a shape neither this
-    file nor `CLAUDE.md`'s own coverage-floor bullets (issue #372, issue
-    #617) already cover. Measured during the review of
-    iss-640-642-rpc-connection-lifetime-and-batch, round 3: failed once
-    with a sibling session's own worktree running a full pytest
-    `-n auto` suite concurrently at 70-95% CPU per worker (`ps aux` at
-    the time), passed standalone every time (4 runs) and in whole-suite
-    runs both before and after, including one at comparable load with
-    that same sibling contention still running. Measured again fixing
-    issue #653: failed twice and passed once in three whole-suite runs
-    with `uptime` in the triple digits (up to 331 on this ten-core
-    machine, from unrelated sessions elsewhere on the box, confirmed
-    absent from this test's own worktree via `ps aux`), then passed
-    reliably once `uptime` came back down into the double digits. A
-    failure here with the rest of the suite clean and `uptime` this high
-    is that discriminator, not evidence this test's own diff regressed
-    anything; rerun standalone or at ordinary load before trusting it.
+    This is 300 sequential real round trips over one socket, each on
+    `bitcoin_core_rpc.transport`'s own fresh, per-call timeout rather
+    than one shared across all 300, so a single-test `FetchError: ...
+    timed out` here means one of 300 individually stalled that long --
+    a far larger exposure to external load than any other test carries,
+    for a shape neither this file nor `CLAUDE.md`'s own coverage-floor
+    bullets (issue #372, issue #617) already cover.
+
+    issue #664 read a run of this test failing standalone as that
+    exposure to ordinary contention rather than as a defect, on the
+    strength of a clean rerun at comparable-or-higher load elsewhere in
+    the same investigation. issue #688 is the correction: reproduced
+    standalone, `-n0`, at a one-minute load average well under what
+    issue #664 itself called contention -- `rpc.main.handle_rpc` used
+    to pop `manager.connections`'s own entry for this connection right
+    after scheduling its reply through `RpcConnection.send`,
+    unconditionally, on `Node`'s own thread; nothing ordered that pop
+    against `RpcConnection.async_send`, on `RpcManager`'s own thread,
+    writing that same reply, re-arming the connection for its next
+    request and reading that next request whole -- all in one burst
+    neither a small `sock_sendall` nor an already-buffered `sock_recv`
+    had to suspend for. Where `async_send` won that race, `handle_rpc`'s
+    own pop then removed the entry `async_send` had just put back for
+    the request already queued behind it, so `rpc.main.get_connection`
+    found nothing for it and `handle_rpc` silently returned, answering
+    nobody: the server-side log carried nothing past the previous
+    request's own "Finished rpc", and
+    `bitcoin_core_rpc.transport.SessionTransport`'s client-side read
+    blocked for the whole of its own per-call timeout with no reply, no
+    close and no reset ever arriving. `handle_rpc` no longer pops this
+    id at all -- `RpcConnection.async_send` is its sole owner now, on
+    the close branch that already ran there -- and this test's own
+    standalone reruns at ordinary load no longer reproduce the failure.
+    A failure here now, at any load, is read as a defect and not rerun
+    away.
     """
     node = rpc_node
     wait_until_listening(node.rpc_manager)

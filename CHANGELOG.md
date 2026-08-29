@@ -2068,6 +2068,29 @@ where this file was written rather than where anything was tagged.
   ever talks to a peer, rather than relying on the final assertion
   against `main_node`, which `bootstrap_node` alone already satisfies.
 
+### `handle_rpc` no longer drops a kept-alive reply (closes #688, closes #685)
+
+- **`rpc.main.handle_rpc` no longer pops `RpcManager.connections`'s own
+  entry for the connection it just answered.** It used to, right after
+  scheduling the reply through `RpcConnection.send`, unconditionally,
+  on `Node`'s own thread -- racing `RpcConnection.async_send`, on
+  `RpcManager`'s own thread, writing that same reply, re-arming the
+  connection for its next kept-alive request and reading that next
+  request whole, all without ever suspending in between. Where
+  `async_send` won that race, `handle_rpc`'s own pop removed the entry
+  `async_send` had just put back for the request already queued behind
+  it, so `rpc.main.get_connection` found nothing for it and the request
+  was silently dropped, answering nobody: the client blocked for its
+  own full per-call timeout with no reply, no close and no reset ever
+  arriving, and nothing on the server's own side to say why.
+  `RpcConnection.async_send` is now the sole owner of this dict's
+  membership, on the branch that already ran there for a reply that
+  closes.
+- **This is what `tests/functional/rpc/connections_test.py::
+  test_many_unpaced_calls_over_one_session_transport_do_not_reset` was
+  failing standalone on, at a load issue #664 had read as ordinary
+  contention** -- that docstring is corrected to say so.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
