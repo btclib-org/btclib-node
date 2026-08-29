@@ -12,6 +12,21 @@ guess. This paragraph used to date that boundary to a `v0.1.0` tag,
 deleted on 2026-08-23 (#553, btclib-org/.github#105); the boundary is
 where this file was written rather than where anything was tagged.
 
+Where an entry cites its issue is section 9 of the organization
+standard's, and it settled on the bullet, beside the claim the citation
+answers, rather than on the entry's `###` heading
+(btclib-org/.github#547). This file's own entry for that change is the
+boundary: a heading carrying the number before it, and one carrying none
+after it, are the same convention read on either side rather than an
+entry that left its issue out. The number reached a heading rather than
+being chosen for it -- section 11 of that standard requires the landing
+subject to carry `(closes #N)`, and a heading written from that subject
+holds the citation already, the pull request number a squash appends
+being the part taken off -- and section 9's *One fact in one place* is
+why it is not kept there once the bullet has it. Nothing written before
+the boundary is rewritten, that being section 9's own *Nothing already
+written is rewritten*.
+
 ## Unreleased
 
 ### The three chain scripts guard their module body (closes #579)
@@ -1317,6 +1332,27 @@ where this file was written rather than where anything was tagged.
 - **`RELEASE_NOTES.md` carries the action this forces**: a datadir
   written by the sqlite3 store cannot be read by this version, and is
   refused by name rather than silently started over as an empty chain.
+
+### The record says where its own entries cite their issues
+
+- **`CHANGELOG.md`'s introduction says which of its entries carry the
+  issue number on the `###` heading and which carry it in the bullet
+  alone** (closes btclib-org/.github#547): section 9 of the organization
+  standard puts the citation in the bullet, beside the claim it answers,
+  and a reader of this record does not reach that section --
+  `CONTRIBUTING.md` is what points a contributor at it. What that reader
+  met was a heading with a number, then a heading without one, and
+  nothing saying whether the second was a convention or an omission.
+- **The reason is beside the boundary rather than left to be worked
+  out**: section 11 of the standard requires the landing subject to
+  carry `(closes #N)`, so a heading written from that subject arrives
+  with the citation in it, and *One fact in one place* is what decides
+  it does not stay there once the bullet has it.
+- **This entry is the first written under the new rule**, its citation
+  in the bullet and its heading carrying none, and everything written
+  before it stands as it was written -- *Nothing already written is
+  rewritten* is the standard's own answer to the retrofit, and the new
+  paragraph points at it rather than restating it.
 
 ## v2026.8.27
 
