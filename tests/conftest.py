@@ -148,7 +148,9 @@ def rpc_node(tmp_path: Path) -> Iterator[Node]:
 
 
 @contextmanager
-def unstarted_node_context(tmp_path: Path, *, pruned: bool = False) -> Iterator[Node]:
+def unstarted_node_context(
+    tmp_path: Path, *, pruned: bool = False, prune_target_mib: int | None = None
+) -> Iterator[Node]:
     """Build and drive a node directly, never `start()`ed; close it on exit.
 
     `run`'s own teardown -- `peer_db.close()`, `chainstate.close()`,
@@ -178,6 +180,7 @@ def unstarted_node_context(tmp_path: Path, *, pruned: bool = False) -> Iterator[
             allow_rpc=False,
             debug=True,
             pruned=pruned,
+            prune_target_mib=prune_target_mib,
         )
     )
     try:
@@ -202,13 +205,19 @@ def regtest_node(tmp_path: Path) -> Iterator[Callable[..., Node]]:
     once more here regardless of what the test already did to it --
     `unstarted_node_context`'s own closes are all safe to repeat -- since
     most callers build exactly one node and never close it themselves.
-    `pruned` reaches `Config` unchanged, `False` by default, matching
-    every caller here before btclib-org/btclib-node#601.
+    `pruned` and `prune_target_mib` reach `Config` unchanged, `False`/
+    `None` by default, matching every caller here before
+    btclib-org/btclib-node#601 and btclib-org/btclib-node#705
+    respectively.
     """
     with ExitStack() as stack:
 
-        def make(*, pruned: bool = False) -> Node:
-            node = stack.enter_context(unstarted_node_context(tmp_path, pruned=pruned))
+        def make(*, pruned: bool = False, prune_target_mib: int | None = None) -> Node:
+            node = stack.enter_context(
+                unstarted_node_context(
+                    tmp_path, pruned=pruned, prune_target_mib=prune_target_mib
+                )
+            )
             node.status = NodeStatus.HeaderSynced
             return node
 

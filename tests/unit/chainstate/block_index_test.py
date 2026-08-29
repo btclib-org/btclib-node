@@ -1155,13 +1155,13 @@ def test_set_downloaded_after_stage_status_is_not_undone_by_a_later_finalize(
 ) -> None:
     """`set_downloaded` on a staged hash survives the next flush.
 
-    Reachable from `main._prune_chain`: `_finalize_fork`'s own to_add
-    loop stages every hash a fork connects through `stage_status`,
+    Reachable from `main.prune_up_to_height`: `_finalize_fork`'s own
+    to_add loop stages every hash a fork connects through `stage_status`,
     before that fork's own `finalize` ever runs, and `to_add` is not
     bounded by `MIN_BLOCKS_TO_KEEP` anywhere -- a fork longer than the
-    retained depth stages a hash `_prune_chain`, run once at the end of
-    that same `update_chain` call, then clears the flag on. Writing
-    straight through would leave `pending` holding a stale
+    retained depth stages a hash `prune_up_to_height`, run once at the
+    end of that same `update_chain` call, then clears the flag on.
+    Writing straight through would leave `pending` holding a stale
     `downloaded=True` entry that the next `finalize` writes back over
     the clear, undoing it silently -- the same shape
     btclib-org/btclib-node#586 fixed for `set_status`.

@@ -27,6 +27,7 @@ from btclib_node.constants import (
     COINBASE_MATURITY,
     MAX_TIP_AGE,
     MIN_BLOCKS_TO_KEEP,
+    MIN_PRUNE_TARGET_MIB,
     NodeStatus,
 )
 from btclib_node.exceptions import ChainstateInconsistencyError, MissingPrevoutError
@@ -1764,10 +1765,48 @@ def test_an_unpruned_node_never_calls_prune_up_to(
     assert calls == []
 
 
-def test_a_pruned_node_deletes_blocks_more_than_the_retained_depth_behind_the_tip(
-    regtest_node: Callable[..., Node],
+def test_a_pruned_node_with_no_mib_target_never_calls_prune_up_to(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A pruned node keeps only the last `MIN_BLOCKS_TO_KEEP` blocks on disk.
+    """`Config.prune_target_mib` unset is Core's own manual pruning, `-prune=1`.
+
+    Nothing is deleted on its own here; only `rpc.callbacks.prune_blockchain`
+    does, matching `node::ApplyArgsManOptions`'s own
+    `PRUNE_TARGET_MANUAL` (`node/blockmanager_args.cpp:28-29`, at
+    bitcoin/bitcoin@ca7162cde5): `FindFilesToPrune` is never called for a
+    manually-pruned chainstate, only `FindFilesToPruneManual` is, and
+    only from the RPC.
+    """
+    node = regtest_node(pruned=True, prune_target_mib=None)
+    calls: list[int] = []
+    monkeypatch.setattr(
+        node.block_db, "prune_up_to", lambda target, _hash: calls.append(target)
+    )
+    connect(
+        node, generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
+    )
+    assert calls == []
+
+
+def _always_over_target(node: Node, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force `_prune_to_target`'s stop condition to never fire.
+
+    `node.block_db.current_usage` answering a constant far above any
+    `prune_target_mib` in this file keeps `_prune_to_target`'s own
+    while-loop running for every height `MIN_BLOCKS_TO_KEEP` allows --
+    the real chains these tests build are a few kilobytes, orders of
+    magnitude under even the smallest MiB target, so this is what
+    stands in for a node whose actual disk usage stays over target
+    throughout, the case `test_a_pruned_node_stops_once_under_target`
+    below is the other side of.
+    """
+    monkeypatch.setattr(node.block_db, "current_usage", lambda: 2**40)
+
+
+def test_a_pruned_node_over_target_deletes_past_the_retained_depth_never_further(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pruned node over target keeps only the last `MIN_BLOCKS_TO_KEEP`.
 
     Core's own retained depth (`constants.MIN_BLOCKS_TO_KEEP`'s own
     citation): a fork replacing the tip's own last `MIN_BLOCKS_TO_KEEP`
@@ -1775,7 +1814,8 @@ def test_a_pruned_node_deletes_blocks_more_than_the_retained_depth_behind_the_ti
     connect through `update_chain` -- one block at a time, this test's
     own shape -- never has reason to reach further back than.
     """
-    node = regtest_node(pruned=True)
+    node = regtest_node(pruned=True, prune_target_mib=1)
+    _always_over_target(node, monkeypatch)
     chain = generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
     block_index = connect(node, chain)
     tip_height = len(block_index.active_chain) - 1
@@ -1787,8 +1827,70 @@ def test_a_pruned_node_deletes_blocks_more_than_the_retained_depth_behind_the_ti
     assert node.block_db.get_block(block_index.active_chain[-1]) is not None
 
 
-def test_a_pruned_node_leaves_headers_and_the_active_chain_untouched(
+def test_a_pruned_node_under_target_deletes_nothing(
     regtest_node: Callable[..., Node],
+) -> None:
+    """A pruned node under its own MiB target the whole time deletes nothing.
+
+    No monkeypatch here: these chains are a few kilobytes, and
+    `MIN_PRUNE_TARGET_MIB` (550) is never crossed by them, so this is
+    `_prune_to_target`'s own real `block_db.current_usage` read, not a
+    forced one.
+    """
+    node = regtest_node(pruned=True, prune_target_mib=MIN_PRUNE_TARGET_MIB)
+    chain = generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
+    block_index = connect(node, chain)
+
+    assert node.block_db.pruned_up_to == -1
+    assert node.block_db.get_block(block_index.active_chain[1]) is not None
+
+
+def test_a_pruned_node_stops_once_under_target(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_prune_to_target` stops as soon as usage drops under the target.
+
+    Core's own `FindFilesToPrune` breaks out of its own file loop "are
+    we below our target?" (`node/blockstorage.cpp:373-375`, at
+    bitcoin/bitcoin@ca7162cde5) rather than reaching every file the
+    retained-depth bound would otherwise allow; matched here by a
+    `current_usage` that answers over target for the first three calls
+    and under it from the fourth call on, so pruning reaches height 3
+    and no further, well short of the `MIN_BLOCKS_TO_KEEP` floor this
+    chain's own length would otherwise allow.
+    """
+    node = regtest_node(pruned=True, prune_target_mib=1)
+    usages = iter([2**40, 2**40, 2**40, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    monkeypatch.setattr(node.block_db, "current_usage", lambda: next(usages))
+    chain = generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
+    block_index = connect(node, chain)
+
+    assert node.block_db.pruned_up_to == 3
+    assert node.block_db.get_block(block_index.active_chain[3]) is None
+    assert node.block_db.get_block(block_index.active_chain[4]) is not None
+
+
+def test_a_pruned_node_still_prunes_when_usage_exactly_equals_the_target(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Usage exactly at the target still prunes, matching Core's own `>=`.
+
+    Core's own check is `nCurrentUsage + nBuffer >= target`
+    (`node/blockstorage.cpp:373`, at bitcoin/bitcoin@ca7162cde5) --
+    inclusive, not `>`, so a node sitting precisely on its own target
+    still prunes one more height rather than stopping short of it.
+    """
+    node = regtest_node(pruned=True, prune_target_mib=1)
+    target_bytes = 1 * 1024 * 1024
+    monkeypatch.setattr(node.block_db, "current_usage", lambda: target_bytes)
+    chain = generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
+    connect(node, chain)
+
+    assert node.block_db.pruned_up_to >= 0
+
+
+def test_a_pruned_node_over_target_leaves_headers_and_the_active_chain_untouched(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Pruning never drops a header, a status, or the active chain itself.
 
@@ -1799,7 +1901,8 @@ def test_a_pruned_node_leaves_headers_and_the_active_chain_untouched(
     drop the `CBlockIndex` entry itself. What that entry's own
     `BLOCK_HAVE_DATA`/`BLOCK_HAVE_UNDO` do on prune is the next test.
     """
-    node = regtest_node(pruned=True)
+    node = regtest_node(pruned=True, prune_target_mib=1)
+    _always_over_target(node, monkeypatch)
     chain = generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
     block_index = connect(node, chain)
 
@@ -1808,8 +1911,8 @@ def test_a_pruned_node_leaves_headers_and_the_active_chain_untouched(
         assert block_index.get_block_info(block_hash) is not None
 
 
-def test_a_pruned_node_clears_downloaded_for_every_block_it_deletes(
-    regtest_node: Callable[..., Node],
+def test_a_pruned_node_over_target_clears_downloaded_for_every_block_it_deletes(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Pruning clears `BlockInfo.downloaded`, matching Core's own index entry.
 
@@ -1818,13 +1921,14 @@ def test_a_pruned_node_clears_downloaded_for_every_block_it_deletes(
     clears `BLOCK_HAVE_DATA`/`BLOCK_HAVE_UNDO` on the `CBlockIndex`
     entry it prunes -- "any block we prune would have to be downloaded
     again in order to consider its chain" -- matched here by
-    `BlockInfo.downloaded`, which `_prune_chain` clears for the same
-    range `block_db.prune_up_to` deletes. Genesis (height 0) is the one
-    exception: it is seeded `downloaded=True` and never written to
+    `BlockInfo.downloaded`, which `prune_up_to_height` clears for the
+    same range `block_db.prune_up_to` deletes. Genesis (height 0) is the
+    one exception: it is seeded `downloaded=True` and never written to
     `block_db` in the first place, so it stays `True` regardless of how
     deep pruning otherwise reaches.
     """
-    node = regtest_node(pruned=True)
+    node = regtest_node(pruned=True, prune_target_mib=1)
+    _always_over_target(node, monkeypatch)
     chain = generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
     block_index = connect(node, chain)
     tip_height = len(block_index.active_chain) - 1
@@ -1840,7 +1944,7 @@ def test_a_pruned_node_clears_downloaded_for_every_block_it_deletes(
 
 
 def test_a_fork_longer_than_the_retained_depth_prunes_correctly_on_disk(
-    regtest_node: Callable[..., Node],
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A fork connected in one `update_chain` call still persists a clear.
 
@@ -1851,7 +1955,7 @@ def test_a_fork_longer_than_the_retained_depth_prunes_correctly_on_disk(
     one `_finalize_fork_and_prune` call -- `chainstate.flush()` never
     fires mid-trial on a chain this size, `should_flush`'s own
     `_FLUSH_BOUND` being far past what a handful of coinbase-only blocks
-    touch, so every hash `_prune_chain` clears is still one
+    touch, so every hash `prune_up_to_height` clears is still one
     `stage_status` staged into `pending`, unflushed, in the very same
     call. `get_block_info` reads `header_dict`, updated the same way
     whether `set_downloaded` writes through or folds into `pending`, so
@@ -1859,7 +1963,8 @@ def test_a_fork_longer_than_the_retained_depth_prunes_correctly_on_disk(
     can, which is why this closes and reopens `Chainstate` rather than
     reading `block_index` again.
     """
-    node = regtest_node(pruned=True)
+    node = regtest_node(pruned=True, prune_target_mib=1)
+    _always_over_target(node, monkeypatch)
     chain = generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
     block_index = connect(node, chain)
     tip_height = len(block_index.active_chain) - 1

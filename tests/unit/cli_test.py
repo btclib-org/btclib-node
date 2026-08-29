@@ -12,6 +12,7 @@ import pytest
 
 from btclib_node import cli
 from btclib_node.chains import RegTest
+from btclib_node.constants import MIN_PRUNE_TARGET_MIB
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -533,14 +534,57 @@ def test_build_config_rpcbind_without_a_port_leaves_rpcport_alone() -> None:
 
 
 def test_build_config_prune_nonzero_reaches_config_pruned() -> None:
-    """A nonzero `-prune` builds a `Config` with `pruned` set, any value alike.
-
-    `Config.pruned` is a flat bool: `cli.py`'s own `-prune` help text is
-    where the collapse of Core's own MiB target down to "zero or not" is
-    argued.
-    """
+    """A nonzero `-prune` builds a `Config` with `pruned` set, any value."""
     assert cli.build_config(["-regtest", "-prune", "550"]).pruned is True
     assert cli.build_config(["-regtest", "-prune", "1"]).pruned is True
+
+
+def test_build_config_prune_at_or_above_the_minimum_sets_the_mib_target() -> None:
+    """`-prune=<n>` for `n >= MIN_PRUNE_TARGET_MIB` reaches `prune_target_mib`.
+
+    Core's own automatic pruning: `<n>` itself is the MiB target, not
+    collapsed to a fixed depth -- `node::ApplyArgsManOptions`
+    (`node/blockmanager_args.cpp:27-35`, at bitcoin/bitcoin@ca7162cde5)
+    stores `nPruneArg * 1_MiB` verbatim as `opts.prune_target` for every
+    `<n>` this branch reaches.
+    """
+    assert (
+        cli.build_config(
+            ["-regtest", "-prune", str(MIN_PRUNE_TARGET_MIB)]
+        ).prune_target_mib
+        == MIN_PRUNE_TARGET_MIB
+    )
+    assert cli.build_config(["-regtest", "-prune", "700"]).prune_target_mib == 700
+
+
+def test_build_config_prune_one_is_manual_and_sets_no_mib_target() -> None:
+    """`-prune=1` is Core's own manual pruning: no MiB target, RPC-only.
+
+    `node::ApplyArgsManOptions` (`node/blockmanager_args.cpp:28-29`, at
+    bitcoin/bitcoin@ca7162cde5): `nPruneArg == 1` is the one value
+    `PRUNE_TARGET_MANUAL` rather than `nPruneArg * 1_MiB` reaches, and
+    `main._prune_chain` reads `prune_target_mib is None` as exactly
+    this -- nothing deleted automatically, only
+    `rpc.callbacks.prune_blockchain`.
+    """
+    assert cli.build_config(["-regtest", "-prune", "1"]).prune_target_mib is None
+    assert cli.build_config(["-regtest", "-prune", "1"]).pruned is True
+
+
+def test_build_config_prune_between_two_and_the_minimum_refuses_to_start() -> None:
+    """`-prune=<n>` for `2 <= n < MIN_PRUNE_TARGET_MIB` refuses, Core's wording.
+
+    `node::ApplyArgsManOptions` (`node/blockmanager_args.cpp:31-33`, at
+    bitcoin/bitcoin@ca7162cde5): too small a target to actually run a
+    node on, and Core refuses to start rather than rounding it up to
+    the floor or collapsing it to manual pruning.
+    """
+    for n in (2, 100, MIN_PRUNE_TARGET_MIB - 1):
+        with pytest.raises(
+            ValueError,
+            match=f"Prune configured below the minimum of {MIN_PRUNE_TARGET_MIB} MiB",
+        ):
+            cli.build_config(["-regtest", "-prune", str(n)])
 
 
 def test_build_config_prune_zero_leaves_pruned_false() -> None:

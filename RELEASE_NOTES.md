@@ -155,6 +155,19 @@ section fills in one landed change at a time — what a user of
   Nothing to migrate for an existing, unpruned data directory: pruning
   only ever removes data going forward from when it is first turned on.
 
+- **`-prune=<n>` now matches Core's own manual/automatic split, instead
+  of collapsing every nonzero `<n>` to the fixed depth above** (issue
+  #705). `-prune=1` is manual pruning: nothing is deleted on its own any
+  more, only the new `pruneblockchain` RPC deletes, and only when asked
+  -- a node started with `-prune=1` expecting the old automatic deletion
+  now has to call that RPC itself, or use `-prune=550` or higher for
+  automatic pruning to a MiB target instead. `-prune=<n>` from `2` to
+  `549` now refuses to start rather than pruning to the fixed depth,
+  Core's own wording: too small a target to actually run a node on.
+  `-prune=<n>` at `550` or above is new: automatic pruning to roughly
+  `<n>` MiB on disk, `getblockchaininfo`'s own `automatic_pruning` and
+  `prune_target_size` answering for it.
+
 ### Windows
 
 - **`pip install btclib-node` now claims Windows** (issue #430): its

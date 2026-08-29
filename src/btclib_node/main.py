@@ -56,7 +56,12 @@ if TYPE_CHECKING:
     from btclib_node.chainstate.filter_index import FilterIndex
     from btclib_node.chainstate.utxo_index import UtxoIndex
 
-__all__ = ["parent_lookup", "update_chain", "verify_mempool_acceptance"]
+__all__ = [
+    "parent_lookup",
+    "prune_up_to_height",
+    "update_chain",
+    "verify_mempool_acceptance",
+]
 
 
 # update_chain calls this on the failure path, naming the block whose
@@ -265,20 +270,12 @@ def _finalize_fork(node: Node, to_add: list[Block], to_remove: list[RevBlock]) -
     node.logger.debug("End chainstate finalize")
 
 
-# update_chain's own finalize-branch step, run right after _finalize_fork:
-# Core's own prune step inside Chainstate::FlushStateToDisk
-# (src/validation.cpp, at bitcoin/bitcoin@ca7162cde5) -- a no-op unless
-# fPruneMode/Config.pruned says this node prunes at all, and never
-# reaching back past MIN_BLOCKS_TO_KEEP (constants.py, 288), the same
-# depth Core's own FindFilesToPrune is bounded by. A fork replacing the
-# last MIN_BLOCKS_TO_KEEP blocks still finds what it needs on disk, the
-# same guarantee that retained depth gives Core's own pruned node against
-# an ordinary reorg; a reorg deeper than that finds its own missing
-# blocks and fails on this node exactly as it does on Core's -- pruning
-# trades away that depth of reorg safety by its own nature, on both, and
-# nothing here is a new gap this call opens.
-def _prune_chain(node: Node) -> None:
-    """Delete block and undo data past `MIN_BLOCKS_TO_KEEP` behind the tip.
+def prune_up_to_height(node: Node, target_height: int) -> None:
+    """Delete block and undo data up to `target_height`, clearing `downloaded`.
+
+    The one write path `_prune_chain`'s own automatic-target walk below
+    and `rpc.callbacks.prune_blockchain`'s manual call share: both need
+    the same pairing, in the same order.
 
     Core's own `BlockManager::PruneOneBlockFile`
     (`node/blockstorage.cpp:270-286`, at bitcoin/bitcoin@ca7162cde5) clears
@@ -299,16 +296,82 @@ def _prune_chain(node: Node) -> None:
     unguarded -- a `target_height` of `0` would otherwise clear a flag
     for a block this store never held and never asks a peer for again.
     """
-    if not node.config.pruned:
-        return
     block_index = node.chainstate.block_index
-    target_height = len(block_index.active_chain) - 1 - MIN_BLOCKS_TO_KEEP
-    if target_height < 0:
-        return
     for height in range(max(1, node.block_db.pruned_up_to + 1), target_height + 1):
         block_hash = block_index.active_chain[height]
         block_index.set_downloaded(block_hash, downloaded=False)
     node.block_db.prune_up_to(target_height, block_index.active_chain.__getitem__)
+
+
+# update_chain's own finalize-branch step, run right after _finalize_fork:
+# Core's own prune step inside Chainstate::FlushStateToDisk
+# (src/validation.cpp, at bitcoin/bitcoin@ca7162cde5) -- a no-op unless
+# fPruneMode/Config.pruned says this node prunes at all, and never
+# reaching back past MIN_BLOCKS_TO_KEEP (constants.py, 288), the same
+# depth Core's own FindFilesToPrune is bounded by. A fork replacing the
+# last MIN_BLOCKS_TO_KEEP blocks still finds what it needs on disk, the
+# same guarantee that retained depth gives Core's own pruned node against
+# an ordinary reorg; a reorg deeper than that finds its own missing
+# blocks and fails on this node exactly as it does on Core's -- pruning
+# trades away that depth of reorg safety by its own nature, on both, and
+# nothing here is a new gap this call opens.
+def _prune_chain(node: Node) -> None:
+    """Delete block and undo data, never `MIN_BLOCKS_TO_KEEP` behind the tip.
+
+    `Config.prune_target_mib` set (Core's own `-prune=<n>`,
+    `n >= MIN_PRUNE_TARGET_MIB`) routes to `_prune_to_target` below,
+    which stops once actual usage is back under the target rather than
+    always reaching every height this bound would allow. `None` -- Core's
+    own manual pruning, `-prune=1` -- deletes nothing here on its own at
+    all; only `rpc.callbacks.prune_blockchain` does, and only when asked.
+    """
+    if not node.config.pruned:
+        return
+    prune_target_mib = node.config.prune_target_mib
+    if prune_target_mib is None:
+        return
+    block_index = node.chainstate.block_index
+    max_height = len(block_index.active_chain) - 1 - MIN_BLOCKS_TO_KEEP
+    if max_height < 0:
+        return
+    _prune_to_target(node, max_height, prune_target_mib)
+
+
+def _prune_to_target(node: Node, max_height: int, prune_target_mib: int) -> None:
+    """Delete oldest-first until `current_usage` is under the MiB target.
+
+    Core's own `BlockManager::FindFilesToPrune`
+    (`node/blockstorage.cpp:332-386`, at bitcoin/bitcoin@ca7162cde5) walks
+    its block files oldest first, pruning whole files -- and stopping,
+    file by file, the moment `nCurrentUsage` (`CalculateCurrentUsage`,
+    same file:811-818) is back under `target` -- never past
+    `last_block_can_prune` (`Chainstate::GetPruneRange`,
+    `validation.cpp:6376-6395`, same sha), the same `MIN_BLOCKS_TO_KEEP`
+    depth `max_height` above already is here. This store's own files
+    rotate by append order rather than by height
+    (`block_db`'s own module docstring), so there is no file-by-file walk
+    to mirror directly; walking height by height instead and checking
+    `block_db.current_usage` after every one reaches the same "stop once
+    under target" behaviour, at finer granularity than Core's own
+    per-file check rather than coarser -- actual bytes still only drop
+    once a file's own last live block or reverse patch is gone
+    (`block_db._release`), the same as Core's.
+
+    Not reproduced: Core's own `nBuffer`, headroom left under `target`
+    for the next `BLOCKFILE_CHUNK_SIZE`/`UNDOFILE_CHUNK_SIZE`
+    preallocation before the next check
+    (`node/blockstorage.cpp:363-364`, same sha). This store never
+    preallocates -- `block_db`'s own `__add_data_to_file` appends exactly
+    what it is given -- and `_prune_chain` above calls this after every
+    connected block, so there is no gap between one check and the next
+    for un-budgeted growth to hide in the way a buffer would guard
+    against.
+    """
+    target_bytes = prune_target_mib * 1024 * 1024
+    height = max(1, node.block_db.pruned_up_to + 1)
+    while height <= max_height and node.block_db.current_usage() >= target_bytes:
+        prune_up_to_height(node, height)
+        height += 1
 
 
 def _finalize_fork_and_prune(

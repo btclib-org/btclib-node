@@ -6,8 +6,8 @@
 
 The unit tests (`block_db_test.py`, `p2p/callbacks_test.py`,
 `download_test.py`, `main_test.py`) cover the mechanism --
-`BlockDB.prune_up_to`'s own deletion, `main._prune_chain`'s own call into
-it, `_below_prune_threshold`'s own disconnect decision, and
+`BlockDB.prune_up_to`'s own deletion, `main.prune_up_to_height`'s own
+call into it, `_below_prune_threshold`'s own disconnect decision, and
 `DownloadManager._reachable_blocks`'s own skip -- each against a double
 standing in for the rest of the node. What this checks is the same four
 things over an actual socket, between two real `Node`s: a pruned node's
@@ -93,6 +93,13 @@ def pruned_server_and_client(
     `update_chain` connects the whole chain, and `main._prune_chain`
     prunes behind it, through the server's real thread rather than by
     calling either function directly.
+
+    `prune_target_mib=1` routes that through the automatic-MiB-target
+    path (`main._prune_to_target`) rather than Core's own manual mode,
+    which deletes nothing on its own -- `current_usage` is monkeypatched
+    to a constant over that target because this chain's own real bytes
+    on disk, a few kilobytes, never would be, the same substitute
+    `main_test.py`'s own `_always_over_target` uses.
     """
     server = Node(
         config=Config(
@@ -101,8 +108,10 @@ def pruned_server_and_client(
             p2p_port=get_random_port(),
             allow_rpc=False,
             pruned=True,
+            prune_target_mib=1,
         )
     )
+    monkeypatch.setattr(server.block_db, "current_usage", lambda: 2**40)
     client = Node(
         config=Config(
             chain="regtest",

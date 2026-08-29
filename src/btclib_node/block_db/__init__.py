@@ -491,16 +491,18 @@ class BlockDB:
     ) -> None:
         """Delete every block and reverse patch from the last pruned height on.
 
-        `hash_at_height` is `main._prune_chain`'s own
-        `active_chain.__getitem__`: this store tracks locations by hash,
-        never by height, so the height -> hash step lives with the
-        caller that already holds `BlockIndex.active_chain` rather than
-        being threaded through here. A no-op if `target_height` is at or
-        behind what an earlier call already reached -- `main._prune_chain`
-        checks the same thing first, so this only ever fires again for a
-        genuinely later target, but a second caller (a test, a retry
-        after a crash) gets the same idempotence `add_block` and
-        `add_rev_block` already give the rest of this store.
+        `hash_at_height` is `main.prune_up_to_height`'s own
+        `active_chain.__getitem__` -- the one caller this method has,
+        shared by `main._prune_chain`'s own automatic-target walk and
+        `rpc.callbacks.prune_blockchain`'s manual call: this store tracks
+        locations by hash, never by height, so the height -> hash step
+        lives with the caller that already holds `BlockIndex.active_chain`
+        rather than being threaded through here. A no-op if `target_height`
+        is at or behind what an earlier call already reached, the same
+        idempotence `add_block` and `add_rev_block` already give the rest
+        of this store -- a retry after a crash, or a second automatic-
+        target step that lands on a height an earlier one already passed,
+        costs nothing extra.
         """
         with self._lock:
             if target_height <= self.pruned_up_to:
@@ -511,6 +513,21 @@ class BlockDB:
                 self._delete_rev_block(block_hash)
             self.pruned_up_to = target_height
             self.db.put(b"p", var_int.serialize(target_height + 1))
+
+    def current_usage(self) -> int:
+        """Bytes this store still accounts for, across every `.blk`/`.rev` file.
+
+        Core's own `BlockManager::CalculateCurrentUsage`
+        (`node/blockstorage.cpp:811-818`, at bitcoin/bitcoin@ca7162cde5)
+        sums `nSize + nUndoSize` over every block file its own
+        `m_blockfile_info` still tracks; `self.files` is this store's own
+        counterpart, one `FileMetadata` per `.blk` or `.rev` file not yet
+        unlinked by `_release`, so the same sum over its `size` fields
+        answers the same question. `main._prune_chain`'s own automatic-
+        target walk is the one caller.
+        """
+        with self._lock:
+            return sum(file.size for file in self.files.values())
 
     def _delete_block(self, block_hash: bytes) -> None:
         location = self.blocks.pop(block_hash, None)

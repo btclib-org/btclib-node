@@ -168,17 +168,22 @@ class Config:
     # P2pManager.server binds every interface unconditionally, and is
     # right to, since a peer listener is supposed to accept a stranger.
     rpc_host: str
-    # `True` retains only the last `MIN_BLOCKS_TO_KEEP` (constants.py,
-    # 288, Core's own two days) blocks and their undo data on disk,
-    # `main._prune_chain`'s own bound -- `block_db.BlockDB.prune_up_to`
-    # is what actually deletes them. No `-prune=<n>` MiB target of
-    # Core's own: this is Core's manual-pruning depth alone, always on
-    # once `pruned` is, and `cli.py`'s own `-prune` collapses whatever
-    # nonzero `<n>` it is given down to this one bound rather than
-    # sizing anything from it -- the size-target axis is
-    # btclib-org/btclib-node#601's own deferred remainder, filed as
-    # btclib-org/btclib-node#705.
+    # `True` is Core's own `IsPruneMode()`: some block and undo data may
+    # be deleted, `MIN_BLOCKS_TO_KEEP` (constants.py, 288, Core's own two
+    # days) behind the tip never among it -- `block_db.BlockDB.prune_up_to`
+    # is what actually deletes. `prune_target_mib` below is the other
+    # half of Core's own `-prune=<n>`: which of manual (RPC-only) or
+    # automatic-to-a-MiB-target pruning this is.
     pruned: bool
+    # `None` is Core's own manual pruning (`-prune=1`): nothing is
+    # deleted on its own, only `rpc.callbacks.prune_blockchain` deletes,
+    # and only when asked. An int is Core's own automatic pruning
+    # (`-prune=<n>`, `n >= MIN_PRUNE_TARGET_MIB`): `main._prune_chain`
+    # deletes on its own, keeping actual bytes under `blocks/` close to
+    # this many MiB, `MIN_BLOCKS_TO_KEEP` behind the tip still never
+    # reached. Read only where `pruned` is `True`; `main._prune_chain`
+    # and `rpc.callbacks.get_blockchain_info` both check `pruned` first.
+    prune_target_mib: int | None
     debug: bool
     min_relay_feerate: FeeRate
     # (ip, port) pairs, resolved by `_resolve_peers` above: Core's own
@@ -241,6 +246,7 @@ class Config:
         allow_p2p: bool = True,
         allow_rpc: bool = True,
         pruned: bool = False,
+        prune_target_mib: int | None = None,
         debug: bool = False,
         log_path: str | None = "history.log",
         min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
@@ -295,6 +301,7 @@ class Config:
         self.rpc_host = rpc_host
 
         self.pruned = pruned
+        self.prune_target_mib = prune_target_mib
 
         self.debug = debug
         self.log_path = log_path
