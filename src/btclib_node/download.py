@@ -10,7 +10,7 @@ announcement and request tracking, and the trickle timing behind both
 keep two peers from being told the same thing in lockstep. Most of the
 constants here are a named Bitcoin Core constant carried over with the
 commit it was read at beside it, per this tree's own convention of
-following Core's behaviour where that is possible and reasonable.
+matching Core's behaviour, always.
 """
 
 import time

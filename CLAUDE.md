@@ -74,10 +74,12 @@ and speaks to it over a socket.
 
 Where this tree reimplements something Bitcoin Core also does — a
 constant, an eviction order, the error an RPC answers a refusal with —
-it **matches Core's behaviour wherever that is possible and
-reasonable**, and the comment beside it names the commit Core was read
-at. What differs from Core in consensus or in relay is a difference the
-network sees, so the default is not a matter of taste.
+it **matches Core's behaviour, always**, and the comment beside it names
+the commit Core was read at. The only licence to differ is the
+language: Python-native, fluent or efficient in Python where Core's own
+line is shaped by C++, never a design weighed against Core's on its own
+merits. What differs from Core in consensus or in relay is a difference
+the network sees, so the default is not a matter of taste.
 
 The citation itself reads `at bitcoin/bitcoin@<sha>`, with `at`
 immediately before the sha **on the same physical line as it**: an
@@ -93,14 +95,33 @@ them, which is never valid Python (btclib-org/btclib-node#471). A
 citation inside a docstring rather than a comment needs none of this:
 `ERA001` only ever walks comment ranges.
 
-Not always, though. This tree has constraints Core does not share, and a
-divergence one of those forces is legitimate: `src/btclib_node/db.py`'s
-docstring is the worked example, arguing its store against Core's.
+`src/btclib_node/db.py`'s docstring is the worked example of that same
+axis, not an exception to it: choosing stdlib `sqlite3` over Core's
+vendored LevelDB is a stdlib-versus-compiled-dependency choice, the
+packaging half of Python-native rather than a design taken against
+Core's, and the docstring argues the store against Core's on exactly
+those terms.
 
-**A convention of this tree is not one of those constraints.** Where
-Core defines the surface — an RPC's field names and what they mean, a
-message's semantics — being consistent with the rest of this codebase is
-not a reason to answer differently from Core, because the reader on the
+Mimicry is of the observed behaviour end to end, not of a local
+`catch`: where a layer below differs, the same behaviour can need
+different code above it, and that is still matching rather than
+diverging. Core's `CDBWrapper::Read` answers "absent" on a deserialize
+failure, but LevelDB's own checksum has already turned real corruption
+into a fatal error before that line ever runs — so a tree without that
+checksum which raises instead of answering "absent" is reproducing
+Core's behaviour, not departing from it.
+
+A capability Core has that this tree lacks is a gap to close, not a
+constraint to design around, wherever the reason is a library fact
+rather than a decision: stdlib `sqlite3` shipping no checksummed VFS
+(btclib-org/btclib-node#637, btclib-org/btclib-node#641) is a reason to
+close that gap in a Python-native way, not licence to treat its absence
+as this tree's own design.
+
+**A convention of this tree is not on that axis.** Where Core defines
+the surface — an RPC's field names and what they mean, a message's
+semantics — being consistent with the rest of this codebase is not a
+reason to answer differently from Core, because the reader on the
 other side is a client written against Core rather than against this
 tree.
 

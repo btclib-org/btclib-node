@@ -1042,6 +1042,34 @@ where this file was written rather than where anything was tagged.
   private-method invariant made to hold by construction rather than a
   reachable fault.
 
+### `CLAUDE.md`'s Following Bitcoin Core says always, not reasonable (closes #638)
+
+- **The section now reads "matches Core's behaviour, always", replacing
+  "wherever that is possible and reasonable"**, and names the permitted
+  axis of variation as the language -- Python-native, fluent or
+  efficient in Python where Core's own line is shaped by C++ -- rather
+  than a design weighed against Core's. #605's rpc-port-from-p2p-port
+  argument and #631/#636's framing of a corrupt-store abort as a
+  justified divergence are what "reasonable" had licensed.
+- **`src/btclib_node/db.py`'s example is relabelled rather than
+  removed.** Stdlib `sqlite3` over Core's vendored LevelDB is a
+  stdlib-versus-compiled-dependency choice, on the permitted axis
+  rather than an exception the rule carves out for this tree's own
+  constraints.
+- **A clarification says mimicry is of Core's behaviour end to end, not
+  of a local `catch`**: Core's `CDBWrapper::Read` answers "absent" on a
+  deserialize failure only because LevelDB's own checksum has already
+  made real corruption fatal before that line runs, so a tree without
+  that checksum which raises instead is reproducing Core's behaviour
+  rather than departing from it.
+- **A clarification says a capability Core has that this tree lacks,
+  for a library reason rather than a decision, is a gap to close and
+  not a constraint to design around** -- btclib-org/btclib-node#637 and
+  btclib-org/btclib-node#641's missing checksummed VFS is the live
+  case.
+- `src/btclib_node/download.py`'s own docstring carried the same
+  "possible and reasonable" wording and is corrected to match.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
