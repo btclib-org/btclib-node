@@ -242,7 +242,7 @@ wheels = [
 [[package]]
 name = "btclib"
 version = "2026.9"
-source = { git = "https://github.com/btclib-org/btclib?branch=main#06d0fe48b975feec6d4b82c57a9a790b97ae19d9" }
+source = { git = "https://github.com/btclib-org/btclib?branch=main#7aa4e90697f2eda200a6f90e62489e0b427c6a13" }
 dependencies = [
     { name = "bitcoin-core-rpc" },
     { name = "typing-extensions" },

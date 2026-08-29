@@ -32,13 +32,13 @@ dependencies = [
     # package's own: btclib-org/btclib-node#361 is where dependency
     # versus extra was decided, and why.
     #
-    # 2026.8.27, not an older release still on the API this code is
-    # written to: `src/btclib_node/download.py` imports
-    # `btclib.p2p.negotiation.FeeFilter` unconditionally, and no PyPI
-    # release before this one carries that module, which is what left
+    # 2026.8.29, the release this tree is developed against. The floor
+    # first left the older API at 2026.8.27, where
+    # `src/btclib_node/download.py`'s unconditional import of
+    # `btclib.p2p.negotiation.FeeFilter` appeared on PyPI — what had left
     # `test.yml`'s own packaging smoke test unable to do more than read
     # the wheel's metadata (btclib-org/btclib-node#381).
-    "btclib[secp256k1]>=2026.8.27",
+    "btclib[secp256k1]>=2026.8.29",
 ]
 # What this repository is about, in the order a reader ranks them:
 # PyPI shows keywords as the metadata gives them, and GitHub sorts its
