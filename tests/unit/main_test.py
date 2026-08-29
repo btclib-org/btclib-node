@@ -825,6 +825,139 @@ def test_a_reorg_whose_own_undo_raises_names_no_new_block(
     assert node.last_rejected_block is None
 
 
+def test_an_io_fault_writing_the_reverse_patch_does_not_invalidate_the_block(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`block_db.add_rev_block` raising propagates, and blames no block.
+
+    `add_rev_block` itself is a pure in-memory buffer -- `self.pending_
+    rev_blocks[hash] = rev_block`, no I/O at all; the write `OSError`
+    would actually come from happens later, inside `finalize`. What
+    this test pins is the classification, not the origin: whatever
+    `add_rev_block` raises, `OSError` here standing in for it, is not
+    one of `_CONTENT_FAILURE`'s three types, so `update_chain`'s own
+    except re-raises it rather than treating it as this candidate's own
+    content -- the same distinction
+    `test_a_reorg_whose_own_undo_raises_names_no_new_block` above pins
+    for the trial's other loop.
+    """
+    candidate = generate_random_chain(1, RegTest().genesis.hash)
+    block_index = node.chainstate.block_index
+    active_chain_before = list(block_index.active_chain)
+    block_index.add_headers([block.header for block in candidate])
+    for block in candidate:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+
+    def boom(rev_block: object) -> None:
+        err_msg = "disk full"
+        raise OSError(err_msg)
+
+    monkeypatch.setattr(node.block_db, "add_rev_block", boom)
+
+    with pytest.raises(OSError, match="disk full"):
+        update_chain(node)
+
+    assert block_index.active_chain == active_chain_before
+    info = block_index.get_block_info(candidate[0].header.hash)
+    assert info.status != BlockStatus.invalid
+    assert node.last_rejected_block is None
+    assert node.chainstate.utxo_index.updated_utxo_set == {}
+    assert node.chainstate.utxo_index.removed_utxos == set()
+    assert node.chainstate.filter_index.pending == {}
+    assert node.block_db.pending_rev_blocks == {}
+
+
+def test_an_io_fault_indexing_the_block_filter_does_not_invalidate_the_block(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`filter_index.add_connected_block` raising propagates the same way.
+
+    The sibling of the test above, over the trial's other storage call:
+    `add_connected_block` reads the parent's filter header off
+    `KeyValueStore.get`, which is exactly the read
+    btclib-org/btclib-node#620 is about.
+    """
+    candidate = generate_random_chain(1, RegTest().genesis.hash)
+    block_index = node.chainstate.block_index
+    active_chain_before = list(block_index.active_chain)
+    block_index.add_headers([block.header for block in candidate])
+    for block in candidate:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+
+    def boom(block: object, rev_block: object) -> None:
+        err_msg = "database is locked"
+        raise OSError(err_msg)
+
+    monkeypatch.setattr(node.chainstate.filter_index, "add_connected_block", boom)
+
+    with pytest.raises(OSError, match="database is locked"):
+        update_chain(node)
+
+    assert block_index.active_chain == active_chain_before
+    info = block_index.get_block_info(candidate[0].header.hash)
+    assert info.status != BlockStatus.invalid
+    assert node.last_rejected_block is None
+    assert node.chainstate.utxo_index.updated_utxo_set == {}
+    assert node.chainstate.utxo_index.removed_utxos == set()
+    assert node.chainstate.filter_index.pending == {}
+    assert node.block_db.pending_rev_blocks == {}
+
+
+def test_a_corrupted_stored_utxo_record_propagates_rather_than_invalidating_the_block(
+    node: Node,
+) -> None:
+    """A truncated `utxo-` record is this node's own fault, not the candidate's.
+
+    No monkeypatch: `node.chainstate.db.put` overwrites the same
+    `utxo-` key `UtxoIndex.finalize` wrote, with a truncated copy of
+    what was already there -- a corrupt-but-readable record, exactly
+    the fault `_bip30_violation`'s own `db.get` truthiness check cannot
+    tell from a healthy one. `good` then spends that same, otherwise
+    unspent, output: `Coin.parse` inside `add_block`'s prevout
+    resolution raises `BTClibValueError` over bytes this node wrote for
+    itself, not over anything `good` supplied, so it is
+    `ChainstateInconsistencyError` and not `InvalidBlockInputError`
+    that has to reach `update_chain`'s caller -- btclib-org/btclib-node#620.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    active_chain_before = list(block_index.active_chain)
+
+    funding = chain[0].transactions[0]
+    key = b"utxo-" + OutPoint(funding.id, 0, check_validity=False).serialize(
+        check_validity=False
+    )
+    original = node.chainstate.db.get(key)
+    assert original is not None
+    node.chainstate.db.put(key, original[:1])
+
+    good = build_block(
+        chain[-1].header.hash,
+        [
+            generate_coinbase(height=len(chain) + 1),
+            spend(funding, funding.vout[0].value),
+        ],
+        len(chain),
+    )
+    block_index.add_headers([good.header])
+    block_index.set_downloaded(good.header.hash)
+    node.block_db.add_block(good)
+
+    with pytest.raises(ChainstateInconsistencyError, match="failed to parse"):
+        update_chain(node)
+
+    assert block_index.active_chain == active_chain_before
+    info = block_index.get_block_info(good.header.hash)
+    assert info.status != BlockStatus.invalid
+    assert node.last_rejected_block is None
+    assert node.chainstate.utxo_index.updated_utxo_set == {}
+    assert node.chainstate.utxo_index.removed_utxos == set()
+    assert node.chainstate.filter_index.pending == {}
+    assert node.block_db.pending_rev_blocks == {}
+
+
 def test_a_reorg_evicts_a_transaction_the_reorg_itself_invalidated(
     node: Node,
 ) -> None:

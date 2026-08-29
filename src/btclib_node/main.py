@@ -27,7 +27,12 @@ from btclib_node.chainstate.contextual import (
     median_time_past,
 )
 from btclib_node.constants import NodeStatus
-from btclib_node.exceptions import ChainstateInconsistencyError, MissingPrevoutError
+from btclib_node.exceptions import (
+    ChainstateInconsistencyError,
+    InvalidBlockInputError,
+    MissingPrevoutError,
+    PrevoutCountMismatchError,
+)
 from btclib_node.interpreter import (
     check_coinbase_maturity,
     check_coinbase_value,
@@ -337,17 +342,74 @@ def _record_rejection(
         node.last_rejected_block = (failed_hash, exc)
 
 
+# What the trial loop's to_add iteration deliberately raises to say a
+# candidate's own content is bad, and nothing else: InvalidBlockInputError
+# is utxo_index.add_block's own two checks (BIP30, a double spend inside
+# the same block); PrevoutCountMismatchError and BTClibValueError are
+# check_transactions and everything _validate_block calls -- amounts,
+# scripts, coinbase value and maturity, finality, sequence locks, and
+# Block.assert_valid_contextual, all of which raise BTClibValueError,
+# btclib's own worker_pool.starmap round trip included, since
+# btclib.exceptions' own docstring is why a btclib exception survives a
+# process pool's pickling unchanged.
+#
+# Everything else the same iteration can raise is this node's own
+# storage or bookkeeping, not a verdict on the candidate: db.py's
+# StoreClosedError, whatever sqlite3 or the filesystem raises out of a
+# KeyValueStore read or write, and ChainstateInconsistencyError -- and
+# that holds even where the call that raised it also raises one of the
+# three above for a different reason, utxo_index.add_block's own
+# self.db.get() being exactly that call. update_chain's own except below
+# is what tells the two apart, by type rather than by call site, and
+# never invalidates a block for the second kind. Core keeps the same
+# distinction at the equivalent point of ConnectBlock (src/validation.cpp,
+# at bitcoin/bitcoin@b91d983f66): every ordinary CheckBlock failure
+# returns false and the block is rejected, but a BLOCK_MUTATED result --
+# "we don't write down blocks to disk if they may have been corrupted, so
+# this should be impossible unless we're having hardware problems" -- is
+# FatalError instead. btclib-org/btclib-node#620
+_CONTENT_FAILURE = (BTClibValueError, InvalidBlockInputError, PrevoutCountMismatchError)
+
+
+def _resolve_trial_exception(
+    node: Node, failed_hash: bytes | None, exc: Exception
+) -> None:
+    """Record `exc` against `failed_hash`, or re-raise it -- never both.
+
+    A function of its own and not the `if`/`else` inline in `update_chain`'s
+    own except -- ruff's own `too-many-branches`/`complex-structure`
+    already count a branch gained there against a ceiling that call is
+    already at. `failed_hash is None` is exactly the to_remove loop above
+    `update_chain`'s own trial, where `_record_rejection`'s own guard
+    already turns this into a no-op regardless; `isinstance(exc,
+    _CONTENT_FAILURE)` is the to_add loop's own exceptions, argued where
+    `_CONTENT_FAILURE` is declared. `raise exc` and not a bare `raise`:
+    this is not itself an except block, so a bare `raise` here has no
+    currently-handled exception of its own to reach for -- `exc` already
+    carries the traceback `update_chain`'s own except caught it with, and
+    raising it explicitly extends that same traceback rather than
+    starting a new one.
+    """
+    if failed_hash is None or isinstance(exc, _CONTENT_FAILURE):
+        _record_rejection(node, failed_hash, exc)
+        return
+    raise exc
+
+
 def update_chain(node: Node) -> None:
     """Try the best ready fork block by block, and commit or roll it back.
 
     Called once per pass of `Node`'s own loop. `_ready_fork` answers
     whether there is a fork worth trying at all; if there is, every
     block on it is applied to the UTXO set and validated in turn, a
-    shutdown between two blocks stopping the trial without failing it,
-    and any other exception rolling every index back to where it stood
-    before this call. Once a trial succeeds, `_finalize_fork` commits
-    it, the mempool is reconciled against whatever it added and
-    removed, and `_announce_added_blocks` tells every connected peer.
+    shutdown between two blocks stopping the trial without failing it.
+    Every other exception rolls every index back to where it stood
+    before this call; whether it also invalidates the block it happened
+    on, or instead propagates out of this call once the rollback has
+    run, is `_CONTENT_FAILURE`'s own distinction above. Once a trial
+    succeeds, `_finalize_fork` commits it, the mempool is reconciled
+    against whatever it added and removed, and `_announce_added_blocks`
+    tells every connected peer.
     """
     fork = _ready_fork(node)
     if fork is None:
@@ -448,7 +510,7 @@ def update_chain(node: Node) -> None:
     except Exception as exc:
         node.logger.exception("Exception occurred")
         success = False
-        _record_rejection(node, failed_hash, exc)
+        _resolve_trial_exception(node, failed_hash, exc)
     finally:
         if success:
             _finalize_fork(node, to_add, to_remove)
