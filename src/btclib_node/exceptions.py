@@ -28,14 +28,16 @@ sites, which fire on a peer's bad block rather than this tree's own
 bug.
 """
 
-from btclib.exceptions import BTClibValueError
+from btclib.exceptions import BTClibRuntimeError, BTClibValueError
 
 __all__ = [
     "ChainstateInconsistencyError",
     "IncompatibleStoreError",
+    "IncompleteRequestHeadError",
     "InvalidBlockInputError",
     "InvalidChainTypeError",
     "InvalidRejectPayloadError",
+    "MalformedRequestHeadError",
     "MissingPrevoutError",
     "NodeShutdownTimeoutError",
     "PrevoutCountMismatchError",
@@ -393,3 +395,38 @@ class InvalidRejectPayloadError(BTClibValueError):
 
     def __init__(self, detail: str) -> None:
         super().__init__(f"invalid reject payload: {detail}")
+
+
+class IncompleteRequestHeadError(BTClibRuntimeError):
+    """`parse_request_head` was handed octets with no header terminator yet.
+
+    `IncompleteMessageError`'s own reason applies here unchanged: a
+    connection reading its header section a chunk at a time is the
+    ordinary case, not a hostile one, so this is `BTClibRuntimeError`
+    and not `BTClibValueError` -- more octets can still answer it, where
+    the errors below cannot. `RpcConnection.run` never triggers this
+    itself, since it only calls `parse_request_head` once `_recv_until`
+    has already confirmed the terminator is present; it exists for
+    `parse_request_head`'s other caller, `fuzz/fuzz_rpc_head.py`, which
+    hands it whatever octets the fuzzer drew.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("no header terminator yet")
+
+
+class MalformedRequestHeadError(BTClibValueError):
+    """A request's header section names a `Content-Length` this node refuses.
+
+    Not present, defaults to `0` (`RpcConnection.run`'s own prior
+    behaviour); present but not an integer, negative, or past
+    `rpc.connection.MAX_BODY_BYTES` all raise this instead. `BTClibValueError`
+    and not a plain `ValueError`, for `WrongNetworkMagicError`'s own
+    reason above: `RpcConnection.run`'s catch is a bare `except
+    Exception`, so this class only matters where a caller narrows on
+    `BTClibException` the way `fuzz/fuzz_rpc_head.py` and
+    `tests/fuzz_corpus_test.py`'s own `_parsed` both do.
+    """
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(f"malformed request head: {detail}")

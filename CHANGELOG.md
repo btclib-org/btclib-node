@@ -1962,6 +1962,52 @@ where this file was written rather than where anything was tagged.
   stating the split outright and naming a future open `uv.lock` alert
   as its own finding rather than a step recorded here.
 
+### Two more of the parsers a peer reaches unauthenticated are fuzzed (issue #516)
+
+- **`p2p.connection.frame_message`/`frame_message_bytes`** pull
+  `Connection.parse_messages`'s own per-message framing -- the header
+  peek, `Message.parse`, and the network-magic check right after it --
+  into a function of a stream (or, for the second, bare octets) rather
+  than an inline loop body, the same shape Core's own
+  `V1Transport::ReceivedBytes` takes in its own
+  `p2p_transport_serialization.cpp` fuzz target
+  (at bitcoin/bitcoin@ca7162cde5): a transport built with no socket,
+  fed raw bytes directly. `parse_messages` itself now calls
+  `frame_message` rather than repeating its body; nothing about what it
+  parses, queues or rewinds on a partial message changed.
+- **`rpc.connection.parse_request_head`** pulls `RpcConnection.run`'s
+  own header-section framing -- the request line, the header fields,
+  the `Content-Length` bound and the keep-alive decision -- into the
+  same shape, scoped the way Core's own `http_request.cpp` fuzz target
+  is scoped: control-line and header framing only, never the JSON-RPC
+  body decoding stdlib's own `json.loads` already does. Two new
+  exceptions, `IncompleteRequestHeadError` and
+  `MalformedRequestHeadError` (`btclib_node.exceptions`), are what it
+  raises for octets a live connection's own `_recv_until` would never
+  hand it but a fuzzer can -- both `BTClibException` subclasses, so
+  `run`'s own bare `except Exception` catches them exactly as it caught
+  the `ConnectionError` this replaces.
+- **`fuzz/fuzz_framing.py` and `fuzz/fuzz_rpc_head.py`** are the two new
+  atheris harnesses over those entry points, each with a seed corpus
+  under `fuzz/corpus/`; `fuzz.yml` now runs all three harnesses in one
+  job, `-max_total_time` split three ways rather than tripled so the
+  job's own 30-minute ceiling does not grow with the harness count.
+  `.pre-commit-config.yaml` excludes `fuzz/corpus/` from
+  `trailing-whitespace`, `end-of-file-fixer` and `mixed-line-ending`:
+  measured against `fuzz_rpc_head`'s own seeds, whose valid HTTP
+  request heads are printable ASCII ending in `\r\n\r\n`,
+  `end-of-file-fixer` dropped one of the required pair and
+  `mixed-line-ending`'s own `--fix=lf` rewrote every `\r\n` to `\n`,
+  each silently turning a valid seed into one `parse_request_head`
+  itself would never produce or accept.
+- **The p2p callbacks (`p2p/callbacks.py`) are not fuzzed.** Core's own
+  matching target for that layer, `process_message.cpp`, builds a
+  whole `TestingSetup` rather than feeding a bare object octets, and
+  this tree's own handlers likewise need a `Node`, a `P2pManager` and a
+  `Connection` rather than a buffer -- a materially different harness
+  shape, not a small refactor away from the other two. Left open,
+  tracked forward as issue #698.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

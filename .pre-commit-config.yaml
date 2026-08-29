@@ -58,14 +58,37 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
+      # fuzz/corpus/ excluded on all three below, for one reason each
+      # hook earns on its own: tests/fuzz_corpus_test.py's own docstring
+      # already says "a seed is wire octets, and a fixer appending to
+      # one invalidates it", and a seed that happens to be printable
+      # ASCII -- fuzz/corpus/fuzz_rpc_head/'s own HTTP request heads,
+      # unlike fuzz_reject's -- is text by `identify`'s own content
+      # sniffing, not by this repository's own convention, so nothing
+      # here stops these three from reading it as prose. Measured
+      # directly (`pre-commit run --files` against a committed seed,
+      # issue #516): end-of-file-fixer drops one `\r\n` of the wire
+      # format's own required two-in-a-row, and --fix=lf rewrites every
+      # `\r\n` in the file to `\n`, in both cases silently turning a
+      # valid `HEADER_TERMINATOR` seed into one `RpcConnection.run`
+      # itself would never produce or accept -- trailing-whitespace
+      # left the same file alone in that same measurement, kept here
+      # anyway since a future seed carrying a trailing space in a
+      # header value is exactly the kind of octet this hook exists to
+      # strip. Excluded by directory, matching pretty-format-json's own
+      # tests/**/_data/ exclude below and its own reason: the next
+      # harness's own seed is safe before anyone remembers this line.
       - id: trailing-whitespace
+        exclude: ^fuzz/corpus/
       - id: end-of-file-fixer
+        exclude: ^fuzz/corpus/
       - id: mixed-line-ending
         # not the default --fix=auto, which normalizes a file to its own
         # most frequent ending: a file entirely in CRLF is consistent by
         # that measure, so it stays, and the LF lines added to it are
         # converted the wrong way. This repository is LF throughout
         args: [--fix=lf]
+        exclude: ^fuzz/corpus/
       - id: check-case-conflict
       # scripts/ has no shebang or executable bit today, and this hook
       # is the pair that keeps it that way: it matches every text file,

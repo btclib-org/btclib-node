@@ -134,7 +134,19 @@ def test_a_corpus_directory_has_a_harness() -> None:
 
 @pytest.mark.parametrize("seed", [seed for _, seed in _SEEDS], ids=_SEED_IDS)
 def test_a_seed_has_no_trailing_newline(seed: Path) -> None:
-    """A seed is wire octets, and a fixer appending to one invalidates it."""
+    r"""A seed is wire octets, and a fixer appending to one invalidates it.
+
+    `fuzz_rpc_head`'s own seeds are the one exception, not by luck but
+    by protocol: HTTP's header terminator is itself `b"\r\n\r\n"`, so
+    every valid seed for that harness ends in a newline as a matter of
+    the wire format `parse_request_head` reads, not as a fixer's
+    accidental addition -- `.pre-commit-config.yaml`'s own
+    `end-of-file-fixer`/`mixed-line-ending` excludes, measured against
+    exactly this directory (issue #516), are the other half of this
+    same fact.
+    """
+    if seed.parent.name == "fuzz_rpc_head":
+        return
     assert not seed.read_bytes().endswith(b"\n"), f"{seed} ends with a newline"
 
 
