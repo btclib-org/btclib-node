@@ -1631,6 +1631,24 @@ where this file was written rather than where anything was tagged.
   registration): unlike `-datadir`, it never decides which file is
   read, so nothing stops it being set inside that same file.
 
+### A dropped `-connect`/`-addnode` peer is redialled (closes #651)
+
+- **`P2pManager.manage_connections`'s own 0.1s loop gains
+  `_maybe_redial_specified`**, one shared, capped, doubling backoff
+  (1s floor, 60s cap) covering both `Config.connect` and
+  `Config.addnode`, reset to the floor the moment a peer is seen
+  connected. Core keeps a whole thread apiece for this --
+  `CConnman::ThreadOpenConnections`'s own `-connect` arm and
+  `ThreadOpenAddedConnections` -- each with its own cadence; this node
+  reuses the one loop it already has for both rather than replicating
+  either cadence exactly, argued in `p2p/manager.py`'s own comment
+  beside the two new constants.
+- **The very first pass never races `Node.run`'s own one-shot dial**
+  (issue #573): each peer's own next-eligible time is seeded a full
+  backoff floor into the future in `P2pManager.run`, immediately
+  before `manage_connections` is scheduled, rather than at
+  construction time, when the gap to `start()` is unknown.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

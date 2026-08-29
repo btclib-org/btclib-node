@@ -58,6 +58,29 @@ _ACTIVE_PRUNE_INTERVAL = 300
 # `verack` this long with no `ping` to wait on at all, is dropped.
 _IDLE_TIMEOUT = 120
 
+# `_maybe_redial_specified`'s own backoff for a `-connect`/`-addnode`
+# peer that is not currently connected: doubled on every attempt made,
+# reset to this floor the moment the peer is seen connected, capped at
+# `_REDIAL_MAX_SECONDS`. Core keeps a whole thread apiece for this --
+# `ThreadOpenConnections`'s own `-connect` arm, an uncapped
+# `for (int64_t nLoop = 0;; nLoop++)` loop redialling every named peer
+# with a per-peer sleep that grows to `10 * 500ms` and a flat `500ms`
+# after each full pass (`src/net.cpp:2592-2625`, at
+# bitcoin/bitcoin@ca7162cde5), and `ThreadOpenAddedConnections`, a
+# `while (true)` loop over `GetAddedNodeInfo(include_connected=false)`
+# -- the "already connected, skip it" filter `_maybe_redial_specified`
+# below reproduces with its own `connected` set -- redialling every
+# not-yet-connected added peer with a `500ms` sleep between each and a
+# `60s` (something was tried) or `2s` (nothing was) sleep after the
+# pass (`src/net.cpp:3052-3082`, same sha). This node has one loop
+# already, `manage_connections`, running every 0.1s regardless of
+# either flag; reusing it for both rather than adding two more standing
+# coroutines is this tree's own Python-native shape of the same
+# requirement, at the cost of one shared, capped, doubling backoff in
+# place of replicating either of Core's own two cadences exactly.
+_REDIAL_BASE_SECONDS = 1.0
+_REDIAL_MAX_SECONDS = 60.0
+
 
 class P2pManager(threading.Thread):
     """The thread listening for and dialling peer connections.
@@ -92,6 +115,28 @@ class P2pManager(threading.Thread):
         # rather than reread from a `Config` a caller could still
         # mutate underneath `run`.
         self.listen = node.config.listen
+
+        # `-connect` and `-addnode` together, by `endpoint_key`: what
+        # `_maybe_redial_specified` below redials once `Node.run`'s own
+        # one-shot dial (`__init__.py`, issue #573) drops one of them.
+        # Built once, here, for the same "a caller cannot change it
+        # mid-flight" reason as the two fields above -- and a plain
+        # `dict` rather than a `set`, since a redial needs the address
+        # back, not only the key it is compared by.
+        self._redial_peers: dict[bytes, NetworkAddressV2] = {
+            endpoint_key(address): address
+            for address in (
+                *(peer_address(host, port) for host, port in node.config.connect),
+                *(peer_address(host, port) for host, port in node.config.addnode),
+            )
+        }
+        # Backoff state for the dict above, seeded in `run` rather than
+        # here -- `run`'s own comment on `_redial_next` is where the
+        # race this seeding avoids is argued.
+        self._redial_backoff: dict[bytes, float] = dict.fromkeys(
+            self._redial_peers, _REDIAL_BASE_SECONDS
+        )
+        self._redial_next: dict[bytes, float] = dict.fromkeys(self._redial_peers, 0.0)
 
         self.connections: dict[int, Connection] = {}
         # A connection accepted or dialled but not yet past `verack`,
@@ -523,19 +568,61 @@ class P2pManager(threading.Thread):
         except Exception:
             self.logger.exception("Exception occurred")
 
+    async def _maybe_redial_specified(self) -> None:
+        """Redial a `-connect`/`-addnode` peer not connected, on backoff.
+
+        `_redial_peers` above is empty unless `Config.connect`/`addnode`
+        named something, so this returns at once for every node that
+        did not ask for either -- the ordinary case. A peer already in
+        `connections` or `pending_connections` has its backoff reset to
+        the floor and is left alone; one that is not, and whose own
+        `_redial_next` has passed, is redialled and its backoff doubled
+        (capped), the same as a peer this pass could not reach at all --
+        distinguishing "reached but the handshake never got anywhere"
+        from "could not even be dialled" is not something Core's own
+        two loops above do either.
+        """
+        if not self._redial_peers:
+            return
+        now = time.time()
+        with self._connections_lock:
+            connected = {
+                endpoint_key(conn.address)
+                for conn in (
+                    *self.connections.values(),
+                    *self.pending_connections.values(),
+                )
+            }
+        for key, address in self._redial_peers.items():
+            if key in connected:
+                self._redial_backoff[key] = _REDIAL_BASE_SECONDS
+                continue
+            if now < self._redial_next[key]:
+                continue
+            self._redial_next[key] = now + self._redial_backoff[key]
+            self._redial_backoff[key] = min(
+                self._redial_backoff[key] * 2, _REDIAL_MAX_SECONDS
+            )
+            try:
+                await self.async_connect(address)
+            except Exception:
+                self.logger.exception("Exception occurred")
+
     async def manage_connections(self) -> None:
         """Prune, prune some more, maybe dial, sleep -- forever, every 0.1s.
 
         `_prune_stale_connections` pings or drops an idle peer every
-        pass; `_maybe_prune_active_addresses` runs far less often; and
+        pass; `_maybe_prune_active_addresses` runs far less often;
         `_maybe_dial_more_peers` dials one more only if this node still
-        has room for it.
+        has room for it; `_maybe_redial_specified` is the standing
+        redial issue #651 asked for, for `-connect`/`-addnode` alone.
         """
         while True:
             now = time.time()
             self._prune_stale_connections(now)
             self._maybe_prune_active_addresses(now)
             await self._maybe_dial_more_peers()
+            await self._maybe_redial_specified()
             await asyncio.sleep(0.1)
 
     def _bind_one(self, family: socket.AddressFamily, host: str) -> socket.socket:
@@ -703,6 +790,20 @@ class P2pManager(threading.Thread):
             asyncio.run_coroutine_threadsafe(self.peer_db.get_addr_from_dns(), loop)
         for server_socket in server_sockets:
             asyncio.run_coroutine_threadsafe(self.server(loop, server_socket), loop)
+        # Seeded here, immediately before `manage_connections` is ever
+        # scheduled, rather than at `__init__` time: `Node.run`'s own
+        # one-shot dial for these same peers (`__init__.py`, issue
+        # #573) races this manager's first `manage_connections` pass,
+        # each reaching `async_connect` from a different thread, and a
+        # peer `_redial_next` already called overdue by the time this
+        # loop starts would sometimes win that race and dial a peer
+        # `Node.run` is dialling in the same instant. A `__init__`-time
+        # seed cannot answer that: an unknown, possibly long, gap sits
+        # between building this manager and `start()` ever being
+        # called on it.
+        now = time.time()
+        for key in self._redial_next:
+            self._redial_next[key] = now + _REDIAL_BASE_SECONDS
         asyncio.run_coroutine_threadsafe(self.manage_connections(), loop)
         loop.run_forever()
 
