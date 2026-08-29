@@ -559,6 +559,18 @@ class BlockDB:
         set alongside the matching `self.files` entry, in `add_block` and
         `finalize`, so there is no path that reaches here with one and
         not the other.
+
+        Only ever closes `open_rev_file`, never `open_block_file`, and
+        that asymmetry is real rather than a gap: `__get_block_file`
+        keeps `open_block_file` in lockstep with `self.file_index` on
+        every `add_block`, the very call that would have to move
+        `self.file_index` past a `.blk` file for that file to reach this
+        method at all, so a `.blk` file past the guard above never has
+        `open_block_file` still pointing at it -- there is no `filename`
+        for which that check could ever be true. `__find_rev_file` opens
+        a `.rev` file named for its own block's own file index
+        (`btclib-org/btclib-node#116`), not for whatever is current, so
+        `open_rev_file` alone can lag `self.file_index` this way.
         """
         remaining = self.live.get(filename, 0) - 1
         if remaining > 0:
@@ -567,13 +579,13 @@ class BlockDB:
         self.live.pop(filename, None)
         if Path(filename).stem == f"{self.file_index:06d}":
             return
-        open_file = self.open_block_file if is_block else self.open_rev_file
-        if open_file is not None and Path(open_file.name).name == filename:
-            open_file.close()
-            if is_block:
-                self.open_block_file = None
-            else:
-                self.open_rev_file = None
+        if (
+            not is_block
+            and self.open_rev_file is not None
+            and Path(self.open_rev_file.name).name == filename
+        ):
+            self.open_rev_file.close()
+            self.open_rev_file = None
         (self.data_dir / filename).unlink(missing_ok=True)
         del self.files[filename]
         self.db.delete(b"f" + filename.encode())
