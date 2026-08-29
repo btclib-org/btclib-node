@@ -434,6 +434,47 @@ def test_build_config_with_nothing_given_uses_every_default(tmp_path: Path) -> N
     assert config.listen is True
 
 
+def test_build_config_datadir_a_file_raises(tmp_path: Path) -> None:
+    """`-datadir` naming an existing file is refused, not a crash.
+
+    Before btclib-org/btclib-node#693, `conf_path.read_text()` raised
+    `NotADirectoryError` uncaught -- neither `_read_conf_file`'s
+    `FileNotFoundError` handler nor its `is_dir()` datadir check
+    (btclib-org/btclib-node#684) ever sees a datadir this shape, since
+    the resulting `conf_path` is not itself a directory and does not
+    read as merely missing either.
+    """
+    datadir = tmp_path / "not-a-dir"
+    datadir.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(ValueError, match="does not exist"):
+        cli.build_config(["-datadir", str(datadir)])
+
+
+def test_build_config_datadir_parent_is_a_file_raises(tmp_path: Path) -> None:
+    """`-datadir` naming a path a file blocks higher up is refused too."""
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("not a directory", encoding="utf-8")
+    datadir = blocker / "subdir"
+    with pytest.raises(ValueError, match="does not exist"):
+        cli.build_config(["-datadir", str(datadir)])
+
+
+def test_build_config_datadir_missing_raises(tmp_path: Path) -> None:
+    """An explicit `-datadir` that does not exist yet is refused too.
+
+    Matches Core's own `CheckDataDirOption` exactly: `fs::is_directory`
+    answers `False` for a missing path the same way it does for one a
+    file blocks, and both are fatal there. The default (unset
+    `-datadir`) path is not checked at all and keeps its own lazy
+    creation -- `test_build_config_with_nothing_given_uses_every_default`
+    above already exercises it by passing an existing `tmp_path`, not
+    this path.
+    """
+    datadir = tmp_path / "not-yet-created"
+    with pytest.raises(ValueError, match="does not exist"):
+        cli.build_config(["-datadir", str(datadir)])
+
+
 def test_build_config_reads_an_existing_bitcoin_conf(tmp_path: Path) -> None:
     """The default-named file under the data directory is read unasked.
 

@@ -610,6 +610,39 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _check_datadir(base_dir: Path) -> None:
+    """Refuse an explicit `-datadir` that is not an existing directory.
+
+    Core's own `CheckDataDirOption` (`src/common/args.cpp:891`, at
+    bitcoin/bitcoin@ca7162cde5) -- `datadir.empty() ||
+    fs::is_directory(fs::absolute(datadir))` -- validates `-datadir` as
+    a directory separately from reading the config file, and
+    `ReadConfigFiles` (`src/common/config.cpp:230-232`, same sha)
+    answers "specified data directory ... does not exist." when it
+    fails, called again there because a `datadir=` line inside the
+    config file can still change it after the command-line value
+    already passed this same check once. This function is
+    `build_config`'s counterpart of the first call, ahead of
+    `_load_conf_tree`; there is no second call here because a
+    `datadir=` line inside a configuration file never reaches
+    `base_dir` at all -- `_collect_file_values` (below) recognises the
+    key, warns on stderr, and drops it rather than ever applying it.
+
+    Missing and blocked-by-a-file are the same refusal here, matching
+    Core exactly: `fs::is_directory` answers `False` for both, and so
+    does `is_dir()`, so nothing here needs to tell them apart. The
+    default (unset `-datadir`) path is never checked at all, matching
+    Core's own `datadir.empty()` bypass -- `build_config` below only
+    calls this when `args.datadir` was given -- and keeps the lazy
+    creation `Node.__init__`'s own `mkdir(exist_ok=True, parents=True)`
+    (`__init__.py`) already gives it, the same shape Core's own default
+    path gets from `GetBlocksDirPath`'s `fs::create_directories`.
+    """
+    if not base_dir.is_dir():
+        err_msg = f'specified data directory "{base_dir}" does not exist.'
+        raise ValueError(err_msg)
+
+
 def build_config(argv: Sequence[str] | None = None) -> Config:
     """Parse `argv` (`sys.argv[1:]` if `None`) and its `-conf` into a `Config`.
 
@@ -621,6 +654,8 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
     args = _build_parser().parse_args(argv)
 
     base_dir = Path(args.datadir) if args.datadir else Path.home() / ".btclib"
+    if args.datadir:
+        _check_datadir(base_dir)
     conf_explicit = args.conf is not None
     conf_value = Path(args.conf) if args.conf else Path(_DEFAULT_CONF_FILENAME)
     conf_path = conf_value if conf_value.is_absolute() else base_dir / conf_value

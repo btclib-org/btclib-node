@@ -1882,6 +1882,25 @@ where this file was written rather than where anything was tagged.
   `fs::is_directory` guard, which likewise runs before its stream is
   ever opened.
 
+### `-datadir` naming a non-directory is refused, not a crash (closes #693)
+
+- **`build_config` (`cli.py`) checks an explicit `-datadir` with a new
+  `_check_datadir` before it is ever joined into `conf_path`**, refusing
+  it with a `ValueError` where the path does not already exist as a
+  directory -- missing, or blocked by a file at the path itself or at
+  any parent component of it -- the same `fs::is_directory` test and
+  the same "does not exist" wording Core's own `CheckDataDirOption`
+  (`src/common/args.cpp:891`, at bitcoin/bitcoin@ca7162cde5) uses,
+  fatal there too. Before this, a datadir a file blocks reached
+  `_read_conf_file`'s `path.read_text()` unchecked and raised
+  `NotADirectoryError`, uncaught, rather than the `ValueError` every
+  other configuration problem in this module raises. The default
+  (unset `-datadir`) path is not checked at all and keeps the lazy
+  creation `Node.__init__`'s own `mkdir(exist_ok=True, parents=True)`
+  already gives it, matching Core's own default path, which is never
+  checked either and is created the same way, lazily, by
+  `GetBlocksDirPath`'s `fs::create_directories`.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
