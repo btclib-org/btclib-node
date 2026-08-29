@@ -291,7 +291,20 @@ def _read_conf_file(path: Path, *, required: bool) -> _ConfTree:
     explicitly naming a file gets instead: a missing or unreadable one
     is fatal there, the same as Core's own "specified config file ...
     could not be opened".
+
+    A directory is checked with `is_dir()` before the file is opened,
+    matching `ReadConfigFiles`'s own `fs::is_directory(conf_path)` guard
+    (same file, line 145, at bitcoin/bitcoin@ca7162cde5), which runs
+    before the stream is ever opened rather than reading the failure an
+    open attempt raises. Catching the open failure instead would depend
+    on the platform: opening a directory raises `IsADirectoryError`
+    (`errno.EISDIR`) on POSIX and `PermissionError` (`errno.EACCES`) on
+    Windows, so a handler for one platform's exception class is not
+    reached by the other's error.
     """
+    if path.is_dir():
+        err_msg = f"configuration file {path} is a directory"
+        raise ValueError(err_msg)
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -299,9 +312,6 @@ def _read_conf_file(path: Path, *, required: bool) -> _ConfTree:
             err_msg = f"specified configuration file {path} could not be opened"
             raise ValueError(err_msg) from None
         return {None: {}}
-    except IsADirectoryError:
-        err_msg = f"configuration file {path} is a directory"
-        raise ValueError(err_msg) from None
     return _parse_conf_text(text, str(path))
 
 

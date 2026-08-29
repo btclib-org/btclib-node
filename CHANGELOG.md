@@ -1869,6 +1869,19 @@ where this file was written rather than where anything was tagged.
   database in place; this tree implements no such rebuild yet, so
   there is nothing to run and nothing to invent one for.
 
+### A directory as a conf file is refused the same way everywhere (closes #684)
+
+- **`_read_conf_file` (`cli.py`) checks `path.is_dir()` before opening
+  the file**, rather than catching the `OSError` subclass an open
+  attempt raises. Opening a directory raises `IsADirectoryError`
+  (`errno.EISDIR`) on POSIX and `PermissionError` (`errno.EACCES`) on
+  Windows, so a handler written for one platform's exception class
+  never catches the other's, and `test_read_conf_file_a_directory_raises`
+  failed on `windows-latest` with the wrong exception propagating
+  uncaught. The `is_dir()` check matches `ReadConfigFiles`'s own
+  `fs::is_directory` guard, which likewise runs before its stream is
+  ever opened.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
