@@ -2293,6 +2293,22 @@ where this file was written rather than where anything was tagged.
   aggregate job rather than any cell by name, needs no ruleset change
   to cover it.
 
+### A `NODE_NETWORK_LIMITED` peer is skipped for an old block (closes #706)
+
+- **`_request_new_block_work` skips a candidate for a connection whose
+  `version_message.services` carry `NODE_NETWORK_LIMITED` without
+  `NODE_NETWORK`, once it falls more than `MIN_BLOCKS_TO_KEEP - 2` behind
+  that connection's own `best_known_height`**, matching Core's own
+  `FindNextBlocks` (`net_processing.cpp:1635`, at
+  bitcoin/bitcoin@ca7162cde5); a candidate still within reach is offered
+  to such a peer exactly as any other connection's is.
+- **`Connection.best_known_height` is this tree's own stand-in for Core's
+  chainwork-ranked `pindexBestKnownBlock`**: `callbacks.version` sets it
+  from the peer's own `version.start_height`, and `callbacks.headers`
+  raises it off every batch that peer itself sends, this tree keeping no
+  per-peer chainwork-ranked index of its own for `download.py` to read
+  instead.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

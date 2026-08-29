@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from btclib.fee import FeeRate, fee_from_vsize
+from btclib.p2p.address import ServiceFlags
 from btclib.p2p.inventory import GetData, Inv
 from btclib.p2p.limits import MAX_INV_SZ
 from btclib.p2p.negotiation import FeeFilter
@@ -59,6 +60,8 @@ def a_conn(
     feefilter_sent: int = 0,
     next_feefilter_send_time: float = 0.0,
     queued_send_bytes: int = 0,
+    version_message: Any = None,
+    best_known_height: int = 0,
 ) -> Any:
     """Build a fake connection, recording every message handed to `send`."""
     sent: list[Any] = []
@@ -80,6 +83,13 @@ def a_conn(
         status=status,
         feefilter_sent=feefilter_sent,
         next_feefilter_send_time=next_feefilter_send_time,
+        # `None` until `callbacks.version` writes it, matching a real
+        # `Connection` (`p2p/connection.py`); `_is_limited_peer`
+        # (download.py) reads only `.services` off it, so a
+        # `SimpleNamespace(services=...)` stands in for the real `Version`
+        # payload. btclib-org/btclib-node#706
+        version_message=version_message,
+        best_known_height=best_known_height,
         # what a real `Connection` starts every fresh connection at
         # (`p2p/connection.py`), and what `_send_due_announcements` now
         # paces an `Inv` chunk against the same way `advance_getdata`
@@ -1053,6 +1063,106 @@ def test_a_peer_that_is_already_pending_eviction_is_left_alone() -> None:
     # so it is not asked for the same block again either
     assert quiet.download_queue == [a_hash(1)]
     assert not quiet.sent
+
+
+def a_version(services: ServiceFlags) -> Any:
+    """Build a fake `version_message` carrying only `services`.
+
+    `_is_limited_peer` (download.py) reads nothing else off it.
+    """
+    return SimpleNamespace(services=services)
+
+
+_LIMITED = ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS
+_FULL = (
+    ServiceFlags.NODE_NETWORK
+    | ServiceFlags.NODE_NETWORK_LIMITED
+    | ServiceFlags.NODE_WITNESS
+)
+
+
+def test_is_limited_peer_is_true_only_for_limited_without_network() -> None:
+    """`_is_limited_peer`: `NODE_NETWORK_LIMITED` set, `NODE_NETWORK` not."""
+    assert download_module._is_limited_peer(
+        a_conn(1, version_message=a_version(_LIMITED))
+    )
+    assert not download_module._is_limited_peer(
+        a_conn(1, version_message=a_version(_FULL))
+    )
+    assert not download_module._is_limited_peer(
+        a_conn(1, version_message=a_version(ServiceFlags.NODE_WITNESS))
+    )
+    # No `version_message` yet: `callbacks.verack` never promotes such a
+    # connection into what `DownloadManager` iterates, but this reads
+    # `False` rather than raising either way.
+    assert not download_module._is_limited_peer(a_conn(1, version_message=None))
+
+
+def test_a_limited_peer_without_network_skips_a_block_far_behind_its_own_tip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `NODE_NETWORK_LIMITED`-only peer is not offered a block too old for it.
+
+    `MIN_BLOCKS_TO_KEEP` stands in for Core's own
+    `NODE_NETWORK_LIMITED_MIN_BLOCKS`; patched to 5 here so the reachable
+    boundary (`best_known_height - (5 - 2)` = 7) falls inside a small,
+    readable window rather than needing 288 candidates to demonstrate.
+    """
+    monkeypatch.setattr(download_module, "MIN_BLOCKS_TO_KEEP", 5)
+    wanted = [a_hash(n) for n in range(1, 11)]  # indices 1..10
+    limited = a_conn(1, version_message=a_version(_LIMITED), best_known_height=10)
+    manager = make_manager([limited], block_index=FakeBlockIndex(wanted))
+    manager.block_download()
+    (getdata,) = only(limited, GetData)
+    # index > 10 - (5 - 2) == 7, so only 8, 9 and 10 are in reach
+    assert hashes_of(getdata) == [a_hash(8), a_hash(9), a_hash(10)]
+    assert limited.download_queue == [a_hash(8), a_hash(9), a_hash(10)]
+
+
+def test_a_peer_advertising_both_services_is_offered_the_whole_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`NODE_NETWORK_LIMITED` and `NODE_NETWORK` together is not a limited peer.
+
+    Same window and the same low `best_known_height` as the skipping
+    test above, so the only variable is the peer's own advertised
+    services -- Core's own `IsLimitedPeer` (net_processing.cpp:1261, at
+    bitcoin/bitcoin@ca7162cde5) reads `!(services & NODE_NETWORK)`, an
+    archival peer that also sets `NODE_NETWORK_LIMITED` still failing it.
+    """
+    monkeypatch.setattr(download_module, "MIN_BLOCKS_TO_KEEP", 5)
+    wanted = [a_hash(n) for n in range(1, 11)]
+    full = a_conn(1, version_message=a_version(_FULL), best_known_height=10)
+    manager = make_manager([full], block_index=FakeBlockIndex(wanted))
+    manager.block_download()
+    (getdata,) = only(full, GetData)
+    assert hashes_of(getdata) == wanted
+
+
+def test_a_limited_peer_with_nothing_in_reach_is_skipped_not_stalled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A limited peer with nothing reachable leaves work for the next peer.
+
+    The loop's own early `return` fires only once neither `waiting` nor
+    `pending` holds anything for *any* connection; a limited peer that
+    cannot reach the window on offer is `continue`d past instead, so an
+    ordinary peer later in the same pass still gets asked.
+    """
+    monkeypatch.setattr(download_module, "MIN_BLOCKS_TO_KEEP", 5)
+    wanted = [a_hash(n) for n in range(1, 11)]
+    # best_known_height=10 puts the reachable boundary at index 7 (see
+    # the skipping test above); holding the window to indices 1..3 keeps
+    # every candidate below it, so nothing here is in reach for `stuck`.
+    stuck = a_conn(1, version_message=a_version(_LIMITED), best_known_height=10)
+    healthy = a_conn(2)
+    manager = make_manager([stuck, healthy], block_index=FakeBlockIndex(wanted))
+    manager.block_window = wanted[:3]
+    manager.block_download()
+    assert not stuck.sent
+    assert stuck.download_queue == []
+    (getdata,) = only(healthy, GetData)
+    assert hashes_of(getdata) == wanted[:3]
 
 
 def test_an_idle_peer_is_asked_for_nothing_once_every_block_has_three_takers() -> None:

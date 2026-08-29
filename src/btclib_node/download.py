@@ -19,12 +19,13 @@ from collections import Counter
 from random import SystemRandom
 from typing import TYPE_CHECKING
 
+from btclib.p2p.address import ServiceFlags
 from btclib.p2p.inventory import GetData, Inv, Inventory, InventoryType
 from btclib.p2p.limits import MAX_INV_SZ
 from btclib.p2p.negotiation import FeeFilter
 
 from btclib_node.chainstate.block_index import MAX_DOWNLOAD_WINDOW
-from btclib_node.constants import NodeStatus, P2pConnStatus
+from btclib_node.constants import MIN_BLOCKS_TO_KEEP, NodeStatus, P2pConnStatus
 from btclib_node.p2p.callbacks import MAX_GETDATA_INFLIGHT_BYTES
 
 if TYPE_CHECKING:
@@ -184,6 +185,35 @@ def _inbound_net_class(address: NetworkAddressV2) -> BIP155Network | int:
     Core's Tor, I2P, CJDNS or bind-address component to do.
     """
     return address.network_id
+
+
+def _is_limited_peer(conn: Connection) -> bool:
+    """Whether `conn` can only serve blocks near its own tip.
+
+    Core's own `IsLimitedPeer` (net_processing.cpp:1261, at
+    bitcoin/bitcoin@ca7162cde5): `NODE_NETWORK_LIMITED` advertised and
+    `NODE_NETWORK` not -- a full archival peer sets both, so this misses
+    it, and so does a peer with neither, which Core keeps out of
+    `FindNextBlocksToDownload` with a separate gate, `CanServeBlocks`
+    (net_processing.cpp:1254, at bitcoin/bitcoin@ca7162cde5), that this
+    tree does not have: `callbacks.version` refuses such a peer only
+    once the node is `BlockSynced`, so during initial block download it
+    is offered the whole window here as if it were archival (issue
+    #725). `False` for a connection with no `version_message` rather
+    than a raised
+    `AttributeError`: every connection `_request_new_block_work` below
+    ever sees has one, `callbacks.verack` refusing to promote one that
+    does not, but that invariant lives in `p2p/callbacks.py` and not
+    here, so this reads defensively rather than asserting it.
+    """
+    version_msg = conn.version_message
+    if version_msg is None:
+        return False
+    services = version_msg.services
+    return bool(
+        services & ServiceFlags.NODE_NETWORK_LIMITED
+        and not services & ServiceFlags.NODE_NETWORK
+    )
 
 
 def _extend_tx_announce_queue(conn: Connection, new_for_conn: list[bytes]) -> None:
@@ -711,16 +741,37 @@ class DownloadManager:
         ]
         return waiting, pending
 
+    def _reachable_blocks(
+        self, conn: Connection, candidates: list[bytes]
+    ) -> list[bytes]:
+        """Filter `candidates` to what `conn` can actually be asked for.
+
+        Unfiltered for a peer that is not `_is_limited_peer` -- Core's own
+        check runs only `if (is_limited_peer)` (`FindNextBlocks`,
+        net_processing.cpp:1635, at bitcoin/bitcoin@ca7162cde5), any other
+        peer's own candidates there being bounded only by the download
+        window, matching this module's own `block_window`. For a limited
+        peer, a candidate more than `MIN_BLOCKS_TO_KEEP - 2` behind
+        `conn.best_known_height` is dropped -- `MIN_BLOCKS_TO_KEEP` stands
+        in for Core's own `NODE_NETWORK_LIMITED_MIN_BLOCKS`, both 288 at
+        that sha (`constants.py`), and `- 2` is Core's own "two blocks
+        buffer for possible races", the same sign as its `>=` skip and
+        the opposite of `_below_prune_threshold`'s `+ 2` on the serving
+        side (`p2p/callbacks.py`) -- the request side wants to stop
+        asking a little before the serving side would actually refuse,
+        not a little after.
+        """
+        if not _is_limited_peer(conn):
+            return candidates
+        block_index = self.node.chainstate.block_index
+        threshold = conn.best_known_height - (MIN_BLOCKS_TO_KEEP - 2)
+        return [
+            h for h in candidates if block_index.get_block_info(h).index > threshold
+        ]
+
     def _request_new_block_work(
         self, connections: list[Connection], waiting: list[bytes], pending: list[bytes]
     ) -> None:
-        # No check here for a connection whose own version_message
-        # advertised NODE_NETWORK_LIMITED without NODE_NETWORK -- Core's
-        # own FindNextBlocksToDownload (net_processing.cpp, at
-        # bitcoin/bitcoin@ca7162cde5) skips such a peer for a block more
-        # than NODE_NETWORK_LIMITED_MIN_BLOCKS behind its own best known
-        # height, which this tree tracks for no connection at all yet.
-        # btclib-org/btclib-node#706
         node = self.node
         for conn in connections:
             # `pending_eviction` is this peer's queue having just been
@@ -732,14 +783,28 @@ class DownloadManager:
             # (callbacks.block), or the peer is gone by
             # `_BLOCK_STALL_DISCONNECT_TIMEOUT` instead.
             if conn.download_queue == [] and not conn.pending_eviction:
-                if waiting:
-                    new = waiting[:MAX_BLOCKS_PER_GETDATA_BURST]
-                    waiting = waiting[MAX_BLOCKS_PER_GETDATA_BURST:]
-                elif pending:
-                    new = pending[:2]
-                    pending = pending[2:]
-                else:
+                if not waiting and not pending:
                     return
+                reachable_waiting = self._reachable_blocks(conn, waiting)
+                if reachable_waiting:
+                    new = reachable_waiting[:MAX_BLOCKS_PER_GETDATA_BURST]
+                    waiting = [h for h in waiting if h not in new]
+                else:
+                    reachable_pending = self._reachable_blocks(conn, pending)[:2]
+                    if not reachable_pending:
+                        # Nothing left that this connection can be asked
+                        # for right now: a NODE_NETWORK_LIMITED peer
+                        # without NODE_NETWORK, sitting behind every
+                        # candidate `_reachable_blocks` above passed it.
+                        # `waiting` and `pending` still hold work for
+                        # whichever other connection this same pass
+                        # reaches next, so this is `continue`, not the
+                        # `return` below -- that one fires only once
+                        # neither list holds anything for anybody.
+                        # btclib-org/btclib-node#706
+                        continue
+                    new = reachable_pending
+                    pending = [h for h in pending if h not in new]
                 conn.download_queue = new
                 getdata = GetData(
                     [

@@ -141,6 +141,12 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     version_msg = Version.parse(msg)
 
     conn.version_message = version_msg
+    # `Connection.best_known_height`'s own docstring (connection.py) is
+    # where reading `start_height` here despite it being 0 on every
+    # connection this tree itself opens (btclib-org/btclib-node#722) is
+    # argued: a taller value off headers this peer actually sends
+    # (below) replaces it once there is one. btclib-org/btclib-node#706
+    conn.best_known_height = version_msg.start_height
     # Every refusal below is discouraged, and not only a protocol
     # violation: Core's own discouragement covers "incompatible or
     # broken peers" alike (banman.h, at bitcoin/bitcoin@58a7869f86), and a
@@ -976,6 +982,17 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     # btclib-org/btclib-node#75
     block_index = node.chainstate.block_index
     tip = block_index.add_headers(headers)
+    if tip is not None:
+        # This batch connected, so its own tip is a taller header this
+        # connection has sent than any before it -- Core's own
+        # UpdateBlockAvailability (net_processing.cpp, at
+        # bitcoin/bitcoin@ca7162cde5) raises `pindexBestKnownBlock` the
+        # same way off every headers batch a peer sends.
+        # `download.py`'s own citation is where a connection's
+        # `best_known_height` is read back. btclib-org/btclib-node#706
+        conn.best_known_height = max(
+            conn.best_known_height, block_index.get_block_info(tip).index
+        )
     if tip is None:
         # a batch connecting to nothing this node knows, whatever its
         # length: get_block_locator_hashes asks from what this node
