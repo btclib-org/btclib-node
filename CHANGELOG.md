@@ -1223,6 +1223,7 @@ where this file was written rather than where anything was tagged.
   `ActivateBestChainStep` (`src/validation.cpp`, at
   bitcoin/bitcoin@b91d983f66).
 ### RocksDB, through `rocksdict`, replaces the store's own sqlite3 (closes #637, closes #641)
+### The store moves to RocksDB, through `rocksdict` (closes #637, closes #641)
 
 - **`src/btclib_node/db.py`'s `KeyValueStore` moves from the standard
   library's `sqlite3` to RocksDB, through `rocksdict`, behind its
