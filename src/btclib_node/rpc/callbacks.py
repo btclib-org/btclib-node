@@ -139,10 +139,9 @@ def get_blockchain_info(
     :1434, same commit). `chainwork` is `block_index.chainwork`'s own
     entry for the tip, hex and zero-padded to 64 digits the way Core's
     `nChainWork.GetHex()` prints a plain magnitude (src/rpc/
-    blockchain.cpp:1450, same commit) -- unlike `get_block_header`
-    above, whose own `chainwork` is the same int un-encoded, a
-    pre-existing divergence from Core this callback does not carry
-    forward (btclib-org/btclib-node#658).
+    blockchain.cpp:1450, same commit) -- `get_block_header` above
+    answers its own `chainwork` the same way now, closing what used to
+    be a divergence from Core between the two (btclib-org/btclib-node#658).
 
     `initialblockdownload` is `node.is_initial_block_download`,
     `main.update_ibd_status`'s own latch, matching Core's own
@@ -259,6 +258,17 @@ def get_block_header(
     does, height and confirmations included for a header off the active
     chain as much as for one on it -- each field's own Core citation is
     beside where it is built, below.
+
+    `nTx` is the one member `blockheaderToJSON` answers that this does
+    not (`src/rpc/blockchain.cpp:185`, at bitcoin/bitcoin@ca7162cde5):
+    Core reads it off `CBlockIndex::nTx`, a count kept beside the header
+    once the block is received; `BlockInfo` (`chainstate/block_index.py`)
+    carries no such count, only `header`, `index`, `status` and
+    `downloaded`, so answering it here would mean parsing the whole
+    block body off `block_db` for every call -- a header lookup paying
+    a block's own cost, and one that still has nothing to answer for a
+    header whose block was never downloaded. Left absent rather than
+    answered at that price.
     """
     block_index = node.chainstate.block_index
 
@@ -318,34 +328,75 @@ def get_block_header(
     # src/rpc/blockchain.cpp:661
     active_chain = block_index.active_chain
 
-    out: dict[str, Any] = header.to_dict()
-    out["hash"] = header.hash
-
     # the block's own height, which is what Core answers with for a
     # block off the active chain as much as for one on it. `BlockInfo`
     # carries it for every header the index holds, where a position in
     # active_chain is a number only the validated ones have.
     height = block_info.index
-    out["height"] = height
     on_active_chain = height < len(active_chain) and active_chain[height] == block_hash
 
-    # Core's ComputeNextBlockAndDepth, src/rpc/blockchain.cpp:126: a
-    # depth is counted from the active chain's tip, and a block that
-    # chain does not hold at its own height is answered with -1 rather
-    # than a number. A header whose block was never downloaded is one of
-    # those, so header sync reports nothing as confirmed.
-    out["confirmations"] = len(active_chain) - height if on_active_chain else -1
+    out: dict[str, Any] = {
+        # src/rpc/blockchain.cpp:170
+        "hash": header.hash,
+        # Core's ComputeNextBlockAndDepth, src/rpc/blockchain.cpp:126: a
+        # depth is counted from the active chain's tip, and a block
+        # that chain does not hold at its own height is answered with
+        # -1 rather than a number -- a header whose block was never
+        # downloaded is one of those, so header sync alone reports
+        # nothing as confirmed (src/rpc/blockchain.cpp:172-173)
+        "confirmations": len(active_chain) - height if on_active_chain else -1,
+        # src/rpc/blockchain.cpp:174
+        "height": height,
+        # src/rpc/blockchain.cpp:175
+        "version": header.version,
+        # strprintf("%08x", nVersion), src/rpc/blockchain.cpp:176 --
+        # btclib bounds `version` to `0 < version <= 0x7FFFFFFF`
+        # (block_header.py's own `assert_valid`), so the top bit is
+        # never set and a plain positive format matches what Core's
+        # signed `%x` prints
+        "versionHex": f"{header.version:08x}",
+        # src/rpc/blockchain.cpp:177 -- Core's own name, not btclib's
+        # `to_dict`'s `merkle_root`
+        "merkleroot": header.merkle_root,
+        # CBlockHeader::GetBlockTime, src/rpc/blockchain.cpp:178 -- the
+        # header's own raw timestamp, not `to_dict`'s ISO 8601 string
+        "time": block_time(header),
+        # CBlockIndex::GetMedianTimePast, src/rpc/blockchain.cpp:179 --
+        # the same call `get_blockchain_info` makes of its own tip,
+        # walking back from this block instead, on or off the active
+        # chain either way, `parent_lookup` reaching either
+        "mediantime": median_time_past(header, height, parent_lookup(node)),
+        # src/rpc/blockchain.cpp:180
+        "nonce": header.nonce,
+        # strprintf("%08x", nBits), src/rpc/blockchain.cpp:181 --
+        # `header.bits` is already those same four bytes in display
+        # order (`block_header.py`'s own class docstring), matching
+        # `get_blockchain_info`'s identical `bits` field
+        "bits": header.bits,
+        # GetTarget(...).GetHex(), src/rpc/blockchain.cpp:182 -- see
+        # `get_blockchain_info`'s own citation for why `header.target`
+        # already matches Core's `SetCompact`/`GetHex` here
+        "target": header.target,
+        # GetDifficulty, src/rpc/blockchain.cpp:106 and :183
+        "difficulty": header.difficulty,
+        # nChainWork.GetHex(), src/rpc/blockchain.cpp:184 -- hex,
+        # zero-padded to 64 digits, matching `get_blockchain_info`'s own
+        # `chainwork` rather than the plain int this answered before
+        # (closes #658)
+        "chainwork": f"{block_index.chainwork[block_hash]:064x}",
+    }
     if height > 0:
-        # the header's own parent, which for a block on the active chain
-        # is active_chain[height - 1] and for one off it is the fork's
-        # ancestor: Core answers with pprev either way
+        # the header's own parent, which for a block on the active
+        # chain is active_chain[height - 1] and for one off it is the
+        # fork's ancestor: Core answers with pprev either way
+        # (src/rpc/blockchain.cpp:187-188)
         out["previousblockhash"] = header.previous_block_hash
     # `next` is the active chain's block at height + 1 and only where
     # this block is its parent, which is the same condition read the
     # other way round: nothing follows a block that chain does not hold
+    # (src/rpc/blockchain.cpp:189-190)
     if on_active_chain and height < len(active_chain) - 1:
         out["nextblockhash"] = active_chain[height + 1]
-    out["chainwork"] = block_index.chainwork[block_hash]
 
     return out
 
