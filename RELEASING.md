@@ -395,29 +395,31 @@ this release included.
    `push`. Everything else that skipped wants explaining before the
    release is called done.
 
-1. Install what was just published, in an environment of its own:
+1. `release.yml`'s own `pypi-install` job already installed what was
+   just published and ran it past import, on every image this
+   repository claims and on `windows-latest` besides — the audit above
+   is where its own result is read. What is left to check by hand is
+   the attestations, which that job carries no token for:
 
    ```shell
-   uv run --isolated --no-project --python 3.14 --with btclib-node \
-     python -c "from btclib_node import Node; print(Node)"
+   pypi-attestations verify pypi <file> --repository \
+     https://github.com/btclib-org/btclib-node
    ```
 
-   then check the attestations. **The
+   **The
    [simple API](https://pypi.org/simple/btclib-node/) (`Accept:
    application/vnd.pypi.simple.v1+json`) is the index's own state; the
    JSON API is a cache of it** — `provenance` answers `null` there
    even where the link exists. The simple API carries the real
    provenance link, under
-   `/integrity/<project>/<version>/<filename>/provenance`, and
-   `pypi-attestations verify pypi <file> --repository
-   https://github.com/btclib-org/btclib-node` checks the signature
-   rather than merely its presence. The simple API is itself served
-   through a CDN, so one request straight after a publish can still
-   answer stale for a few minutes — `release.yml`'s own *Install from
-   TestPyPI and use it* step measured exactly that lag, a `curl` GET
-   confirming a version and `uv` failing to resolve it one second
-   later (#546, #548); a retry is what an absence needs before it is
-   trusted, the way that workflow step retries rather than asking
+   `/integrity/<project>/<version>/<filename>/provenance`, and the
+   command above checks the signature rather than merely its presence.
+   The simple API is itself served through a CDN, so one request
+   straight after a publish can still answer stale for a few minutes —
+   `pypi-install.yml`'s own wait step is written against exactly that
+   lag, a `curl` GET confirming a version and `uv` failing to resolve
+   it one second later (#546, #548); a retry is what an absence needs
+   before it is trusted, the way that step retries rather than asking
    once.
 
 1. Read the bill of materials attached to the release,

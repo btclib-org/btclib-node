@@ -298,12 +298,13 @@ is its output rather than a defect, and its own header says why.
 `src/btclib_node/chains.py` names. `claude-review.yml` writes the review
 and its own header says it must not become a required check.
 `vendored-vectors.yml` re-checks `tests/_data/README.md`'s pin against
-upstream, `deps-latest.yml` upgrades every dependency and runs the suite
-and the lint gate against the result, and `mutation.yml` is its own
-section below. `fuzz.yml` runs the atheris harnesses under `fuzz/`
-against octets nobody chose, and its own header says which parser this
-tree owns of what a peer reaches and why the harness is a script rather
-than the ClusterFuzzLite container the sibling libraries build.
+upstream, `deps-latest.yml` upgrades every dependency and runs the suite and
+the lint gate against the result, `pypi-install.yml` installs `btclib-node`
+from the index rather than from a checkout and runs it past import, and
+`mutation.yml` is its own section below. `fuzz.yml` runs the atheris harnesses
+under `fuzz/` against octets nobody chose, and its own header says which
+parser this tree owns of what a peer reaches and why the harness is a script
+rather than the ClusterFuzzLite container the sibling libraries build.
 `scorecard.yml` runs OpenSSF's third-party audit of the repository's
 supply-chain posture, on push to `main` and on a weekly schedule. Unlike
 every other workflow above, it carries neither a `pull_request` trigger

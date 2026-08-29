@@ -1,0 +1,263 @@
+---
+name: pypi-install
+
+# checks whether what is already on PyPI actually works, not merely
+# installs -- which no pull request asks, checking out the tree it is
+# testing being the whole point of one. No checkout here either, on
+# purpose: nothing from this repository takes part, which is what
+# guarantees the checks below resolve to what was installed from the
+# index and not to a source tree.
+#
+# `import btclib_node` runs __init__.py alone, and what a bare import
+# cannot see is the runtime path a user actually exercises: the store
+# is sqlite3 from the standard library (btclib-org/btclib-node#107, no
+# wheel to be missing there), but this package unconditionally depends
+# on `btclib[secp256k1]`, so a compiled extension is resolved and
+# imported the moment the interpreter's own script engine needs it --
+# and `btclib._libsecp256k1` degrades a broken pair silently to the
+# Python arithmetic, tens of times slower and not constant-time, rather
+# than failing on import. So the checks below ask past the import: that
+# the bindings this package always pulls in actually serve, and that a
+# `Node` this package's own class builds and starts on regtest comes
+# back down cleanly, which is the one thing every one of this
+# repository's own functional tests already exercises against a source
+# tree and this workflow is the only place that exercises against the
+# index.
+#
+# A schedule is also something GitHub itself stops firing: it suspends a
+# workflow's cron trigger after sixty days without repository activity,
+# and says so only by email. Sixty quiet days is exactly the stretch this
+# sentinel exists to cover, so a silence from it is worth a look at the
+# Actions tab before it is read as green.
+on:
+  schedule:
+    # Wednesday, the hour after deps-latest.yml, and the pair is why this is
+    # weekly: deps-latest.yml upgrades every dependency and runs the suite,
+    # this asks what the index actually serves, and read together they
+    # separate a break this tree caused from one that arrived. What it
+    # watches is external rot -- a new interpreter, an index serving a
+    # file that does not match its own hash -- which a week samples as
+    # well as anything longer, and after a release the trigger below
+    # answers immediately regardless.
+    # The time is section 10's grid in btclib-org/.github and not this
+    # file's to restate.
+    # Only the default branch schedules workflows, so on any other branch
+    # this is reachable through the dispatch below alone
+    - cron: "20 5 * * 3"
+  # after a release, which is the one moment this workflow's answer can
+  # change: a call does not forget, where RELEASING.md's step is a verdict
+  # to read. Called by release.yml rather than triggered by
+  # workflow_run, which zizmor rates a dangerous trigger and rightly -- it
+  # runs the default branch's copy with the token of a push nobody reviewed
+  # -- where a call runs inside the release that gated it. The caller passes
+  # the tag, and only the caller does: the weekly run and a dispatch have
+  # no particular version in mind, which is the point of them
+  workflow_call:
+    inputs:
+      version:
+        description: >-
+          the tag whose version the index must serve before the matrix
+          installs anything, empty on a run with no release behind it
+        required: false
+        type: string
+        default: ""
+  workflow_dispatch:
+  # so a change to this file is checked by the thing it configures, the
+  # same way os-macos.yml and os-windows.yml are. closed is deliberately
+  # absent, unlike those two: the concurrency block below cancels
+  # nothing, this workflow's own runs each being a sample worth keeping
+  # rather than one superseding another, so a closed event here would
+  # supersede no run whichever group it landed in -- it would only add
+  # one, installing from the index for a pull request nobody is on any
+  # more
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+    paths:
+      - .github/workflows/pypi-install.yml
+
+# least privilege for the GITHUB_TOKEN: everything running in a job
+# (actions, dependencies) can read the token, so it must not be able to
+# write to the repository
+permissions:
+  contents: read
+
+# never cancel a sentinel: a scheduled run and a dispatched one are both
+# samples worth keeping, and neither supersedes the other. A concurrent
+# run queues instead
+concurrency:
+  group: pypi-install-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  install-published:
+    name: >-
+      ${{ matrix.no-binary && 'Build' || 'Install' }}
+      btclib-node from PyPI on ${{ matrix.os }}
+    # a draft pull request is work in progress and spends no runner
+    # here either: the same condition lint.yml and test.yml carry, and
+    # ready_for_review is a trigger type above for the same reason
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # every image one of this repository's own platform sentinels
+        # already runs, and nothing beyond it: os-ubuntu.yml's own
+        # header is why aarch64 Linux is here at all -- this package
+        # resolves a different published btclib_secp256k1 wheel there
+        # from the one ubuntu-latest installs -- os-macos.yml's is why
+        # there is one macOS image and not two ("what a macOS cell
+        # answers is the start method, which is the platform's and not
+        # the architecture's, and the Intel runner would answer it
+        # twice"), and os-windows.yml's is why windows-latest is here
+        # despite pyproject.toml's own classifiers naming only POSIX and
+        # MacOS: a stranger can `pip install` this from the index today
+        # regardless of what the classifiers claim, and os-windows.yml's
+        # own header already accepts that cell running red rather than
+        # hiding the gap -- this workflow inherits that acceptance
+        # rather than re-deciding it
+        os:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+          - macos-latest
+          - windows-latest
+        include:
+          # the one cell where the sdist is what gets built, not merely
+          # what a missing wheel would silently fall back to:
+          # [tool.uv.build-backend] in pyproject.toml declares this
+          # sdist's contents as a set of glob patterns rather than
+          # reading them off git, and a wheel built straight from a
+          # working tree cannot see a pattern that dropped a module the
+          # published sdist needed. No second interpreter to add this
+          # to, unlike btclib's own copy of this file: os-ubuntu.yml's
+          # header already settled that this tree's interpreter axis is
+          # one cell wide, `requires-python` naming the newest and only
+          # interpreter this package claims
+          - os: ubuntu-latest
+            no-binary: true
+    timeout-minutes: 20
+    steps:
+      # every run step below declares `shell: bash`, and the matrix is why:
+      # the default shell on a Windows runner is PowerShell, which parses
+      # none of this. The wait step went in without the line on a sibling
+      # repository's own copy of this file (btclib issue #1141) and took
+      # every Windows cell of a release run with it -- "Missing opening
+      # '(' after keyword 'for'" -- having never run before that tag, a
+      # release being then the only trigger that reached it. A step whose
+      # script happens to be a couple of plain commands survives
+      # PowerShell unchanged, which is what makes an omission invisible
+      # on review; declaring it on every step is what makes the absence
+      # of one visible instead
+      #
+      # the index does not serve a new file the instant the upload returns,
+      # and this workflow installs whatever the resolver picks: a run that
+      # starts too early tests the *previous* version and reports a pass for
+      # it, which is worse than reporting nothing. So a run with a release
+      # behind it waits for the version its tag names, and fails if it never
+      # arrives rather than measuring the wrong thing.
+      #
+      # The step itself runs on every trigger and does nothing on most of
+      # them, the input being empty wherever no release is calling. An
+      # `if:` here would make a tag the only thing that ever runs it, and
+      # a step a release is the first to run is a step whose defect ships
+      # with that release -- which has already happened to this script, in
+      # more than one repository of this organization. Unguarded, every
+      # weekly run parses it on every cell of the matrix. The empty case is
+      # a condition around the loop rather than an early `exit 0` for that
+      # same reason: bash parses a script as it runs, so an exit at the
+      # top leaves what follows unparsed, where an `if` is parsed whole
+      # before its condition is tested
+      - name: Wait for the index to serve the released version
+        shell: bash
+        env:
+          TAG: ${{ inputs.version }}
+        run: |
+          version="${TAG#v}"
+          if [ -z "$version" ]; then
+            echo "no release behind this run: nothing to wait for"
+          else
+            for attempt in $(seq 20); do
+              if curl -sf --max-time 10 -o /dev/null \
+                  "https://pypi.org/pypi/btclib-node/${version}/json"; then
+                echo "the index serves ${version}"
+                exit 0
+              fi
+              echo "attempt ${attempt}: ${version} is not served yet"
+              sleep 15
+            done
+            echo "::error::${version} never appeared on the index"
+            exit 1
+          fi
+      # uv rather than actions/setup-python, which is what every other
+      # workflow here already uses. The windows-11-arm gap the
+      # setup-python action carries on a sibling repository's copy of
+      # this file does not reach this matrix, windows-11-arm not being
+      # one of the images above
+      - name: Setup uv with Python 3.14
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.14"
+      # --verbose so the log names the btclib_secp256k1 wheel this cell
+      # resolved to, and on the include cell above where the package
+      # itself is built from its sdist, what that build did too.
+      # --only-binary btclib-node on every other cell: without it a
+      # yanked or missing wheel demotes a cell to an sdist build
+      # silently, and the run stays green while testing the wrong thing.
+      # Only btclib-node is constrained either way, never its
+      # dependencies: they are left to resolve however the resolver
+      # normally would.
+      # A venv of its own, and every step below runs --no-project
+      # against it: there is no checkout, so nothing of this repository
+      # is on the path either way, and that is the property the header
+      # above claims
+      - name: Install btclib-node from PyPI
+        shell: bash
+        env:
+          NO_BINARY: ${{ matrix.no-binary || false }}
+        run: |
+          uv venv --python 3.14
+          if [ "$NO_BINARY" = "true" ]; then
+            uv pip install --verbose --no-binary btclib-node btclib-node
+          else
+            uv pip install --verbose --only-binary btclib-node btclib-node
+          fi
+      # is_libsecp256k1_serving is what the header above says a bare
+      # import cannot see: this package names no extra of its own that
+      # would make the bindings optional, unlike btclib's own two-job
+      # split for this file, so there is only ever one configuration to
+      # check here
+      - name: Verify the bindings serve
+        shell: bash
+        run: |
+          uv run --no-project python -c "from importlib.metadata import version; \
+            from btclib.curves import is_libsecp256k1_serving; \
+            print('installed version:', version('btclib-node')); \
+            assert is_libsecp256k1_serving(), \
+              'btclib[secp256k1] resolved, the bindings do not serve'"
+      # the check tests/conftest.py's own node_context builds a Node
+      # from, against the index's copy of the class rather than this
+      # repository's own: a chain that resolves, a data directory that
+      # gets created, both listeners bound on regtest's fixed ports and
+      # closed again -- the one thing every functional test in this
+      # repository already exercises against a source tree. On
+      # windows-latest this is expected to fail, and the failure is the
+      # output: os-windows.yml's own header already names
+      # `loop.add_reader`, which P2pManager and RpcManager both call, as
+      # unimplemented by the Proactor event loop that is Windows'
+      # default, and this step is what makes that reachable from the
+      # index rather than only from a checkout
+      - name: Verify a Node starts and stops on regtest
+        shell: bash
+        run: |
+          uv run --no-project python -c "
+          import tempfile
+
+          from btclib_node import Node
+          from btclib_node.config import Config
+
+          with tempfile.TemporaryDirectory() as tmp:
+              node = Node(config=Config(chain='regtest', data_dir=tmp, debug=True))
+              node.start()
+              node.stop()
+          print('the node started and stopped cleanly')
+          "
