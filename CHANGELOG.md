@@ -1506,6 +1506,31 @@ where this file was written rather than where anything was tagged.
   a mempool spend of it `MissingPrevoutError`, in place of the
   `ChainstateInconsistencyError` both used to assert.
 
+### `getblockheader` answers Core's own field names and types (closes #658)
+
+- **`chainwork` is hex, zero-padded to 64 digits**, matching Core's own
+  `nChainWork.GetHex()` (`src/rpc/blockchain.cpp:184`, at
+  bitcoin/bitcoin@ca7162cde5) rather than the plain JSON number
+  `block_index.chainwork[block_hash]` used to answer un-encoded: a
+  client written against Core parsing this the way it parses
+  `getblockchaininfo`'s own `chainwork` (#575) got a JSON number where
+  it expected a string.
+- **`versionHex`, `mediantime` join `version`, `nonce`, `bits`,
+  `target`, `difficulty`**, each matching Core's own name and type
+  (`src/rpc/blockchain.cpp:170-184`, same commit); `merkleroot` and
+  `previousblockhash` replace btclib's own `to_dict`'s `merkle_root` and
+  `previous_block_hash`, which this callback used to answer verbatim
+  under btclib's own snake_case names rather than Core's -- for
+  `previous_block_hash` specifically also for a genesis-height block,
+  where `to_dict` answered an all-zero hash under that name and Core
+  answers no `previousblockhash` member at all. `time` is now the raw
+  timestamp `to_dict`'s own ISO 8601 string was standing in for.
+  `nTx` stays absent: Core reads it off `CBlockIndex::nTx`, a count
+  kept beside the header once the block is received, and `BlockInfo`
+  (`chainstate/block_index.py`) carries no such count -- answering it
+  here would mean parsing the whole block body off `block_db` for
+  every call, a header lookup paying a block's own cost.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

@@ -1116,6 +1116,13 @@ def a_block_index(
 
     `validated` is how far along `chain` the active chain reaches, and is
     the whole of it by default.
+
+    `header_dict` is `blocks` itself: `get_block_header`'s own
+    `mediantime` walks it through `main.parent_lookup`, which reads
+    `header_dict[hash].header` -- the same shape `block()` below
+    already builds each entry as, so no second collection is needed to
+    answer it, only every chain built here staying short of the eleven
+    ancestors `median_time_past` would need to walk off the end of it.
     """
 
     def block(header: BlockHeader, height: int) -> Any:
@@ -1134,6 +1141,7 @@ def a_block_index(
     return SimpleNamespace(
         active_chain=[header.hash for header in connected],
         get_block_info=blocks.__getitem__,
+        header_dict=blocks,
         chainwork=chainwork,
     )
 
@@ -1167,7 +1175,61 @@ def test_a_block_header_names_the_ones_either_side_of_it() -> None:
     assert middle["confirmations"] == 2
     assert middle["previousblockhash"] == chain[0].hash
     assert middle["nextblockhash"] == chain[2].hash
-    assert middle["chainwork"] == 2
+
+
+def test_a_block_header_s_chainwork_is_hex_and_zero_padded_to_64() -> None:
+    """`chainwork` is hex here (closes #658), not the plain int used to pin it.
+
+    `a_block_index`'s own fake chainwork is `index + 1`, so the middle
+    block of a 3-header chain answers `2` -- unpadded hex is one digit,
+    the `2` the un-corrected version of this test used to assert
+    against directly, so this exercises exactly the difference padding
+    to 64 makes rather than a value long enough to hide it.
+    """
+    chain = generate_random_header_chain(3, RegTest().genesis.hash)
+    node = cast(
+        "Node",
+        SimpleNamespace(chainstate=SimpleNamespace(block_index=a_block_index(chain))),
+    )
+    middle = header_json(node, _CONN, [chain[1].hash.hex()])
+    assert middle["chainwork"] == (
+        "0000000000000000000000000000000000000000000000000000000000000002"
+    )
+    assert len(middle["chainwork"]) == 64
+
+
+def test_a_block_header_answers_every_scalar_field_core_s_own_does() -> None:
+    """`version`, `merkleroot`, `time`, `nonce`, `bits`, `target`, `difficulty`.
+
+    `bits`/`target`/`difficulty` are cross-checked the same way
+    `get_blockchain_info`'s own equivalent test is, against Core's
+    literal `SetCompact`/`GetDifficulty` algorithm on regtest's own
+    easy genesis bits, independently of the `BlockHeader` properties
+    this callback reads. `versionHex` and `merkleroot`/`previous_block_hash`
+    being absent under btclib's own `to_dict` spelling are what closes
+    the naming half of #658, chainwork's own hex form closing the rest.
+    """
+    chain = generate_random_header_chain(1, RegTest().genesis.hash)
+    header = chain[0]
+    node = cast(
+        "Node",
+        SimpleNamespace(chainstate=SimpleNamespace(block_index=a_block_index(chain))),
+    )
+    result = header_json(node, _CONN, [header.hash.hex()])
+    assert result["version"] == 70015
+    assert result["versionHex"] == "0001117f"
+    assert result["merkleroot"] == header.merkle_root
+    assert result["time"] == int(header.time.timestamp())
+    assert result["mediantime"] == int(header.time.timestamp())
+    assert result["nonce"] == header.nonce
+    assert result["bits"] == bytes.fromhex("207fffff")
+    assert result["target"] == bytes.fromhex(
+        "7fffff0000000000000000000000000000000000000000000000000000000000"
+    )
+    assert result["difficulty"] == 4.6565423739069247e-10
+    assert "previous_block_hash" not in result
+    assert "merkle_root" not in result
+    assert "nTx" not in result
 
 
 def test_the_first_header_has_nothing_before_it_and_the_last_nothing_after() -> None:
