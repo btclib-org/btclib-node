@@ -1588,6 +1588,34 @@ where this file was written rather than where anything was tagged.
   confidence issue #640's own report chose 300 for, without removing
   the underlying exposure a documented discriminator already answers.
 
+### testmempoolaccept no longer swallows a store error (closes #668)
+
+- **`test_mempool_accept`'s own blind `except Exception` no longer
+  catches a `StoreCorruptionError` raised while reading a prevout.**
+  It now catches only `BTClibValueError` and `MissingPrevoutError` --
+  `verify_mempool_acceptance`'s own two verdicts on the candidate
+  transaction -- and lets anything else propagate, ending the whole
+  batch rather than reporting it as that one entry's own
+  `"reject-reason"`. This matches Core's own `testmempoolaccept`
+  (`src/rpc/mempool.cpp:379-430`, at bitcoin/bitcoin@ca7162cde5),
+  whose per-tx loop never catches anything either -- it only ever
+  branches on the `TxValidationResult` `ProcessTransaction` returns
+  rather than raises -- so a genuine fault reaches `ExecuteCommand`'s
+  own uniform catch (`src/rpc/server.cpp:874-887`, same commit)
+  instead, this tree's own equivalent being `handle_rpc`
+  (`rpc/main.py`), which already logs and answers `INTERNAL_ERROR`
+  for exactly this, the same catch `sendrawtransaction` already
+  relies on for a store error past its own two excepts.
+- **`RELEASE_NOTES.md`'s #631 entry is corrected to say so**: it used
+  to tell an operator to read the log for `StoreCorruptionError`
+  where `testmempoolaccept` wrote nothing there to find, the gap this
+  closes.
+- **A rewritten `send_raw_transaction` test in the same file swaps
+  its own monkeypatched stand-in from `ChainstateInconsistencyError`
+  to `StoreCorruptionError`**, matching what `verify_mempool_acceptance`
+  can still actually raise for this node's own storage now that
+  #650 stopped `UtxoIndex.get_coin` raising the former.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

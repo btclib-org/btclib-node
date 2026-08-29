@@ -793,7 +793,10 @@ def test_mempool_accept(
     Runs `verify_mempool_acceptance` without calling `Mempool.add_tx`,
     so a transaction it verifies is reported allowed without being
     added -- the same reject reasons `send_raw_transaction` raises are
-    reported here per entry instead, and never end the whole batch.
+    reported here per entry instead, neither ending the whole batch.
+    A fault that is neither of those two propagates and does end it,
+    matching Core's own `testmempoolaccept`, which has no per-tx
+    catch-all either (btclib-org/btclib-node#668).
     """
     if not params:
         # the same mechanism get_block_hash's own missing-argument case
@@ -833,6 +836,19 @@ def test_mempool_accept(
             "allowed": False,
             "vsize": tx.vsize,
         }
+        # Only these two, matching Core's own shape: testmempoolaccept's
+        # per-tx loop (src/rpc/mempool.cpp:379-430, at
+        # bitcoin/bitcoin@ca7162cde5) never catches anything itself --
+        # it only ever branches on the TxValidationResult
+        # ProcessTransaction always returns rather than raises, so a
+        # genuine C++ exception escaping that loop is not one tx's own
+        # verdict, it propagates out of the RPC call entirely, to
+        # ExecuteCommand's own catch (src/rpc/server.cpp:874-887, same
+        # commit), which is this tree's handle_rpc (rpc/main.py) --
+        # already logging and answering INTERNAL_ERROR for exactly this,
+        # the same uniform catch send_raw_transaction below already
+        # relies on for anything past its own two excepts
+        # (btclib-org/btclib-node#668).
         try:
             verify_mempool_acceptance(node, tx)
             tx_res["allowed"] = True
@@ -840,13 +856,6 @@ def test_mempool_accept(
             tx_res["reject-reason"] = _INVALID_SCRIPT_REASON
         except MissingPrevoutError:
             tx_res["reject-reason"] = _MISSING_PREVOUTS_REASON
-        # deliberately blind (BLE001): testmempoolaccept answers one
-        # entry per transaction handed to it, Core's own contract for
-        # the RPC this matches, so an unexpected failure on one of them
-        # is reported as that one entry's own reject-reason rather than
-        # ending the whole batch's answer
-        except Exception:  # noqa: BLE001
-            tx_res["reject-reason"] = "Unknown error"
         out.append(tx_res)
     return out
 

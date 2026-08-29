@@ -13,6 +13,9 @@ from collections import deque
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
+import btclib_node.rpc.callbacks as rpc_callbacks
+from btclib_node.exceptions import StoreCorruptionError
+from btclib_node.log import Logger
 from btclib_node.rpc.callbacks import callbacks
 from btclib_node.rpc.errors import RpcError, RpcErrorCode, error_msg
 from btclib_node.rpc.main import (
@@ -20,8 +23,11 @@ from btclib_node.rpc.main import (
     handle_rpc,
     is_valid_rpc,
 )
+from tests import generate_random_transaction
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import pytest
 
     from btclib_node.rpc.manager import RpcManager
@@ -30,13 +36,17 @@ PING = {"jsonrpc": "2.0", "id": "a", "method": "ping"}
 
 
 def make_node(
-    batch: list[Any], conn_id: int = 0, *, callback: Any = None
+    batch: list[Any], conn_id: int = 0, *, callback: Any = None, logger: Any = None
 ) -> tuple[Any, list[Any], list[Any], list[bool]]:
     """Build a node whose rpc_manager queues `batch` for handle_rpc to pop.
 
     Returns the node, and the lists its double `RpcConnection`'s `send`,
     `send_and_wait` and `stop` each append to -- the answer `handle_rpc`
-    produces.
+    produces. `logger` defaults to a stand-in recording nothing, but a
+    real `Logger` is what a test proving a log line needs instead,
+    `Node.logger` never reaching `caplog` for `log.py`'s own reason
+    (CLAUDE.md, btclib-org/btclib-node#587) -- the same default
+    `p2p/main_test.py`'s own `make_node` already carries.
     """
     sent: list[Any] = []
     waited: list[Any] = []
@@ -46,7 +56,9 @@ def make_node(
         rpc_manager=SimpleNamespace(
             messages=deque([(batch, conn_id)]), connections={0: conn}
         ),
-        logger=SimpleNamespace(debug=lambda *a: None, exception=lambda *a: None),
+        logger=logger
+        if logger is not None
+        else SimpleNamespace(debug=lambda *a: None, exception=lambda *a: None),
         stop=lambda: stopped.append(True),
         p2p_manager=SimpleNamespace(ping_all=callback or (lambda: None)),
     )
@@ -109,6 +121,48 @@ def test_a_callback_that_raises_is_answered_internal_error() -> None:
     # -32603 is the node reporting itself broken, so it is the one
     # answer that is also an event of the node's
     assert logged == ["Exception occurred"]
+
+
+def test_testmempoolaccept_own_store_error_reaches_the_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`testmempoolaccept`'s own store fault reaches `handle_rpc`'s log line.
+
+    `test_mempool_accept` (`rpc/callbacks.py`) has no catch of its own
+    for `StoreCorruptionError` -- the fault this proves reaches the log
+    is a real one, monkeypatched onto `verify_mempool_acceptance` where
+    `UtxoIndex.get_coin` would otherwise raise it -- so it propagates
+    here the same as any other raising callback, `handle_rpc`'s own
+    generic catch above being what logs it and answers `INTERNAL_ERROR`
+    rather than `test_mempool_accept` folding it into one entry's own
+    `"reject-reason"` (btclib-org/btclib-node#668). A real `Logger`
+    writing to a real file, read back after, is what proves the line
+    exists: `caplog` sees nothing from this tree's own logger
+    (CLAUDE.md, btclib-org/btclib-node#587).
+    """
+
+    def corrupted(node: Any, tx: Any) -> NoReturn:
+        err_msg = "stored utxo- record failed to parse"
+        raise StoreCorruptionError(err_msg)
+
+    monkeypatch.setattr(rpc_callbacks, "verify_mempool_acceptance", corrupted)
+    raw = generate_random_transaction().serialize(include_witness=True).hex()
+    batch = [
+        {"jsonrpc": "2.0", "id": "a", "method": "testmempoolaccept", "params": [[raw]]}
+    ]
+    log_path = tmp_path / "debug.log"
+    logger = Logger(log_path, debug=True)
+    node, sent, _, _ = make_node(batch, logger=logger)
+    handle_rpc(node)
+    logger.close()
+
+    assert sent == [[error_msg(RpcErrorCode.INTERNAL_ERROR, "Internal Error", "a")]]
+    lines = [
+        line
+        for line in log_path.read_text(encoding="utf-8").splitlines()
+        if "Exception occurred" in line
+    ]
+    assert len(lines) == 1
 
 
 def test_a_callback_that_refuses_names_its_own_code_and_reason() -> None:
