@@ -16,7 +16,11 @@ from btclib.exceptions import BTClibValueError
 from btclib.tx.out_point import OutPoint
 
 from btclib_node.block_db import Coin, RevBlock
-from btclib_node.chainstate.muhash import CoinStats, is_bip30_unspendable
+from btclib_node.chainstate.muhash import (
+    CoinStats,
+    is_bip30_unspendable,
+    is_unspendable,
+)
 from btclib_node.exceptions import ChainstateInconsistencyError, InvalidBlockInputError
 
 if TYPE_CHECKING:
@@ -275,20 +279,53 @@ class UtxoIndex:
 
     def _stage_creation(
         self, out_point_bytes: bytes, coin: Coin, *, hash_it: bool
-    ) -> None:
+    ) -> bool:
         """Unmark, put, and usually hash in, one created output.
+
+        Returns whether the output was staged at all: `False`, a
+        no-op, for a provably unspendable one (`is_unspendable`) --
+        matching `CCoinsViewCache::AddCoin` (`src/coins.cpp:82`, at
+        bitcoin/bitcoin@ca7162cde5), which returns without adding such
+        an output to Core's own UTXO set in the first place
+        (`muhash.py`'s own "What is inserted, and what is not"
+        argues why the digest already agreed with Core on this before
+        the store did, btclib-org/btclib-node#667). `add_block`'s own
+        two creation loops use the return value to keep such an
+        outpoint out of `added` too, so `apply_rev_block` is never
+        asked to undo a creation this call never staged -- an
+        unspendable output that is never stored is never restored.
 
         `add_block`'s own two creation loops share this rather than
         each repeating `_unmark_removed` + `_put` + a conditional
         `_hash_insert` inline -- what ruff's own `complex-structure`
         already counts every branch of `add_block` itself against.
         `hash_it=False` only ever for the coinbase loop's own
-        `is_bip30_unspendable` gate.
+        `is_bip30_unspendable` gate, and moot for an unspendable
+        output either way, this method returning before that check is
+        ever reached.
         """
+        if is_unspendable(coin.tx_out.script_pub_key.script):
+            return False
         self._unmark_removed(out_point_bytes)
         self._put(out_point_bytes, coin)
         if hash_it:
             self._hash_insert(out_point_bytes, coin)
+        return True
+
+    def _stage_added(
+        self, added: list[OutPoint], out_point: OutPoint, coin: Coin, *, hash_it: bool
+    ) -> None:
+        """Stage a creation and record it in `added` where it was stored.
+
+        `add_block`'s own two creation loops share this the same way
+        they already share `_stage_creation` above: an inline `if`
+        around each call site is exactly the extra branch ruff's own
+        `complex-structure` counts against `add_block` itself, at any
+        layout the check were written in instead.
+        """
+        out_point_bytes = out_point.serialize(check_validity=False)
+        if self._stage_creation(out_point_bytes, coin, hash_it=hash_it):
+            added.append(out_point)
 
     def should_flush(self) -> bool:
         """Whether the staged size has reached `_FLUSH_BOUND`.
@@ -362,6 +399,19 @@ class UtxoIndex:
         `CoinStatsIndex::CustomAppend` -- `muhash.py`'s own "The two
         blocks history exempts" argues why, and why this is a different
         pair from `check_bip30`'s own exception above.
+
+        Neither creation loop stages a provably unspendable output at
+        all -- `_stage_creation`'s own docstring is where that gate,
+        and why it is what keeps `added` (and so `RevBlock.to_remove`)
+        from ever naming an outpoint this call never wrote, is argued
+        (btclib-org/btclib-node#667). A block's own spend loop below
+        needs no matching gate: no valid witness satisfies a provably
+        unspendable output's own script, so no block this method is
+        ever asked to connect legitimately spends one, and one that
+        tried would find it absent -- `"prevout not found"`, the same
+        answer Core's own `ConnectBlock` reaches through
+        `Consensus::CheckTxInputs`/`HaveInputs` for an output its own
+        `AddCoin` never added either.
         """
         if check_bip30:
             self._check_bip30(block)
@@ -375,9 +425,7 @@ class UtxoIndex:
         for i, tx_out in enumerate(block.transactions[0].vout):
             out_point = OutPoint(block.transactions[0].id, i, check_validity=False)
             coin = Coin(tx_out, height, is_coinbase=True)
-            out_point_bytes = out_point.serialize(check_validity=False)
-            self._stage_creation(out_point_bytes, coin, hash_it=not skip_coinbase_hash)
-            added.append(out_point)
+            self._stage_added(added, out_point, coin, hash_it=not skip_coinbase_hash)
 
         for tx in block.transactions[1:]:
             tx_id = tx.id
@@ -411,10 +459,8 @@ class UtxoIndex:
 
             for i, tx_out in enumerate(tx.vout):
                 out_point = OutPoint(tx_id, i, check_validity=False)
-                out_point_bytes = out_point.serialize(check_validity=False)
                 created_coin = Coin(tx_out, height, is_coinbase=False)
-                self._stage_creation(out_point_bytes, created_coin, hash_it=True)
-                added.append(out_point)
+                self._stage_added(added, out_point, created_coin, hash_it=True)
 
             complete_transactions.append((prev_coins, tx))
 
@@ -496,11 +542,20 @@ class UtxoIndex:
         at bitcoin/bitcoin@ca7162cde5), which gates on exactly the same
         conjunction rather than the hash/height pair alone.
         `to_remove` parses the stored `Coin` for this alone where the
-        rest of this loop only ever needed to know the record existed;
-        the parse failure it can raise is this node's own corrupted
-        record, the same distinction `add_block`'s and `get_coin`'s own
-        `Coin.parse` calls draw (btclib-org/btclib-node#620,
-        btclib-org/btclib-node#631, btclib-org/btclib-node#636).
+        rest of this loop only ever needed to know the record existed.
+        A parse failure here raises `ChainstateInconsistencyError`,
+        unlike the identical fault reached through `_stored_prevout`
+        (`add_block`'s own prevout resolution, `get_coin`), which
+        answers `None` instead (btclib-org/btclib-node#650,
+        `_stored_prevout`'s own docstring). The two share only the
+        *attribution* -- that the fault is this node's own corrupted
+        record, never a caller's content (btclib-org/btclib-node#620,
+        btclib-org/btclib-node#631, btclib-org/btclib-node#636) -- not
+        the *outcome*: undoing a block this node already connected has
+        no legitimate "not found" reading the way an ordinary prevout
+        lookup does, this loop's own `"output not found"` raise
+        immediately above already treating absence itself as this
+        node's own bookkeeping fault rather than a candidate's.
         """
         for out_point, coin in rev_block.to_add:
             out_point_bytes = out_point.serialize(check_validity=False)

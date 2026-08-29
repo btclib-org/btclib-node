@@ -1842,6 +1842,33 @@ where this file was written rather than where anything was tagged.
   (renamed from `test_an_empty_batch_is_an_invalid_request`) now assert
   Core's own answer.
 
+### `add_block` no longer stores a provably unspendable output (closes #667)
+
+- **A leading `OP_RETURN` or an over-`MAX_SCRIPT_SIZE` script is never
+  written under a `utxo-` key at all**, matching `CCoinsViewCache
+  ::AddCoin` (`src/coins.cpp:82`, at bitcoin/bitcoin@ca7162cde5), which
+  returns without adding such an output to Core's own UTXO set in the
+  first place. `_stage_creation` (`chainstate/utxo_index.py`) is the
+  one gate both of `add_block`'s own creation loops share, and its
+  return value is what keeps `RevBlock.to_remove` from ever naming an
+  outpoint this call never wrote: an output never stored is never
+  restored, `apply_rev_block` needing no gate of its own for either
+  side of the undo.
+- **`gettxoutsetinfo`'s `txouts` and `bogosize` are unchanged**: both
+  were always `CoinStats`'s own running count (issue #639), gated on
+  the identical `is_unspendable` independently of what the `utxo-`
+  namespace held, never a scan of that namespace -- this closes the
+  gap between what the store persists and what the RPC answers, not
+  a gap in the RPC itself.
+- **An existing data directory needs nothing.** The entries a
+  pre-#667 node already wrote for a provably unspendable output stay
+  exactly where they are -- harmless, since nothing ever looks one up
+  as a prevout, and never revisited by this change, which only ever
+  gates a new write. Core's own answer to the same question is a full
+  `-reindex-chainstate` rebuild, not an incremental scrub of the coins
+  database in place; this tree implements no such rebuild yet, so
+  there is nothing to run and nothing to invent one for.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

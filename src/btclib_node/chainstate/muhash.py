@@ -93,17 +93,22 @@ reason -- it is not meant to reproduce a wire size).
 a script over `MAX_SCRIPT_SIZE` (10,000 bytes). `CCoinsViewCache
 ::AddCoin` (`coins.cpp:82`) returns without ever adding such an output
 to Core's own UTXO set in the first place, so `ApplyCoinHash` never
-sees one either. `UtxoIndex` here does not reproduce that half --
-`utxo_index.py`'s own `add_block`/`apply_rev_block` still store every
-output under a `utxo-` key regardless of spendability, a pre-existing
-divergence this branch does not close (btclib-org/btclib-node#667) --
-but `CoinStats.insert`/`remove` gate on it independently of what the
-store above them keeps, which is what makes the digest and the three
-counters match Core's on a block carrying an `OP_RETURN` output despite
-that divergence: Core's own coins database and this tree's `utxo-`
-namespace disagree on membership, but neither ever offers an
-unspendable output to `ApplyCoinHash`/`CoinStats.insert`, so the two
-accumulators agree regardless.
+sees one either. `CoinStats.insert`/`remove` gate on it independently
+of what `UtxoIndex`'s own store keeps -- which is what already made
+the digest and the three counters match Core's on a block carrying an
+`OP_RETURN` output before `UtxoIndex`'s own `add_block` gated on it too
+(btclib-org/btclib-node#667): even while the two disagreed on
+membership, neither ever offered an unspendable output to
+`ApplyCoinHash`/`CoinStats.insert`, so the two accumulators agreed
+regardless. `UtxoIndex.add_block` now also skips storing such an
+output under a `utxo-` key at all, matching `AddCoin`'s own refusal
+directly rather than only agreeing with it through `CoinStats`'s own
+independent gate (`utxo_index.py`'s own `_stage_creation` is where
+that gate, and `apply_rev_block`'s own consequence -- an output never
+stored is never restored -- are argued); `gettxoutsetinfo`'s `txouts`
+and `bogosize` (`rpc/callbacks.py`) were always `CoinStats`'s own
+count, never a scan of the `utxo-` namespace, so this changes nothing
+either answers.
 
 ## The two blocks history exempts
 
