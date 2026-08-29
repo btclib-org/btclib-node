@@ -1685,6 +1685,24 @@ where this file was written rather than where anything was tagged.
   to this listener defect, filed as their own issues rather than guessed
   at here, so this closes none of what #430 asks for closed.
 
+### REPOSITORY.md's required-check PATCH sends the checks array (closes #657)
+
+- **The documented `PATCH` of `main`'s required checks sends the
+  `checks` array as a JSON body on stdin, each entry bound to the
+  Actions app, and the read-back beside it quotes `.checks[]` with its
+  `app_id`** rather than `.contexts[]`. The `contexts` form the section
+  carried since btclib-org/btclib-node#264 would have replaced the
+  four names bound to the app with the same four bound to nothing, and
+  the `.contexts[]` read-back answers identically either way, so the
+  record was a command that creates the drift and a check that cannot
+  see it (section 11 of the organization standard). The live setting is
+  bound today and was not changed: the new read-back's example output
+  is its answer at 991b385.
+- **The topics example under *Features, and the topics* reads
+  `rocksdb` where it read `sqlite`**, the setting having been aligned
+  to `pyproject.toml`'s `keywords` when btclib-org/btclib-node#641
+  landed (issue #660).
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
