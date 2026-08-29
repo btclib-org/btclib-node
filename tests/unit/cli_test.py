@@ -557,18 +557,34 @@ def test_build_config_prune_at_or_above_the_minimum_sets_the_mib_target() -> Non
     assert cli.build_config(["-regtest", "-prune", "700"]).prune_target_mib == 700
 
 
-def test_build_config_prune_below_the_minimum_leaves_the_mib_target_unset() -> None:
-    """`-prune=<n>` for `1 <= n < MIN_PRUNE_TARGET_MIB` sets no MiB target.
+def test_build_config_prune_one_is_manual_and_sets_no_mib_target() -> None:
+    """`-prune=1` is Core's own manual pruning: no MiB target, RPC-only.
 
-    `main._prune_chain` reads `prune_target_mib is None` as every nonzero
-    `-prune=<n>` in this range currently does, its own bound
-    `MIN_BLOCKS_TO_KEEP` never crossed -- Core's own split of this same
-    range into manual pruning (`-prune=1`) and a refusal
-    (`2 <= n < MIN_PRUNE_TARGET_MIB`) is btclib-org/btclib-node#705's own
-    other half.
+    `node::ApplyArgsManOptions` (`node/blockmanager_args.cpp:28-29`, at
+    bitcoin/bitcoin@ca7162cde5): `nPruneArg == 1` is the one value
+    `PRUNE_TARGET_MANUAL` rather than `nPruneArg * 1_MiB` reaches, and
+    `main._prune_chain` reads `prune_target_mib is None` as exactly
+    this -- nothing deleted automatically, only
+    `rpc.callbacks.prune_blockchain`.
     """
     assert cli.build_config(["-regtest", "-prune", "1"]).prune_target_mib is None
-    assert cli.build_config(["-regtest", "-prune", "100"]).prune_target_mib is None
+    assert cli.build_config(["-regtest", "-prune", "1"]).pruned is True
+
+
+def test_build_config_prune_between_two_and_the_minimum_refuses_to_start() -> None:
+    """`-prune=<n>` for `2 <= n < MIN_PRUNE_TARGET_MIB` refuses, Core's wording.
+
+    `node::ApplyArgsManOptions` (`node/blockmanager_args.cpp:31-33`, at
+    bitcoin/bitcoin@ca7162cde5): too small a target to actually run a
+    node on, and Core refuses to start rather than rounding it up to
+    the floor or collapsing it to manual pruning.
+    """
+    for n in (2, 100, MIN_PRUNE_TARGET_MIB - 1):
+        with pytest.raises(
+            ValueError,
+            match=f"Prune configured below the minimum of {MIN_PRUNE_TARGET_MIB} MiB",
+        ):
+            cli.build_config(["-regtest", "-prune", str(n)])
 
 
 def test_build_config_prune_zero_leaves_pruned_false() -> None:

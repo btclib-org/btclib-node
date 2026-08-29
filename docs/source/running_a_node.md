@@ -42,17 +42,19 @@ the command line always wins over the file. `-prune` is accepted, and
 
 ## Pruning
 
-`-prune=<n>` with any nonzero `<n>` keeps only the last 288 blocks and
-their undo data (about two days) on disk, deleting the rest as the
-chain advances -- `getblockchaininfo`'s own `pruned` and `pruneheight`
-answer for what a caller wants to check programmatically, `pruneheight`
-being the first height still on disk. Core's own `-prune=<n>` MiB
-target and its `pruneblockchain` RPC are not read: this node honours
-only whether `<n>` is zero, and the retained depth is fixed rather than
-sized from disk usage
-([#705](https://github.com/btclib-org/btclib-node/issues/705)). A
-negative `<n>` refuses to start, Core's own behaviour, rather than
-silently pruning.
+`-prune=<n>` matches Core's own three-way split. `<n>` of `1` is manual
+pruning: nothing is deleted on its own, and the `pruneblockchain` RPC is
+what deletes block and undo data up to a height or a timestamp, both
+answering the height of the last block actually pruned. `<n>` at or
+above `550` is automatic pruning to roughly `<n>` MiB on disk, tracked
+against actual bytes under `blocks/` and re-checked after every block
+this node connects. Neither ever reaches within the last 288 blocks
+(about two days) of the tip -- `getblockchaininfo`'s own `pruned`,
+`pruneheight`, `automatic_pruning` and `prune_target_size` answer for
+what a caller wants to check programmatically, `pruneheight` being the
+first height still on disk. `<n>` from `2` to `549` refuses to start,
+Core's own wording -- too small a target to actually run a node on. A
+negative `<n>` refuses to start too, rather than silently pruning.
 
 A pruned node tells a peer so: `NODE_NETWORK_LIMITED` on its own
 `version`, `NODE_NETWORK` dropped, matching what Core's own pruned node

@@ -1870,6 +1870,25 @@ def test_a_pruned_node_stops_once_under_target(
     assert node.block_db.get_block(block_index.active_chain[4]) is not None
 
 
+def test_a_pruned_node_still_prunes_when_usage_exactly_equals_the_target(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Usage exactly at the target still prunes, matching Core's own `>=`.
+
+    Core's own check is `nCurrentUsage + nBuffer >= target`
+    (`node/blockstorage.cpp:373`, at bitcoin/bitcoin@ca7162cde5) --
+    inclusive, not `>`, so a node sitting precisely on its own target
+    still prunes one more height rather than stopping short of it.
+    """
+    node = regtest_node(pruned=True, prune_target_mib=1)
+    target_bytes = 1 * 1024 * 1024
+    monkeypatch.setattr(node.block_db, "current_usage", lambda: target_bytes)
+    chain = generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
+    connect(node, chain)
+
+    assert node.block_db.pruned_up_to >= 0
+
+
 def test_a_pruned_node_over_target_leaves_headers_and_the_active_chain_untouched(
     regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
 ) -> None:

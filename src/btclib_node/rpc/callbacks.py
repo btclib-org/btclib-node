@@ -19,9 +19,13 @@ from btclib.p2p.address import ServiceFlags
 from btclib.tx import Tx
 
 from btclib_node.chainstate.contextual import block_time, median_time_past
-from btclib_node.constants import P2pConnStatus
+from btclib_node.constants import MIN_BLOCKS_TO_KEEP, P2pConnStatus
 from btclib_node.exceptions import MissingPrevoutError
-from btclib_node.main import parent_lookup, verify_mempool_acceptance
+from btclib_node.main import (
+    parent_lookup,
+    prune_up_to_height,
+    verify_mempool_acceptance,
+)
 from btclib_node.p2p.address import ip_and_port
 from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import RpcError, RpcErrorCode, bool_param, type_error
@@ -47,6 +51,7 @@ __all__ = [
     "get_raw_transaction",
     "get_tx_out_set_info",
     "ping",
+    "prune_blockchain",
     "send_raw_transaction",
     "service_names",
     "stop",
@@ -207,6 +212,126 @@ def get_blockchain_info(
         if prune_target_mib is not None:
             out["prune_target_size"] = prune_target_mib * 1024 * 1024
     return out
+
+
+# Core's own single-argument NUM check, `RPCMethod::HandleRequest`
+# against `RPCArg::Type::NUM` -- 1e9 is Core's own boundary between "this
+# is a height" and "this is a timestamp" (`rpc/blockchain.cpp:944-945`,
+# at bitcoin/bitcoin@ca7162cde5, "Height value more than a billion...");
+# `_PRUNE_TIMESTAMP_WINDOW` is Core's own `TIMESTAMP_WINDOW`
+# (`chain.h:29,37`, same sha), the two-hour future-drift allowance a
+# block's own timestamp may carry, subtracted before the search so a
+# block whose real height is later than its timestamp alone would
+# suggest is not missed.
+_PRUNE_TIMESTAMP_TO_HEIGHT_THRESHOLD = 1_000_000_000
+_PRUNE_TIMESTAMP_WINDOW = 2 * 60 * 60
+
+
+def _height_param(params: list[Any]) -> int:
+    """Parse `pruneblockchain`'s own `height` argument, Core's own checks.
+
+    Split out of `prune_blockchain` below only to keep that function's
+    own cyclomatic complexity under ruff's `C901` -- every check here is
+    still exactly `get_block_hash`'s own, cited there rather than
+    repeated in this docstring.
+    """
+    if not params:
+        raise RpcError(RpcErrorCode.MISC_ERROR, "pruneblockchain height")
+    height_param = params[0]
+    if isinstance(height_param, bool) or not isinstance(height_param, (int, float)):
+        raise type_error(1, "height", height_param, "number")
+    if isinstance(height_param, float):
+        raise RpcError(RpcErrorCode.MISC_ERROR, "JSON integer out of range")
+    if height_param < 0:
+        raise RpcError(RpcErrorCode.INVALID_PARAMETER, "Negative block height.")
+    return height_param
+
+
+def _height_from_timestamp(node: Node, timestamp: int) -> int:
+    """Find the earliest height whose own time reaches `timestamp` minus drift.
+
+    Core's own `CChain::FindEarliestAtLeast` (`chain.cpp:60-64`, at
+    bitcoin/bitcoin@ca7162cde5) binary-searches `GetBlockTimeMax`, a
+    running maximum kept for exactly this search to stay valid despite
+    the 2-hour drift a timestamp is allowed against its own predecessor;
+    `BlockIndex` here carries no counterpart to it, so there is no
+    monotonic key left to binary-search on. A linear scan over each
+    block's own raw time needs none, at the cost of the same search
+    Core answers in `O(log n)` here costing `O(n)`, paid once per call
+    rather than a database's own choice.
+    """
+    target_time = timestamp - _PRUNE_TIMESTAMP_WINDOW
+    block_index = node.chainstate.block_index
+    active_chain = block_index.active_chain
+    found_height = next(
+        (
+            height
+            for height in range(len(active_chain))
+            if block_time(block_index.header_dict[active_chain[height]].header)
+            >= target_time
+        ),
+        None,
+    )
+    if found_height is None:
+        raise RpcError(
+            RpcErrorCode.INVALID_PARAMETER,
+            "Could not find block with at least the specified timestamp.",
+        )
+    return found_height
+
+
+def prune_blockchain(node: Node, conn: RpcConnection, params: list[Any]) -> int:
+    """Answer `pruneblockchain`: manually delete up to `height`, or a timestamp.
+
+    Core's own `pruneblockchain` (`rpc/blockchain.cpp:918-975`, at
+    bitcoin/bitcoin@ca7162cde5). Requires `Config.pruned`, matching
+    `IsPruneMode()`'s own refusal (`rpc/blockchain.cpp:933-935`) --
+    manual pruning (`Config.prune_target_mib` unset) and automatic
+    pruning (set) both answer this RPC the same way, Core drawing no
+    such distinction for it either; `main._prune_chain` is the one
+    place the two differ.
+
+    `height` above `_PRUNE_TIMESTAMP_TO_HEIGHT_THRESHOLD` is read as a
+    block time instead, by `_height_from_timestamp` above.
+
+    Refused the way Core refuses it, in Core's own order and wording:
+    a missing or wrongly typed `height` (`RPCMethod::HandleRequest`'s
+    own generic argument check, same as `get_block_hash` above), a
+    negative one (`rpc/blockchain.cpp:939-941`), a chain shorter than
+    `MIN_BLOCKS_TO_KEEP` (`rpc/blockchain.cpp:958-960`, Core's own
+    per-chain `nPruneAfterHeight` collapsed to this tree's one uniform
+    floor -- `MIN_BLOCKS_TO_KEEP` is already what every other prune
+    decision here is bounded by, where Core's own value differs per
+    chain, 100000 on mainnet and 1000 elsewhere), and a `height` past
+    the tip (`rpc/blockchain.cpp:963-965`). A `height` within
+    `MIN_BLOCKS_TO_KEEP` of the tip is not refused, only clamped down to
+    it (`rpc/blockchain.cpp:966-969`), and pruning still runs.
+
+    Answers `block_db.BlockDB.pruned_up_to`, Core's own "height of the
+    last block pruned" (`rpc/blockchain.cpp:927-928`) -- this store
+    already tracks exactly that height, so there is no index scan to
+    answer it with the way Core's own `GetPruneHeight` runs one.
+    """
+    if not node.config.pruned:
+        raise RpcError(
+            RpcErrorCode.MISC_ERROR,
+            "Cannot prune blocks because node is not in prune mode.",
+        )
+    height_param = _height_param(params)
+    if height_param > _PRUNE_TIMESTAMP_TO_HEIGHT_THRESHOLD:
+        height_param = _height_from_timestamp(node, height_param)
+
+    chain_height = len(node.chainstate.block_index.active_chain) - 1
+    if chain_height < MIN_BLOCKS_TO_KEEP:
+        err_msg = "Blockchain is too short for pruning."
+        raise RpcError(RpcErrorCode.MISC_ERROR, err_msg)
+    if height_param > chain_height:
+        err_msg = "Blockchain is shorter than the attempted prune height."
+        raise RpcError(RpcErrorCode.INVALID_PARAMETER, err_msg)
+    height_param = min(height_param, chain_height - MIN_BLOCKS_TO_KEEP)
+
+    prune_up_to_height(node, height_param)
+    return node.block_db.pruned_up_to
 
 
 def get_block_hash(node: Node, conn: RpcConnection, params: list[Any]) -> bytes:
@@ -1098,6 +1223,7 @@ callbacks = {
     "getbestblockhash": get_best_block_hash,
     "getblockcount": get_block_count,
     "getblockchaininfo": get_blockchain_info,
+    "pruneblockchain": prune_blockchain,
     "getblockhash": get_block_hash,
     "getblockheader": get_block_header,
     "getpeerinfo": get_peer_info,

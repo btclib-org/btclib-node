@@ -51,13 +51,9 @@ UNEXPORTED = {
     "btclib_node.download": ["MAX_BLOCKS_PER_GETDATA_BURST"],
     # finish_sync/update_ibd_status: called only from settle_at_no_candidate,
     # itself called only from update_chain's own module; update_header_index:
-    # update_chain's own failure-path helper, called from nowhere else;
-    # prune_up_to_height: called only from this module's own _prune_chain
-    # so far, ahead of btclib-org/btclib-node#705's own manual/RPC half,
-    # which is the caller outside this module it exists for
+    # update_chain's own failure-path helper, called from nowhere else
     "btclib_node.main": [
         "finish_sync",
-        "prune_up_to_height",
         "settle_at_no_candidate",
         "update_header_index",
         "update_ibd_status",

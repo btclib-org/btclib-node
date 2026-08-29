@@ -31,9 +31,14 @@ import btclib_node.rpc.callbacks as cb
 from btclib_node.block_db import Coin
 from btclib_node.chains import Chain, Main, RegTest
 from btclib_node.chainstate.block_index import calculate_work
+from btclib_node.chainstate.contextual import block_time
 from btclib_node.chainstate.muhash import CoinStats
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
-from btclib_node.constants import P2pConnStatus
+from btclib_node.constants import (
+    MIN_BLOCKS_TO_KEEP,
+    MIN_PRUNE_TARGET_MIB,
+    P2pConnStatus,
+)
 from btclib_node.exceptions import MissingPrevoutError, StoreCorruptionError
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
@@ -50,6 +55,7 @@ from btclib_node.rpc.callbacks import (
     get_raw_transaction,
     get_tx_out_set_info,
     ping,
+    prune_blockchain,
     send_raw_transaction,
     service_names,
     stop,
@@ -60,9 +66,12 @@ from btclib_node.rpc.callbacks import (
 from btclib_node.rpc.callbacks import test_mempool_accept as mempool_accept
 from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import RpcError, RpcErrorCode
-from tests import generate_random_header_chain
+from tests import generate_random_chain, generate_random_header_chain
+from tests.unit.main_test import connect
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from btclib.block import BlockHeader
 
     from btclib_node import Node
@@ -1875,10 +1884,195 @@ def test_blockchain_info_s_automatic_pruning_is_whether_a_mib_target_is_set() ->
 
 def test_blockchain_info_s_prune_target_size_is_in_bytes() -> None:
     """`prune_target_size` is `prune_target_mib` in bytes, Core's own unit."""
-    node = a_blockchain_info_node(pruned=True, prune_target_mib=550)
+    node = a_blockchain_info_node(pruned=True, prune_target_mib=MIN_PRUNE_TARGET_MIB)
     result = get_blockchain_info(node, _CONN, [])
     assert result["automatic_pruning"] is True
-    assert result["prune_target_size"] == 550 * 1024 * 1024
+    assert result["prune_target_size"] == MIN_PRUNE_TARGET_MIB * 1024 * 1024
+
+
+def test_prune_blockchain_refuses_when_not_in_prune_mode(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Core's own `IsPruneMode()` refusal (`rpc/blockchain.cpp:933-935`)."""
+    node = regtest_node(pruned=False)
+    with pytest.raises(RpcError) as raised:
+        prune_blockchain(node, _CONN, [10])
+    assert raised.value.code == RpcErrorCode.MISC_ERROR
+    assert (
+        raised.value.message == "Cannot prune blocks because node is not in prune mode."
+    )
+
+
+def test_prune_blockchain_refuses_a_missing_height(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A call with no argument names the usage string, unquoted like Core's."""
+    node = regtest_node(pruned=True, prune_target_mib=None)
+    with pytest.raises(RpcError) as raised:
+        prune_blockchain(node, _CONN, [])
+    assert raised.value.code == RpcErrorCode.MISC_ERROR
+    assert raised.value.message == "pruneblockchain height"
+
+
+def test_prune_blockchain_refuses_a_height_of_the_wrong_json_type(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A non-numeric `height` is named the way `type_error` names it."""
+    node = regtest_node(pruned=True, prune_target_mib=None)
+    with pytest.raises(RpcError) as raised:
+        prune_blockchain(node, _CONN, ["10"])
+    assert raised.value.code == RpcErrorCode.TYPE_ERROR
+    assert raised.value.message == (
+        'Wrong type passed:\n{\n    "Position 1 (height)": "JSON value '
+        'of type string is not of expected type number"\n}'
+    )
+
+
+def test_prune_blockchain_refuses_a_bool_height(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A JSON bool is its own VBOOL, not VNUM, refused the same as a string."""
+    node = regtest_node(pruned=True, prune_target_mib=None)
+    with pytest.raises(RpcError) as raised:
+        prune_blockchain(node, _CONN, [True])
+    assert raised.value.code == RpcErrorCode.TYPE_ERROR
+
+
+def test_prune_blockchain_refuses_a_fractional_height(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A JSON number with a decimal point fails `getInt<int>()`, Core's way."""
+    node = regtest_node(pruned=True, prune_target_mib=None)
+    with pytest.raises(RpcError) as raised:
+        prune_blockchain(node, _CONN, [10.5])
+    assert raised.value.code == RpcErrorCode.MISC_ERROR
+    assert raised.value.message == "JSON integer out of range"
+
+
+def test_prune_blockchain_refuses_a_negative_height(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Core's own `heightParam < 0` check (`rpc/blockchain.cpp:939-941`)."""
+    node = regtest_node(pruned=True, prune_target_mib=None)
+    with pytest.raises(RpcError) as raised:
+        prune_blockchain(node, _CONN, [-1])
+    assert raised.value.code == RpcErrorCode.INVALID_PARAMETER
+    assert raised.value.message == "Negative block height."
+
+
+def test_prune_blockchain_refuses_a_chain_too_short_for_pruning(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A chain shorter than `MIN_BLOCKS_TO_KEEP` refuses to prune at all."""
+    node = regtest_node(pruned=True, prune_target_mib=None)
+    chain = generate_random_chain(MIN_BLOCKS_TO_KEEP - 1, node.chain.genesis.hash)
+    connect(node, chain)
+    with pytest.raises(RpcError) as raised:
+        prune_blockchain(node, _CONN, [1])
+    assert raised.value.code == RpcErrorCode.MISC_ERROR
+    assert raised.value.message == "Blockchain is too short for pruning."
+
+
+def test_prune_blockchain_refuses_a_height_past_the_tip(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Core's own `height > chainHeight` check (`blockchain.cpp:963-965`)."""
+    node = regtest_node(pruned=True, prune_target_mib=None)
+    chain = generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
+    block_index = connect(node, chain)
+    tip_height = len(block_index.active_chain) - 1
+    with pytest.raises(RpcError) as raised:
+        prune_blockchain(node, _CONN, [tip_height + 1])
+    assert raised.value.code == RpcErrorCode.INVALID_PARAMETER
+    assert (
+        raised.value.message == "Blockchain is shorter than the attempted prune height."
+    )
+
+
+def test_prune_blockchain_deletes_up_to_the_given_height(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A height comfortably behind the tip deletes exactly through it.
+
+    `prune_target_mib=None` -- manual pruning -- so nothing was deleted
+    on its own before this call; the only reason a block is gone
+    afterwards is this one RPC call.
+    """
+    node = regtest_node(pruned=True, prune_target_mib=None)
+    chain = generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
+    block_index = connect(node, chain)
+    assert node.block_db.pruned_up_to == -1
+
+    result = prune_blockchain(node, _CONN, [3])
+
+    assert result == 3
+    assert node.block_db.pruned_up_to == 3
+    assert node.block_db.get_block(block_index.active_chain[3]) is None
+    assert node.block_db.get_block(block_index.active_chain[4]) is not None
+
+
+def test_prune_blockchain_clamps_a_height_close_to_the_tip(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A `height` within `MIN_BLOCKS_TO_KEEP` of the tip is clamped.
+
+    Core's own `blockchain.cpp:966-969`: pruning still runs, down to the
+    retained depth rather than up to the height actually asked for.
+    """
+    node = regtest_node(pruned=True, prune_target_mib=None)
+    chain = generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
+    block_index = connect(node, chain)
+    tip_height = len(block_index.active_chain) - 1
+
+    result = prune_blockchain(node, _CONN, [tip_height])
+
+    assert result == tip_height - MIN_BLOCKS_TO_KEEP
+    assert node.block_db.pruned_up_to == tip_height - MIN_BLOCKS_TO_KEEP
+
+
+def test_prune_blockchain_reads_a_large_height_as_a_timestamp(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A `height` over the billion threshold is the earliest block that old.
+
+    `target_height`'s own block time, plus the two-hour drift window
+    `pruneblockchain` subtracts back off before searching, round-trips
+    to `target_height` itself: this chain's blocks are dated one second
+    apart, so no earlier block shares that same time.
+    """
+    node = regtest_node(pruned=True, prune_target_mib=None)
+    chain = generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
+    block_index = connect(node, chain)
+    target_height = 3
+    target_header = node.chainstate.block_index.header_dict[
+        block_index.active_chain[target_height]
+    ].header
+    timestamp_param = block_time(target_header) + 2 * 60 * 60
+
+    result = prune_blockchain(node, _CONN, [timestamp_param])
+
+    assert result == target_height
+    assert node.block_db.pruned_up_to == target_height
+
+
+def test_prune_blockchain_refuses_a_timestamp_after_every_block(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A timestamp past every block's own time finds nothing to prune to."""
+    node = regtest_node(pruned=True, prune_target_mib=None)
+    chain = generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
+    block_index = connect(node, chain)
+    tip_header = node.chainstate.block_index.header_dict[
+        block_index.active_chain[-1]
+    ].header
+    timestamp_param = block_time(tip_header) + 2 * 60 * 60 + 1000
+
+    with pytest.raises(RpcError) as raised:
+        prune_blockchain(node, _CONN, [timestamp_param])
+    assert raised.value.code == RpcErrorCode.INVALID_PARAMETER
+    assert raised.value.message == (
+        "Could not find block with at least the specified timestamp."
+    )
 
 
 def a_chain_index_node(chain: list[bytes]) -> Node:

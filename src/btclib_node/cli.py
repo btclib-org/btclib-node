@@ -554,12 +554,13 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help=(
-            "Reduce storage requirements by pruning old blocks: <n> at or above "
-            f"{MIN_PRUNE_TARGET_MIB} automatically prunes to roughly <n> MiB on "
-            "disk, Core's own target; any other nonzero <n> keeps the last 288 "
-            "blocks and their undo data (about two days) and deletes the rest as "
-            "the chain advances, Core's own manual-pruning RPC not yet read; a "
-            "negative <n> refuses to start, matching Core"
+            "Reduce storage requirements by pruning old blocks: 1 allows manual "
+            "pruning via the pruneblockchain RPC and deletes nothing on its own; "
+            f"{MIN_PRUNE_TARGET_MIB} or above automatically prunes to roughly <n> "
+            "MiB on disk, tracked against actual bytes under blocks/ and never "
+            f"past the last 288 blocks; a value from 2 to {MIN_PRUNE_TARGET_MIB - 1} "
+            "refuses to start; a negative <n> refuses to start too -- all matching "
+            "Core"
         ),
     )
     parser.add_argument(
@@ -684,6 +685,19 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
         # configured with a negative value.")};` -- bitcoind refuses to
         # start rather than treating a negative value as "pruning is on".
         err_msg = "Prune cannot be configured with a negative value."
+        raise ValueError(err_msg)
+    if prune is not None and 1 < prune < MIN_PRUNE_TARGET_MIB:
+        # Core's own wording, node::ApplyArgsManOptions
+        # (node/blockmanager_args.cpp:31-33, at bitcoin/bitcoin@ca7162cde5):
+        # `return util::Error{strprintf(_("Prune configured below the
+        # minimum of %d MiB.  Please use a higher number."),
+        # MIN_DISK_SPACE_FOR_BLOCK_FILES / 1_MiB)};` -- 1 is manual
+        # pruning, not a MiB target, so it is the one value below this
+        # floor Core still accepts.
+        err_msg = (
+            f"Prune configured below the minimum of {MIN_PRUNE_TARGET_MIB} MiB.  "
+            "Please use a higher number."
+        )
         raise ValueError(err_msg)
     prune_target_mib = (
         prune if prune is not None and prune >= MIN_PRUNE_TARGET_MIB else None

@@ -56,7 +56,12 @@ if TYPE_CHECKING:
     from btclib_node.chainstate.filter_index import FilterIndex
     from btclib_node.chainstate.utxo_index import UtxoIndex
 
-__all__ = ["parent_lookup", "update_chain", "verify_mempool_acceptance"]
+__all__ = [
+    "parent_lookup",
+    "prune_up_to_height",
+    "update_chain",
+    "verify_mempool_acceptance",
+]
 
 
 # update_chain calls this on the failure path, naming the block whose
