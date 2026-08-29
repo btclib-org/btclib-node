@@ -674,6 +674,30 @@ def test_add_tx(node: Node) -> None:
     verify_mempool_acceptance(node, tx2)
 
 
+def test_a_corrupted_stored_coin_is_this_nodes_own_fault_not_the_tx_s(
+    node: Node,
+) -> None:
+    """A broken `utxo-` record raises `ChainstateInconsistencyError`.
+
+    The record corrupted here is one only this node's own earlier
+    `connect` (via `UtxoIndex.finalize`) ever wrote -- `tx` below never
+    supplies these bytes, so the raise this proves is over storage this
+    node owns, not over `tx`'s own content. btclib-org/btclib-node#631
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+
+    coinbase = chain[0].transactions[0]
+    key = b"utxo-" + OutPoint(coinbase.id, 0).serialize(check_validity=False)
+    original = node.chainstate.utxo_index.db.get(key)
+    assert original is not None
+    node.chainstate.db.put(key, original[:1])
+
+    tx = generate_random_transaction(coinbase.id)
+    with pytest.raises(ChainstateInconsistencyError, match="stored utxo- record"):
+        verify_mempool_acceptance(node, tx)
+
+
 def test_a_candidate_whose_block_has_not_arrived_is_not_connected(
     node: Node, monkeypatch: pytest.MonkeyPatch
 ) -> None:

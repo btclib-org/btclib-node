@@ -294,7 +294,17 @@ class UtxoIndex:
                         # a Coin.parse this raises on is this node's own
                         # stored record being corrupted, not the block's
                         # content, unlike every other raise in this loop
-                        # (btclib-org/btclib-node#620)
+                        # (btclib-org/btclib-node#620). Raising where
+                        # CDBWrapper::Read/CCoinsViewDB::GetCoin answer
+                        # absent is not a departure from Core: LevelDB's
+                        # own checksum makes corruption fatal before
+                        # that deserialize is ever reached, so absent is
+                        # Core's answer to a format mismatch on an
+                        # intact record and never to this one. What
+                        # differs between the two trees is where the
+                        # fault is caught, not what either chose;
+                        # ChainstateInconsistencyError's own docstring
+                        # argues it (btclib-org/btclib-node#636)
                         try:
                             coin = Coin.parse(prevout_data, check_validity=False)
                         except BTClibValueError as exc:
@@ -412,7 +422,26 @@ class UtxoIndex:
         coin_data = self.db.get(b"utxo-" + prevout_bytes)
         if coin_data is None:
             return None
-        return Coin.parse(coin_data, check_validity=False)
+        # coin_data is present under a key only this node's own finalize
+        # ever writes -- no caller here supplied these bytes, so a
+        # Coin.parse failure is this node's own stored record being
+        # corrupted, not a candidate block's or a mempool transaction's
+        # content, the same distinction UtxoIndex.add_block's own read
+        # of the same kind of record draws (btclib-org/btclib-node#620,
+        # btclib-org/btclib-node#631). Raising where
+        # CDBWrapper::Read/CCoinsViewDB::GetCoin answer absent is not a
+        # departure from Core: LevelDB's own checksum makes corruption
+        # fatal before that deserialize is ever reached, so absent is
+        # Core's answer to a format mismatch on an intact record and
+        # never to this one. What differs between the two trees is
+        # where the fault is caught, not what either chose;
+        # ChainstateInconsistencyError's own docstring argues it
+        # (btclib-org/btclib-node#636)
+        try:
+            return Coin.parse(coin_data, check_validity=False)
+        except BTClibValueError as exc:
+            err_msg = "stored utxo- record failed to parse"
+            raise ChainstateInconsistencyError(err_msg) from exc
 
     def finalize(self, wb: KeyValueStore | None = None) -> None:
         """Write every staged change into `wb`, or into `self.db` if none.
