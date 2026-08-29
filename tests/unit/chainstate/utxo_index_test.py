@@ -836,3 +836,76 @@ def test_mutating_coin_stats_removal_out_of_apply_rev_block_breaks_the_reorg(
     utxo_index.apply_rev_block(rev_block)
     assert utxo_index.coin_stats.digest() == CoinStats().digest()
     chainstate.close()
+
+
+def unspendable_spend(prev_out: OutPoint, tag: bytes) -> Tx:
+    """Build a transaction spending `prev_out` into one `OP_RETURN` output."""
+    return Tx(
+        version=1,
+        lock_time=0,
+        vin=[TxIn(prev_out=prev_out, script_sig=tag, sequence=0xFFFFFFFF)],
+        vout=[TxOut(value=49 * 10**8, script_pub_key=script.serialize(["OP_RETURN"]))],
+    )
+
+
+def test_add_block_does_not_store_a_provably_unspendable_output(
+    tmp_path: Path,
+) -> None:
+    """A provably unspendable output is staged nowhere `add_block` can reach.
+
+    Matches `CCoinsViewCache::AddCoin` (`src/coins.cpp:82`, at
+    bitcoin/bitcoin@ca7162cde5), which returns without adding such an
+    output to Core's own UTXO set at all (btclib-org/btclib-node#667).
+    Checked at every point `_stage_added`'s own gate touches: not in
+    `updated_utxo_set`, not in the `RevBlock` a reorg would undo this
+    block with, and not in the store once `finalize` writes everything
+    still staged.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    funding = coinbase(b"\x40")
+    utxo_index.add_block(one_tx_block([funding], b"\x40" * 32), 1)
+    utxo_index.finalize()
+
+    unspendable_tx = unspendable_spend(OutPoint(funding.id, 0), b"\x41")
+    out = OutPoint(unspendable_tx.id, 0)
+    key = out.serialize(check_validity=False)
+    _, rev_block = utxo_index.add_block(
+        one_tx_block([coinbase(b"\x42"), unspendable_tx], b"\x42" * 32), 2
+    )
+    assert key not in utxo_index.updated_utxo_set
+    assert out not in rev_block.to_remove
+
+    utxo_index.finalize()
+    assert utxo_index.db.get(b"utxo-" + key) is None
+    assert utxo_index.get_coin(key) is None
+    chainstate.close()
+
+
+def test_apply_rev_block_never_restores_an_output_it_never_stored(
+    tmp_path: Path,
+) -> None:
+    """Undoing the block that "created" an unspendable output stores nothing.
+
+    `to_remove` never names the outpoint in the first place (the test
+    above pins that directly), so `apply_rev_block` completes without
+    raising and without ever writing it into `updated_utxo_set` --
+    `_stage_creation`'s own docstring is where "an output never stored
+    is never restored" is argued.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    funding = coinbase(b"\x45")
+    utxo_index.add_block(one_tx_block([funding], b"\x45" * 32), 1)
+    utxo_index.finalize()
+
+    unspendable_tx = unspendable_spend(OutPoint(funding.id, 0), b"\x46")
+    out = OutPoint(unspendable_tx.id, 0)
+    key = out.serialize(check_validity=False)
+    _, rev_block = utxo_index.add_block(
+        one_tx_block([coinbase(b"\x47"), unspendable_tx], b"\x47" * 32), 2
+    )
+
+    utxo_index.apply_rev_block(rev_block)
+    assert key not in utxo_index.updated_utxo_set
+    chainstate.close()
