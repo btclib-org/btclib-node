@@ -927,6 +927,28 @@ where this file was written rather than where anything was tagged.
   node's own `Config`** — every functional rpc test passes an explicit
   `rpc_port` of its own, so none of them exercised the default this
   issue was about.
+
+### An I/O fault trying a block is not the block's own fault (closes #620)
+
+- **`update_chain`'s trial loop tells a content failure from a storage one
+  by exception type, not by which call raised it.** `_CONTENT_FAILURE`
+  (`main.py`) is `BTClibValueError`, `InvalidBlockInputError` and
+  `PrevoutCountMismatchError` -- what `_validate_block` and
+  `utxo_index.add_block`'s own BIP30/double-spend checks raise to refuse
+  a candidate's own content. Everything else the trial's `to_add` loop
+  raises -- a `KeyValueStore` read or write failing inside
+  `utxo_index.add_block` or `filter_index.add_connected_block`, or
+  `ChainstateInconsistencyError` -- rolls the trial back and then
+  propagates out of `update_chain`, rather than invalidating the block it
+  happened to land on.
+- **Core keeps the same split inside `ConnectBlock`** (`src/validation.cpp`,
+  at bitcoin/bitcoin@b91d983f66): an ordinary `CheckBlock` failure is
+  rejected, a `BLOCK_MUTATED` one is `FatalError`.
+- A propagated exception reaches `Node._step_chain`, whose own existing
+  catch stops the main loop and closes every database, the same path a
+  failure out of `_blocks_to_add`, `_rev_blocks_to_remove` or
+  `_finalize_fork` already took.
+
 ### The UTXO cache survives across connected blocks (closes #586)
 
 - **`UtxoIndex.updated_utxo_set` and `removed_utxos` now stage several
@@ -1003,27 +1025,6 @@ where this file was written rather than where anything was tagged.
   refused `bad-txns-BIP30` -- CVE-2012-1909's own shape, independently
   of the double-spend-guard consequence above; `_unmark_removed`
   running unconditionally fixes both at once.
-
-### An I/O fault trying a block is not the block's own fault (closes #620)
-
-- **`update_chain`'s trial loop tells a content failure from a storage one
-  by exception type, not by which call raised it.** `_CONTENT_FAILURE`
-  (`main.py`) is `BTClibValueError`, `InvalidBlockInputError` and
-  `PrevoutCountMismatchError` -- what `_validate_block` and
-  `utxo_index.add_block`'s own BIP30/double-spend checks raise to refuse
-  a candidate's own content. Everything else the trial's `to_add` loop
-  raises -- a `KeyValueStore` read or write failing inside
-  `utxo_index.add_block` or `filter_index.add_connected_block`, or
-  `ChainstateInconsistencyError` -- rolls the trial back and then
-  propagates out of `update_chain`, rather than invalidating the block it
-  happened to land on.
-- **Core keeps the same split inside `ConnectBlock`** (`src/validation.cpp`,
-  at bitcoin/bitcoin@b91d983f66): an ordinary `CheckBlock` failure is
-  rejected, a `BLOCK_MUTATED` one is `FatalError`.
-- A propagated exception reaches `Node._step_chain`, whose own existing
-  catch stops the main loop and closes every database, the same path a
-  failure out of `_blocks_to_add`, `_rev_blocks_to_remove` or
-  `_finalize_fork` already took.
 
 ## v2026.8.27
 
