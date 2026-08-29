@@ -26,7 +26,7 @@ from btclib_node.chainstate.contextual import (
     header_at_height,
     median_time_past,
 )
-from btclib_node.constants import NodeStatus
+from btclib_node.constants import MAX_TIP_AGE, NodeStatus
 from btclib_node.exceptions import (
     ChainstateInconsistencyError,
     InvalidBlockInputError,
@@ -56,7 +56,7 @@ if TYPE_CHECKING:
     from btclib_node.chainstate.filter_index import FilterIndex
     from btclib_node.chainstate.utxo_index import UtxoIndex
 
-__all__ = ["update_chain", "verify_mempool_acceptance"]
+__all__ = ["parent_lookup", "update_chain", "verify_mempool_acceptance"]
 
 
 # update_chain calls this on the failure path, naming the block whose
@@ -101,6 +101,49 @@ def finish_sync(node: Node) -> None:
     if node.status == NodeStatus.BlockSynced:
         return
     node.status = NodeStatus.BlockSynced
+
+
+def update_ibd_status(node: Node) -> None:
+    """Latch `node.is_initial_block_download` to `False`, and never back.
+
+    Core's own `ChainstateManager::UpdateIBDStatus`
+    (`src/validation.cpp:3302`, at bitcoin/bitcoin@ca7162cde5): once the
+    active chain's own tip carries at least `node.chain`'s own
+    `minimum_chain_work` (`chains.py`) and is no older than
+    `MAX_TIP_AGE` (`constants.py`), this node counts as caught up --
+    `CChain::IsTipRecent`, `src/chain.h:431`, same commit. A no-op past
+    the first call for the same reason `finish_sync` above is one:
+    Core's function never sets its own cached flag back to `true`
+    either, `UpdateIBDStatus`'s own comment naming that explicitly.
+
+    Called at the same two places `finish_sync` is: both are "there is
+    nothing more to try against the active chain right now", which is
+    exactly when the tip this reads could just have moved.
+    """
+    if not node.is_initial_block_download:
+        return
+    block_index = node.chainstate.block_index
+    tip_hash = block_index.active_chain[-1]
+    if block_index.chainwork[tip_hash] < node.chain.minimum_chain_work:
+        return
+    tip_header = block_index.header_dict[tip_hash].header
+    if datetime.now(UTC) - tip_header.time > MAX_TIP_AGE:
+        return
+    node.is_initial_block_download = False
+
+
+def settle_at_no_candidate(node: Node) -> None:
+    """Run `finish_sync` and `update_ibd_status` together, at one call site.
+
+    The two are separate latches over separate conditions, but every
+    caller that has reason to check one has reason to check the other
+    -- "there is no candidate left to beat the active chain right now"
+    -- so this is what `_ready_fork` and `update_chain` below each call
+    instead of both, one statement rather than two at each of the two
+    places that used to repeat the pair.
+    """
+    finish_sync(node)
+    update_ibd_status(node)
 
 
 # every hash here was just checked downloaded, or was on the active
@@ -262,7 +305,7 @@ def _ready_fork(node: Node) -> tuple[list[bytes], list[bytes]] | None:
     block_index = node.chainstate.block_index
     first_candidate = block_index.get_first_candidate()
     if not first_candidate:
-        finish_sync(node)
+        settle_at_no_candidate(node)
         return None
 
     to_add_hash, to_remove_hash = block_index.get_fork_details(
@@ -281,13 +324,20 @@ def _ready_fork(node: Node) -> tuple[list[bytes], list[bytes]] | None:
     return to_add_hash, to_remove_hash
 
 
-# both _validate_block and verify_mempool_acceptance below need a way to
-# walk from a known header back to an ancestor's, for median_time_past:
-# header_dict holds every header this node has ever indexed, active
-# chain or not, so this reaches a trial fork's own earlier blocks as
-# readily as long-committed history -- unlike active_chain, which still
-# reads as the chain before this trial until _finalize_fork runs
-def _parent_of(node: Node) -> Callable[[BlockHeader], BlockHeader]:
+def parent_lookup(node: Node) -> Callable[[BlockHeader], BlockHeader]:
+    """Return a callable stepping from a known header back to its parent's.
+
+    `_validate_block` and `verify_mempool_acceptance` below, and
+    `rpc.callbacks.get_blockchain_info`, each need this for
+    `median_time_past`: `header_dict` holds every header this node has
+    ever indexed, active chain or not, so this reaches a trial fork's
+    own earlier blocks as readily as long-committed history -- unlike
+    `active_chain`, which still reads as the chain before this trial
+    until `_finalize_fork` runs. Not underscore-prefixed:
+    `rpc.callbacks` is a different module, and importing a name it does
+    not own would be the private-name import this codebase's own ruff
+    configuration (`select = ["ALL"]`) already refuses elsewhere.
+    """
     header_dict = node.chainstate.block_index.header_dict
 
     def parent_of(header: BlockHeader) -> BlockHeader:
@@ -333,7 +383,7 @@ def _validate_block(
     block_index = node.chainstate.block_index
     parent_header = block_index.header_dict[block.header.previous_block_hash].header
     parent_height = index - 1
-    parent_of = _parent_of(node)
+    parent_of = parent_lookup(node)
     parent_mtp = median_time_past(parent_header, parent_height, parent_of)
 
     # Core deploys BIP68, BIP112 (the CHECKSEQUENCEVERIFY opcode) and
@@ -469,7 +519,7 @@ def update_chain(node: Node) -> None:
     """
     fork = _ready_fork(node)
     if fork is None:
-        return None
+        return
     to_add_hash, to_remove_hash = fork
 
     block_index = node.chainstate.block_index
@@ -588,8 +638,7 @@ def update_chain(node: Node) -> None:
     node.logger.debug("Finished main\n")
 
     if not block_index.get_first_candidate():
-        return finish_sync(node)
-    return None
+        settle_at_no_candidate(node)
 
 
 def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
@@ -674,7 +723,7 @@ def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
     tip_hash = block_index.active_chain[-1]
     tip_header = block_index.header_dict[tip_hash].header
     tip_height = spend_height - 1
-    parent_of = _parent_of(node)
+    parent_of = parent_lookup(node)
     tip_mtp = median_time_past(tip_header, tip_height, parent_of)
 
     if not is_final_tx(tx, spend_height, tip_mtp):

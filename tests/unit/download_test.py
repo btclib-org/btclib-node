@@ -99,7 +99,13 @@ def make_manager(
     warm_worker_pool: Any = None,
     min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
 ) -> DownloadManager:
-    """Build a `DownloadManager` over a fake node with the given connections."""
+    """Build a `DownloadManager` over a fake node with the given connections.
+
+    `status` is `NodeStatus.BlockSynced` by default, matching the
+    caught-up node most of these tests want -- `_send_due_feefilters`
+    reads it as its own IBD proxy, `download.py`'s own comment beside
+    that read arguing why it is not `is_initial_block_download`.
+    """
     node = SimpleNamespace(
         status=status,
         p2p_manager=SimpleNamespace(connections={conn.id: conn for conn in conns}),
@@ -743,7 +749,7 @@ def test_the_floor_is_never_undercut_even_by_an_empty_mempools_own_zero() -> Non
 
 
 def test_ibd_sends_every_connected_peer_the_top_bucket() -> None:
-    """While still syncing, every connected peer is sent the top fee bucket."""
+    """While still in IBD, every connected peer is sent the top fee bucket."""
     conn = a_conn(1)
     manager = make_manager([conn], status=NodeStatus.SyncingHeaders)
     manager._send_due_feefilters()
@@ -752,7 +758,7 @@ def test_ibd_sends_every_connected_peer_the_top_bucket() -> None:
 
 
 def test_leaving_ibd_forces_an_immediate_resend_off_the_top_bucket() -> None:
-    """Leaving sync forces an immediate resend, off the stale top bucket."""
+    """Leaving IBD forces an immediate resend, off the stale top bucket."""
     conn = a_conn(1)
     manager = make_manager([conn], status=NodeStatus.SyncingHeaders)
     manager._send_due_feefilters()

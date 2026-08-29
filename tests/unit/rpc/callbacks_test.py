@@ -28,7 +28,8 @@ from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
 import btclib_node.rpc.callbacks as cb
-from btclib_node.chains import Main, RegTest
+from btclib_node.chains import Chain, Main, RegTest
+from btclib_node.chainstate.block_index import calculate_work
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import P2pConnStatus
 from btclib_node.exceptions import ChainstateInconsistencyError, MissingPrevoutError
@@ -1447,6 +1448,54 @@ def test_block_count_is_the_active_chain_s_own_last_index() -> None:
     assert get_block_count(node, _CONN, []) == 1
 
 
+def a_blockchain_info_node(
+    *,
+    chain: Chain | None = None,
+    headers: list[BlockHeader] | None = None,
+    header_index: list[bytes] | None = None,
+    is_initial_block_download: bool = False,
+    pruned: bool = False,
+) -> Node:
+    """Build a node carrying just what `get_blockchain_info` reads.
+
+    `headers` is the active chain's own headers, genesis first and each
+    linked to the one before it -- `median_time_past`'s own walk over
+    `header_dict` needs real ancestors, not bare hashes, unlike
+    `header_index` below it. RegTest's own genesis alone by default,
+    which is also `bits=0x207fffff`, the value this file's own
+    bits/target/difficulty tests are cross-checked against.
+    `header_index` defaults to the active chain's own hashes -- a node
+    whose every known header has also been validated and connected,
+    which is every test here but the one naming the two apart.
+    """
+    chain = chain if chain is not None else RegTest()
+    headers = headers if headers is not None else [chain.genesis]
+    active_chain = [header.hash for header in headers]
+    header_dict = {header.hash: SimpleNamespace(header=header) for header in headers}
+    chainwork: dict[bytes, int] = {}
+    total_work = 0
+    for header in headers:
+        total_work += calculate_work(header)
+        chainwork[header.hash] = total_work
+    header_index = header_index if header_index is not None else active_chain
+    return cast(
+        "Node",
+        SimpleNamespace(
+            chain=chain,
+            chainstate=SimpleNamespace(
+                block_index=SimpleNamespace(
+                    active_chain=active_chain,
+                    header_index=header_index,
+                    header_dict=header_dict,
+                    chainwork=chainwork,
+                )
+            ),
+            is_initial_block_download=is_initial_block_download,
+            config=SimpleNamespace(pruned=pruned),
+        ),
+    )
+
+
 def test_blockchain_info_names_the_chain_in_core_s_own_vocabulary() -> None:
     """`getblockchaininfo` names the chain in Core's own vocabulary (issue #21).
 
@@ -1454,11 +1503,101 @@ def test_blockchain_info_names_the_chain_in_core_s_own_vocabulary() -> None:
     own vocabulary for it is not btclib's network name -- `chains.py`'s
     `Chain.name` is "mainnet", Core answers "main".
     """
-    node = cast("Node", SimpleNamespace(chain=RegTest()))
-    assert get_blockchain_info(node, _CONN, []) == {"chain": "regtest"}
+    node = a_blockchain_info_node(chain=RegTest())
+    assert get_blockchain_info(node, _CONN, [])["chain"] == "regtest"
 
-    node = cast("Node", SimpleNamespace(chain=Main()))
-    assert get_blockchain_info(node, _CONN, []) == {"chain": "main"}
+    node = a_blockchain_info_node(chain=Main())
+    assert get_blockchain_info(node, _CONN, [])["chain"] == "main"
+
+
+def test_blockchain_info_s_blocks_is_the_active_chain_s_own_last_index() -> None:
+    """`blocks` is `active_chain`'s own height, matching `getblockcount`."""
+    chain = RegTest()
+    headers = [chain.genesis, *generate_random_header_chain(2, chain.genesis.hash)]
+    node = a_blockchain_info_node(chain=chain, headers=headers)
+    assert get_blockchain_info(node, _CONN, [])["blocks"] == 2
+
+
+def test_blockchain_info_s_headers_outruns_blocks_during_header_sync() -> None:
+    """`headers` moves ahead of `blocks` while header sync outruns validation.
+
+    `header_index` carries every header this node knows of, `active_chain`
+    only the ones it has validated and connected -- the gap between the
+    two answers is what a header sync in progress looks like from here
+    (issue #575).
+    """
+    node = a_blockchain_info_node(
+        header_index=[b"\x11" * 32, b"\x22" * 32, b"\x33" * 32, b"\x44" * 32]
+    )
+    result = get_blockchain_info(node, _CONN, [])
+    assert result["blocks"] == 0
+    assert result["headers"] == 3
+
+
+def test_blockchain_info_s_bestblockhash_is_the_active_chain_s_own_tip() -> None:
+    """`bestblockhash` is `active_chain`'s tip, per `getbestblockhash`."""
+    chain = RegTest()
+    headers = [chain.genesis, *generate_random_header_chain(1, chain.genesis.hash)]
+    node = a_blockchain_info_node(chain=chain, headers=headers)
+    assert get_blockchain_info(node, _CONN, [])["bestblockhash"] == headers[-1].hash
+
+
+def test_blockchain_info_s_bits_target_and_difficulty_cross_checked_against_core() -> (
+    None
+):
+    """`bits`, `target` and `difficulty` on regtest's own genesis header.
+
+    `target` and `difficulty` are computed here from `bits` by Core's own
+    literal algorithm -- `SetCompact`'s mantissa*256**(exponent-3) and
+    `GetDifficulty`'s repeated `*=`/`/=` 256.0 loop -- independently of
+    `btclib.block.block_header.BlockHeader`'s own properties this
+    callback reads, rather than by re-deriving the same code under test.
+    """
+    node = a_blockchain_info_node()
+    result = get_blockchain_info(node, _CONN, [])
+    assert result["bits"] == bytes.fromhex("207fffff")
+    assert result["target"] == bytes.fromhex(
+        "7fffff0000000000000000000000000000000000000000000000000000000000"
+    )
+    assert result["difficulty"] == 4.6565423739069247e-10
+
+
+def test_blockchain_info_s_time_and_mediantime_on_a_single_header_chain() -> None:
+    """`time` and `mediantime` both answer the one header's own timestamp."""
+    node = a_blockchain_info_node()
+    result = get_blockchain_info(node, _CONN, [])
+    assert result["time"] == 1296688602
+    assert result["mediantime"] == 1296688602
+
+
+def test_blockchain_info_s_chainwork_is_hex_and_zero_padded_to_64() -> None:
+    """`chainwork` is hex here, unlike `getblockheader`'s own plain int.
+
+    Core's `GetBlockProof` on regtest's own easy genesis target is 2,
+    computed independently of `btclib.block.proof_of_work.block_work`
+    this callback reads through `BlockIndex.chainwork`.
+    """
+    node = a_blockchain_info_node()
+    result = get_blockchain_info(node, _CONN, [])
+    assert result["chainwork"] == (
+        "0000000000000000000000000000000000000000000000000000000000000002"
+    )
+    assert len(result["chainwork"]) == 64
+
+
+def test_blockchain_info_s_initialblockdownload_reads_the_node_s_own_latch() -> None:
+    """`initialblockdownload` reads `node.is_initial_block_download` as-is."""
+    node = a_blockchain_info_node(is_initial_block_download=True)
+    assert get_blockchain_info(node, _CONN, [])["initialblockdownload"] is True
+
+    node = a_blockchain_info_node(is_initial_block_download=False)
+    assert get_blockchain_info(node, _CONN, [])["initialblockdownload"] is False
+
+
+def test_blockchain_info_s_pruned_reads_config() -> None:
+    """`pruned` is `Config.pruned`, always `False` per `Config.__init__`."""
+    node = a_blockchain_info_node(pruned=False)
+    assert get_blockchain_info(node, _CONN, [])["pruned"] is False
 
 
 def a_chain_index_node(chain: list[bytes]) -> Node:

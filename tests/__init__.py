@@ -234,7 +234,10 @@ def generate_coinbase(value: int = 50 * 10**8, height: int | None = None) -> Tx:
 
 
 def build_block(
-    previous_block_hash: bytes, transactions: list[Tx], height: int
+    previous_block_hash: bytes,
+    transactions: list[Tx],
+    height: int,
+    time: datetime | None = None,
 ) -> Block:
     """Return a solved regtest block extending `previous_block_hash`.
 
@@ -242,13 +245,18 @@ def build_block(
     height, matching `generate_random_header_chain`'s own spacing -- so
     two blocks built at the same height carry the same timestamp, which
     is fine for a caller building disjoint forks but not for one
-    building a single chain out of order.
+    building a single chain out of order. `time` overrides that dating
+    outright, for the one caller that needs a block recent against the
+    real clock rather than dated relative to `GENESIS_TIME` -- a test of
+    `Node.is_initial_block_download`'s own tip-age half, which every
+    other block this function or `generate_random_chain` builds is far
+    too old to ever satisfy.
     """
     header = BlockHeader(
         version=70015,
         previous_block_hash=previous_block_hash,
         merkle_root=merkle_root_and_mutated_from_transactions(transactions)[0],
-        time=GENESIS_TIME + timedelta(seconds=height + 1),
+        time=time if time is not None else GENESIS_TIME + timedelta(seconds=height + 1),
         bits=REGTEST_POW_LIMIT_BITS,
         nonce=1,
         check_validity=False,
