@@ -1948,6 +1948,20 @@ where this file was written rather than where anything was tagged.
   one whose values are `bytes` or read from a corpus already carries its
   own `ids=`.
 
+### REPOSITORY.md's alert paragraph answers what is true today (closes #680)
+
+- **The *Security and analysis* section's alert calls now print the
+  answer they read back, and the paragraph under them says what is
+  true of it.** The second call's default listing carries every alert
+  state, not only `open`, and every alert on this tree today answers
+  `dismissed` or `fixed`, none `open`. By manifest it is 26
+  `poetry.lock` (a file this tree no longer has) and 1 `uv.lock`, this
+  tree's own; the `uv.lock` alert is `pytest`, medium severity,
+  already `fixed` at `9.0.3`. The paragraph used to point its
+  remaining step at the closed issue #37; it now defers to no issue,
+  stating the split outright and naming a future open `uv.lock` alert
+  as its own finding rather than a step recorded here.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
