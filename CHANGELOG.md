@@ -1223,6 +1223,16 @@ where this file was written rather than where anything was tagged.
   `ActivateBestChainStep` (`src/validation.cpp`, at
   bitcoin/bitcoin@b91d983f66).
 
+### The suite passing free-threaded is now a claim the metadata makes (closes #593)
+
+- **`pyproject.toml` declares `Programming Language :: Python :: Free
+  Threading :: 3 - Stable`.** `test.yml`'s `coverage` job runs the whole
+  suite on `3.14t`, at the 100% coverage floor, on every merge, and the
+  classifier is that claim made to an index. The comment beside it says
+  the claim is about the free-threaded build working and not about
+  throughput: the UTXO store is the larger half in wall clock and is
+  serial regardless of the interpreter build (issue #576).
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
