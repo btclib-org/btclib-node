@@ -16,6 +16,7 @@ from btclib.exceptions import BTClibValueError
 from btclib.tx.out_point import OutPoint
 
 from btclib_node.block_db import Coin, RevBlock
+from btclib_node.chainstate.muhash import CoinStats, is_bip30_unspendable
 from btclib_node.exceptions import ChainstateInconsistencyError, InvalidBlockInputError
 
 if TYPE_CHECKING:
@@ -64,6 +65,25 @@ _UNSET = object()
 # second one: what it costs on a crash is argued in db.py's docstring.
 _FLUSH_BOUND = 500_000
 
+# UtxoIndex's own key into KeyValueStore's meta column family
+# (db.py's own get_meta/put_meta): CoinStats.serialize's own bytes,
+# restored on __init__ and written by finalize in the same write_batch
+# as the coins it commits to (db.py's docstring argues why).
+_COIN_STATS_META_KEY = b"coinstats"
+
+# `_undo_log`'s own entry shape is one of two, discriminated by the
+# first element: a dict/set mutation, whose second and third elements
+# are the key and the prior value `_put`/`_pop`/`_mark_removed`/
+# `_unmark_removed` above already carry; or a `coin_stats` mutation,
+# whose second element is `True` for an insert and `False` for a
+# remove (`rollback` below reads it that way) and whose third is the
+# `(out_point_bytes, coin)` pair `_hash_insert`/`_hash_remove` replay
+# the opposite call with -- not a prior value, `coin_stats` needing
+# none (the class docstring's own paragraph on it argues why).
+_DictOrSetUndoEntry = tuple[dict[bytes, Any] | set[bytes], bytes, Any]
+_CoinStatsUndoEntry = tuple[CoinStats, bool, tuple[bytes, Coin]]
+_UndoEntry = _DictOrSetUndoEntry | _CoinStatsUndoEntry
+
 
 class UtxoIndex:
     """The set of spendable outputs, staged in memory until `finalize`.
@@ -86,6 +106,16 @@ class UtxoIndex:
     `rollback(mark)` undoes only what was recorded since `mark`
     (`trial_mark`'s own reading, taken before the trial that might fail
     began), in reverse, leaving anything recorded before it standing.
+
+    `coin_stats` is the running commitment to the same set --
+    `chainstate/muhash.py`'s own `CoinStats`, restored from
+    `parent_db`'s meta column family here and staged the same way the
+    two dicts above are: every `_hash_insert`/`_hash_remove` this class
+    makes is logged into the same `_undo_log`, `CoinStats.insert` and
+    `.remove` being each other's exact undo regardless of order
+    (`muhash.py`'s own docstring argues why), so `rollback` needs no
+    prior accumulator state recorded, only that the opposite call
+    replays.
     """
 
     def __init__(self, parent_db: KeyValueStore, logger: Logger) -> None:
@@ -94,7 +124,14 @@ class UtxoIndex:
 
         self.removed_utxos: set[bytes] = set()
         self.updated_utxo_set: dict[bytes, Coin] = {}
-        self._undo_log: list[tuple[dict[bytes, Any] | set[bytes], bytes, Any]] = []
+        self._undo_log: list[_UndoEntry] = []
+
+        stored_stats = parent_db.get_meta(_COIN_STATS_META_KEY)
+        self.coin_stats = (
+            CoinStats.deserialize(stored_stats)
+            if stored_stats is not None
+            else CoinStats()
+        )
 
         self.logger = logger
 
@@ -221,6 +258,38 @@ class UtxoIndex:
         except BTClibValueError:
             return None
 
+    def _hash_insert(self, out_point_bytes: bytes, coin: Coin) -> None:
+        """`coin_stats.insert(out_point_bytes, coin)`, logged for `rollback`.
+
+        The class docstring's own paragraph on `coin_stats` is where the
+        undo -- `_hash_remove` below, replayed rather than a prior value
+        restored -- is argued.
+        """
+        self.coin_stats.insert(out_point_bytes, coin)
+        self._undo_log.append((self.coin_stats, True, (out_point_bytes, coin)))
+
+    def _hash_remove(self, out_point_bytes: bytes, coin: Coin) -> None:
+        """`coin_stats.remove(out_point_bytes, coin)`, logged for `rollback`."""
+        self.coin_stats.remove(out_point_bytes, coin)
+        self._undo_log.append((self.coin_stats, False, (out_point_bytes, coin)))
+
+    def _stage_creation(
+        self, out_point_bytes: bytes, coin: Coin, *, hash_it: bool
+    ) -> None:
+        """Unmark, put, and usually hash in, one created output.
+
+        `add_block`'s own two creation loops share this rather than
+        each repeating `_unmark_removed` + `_put` + a conditional
+        `_hash_insert` inline -- what ruff's own `complex-structure`
+        already counts every branch of `add_block` itself against.
+        `hash_it=False` only ever for the coinbase loop's own
+        `is_bip30_unspendable` gate.
+        """
+        self._unmark_removed(out_point_bytes)
+        self._put(out_point_bytes, coin)
+        if hash_it:
+            self._hash_insert(out_point_bytes, coin)
+
     def should_flush(self) -> bool:
         """Whether the staged size has reached `_FLUSH_BOUND`.
 
@@ -283,6 +352,16 @@ class UtxoIndex:
         Returns each non-coinbase transaction paired with the prevouts
         its own inputs consumed -- what `interpreter.check_transactions`
         validates against -- and the `RevBlock` that undoes this call.
+
+        Every output this stages and every prevout it spends also moves
+        `coin_stats`, the running commitment to the set -- inserted for
+        a creation, removed for a spend, `Coin.parse`'s own two raises
+        above unaffected since they run before either ever touches it.
+        The coinbase creation loop's own `_hash_insert` is skipped for
+        the two mainnet blocks `is_bip30_unspendable` names, matching
+        `CoinStatsIndex::CustomAppend` -- `muhash.py`'s own "The two
+        blocks history exempts" argues why, and why this is a different
+        pair from `check_bip30`'s own exception above.
         """
         if check_bip30:
             self._check_bip30(block)
@@ -290,13 +369,14 @@ class UtxoIndex:
         removed: list[tuple[OutPoint, Coin]] = []
         added: list[OutPoint] = []
         complete_transactions: list[tuple[list[Coin], Tx]] = []
+        block_hash = block.header.hash
+        skip_coinbase_hash = is_bip30_unspendable(height, block_hash)
 
         for i, tx_out in enumerate(block.transactions[0].vout):
             out_point = OutPoint(block.transactions[0].id, i, check_validity=False)
             coin = Coin(tx_out, height, is_coinbase=True)
             out_point_bytes = out_point.serialize(check_validity=False)
-            self._unmark_removed(out_point_bytes)
-            self._put(out_point_bytes, coin)
+            self._stage_creation(out_point_bytes, coin, hash_it=not skip_coinbase_hash)
             added.append(out_point)
 
         for tx in block.transactions[1:]:
@@ -327,17 +407,18 @@ class UtxoIndex:
                     self._mark_removed(prevout_bytes)
 
                 removed.append((tx_in.prev_out, coin))
+                self._hash_remove(prevout_bytes, coin)
 
             for i, tx_out in enumerate(tx.vout):
                 out_point = OutPoint(tx_id, i, check_validity=False)
                 out_point_bytes = out_point.serialize(check_validity=False)
-                self._unmark_removed(out_point_bytes)
-                self._put(out_point_bytes, Coin(tx_out, height, is_coinbase=False))
+                created_coin = Coin(tx_out, height, is_coinbase=False)
+                self._stage_creation(out_point_bytes, created_coin, hash_it=True)
                 added.append(out_point)
 
             complete_transactions.append((prev_coins, tx))
 
-        rev_block = RevBlock(hash=block.header.hash, to_add=removed, to_remove=added)
+        rev_block = RevBlock(hash=block_hash, to_add=removed, to_remove=added)
 
         return complete_transactions, rev_block
 
@@ -393,11 +474,42 @@ class UtxoIndex:
         block recreating the restored outpoint -- still unspent once
         this call has put it back -- would connect instead of being
         refused `bad-txns-BIP30` (btclib-org/btclib-node#586).
+
+        `coin_stats` moves the opposite way `add_block` moved it for
+        the same coin: `to_add` restores a prevout that block spent, so
+        it is inserted back into the commitment; `to_remove` drops an
+        output that block created, so it is removed from it -- both
+        skipped for a coin that is both `coin.is_coinbase` and named by
+        `is_bip30_unspendable`, matching `add_block`'s own gate, which
+        withholds only the coinbase creation loop
+        (`skip_coinbase_hash`, `add_block`'s own docstring) and never an
+        ordinary transaction sharing the same block. `is_coinbase`
+        alone is what `is_bip30_unspendable` cannot answer for: it
+        checks only the coin's own height and the block's hash, so
+        without this condition every non-coinbase output *of the exempt
+        block itself* -- stamped with the same height by `add_block` --
+        would be wrongly withheld here on undo despite having been
+        correctly hashed in on the way in, leaving `coin_stats`
+        permanently off after a reorg through that block. Matches
+        `CoinStatsIndex::CustomAppend`'s own `is_coinbase &&
+        IsBIP30Unspendable(...)` (`src/index/coinstatsindex.cpp:129`,
+        at bitcoin/bitcoin@ca7162cde5), which gates on exactly the same
+        conjunction rather than the hash/height pair alone.
+        `to_remove` parses the stored `Coin` for this alone where the
+        rest of this loop only ever needed to know the record existed;
+        the parse failure it can raise is this node's own corrupted
+        record, the same distinction `add_block`'s and `get_coin`'s own
+        `Coin.parse` calls draw (btclib-org/btclib-node#620,
+        btclib-org/btclib-node#631, btclib-org/btclib-node#636).
         """
         for out_point, coin in rev_block.to_add:
             out_point_bytes = out_point.serialize(check_validity=False)
             self._unmark_removed(out_point_bytes)
             self._put(out_point_bytes, coin)
+            if not (
+                coin.is_coinbase and is_bip30_unspendable(coin.height, rev_block.hash)
+            ):
+                self._hash_insert(out_point_bytes, coin)
 
         for out_point in rev_block.to_remove:
             out_point_bytes = out_point.serialize(check_validity=False)
@@ -406,12 +518,22 @@ class UtxoIndex:
                 err_msg = "output already removed"
                 raise ChainstateInconsistencyError(err_msg)
             if out_point_bytes in self.updated_utxo_set:
-                self._pop(out_point_bytes)
-            elif self.db.get(b"utxo-" + out_point_bytes):
-                self._mark_removed(out_point_bytes)
+                coin = self._pop(out_point_bytes)
             else:
-                err_msg = "output not found"
-                raise ChainstateInconsistencyError(err_msg)
+                coin_data = self.db.get(b"utxo-" + out_point_bytes)
+                if not coin_data:
+                    err_msg = "output not found"
+                    raise ChainstateInconsistencyError(err_msg)
+                try:
+                    coin = Coin.parse(coin_data, check_validity=False)
+                except BTClibValueError as exc:
+                    err_msg = "stored utxo- record failed to parse"
+                    raise ChainstateInconsistencyError(err_msg) from exc
+                self._mark_removed(out_point_bytes)
+            if not (
+                coin.is_coinbase and is_bip30_unspendable(coin.height, rev_block.hash)
+            ):
+                self._hash_remove(out_point_bytes, coin)
 
     def get_coin(self, prevout_bytes: bytes) -> Coin | None:
         """Return the `Coin` a serialized outpoint still resolves to, or `None`.
@@ -439,13 +561,19 @@ class UtxoIndex:
 
         Everything staged is durable after this, so nothing recorded
         before it can ever be rolled back to: `_undo_log` is cleared
-        along with the two dicts it was tracking.
+        along with the two dicts it was tracking. `coin_stats` is
+        written alongside them, into the same store's meta column
+        family (`db.py`'s own `put_meta`) -- inside `wb`'s own batch
+        when a caller passes one, which is what keeps the commitment
+        and the coins it commits to landing together or not at all
+        (`db.py`'s docstring argues why).
         """
         db = wb or self.db
         for x in self.removed_utxos:
             db.delete(b"utxo-" + x)
         for out_point_bytes, coin in self.updated_utxo_set.items():
             db.put(b"utxo-" + out_point_bytes, coin.serialize())
+        db.put_meta(_COIN_STATS_META_KEY, self.coin_stats.serialize())
         self.removed_utxos = set()
         self.updated_utxo_set = {}
         self._undo_log = []
@@ -459,7 +587,20 @@ class UtxoIndex:
         caller with something to protect gets a real one from.
         """
         while len(self._undo_log) > mark:
-            container, key, prior = self._undo_log.pop()
+            entry = self._undo_log.pop()
+            if isinstance(entry[0], CoinStats):
+                _, was_insert, (out_point_bytes, coin) = entry
+                if was_insert:
+                    # this entry logged a _hash_insert, so undoing it
+                    # removes the same (out_point_bytes, coin) pair --
+                    # muhash.py's own docstring is where insert and
+                    # remove being each other's exact inverse,
+                    # regardless of order, is argued
+                    self.coin_stats.remove(out_point_bytes, coin)
+                else:
+                    self.coin_stats.insert(out_point_bytes, coin)
+                continue
+            container, key, prior = entry
             if isinstance(container, set):
                 if prior:
                     container.add(key)

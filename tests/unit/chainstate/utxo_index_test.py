@@ -20,12 +20,23 @@ from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
-from btclib_node.block_db import RevBlock
+from btclib_node.block_db import Coin, RevBlock
 from btclib_node.chains import RegTest
 from btclib_node.chainstate import Chainstate
+from btclib_node.chainstate.muhash import CoinStats
 from btclib_node.exceptions import ChainstateInconsistencyError, InvalidBlockInputError
 from btclib_node.log import Logger
 from tests import generate_random_chain
+
+# The two mainnet blocks `is_bip30_unspendable` names
+# (`chainstate/muhash.py`'s own `_BIP30_UNSPENDABLE_ORIGINALS`), height
+# and hash both -- neither reachable on any real chain this suite runs,
+# so exercising the branches gated on them means building a block that
+# merely carries the same pair rather than a real one.
+_BIP30_ORIGINAL_HEIGHT = 91722
+_BIP30_ORIGINAL_HASH = bytes.fromhex(
+    "00000000000271a2dc26e7667f8419f2e15416dc6955e5a6c6cdf3f2574dd08e"
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -564,4 +575,264 @@ def test_rollback_restores_a_set_entry_a_second_mutation_had_overwritten(
     utxo_index.rollback(mark)
 
     assert key in utxo_index.removed_utxos
+    chainstate.close()
+
+
+def test_coin_stats_returns_to_the_empty_digest_after_a_full_reorg(
+    tmp_path: Path,
+) -> None:
+    """Applying every `RevBlock` back to front returns `coin_stats` to empty.
+
+    The same shape `test_rev_patch` above already pins for the two
+    staging dicts, extended to `coin_stats`: `MuHash3072.insert` and
+    `.remove` are each other's exact inverse regardless of order
+    (`chainstate/muhash.py`'s own docstring), so unwinding every block a
+    chain ever staged, in reverse, has to land the accumulator back on
+    the same digest an empty `CoinStats` starts with -- not merely a
+    non-empty one, which a partially-correct undo could also produce.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    chain = generate_random_chain(200, RegTest().genesis.hash)
+    rev_patches = []
+    for height, block in enumerate(chain, start=1):
+        _, rev_patch = utxo_index.add_block(block, height)
+        rev_patches.append(rev_patch)
+    assert utxo_index.coin_stats.digest() != CoinStats().digest()
+
+    rev_patches.reverse()
+    for rev_patch in rev_patches:
+        utxo_index.apply_rev_block(rev_patch)
+
+    assert utxo_index.coin_stats.digest() == CoinStats().digest()
+    chainstate.close()
+
+
+def test_coin_stats_persists_across_a_restart(tmp_path: Path) -> None:
+    """`coin_stats` reloads to the same digest a fresh `Chainstate` reopens.
+
+    `test_long_init` above pins the same round trip for the `utxo-`
+    records themselves; `finalize`'s own docstring is where writing
+    `coin_stats` into the same batch, rather than a second one, is
+    argued.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    chain = generate_random_chain(50, RegTest().genesis.hash)
+    for height, block in enumerate(chain, start=1):
+        utxo_index.add_block(block, height)
+    utxo_index.finalize()
+    digest = utxo_index.coin_stats.digest()
+    chainstate.close()
+
+    new_chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    new_utxo_index = new_chainstate.utxo_index
+    assert new_utxo_index.coin_stats.digest() == digest
+    new_chainstate.close()
+
+
+def test_add_block_skips_hashing_a_bip30_exempt_coinbase(tmp_path: Path) -> None:
+    """A coinbase at one of history's two exempt height/hash pairs is unhashed.
+
+    `add_block`'s own `skip_coinbase_hash` gate, matching
+    `CoinStatsIndex::CustomAppend` -- the coinbase is still staged into
+    `updated_utxo_set` (spendable, could be spent, undone by a reorg)
+    but never reaches `coin_stats`, the same way Core's own index skips
+    hashing it.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    exempt = coinbase(b"\x20")
+    utxo_index.add_block(
+        one_tx_block([exempt], _BIP30_ORIGINAL_HASH),
+        _BIP30_ORIGINAL_HEIGHT,
+        check_bip30=False,
+    )
+    assert utxo_index.coin_stats.digest() == CoinStats().digest()
+    out = OutPoint(exempt.id, 0)
+    assert utxo_index.get_coin(out.serialize(check_validity=False)) is not None
+    chainstate.close()
+
+
+def test_apply_rev_block_skips_bip30_exempt_coins_on_both_sides(
+    tmp_path: Path,
+) -> None:
+    """`apply_rev_block`'s own `is_bip30_unspendable` gate, both directions.
+
+    `to_add` restoring an exempt coin, and `to_remove` undoing the
+    creation of one, both leave `coin_stats` untouched -- neither side
+    ever put it there in the first place, `add_block`'s own gate on the
+    same pair above being why.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    exempt = coinbase(b"\x21")
+    _, rev_block = utxo_index.add_block(
+        one_tx_block([exempt], _BIP30_ORIGINAL_HASH),
+        _BIP30_ORIGINAL_HEIGHT,
+        check_bip30=False,
+    )
+    assert utxo_index.coin_stats.digest() == CoinStats().digest()
+
+    # to_remove: undoing the exempt coinbase's own creation
+    utxo_index.apply_rev_block(rev_block)
+    assert utxo_index.coin_stats.digest() == CoinStats().digest()
+
+    # to_add: restoring the same exempt coin, the other side of the gate
+    out = OutPoint(exempt.id, 0)
+    restore = RevBlock(
+        hash=_BIP30_ORIGINAL_HASH,
+        to_add=[(out, Coin(exempt.vout[0], _BIP30_ORIGINAL_HEIGHT, is_coinbase=True))],
+        to_remove=[],
+    )
+    utxo_index.apply_rev_block(restore)
+    assert utxo_index.coin_stats.digest() == CoinStats().digest()
+    chainstate.close()
+
+
+def test_apply_rev_block_hashes_in_an_ordinary_output_of_the_exempt_block(
+    tmp_path: Path,
+) -> None:
+    """`to_remove` must still un-hash a non-coinbase output of the exempt block.
+
+    `is_bip30_unspendable` alone answers only for the coin's own height
+    and the disconnecting block's hash -- never `coin.is_coinbase` --
+    so gating `to_remove`'s own `_hash_remove` on it alone would
+    wrongly withhold *every* non-coinbase output the exempt block
+    itself creates, not only the exempt coinbase: `add_block` stamps
+    every output of a connecting block, coinbase or not, with that same
+    block's own height (`add_block`'s own docstring). The exempt block
+    here carries the exempt coinbase **plus one ordinary transaction**,
+    spending an already-finalized, unrelated funding output --
+    `add_block` correctly hashes the ordinary output in (`hash_it=True`
+    unconditionally for a non-coinbase creation), and only
+    `coin.is_coinbase and is_bip30_unspendable(...)` together, matching
+    `CoinStatsIndex::CustomAppend`'s own `is_coinbase &&
+    IsBIP30Unspendable(...)` (`src/index/coinstatsindex.cpp:129`, at
+    bitcoin/bitcoin@ca7162cde5), correctly un-hashes it again on undo.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    funding = coinbase(b"\x25")
+    utxo_index.add_block(one_tx_block([funding], b"\x25" * 32), 1)
+    utxo_index.finalize()
+    before = utxo_index.coin_stats.digest()
+
+    exempt_cb = coinbase(b"\x26")
+    ordinary = spending(OutPoint(funding.id, 0), b"\x27")
+    _, rev_block = utxo_index.add_block(
+        one_tx_block([exempt_cb, ordinary], _BIP30_ORIGINAL_HASH),
+        _BIP30_ORIGINAL_HEIGHT,
+        check_bip30=False,
+    )
+    assert utxo_index.coin_stats.digest() != before
+
+    utxo_index.apply_rev_block(rev_block)
+    assert utxo_index.coin_stats.digest() == before
+    chainstate.close()
+
+
+def test_apply_rev_block_hashes_in_a_non_coinbase_restore_via_to_add(
+    tmp_path: Path,
+) -> None:
+    """`to_add` must still hash in a non-coinbase coin at the exempt height.
+
+    The `to_remove` side above is what the reviewed reorg actually
+    reaches; this isolates `to_add`'s own identical conjunction
+    directly, the way the sibling coinbase test above isolates the
+    coinbase case -- a synthetic `RevBlock` naming a non-coinbase coin
+    at `_BIP30_ORIGINAL_HEIGHT`/`_BIP30_ORIGINAL_HASH`, the only
+    combination `is_bip30_unspendable` alone cannot tell from the
+    exempt coinbase itself.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    before = utxo_index.coin_stats.digest()
+
+    tx_out = TxOut(value=1000, script_pub_key=script.serialize(["OP_1"]))
+    out = OutPoint(b"\x28" * 32, 0, check_validity=False)
+    restore = RevBlock(
+        hash=_BIP30_ORIGINAL_HASH,
+        to_add=[(out, Coin(tx_out, _BIP30_ORIGINAL_HEIGHT, is_coinbase=False))],
+        to_remove=[],
+    )
+    utxo_index.apply_rev_block(restore)
+    assert utxo_index.coin_stats.digest() != before
+    chainstate.close()
+
+
+def test_apply_rev_block_reads_a_flushed_coin_for_coin_stats_too(
+    tmp_path: Path,
+) -> None:
+    """`to_remove`'s own `else` branch parses a durable coin off disk.
+
+    Every earlier `apply_rev_block` test above undoes a still-staged
+    creation; this one finalizes first, so `to_remove` finds nothing in
+    `updated_utxo_set` and has to `Coin.parse` the stored record --
+    the branch `coin_stats`'s own removal now also depends on, since
+    the parsed `Coin` (its height and coinbase bit) is what
+    `_hash_remove` needs.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    funding = coinbase(b"\x22")
+    _, rev_block = utxo_index.add_block(one_tx_block([funding], b"\x22" * 32), 1)
+    utxo_index.finalize()
+    before = utxo_index.coin_stats.digest()
+    assert before != CoinStats().digest()
+
+    utxo_index.apply_rev_block(rev_block)
+    assert utxo_index.coin_stats.digest() == CoinStats().digest()
+    chainstate.close()
+
+
+def test_a_corrupted_stored_coin_is_this_nodes_own_fault_in_apply_rev_block(
+    tmp_path: Path,
+) -> None:
+    """`apply_rev_block`'s own `to_remove` raises on a corrupted `utxo-` record.
+
+    The record corrupted here is one only this node's own earlier
+    `finalize` ever wrote -- `rev_block` below never supplies these
+    bytes, so the raise this proves is over storage this node owns,
+    mirroring `main_test.py`'s own
+    `test_a_corrupted_stored_coin_is_this_nodes_own_fault_not_the_tx_s`
+    for this module's third `Coin.parse` call site
+    (btclib-org/btclib-node#620, btclib-org/btclib-node#631,
+    btclib-org/btclib-node#636).
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    funding = coinbase(b"\x23")
+    _, rev_block = utxo_index.add_block(one_tx_block([funding], b"\x23" * 32), 1)
+    utxo_index.finalize()
+
+    out = OutPoint(funding.id, 0)
+    key = b"utxo-" + out.serialize(check_validity=False)
+    original = utxo_index.db.get(key)
+    assert original is not None
+    utxo_index.db.put(key, original[:1])
+
+    with pytest.raises(ChainstateInconsistencyError, match="stored utxo- record"):
+        utxo_index.apply_rev_block(rev_block)
+    chainstate.close()
+
+
+def test_mutating_coin_stats_removal_out_of_apply_rev_block_breaks_the_reorg(
+    tmp_path: Path,
+) -> None:
+    """A reorg that forgets to unwind `coin_stats` is caught, not silently kept.
+
+    Not a mutation test proper -- nothing here is patched -- but a
+    direct pin of the property a dropped `_hash_remove`/`_hash_insert`
+    call in `apply_rev_block` would break:
+    `test_coin_stats_returns_to_the_empty_digest_after_a_full_reorg`
+    above is the one this guards, restated at one block so the failure
+    a skipped call would cause is legible without a 200-block diff.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    funding = coinbase(b"\x24")
+    _, rev_block = utxo_index.add_block(one_tx_block([funding], b"\x24" * 32), 1)
+    utxo_index.apply_rev_block(rev_block)
+    assert utxo_index.coin_stats.digest() == CoinStats().digest()
     chainstate.close()

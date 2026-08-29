@@ -194,6 +194,18 @@ distinguish by content has no RocksDB analogue to keep -- it is
 simulated in the tests below, as it already was for SQLite, since
 nothing in this tree still writes one on purpose.
 
+`_VERSION_KEY` is no longer the only thing this class keeps outside
+`kv`'s own key order: `get_meta`/`put_meta` below are the general
+form, and `UtxoIndex`'s own running MuHash commitment
+(btclib-org/btclib-node#639, `chainstate/muhash.py`) is what they were
+added for -- a single scalar value, not a range any reader ever walks,
+which is exactly what a column family outside the default one's own
+scan is for. `put_meta` stages into the same `WriteBatch` `put`/`delete`
+do when a batch is open, so a caller's meta write and its coin writes
+commit or fail together -- `UtxoIndex.finalize` is where that matters,
+writing the commitment and the coins it commits to in the one batch
+`Chainstate.flush` opens.
+
 ## Corruption is an error this tree now classifies itself
 
 `rocksdict` raises a bare `Exception` on a checksum mismatch, its
@@ -589,6 +601,62 @@ class KeyValueStore:
                 self._pending_batch.delete(key)
                 return
             self._db.delete(key, write_opt=_WRITE_OPTIONS)
+
+    def get_meta(self, key: bytes) -> bytes | None:
+        """Return the value stored under `key` in the meta column family.
+
+        The module docstring's own "`_SCHEMA_VERSION` moves to its own
+        column family" is where that family, and what belongs outside
+        the default one's own key order, is argued;
+        `UtxoIndex`'s own running MuHash commitment
+        (`chainstate/muhash.py`) is the second thing to live here,
+        `_VERSION_KEY` being the first.
+        """
+        with self._lock:
+            self._ensure_open()
+            try:
+                value = self._meta.get(key, read_opt=_READ_OPTIONS)
+            except Exception as exc:
+                self._raise_if_corrupted(exc)
+                raise
+            return cast("bytes | None", value)
+
+    def put_meta(self, key: bytes, value: bytes) -> None:
+        """Store `value` under `key` in the meta column family.
+
+        Inside a `write_batch`, staged in the same `WriteBatch` `put`/
+        `delete` above stage into -- `rocksdict`'s own `WriteBatch.put`
+        takes a `column_family` argument for exactly this, so a meta
+        write and a default-column-family write commit together in one
+        `Rdict.write` call rather than needing a second batch or a
+        second lock. `get_meta` above needs no batch-aware counterpart:
+        nothing here reads a meta key it may have just staged but not
+        yet committed, unlike `get`, which `write_batch`'s own docstring
+        does not claim either -- a `pending_batch` is never read back
+        through `get`/`get_meta`, only replayed onto the store on exit.
+
+        The `ColumnFamily` handle `WriteBatch.put` wants is fetched here
+        and held in no attribute of this class: `self._meta`'s own kind
+        of handle (`Rdict`, from `get_column_family`) is released by its
+        own `.close()`, called from `close()` below, but
+        `get_column_family_handle`'s own return type exposes none --
+        measured directly, caching one on `self` the way `self._meta` is
+        left a live `Rdict` reference open on this store's directory
+        `LOCK` past `close()`, with nothing in this class able to drop
+        it, so a caller still holding this object -- as every one here
+        does, `close()` never being the last statement that touches it
+        -- found a second store at the same path refused. A name that
+        lives only for the one call this method makes is dropped with
+        it, on the same reasoning `__iter__` above already reads the
+        whole store into a list rather than handing out a live iterator.
+        """
+        with self._lock:
+            self._ensure_open()
+            if self._pending_batch is not None:
+                handle = self._db.get_column_family_handle(_META_COLUMN_FAMILY)
+                self._pending_batch.put(key, value, column_family=handle)
+                return
+            self._meta.put(key, value, write_opt=_WRITE_OPTIONS)
 
     def __iter__(self) -> Iterator[tuple[bytes, bytes]]:
         """Walk every pair, in ascending key order.

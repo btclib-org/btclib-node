@@ -1703,6 +1703,49 @@ where this file was written rather than where anything was tagged.
   to `pyproject.toml`'s `keywords` when btclib-org/btclib-node#641
   landed (issue #660).
 
+### A MuHash commitment to the UTXO set, and `gettxoutsetinfo` (closes #639)
+
+- **`chainstate/muhash.py` is a `MuHash3072` matching Core's own
+  construction bit for bit**: the same 3072-bit safe-prime modulus, the
+  same ChaCha20-keyed-by-SHA256 per-element hash, and the same
+  numerator/denominator fraction that lets an element be inserted or
+  removed in either order without recomputing the rest of the set --
+  checked directly against `crypto_tests.cpp`'s own `muhash_tests` and
+  RFC 7539/8439's own ChaCha20 vectors
+  (`tests/unit/chainstate/muhash_test.py`,
+  `tests/_data/README.md`'s own new entry). The arithmetic is native
+  Python `int`, in place of Core's own fixed-width limb representation
+  -- `CLAUDE.md`'s own Python-native licence for this axis.
+- **`CoinStats` bundles that accumulator with `CoinStatsIndex`'s own
+  three running counters** -- the output count, the total amount, the
+  bogo size -- and `UtxoIndex.add_block`/`apply_rev_block` move all
+  four together with every coin they stage, undone by `rollback` the
+  same way a staged coin already was: an insert's own undo is a remove
+  of the same element, needing no prior accumulator state recorded.
+  `KeyValueStore.get_meta`/`put_meta` (`db.py`) are what let it persist
+  in the store's own meta column family, inside the same `write_batch`
+  as the coins it commits to, so a crash cannot leave the two out of
+  step.
+- **A provably unspendable output -- a leading `OP_RETURN`, or a script
+  over `MAX_SCRIPT_SIZE` -- is never hashed into the commitment**,
+  matching `CCoinsViewCache::AddCoin`'s own refusal to add one to
+  Core's UTXO set at all. `UtxoIndex`'s own `utxo-` store still keeps
+  every output regardless of spendability, a pre-existing divergence
+  this branch does not close (issue #667).
+- **`gettxoutsetinfo` answers `hash_type: "muhash"` and `"none"`**, with
+  Core's own field names and units -- `height`, `bestblock`, `txouts`,
+  `bogosize`, `muhash`, `total_amount`. `hash_type: "hash_serialized_3"`
+  is refused with Core's own "not a valid hash_type" error, this tree
+  answering only the indexed shape and not the from-scratch double-SHA256
+  scan Core computes it with; `hash_or_height` is refused the way a
+  `bitcoind` running without `-coinstatsindex` already refuses it, since
+  this tree has no historical snapshot to answer a past height from
+  either. `transactions` and `disk_size` are left out the same way
+  Core's own indexed answer already leaves them out, for the identical
+  reason: both are an `O(n)` count over the whole set, which an
+  incremental accumulator exists specifically to avoid paying on every
+  call.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
