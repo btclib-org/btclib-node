@@ -4,14 +4,17 @@
 
 """A pruned node, over a real connection: what it serves and what it drops.
 
-The unit tests (`block_db_test.py`, `p2p/callbacks_test.py`, `main_test.py`)
-cover the mechanism -- `BlockDB.prune_up_to`'s own deletion,
-`main._prune_chain`'s own call into it, and `_below_prune_threshold`'s own
-disconnect decision -- each against a double standing in for the rest of
-the node. What this checks is the same three things over an actual socket,
-between two real `Node`s: a pruned node's own `version` on the wire, an old
-`getdata` answered by dropping the connection rather than by a `notfound`,
-and a recent one still answered in full.
+The unit tests (`block_db_test.py`, `p2p/callbacks_test.py`,
+`download_test.py`, `main_test.py`) cover the mechanism --
+`BlockDB.prune_up_to`'s own deletion, `main._prune_chain`'s own call into
+it, `_below_prune_threshold`'s own disconnect decision, and
+`DownloadManager._reachable_blocks`'s own skip -- each against a double
+standing in for the rest of the node. What this checks is the same four
+things over an actual socket, between two real `Node`s: a pruned node's
+own `version` on the wire, an old `getdata` answered by dropping the
+connection rather than by a `notfound`, a recent one still answered in
+full, and a real client's own `DownloadManager` never sending that old
+`getdata` in the first place.
 """
 
 from collections import deque
@@ -37,6 +40,8 @@ from tests import (
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
+
+    from btclib.p2p.payload import Payload
 
 # Eight blocks past the retained depth: enough for `main._prune_chain`
 # to have deleted at least one real block (heights 1..8) and kept the
@@ -200,6 +205,74 @@ def test_a_pruned_server_drops_a_client_asking_for_a_pruned_block(
     # same as a real client would. What the disconnect actually did is
     # on *this* connection object, not on the dict's own membership.
     wait_until(lambda: connection.status == P2pConnStatus.Closed)
+
+
+def test_a_client_never_asks_the_pruned_server_for_a_block_past_its_depth(
+    pruned_server_and_client: tuple[Node, Node],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`DownloadManager` itself never sends the `GetData` built by hand above.
+
+    The two tests above drive a `GetData` by hand, over a connection
+    `step` still holds silent, to pin what the server does with one; this
+    one instead lets `block_download` (download.py, closes #706) build
+    its own request over that same real connection -- a real `version`
+    already read `NODE_NETWORK_LIMITED` without `NODE_NETWORK` off the
+    wire (the first test above), and a real `headers` batch, processed
+    by `callbacks.headers` the way the fixture's own header sync always
+    runs regardless of `step` being silenced, is what
+    `Connection.best_known_height` is actually read off here rather than
+    off a `SimpleNamespace` double the way `download_test.py`'s own unit
+    tests build it.
+
+    `connection.send` is wrapped rather than `download_queue` re-read
+    after the call: a block this test's own server genuinely holds can
+    come back over the real socket and `callbacks.block` removes it from
+    `download_queue` the moment it does, on `client`'s own running
+    thread -- a read racing that thread would answer differently
+    depending on how far that race had gotten, which is not what this
+    test is about. What `block_download` decided to send is settled the
+    instant `conn.send` is called, synchronously, on this thread; one
+    call to `block_download` on this one, otherwise idle connection
+    sends exactly the one `GetData` its own single burst builds, so
+    `sent` records nothing to filter a second kind of message out of.
+
+    Un-fixed, this client's very first burst reaches back to height 1,
+    inside the eight-block remainder `_CHAIN_LENGTH` leaves pruned away;
+    the assertion below on `getdata.items` catches that directly, and
+    the server would in fact drop the connection for it exactly as the
+    test above shows by hand, which the `wait_until`/`Connected` check
+    at the end confirms never happens here.
+    """
+    _server, client = pruned_server_and_client
+    wait_until(lambda: client.status >= NodeStatus.HeaderSynced)
+    connection = client.p2p_manager.connections[0]
+    # Real headers, not a hand-set attribute: proof `callbacks.headers`
+    # actually raised `best_known_height` off what this connection sent,
+    # rather than this test asserting against a value it wrote itself.
+    assert connection.best_known_height == _CHAIN_LENGTH
+
+    sent: list[Payload] = []
+    real_send = connection.send
+
+    def recording_send(msg: Payload) -> None:
+        sent.append(msg)
+        real_send(msg)
+
+    monkeypatch.setattr(connection, "send", recording_send)
+    client.download_manager.block_download()
+
+    (getdata,) = sent  # exactly the one burst, not withheld and not more
+    assert isinstance(getdata, GetData)
+    block_index = client.chainstate.block_index
+    threshold = connection.best_known_height - (MIN_BLOCKS_TO_KEEP - 2)
+    for item in getdata.items:
+        assert block_index.get_block_info(item.hash).index > threshold
+
+    # The server actually answers every item of that burst rather than
+    # dropping the connection over one it would have refused.
+    wait_until(lambda: connection.download_queue == [])
+    assert connection.status == P2pConnStatus.Connected
 
 
 def _wait_for_message(node: Node, command: str, timeout: float = 20) -> bytes:

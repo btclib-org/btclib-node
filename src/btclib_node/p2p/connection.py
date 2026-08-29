@@ -431,6 +431,28 @@ class Connection:
         self.pending_eviction: bool = False
         self.last_block_timestamp: float = time.time()
 
+        # This connection's own best known chain height -- callbacks.version
+        # sets it from the peer's own `start_height` and callbacks.headers
+        # raises it as headers this peer sent verify a taller tip. Core's
+        # own `pindexBestKnownBlock` (net_processing.cpp) is ranked by
+        # chainwork and updated off inv/headers announcements alone; this
+        # tree keeps no per-peer chainwork-ranked index for `download.py`
+        # to rank against, so height off what this peer has itself sent
+        # stands in for it. `start_height` is not the useful seed Core's
+        # own field is in practice: every connection this tree's own
+        # `send_version` opens sends the literal `0` there regardless of
+        # this node's real height (btclib-org/btclib-node#722), so
+        # between two btclib-node peers this starts at 0 and stays there
+        # until that peer's own `headers` update it -- which
+        # `_reachable_blocks` (download.py) already treats as "nothing
+        # ruled out yet" rather than "confirmed at height 0", the
+        # threshold it computes from a low `best_known_height` excluding
+        # nothing a real download window holds. 0 until callbacks.version
+        # writes here, which every connection `DownloadManager` ever sees
+        # has already done by the time it is promoted (`callbacks.verack`
+        # refuses one that has not). btclib-org/btclib-node#706
+        self.best_known_height: int = 0
+
         # Set by callbacks.getaddr the first time it answers this
         # connection: a peer that asks again gets nothing, rather than a
         # second answer from the cache. The cache already stops a fresh

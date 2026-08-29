@@ -412,6 +412,11 @@ def a_peer(**attributes: Any) -> Any:
         # way a real connection whose peer reads promptly never would
         queued_send_bytes=0,
         version_message=None,
+        # what `Connection` starts every fresh connection at, and what
+        # `callbacks.version`/`callbacks.headers` overwrite -- 0 rather
+        # than `None`, matching the real field (`p2p/connection.py`).
+        # btclib-org/btclib-node#706
+        best_known_height=0,
         wtxidrelay_received=False,
         prefer_addressv2=False,
         prefers_headers=False,
@@ -2072,8 +2077,15 @@ class FakeHeaderIndex:
         return self.tip
 
     def get_block_info(self, block_hash: bytes) -> SimpleNamespace:
-        """Answer every hash with the same fixed `tip_status`."""
-        return SimpleNamespace(status=self.tip_status)
+        """Answer every hash with the same fixed `tip_status`, and index 0.
+
+        `index` is never asserted against by a test built on this double
+        -- `headers`'s own `conn.best_known_height` update
+        (btclib-org/btclib-node#706) is the only reader, and every test
+        here only checks `Connection.sent`/`node.status`, not the height
+        that update leaves behind.
+        """
+        return SimpleNamespace(status=self.tip_status, index=0)
 
     def get_block_locator_hashes(self) -> list[bytes]:
         """Return the one fixed locator hash this stand-in ever answers with."""
