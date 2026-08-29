@@ -805,6 +805,18 @@ def test_close_without_a_task_closes_the_socket_anyway() -> None:
     theirs.close()
 
 
+# A Windows kernel wait is satisfied against the interrupt-time tick
+# clock, not the QPC-backed clock `time.monotonic()` reads (see the
+# docstring below), and can be resolved up to one tick before its
+# requested duration -- 15.625ms is the documented default tick
+# ("The system clock 'ticks' at a constant rate", Microsoft's own
+# Remarks for `Sleep`, which times against the same tick-based wait
+# timer `WaitForMultipleObjects` itself documents no accuracy for:
+# https://learn.microsoft.com/en-us/windows/win32/api/synchapi/
+# nf-synchapi-sleep).
+_WINDOWS_TIMER_TICK = 0.015625
+
+
 @pytest.mark.filterwarnings(
     "ignore:coroutine 'RpcConnection.async_send' was never awaited:RuntimeWarning"
 )
@@ -824,6 +836,33 @@ def test_send_and_wait_gives_up_rather_than_blocking_forever() -> None:
     sits unreferenced except by that queued callback, and Python warns
     when it is collected unawaited: a real defect ordinarily, and
     exactly the state this test asks for on purpose.
+
+    `future.result(timeout=2)` waits on a `threading.Condition`, whose
+    `wait` reaches `_thread.lock.acquire(True, 2)` -- CPython's
+    `lock_PyThread_acquire_lock` (`Modules/_threadmodule.c:814-833`, at
+    python/cpython@v3.14.0) calls `_PyMutex_LockTimed`
+    (`Python/lock.c:53`), whose own deadline reads `PyTime_MonotonicRaw`
+    (`lock.c:67,148`) -- on Windows `QueryPerformanceCounter`
+    (`Python/pytime.c:1065-1090`), the same clock `time.monotonic()`
+    itself reads (`PyTime_Monotonic`, `pytime.c:1223-1225`, through the
+    same `py_get_monotonic_clock`), so the lock's deadline and this
+    test's own `waited` measurement are not two different clocks. The
+    wait itself parks through `_PyParkingLot_Park` into
+    `_PySemaphore_PlatformWait`, which on Windows calls
+    `WaitForMultipleObjects` with a millisecond count taken from
+    `_PyTime_AsMilliseconds(timeout, _PyTime_ROUND_TIMEOUT)`
+    (`Python/parking_lot.c:95-133`, the call at `:130`, the conversion
+    at `:105`) -- not `WaitForSingleObject`, and not the legacy
+    `Python/thread_nt.h` path `_thread.Lock` no longer uses in 3.14.
+    What remains is the gap between that millisecond count and the
+    clock the OS actually satisfies the wait against: the kernel's own
+    interrupt-time tick, which `_WINDOWS_TIMER_TICK`'s own comment
+    above cites Microsoft's documentation for. A 2000ms wait is
+    satisfied once that tick clock reaches "start tick + 2000ms", up to
+    one tick before 2000ms have elapsed on the QPC-backed clock
+    `time.monotonic()` reads, so `_WINDOWS_TIMER_TICK` is the slack
+    this bound needs -- small next to the two-second wait it guards, so
+    a regression that actually shortens the wait still fails loudly.
     """
     ours, theirs = socket.socketpair()
     loop = asyncio.new_event_loop()
@@ -833,7 +872,7 @@ def test_send_and_wait_gives_up_rather_than_blocking_forever() -> None:
     started = time.monotonic()
     conn.send_and_wait([{"id": "x"}])  # returns, does not raise
     waited = time.monotonic() - started
-    assert waited >= 2
+    assert waited >= 2 - _WINDOWS_TIMER_TICK
     loop.close()
     ours.close()
     theirs.close()
