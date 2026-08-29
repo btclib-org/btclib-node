@@ -232,11 +232,11 @@ wheels = [
 
 [[package]]
 name = "bitcoin-core-rpc"
-version = "2026.8.20"
+version = "2026.8.29"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/80/7a/02580ed845cc0daa380f76e3b19be84e2d6de0a58d46fe5f71d2c5588798/bitcoin_core_rpc-2026.8.20.tar.gz", hash = "sha256:9e47e906ffeb09dc2c9a5fc5ce2f893794a069193f65af271621a04cd733d79a", size = 382663, upload-time = "2026-08-20T13:42:00.63Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/da/b2/06b9d205d78f0ceccff52894504092adfee7f8bb06aa0dfa9c1796a6dda9/bitcoin_core_rpc-2026.8.29.tar.gz", hash = "sha256:ffef4bb09408fa2a7917824ad4b09b073fcf98fa6d2fd6c59610c40d51671b59", size = 484678, upload-time = "2026-08-29T06:17:00.542Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5e/3b/3ad6ebf51dcd6387b801f0a66da7451f25064c95b9718be659fa31aaf0c9/bitcoin_core_rpc-2026.8.20-py3-none-any.whl", hash = "sha256:34a7c1f406409872792d46155e8f3cc5e9f2671da0136120a181bced810a9b6b", size = 44521, upload-time = "2026-08-20T13:41:59.346Z" },
+    { url = "https://files.pythonhosted.org/packages/b7/8c/6aa9fa848f0de6d44065926dcf1c7c1c388d095ca595004349a4f029a7ff/bitcoin_core_rpc-2026.8.29-py3-none-any.whl", hash = "sha256:ea8f8ce4276e1e66ce954026f0a4d71131cd95923fd39e5e2210e850694f7271", size = 59722, upload-time = "2026-08-29T06:16:59.233Z" },
 ]
 
 [[package]]
@@ -283,11 +283,9 @@ dev = [
     { name = "pytest-order" },
     { name = "pytest-timeout" },
     { name = "pytest-xdist" },
-    { name = "requests" },
     { name = "ruff" },
     { name = "sphinx" },
     { name = "twine" },
-    { name = "types-requests" },
 ]
 docs = [
     { name = "furo" },
@@ -307,7 +305,6 @@ lint = [
     { name = "mypy" },
     { name = "pre-commit" },
     { name = "ruff" },
-    { name = "types-requests" },
 ]
 mutation = [
     { name = "cosmic-ray" },
@@ -319,7 +316,6 @@ test = [
     { name = "pytest-order" },
     { name = "pytest-timeout" },
     { name = "pytest-xdist" },
-    { name = "requests" },
 ]
 
 [package.metadata]
@@ -333,7 +329,7 @@ check = [
     { name = "twine" },
 ]
 dev = [
-    { name = "bitcoin-core-rpc", specifier = ">=2026.8.20" },
+    { name = "bitcoin-core-rpc", specifier = ">=2026.8.29" },
     { name = "check-sdist" },
     { name = "check-wheel-contents" },
     { name = "cosmic-ray" },
@@ -347,11 +343,9 @@ dev = [
     { name = "pytest-order", specifier = ">=1.5.0" },
     { name = "pytest-timeout", specifier = ">=2.4.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
-    { name = "requests", specifier = ">=2.34.2" },
     { name = "ruff", specifier = ">=0.16.4" },
     { name = "sphinx" },
     { name = "twine" },
-    { name = "types-requests", specifier = ">=2.32" },
 ]
 docs = [
     { name = "furo" },
@@ -369,17 +363,15 @@ lint = [
     { name = "mypy", specifier = ">=1.18.2" },
     { name = "pre-commit", specifier = ">=4.6.2" },
     { name = "ruff", specifier = ">=0.16.4" },
-    { name = "types-requests", specifier = ">=2.32" },
 ]
 mutation = [{ name = "cosmic-ray" }]
 test = [
-    { name = "bitcoin-core-rpc", specifier = ">=2026.8.20" },
+    { name = "bitcoin-core-rpc", specifier = ">=2026.8.29" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "pytest-order", specifier = ">=1.5.0" },
     { name = "pytest-timeout", specifier = ">=2.4.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
-    { name = "requests", specifier = ">=2.34.2" },
 ]
 
 [[package]]
@@ -2012,18 +2004,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/92/3c/58f808a359700f39a967dffede33efeac809262c03303fa3eec6afff8f49/twine-7.0.0.tar.gz", hash = "sha256:85cdb29c518efef867360ae4acd4b0dfd61c8654a22fca08e6f8539f05022177", size = 215032, upload-time = "2026-07-27T15:59:00.825Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/96/08/ddcdc06225eaad6de0e48e1002b06d919dbde20582d0662c7af51308e5d6/twine-7.0.0-py3-none-any.whl", hash = "sha256:b854164df26db268af05f49aa5c0344b10e27a494343ff05b1e0bad3b135f5a7", size = 43204, upload-time = "2026-07-27T15:58:59.26Z" },
-]
-
-[[package]]
-name = "types-requests"
-version = "2.33.0.20260712"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "urllib3" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/db/51/703318f7b7be8bee126ec13bf615050f932d0179b8784420f3a0199cc769/types_requests-2.33.0.20260712.tar.gz", hash = "sha256:2141b67ab534a5c5cd2dac5034f2a35f42e699c5bf185eee608c5246a069d7fb", size = 25084, upload-time = "2026-07-12T05:14:20.455Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/62/e7/010c87f559e216d83f9dc51e939633fd0d0ead3377340181ab0e223cd3b5/types_requests-2.33.0.20260712-py3-none-any.whl", hash = "sha256:de027e28c171d3da529689cbfa023b0b4eab188c8dfa22fd834eebd2cee6e7bb", size = 21392, upload-time = "2026-07-12T05:14:19.616Z" },
 ]
 
 [[package]]

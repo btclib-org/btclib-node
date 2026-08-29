@@ -8,17 +8,25 @@ A missing method or id, an unknown method, an empty batch, a method
 name of the wrong JSON type, and a refusal a callback raises on
 purpose -- each checked to answer the client without ending the node's
 own loop.
+
+Most of these are driven through `BitcoinCoreRpcClient.call_raw`, which
+sends a request identical to `post`'s own construction but interprets
+nothing of the reply. Two shapes it cannot build stay on `post`: a
+request missing `method` or `id` -- `call_raw` always carries both --
+and the bare `[]` empty batch, which is legal JSON-RPC but not a shape
+either `call_raw` (one object) or `call_batch` (refuses an empty
+`calls`) can send.
 """
 
 import contextlib
 import json
 from typing import TYPE_CHECKING, Any
 
-import requests
+from bitcoin_core_rpc import FetchError
 
 from btclib_node import Node
 from btclib_node.config import Config
-from tests import get_random_port, post, wait_until_listening
+from tests import get_random_port, post, rpc_client, wait_until_listening
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -38,19 +46,10 @@ def test_no_method(tmp_path: Path) -> None:
 
     wait_until_listening(node.rpc_manager)
 
-    response = json.loads(
-        requests.post(
-            url=f"http://127.0.0.1:{node.rpc_port}",
-            data=json.dumps(
-                {
-                    "jsonrpc": "1.0",
-                    "id": "pytest",
-                }
-            ).encode(),
-            headers={"Content-Type": "text/plain"},
-            timeout=2,
-        ).text
-    )
+    # `call_raw` always sets its own `method`, so a request missing the
+    # key entirely has nothing to build it with -- `post` stays on the
+    # raw envelope for that reason
+    response = json.loads(post(node, {"jsonrpc": "1.0", "id": "pytest"}))
 
     assert response["error"]["message"] == "Invalid request"
 
@@ -71,19 +70,9 @@ def test_no_id(tmp_path: Path) -> None:
 
     wait_until_listening(node.rpc_manager)
 
-    response = json.loads(
-        requests.post(
-            url=f"http://127.0.0.1:{node.rpc_port}",
-            data=json.dumps(
-                {
-                    "jsonrpc": "1.0",
-                    "method": "getpeerinfo",
-                }
-            ).encode(),
-            headers={"Content-Type": "text/plain"},
-            timeout=2,
-        ).text
-    )
+    # `call_raw` always sets its own `id`, so a request missing the key
+    # entirely has nothing to build it with either
+    response = json.loads(post(node, {"jsonrpc": "1.0", "method": "getpeerinfo"}))
 
     assert response["error"]["message"] == "Invalid request"
 
@@ -104,22 +93,11 @@ def test_invalid_method(tmp_path: Path) -> None:
 
     wait_until_listening(node.rpc_manager)
 
-    response = json.loads(
-        requests.post(
-            url=f"http://127.0.0.1:{node.rpc_port}",
-            data=json.dumps(
-                {
-                    "jsonrpc": "1.0",
-                    "method": "notavalidmethod",
-                    "id": "pytest",
-                }
-            ).encode(),
-            headers={"Content-Type": "text/plain"},
-            timeout=2,
-        ).text
+    _, body = rpc_client(node).call_raw(
+        "notavalidmethod", jsonrpc="1.0", request_timeout=2
     )
 
-    assert response["error"]["message"] == "Method not found"
+    assert body["error"]["message"] == "Method not found"
 
     node.stop()
 
@@ -134,15 +112,19 @@ def test_an_empty_batch_does_not_end_the_node(rpc_node: Node) -> None:
     """
     node = rpc_node
     wait_until_listening(node.rpc_manager)
+    client = rpc_client(node)
 
-    good = {"jsonrpc": "2.0", "id": "a", "method": "getbestblockhash"}
-    assert json.loads(post(node, good))["result"]
+    _, body = client.call_raw("getbestblockhash", jsonrpc="2.0")
+    assert body["result"]
 
+    # neither `call_raw` (one object per post) nor `call_batch` (refuses
+    # an empty `calls`) can send a bare `[]`, so this stays on `post`
     answer = json.loads(post(node, []))
     assert answer["error"]["message"] == "Invalid request"
 
     assert node.is_alive()
-    assert json.loads(post(node, good))["result"]
+    _, body = client.call_raw("getbestblockhash", jsonrpc="2.0")
+    assert body["result"]
 
 
 def test_a_request_the_handler_cannot_read_does_not_end_the_node(
@@ -155,16 +137,21 @@ def test_a_request_the_handler_cannot_read_does_not_end_the_node(
     what keeps that to one logged line. It gets no answer, which is its
     own defect and its own issue -- what is asserted here is only that
     the node is still there afterwards.
+
+    `call_raw` refuses a non-string `method` itself, before anything is
+    sent (`BtcRpcTypeError`) -- a conformance case its own docstring
+    disclaims -- so this stays on `post`, and the timeout this used to
+    read as a `requests` exception is `http_request`'s own `FetchError`.
     """
     node = rpc_node
     wait_until_listening(node.rpc_manager)
 
-    with contextlib.suppress(requests.exceptions.RequestException):
+    with contextlib.suppress(FetchError):
         post(node, [{"jsonrpc": "2.0", "id": "a", "method": ["not", "hashable"]}], 2)
 
     assert node.is_alive()
-    good = {"jsonrpc": "2.0", "id": "b", "method": "getbestblockhash"}
-    assert json.loads(post(node, good))["result"]
+    _, body = rpc_client(node).call_raw("getbestblockhash", jsonrpc="2.0")
+    assert body["result"]
 
 
 def test_a_request_the_node_can_refuse_is_not_answered_internal_error(
@@ -179,17 +166,14 @@ def test_a_request_the_node_can_refuse_is_not_answered_internal_error(
     """
     node = rpc_node
     wait_until_listening(node.rpc_manager)
+    client = rpc_client(node)
 
     def refusal(params: list[Any]) -> Any:
-        request = {
-            "jsonrpc": "2.0",
-            "id": "a",
-            "method": "getblockheader",
-            "params": params,
-        }
-        answer = json.loads(post(node, request))
-        assert answer["id"] == "a"
-        return answer["error"]
+        # `call_raw` mints its own `id`, so the reply is read straight
+        # off this one HTTP exchange rather than correlated by a value
+        # this caller chose -- there is no second reply it could be
+        _, body = client.call_raw("getblockheader", params, jsonrpc="2.0")
+        return body["error"]
 
     assert refusal(["11" * 32]) == {"code": -5, "message": "Block not found"}
     assert refusal(["zz"])["code"] == -8
@@ -208,12 +192,11 @@ def test_a_missing_argument_is_not_answered_internal_error(rpc_node: Node) -> No
     """
     node = rpc_node
     wait_until_listening(node.rpc_manager)
+    client = rpc_client(node)
 
     def refusal(method: str, params: list[Any]) -> Any:
-        request = {"jsonrpc": "2.0", "id": "a", "method": method, "params": params}
-        answer = json.loads(post(node, request))
-        assert answer["id"] == "a"
-        return answer["error"]
+        _, body = client.call_raw(method, params, jsonrpc="2.0")
+        return body["error"]
 
     assert refusal("testmempoolaccept", []) == {
         "code": -1,

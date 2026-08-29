@@ -2,13 +2,20 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""RpcManager.connections does not grow without bound, over a real node."""
+"""RpcManager.connections does not grow without bound, over a real node.
 
-import json
+Every entry sheds once answered, and never survives to be reused: this
+node's own `RpcConnection.async_send` closes its socket unconditionally
+after one reply, so a client pooling a connection across several calls
+still pays a fresh accept every time.
+"""
+
 import socket
 from typing import TYPE_CHECKING
 
-from tests import post, wait_until, wait_until_listening
+from bitcoin_core_rpc import SessionTransport
+
+from tests import rpc_client, wait_until, wait_until_listening
 
 if TYPE_CHECKING:
     from btclib_node import Node
@@ -26,10 +33,11 @@ def test_connections_do_not_outlive_the_answer_they_carried(rpc_node: Node) -> N
     """
     node = rpc_node
     wait_until_listening(node.rpc_manager)
+    client = rpc_client(node)
 
-    good = {"jsonrpc": "2.0", "id": "a", "method": "getbestblockhash"}
     for _ in range(11):
-        assert json.loads(post(node, good))["result"]
+        _, body = client.call_raw("getbestblockhash", jsonrpc="2.0")
+        assert body["result"]
 
     wait_until(lambda: not node.rpc_manager.connections)
 
@@ -70,5 +78,48 @@ def test_a_client_that_sends_nothing_is_dropped_within_the_deadline(
         stalled.close()
     wait_until(lambda: not node.rpc_manager.connections)
 
-    good = {"jsonrpc": "2.0", "id": "a", "method": "getbestblockhash"}
-    assert json.loads(post(node, good))["result"]
+    _, body = rpc_client(node).call_raw("getbestblockhash", jsonrpc="2.0")
+    assert body["result"]
+
+
+def test_one_session_transport_still_opens_a_socket_per_call(rpc_node: Node) -> None:
+    """One `SessionTransport`, three calls: the listener is asked for three.
+
+    `SessionTransport` keeps a connection open across calls and probes
+    it before reusing it (its own docstring), which is what lets a
+    caller against Core skip a handshake per call -- Core keeps an rpc
+    connection alive and drops an idle one with a plain `close()`. This
+    node's own `RpcConnection.async_send` closes its socket
+    unconditionally after every reply, with no idling and no keep-alive
+    to probe for, so the same `SessionTransport` instance still pays a
+    fresh accept on every call: the probe evicts the connection this
+    node already closed and reconnects rather than finding one to reuse.
+    `RpcManager.last_connection_id` is incremented once per accepted
+    socket (`rpc/manager.py`), so three distinct values across three
+    calls is three distinct connections, not one kept open.
+    """
+    node = rpc_node
+    wait_until_listening(node.rpc_manager)
+
+    client = rpc_client(node)
+    transport = SessionTransport()
+    client.transport = transport
+
+    accepted: list[int] = []
+    try:
+        for _ in range(3):
+            _, body = client.call_raw("getbestblockhash", jsonrpc="2.0")
+            assert body["result"]
+            # waited for before the next call, so the next call's own
+            # probe meets a socket this node has already closed rather
+            # than racing the close still in flight
+            wait_until(lambda: not node.rpc_manager.connections)
+            accepted.append(node.rpc_manager.last_connection_id)
+    finally:
+        # otherwise the pooled connection's own socket is closed only
+        # when the garbage collector reaches it, which is what
+        # `filterwarnings = ["error", ...]` (pyproject.toml) turns a
+        # bare `ResourceWarning` on that late a close into
+        transport.close()
+
+    assert accepted == [0, 1, 2]

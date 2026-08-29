@@ -29,7 +29,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-import requests
+from bitcoin_core_rpc import BitcoinCoreRpcClient, http_request
 from btclib.block import (
     Block,
     BlockHeader,
@@ -394,6 +394,21 @@ def wait_until_listening(manager: _ListensOnAPort, timeout: float = 20) -> None:
     raise WaitTimeoutError(err_msg)
 
 
+def rpc_client(node: Node, timeout: float = 5) -> BitcoinCoreRpcClient:
+    """Return a client pointed at `node`'s own RPC port.
+
+    This node checks no credential of its own (issue #27), so `user`
+    and `password` are placeholders the constructor requires one of,
+    not anything the node reads.
+    """
+    return BitcoinCoreRpcClient(
+        f"http://127.0.0.1:{node.rpc_port}",
+        user="pytest",
+        password="pytest",  # noqa: S106
+        timeout=timeout,
+    )
+
+
 def post(node: Node, payload: Any, timeout: float = 5) -> str:
     """POST `payload` as JSON to `node`'s RPC port; return the raw body.
 
@@ -401,12 +416,23 @@ def post(node: Node, payload: Any, timeout: float = 5) -> str:
     `json.loads` on it itself, most often to reach into the JSON-RPC
     envelope's own `"error"` field rather than to get an object back
     directly.
+
+    Built on `bitcoin_core_rpc.http_request` and not on
+    `BitcoinCoreRpcClient.call_raw`: `call_raw` always sets its own
+    `id` and always carries a `method` it has checked is a string, so a
+    caller building a request missing either key, or naming a `method`
+    that is not one, has nothing to build it with -- `call_raw`'s own
+    docstring names both as deliberately out of scope. Every caller
+    left on this helper is exactly one of those two shapes, or the bare
+    `[]` neither `call_raw` nor `call_batch` can send at all, `call_raw`
+    posting one object and `call_batch` refusing an empty `calls`.
     """
-    return requests.post(
-        url=f"http://127.0.0.1:{node.rpc_port}",
+    _, body = http_request(
+        f"http://127.0.0.1:{node.rpc_port}",
         data=json.dumps(payload).encode(),
         timeout=timeout,
-    ).text
+    )
+    return body.decode()
 
 
 def call_within[T](func: Callable[[], T], timeout: float = 5) -> T:

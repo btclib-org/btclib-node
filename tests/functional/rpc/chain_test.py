@@ -9,10 +9,8 @@ and `getblockchaininfo`, each driven against a node that has actually
 validated and connected the chain it is asked about.
 """
 
-import json
 from typing import TYPE_CHECKING, Any
 
-import requests
 from bitcoin_core_rpc import BitcoinCoreRpcClient
 from btclib.fetch.bitcoin_core import BitcoinCoreFetcher
 
@@ -24,7 +22,7 @@ from tests import (
     generate_random_chain,
     generate_random_header_chain,
     get_random_port,
-    post,
+    rpc_client,
     wait_until,
     wait_until_listening,
 )
@@ -51,22 +49,11 @@ def test_best_block_hash(rpc_node: Node) -> None:
 
     wait_until(lambda: len(block_index.active_chain) == 100 + 1)
 
-    response = json.loads(
-        requests.post(
-            url=f"http://127.0.0.1:{node.rpc_port}",
-            data=json.dumps(
-                {
-                    "jsonrpc": "1.0",
-                    "id": "pytest",
-                    "method": "getbestblockhash",
-                }
-            ).encode(),
-            headers={"Content-Type": "text/plain"},
-            timeout=2,
-        ).text
+    _, body = rpc_client(node).call_raw(
+        "getbestblockhash", jsonrpc="1.0", request_timeout=2
     )
 
-    assert response["result"] == header_chain[-1].hash.hex()
+    assert body["result"] == header_chain[-1].hash.hex()
 
 
 def test_block_hash(rpc_node: Node) -> None:
@@ -87,22 +74,10 @@ def test_block_hash(rpc_node: Node) -> None:
 
     wait_until(lambda: len(block_index.active_chain) == 100 + 1)
 
-    response = json.loads(
-        requests.post(
-            url=f"http://127.0.0.1:{node.rpc_port}",
-            data=json.dumps(
-                {
-                    "jsonrpc": "1.0",
-                    "id": "pytest",
-                    "method": "getblockhash",
-                    "params": [50],
-                }
-            ).encode(),
-            headers={"Content-Type": "text/plain"},
-            timeout=2,
-        ).text
+    _, body = rpc_client(node).call_raw(
+        "getblockhash", [50], jsonrpc="1.0", request_timeout=2
     )
-    assert response["result"] == header_chain[50 - 1].hash.hex()
+    assert body["result"] == header_chain[50 - 1].hash.hex()
 
 
 def test_block_count(rpc_node: Node) -> None:
@@ -122,10 +97,8 @@ def test_block_count(rpc_node: Node) -> None:
 
     wait_until(lambda: len(block_index.active_chain) == 10 + 1)
 
-    response = json.loads(
-        post(node, {"jsonrpc": "1.0", "id": "pytest", "method": "getblockcount"})
-    )
-    assert response["result"] == 10
+    _, body = rpc_client(node).call_raw("getblockcount", jsonrpc="1.0")
+    assert body["result"] == 10
 
 
 def test_blockchain_info_names_the_chain_btclib_s_fetcher_checks(
@@ -140,10 +113,8 @@ def test_blockchain_info_names_the_chain_btclib_s_fetcher_checks(
     node = rpc_node
     wait_until_listening(node.rpc_manager)
 
-    response = json.loads(
-        post(node, {"jsonrpc": "1.0", "id": "pytest", "method": "getblockchaininfo"})
-    )
-    assert response["result"] == {"chain": "regtest"}
+    _, body = rpc_client(node).call_raw("getblockchaininfo", jsonrpc="1.0")
+    assert body["result"] == {"chain": "regtest"}
 
 
 def test_bitcoin_core_fetcher_works_against_this_node_unchanged(
@@ -184,13 +155,8 @@ def test_bitcoin_core_fetcher_works_against_this_node_unchanged(
 
 def get_block_header(node: Node, block_hash: str) -> Any:
     """Call getblockheader on `block_hash`, verbose by default."""
-    request = {
-        "jsonrpc": "1.0",
-        "id": "pytest",
-        "method": "getblockheader",
-        "params": [block_hash],
-    }
-    return json.loads(post(node, request))["result"]
+    _, body = rpc_client(node).call_raw("getblockheader", [block_hash], jsonrpc="1.0")
+    return body["result"]
 
 
 def test_block_header_on_the_chain_the_node_validated(rpc_node: Node) -> None:

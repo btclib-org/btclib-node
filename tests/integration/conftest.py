@@ -18,7 +18,12 @@ import time
 from typing import TYPE_CHECKING
 
 import pytest
-from bitcoin_core_rpc import BitcoinCoreRpcClient, FetchError, cookie_path_from_chain
+from bitcoin_core_rpc import (
+    BitcoinCoreRpcClient,
+    FetchError,
+    SessionTransport,
+    cookie_path_from_chain,
+)
 
 from tests import get_random_port
 
@@ -63,6 +68,20 @@ class Bitcoind:
     the family's own client for exactly this exchange, so the cookie
     parsing, the request shape and the exceptions are that module's and
     not a second copy of them here.
+
+    The client's own transport is a `SessionTransport`, not the default:
+    unlike this node's own listener (`connections_test.py`, the
+    functional rpc suite), a real bitcoind keeps an rpc connection
+    alive across calls the way `SessionTransport`'s own docstring
+    describes, and `reorg_test.py` and `backpressure_test.py` beside
+    this one each drive bitcoind through dozens of individual calls --
+    a block per `submitblock`. Measured directly against a live regtest
+    bitcoind, one connection kept open across many sequential calls
+    answers each measurably faster than a fresh connection would. What
+    that does not move is either integration test module's own wall
+    time: both are dominated by bitcoind's own block validation, not by
+    the rpc round trip, so the saving is real at the call and invisible
+    at the module.
     """
 
     def __init__(self, rpc_port: int, p2p_port: int, cookie_path: Path) -> None:
@@ -75,13 +94,26 @@ class Bitcoind:
         """
         self.rpc_port = rpc_port
         self.p2p_port = p2p_port
+        self._transport = SessionTransport()
         self._client = BitcoinCoreRpcClient(
-            f"http://127.0.0.1:{rpc_port}", cookie_path=cookie_path
+            f"http://127.0.0.1:{rpc_port}",
+            cookie_path=cookie_path,
+            transport=self._transport,
         )
 
     def rpc(self, method: str, params: list[object] | None = None) -> object:
         """Call `method` over bitcoind's JSON-RPC, and return its result."""
         return self._client.call(method, params)
+
+    def close(self) -> None:
+        """Close the pooled connection `SessionTransport` kept open.
+
+        Left to the garbage collector instead, an open socket's own
+        finalizer can raise on a connection bitcoind has already reset,
+        which `filterwarnings = ["error", ...]` (pyproject.toml) turns
+        into a test failure rather than a silent `ResourceWarning`.
+        """
+        self._transport.close()
 
 
 def _wait_for_rpc(node: Bitcoind, process: subprocess.Popen[bytes]) -> None:
@@ -137,5 +169,6 @@ def bitcoind(bitcoind_path: str, tmp_path: Path) -> Iterator[Bitcoind]:
         _wait_for_rpc(node, process)
         yield node
     finally:
+        node.close()
         process.terminate()
         process.wait(timeout=_STARTUP_TIMEOUT)
