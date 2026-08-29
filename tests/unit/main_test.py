@@ -1837,3 +1837,41 @@ def test_a_pruned_node_clears_downloaded_for_every_block_it_deletes(
     for height in range(oldest_kept, tip_height + 1):
         block_hash = block_index.active_chain[height]
         assert block_index.get_block_info(block_hash).downloaded is True
+
+
+def test_a_fork_longer_than_the_retained_depth_prunes_correctly_on_disk(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A fork connected in one `update_chain` call still persists a clear.
+
+    `_finalize_fork`'s own `to_add` loop is not bounded by
+    `MIN_BLOCKS_TO_KEEP` anywhere, and `connect` below marks every
+    header downloaded before its first `update_chain` call, so the
+    whole `MIN_BLOCKS_TO_KEEP + 5`-block chain connects as one trial,
+    one `_finalize_fork_and_prune` call -- `chainstate.flush()` never
+    fires mid-trial on a chain this size, `should_flush`'s own
+    `_FLUSH_BOUND` being far past what a handful of coinbase-only blocks
+    touch, so every hash `_prune_chain` clears is still one
+    `stage_status` staged into `pending`, unflushed, in the very same
+    call. `get_block_info` reads `header_dict`, updated the same way
+    whether `set_downloaded` writes through or folds into `pending`, so
+    it cannot tell the two apart -- only what actually reaches the store
+    can, which is why this closes and reopens `Chainstate` rather than
+    reading `block_index` again.
+    """
+    node = regtest_node(pruned=True)
+    chain = generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
+    block_index = connect(node, chain)
+    tip_height = len(block_index.active_chain) - 1
+    oldest_kept = tip_height - MIN_BLOCKS_TO_KEEP + 1
+    pruned_hashes = block_index.active_chain[1:oldest_kept]
+    kept_hashes = block_index.active_chain[oldest_kept:]
+    assert pruned_hashes
+
+    node.chainstate.close()
+    reopened = Chainstate(node.data_dir, RegTest(), node.logger)
+    for block_hash in pruned_hashes:
+        assert reopened.block_index.get_block_info(block_hash).downloaded is False
+    for block_hash in kept_hashes:
+        assert reopened.block_index.get_block_info(block_hash).downloaded is True
+    reopened.close()

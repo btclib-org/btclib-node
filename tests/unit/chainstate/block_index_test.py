@@ -1148,3 +1148,45 @@ def test_invalidate_after_stage_status_is_not_undone_by_a_later_finalize(
     stored = BlockInfo.deserialize(data, check_validity=False)
     assert stored.status == BlockStatus.invalid
     chainstate.close()
+
+
+def test_set_downloaded_after_stage_status_is_not_undone_by_a_later_finalize(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """`set_downloaded` on a staged hash survives the next flush.
+
+    Reachable from `main._prune_chain`: `_finalize_fork`'s own to_add
+    loop stages every hash a fork connects through `stage_status`,
+    before that fork's own `finalize` ever runs, and `to_add` is not
+    bounded by `MIN_BLOCKS_TO_KEEP` anywhere -- a fork longer than the
+    retained depth stages a hash `_prune_chain`, run once at the end of
+    that same `update_chain` call, then clears the flag on. Writing
+    straight through would leave `pending` holding a stale
+    `downloaded=True` entry that the next `finalize` writes back over
+    the clear, undoing it silently -- the same shape
+    btclib-org/btclib-node#586 fixed for `set_status`.
+    """
+    chainstate = a_chainstate(None)
+    block_index = chainstate.block_index
+    (header,) = generate_random_header_chain(1, RegTest().genesis.hash)
+    block_index.add_headers([header])
+    # downloaded=True before staging: _finalize_fork's own to_add loop
+    # only ever stages a hash _ready_fork already required downloaded,
+    # so the pending entry stage_status below captures carries that
+    # True forward -- the stale value a write-through set_downloaded
+    # would otherwise lose to the next finalize.
+    block_index.set_downloaded(header.hash)
+    block_index.stage_status(header.hash, BlockStatus.in_active_chain)
+    assert header.hash in block_index.pending
+    assert block_index.pending[header.hash].downloaded is True
+
+    block_index.set_downloaded(header.hash, downloaded=False)
+
+    block_index.finalize()
+
+    assert block_index.pending == {}
+    data = block_index.db.get(b"blkinfo-" + header.hash)
+    assert data is not None
+    stored = BlockInfo.deserialize(data, check_validity=False)
+    assert stored.downloaded is False
+    chainstate.close()
