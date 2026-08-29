@@ -150,9 +150,12 @@ def get_blockchain_info(
     bitcoin/bitcoin@ca7162cde5) field for field: chain work against
     `Chain.minimum_chain_work` and tip age against `MAX_TIP_AGE`, not
     merely whether this node has run out of candidates to try.
-    `pruned` is `Config.pruned`, always `False`: `Config.__init__`
-    refuses `pruned=True` outright rather than accepting it and pruning
-    nothing (src/rpc/blockchain.cpp:1452, at bitcoin/bitcoin@ca7162cde5).
+    `pruned` is `Config.pruned` (src/rpc/blockchain.cpp:1452, same
+    commit); `pruneheight`, present only where `pruned` is true, is the
+    first height `block_db.BlockDB.prune_up_to` has not deleted --
+    `pruned_up_to + 1`, Core's own "the first block unpruned, all
+    previous blocks were pruned" (src/rpc/blockchain.cpp:1455, same
+    commit, `prune_height.value() + 1`).
 
     Absent, each for its own reason rather than by oversight:
     `verificationprogress`, Core's own `GuessVerificationProgress`
@@ -167,11 +170,12 @@ def get_blockchain_info(
     nothing here yet totals the block and undo files' own bytes on
     disk; `signet_challenge`, `SigNet` here carrying no configurable
     challenge (chains.py's own genesis is the one public signet);
-    `pruneheight`, `automatic_pruning` and `prune_target_size`, each
-    optional on Core's own side and present only where pruning is
-    enabled, which `pruned`'s own paragraph above already answers
-    `False` for; `backgroundvalidation`, present on Core's own side only
-    behind an assumeutxo snapshot this node has no counterpart to.
+    `automatic_pruning` and `prune_target_size`, Core's own `-prune=<n>`
+    MiB-target axis, which `config.py`'s own `pruned` field comment
+    argues this tree does not implement -- pruning here has no manual
+    vs. automatic distinction to answer either half of for;
+    `backgroundvalidation`, present on Core's own side only behind an
+    assumeutxo snapshot this node has no counterpart to.
     """
     block_index = node.chainstate.block_index
     active_chain = block_index.active_chain
@@ -179,7 +183,7 @@ def get_blockchain_info(
     tip_header = block_index.header_dict[tip_hash].header
     tip_height = len(active_chain) - 1
     tip_mtp = median_time_past(tip_header, tip_height, parent_lookup(node))
-    return {
+    out: dict[str, Any] = {
         "chain": _CORE_CHAIN_NAMES[node.chain.name],
         "blocks": tip_height,
         "headers": len(block_index.header_index) - 1,
@@ -193,6 +197,9 @@ def get_blockchain_info(
         "initialblockdownload": node.is_initial_block_download,
         "pruned": node.config.pruned,
     }
+    if node.config.pruned:
+        out["pruneheight"] = node.block_db.pruned_up_to + 1
+    return out
 
 
 def get_block_hash(node: Node, conn: RpcConnection, params: list[Any]) -> bytes:
@@ -794,7 +801,21 @@ def _find_transaction(
         ) from error
     block = node.block_db.get_block(block_hash)
     if block is None:
-        raise RpcError(RpcErrorCode.MISC_ERROR, "Block not available")
+        # Core's own `CheckBlockDataAvailability` (`rpc/blockchain.cpp`,
+        # at bitcoin/bitcoin@ca7162cde5): "Block not available (pruned
+        # data)" once `blockman.IsBlockPruned` says the store deleted it
+        # rather than never having had it, "Block not available (not
+        # fully downloaded)" otherwise -- `block_info.index` against
+        # `block_db.pruned_up_to` is this store's own version of that
+        # same distinction, `BlockDB.prune_up_to`'s own docstring is
+        # where deleting by height rather than by file is argued.
+        if block_info.index <= node.block_db.pruned_up_to:
+            raise RpcError(
+                RpcErrorCode.MISC_ERROR, "Block not available (pruned data)"
+            )
+        raise RpcError(
+            RpcErrorCode.MISC_ERROR, "Block not available (not fully downloaded)"
+        )
     tx = next((t for t in block.transactions if t.id == txid), None)
     if tx is None:
         raise RpcError(

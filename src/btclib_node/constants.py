@@ -16,6 +16,7 @@ from datetime import timedelta
 __all__ = [
     "COINBASE_MATURITY",
     "MAX_TIP_AGE",
+    "MIN_BLOCKS_TO_KEEP",
     "NodeStatus",
     "P2pConnStatus",
     "ProtocolVersion",
@@ -39,6 +40,18 @@ MAX_TIP_AGE = timedelta(hours=24)
 # `tests/__init__.py`'s own `generate_random_chain` is where that is
 # argued against a chain short enough to have nothing mature to spend.
 COINBASE_MATURITY = 100
+
+# Core's own `MIN_BLOCKS_TO_KEEP` (`src/validation.h:76`, at
+# bitcoin/bitcoin@ca7162cde5): block files within this many blocks of the
+# tip are never pruned. `NODE_NETWORK_LIMITED_MIN_BLOCKS`
+# (`src/net_processing.cpp:157`, same commit) is the separate constant
+# Core checks before answering a peer's `getdata` for an old block once
+# this node's own services say `NODE_NETWORK_LIMITED` rather than
+# `NODE_NETWORK` -- both 288 (two days of ten-minute blocks) at this
+# sha, so `block_db.BlockDB.prune_up_to` and `p2p.callbacks`'s own
+# below-threshold disconnect share this one name rather than carrying
+# two constants that only happen to agree today.
+MIN_BLOCKS_TO_KEEP = 288
 
 
 # The service bits are `btclib.p2p.address.ServiceFlags`, not a table

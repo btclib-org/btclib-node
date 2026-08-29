@@ -23,7 +23,12 @@ from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate import utxo_index as utxo_index_module
 from btclib_node.chainstate.block_index import BlockIndex, BlockInfo, BlockStatus
 from btclib_node.config import Config
-from btclib_node.constants import COINBASE_MATURITY, MAX_TIP_AGE, NodeStatus
+from btclib_node.constants import (
+    COINBASE_MATURITY,
+    MAX_TIP_AGE,
+    MIN_BLOCKS_TO_KEEP,
+    NodeStatus,
+)
 from btclib_node.exceptions import ChainstateInconsistencyError, MissingPrevoutError
 from btclib_node.interpreter import check_transactions
 from btclib_node.main import update_chain, verify_mempool_acceptance
@@ -1742,3 +1747,59 @@ def test_update_ibd_status_latches_off_and_never_back_as_the_tip_ages() -> None:
     stale_header.time = datetime.now(UTC) - MAX_TIP_AGE - timedelta(days=1)
     main.update_ibd_status(node)
     assert node.is_initial_block_download is False
+
+
+def test_an_unpruned_node_never_calls_prune_up_to(
+    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_prune_chain` is a no-op unless `Config.pruned` is set."""
+    node = regtest_node(pruned=False)
+    calls: list[int] = []
+    monkeypatch.setattr(
+        node.block_db, "prune_up_to", lambda target, _hash: calls.append(target)
+    )
+    connect(node, generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash))
+    assert calls == []
+
+
+def test_a_pruned_node_deletes_blocks_more_than_the_retained_depth_behind_the_tip(
+    regtest_node: Callable[[], Node],
+) -> None:
+    """A pruned node keeps only the last `MIN_BLOCKS_TO_KEEP` blocks on disk.
+
+    Core's own retained depth (`constants.MIN_BLOCKS_TO_KEEP`'s own
+    citation): a fork replacing the tip's own last `MIN_BLOCKS_TO_KEEP`
+    blocks still finds what it needs, which is exactly what an ordinary
+    connect through `update_chain` -- one block at a time, this test's
+    own shape -- never has reason to reach further back than.
+    """
+    node = regtest_node(pruned=True)
+    chain = generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
+    block_index = connect(node, chain)
+    tip_height = len(block_index.active_chain) - 1
+
+    assert node.block_db.pruned_up_to == tip_height - MIN_BLOCKS_TO_KEEP
+    oldest_kept = tip_height - MIN_BLOCKS_TO_KEEP + 1
+    assert node.block_db.get_block(block_index.active_chain[oldest_kept - 1]) is None
+    assert node.block_db.get_block(block_index.active_chain[oldest_kept]) is not None
+    assert node.block_db.get_block(block_index.active_chain[-1]) is not None
+
+
+def test_a_pruned_node_leaves_headers_and_the_active_chain_untouched(
+    regtest_node: Callable[[], Node],
+) -> None:
+    """Pruning deletes block and undo data only -- never a header or a status.
+
+    `BlockIndex` keeps every header this node has ever seen regardless
+    of `Config.pruned`, matching Core's own block index -- pruning
+    clears `BLOCK_HAVE_DATA`/`BLOCK_HAVE_UNDO`, never the index entry
+    itself (`node/blockstorage.cpp`'s `UnlinkPrunedFiles`, at
+    bitcoin/bitcoin@ca7162cde5).
+    """
+    node = regtest_node(pruned=True)
+    chain = generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
+    block_index = connect(node, chain)
+
+    assert len(block_index.active_chain) == len(chain) + 1
+    for block_hash in block_index.active_chain:
+        assert block_index.get_block_info(block_hash).downloaded is True

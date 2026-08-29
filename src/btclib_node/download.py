@@ -714,6 +714,13 @@ class DownloadManager:
     def _request_new_block_work(
         self, connections: list[Connection], waiting: list[bytes], pending: list[bytes]
     ) -> None:
+        # No check here for a connection whose own version_message
+        # advertised NODE_NETWORK_LIMITED without NODE_NETWORK -- Core's
+        # own FindNextBlocksToDownload (net_processing.cpp, at
+        # bitcoin/bitcoin@ca7162cde5) skips such a peer for a block more
+        # than NODE_NETWORK_LIMITED_MIN_BLOCKS behind its own best known
+        # height, which this tree tracks for no connection at all yet.
+        # btclib-org/btclib-node#706
         node = self.node
         for conn in connections:
             # `pending_eviction` is this peer's queue having just been

@@ -26,7 +26,7 @@ from btclib_node.chainstate.contextual import (
     header_at_height,
     median_time_past,
 )
-from btclib_node.constants import MAX_TIP_AGE, NodeStatus
+from btclib_node.constants import MAX_TIP_AGE, MIN_BLOCKS_TO_KEEP, NodeStatus
 from btclib_node.exceptions import (
     ChainstateInconsistencyError,
     InvalidBlockInputError,
@@ -263,6 +263,29 @@ def _finalize_fork(node: Node, to_add: list[Block], to_remove: list[RevBlock]) -
     if utxo_index.should_flush():
         node.chainstate.flush()
     node.logger.debug("End chainstate finalize")
+
+
+# update_chain's own finalize-branch step, run right after _finalize_fork:
+# Core's own prune step inside Chainstate::FlushStateToDisk
+# (src/validation.cpp, at bitcoin/bitcoin@ca7162cde5) -- a no-op unless
+# fPruneMode/Config.pruned says this node prunes at all, and never
+# reaching back past MIN_BLOCKS_TO_KEEP (constants.py, 288), the same
+# depth Core's own FindFilesToPrune is bounded by. A fork replacing the
+# last MIN_BLOCKS_TO_KEEP blocks still finds what it needs on disk, the
+# same guarantee that retained depth gives Core's own pruned node against
+# an ordinary reorg; a reorg deeper than that finds its own missing
+# blocks and fails on this node exactly as it does on Core's -- pruning
+# trades away that depth of reorg safety by its own nature, on both, and
+# nothing here is a new gap this call opens.
+def _prune_chain(node: Node) -> None:
+    """Delete block and undo data more than `MIN_BLOCKS_TO_KEEP` behind the tip."""
+    if not node.config.pruned:
+        return
+    block_index = node.chainstate.block_index
+    target_height = len(block_index.active_chain) - 1 - MIN_BLOCKS_TO_KEEP
+    if target_height < 0:
+        return
+    node.block_db.prune_up_to(target_height, block_index.active_chain.__getitem__)
 
 
 # update_chain's own trial marks, taken before a trial starts: should_flush
@@ -627,6 +650,7 @@ def update_chain(node: Node) -> None:
     finally:
         if success:
             _finalize_fork(node, to_add, to_remove)
+            _prune_chain(node)
         else:
             node.logger.debug("Start chainstate rollback")
             _rollback_trial(node, utxo_mark, filter_mark)

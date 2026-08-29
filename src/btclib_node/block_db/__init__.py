@@ -10,6 +10,17 @@ key-value store, are what let a later read seek straight to a block
 instead of scanning a file for it. A reverse patch is filed against its
 own block only once that block's branch connects, `pending_rev_blocks`
 holding one generated for a branch `update_chain` may still refuse.
+
+`prune_up_to` is this store's own half of pruning
+(btclib-org/btclib-node#601): it deletes a block and its reverse patch,
+by height rather than by file, because this store's own rotation
+(`__find_block_file`) tracks append order and not a file's own height
+range the way Core's `FlatFilePos`/`nHeightFirst`/`nHeightLast`
+(`node/blockstorage.h`, at bitcoin/bitcoin@ca7162cde5) does. `live` is
+what lets a `.blk`/`.rev` file still be reclaimed once every block it
+ever held has been pruned this way -- `_release`'s own docstring is
+where that is argued end to end, the uncomfortable half (a syncing
+node's own append order tracking height only approximately) included.
 """
 
 import threading
@@ -27,6 +38,8 @@ from btclib_node.db import KeyValueStore
 from btclib_node.exceptions import ChainstateInconsistencyError
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from btclib.alias import BinaryData
 
     from btclib_node.log import Logger
@@ -263,6 +276,18 @@ class BlockDB:
         self.files: dict[str, FileMetadata] = {}
         self.blocks: dict[bytes, BlockLocation] = {}
         self.rev_patches: dict[bytes, BlockLocation] = {}
+        # how many still-held blocks/rev patches point into each flat
+        # file, kept alongside `files`: `_release` unlinks a file once
+        # its own count reaches zero. Built by init_from_db below and
+        # maintained at every site that adds to or removes from `blocks`
+        # and `rev_patches` -- add_block, finalize's own rev-writing
+        # loop, and prune_up_to's own two deletes.
+        self.live: dict[str, int] = {}
+        # the last height prune_up_to has deleted through, -1 meaning
+        # nothing has been pruned yet -- persisted as its own value plus
+        # one, since var_int carries no sign, and read back the same way
+        # below.
+        self.pruned_up_to = -1
         # held here between add_rev_block and finalize/rollback, the way
         # UtxoIndex.updated_utxo_set and FilterIndex.pending hold theirs:
         # a branch update_chain refuses never reaches disk, where writing
@@ -289,6 +314,13 @@ class BlockDB:
                 self.rev_patches[key[1:]] = BlockLocation.deserialize(value)
             elif key == b"i":
                 self.file_index = var_int.parse(value, max_size=_LOCAL_BOOKKEEPING_MAX)
+            elif key == b"p":
+                pruned = var_int.parse(value, max_size=_LOCAL_BOOKKEEPING_MAX)
+                self.pruned_up_to = pruned - 1
+        for location in self.blocks.values():
+            self.live[location.filename] = self.live.get(location.filename, 0) + 1
+        for location in self.rev_patches.values():
+            self.live[location.filename] = self.live.get(location.filename, 0) + 1
         self.logger.info("Finished Block database initialization")
 
     def close(self) -> None:
@@ -378,6 +410,9 @@ class BlockDB:
             block_location = BlockLocation(Path(file.name).name, index, block_size)
             self.blocks[block_hash] = block_location
             self.db.put(b"b" + block_hash, block_location.serialize())
+            self.live[block_location.filename] = (
+                self.live.get(block_location.filename, 0) + 1
+            )
 
     def add_rev_block(self, rev_block: RevBlock) -> None:
         """Buffer `rev_block` for `finalize` to write out.
@@ -417,6 +452,9 @@ class BlockDB:
                 block_location = BlockLocation(Path(file.name).name, index, block_size)
                 self.rev_patches[rev_block_hash] = block_location
                 self.db.put(b"r" + rev_block_hash, block_location.serialize())
+                self.live[block_location.filename] = (
+                    self.live.get(block_location.filename, 0) + 1
+                )
             self.pending_rev_blocks = {}
 
     def rollback(self) -> None:
@@ -447,3 +485,87 @@ class BlockDB:
                 file, rev_patch_location.index, rev_patch_location.size
             )
         return RevBlock.deserialize(rev_patch_data)
+
+    def prune_up_to(
+        self, target_height: int, hash_at_height: Callable[[int], bytes]
+    ) -> None:
+        """Delete every block and reverse patch from the last pruned height on.
+
+        `hash_at_height` is `main._prune_chain`'s own
+        `active_chain.__getitem__`: this store tracks locations by hash,
+        never by height, so the height -> hash step lives with the
+        caller that already holds `BlockIndex.active_chain` rather than
+        being threaded through here. A no-op if `target_height` is at or
+        behind what an earlier call already reached -- `main._prune_chain`
+        checks the same thing first, so this only ever fires again for a
+        genuinely later target, but a second caller (a test, a retry
+        after a crash) gets the same idempotence `add_block` and
+        `add_rev_block` already give the rest of this store.
+        """
+        with self._lock:
+            if target_height <= self.pruned_up_to:
+                return
+            for height in range(self.pruned_up_to + 1, target_height + 1):
+                block_hash = hash_at_height(height)
+                self._delete_block(block_hash)
+                self._delete_rev_block(block_hash)
+            self.pruned_up_to = target_height
+            self.db.put(b"p", var_int.serialize(target_height + 1))
+
+    def _delete_block(self, block_hash: bytes) -> None:
+        location = self.blocks.pop(block_hash, None)
+        if location is None:
+            return
+        self.db.delete(b"b" + block_hash)
+        self._release(location.filename, is_block=True)
+
+    def _delete_rev_block(self, block_hash: bytes) -> None:
+        location = self.rev_patches.pop(block_hash, None)
+        if location is None:
+            return
+        self.db.delete(b"r" + block_hash)
+        self._release(location.filename, is_block=False)
+
+    def _release(self, filename: str, *, is_block: bool) -> None:
+        """Drop one live reference to `filename`, unlinking it once none is left.
+
+        Core's own `UnlinkPrunedFiles` (`node/blockstorage.cpp`, at
+        bitcoin/bitcoin@ca7162cde5) reaches the same file once every block
+        `FindFilesToPrune` sees inside it is behind the retained depth,
+        found by the file's own stored height range
+        (`nHeightFirst`/`nHeightLast`). This store's own rotation
+        (`__find_block_file`) tracks append order rather than height, so
+        `prune_up_to` above reaches the same file from the other
+        direction -- one block at a time, oldest height first -- and this
+        is where the count converges on Core's own "every block in this
+        file is gone" the same file-granularity deletion answers to. A
+        syncing node writes in close to height order already, so the two
+        line up in the ordinary case; a node whose forks left blocks
+        scattered across files out of height order reclaims those files
+        later than Core would, once the last of their still-live blocks
+        is finally pruned too, rather than not at all.
+
+        Never unlinks the file `file_index` currently names: that is
+        still open for new blocks or patches to land in, whatever this
+        call's own count says, and reclaiming it here would have the very
+        next `add_block` or `finalize` reopen a file this store had just
+        deleted out from under itself.
+        """
+        remaining = self.live.get(filename, 0) - 1
+        if remaining > 0:
+            self.live[filename] = remaining
+            return
+        self.live.pop(filename, None)
+        if Path(filename).stem == f"{self.file_index:06d}":
+            return
+        open_file = self.open_block_file if is_block else self.open_rev_file
+        if open_file is not None and Path(open_file.name).name == filename:
+            open_file.close()
+            if is_block:
+                self.open_block_file = None
+            else:
+                self.open_rev_file = None
+        (self.data_dir / filename).unlink(missing_ok=True)
+        if filename in self.files:
+            del self.files[filename]
+            self.db.delete(b"f" + filename.encode())

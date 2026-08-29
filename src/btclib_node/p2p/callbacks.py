@@ -65,7 +65,12 @@ from btclib.p2p.negotiation import FeeFilter, GetAddr, SendHeaders, WtxidRelay
 
 from btclib_node.chainstate.block_index import BlockStatus
 from btclib_node.chainstate.filter_index import NO_PREVIOUS_FILTER_HEADER
-from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion
+from btclib_node.constants import (
+    MIN_BLOCKS_TO_KEEP,
+    NodeStatus,
+    P2pConnStatus,
+    ProtocolVersion,
+)
 from btclib_node.exceptions import ChainstateInconsistencyError, MissingPrevoutError
 from btclib_node.main import verify_mempool_acceptance
 from btclib_node.p2p.address import (
@@ -688,6 +693,33 @@ def _notfound_pace(
     return should_flush, over_budget
 
 
+def _below_prune_threshold(node: Node, block_hash: bytes) -> bool:
+    """Whether `block_hash` falls more than `MIN_BLOCKS_TO_KEEP` behind the tip.
+
+    Core's own `ProcessGetBlockData` (`net_processing.cpp`, at
+    bitcoin/bitcoin@ca7162cde5): "Avoid leaking prune-height by never
+    sending blocks below the NODE_NETWORK_LIMITED threshold", checked
+    against `peer.m_our_services` -- what this node told the requesting
+    peer during its own handshake -- rather than what is actually still
+    on disk, and fired whether or not the block asked for happens to
+    still be there: a pruned node that still holds it this once is not
+    to be relied on for it the next time either. Every connection of a
+    pruned node is told the same `NODE_NETWORK_LIMITED`-only services
+    (`connection.py`'s own `send_version`, gated on `Config.pruned`
+    the identical way), so this reads `node.config.pruned` directly
+    rather than a per-connection record of what was sent. `+ 2` is
+    Core's own buffer, "for possible races". Answers `False` for a hash
+    this index has never indexed, matching Core's own `if (!pindex)
+    return;` immediately above the check this mirrors.
+    """
+    block_index = node.chainstate.block_index
+    block_info = block_index.header_dict.get(block_hash)
+    if block_info is None:
+        return False
+    tip_height = len(block_index.active_chain) - 1
+    return tip_height - block_info.index > MIN_BLOCKS_TO_KEEP + 2  # noqa: PLR2004
+
+
 def _serve_getdata_item(
     node: Node,
     conn: Connection,
@@ -723,6 +755,9 @@ def _serve_getdata_item(
             not_found.append(item)
             not_found_bytes += _NOTFOUND_ITEM_BYTES
     elif item.type_code in _GETDATA_BLOCK_TYPES:
+        if node.config.pruned and _below_prune_threshold(node, item.hash):
+            conn.stop()
+            return not_found_bytes
         block = node.block_db.get_block(item.hash)
         if block:
             include_witness = item.type_code == InventoryType.MSG_WITNESS_BLOCK
@@ -761,6 +796,9 @@ def advance_getdata(node: Node, conn: Connection, items: deque[Inventory]) -> bo
     `notfound` either: `ProcessGetBlockData` returns on one with no
     `notfound` of its own, `vNotFound` being `ProcessGetData`'s own local
     and never touched by the function it calls out to for a block item.
+    `_below_prune_threshold`'s own docstring is where a pruned node's
+    other answer to a block item -- disconnecting rather than staying
+    silent -- is argued against the same function.
 
     `conn.queued_send_bytes` is read the same way `advance_cfilters`
     below reads it, and holds what `conn.send` has counted -- this

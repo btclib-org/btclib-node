@@ -9,7 +9,6 @@ on which interfaces, and the feerate floor it tells a peer about in
 `feefilter` -- `DEFAULT_MIN_RELAY_FEERATE` below, Core's own
 `DEFAULT_MIN_RELAY_TX_FEE`. `_resolve_chain` is what turns a chain
 already built, or a network's name, into the `Chain` a `Config` carries.
-`pruned` is reserved rather than honoured: see its own field comment.
 `split_host_port` is `cli.py`'s own splitter for `-rpcbind`'s optional
 port too, which is why it is public here rather than named with a
 leading underscore.
@@ -23,11 +22,7 @@ from typing import TYPE_CHECKING
 from btclib.fee import FeeRate
 
 from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet
-from btclib_node.exceptions import (
-    InvalidChainTypeError,
-    PruningNotImplementedError,
-    UnknownChainError,
-)
+from btclib_node.exceptions import InvalidChainTypeError, UnknownChainError
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -173,13 +168,16 @@ class Config:
     # P2pManager.server binds every interface unconditionally, and is
     # right to, since a peer listener is supposed to accept a stranger.
     rpc_host: str
-    # always `False`: `__init__` below refuses `True` with
-    # `PruningNotImplementedError` (btclib-org/btclib-node#574) rather
-    # than accepting it and pruning nothing. The field stays, and so
-    # does the parameter below, because nothing is removed from
-    # `Config`'s public API -- only the one value that would have
-    # written every block of the chain to disk while a caller believed
-    # it would not.
+    # `True` retains only the last `MIN_BLOCKS_TO_KEEP` (constants.py,
+    # 288, Core's own two days) blocks and their undo data on disk,
+    # `main._prune_chain`'s own bound -- `block_db.BlockDB.prune_up_to`
+    # is what actually deletes them. No `-prune=<n>` MiB target of
+    # Core's own: this is Core's manual-pruning depth alone, always on
+    # once `pruned` is, and `cli.py`'s own `-prune` collapses whatever
+    # nonzero `<n>` it is given down to this one bound rather than
+    # sizing anything from it -- the size-target axis is
+    # btclib-org/btclib-node#601's own deferred remainder, filed as
+    # btclib-org/btclib-node#705.
     pruned: bool
     debug: bool
     min_relay_feerate: FeeRate
@@ -296,8 +294,6 @@ class Config:
 
         self.rpc_host = rpc_host
 
-        if pruned:
-            raise PruningNotImplementedError
         self.pruned = pruned
 
         self.debug = debug

@@ -12,7 +12,6 @@ import pytest
 
 from btclib_node import cli
 from btclib_node.chains import RegTest
-from btclib_node.exceptions import PruningNotImplementedError
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -533,10 +532,21 @@ def test_build_config_rpcbind_without_a_port_leaves_rpcport_alone() -> None:
     assert config.rpc_port == 9999
 
 
-def test_build_config_prune_nonzero_raises_pruning_not_implemented() -> None:
-    """A nonzero `-prune` reaches `Config`'s own refusal."""
-    with pytest.raises(PruningNotImplementedError):
-        cli.build_config(["-regtest", "-prune", "550"])
+def test_build_config_prune_nonzero_reaches_config_pruned() -> None:
+    """A nonzero `-prune` builds a `Config` with `pruned` set, any value alike.
+
+    `Config.pruned` is a flat bool: `cli.py`'s own `-prune` help text is
+    where the collapse of Core's own MiB target down to "zero or not" is
+    argued.
+    """
+    assert cli.build_config(["-regtest", "-prune", "550"]).pruned is True
+    assert cli.build_config(["-regtest", "-prune", "1"]).pruned is True
+
+
+def test_build_config_prune_zero_leaves_pruned_false() -> None:
+    """`-prune=0`, the default, builds an unpruned `Config`."""
+    assert cli.build_config(["-regtest", "-prune", "0"]).pruned is False
+    assert cli.build_config(["-regtest"]).pruned is False
 
 
 def test_build_config_blocksdir_reaches_config(tmp_path: Path) -> None:
@@ -648,16 +658,6 @@ def test_main_a_bad_argument_exits_one_with_a_message(
     """A `build_config` failure prints to stderr and exits `1`."""
     with pytest.raises(SystemExit) as excinfo:
         cli.main(["-datadir", str(tmp_path), "-conf", "nope.conf"])
-    assert excinfo.value.code == 1
-    assert "btclib-node:" in capsys.readouterr().err
-
-
-def test_main_pruning_not_implemented_also_exits_one(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """`PruningNotImplementedError` is caught the same way `ValueError` is."""
-    with pytest.raises(SystemExit) as excinfo:
-        cli.main(["-datadir", str(tmp_path), "-regtest", "-prune", "550"])
     assert excinfo.value.code == 1
     assert "btclib-node:" in capsys.readouterr().err
 

@@ -41,7 +41,6 @@ __all__ = [
     "MissingPrevoutError",
     "NodeShutdownTimeoutError",
     "PrevoutCountMismatchError",
-    "PruningNotImplementedError",
     "ReimportedMainProcessError",
     "StoreClosedError",
     "StoreCorruptionError",
@@ -315,29 +314,6 @@ class InvalidChainTypeError(TypeError):
         super().__init__(f"chain must be a Chain or str, not {type(chain).__name__}")
 
 
-class PruningNotImplementedError(NotImplementedError):
-    """`Config`'s own `pruned` was given `True`, and nothing here prunes.
-
-    A Bitcoin Core node that prunes drops `NODE_NETWORK` from the
-    services its own `version` advertises, keeping only
-    `NODE_NETWORK_LIMITED` -- a promise of at least the last
-    `MIN_BLOCKS_TO_KEEP` (288, two days), never of the whole chain --
-    and deletes a block file once it falls further behind the tip than
-    that (`src/init.cpp`, `src/validation.h`, at
-    bitcoin/bitcoin@05e49b342f). `BlockDB` here deletes nothing, and
-    `p2p/connection.py`'s `send_version` sets both bits unconditionally,
-    so honouring `pruned=True` today would mean serving a promise this
-    tree cannot keep. `pruned` stays a reserved name rather than a
-    silently-ignored one -- btclib-org/btclib-node#601 is where the rest
-    of it is built; until it lands, `Config` accepts only its default,
-    `False`.
-    """
-
-    def __init__(self) -> None:
-        super().__init__(
-            "pruning is not implemented (btclib-org/btclib-node#601); "
-            "Config(pruned=True) is refused rather than silently ignored"
-        )
 
 
 class PrevoutCountMismatchError(ValueError):

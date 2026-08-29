@@ -863,12 +863,21 @@ class Connection:
         # getcfcheckpt for every block of the chain. The filter index is
         # caught up before the node starts listening and kept up as
         # blocks connect, so the promise holds whenever this is sent.
-        services = (
-            ServiceFlags.NODE_NETWORK
-            | ServiceFlags.NODE_WITNESS
-            | ServiceFlags.NODE_COMPACT_FILTERS
-            | ServiceFlags.NODE_NETWORK_LIMITED
-        )
+        #
+        # NODE_NETWORK_LIMITED is set unconditionally and NODE_NETWORK
+        # only where this node is not pruned, matching Core's own
+        # `g_local_services` (`src/init.cpp`, at bitcoin/bitcoin@ca7162cde5):
+        # `NODE_NETWORK_LIMITED | NODE_WITNESS` from the start, gaining
+        # `NODE_NETWORK` only once `!chainman.m_blockman.IsPruneMode()`
+        # (`:2026-2028`). `Config.pruned` answers that check here, one
+        # fixed set of services for every connection rather than the
+        # per-chainstate assumeutxo case Core's own comment there also
+        # covers -- this tree has no counterpart to a background
+        # snapshot sync.
+        services = ServiceFlags.NODE_WITNESS | ServiceFlags.NODE_NETWORK_LIMITED
+        if not self.manager.node.config.pruned:
+            services |= ServiceFlags.NODE_NETWORK
+        services |= ServiceFlags.NODE_COMPACT_FILTERS
         # over the whole 64-bit field, as Core draws it: this nonce is
         # how a node recognises a connection to itself, so a narrower
         # draw is a narrower guarantee of that

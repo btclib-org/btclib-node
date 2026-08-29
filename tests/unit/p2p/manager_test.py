@@ -175,6 +175,7 @@ def a_manager() -> Iterator[AManagerFactory]:
                 connect_given=bool(connect),
                 addnode=addnode,
                 listen=listen,
+                pruned=False,
             ),
         )
         # a peer db that refuses to be asked by default: a test that

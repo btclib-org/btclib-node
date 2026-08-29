@@ -37,11 +37,30 @@ An operator's existing `bitcoin.conf` is read from the data directory
 without being told to, `-conf=<file>` naming another one; a
 `[section]` per chain, `main` included, plus one default section that
 applies to every chain, is the same shape Core's own reader uses, and
-the command line always wins over the file. `-prune` is accepted and
-refused: any nonzero value stops the node before it starts
-(`PruningNotImplementedError`,
-[#601](https://github.com/btclib-org/btclib-node/issues/601), storage
-reduction is not implemented).
+the command line always wins over the file. `-prune` is accepted, and
+`## Pruning` below is what any nonzero value actually does.
+
+## Pruning
+
+`-prune=<n>` with any nonzero `<n>` keeps only the last 288 blocks and
+their undo data (about two days) on disk, deleting the rest as the
+chain advances -- `getblockchaininfo`'s own `pruned` and `pruneheight`
+answer for what a caller wants to check programmatically, `pruneheight`
+being the first height still on disk. Core's own `-prune=<n>` MiB
+target and its `pruneblockchain` RPC are not read: this node honours
+only whether `<n>` is zero, and the retained depth is fixed rather than
+sized from disk usage
+([#705](https://github.com/btclib-org/btclib-node/issues/705)).
+
+A pruned node tells a peer so: `NODE_NETWORK_LIMITED` on its own
+`version`, `NODE_NETWORK` dropped, matching what Core's own pruned node
+advertises. `getrawtransaction`'s block-hash lookup and a peer's own
+`getdata` both answer for a block this node has since deleted the way
+Core's peer does -- `"Block not available (pruned data)"` over RPC, no
+answer at all, or the connection dropped outright, over the wire.
+`-connect`/`-addnode` still dial whatever is named; a pruned node
+serving another pruned node is between the two operators to arrange,
+same as it is for Core.
 
 ## Pointing it at a peer of your own
 

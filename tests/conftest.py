@@ -148,7 +148,7 @@ def rpc_node(tmp_path: Path) -> Iterator[Node]:
 
 
 @contextmanager
-def unstarted_node_context(tmp_path: Path) -> Iterator[Node]:
+def unstarted_node_context(tmp_path: Path, *, pruned: bool = False) -> Iterator[Node]:
     """Build and drive a node directly, never `start()`ed; close it on exit.
 
     `run`'s own teardown -- `peer_db.close()`, `chainstate.close()`,
@@ -177,6 +177,7 @@ def unstarted_node_context(tmp_path: Path) -> Iterator[Node]:
             allow_p2p=False,
             allow_rpc=False,
             debug=True,
+            pruned=pruned,
         )
     )
     try:
@@ -201,11 +202,13 @@ def regtest_node(tmp_path: Path) -> Iterator[Callable[[], Node]]:
     once more here regardless of what the test already did to it --
     `unstarted_node_context`'s own closes are all safe to repeat -- since
     most callers build exactly one node and never close it themselves.
+    `pruned` reaches `Config` unchanged, `False` by default, matching
+    every caller here before btclib-org/btclib-node#601.
     """
     with ExitStack() as stack:
 
-        def make() -> Node:
-            node = stack.enter_context(unstarted_node_context(tmp_path))
+        def make(*, pruned: bool = False) -> Node:
+            node = stack.enter_context(unstarted_node_context(tmp_path, pruned=pruned))
             node.status = NodeStatus.HeaderSynced
             return node
 
