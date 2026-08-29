@@ -224,6 +224,7 @@ dev = [
     { include-group = "mutation" },
     { include-group = "docs" },
     { include-group = "check" },
+    { include-group = "fuzz" },
 ]
 
 [tool.uv]

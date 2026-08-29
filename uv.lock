@@ -269,6 +269,7 @@ check = [
     { name = "twine" },
 ]
 dev = [
+    { name = "atheris", marker = "sys_platform == 'linux'" },
     { name = "bitcoin-core-rpc" },
     { name = "check-sdist" },
     { name = "check-wheel-contents" },
@@ -329,6 +330,7 @@ check = [
     { name = "twine" },
 ]
 dev = [
+    { name = "atheris", marker = "sys_platform == 'linux'", specifier = ">=3.1.0" },
     { name = "bitcoin-core-rpc", specifier = ">=2026.8.29" },
     { name = "check-sdist" },
     { name = "check-wheel-contents" },
