@@ -33,21 +33,42 @@ on the sentinel's own day.
 A seed is accepted where a declared entry point returns rather than
 refusing it, and `_parsed` treats the same family the harness
 suppresses as a refusal -- `fuzz/fuzz_reject.py`'s own docstring argues
-which it is.
+which it is. `_REFUSED`, not `None`, is that refusal's own marker:
+`fuzz.fuzz_process_message:dispatch` (issue #698) is a dispatch through
+a node rather than a parse, so `None` is its own ordinary, *accepted*
+return, and reusing it for "refused" would count that harness's every
+accepted seed as refused instead.
+
+`fuzz_process_message.py` is the one harness this module does import,
+because its own `ENTRY_POINTS` -- `dispatch`, module docstring there --
+is not reachable through the installed package the way the other three
+harnesses' own are, and needs no atheris to run: `_resolve` below loads
+it from `fuzz/` by path rather than through `importlib.import_module`,
+once, and keeps it, since `dispatch` reuses one `Node` across calls by
+design and a fresh import per call would rebuild it every time instead.
 """
 
 from __future__ import annotations
 
 import ast
-import importlib
+import importlib.util
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from btclib.exceptions import BTClibException
 
+if TYPE_CHECKING:
+    from types import ModuleType
+
 _FUZZ = Path(__file__).parent.parent / "fuzz"
 _CORPUS = _FUZZ / "corpus"
+
+# What `_parsed` returns for a spec that refused `data` -- never `None`,
+# module docstring above is where that is argued.
+_REFUSED = object()
+
+_loaded_fuzz_modules: dict[str, ModuleType] = {}
 
 
 def _harnesses() -> tuple[Path, ...]:
@@ -69,10 +90,52 @@ def _entry_points(path: Path) -> tuple[str, ...]:
     return tuple(spec for specs in declared for spec in specs)
 
 
+def _load_fuzz_module(module_name: str) -> ModuleType:
+    """Load a `fuzz.<name>` module from `fuzz/` by path, once, and keep it.
+
+    Not `importlib.import_module`: `fuzz/` carries no `__init__.py` and
+    is not on `sys.path` through the installed package the way
+    `btclib_node` is, so this is the one harness `_resolve` reaches by
+    path -- module docstring above is where that split, and why it is
+    kept rather than reloaded per call, are argued.
+    """
+    if module_name not in _loaded_fuzz_modules:
+        path = (_FUZZ.parent / Path(*module_name.split("."))).with_suffix(".py")
+        module_spec = importlib.util.spec_from_file_location(module_name, path)
+        if module_spec is None or module_spec.loader is None:
+            err_msg = f"cannot load {module_name} from {path}"
+            raise ImportError(err_msg)
+        module = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(module)
+        _loaded_fuzz_modules[module_name] = module
+    return _loaded_fuzz_modules[module_name]
+
+
+def test_a_fuzz_module_spec_that_cannot_be_built_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The safety branch `_load_fuzz_module` carries for a spec it cannot build.
+
+    Never true through `_resolve`'s own module names: every one of them
+    is forced to a `.py` suffix before `spec_from_file_location` sees it,
+    and that function always resolves a loader for one. Driven directly
+    instead, `spec_from_file_location` patched to answer the way it does
+    for a suffix it cannot handle -- `None` -- which is the one case
+    `_load_fuzz_module` refuses rather than executing.
+    """
+    monkeypatch.setattr(importlib.util, "spec_from_file_location", lambda *a, **k: None)
+    with pytest.raises(ImportError, match="cannot load"):
+        _load_fuzz_module("fuzz.unreachable_698")
+
+
 def _resolve(spec: str) -> Any:
     """Import what "module:Qual.name" names, against the installed package."""
     module_name, _, qualname = spec.partition(":")
-    obj: Any = importlib.import_module(module_name)
+    obj: Any = (
+        _load_fuzz_module(module_name)
+        if module_name.startswith("fuzz.")
+        else importlib.import_module(module_name)
+    )
     for part in qualname.split("."):
         obj = getattr(obj, part)
     return obj
@@ -84,7 +147,7 @@ def _seeds(harness: str) -> tuple[Path, ...]:
 
 
 def _parsed(spec: str, data: bytes) -> Any:
-    """Return what `spec` parses `data` into, or None where it refuses.
+    """Return what `spec` parses `data` into, or `_REFUSED` where it refuses.
 
     The family is the one the harness suppresses, so what counts as a
     refusal here is what counts as one there.
@@ -92,7 +155,7 @@ def _parsed(spec: str, data: bytes) -> Any:
     try:
         return _resolve(spec)(data)
     except BTClibException:
-        return None
+        return _REFUSED
 
 
 _HARNESSES = _harnesses()
@@ -152,28 +215,64 @@ def test_a_seed_has_no_trailing_newline(seed: Path) -> None:
 
 @pytest.mark.parametrize(("harness", "seed"), _SEEDS, ids=_SEED_IDS)
 def test_a_seed_parses_and_reserializes_to_itself(harness: str, seed: Path) -> None:
-    """A declared entry point accepts the seed and writes it back out.
+    """A declared entry point accepts the seed, reserializing it where it can.
 
-    Both halves at once, the second being what says the first accepted
-    the octets it was given rather than a prefix of them.
+    Both halves at once for a parser-style entry point, the second
+    being what says the first accepted the octets it was given rather
+    than a prefix of them. An entry point that dispatches rather than
+    parses -- `None` on acceptance, `_REFUSED` module-level comment
+    above is where that is argued -- has nothing to reserialize and is
+    held to the first half alone.
     """
     data = seed.read_bytes()
     specs = _entry_points(_FUZZ / f"{harness}.py")
     accepted = {
-        spec: parsed for spec in specs if (parsed := _parsed(spec, data)) is not None
+        spec: parsed
+        for spec in specs
+        if (parsed := _parsed(spec, data)) is not _REFUSED
     }
     assert accepted, f"{seed} is refused by every entry point {harness} declares"
-    mismatched = [spec for spec, obj in accepted.items() if obj.serialize() != data]
+    mismatched = [
+        spec
+        for spec, obj in accepted.items()
+        if obj is not None and obj.serialize() != data
+    ]
     assert not mismatched, f"{seed} does not reserialize to itself under {mismatched}"
+
+
+def test_a_callback_level_refusal_of_fuzz_process_message_is_not_accepted() -> None:
+    """`fuzz.fuzz_process_message:dispatch` tells a refusal from acceptance.
+
+    `p2p.callbacks.ping` calls `Ping.parse`, which raises
+    `BTClibValueError` for a nonce shorter than the eight bytes the wire
+    format carries -- a refusal `handle_p2p`'s own `except` logs and does
+    not discourage the peer for (`main.handle_p2p`, `p2p/main.py`), which
+    `dispatch` used to answer `None` for indistinguishably from genuine
+    acceptance (issue #698's own review, round 1, finding 2), the same
+    `None` a well-formed ping is accepted with. `module._TYPES.index`
+    finds where `ping` sits in the sorted selector rather than the index
+    being hardcoded here, since a command added or removed from
+    `p2p.callbacks` would otherwise silently point this test at a
+    different command instead of failing loudly.
+    """
+    spec = "fuzz.fuzz_process_message:dispatch"
+    module = _load_fuzz_module("fuzz.fuzz_process_message")
+    ping_selector = module._TYPES.index("ping")
+    refused = bytes([ping_selector]) + b"\x01\x02"
+    accepted = bytes([ping_selector]) + b"\x00" * 8
+    assert _parsed(spec, refused) is _REFUSED
+    assert _parsed(spec, accepted) is None
 
 
 def test_a_malformed_payload_is_refused() -> None:
     """The control on the two tests above: acceptance can fail.
 
-    An empty payload is what every entry point declared here refuses,
-    `btclib.var_int.parse` having nothing to read, so this says the
-    tests above measure acceptance rather than reporting it.
+    An empty payload is what every entry point declared here refuses --
+    `btclib.var_int.parse` having nothing to read for the three parsers,
+    and `fuzz.fuzz_process_message:dispatch` (issue #698) having no
+    selector byte to pick a message type with -- so this says the tests
+    above measure acceptance rather than reporting it.
     """
     specs = [spec for path in _HARNESSES for spec in _entry_points(path)]
     assert specs
-    assert all(_parsed(spec, b"") is None for spec in specs)
+    assert all(_parsed(spec, b"") is _REFUSED for spec in specs)
