@@ -67,96 +67,90 @@ class ChainstateInconsistencyError(RuntimeError):
     invariant this violates -- a block marked downloaded that
     `block_db` does not hold, a reverse patch `set_status` already
     trusts that is not on disk, a UTXO `apply_rev_block` is asked to
-    remove that this node's own earlier `add_block` did not just add, a
-    stored `utxo-` record `add_block`'s own prevout resolution or
-    `UtxoIndex.get_coin` reads back that does not parse. Those
-    last two differ from the other three in shape -- the key is found,
-    so nothing upstream misnamed it, only the bytes underneath are
-    wrong -- but not in kind: the same test that separates this class
-    from `InvalidBlockInputError` below, which shares two of its
-    messages ("prevout not found", "prevout already spent in this
-    batch") but not the invariant, applies here too. `apply_rev_block`
-    only ever inverts a reverse patch this node wrote for a block it
-    already validated and connected, and a `utxo-` key is one only this
-    node's own `finalize` ever writes, whichever of the two reads it,
-    so a failure at any of these is this tree's own bookkeeping
-    disagreeing with itself. A peer's bad data, or a submitted
-    transaction's own content, is refused earlier and differently
-    (`BTClibException`, a `None` handled in place, `InvalidBlockInputError`,
-    or `MissingPrevoutError`); reaching here is never that.
+    remove that this node's own earlier `add_block` did not just add.
+    `apply_rev_block` only ever inverts a reverse patch this node
+    wrote for a block it already validated and connected, so a
+    failure there is this tree's own bookkeeping disagreeing with
+    itself, the same test that separates this class from
+    `InvalidBlockInputError` below, which shares two of its messages
+    ("prevout not found", "prevout already spent in this batch") but
+    not the invariant. A peer's bad data, or a submitted transaction's
+    own content, is refused earlier and differently
+    (`BTClibException`, a `None` handled in place,
+    `InvalidBlockInputError`, or `MissingPrevoutError`); reaching here
+    is never that.
 
-    Core's own read path answers a fault of this shape by treating the
-    record as absent, but it is not answering *this* fault, and the
-    difference between the two trees is where the detection sits rather
-    than a choice either made. `CDBWrapper::Read`
-    (`src/dbwrapper.h:220-237`, at bitcoin/bitcoin@05e49b342f) catches a
-    deserialize failure inside its own `try` and returns `false`, and
-    `CCoinsViewDB::GetCoin` (`src/txdb.cpp:88-95`) turns that `false`
-    into `std::nullopt` -- the coin reads back as absent, never as an
-    error. Core's own `Read` never actually sees storage-layer
-    corruption there: `CDBWrapper` reads with `verify_checksums = true`
-    (`src/dbwrapper.cpp:248`), and a checksum mismatch reaches
+    Two call sites used to belong on the list above: a stored `utxo-`
+    record `UtxoIndex.add_block`'s own prevout resolution or
+    `UtxoIndex.get_coin` reads back that `Coin.parse` cannot read.
+    Neither raises this class any more (btclib-org/btclib-node#650),
+    and the reasoning is Core's own. `CDBWrapper::Read`
+    (`src/dbwrapper.h:220-237`, at bitcoin/bitcoin@ca7162cde5) catches
+    a deserialize failure inside its own `try` and returns `false`,
+    and `CCoinsViewDB::GetCoin` (`src/txdb.cpp:88-95`) turns that
+    `false` into `std::nullopt` -- the coin reads back as absent,
+    never as an error. `CDBWrapper` reads with `verify_checksums =
+    true` (`src/dbwrapper.cpp:248`), and a checksum mismatch reaches
     `HandleError` (`src/dbwrapper.cpp:46-53`), which throws
     `dbwrapper_error` and ends the process, before `ReadImpl`
     (`src/dbwrapper.cpp:346-357`) ever returns and `Read`'s own `try`
-    runs at all -- the deserialize failure that `try` actually catches
-    is a format mismatch on an intact, checksummed read, not bit rot.
-    `db.py`'s own store now carries an equivalent guard beneath it -- a
-    per-block checksum, verified on every read, the same mechanism
-    `verify_checksums = true` gives Core (btclib-org/btclib-node#641) --
-    so a genuinely corrupted `utxo-` record is caught there, as
-    `StoreCorruptionError`, before either `Coin.parse` call above ever
-    runs on it. What that leaves unsettled is what a `Coin.parse`
-    failure means on a record the guard above already passed as intact,
-    which is not answered here and is tracked at
-    btclib-org/btclib-node#650. Answering Core's own way -- silently
-    absent -- would fold that node-owned fault into an ordinary "prevout
-    missing" refusal, indistinguishable from a legitimate one and
-    invisible to whoever operates this node; raising instead puts a name
-    in the log to grep for.
+    runs at all -- so the deserialize failure that `try` actually
+    catches is a format mismatch on an intact, checksummed read,
+    never bit rot. `db.py`'s own store now carries the same
+    separation: RocksDB verifies an equivalent per-block checksum on
+    every read (btclib-org/btclib-node#641), so a genuinely corrupted
+    `utxo-` record is caught there, as `StoreCorruptionError`, before
+    either `Coin.parse` call in `UtxoIndex` ever runs on it -- and
+    what reaches `Coin.parse` is therefore exactly the case Core
+    answers absent to. `UtxoIndex.get_coin` now returns `None` for
+    it, and `UtxoIndex.add_block` folds it into the same
+    `InvalidBlockInputError` ("prevout not found") a genuinely
+    missing prevout already raises, matching `GetCoin`'s own
+    `std::nullopt` rather than raising a class of this tree's own
+    that Core has no equivalent of at that call.
 
-    What Core's node does *after* its own storage layer throws is not
-    settled here, and this class does not rest on it: `rpc/server.cpp`'s
-    `JSONRPCExec` and `net_processing.cpp`'s own per-message dispatch
-    each catch `std::exception`, which `dbwrapper_error` is, so those
-    two paths may absorb it where Core's `AbortNode`/`FatalError`
-    machinery and its own "Fatal LevelDB error" wording say the intent
-    is to stop. Settling that needs more of Core's history than either
-    of this tree's two call sites depends on: what they rest on is the
-    paragraph above, which is measured -- Core detects at the storage
-    layer, and this tree's own store now does too
-    (btclib-org/btclib-node#641), so what a `Coin.parse` failure at
-    either of these two sites still means is btclib-org/btclib-node#650's
-    own question, not this class's. (btclib-org/btclib-node#636)
+    What that answer costs is real, and Core pays it too: a coin this
+    node wrote itself, that a bug in this node's own serializer alone
+    can make unparsable on a checksum-clean read, is from here
+    indistinguishable from a coin that never existed, and a later,
+    genuinely valid block spending it is rejected. `Consensus::CheckTxInputs`'s
+    own `HaveInputs` check (`src/consensus/tx_verify.cpp:169-174`, at
+    bitcoin/bitcoin@ca7162cde5) answers a missing coin
+    `TX_MISSING_INPUTS`, `"bad-txns-inputs-missingorspent"`, and
+    `ConnectBlock` (`src/validation.cpp:2543-2547`) turns that
+    failure into `BlockValidationResult::BLOCK_CONSENSUS` -- an
+    ordinary consensus rejection, on the wire indistinguishable from
+    a block that spent a coin that genuinely never existed. Core
+    carries this exposure knowingly, not by oversight: `CDBWrapper::Read`'s
+    own `try` has no way to tell "the checksum passed but the bytes
+    are not a `Coin`" apart from "nothing is stored here" before it
+    ever answers `false` for either, so a local deserialize bug
+    surfacing as a rejected valid block is the accepted cost of the
+    one read path that keeps every other cause of "missing" simple.
+    This tree now pays the identical cost, for the identical reason:
+    matching Core's behaviour end to end rather than only the half of
+    it that reads comfortably (CLAUDE.md's own *Following Bitcoin
+    Core* argues the same trade for `CDBWrapper::Read` in general).
 
     `message` and not a structured payload per call site: what is
     inconsistent (a hash, a count, a status) differs by call site, and
     every one of them is read exactly once, in whatever it raises to.
 
     Unlike most of this file's classes, this one does not always end
-    the node: `verify_mempool_acceptance` (`main.py`) raises it too, and
-    every caller that reaches it already answers an exception outside
-    `MissingPrevoutError` and `BTClibValueError` its own way, by a
-    design none of them had to change for this. `update_chain`'s own
-    reorg reconciliation lets it propagate and end the node, the same as
-    every other site above -- reasonably so: it fires there mid-way
-    through applying a fork to this node's own already-committed
-    chainstate, and continuing to run this node once an index has been
-    found disagreeing with its own data mid-mutation is not safe.
-    Refusing one mempool entrant carries none of that risk -- nothing
-    downstream of `verify_mempool_acceptance` is mid-mutation of anything
-    -- which is what lets its own three callers answer this without
-    ending the node. The p2p `tx` handler (`p2p/callbacks.py`)
-    lets it propagate into `handle_p2p`'s own generic catch, which stops
-    that one connection without discouraging the peer,
-    `isinstance(e, BTClibException)` being false for it.
-    `send_raw_transaction` (`rpc/callbacks.py`) has no catch of its own
-    for it, so it propagates further, into `handle_rpc`'s own generic
-    catch, answered to the caller as an internal-error verdict rather
-    than a refusal of the transaction; `test_mempool_accept`'s own
-    per-entry loop already carries that same catch-all itself, one
-    layer closer, answering the one entry `"Unknown error"` rather than
-    ending the batch. (btclib-org/btclib-node#631)
+    the node: `update_chain`'s own reorg reconciliation lets it
+    propagate and end the node -- reasonably so, since every raise
+    above fires mid-way through applying a fork to this node's own
+    already-committed chainstate, and continuing to run this node
+    once an index has been found disagreeing with its own data
+    mid-mutation is not safe. The p2p filter callbacks (`get_cfilters`,
+    `get_cfheaders`, `get_cfcheckpt` in `p2p/callbacks.py`) raise it
+    too, over a filter or a filter header missing for a block already
+    on the active chain, and carry none of that risk -- nothing
+    downstream of answering one peer's BIP157 request is mid-mutation
+    of anything. `handle_p2p`'s own generic catch is what lets them
+    answer this without ending the node: it stops that one connection
+    without discouraging the peer, `isinstance(e, BTClibException)`
+    being false for it.
     """
 
     def __init__(self, message: str) -> None:
@@ -262,19 +256,22 @@ class StoreCorruptionError(RuntimeError):
     same reason: whichever caller this reaches, continuing to run past
     a store that has just reported disagreeing with its own bytes is
     not safe, and nothing here narrows that per call site the way
-    `ChainstateInconsistencyError`'s own three exceptions from ending
-    the node do.
+    `ChainstateInconsistencyError`'s own call sites, which sometimes
+    let it propagate without ending the node, do.
 
     `db.py`'s own module docstring is where the checksum this class
     detects is argued against Core's `verify_checksums = true`
-    (btclib-org/btclib-node#641, closing btclib-org/btclib-node#637);
-    what a chainstate caller does with this once it is raised --
-    whether it is ever mapped onto `ChainstateInconsistencyError` rather
-    than left to propagate as itself -- is unsettled and tracked at
-    btclib-org/btclib-node#650, the same issue
-    `ChainstateInconsistencyError`'s own docstring points at for the
-    related question of what a `Coin.parse` failure means once this
-    guard has already passed a record as intact.
+    (btclib-org/btclib-node#641, closing btclib-org/btclib-node#637).
+    Neither of `UtxoIndex`'s two chainstate callers maps this onto
+    `ChainstateInconsistencyError`: `add_block` and `get_coin` both
+    call `self.db.get` unguarded, so a genuine `StoreCorruptionError`
+    there propagates as itself to whatever each caller's own caller
+    does with an exception outside its own -- `update_chain`'s trial
+    loop for `add_block`, `verify_mempool_acceptance`'s own callers
+    for `get_coin`. `ChainstateInconsistencyError`'s own docstring is
+    where the distinct, now-resolved question sits: what a
+    `Coin.parse` failure means once this guard has already passed a
+    record as intact (btclib-org/btclib-node#650).
     """
 
     def __init__(self, message: str) -> None:

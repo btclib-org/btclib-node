@@ -193,6 +193,34 @@ class UtxoIndex:
         )
         self.removed_utxos.discard(out_point_bytes)
 
+    def _stored_prevout(self, prevout_bytes: bytes) -> Coin | None:
+        """Return the `Coin` a stored `utxo-` record still resolves to.
+
+        `None` both for no such key and for a key whose bytes
+        `Coin.parse` cannot read: a `utxo-` key is one only this
+        node's own `finalize` ever writes, so a parse failure here is
+        over this node's own stored bytes, never over a caller's
+        content -- but RocksDB's own per-block checksum
+        (btclib-org/btclib-node#641) has already turned a genuinely
+        corrupted record into `StoreCorruptionError` before this call
+        is ever reached, so what a parse failure means here is a
+        checksum-clean record that still does not deserialize:
+        exactly the fault `CDBWrapper::Read`/`CCoinsViewDB::GetCoin`
+        answer absent to (`src/dbwrapper.h`, `src/txdb.cpp`, at
+        bitcoin/bitcoin@ca7162cde5). Matching that answer with `None`
+        rather than raising `ChainstateInconsistencyError` is
+        btclib-org/btclib-node#650's own decision, argued in that
+        class's own docstring; `add_block` and `get_coin`, this
+        method's own two callers, are where it used to be raised.
+        """
+        prevout_data = self.db.get(b"utxo-" + prevout_bytes)
+        if prevout_data is None:
+            return None
+        try:
+            return Coin.parse(prevout_data, check_validity=False)
+        except BTClibValueError:
+            return None
+
     def should_flush(self) -> bool:
         """Whether the staged size has reached `_FLUSH_BOUND`.
 
@@ -286,35 +314,17 @@ class UtxoIndex:
                     coin = self._pop(prevout_bytes)
                     prev_coins.append(coin)
                 else:
-                    prevout_data = self.db.get(b"utxo-" + prevout_bytes)
-                    if prevout_data:
-                        # prevout_data is present under a key only this
-                        # node's own finalize() ever writes -- the
-                        # candidate block never supplied these bytes, so
-                        # a Coin.parse this raises on is this node's own
-                        # stored record being corrupted, not the block's
-                        # content, unlike every other raise in this loop
-                        # (btclib-org/btclib-node#620). Raising where
-                        # CDBWrapper::Read/CCoinsViewDB::GetCoin answer
-                        # absent is not a departure from Core: LevelDB's
-                        # own checksum makes corruption fatal before
-                        # that deserialize is ever reached, so absent is
-                        # Core's answer to a format mismatch on an
-                        # intact record and never to this one. What
-                        # differs between the two trees is where the
-                        # fault is caught, not what either chose;
-                        # ChainstateInconsistencyError's own docstring
-                        # argues it (btclib-org/btclib-node#636)
-                        try:
-                            coin = Coin.parse(prevout_data, check_validity=False)
-                        except BTClibValueError as exc:
-                            err_msg = "stored utxo- record failed to parse"
-                            raise ChainstateInconsistencyError(err_msg) from exc
-                        prev_coins.append(coin)
-                        self._mark_removed(prevout_bytes)
-                    else:
+                    # _stored_prevout's own docstring is where
+                    # answering "prevout not found" for a
+                    # checksum-clean record Coin.parse still cannot
+                    # read is argued (btclib-org/btclib-node#650).
+                    resolved = self._stored_prevout(prevout_bytes)
+                    if resolved is None:
                         err_msg = "prevout not found"
                         raise InvalidBlockInputError(err_msg)
+                    coin = resolved
+                    prev_coins.append(coin)
+                    self._mark_removed(prevout_bytes)
 
                 removed.append((tx_in.prev_out, coin))
 
@@ -419,29 +429,10 @@ class UtxoIndex:
             return self.updated_utxo_set[prevout_bytes]
         if prevout_bytes in self.removed_utxos:
             return None
-        coin_data = self.db.get(b"utxo-" + prevout_bytes)
-        if coin_data is None:
-            return None
-        # coin_data is present under a key only this node's own finalize
-        # ever writes -- no caller here supplied these bytes, so a
-        # Coin.parse failure is this node's own stored record being
-        # corrupted, not a candidate block's or a mempool transaction's
-        # content, the same distinction UtxoIndex.add_block's own read
-        # of the same kind of record draws (btclib-org/btclib-node#620,
-        # btclib-org/btclib-node#631). Raising where
-        # CDBWrapper::Read/CCoinsViewDB::GetCoin answer absent is not a
-        # departure from Core: LevelDB's own checksum makes corruption
-        # fatal before that deserialize is ever reached, so absent is
-        # Core's answer to a format mismatch on an intact record and
-        # never to this one. What differs between the two trees is
-        # where the fault is caught, not what either chose;
-        # ChainstateInconsistencyError's own docstring argues it
-        # (btclib-org/btclib-node#636)
-        try:
-            return Coin.parse(coin_data, check_validity=False)
-        except BTClibValueError as exc:
-            err_msg = "stored utxo- record failed to parse"
-            raise ChainstateInconsistencyError(err_msg) from exc
+        # _stored_prevout's own docstring is where answering `None`
+        # for a checksum-clean record `Coin.parse` still cannot read
+        # is argued (btclib-org/btclib-node#650).
+        return self._stored_prevout(prevout_bytes)
 
     def finalize(self, wb: KeyValueStore | None = None) -> None:
         """Write every staged change into `wb`, or into `self.db` if none.

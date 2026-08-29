@@ -446,11 +446,17 @@ def _record_rejection(node: Node, failed_hash: bytes, exc: BaseException) -> Non
 # storage or bookkeeping, not a verdict on the candidate: db.py's
 # StoreClosedError and StoreCorruptionError, whatever RocksDB or the
 # filesystem raises out of a KeyValueStore read or write, and
-# ChainstateInconsistencyError -- and
-# that holds even where the call that raised it also raises one of the
-# three above for a different reason, utxo_index.add_block's own
-# self.db.get() being exactly that call. update_chain's own except below
-# is what tells the two apart, by type rather than by call site, and
+# ChainstateInconsistencyError -- classification is by exception type,
+# not by call site, which utxo_index.add_block's own self.db.get()
+# still shows even though what it illustrates changed
+# (btclib-org/btclib-node#650): that one read can raise
+# StoreCorruptionError (storage, not a verdict) or feed a
+# checksum-clean record Coin.parse still cannot parse into
+# InvalidBlockInputError (one of the three above, matching
+# CDBWrapper::Read/CCoinsViewDB::GetCoin's own "absent" rather than
+# raising ChainstateInconsistencyError the way it used to before the
+# store carried its own checksum). update_chain's own except below is
+# what tells the two apart, by type rather than by call site, and
 # never invalidates a block for the second kind. Core keeps the same
 # distinction at the equivalent point of ConnectBlock (src/validation.cpp,
 # at bitcoin/bitcoin@b91d983f66): every ordinary CheckBlock failure
@@ -697,12 +703,14 @@ def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
         # blocks' own worth of staging created or already spent is real
         # before UtxoIndex.finalize ever writes it out, staying staged
         # across more than one block being what btclib-org/btclib-node#586
-        # is about. A stored utxo- record this reads back that fails to
-        # parse is this node's own fault, not tx's -- get_coin's own
-        # store fallback raises ChainstateInconsistencyError for that,
-        # the same distinction UtxoIndex.add_block's own read of the
-        # same kind of record draws (btclib-org/btclib-node#620,
-        # btclib-org/btclib-node#631, btclib-org/btclib-node#636).
+        # is about. A stored utxo- record this reads back that fails
+        # to parse answers None here too, the same as a genuinely
+        # missing one: get_coin's own store fallback matches
+        # CDBWrapper::Read/CCoinsViewDB::GetCoin's own "absent" rather
+        # than raising, RocksDB's own checksum (#641) being what now
+        # catches a genuinely corrupted record before this call is
+        # ever reached (btclib-org/btclib-node#620,
+        # btclib-org/btclib-node#631, btclib-org/btclib-node#650).
         coin = utxo_index.get_coin(prevout_bytes)
         if coin:
             coins_from_utxo_set.append(coin)

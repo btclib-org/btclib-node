@@ -1471,6 +1471,41 @@ where this file was written rather than where anything was tagged.
   rule, and a batch sharing its connection with the call after it --
   none of which any test below `tests/unit/rpc/` reached before this.
 
+### A Coin.parse failure on an intact record now answers absent (closes #650)
+
+- **`UtxoIndex.add_block` and `UtxoIndex.get_coin` no longer raise
+  `ChainstateInconsistencyError` when a stored `utxo-` record's own
+  bytes pass RocksDB's own checksum (btclib-org/btclib-node#641) but
+  `Coin.parse` still cannot read them.** `add_block` folds it into the
+  same `InvalidBlockInputError` ("prevout not found") a genuinely
+  missing prevout already raises; `get_coin` returns `None`. Both
+  match `CDBWrapper::Read`/`CCoinsViewDB::GetCoin`'s own "absent" for
+  a checksum-clean record that does not deserialize, read at
+  `bitcoin/bitcoin@ca7162cde5` -- the case #641 made reachable by
+  moving genuine corruption to a separate, earlier guard
+  (`StoreCorruptionError`), which is still raised and still not
+  mapped onto this class.
+- **The cost is accepted, not hidden**: a coin this node wrote itself,
+  that a bug in this node's own serializer alone can make unparsable
+  on a checksum-clean read, is answered as absent, so a later,
+  genuinely valid block spending it is rejected
+  (`bad-txns-inputs-missingorspent`, `BLOCK_CONSENSUS`) -- Core pays
+  the identical price for the identical reason, argued in
+  `ChainstateInconsistencyError`'s own docstring.
+- **`ChainstateInconsistencyError`'s and `StoreCorruptionError`'s own
+  docstrings drop the two now-false raise sites and the "unsettled"
+  framing**, and `CLAUDE.md`'s *Following Bitcoin Core* paragraph is
+  rewritten to describe this tree's checksum as landed rather than as
+  a gap still open; `RELEASE_NOTES.md`'s own #631 entry now scopes
+  its "this node's own fault" answer to what the checksum catches, and
+  says beside it that a checksum-clean record `Coin.parse` cannot read
+  is answered as absent, with nothing logged.
+- **The two tests from #620 and #631 assert the decided behaviour**:
+  a real, on-disk truncated `utxo-` record (not a monkeypatch) now
+  rejects the candidate block as `InvalidBlockInputError` and answers
+  a mempool spend of it `MissingPrevoutError`, in place of the
+  `ChainstateInconsistencyError` both used to assert.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
