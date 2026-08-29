@@ -36,9 +36,16 @@ if TYPE_CHECKING:
 BODY = b'{"jsonrpc":"2.0","id":"x","method":"getbestblockhash"}'
 
 
-def request(headers: bytes = b"", body: bytes = BODY) -> bytes:
-    """Build a raw HTTP request line and headers, followed by `body`."""
-    return b"POST / HTTP/1.1\r\nHost: x\r\n" + headers + b"\r\n" + body
+def request(
+    headers: bytes = b"", body: bytes = BODY, *, version: bytes = b"HTTP/1.1"
+) -> bytes:
+    """Build a raw HTTP request line and headers, followed by `body`.
+
+    `version` names the request line's own trailing token -- `HTTP/1.1`
+    by default, which is every existing caller's own request; a caller
+    of `_wants_keep_alive`'s HTTP/1.0 half passes `b"HTTP/1.0"` instead.
+    """
+    return b"POST / " + version + b"\r\nHost: x\r\n" + headers + b"\r\n" + body
 
 
 def with_length(body: bytes = BODY) -> bytes:
@@ -100,6 +107,17 @@ def drive(
                 await task
             outcome = "waiting"
         sender.cancel()
+        # A parse error's own reply is scheduled as a task of its own
+        # now (`RpcConnection.run`'s own comment on its `ValueError`
+        # branch), so it may not have run yet the instant `task` above
+        # resolves -- everything else `run` refuses through closes
+        # `ours` synchronously, in its own frame, and `asyncio.sleep(0)`
+        # costs nothing but a loop turn, so this never waits any real
+        # time for those, only enough turns for a scheduled task to run.
+        for _ in range(50):
+            if ours.fileno() == -1:
+                break
+            await asyncio.sleep(0)
         closed = ours.fileno() == -1
         if theirs.fileno() != -1:
             theirs.close()
@@ -143,17 +161,28 @@ def test_a_body_split_across_reads_is_reassembled() -> None:
 def test_a_request_with_no_body_is_refused() -> None:
     """A request with no Content-Length and no body is refused, not dispatched.
 
-    No Content-Length is a length of zero, and `b""` is not JSON.
+    No Content-Length is a length of zero, and `b""` is not JSON. Sends
+    its own `Connection: close`, so the refusal's own reply closing is
+    what this asserts rather than an idle wait for a next request this
+    test never sends -- the parse-error branch honours `Connection` the
+    same as any other reply now (issue #640, `test_several_malformed_
+    bodies_over_one_kept_alive_connection_are_each_answered` below is
+    the keep-alive half of this).
     """
-    _, messages, closed = drive([request()])
+    _, messages, closed = drive([request(b"Connection: close\r\n")])
     assert not messages
     assert closed
 
 
 def test_a_body_that_is_not_json_is_refused() -> None:
-    """A body that fails to parse as JSON is refused, and the socket closed."""
+    """A body that fails to parse as JSON is refused, and the socket closed.
+
+    `Connection: close` of its own, for the same reason
+    `test_a_request_with_no_body_is_refused` above sends one.
+    """
     body = b"not json"
-    _, messages, closed = drive([with_length(body)])
+    headers = b"Connection: close\r\nContent-Length: %d\r\n" % len(body)
+    _, messages, closed = drive([request(headers, body)])
     assert not messages
     assert closed
 
@@ -231,7 +260,10 @@ def test_the_response_is_crlf_framed_and_the_socket_closed() -> None:
         theirs.setblocking(False)
         loop = asyncio.get_running_loop()
         conn = RpcConnection(
-            loop, ours, cast("RpcManager", SimpleNamespace(messages=[])), 0
+            loop,
+            ours,
+            cast("RpcManager", SimpleNamespace(messages=[], connections={})),
+            0,
         )
         await conn.async_send([{"result": b"\xff", "id": "x"}])
         data = await loop.sock_recv(theirs, 4096)
@@ -256,7 +288,10 @@ def test_a_response_of_several_stays_a_list() -> None:
         theirs.setblocking(False)
         loop = asyncio.get_running_loop()
         conn = RpcConnection(
-            loop, ours, cast("RpcManager", SimpleNamespace(messages=[])), 0
+            loop,
+            ours,
+            cast("RpcManager", SimpleNamespace(messages=[], connections={})),
+            0,
         )
         await conn.async_send([{"id": "a"}, {"id": "b"}])
         data = await loop.sock_recv(theirs, 4096)
@@ -265,6 +300,238 @@ def test_a_response_of_several_stays_a_list() -> None:
 
     body = asyncio.run(main()).partition(b"\r\n\r\n")[2]
     assert json.loads(body) == [{"id": "a"}, {"id": "b"}]
+
+
+def test_a_kept_alive_connection_reads_a_second_request_off_the_same_socket() -> None:
+    """A reply that keeps the connection open lets a second request through.
+
+    Neither request here carries a `Connection` header, so both default
+    to HTTP/1.1's own keep-alive (issue #640): `async_send` re-adds this
+    connection to `manager.connections` and calls `run` again rather
+    than closing, and the second request queued this way is
+    `manager.messages`'s second entry, off the very socket the first
+    arrived on. The reply itself carries no `Connection` header of its
+    own -- HTTP/1.1's default needs none.
+    """
+
+    async def main() -> tuple[list[Any], bool, bytes]:
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        theirs.setblocking(False)
+        loop = asyncio.get_running_loop()
+        manager = SimpleNamespace(messages=[], connections={})
+        conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
+
+        await loop.sock_sendall(theirs, with_length())
+        await conn.run()
+        assert conn.keep_alive
+
+        await loop.sock_sendall(theirs, with_length())
+        await conn.async_send([{"id": "x", "result": None}])
+        head = (await loop.sock_recv(theirs, 4096)).partition(b"\r\n\r\n")[0]
+
+        # kept alive by construction -- both requests default to it, and
+        # the assertions below are what actually pin that -- so unlike
+        # `drive`'s own shared helper this has nothing conditional left
+        # to check before closing it itself
+        closed = ours.fileno() == -1
+        theirs.close()
+        ours.close()
+        return manager.messages, closed, head
+
+    messages, closed, head = asyncio.run(main())
+    assert len(messages) == 2
+    assert not closed
+    assert b"Connection:" not in head
+
+
+def test_a_connection_asking_for_close_is_closed_after_its_reply() -> None:
+    """`Connection: close` is honoured: one reply, then the socket closes.
+
+    The reply says so too, matching Core's own explicit `Connection:
+    close` header (`HTTPRequest::WriteReply`, at
+    bitcoin/bitcoin@ca7162cde5) rather than a close `http.client` -- and
+    so `bitcoin_core_rpc.SessionTransport` -- has no way to tell from a
+    still-open connection otherwise (issue #640).
+    """
+
+    async def main() -> tuple[bool, bytes]:
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        theirs.setblocking(False)
+        loop = asyncio.get_running_loop()
+        manager = SimpleNamespace(messages=[], connections={0: None})
+        conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
+
+        headers = b"Connection: close\r\nContent-Length: %d\r\n" % len(BODY)
+        await loop.sock_sendall(theirs, request(headers))
+        await conn.run()
+        assert not conn.keep_alive
+
+        await conn.async_send([{"id": "x", "result": None}])
+        head = (await loop.sock_recv(theirs, 4096)).partition(b"\r\n\r\n")[0]
+
+        # async_send closes `ours` itself, off the `Connection: close`
+        # just read, so there is nothing of this side left to close
+        closed = ours.fileno() == -1
+        theirs.close()
+        return closed, head
+
+    closed, head = asyncio.run(main())
+    assert closed
+    assert b"\r\nConnection: close\r\n" in b"\r\n" + head
+
+
+def test_a_kept_alive_connection_idles_out_once_request_timeout_elapses() -> None:
+    """A kept-alive connection with no next request is dropped once idle.
+
+    Matches Core's own idle-connection disconnect
+    (`HTTPServer::DisconnectClients`, `REQUEST_TIMEOUT`'s own docstring
+    above has the citation and the reasoning for reusing that same
+    constant here). `request_timeout` is lowered, well below
+    `REQUEST_TIMEOUT`'s own real, Core-matching default, so this test
+    does not itself wait thirty seconds for it.
+    """
+
+    async def main() -> tuple[bool, bool]:
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        theirs.setblocking(False)
+        loop = asyncio.get_running_loop()
+        manager = SimpleNamespace(messages=[], connections={})
+        conn = RpcConnection(
+            loop, ours, cast("RpcManager", manager), 0, request_timeout=0.2
+        )
+
+        await loop.sock_sendall(theirs, with_length())
+        await conn.run()
+        assert conn.keep_alive
+
+        await asyncio.wait_for(
+            conn.async_send([{"id": "x", "result": None}]), timeout=2
+        )
+
+        # the idle wait inside that async_send is what closes `ours`,
+        # once it times out -- nothing of this side left to close either
+        closed = ours.fileno() == -1
+        theirs.close()
+        return closed, 0 in manager.connections
+
+    closed, still_registered = asyncio.run(main())
+    assert closed
+    assert not still_registered
+
+
+@pytest.mark.parametrize(
+    ("version", "connection_header", "expect_keep_alive"),
+    [
+        (b"HTTP/1.0", b"", False),
+        (b"HTTP/1.0", b"Connection: keep-alive\r\n", True),
+        (b"HTTP/1.1", b"", True),
+        (b"HTTP/1.1", b"Connection: close\r\n", False),
+    ],
+    ids=[
+        "1.0-bare-closes",
+        "1.0-keep-alive-stays",
+        "1.1-bare-stays",
+        "1.1-close-closes",
+    ],
+)
+def test_keep_alive_follows_core_s_own_default_per_version(
+    version: bytes, connection_header: bytes, *, expect_keep_alive: bool
+) -> None:
+    """HTTP/1.0 defaults to closing, HTTP/1.1 to keep-alive, matching Core.
+
+    `HTTPRequest::WriteReply` (`httpserver.cpp:557-575`, at
+    bitcoin/bitcoin@ca7162cde5): HTTP/1.0 stays open only for an
+    explicit `Connection: keep-alive`; HTTP/1.1 stays open unless told
+    `Connection: close`. `run` used to read every request the same way
+    regardless of its own request line's version (issue #640) -- a
+    second request, sent here regardless of what the first asked for,
+    is answered only where `expect_keep_alive` says this connection is
+    still being read from.
+    """
+
+    async def main() -> tuple[bool, bool]:
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        theirs.setblocking(False)
+        loop = asyncio.get_running_loop()
+        manager = SimpleNamespace(messages=[], connections={})
+        conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
+
+        headers = connection_header + b"Content-Length: %d\r\n" % len(BODY)
+        one_request = request(headers, BODY, version=version)
+
+        await loop.sock_sendall(theirs, one_request)
+        await conn.run()
+        keep_alive = conn.keep_alive
+
+        await loop.sock_sendall(theirs, one_request)
+        await conn.async_send([{"id": "x", "result": None}])
+        second_arrived = False
+        for _ in range(50):
+            if len(manager.messages) >= 2:
+                second_arrived = True
+                break
+            await asyncio.sleep(0)
+
+        theirs.close()
+        if ours.fileno() != -1:
+            ours.close()
+        return keep_alive, second_arrived
+
+    keep_alive, second_arrived = asyncio.run(main())
+    assert keep_alive == expect_keep_alive
+    assert second_arrived == expect_keep_alive
+
+
+def test_several_malformed_bodies_over_one_kept_alive_connection_are_each_answered() -> (
+    None
+):
+    """A kept-alive connection answers a run of malformed bodies, staying open.
+
+    `run`'s own `ValueError` branch used to force-close regardless of
+    `Connection`: scheduling that reply the way `send` already
+    schedules a dispatched one, instead of awaiting it inline, is what
+    keeps a run of malformed bodies from growing this coroutine's own
+    call stack by one frame each, and what lets each answer honour
+    keep-alive instead of always closing (issue #640), matching Core's
+    own `HTTPReq_JSONRPC` (`src/httprpc.cpp:224-234`, at
+    bitcoin/bitcoin@ca7162cde5).
+    """
+
+    async def main() -> tuple[int, bool]:
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        theirs.setblocking(False)
+        loop = asyncio.get_running_loop()
+        manager = SimpleNamespace(messages=[], connections={})
+        conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
+
+        bad = request(b"Content-Length: 3\r\n", b"bad")
+        await loop.sock_sendall(theirs, bad)
+        await conn.run()
+
+        replies = 0
+        for _ in range(20):
+            data = await asyncio.wait_for(loop.sock_recv(theirs, 4096), timeout=2)
+            assert data
+            replies += 1
+            await loop.sock_sendall(theirs, bad)
+
+        # kept alive by construction -- every reply here is a valid
+        # HTTP/1.1 request with no `Connection: close`, and the
+        # assertions below are what actually pin that -- so nothing
+        # conditional is left to check before closing this side too
+        closed = ours.fileno() == -1
+        theirs.close()
+        ours.close()
+        return replies, closed
+
+    replies, closed = asyncio.run(main())
+    assert replies == 20
+    assert not closed
 
 
 def test_the_encoder_defers_to_json_for_what_is_not_bytes() -> None:
@@ -307,7 +574,10 @@ def test_a_raw_json_value_is_written_unquoted_and_verbatim() -> None:
         theirs.setblocking(False)
         loop = asyncio.get_running_loop()
         conn = RpcConnection(
-            loop, ours, cast("RpcManager", SimpleNamespace(messages=[])), 0
+            loop,
+            ours,
+            cast("RpcManager", SimpleNamespace(messages=[], connections={})),
+            0,
         )
         await conn.async_send([{"result": RawJSON("0.00000001"), "id": "x"}])
         data = await loop.sock_recv(theirs, 4096)
@@ -334,7 +604,10 @@ def test_a_raw_json_value_does_not_swallow_a_field_containing_its_own_mark() -> 
         theirs.setblocking(False)
         loop = asyncio.get_running_loop()
         conn = RpcConnection(
-            loop, ours, cast("RpcManager", SimpleNamespace(messages=[])), 0
+            loop,
+            ours,
+            cast("RpcManager", SimpleNamespace(messages=[], connections={})),
+            0,
         )
         await conn.async_send(
             [{"result": "RawJSONx", "extra": RawJSON("1.00000000"), "id": "x"}]
@@ -355,7 +628,10 @@ def test_close_cancels_the_task_it_was_given() -> None:
         ours.setblocking(False)
         loop = asyncio.get_running_loop()
         conn = RpcConnection(
-            loop, ours, cast("RpcManager", SimpleNamespace(messages=[])), 0
+            loop,
+            ours,
+            cast("RpcManager", SimpleNamespace(messages=[], connections={})),
+            0,
         )
 
         async def forever() -> None:
@@ -390,7 +666,7 @@ def test_repr_names_the_peer_and_says_so_when_there_is_none() -> None:
     conn = RpcConnection(
         cast("asyncio.AbstractEventLoop", None),
         client,
-        cast("RpcManager", SimpleNamespace(messages=[])),
+        cast("RpcManager", SimpleNamespace(messages=[], connections={})),
         0,
     )
     host, port = listener.getsockname()
@@ -422,7 +698,7 @@ def test_repr_brackets_an_ipv6_peer(host: str, endpoint: str) -> None:
     conn = RpcConnection(
         cast("asyncio.AbstractEventLoop", None),
         client,
-        cast("RpcManager", SimpleNamespace(messages=[])),
+        cast("RpcManager", SimpleNamespace(messages=[], connections={})),
         0,
     )
     assert repr(conn) == f"Connection to {endpoint}"
@@ -434,7 +710,7 @@ def test_close_without_a_task_closes_the_socket_anyway() -> None:
     conn = RpcConnection(
         cast("asyncio.AbstractEventLoop", None),
         ours,
-        cast("RpcManager", SimpleNamespace(messages=[])),
+        cast("RpcManager", SimpleNamespace(messages=[], connections={})),
         0,
     )
     assert conn.task is None
@@ -466,7 +742,7 @@ def test_send_and_wait_gives_up_rather_than_blocking_forever() -> None:
     ours, theirs = socket.socketpair()
     loop = asyncio.new_event_loop()
     conn = RpcConnection(
-        loop, ours, cast("RpcManager", SimpleNamespace(messages=[])), 0
+        loop, ours, cast("RpcManager", SimpleNamespace(messages=[], connections={})), 0
     )
     started = time.monotonic()
     conn.send_and_wait([{"id": "x"}])  # returns, does not raise

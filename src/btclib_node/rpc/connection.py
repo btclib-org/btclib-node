@@ -2,7 +2,7 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""`RpcConnection`, one HTTP socket carrying a JSON-RPC request and reply.
+"""`RpcConnection`, one accepted HTTP socket carrying one or more requests.
 
 Parses the header section off the wire, bounded by `MAX_HEADER_BYTES`
 and `MAX_BODY_BYTES` since the listener this serves is bound to every
@@ -10,6 +10,12 @@ interface, and decodes the JSON-RPC batch `rpc.manager.RpcManager.messages`
 queues for `rpc.main.handle_rpc`. `RawJSON` is a JSON number written
 back out exactly as given, the way Core's own `UniValue` writes one
 built from a string rather than from a `float`.
+
+Matching Core's own per-version keep-alive default (`_wants_keep_alive`,
+`src/httpserver.cpp:557-575`, at bitcoin/bitcoin@ca7162cde5), `async_send`
+keeps the socket open across replies where the request it is answering
+asked to, reading the next request off the same connection rather than
+requiring a fresh accept per call (issue #640).
 """
 
 import asyncio
@@ -17,7 +23,7 @@ import contextlib
 import json
 import re
 import secrets
-from http.client import parse_headers
+from http.client import HTTPMessage, parse_headers
 from io import BytesIO
 from typing import TYPE_CHECKING, Any, override
 
@@ -55,17 +61,19 @@ MAX_BODY_BYTES = 32 * 1024 * 1024
 # on `sock_recv` for the life of the node, its socket and its entry in
 # `RpcManager.connections` both held the whole time (issue #437). Core's
 # own `-rpcservertimeout`, `DEFAULT_HTTP_SERVER_TIMEOUT` (`src/httpserver.h:42`,
-# at bitcoin/bitcoin@b91d983f66), is 30 seconds, and is what this is matched
-# to -- but not to Core's own mechanism: Core resets that timer on every
-# receive (`httpserver.cpp:930`) and every send (`:1275`), and its own
-# `DisconnectClients` (`:1098-1100`) only disconnects a client genuinely
-# idle *between* requests, one of its own HTTP connections carrying more
-# than one. This tree's connection is one request per socket with no
-# such "between" to distinguish, so
-# REQUEST_TIMEOUT is spent once, on the whole read from accept to a
-# complete request (`run` below), rather than reset on each byte -- which
-# also bounds a client that dribbles one byte at a time forever, where a
-# per-`sock_recv` reset would not.
+# at bitcoin/bitcoin@ca7162cde5), is 30 seconds, and is what this is matched
+# to -- for both of the bounds Core spends it on: one request in flight,
+# and the idle gap a kept-alive connection may sit in between two of them
+# before `HTTPServer::DisconnectClients` (`httpserver.cpp:1097`) drops it,
+# its own `m_idle_since` reset on every receive (`:947`) and every send
+# (`:1292`), not on each byte. `async_send` below re-enters this same
+# `asyncio.timeout(self.request_timeout)` scope for a connection's next
+# request rather than closing after its first one (issue #640), so
+# REQUEST_TIMEOUT now serves both of Core's own two roles the way Core's
+# own single constant does, rather than a second constant duplicating the
+# same citation -- not reset per byte or per request either way, which is
+# also what bounds a client dribbling one byte of a single request at a
+# time forever.
 # a float, not Core's own int seconds: asyncio.timeout below and
 # RpcManager.request_timeout both carry this as a float throughout, a
 # test lowering it to a fraction of a second being the only assignment
@@ -158,6 +166,30 @@ class JSONEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
+def _wants_keep_alive(request_line: bytes | bytearray, headers: HTTPMessage) -> bool:
+    """Return whether `request_line` and `headers` ask to be kept alive.
+
+    Matches Core's own `HTTPRequest::WriteReply` (`httpserver.cpp:557-575`,
+    at bitcoin/bitcoin@ca7162cde5): HTTP/1.0 defaults to closing and
+    stays open only for an explicit `Connection: keep-alive`; HTTP/1.1
+    defaults to keep-alive and closes only for an explicit `Connection:
+    close` -- which wins where a request carries both, the way Core's
+    own `close` check runs unconditionally after its two version
+    branches and overrides whichever of them ran. `request_line`'s own
+    trailing token is where the version lives; anything other than
+    exactly `HTTP/1.0` reads as 1.1 or later, matching what this
+    listener's own reply already always claims (`async_send` below)
+    regardless of what the request itself asked for.
+    """
+    connection_header = headers.get("Connection", "").strip().casefold()
+    keep_alive = not request_line.rstrip().endswith(b"HTTP/1.0")
+    if connection_header == "keep-alive":
+        keep_alive = True
+    if connection_header == "close":
+        keep_alive = False
+    return keep_alive
+
+
 class RpcConnection:
     """One accepted RPC socket, from the header read through the reply.
 
@@ -198,6 +230,22 @@ class RpcConnection:
         self.buffer = bytearray()
         self.task: Future[None] | None = None
         self.request_timeout = request_timeout
+        # Recomputed by `run` from each request's own `Connection`
+        # header, `False` until the first one is read: `async_send`
+        # reads this once a reply is ready, to decide whether to close
+        # the socket or read another request off it (issue #640).
+        self.keep_alive = False
+        # A parse error's own reply, set by `run` below and never read
+        # back: `asyncio.Task` only holds a *weak* reference to itself
+        # in the loop's own bookkeeping, so a `Task` nothing else
+        # references can be garbage-collected before it ever runs --
+        # `asyncio.create_task`'s own documentation warns of exactly
+        # this. Kept here purely so one survives to run, one request at
+        # a time: `run` calls into this branch again only once the
+        # previous one has already sent its own reply and, if kept
+        # alive, read the next request in turn, so this is never
+        # overwritten while still in flight.
+        self._parse_error_reply: asyncio.Task[None] | None = None
 
     def close(self) -> None:
         """Cancel the running `run` task, if any, and close `client`."""
@@ -246,6 +294,12 @@ class RpcConnection:
         `TimeoutError` once expired, caught below like any other -- closes
         `client` rather than raising, since nothing reads the `Future`
         this task runs under.
+
+        Called again, by `async_send` below, for every request after the
+        first one a kept-alive connection carries -- `self.buffer` is
+        trimmed to what is left after this request's own body before
+        that request is queued, so a second call starts clean rather
+        than re-reading bytes this one already consumed.
         """
         try:
             async with asyncio.timeout(self.request_timeout):
@@ -253,9 +307,11 @@ class RpcConnection:
                     lambda: HEADER_TERMINATOR in self.buffer, MAX_HEADER_BYTES
                 )
                 head, _, self.buffer = self.buffer.partition(HEADER_TERMINATOR)
-                # parse_headers wants the field lines alone, so drop the
-                # request line, and the blank line partition() consumed.
-                _, _, fields = head.partition(b"\r\n")
+                # parse_headers wants the field lines alone, so the
+                # request line is split off on its own rather than
+                # simply dropped -- its own trailing token is what
+                # `keep_alive` below reads.
+                request_line, _, fields = head.partition(b"\r\n")
                 headers = parse_headers(BytesIO(fields + HEADER_TERMINATOR))
                 length = int(headers.get("Content-Length", 0))
                 # int() admits a negative, which would make the
@@ -269,10 +325,17 @@ class RpcConnection:
                     # would not change what catches it, only add a call
                     # for no reader
                     raise ConnectionError  # noqa: TRY301
+                self.keep_alive = _wants_keep_alive(request_line, headers)
                 await self._recv_until(lambda: len(self.buffer) >= length)
 
+            body_bytes = self.buffer[:length]
+            # Whatever is left belongs to a request after this one --
+            # pipelined ahead of its own reply, or simply not sent yet --
+            # and must not be replayed as part of this request's own
+            # body on a second call to this method.
+            self.buffer = self.buffer[length:]
             try:
-                body = json.loads(self.buffer[:length])
+                body = json.loads(body_bytes)
             except ValueError:
                 # JSON-RPC 2.0 section 5.1's own `PARSE_ERROR`, id
                 # `null`: a body that is not JSON is not a request this
@@ -281,18 +344,67 @@ class RpcConnection:
                 # not `json.JSONDecodeError` alone, since malformed
                 # bytes `json.loads` cannot even decode as text raise
                 # the stdlib's own `UnicodeDecodeError`, a `ValueError`
-                # too and the same "invalid JSON" from the client's side
-                await self.async_send(
-                    [error_msg(RpcErrorCode.PARSE_ERROR, "Parse error")]
+                # too and the same "invalid JSON" from the client's side.
+                # Scheduled as a task of its own, the same seam `send`
+                # below reaches this same coroutine through, rather than
+                # awaited in this very frame: `self.keep_alive` --
+                # already read off this request's own headers above -- is
+                # honoured here exactly as it is for a dispatched reply,
+                # matching Core's own `HTTPReq_JSONRPC`
+                # (`src/httprpc.cpp:232-244`, at bitcoin/bitcoin@ca7162cde5),
+                # which negotiates keep-alive on a parse error the same
+                # way it does on any other reply -- so where it says to,
+                # `async_send` calls back into `run` for a further
+                # request, and doing that by awaiting it here would grow
+                # this coroutine's own stack by one frame per malformed
+                # body a kept-alive connection sent in a row, rather than
+                # by a scheduled task's own fresh one each time, the way
+                # `send` below already keeps a dispatched reply's own
+                # recursion flat.
+                #
+                # `self.loop.create_task`, not `send`'s own
+                # `run_coroutine_threadsafe`: this method already runs on
+                # `self.loop`'s own thread, so `run_coroutine_threadsafe`
+                # here would only requeue itself onto the very loop it is
+                # already running on, through `call_soon_threadsafe` -- a
+                # Task made real one further turn later rather than this
+                # one, invisible to `asyncio.all_tasks()` for that whole
+                # turn. `RpcManager.stop` reads `all_tasks()` exactly
+                # once, to build the set it cancels; a task not yet in it
+                # that turn is not in the set it cancels either, and never
+                # gets to run at all once `stop` has since closed the loop
+                # under it (measured against the unmodified `stop()`,
+                # issue #640 review round 2). `self.loop.create_task` --
+                # unlike `send`'s own cross-thread call, which does need
+                # the thread-safe seam -- makes the `Task` object exist
+                # synchronously, in time for that one read to find it.
+                #
+                # Left in `manager.connections` rather than popped here,
+                # unlike a dispatched reply's own pop in
+                # `rpc.main.handle_rpc`: that pop is safe precisely
+                # because it runs on `Node`'s own thread, the same one
+                # `stop` is called from, so the two cannot interleave
+                # (issue #640 review round 2) -- this method runs on
+                # `self.loop`'s own thread instead, where a pop here could
+                # still race `stop`'s own socket-closing sweep of
+                # `manager.connections`, the second collection that sweep
+                # reads, the same way popping raced its first. Leaving the
+                # entry in place keeps that sweep able to close this
+                # connection's own socket even on a turn where the task
+                # above never gets to run at all; `async_send` below pops
+                # it once it does, on the branch that closes rather than
+                # keeps this connection.
+                # Assigned to `self._parse_error_reply` (its own
+                # docstring above has why) rather than left a bare
+                # statement: unlike `run_coroutine_threadsafe` elsewhere
+                # in this class, `create_task` returns an `Awaitable`,
+                # which mypy's own `unused-awaitable` flags as a
+                # likely-missing `await` when discarded outright.
+                self._parse_error_reply = self.loop.create_task(
+                    self.async_send(
+                        [error_msg(RpcErrorCode.PARSE_ERROR, "Parse error")]
+                    )
                 )
-                # send() below is what a valid request answers through,
-                # and it is what pops this id out of `manager.connections`
-                # once `handle_rpc` is done with it; this reply never
-                # reaches `handle_rpc`, so the entry is forgotten here
-                # instead -- left in place otherwise, an unauthenticated,
-                # all-interfaces port (#27) fed one malformed body per
-                # connection it never forgets
-                self.manager.connections.pop(self.id, None)
                 return
 
             if not isinstance(body, list):
@@ -308,26 +420,33 @@ class RpcConnection:
         # `finally` here, so narrowing this would leak the socket this
         # unauthenticated, all-interfaces port (#27) opened, on top of
         # losing the exception itself to that same unread Future.
-        # `self.manager.connections.pop` below is the same reasoning
-        # the parse-error branch's own pop above already argues, applied
-        # to every other way this method fails rather than only that
-        # one: `ConnectionError` (an unterminated header, an overstated
-        # or negative Content-Length, a peer that goes away mid-request)
-        # and `TimeoutError` (`REQUEST_TIMEOUT` elapsing) never reach
-        # `send()` either, and `send()` is the only other place this id
-        # leaves `manager.connections` (issue #437).
+        # `self.manager.connections.pop` below covers every other way
+        # this method fails: `ConnectionError` (an unterminated header,
+        # an overstated or negative Content-Length, a peer that goes away
+        # mid-request) and `TimeoutError` (`REQUEST_TIMEOUT` elapsing)
+        # never reach `send()` or `async_send`'s own close branch either,
+        # and one of those two is otherwise the only place this id leaves
+        # `manager.connections` (issue #437). Popped in the same
+        # statement group as `self.client.close()` above rather than
+        # scheduled apart from it the way the parse-error branch's own
+        # reply is: there is no gap here for `RpcManager.stop`'s sweep to
+        # land in the middle of, since both run synchronously, in this
+        # thread, before this method's own frame returns.
         except Exception:  # noqa: BLE001
             self.client.close()
             self.manager.connections.pop(self.id, None)
 
     async def async_send(self, response: list[dict[str, Any]]) -> None:
-        """Write `response` back as one JSON-RPC HTTP reply, then close.
+        """Write `response` back as one JSON-RPC HTTP reply.
 
         Wraps any `RawJSON` value in a fresh per-call mark before
         encoding, substitutes it back out unquoted once encoding is
-        done, and frames the result behind a `Content-Length` header --
-        one reply per accepted connection, closing `client` once it is
-        sent.
+        done, and frames the result behind a `Content-Length` header.
+        `self.keep_alive` -- `_wants_keep_alive`'s own answer, set by
+        `run` above off the request this is answering -- decides what
+        happens once the reply is on the wire: `client` closes, or this
+        reads another request off the same socket, matching Core's own
+        per-version keep-alive default either way (issue #640).
         """
         body: list[dict[str, Any]] | dict[str, Any] = response
         if len(response) == 1:
@@ -349,12 +468,41 @@ class RpcConnection:
         # would itself refuse to read.
         http_response = "HTTP/1.1 200 OK\r\n"
         http_response += "Content-Type: application/json\r\n"
+        if not self.keep_alive:
+            # Only written where this is closing: HTTP/1.1 defaults to
+            # keep-alive with no header at all (Core's own
+            # `HTTPRequest::WriteReply`, as above), and a close this
+            # reply does not announce is one `http.client`'s own
+            # `HTTPResponse.will_close` -- which reads this header and
+            # not the socket's own fate -- would still read as open,
+            # which is exactly the race issue #640 is about: a pooling
+            # client kept believing a connection reusable past this
+            # node's own close of it.
+            http_response += "Connection: close\r\n"
         http_response += f"Content-Length: {len(output_str) + 1}\r\n"
         http_response += "\r\n"  # Important!
         http_response += output_str
         http_response += "\n"
         await self.loop.sock_sendall(self.client, http_response.encode())
-        self.client.close()
+        if self.keep_alive:
+            # Back in `manager.connections` before the read below can
+            # possibly complete: `handle_rpc`'s own call into `send`,
+            # which scheduled this coroutine, already popped this id out
+            # unconditionally once it did, on the assumption every reply
+            # closes -- true of every reply but this one now.
+            self.manager.connections[self.id] = self
+            await self.run()
+        else:
+            self.client.close()
+            # A no-op, `pop`'s own default absorbing it, for a dispatched
+            # reply: `handle_rpc` already popped this id out once it
+            # scheduled this coroutine. The parse-error branch of `run`
+            # above pops nothing itself, deliberately, so this is what
+            # removes its entry once this connection is actually done
+            # rather than only kept reachable for `RpcManager.stop`'s own
+            # socket-closing sweep in the meantime (issue #640 review
+            # round 2).
+            self.manager.connections.pop(self.id, None)
 
     def send(self, response: list[dict[str, Any]]) -> None:
         """Schedule `async_send` on `loop`, from `handle_rpc`'s own thread."""
@@ -366,8 +514,13 @@ class RpcConnection:
 
         `handle_rpc`'s own `stop` request is the only caller: the client
         has to see its own reply before `node.stop()` starts tearing
-        `loop` down under it.
+        `loop` down under it. Forces a close of its own regardless of
+        what the request asked for, whatever `run` last set
+        `self.keep_alive` to -- `RpcManager.stop`, called right after
+        this returns, tears the whole loop down, so there is no next
+        request this connection could still answer.
         """
+        self.keep_alive = False
         future = asyncio.run_coroutine_threadsafe(self.async_send(response), self.loop)
         with contextlib.suppress(TimeoutError):
             future.result(timeout=2)

@@ -6,10 +6,11 @@
 
 Connections, the RPC manager, the errors JSON-RPC 2.0 defines and the
 method handlers `Node`'s loop calls. `manager.RpcManager` is the
-thread; `connection.RpcConnection` is one request's own socket;
-`callbacks.callbacks` is the method-name table `main.handle_rpc`
-dispatches through; `errors.RpcError` is what a handler raises to
-answer with a JSON-RPC error object instead of a result.
+thread; `connection.RpcConnection` is one accepted socket, carrying one
+request or several; `callbacks.callbacks` is the method-name table
+`main.handle_rpc` dispatches through; `errors.RpcError` is what a
+handler raises to answer with a JSON-RPC error object instead of a
+result.
 """
 
 __all__ = []
