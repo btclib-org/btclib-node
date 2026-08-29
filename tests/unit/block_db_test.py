@@ -623,3 +623,41 @@ def test_prune_up_to_never_unlinks_the_file_still_open_for_writing(
 
     assert "000001.blk" in block_db.files
     assert (block_db.data_dir / "000001.blk").exists()
+
+
+def test_prune_up_to_closes_a_stale_open_rev_file_before_unlinking_it(
+    a_db: Callable[[Path | None], BlockDB],
+) -> None:
+    """A `.rev` file `open_rev_file` still points at is closed, not just unlinked.
+
+    `finalize` opens the `.rev` file named for a block's own `.blk` file
+    index (`btclib-org/btclib-node#116`), not for whatever `.blk` file is
+    current, so a `.blk` rotation can move `self.file_index` on while
+    `open_rev_file` still names the older file's own `.rev` -- the guard
+    above this one, comparing against `self.file_index`, is already past
+    by then, since that now names the *new* `.blk` file rather than this
+    `.rev` file's own index.
+    """
+    block_db = a_db(None)
+    chain = generate_random_chain(6, RegTest().genesis.hash)
+    hashes: list[bytes] = [b"\x00" * 32]
+    for tag, block in enumerate(chain[:3], start=1):
+        block_db.add_block(block)
+        block_db.add_rev_block(a_rev_block(tag=tag, block_hash=block.header.hash))
+        hashes.append(block.header.hash)
+    block_db.finalize()
+    assert block_db.open_rev_file is not None
+    assert block_db.open_rev_file.name.endswith("000001.rev")
+
+    block_db.files["000001.blk"].size = MAX_FILE_SIZE + 1
+    for block in chain[3:]:
+        block_db.add_block(block)
+        hashes.append(block.header.hash)
+    assert block_db.file_index == 2
+    assert block_db.open_rev_file.name.endswith("000001.rev")
+
+    block_db.prune_up_to(3, hashes.__getitem__)
+
+    assert "000001.rev" not in block_db.files
+    assert not (block_db.data_dir / "000001.rev").exists()
+    assert block_db.open_rev_file is None

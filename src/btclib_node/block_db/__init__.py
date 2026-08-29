@@ -550,6 +550,15 @@ class BlockDB:
         call's own count says, and reclaiming it here would have the very
         next `add_block` or `finalize` reopen a file this store had just
         deleted out from under itself.
+
+        `filename` is trusted to already be a key of `self.files`, the
+        same way `__find_block_file`'s own `self.files[filename].size`
+        is above -- every `BlockLocation`/`RevBlock` location this class
+        ever hands `_delete_block`/`_delete_rev_block` came from a
+        `self.blocks`/`self.rev_patches` entry that was itself only ever
+        set alongside the matching `self.files` entry, in `add_block` and
+        `finalize`, so there is no path that reaches here with one and
+        not the other.
         """
         remaining = self.live.get(filename, 0) - 1
         if remaining > 0:
@@ -566,6 +575,5 @@ class BlockDB:
             else:
                 self.open_rev_file = None
         (self.data_dir / filename).unlink(missing_ok=True)
-        if filename in self.files:
-            del self.files[filename]
-            self.db.delete(b"f" + filename.encode())
+        del self.files[filename]
+        self.db.delete(b"f" + filename.encode())
