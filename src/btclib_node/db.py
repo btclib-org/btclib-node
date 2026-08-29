@@ -269,6 +269,36 @@ it, so a `close()` from one thread simply waits for a `get()` already
 in progress on another, the same shape `test_close_waits_for_whoever
 _is_using_the_connection` already pins.
 
+**A closed store's `LOCK` releases synchronously, traced source to
+source and then measured directly on `windows-latest`.** `close()`'s
+own drop chain -- `DbReferenceHolder::close` (`src/db_reference.rs`,
+rocksdict at rocksdict/RocksDict@v0.3.29) dropping the last `Arc<DB>`
+clone into `DBCommon::drop`, `ffi::rocksdb_close`, `DBImpl::~DBImpl`,
+`DBImpl::CloseHelper`, which waits out every background compaction and
+flush before it ever reaches `env_->UnlockFile`
+(`db/db_impl/db_impl.cc`, RocksDB at
+facebook/rocksdb@44e95d8af5d7ec503b3f1d5754c3379ab6c29a9d, the sha
+`rust-rocksdb`'s own fork pins for that tag,
+Congyuwang/rust-rocksdb@4cf3c68a993b807bc54ff1c5293cdf49e62aaf72) -- is
+synchronous on the calling thread the whole way,
+`WinFileSystem::UnlockFile` (`port/win/env_win.cc`) itself a bare
+`delete lock` into `WinFileLock::~WinFileLock`'s own `::CloseHandle`
+(`port/win/io_win.cc`), nothing in it deferred to a background thread
+or to Python's own garbage collector. A `windows-latest` run once
+found a `LOCK` still held immediately after three such closes and a
+`shutil.copytree` right behind them (btclib-org/btclib-node#683, run
+33273020014); a single `close()`-then-reopen on the same path,
+dispatched separately to answer that finding on its own
+(btclib-org/btclib-node#703, run 33274969391), opened on its first
+attempt, and every close-then-reopen
+test already in this suite -- this file's own, `block_db_test.py`,
+`chainstate/filter_index_test.py`, `chainstate/block_index_test.py`,
+`main_test.py`'s `first`/`reopened` pair among them -- passed in that
+same run. Weighed against the traced chain above, the first run's own
+gap reads as contention on a loaded parallel runner rather than a
+defect this store, `rocksdict`, or RocksDB owes a fix for, and #703
+closes on that measurement rather than on a code change.
+
 **A crash before `Chainstate.flush` writes costs whatever is staged
 since the last one, and never a torn store.** `main._finalize_fork` no
 longer writes `BlockIndex`'s and `FilterIndex`'s own changes on every
