@@ -545,28 +545,19 @@ class DownloadManager:
         # Core's own `MaybeSendFeefilter` (`net_processing.cpp`, at
         # bitcoin/bitcoin@ca7162cde5) gates this same decision on
         # `m_chainman.IsInitialBlockDownload()`, which `main.
-        # update_ibd_status`'s own `node.is_initial_block_download` now
-        # answers faithfully (btclib-org/btclib-node#575) -- tried here
-        # in place of the comparison below, and reverted: Core's flag
-        # requires the tip to be no older than `MAX_TIP_AGE`, which a
-        # regtest chain built with `GENESIS_TIME`-relative timestamps
-        # (`tests/__init__.py`'s own `build_block`, the default every
-        # functional test but one uses) never satisfies, so a node that
-        # has validated its whole known chain would still announce
-        # `_max_feefilter` to every peer forever. A peer receiving that
-        # then refuses to announce anything back below it
-        # (`_queue_announcements_for_received_txs`'s own `meets_fee_rate`
-        # check), which is what actually broke
-        # `tests/functional/p2p/tx_test.py::test_send_tx` under this
-        # swap -- measured, not guessed, by running the whole suite with
-        # the swap in and finding that one functional test newly red,
-        # `origin/main` clean under the same run. `NodeStatus.BlockSynced`
-        # is this node's own readiness signal instead: whether there is
-        # a synced mempool worth pricing against at all, which is what
-        # `p2p.callbacks`'s own `tx` handler already gates incoming
-        # relay on (btclib-org/btclib-node#129) -- not Core's own
-        # IsInitialBlockDownload, and not claimed to be one anymore.
-        ibd = self.node.status < NodeStatus.BlockSynced
+        # update_ibd_status`'s own `node.is_initial_block_download`
+        # answers faithfully (btclib-org/btclib-node#575). An earlier
+        # version of this branch read `NodeStatus.BlockSynced` instead,
+        # a second, looser definition of the one Core concept living in
+        # this tree -- caught unsafe against `is_initial_block_download`
+        # only because the suite's own regtest fixtures dated every
+        # block `GENESIS_TIME`-relative, far older than `MAX_TIP_AGE`
+        # ever tolerates, which is a fixture defect and not a reason to
+        # carry two answers to Core's one flag: closed by giving the one
+        # caller that needs a recent tip a recent one
+        # (`tests/__init__.py`'s own `generate_random_chain`, `tip_time`)
+        # rather than reading `NodeStatus` here (btclib-org/btclib-node#661).
+        ibd = self.node.is_initial_block_download
         current_filter = (
             self._max_feefilter
             if ibd

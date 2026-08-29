@@ -4,6 +4,7 @@
 
 """A broadcast transaction reaches a peer's mempool over `inv`/`getdata`."""
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import btclib_node.download as download_module
@@ -31,10 +32,18 @@ def test_send_tx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
     Both nodes are brought to `BlockSynced` first, since `callbacks.tx`
     drops a transaction arriving before that regardless of what the
-    sender's own version claimed. The trickle delay is pinned to zero
-    so the announcement is due immediately rather than after a real,
-    randomly drawn wait; without it this test would still pass, only
-    slower and by however long that draw happened to be.
+    sender's own version claimed. Both are also brought past IBD:
+    `DownloadManager._send_due_feefilters` gates outgoing relay on
+    `node.is_initial_block_download`, and a peer holding the top
+    feefilter bucket this node would otherwise still be sending refuses
+    to announce anything back below it -- `generate_random_chain`'s own
+    `tip_time` is what gets each node's tip recent enough for that flag
+    to actually latch `False` (btclib-org/btclib-node#661), where the
+    chain's ordinary `GENESIS_TIME`-relative dating never would. The
+    trickle delay is pinned to zero so the announcement is due
+    immediately rather than after a real, randomly drawn wait; without
+    it this test would still pass, only slower and by however long that
+    draw happened to be.
     """
     # `DownloadManager._send_due_announcements` draws a real, random
     # delay for both nodes' connections the moment each is created
@@ -69,8 +78,14 @@ def test_send_tx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # COINBASE_MATURITY long -- exactly that and no more, so nothing in
     # the chain itself spends chain[0]'s coinbase first, leaving it for
     # this test's own tx below, which is old enough to spend it the
-    # moment this chain's tip connects (btclib-org/btclib-node#569)
-    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    # moment this chain's tip connects (btclib-org/btclib-node#569).
+    # tip_time keeps only the tip recent, every earlier block still
+    # dated the ordinary way -- this test's own maturity arithmetic
+    # above reads real height and BIP34, neither of which tip_time
+    # touches (btclib-org/btclib-node#661)
+    chain = generate_random_chain(
+        COINBASE_MATURITY, RegTest().genesis.hash, tip_time=datetime.now(UTC)
+    )
     for node in (node1, node2):
         block_index = node.chainstate.block_index
         node.chainstate.block_index.add_headers([block.header for block in chain])
@@ -86,6 +101,11 @@ def test_send_tx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # a transaction that arrives before this node is block synced,
         # whatever its own version told the peer. btclib-org/btclib-node#129
         wait_until(lambda: node.status == NodeStatus.BlockSynced)  # noqa: B023
+        # _send_due_feefilters gates outgoing relay on this same flag
+        # (btclib-org/btclib-node#661); update_ibd_status only re-checks
+        # it at update_chain's own settle points, which the wait above
+        # already forces past
+        wait_until(lambda: node.is_initial_block_download is False)  # noqa: B023
 
     node2.p2p_manager.connect(local_addr(node1.p2p_port))
     # each side's own `connections` only holds a peer past its own

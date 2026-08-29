@@ -94,6 +94,7 @@ def make_manager(
     conns: list[Any],
     *,
     status: NodeStatus = NodeStatus.BlockSynced,
+    is_initial_block_download: bool = False,
     block_index: Any | None = None,
     mempool: Any | None = None,
     warm_worker_pool: Any = None,
@@ -101,13 +102,17 @@ def make_manager(
 ) -> DownloadManager:
     """Build a `DownloadManager` over a fake node with the given connections.
 
-    `status` is `NodeStatus.BlockSynced` by default, matching the
-    caught-up node most of these tests want -- `_send_due_feefilters`
-    reads it as its own IBD proxy, `download.py`'s own comment beside
-    that read arguing why it is not `is_initial_block_download`.
+    `status` and `is_initial_block_download` are independent: `status`
+    is `NodeStatus.BlockSynced` by default, matching the caught-up node
+    most of these tests want, and `is_initial_block_download` defaults
+    to `False` the same way -- `_send_due_feefilters` reads the latter
+    as its own IBD flag (btclib-org/btclib-node#661), where the sync
+    stage a test names through `status` is what every other gate in
+    this module reads instead.
     """
     node = SimpleNamespace(
         status=status,
+        is_initial_block_download=is_initial_block_download,
         p2p_manager=SimpleNamespace(connections={conn.id: conn for conn in conns}),
         chainstate=SimpleNamespace(block_index=block_index),
         mempool=mempool if mempool is not None else Mempool(Logger(debug=True)),
@@ -153,7 +158,9 @@ def test_a_step_asks_for_neither_kind_while_the_headers_are_syncing() -> None:
     # skip the send outright, so a step() while headers are syncing is
     # not silent, only silent of GetData/Inv. btclib-org/btclib-node#275
     conn = a_conn(1)
-    manager = make_manager([conn], status=NodeStatus.SyncingHeaders)
+    manager = make_manager(
+        [conn], status=NodeStatus.SyncingHeaders, is_initial_block_download=True
+    )
     manager.inv_txs = [(1, a_hash(1))]
     manager.step()
     assert not only(conn, GetData)
@@ -751,7 +758,7 @@ def test_the_floor_is_never_undercut_even_by_an_empty_mempools_own_zero() -> Non
 def test_ibd_sends_every_connected_peer_the_top_bucket() -> None:
     """While still in IBD, every connected peer is sent the top fee bucket."""
     conn = a_conn(1)
-    manager = make_manager([conn], status=NodeStatus.SyncingHeaders)
+    manager = make_manager([conn], is_initial_block_download=True)
     manager._send_due_feefilters()
     (sent,) = only(conn, FeeFilter)
     assert sent.feerate == manager._max_feefilter
@@ -760,13 +767,13 @@ def test_ibd_sends_every_connected_peer_the_top_bucket() -> None:
 def test_leaving_ibd_forces_an_immediate_resend_off_the_top_bucket() -> None:
     """Leaving IBD forces an immediate resend, off the stale top bucket."""
     conn = a_conn(1)
-    manager = make_manager([conn], status=NodeStatus.SyncingHeaders)
+    manager = make_manager([conn], is_initial_block_download=True)
     manager._send_due_feefilters()
     assert conn.feefilter_sent == manager._max_feefilter
     conn.sent.clear()
     conn.next_feefilter_send_time = time.time() + 1000  # its ordinary schedule
 
-    manager.node.status = NodeStatus.BlockSynced
+    manager.node.is_initial_block_download = False
     manager._send_due_feefilters()
     (sent,) = only(conn, FeeFilter)
     assert sent.feerate != manager._max_feefilter
