@@ -15,11 +15,13 @@ Set through classic branch protection; no ruleset on `main` carries a
 
 ```shell
 gh api repos/btclib-org/btclib-node/branches/main/protection \
-  --jq '.required_status_checks.contexts[]'
-# Lint and type-check
-# test: every job passed
-# Build the documentation
-# Regtest against Bitcoin Core
+  --jq '.required_status_checks
+        | {strict, checks: [.checks[] | {app_id, context}]}'
+# {"checks":[{"app_id":15368,"context":"Lint and type-check"},
+#   {"app_id":15368,"context":"test: every job passed"},
+#   {"app_id":15368,"context":"Build the documentation"},
+#   {"app_id":15368,"context":"Regtest against Bitcoin Core"}],
+#   "strict":true}
 gh api repos/btclib-org/btclib-node/rulesets --jq '.[].id' \
   | xargs -I{} gh api repos/btclib-org/btclib-node/rulesets/{} \
     --jq '.rules[] | select(.type=="required_status_checks")'
@@ -44,9 +46,10 @@ job added to that workflow is gated on by being added rather than by
 somebody editing a rule stored outside the tree. Every one of these jobs
 carries the reasoning in its own header.
 
-The context is the job's `name:`, not the workflow's, and the array
-above holds it as a literal string that nothing in the tree can keep in
-step: **renaming the `regtest` job would leave a required check nothing
+The context is the job's `name:`, not the workflow's, and the `checks`
+array above holds it as a literal string that nothing in the tree can
+keep in step, bound to the Actions app (`15368`) that produces it:
+**renaming the `regtest` job would leave a required check nothing
 produces, and a merge would wait on it forever.** That is a change to
 make here first, in the same order this section's own opening argues —
 the setting, then the record of it.
@@ -54,28 +57,40 @@ the setting, then the record of it.
 `docs.yml`'s "Build the documentation" runs on every pull request
 already, the way `lint.yml` and `test.yml` do (*What gates a merge, and
 what only reports* in `CONTRIBUTING.md`), and `release.yml` calls it too
-(btclib-org/btclib-node#264); its presence in the `contexts` array above
+(btclib-org/btclib-node#264); its presence in the `checks` array above
 is what makes a red run on it block a merge into `main`, a repository
 setting no pull request carries (this section's own opening sentence).
-Adding a context to that array is a `gh api` PATCH:
+Adding a check to that array is a `gh api` PATCH of the `checks` array,
+as a JSON body on stdin:
 
 ```shell
 gh api -X PATCH \
   repos/btclib-org/btclib-node/branches/main/protection/required_status_checks \
-  -F strict=true \
-  -f 'contexts[]=Lint and type-check' \
-  -f 'contexts[]=test: every job passed' \
-  -f 'contexts[]=Build the documentation' \
-  -f 'contexts[]=Regtest against Bitcoin Core'
+  --input - <<'JSON'
+{"strict": true,
+ "checks": [{"context": "Lint and type-check", "app_id": 15368},
+            {"context": "test: every job passed", "app_id": 15368},
+            {"context": "Build the documentation", "app_id": 15368},
+            {"context": "Regtest against Bitcoin Core", "app_id": 15368}]}
+JSON
 ```
 
-The array is rewritten whole rather than added to: a context left out of
-that PATCH stops being required, silently. `-F` is what `strict` needs,
-`-f` sending a string even for a boolean — btclib-org/btclib-node#453 is
-where this command was first run rather than only documented.
+The array is rewritten whole rather than added to: a check left out of
+that PATCH stops being required, silently. `checks` and not `contexts`,
+and a JSON body and not `-f`: `contexts` has no field for an app, so a
+PATCH sending it replaces a list bound to the Actions app with the same
+names bound to nothing, and `-f` sends `app_id` as a string, which the
+endpoint refuses (section 11 of the organization standard). This section
+carried the `contexts` form, with `-F strict=true` and one `-f` per
+name, from btclib-org/btclib-node#264 until btclib-org/btclib-node#657;
+btclib-org/btclib-node#453 is where a PATCH was first run here rather
+than only documented.
 
-Re-run the first command above to confirm the contexts still hold
-— its answer, not this paragraph, is what is true today.
+Re-run the first command above to confirm the checks still hold, each
+with its `app_id` — its answer, not this paragraph, is what is true
+today. A read of `.contexts[]` cannot tell: it answers the same four
+names whether or not each is bound to an app, which is why the record
+above reads `.checks[]`.
 
 **`links.yml`, `os-macos.yml` and `bootstrap-dns.yml` must not become
 required checks**, and neither must `claude-review.yml` nor
@@ -91,7 +106,7 @@ any pull request at all. Each says so in its own header.
 `codeql.yml` is not among them. It runs on `pull_request` and carries an
 aggregate job, `codeql: every job passed`, so its result is one context
 a rule can name however many languages the matrix grows to
-(btclib-org/.github#459). Whether the rule asks for it is the `contexts`
+(btclib-org/.github#459). Whether the rule asks for it is the `checks`
 array above, which does not name it.
 
 ## Branch protection and the rulesets
@@ -234,8 +249,8 @@ network or the credentials.
 
 ```shell
 gh api repos/btclib-org/btclib-node --jq '.topics | join(", ")'
-# bitcoin, bitcoin-node, blockchain, consensus, full-node, p2p,
-# script-interpreter, sqlite
+# bitcoin, bitcoin-node, blockchain, consensus, full-node, p2p, rocksdb,
+# script-interpreter
 ```
 
 The topics are `pyproject.toml`'s `keywords`, in the same lowercase
