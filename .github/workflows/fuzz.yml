@@ -7,10 +7,11 @@ name: fuzz
 # sentinel is keyed on that property, and where the calendar row below
 # comes from; btclib-org/.github#342 is where the ranking of an entry
 # point reached ahead of verification over one reached after it is
-# argued. fuzz/fuzz_reject.py is what this repository owns of that
-# surface today, and its own docstring is where that is stated;
-# btclib-org/btclib-node#516 is the rest of the surface, behind objects
-# that own a socket, a manager or a node.
+# argued. fuzz/fuzz_reject.py, fuzz/fuzz_framing.py and
+# fuzz/fuzz_rpc_head.py are what this repository owns of that surface
+# today -- each harness's own docstring is where its own share of it is
+# stated; btclib-org/btclib-node#698 is the rest of the surface, behind
+# objects that own a socket, a manager or a node.
 #
 # Atheris run as an ordinary script, and not ClusterFuzzLite, which is
 # what `btclib` runs and would otherwise be the port. ClusterFuzzLite
@@ -103,23 +104,33 @@ jobs:
           python-version: "3.14"
       # The seed directory is passed second and read only: libFuzzer
       # writes the units it finds interesting into the first directory
-      # it is given, so an empty one there is what keeps the committed
-      # seeds exactly as they are checked in. That directory is
-      # discarded with the runner -- nothing here carries a corpus
-      # between runs, which is the trade the header states.
+      # it is given, one per harness so a unit one harness finds
+      # interesting is never handed to another as a seed, so an empty
+      # one there is what keeps the committed seeds exactly as they are
+      # checked in. That directory is discarded with the runner --
+      # nothing here carries a corpus between runs, which is the trade
+      # the header states.
       #
-      # -max_total_time is the arm, at ten minutes for the one harness
-      # this tree has; -timeout is what a single input may take before
-      # it counts as a hang, which is the finding a parser reading a
-      # length prefix off the wire is most likely to produce; and
-      # -artifact_prefix is what puts a crashing input where the upload
-      # below looks for it rather than in the working directory.
+      # -max_total_time is the arm: 600 seconds total, the same budget
+      # this job carried when it fuzzed one harness, now split three
+      # ways rather than tripled, so this step's own share of the job's
+      # 30-minute ceiling does not grow with the number of harnesses.
+      # -timeout is what a single input may take before it counts as a
+      # hang, which is the finding a parser reading a length prefix off
+      # the wire is most likely to produce; -artifact_prefix, one
+      # per harness, is what puts a crashing input where the upload
+      # below looks for it, under a name that says which harness found
+      # it, rather than in the working directory or overwriting another
+      # harness's own crash of the same libFuzzer-chosen name.
       - name: Fuzz
         run: |
-          mkdir -p corpus crashes
-          uv run --locked --no-default-groups --group fuzz \
-            python fuzz/fuzz_reject.py corpus fuzz/corpus/fuzz_reject \
-            -max_total_time=600 -timeout=25 -artifact_prefix=crashes/
+          mkdir -p crashes
+          for harness in fuzz_reject fuzz_framing fuzz_rpc_head; do
+            mkdir -p "corpus/$harness"
+            uv run --locked --no-default-groups --group fuzz \
+              python "fuzz/$harness.py" "corpus/$harness" "fuzz/corpus/$harness" \
+              -max_total_time=200 -timeout=25 -artifact_prefix="crashes/$harness-"
+          done
       # the input, and nothing else: a crashing unit is what reproduces
       # the finding locally, and the log above is what says which
       # exception it raised. if-no-files-found is deliberately quiet --

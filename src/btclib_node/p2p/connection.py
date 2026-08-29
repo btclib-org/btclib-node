@@ -31,6 +31,7 @@ from btclib.p2p.keepalive import Ping
 from btclib.p2p.limits import MAX_PROTOCOL_MESSAGE_LENGTH
 from btclib.p2p.message import Message
 
+from btclib_node.chains import RegTest
 from btclib_node.constants import P2pConnStatus, ProtocolVersion
 from btclib_node.exceptions import WrongNetworkMagicError
 from btclib_node.p2p.address import ip_and_port, network_address
@@ -50,7 +51,13 @@ if TYPE_CHECKING:
     from btclib_node import Node
     from btclib_node.p2p.manager import P2pManager
 
-__all__ = ["MAX_QUEUED_RECV_BYTES", "MAX_QUEUED_SEND_BYTES", "Connection"]
+__all__ = [
+    "MAX_QUEUED_RECV_BYTES",
+    "MAX_QUEUED_SEND_BYTES",
+    "Connection",
+    "frame_message",
+    "frame_message_bytes",
+]
 
 
 # Core's own cap, `-maxsendbuffer` (`src/net.h`'s
@@ -290,6 +297,50 @@ _LENGTH_SIZE = 4
 # worse than a node that says why it will not start.
 # btclib-org/btclib-node#580
 _USER_AGENT = f"/btclib:{version('btclib-node')}/".encode()
+
+
+def frame_message(stream: BytesIO, magic: bytes) -> Message:
+    """Parse one whole message off `stream`, checking it against `magic`.
+
+    The two-line body `parse_messages`'s own loop used to inline, split
+    out so `fuzz/fuzz_framing.py` can drive it directly -- matching
+    Core's own `p2p_transport_serialization.cpp` fuzz target, which
+    likewise feeds raw octets to a `V1Transport` constructed with no
+    wider node context (at bitcoin/bitcoin@ca7162cde5): the framing is
+    a separable step, fed octets rather than a whole peer connection.
+
+    Raises `IncompleteMessageError` -- `Message.parse`'s own refusal,
+    rewinding `stream` to the start of the partial message -- where
+    `stream` does not yet hold a whole message, and
+    `WrongNetworkMagicError` where it does but the message's own magic
+    disagrees with `magic`. Never touches `stream` beyond what
+    `Message.parse` itself consumes, so a caller looping this over
+    several whole messages in one buffer -- `parse_messages` below --
+    keeps every one of `Message.parse`'s own stream-position guarantees.
+    """
+    message = Message.parse(stream)
+    if message.magic != magic:
+        raise WrongNetworkMagicError(message.magic)
+    return message
+
+
+def frame_message_bytes(data: bytes) -> Message:
+    """Return the one-argument, octet-only shape `fuzz/fuzz_framing.py` drives.
+
+    `RegTest`'s own magic -- this tree's cheapest chain to construct,
+    a bare no-argument `Chain` (`chains.py`) -- rather than a magic
+    threaded through the entry point: a bare magic mismatch is exactly
+    the one check `frame_message` makes beyond `Message.parse` itself,
+    and is worth fuzzing on its own footing rather than fixed away.
+
+    Trailing octets past the one message framed are left unread, the
+    same way `parse_messages` leaves them in `self.buffer` for the next
+    read rather than treating them as this message's own problem -- not
+    a refusal, so a seed exercised by `tests/fuzz_corpus_test.py`'s own
+    round-trip check (`frame_message_bytes(seed).serialize() == seed`)
+    must not carry any.
+    """
+    return frame_message(BytesIO(data), RegTest().magic)
 
 
 class Connection:
@@ -949,13 +1000,11 @@ class Connection:
             while True:
                 start = stream.tell()
                 try:
-                    message = Message.parse(stream)
+                    message = frame_message(stream, self.node.chain.magic)
                 except IncompleteMessageError:
                     # the only refusal more octets can answer, and the
                     # stream is back at the start of the partial message
                     return
-                if message.magic != self.node.chain.magic:
-                    raise WrongNetworkMagicError(message.magic)
                 self.last_receive = time.time()
                 size = stream.tell() - start
                 consumed += size

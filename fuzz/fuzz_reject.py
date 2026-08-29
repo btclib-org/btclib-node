@@ -11,11 +11,13 @@ octets reaches this parser directly -- the ranking btclib-org/.github#342
 argues, an entry point reached from the network ahead of verification
 being worth more than one reached only after it.
 
-Everything else a peer's octets reach here is either `btclib`'s codec,
-fuzzed by that repository's own harnesses, or a method over a connection
-that owns a socket, a manager and a node; btclib-org/btclib-node#516 is
-where the second of those is argued and is why this directory holds one
-harness.
+Everything else a peer's octets reach is either `btclib`'s own codec,
+fuzzed by that repository's own harnesses, this tree's own
+hostile-input arithmetic ahead of that codec -- `fuzz_framing.py` and
+`fuzz_rpc_head.py`, added alongside this file by issue #516 -- or a
+method over a connection that owns a socket, a manager and a node,
+which issue #698 is where that last, still-unfuzzed third is argued
+and tracked forward.
 
 A crash is a defect in `parse` and never in this harness: `data` is
 unconstrained octets handed straight to it, with nothing decoding,

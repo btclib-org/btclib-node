@@ -23,10 +23,12 @@ import contextlib
 import json
 import re
 import secrets
-from http.client import HTTPMessage, parse_headers
+from dataclasses import dataclass
+from http.client import HTTPException, HTTPMessage, parse_headers
 from io import BytesIO
 from typing import TYPE_CHECKING, Any, override
 
+from btclib_node.exceptions import IncompleteRequestHeadError, MalformedRequestHeadError
 from btclib_node.p2p.address import ip_and_port
 from btclib_node.rpc.errors import RpcErrorCode, error_msg
 
@@ -43,7 +45,9 @@ __all__ = [
     "REQUEST_TIMEOUT",
     "JSONEncoder",
     "RawJSON",
+    "RequestHead",
     "RpcConnection",
+    "parse_request_head",
 ]
 
 HEADER_TERMINATOR = b"\r\n\r\n"
@@ -190,6 +194,94 @@ def _wants_keep_alive(request_line: bytes | bytearray, headers: HTTPMessage) -> 
     return keep_alive
 
 
+@dataclass(frozen=True)
+class RequestHead:
+    r"""One request's own header section and the framing decision from it.
+
+    `request_line` and `fields` are kept as the raw `bytes` `parse_request_head`
+    split them from, not reduced to `HTTPMessage`'s own parsed object,
+    so `serialize` reproduces the exact octets parsed -- the same
+    round-trip `tests/fuzz_corpus_test.py` already holds
+    `p2p.connection.frame_message_bytes` to. `length` and `keep_alive`
+    are the two decisions `RpcConnection.run` draws from this section
+    before it knows how many more bytes to read.
+
+    `separator` is the exact bytes `head.partition(b"\r\n")` returned
+    between `request_line` and `fields` inside `parse_request_head` --
+    `b"\r\n"` for a request carrying at least one header field, `b""`
+    for one carrying none (`request_line` itself is then the whole of
+    `head`, and there is nothing for a separator to separate). Stored
+    rather than assumed, since assuming `b"\r\n"` unconditionally is
+    exactly what made `serialize` fabricate two octets that were never
+    in the input for a zero-field request (issue #516 review round 1).
+    `consumed` is `len(serialize())`, computed once in
+    `parse_request_head` from `data` directly rather than re-derived
+    from `serialize()` at every call site: `run` trims `self.buffer` by
+    this, not by re-parsing its own output.
+    """
+
+    request_line: bytes
+    separator: bytes
+    fields: bytes
+    length: int
+    keep_alive: bool
+    consumed: int
+
+    def serialize(self) -> bytes:
+        """Reproduce the exact octets `parse_request_head` consumed."""
+        return self.request_line + self.separator + self.fields + HEADER_TERMINATOR
+
+
+def parse_request_head(data: bytes) -> RequestHead:
+    """Parse one request's header section off the front of `data`.
+
+    The framing half of what `RpcConnection.run` used to do inline,
+    pulled out so `fuzz/fuzz_rpc_head.py` can drive it over raw octets
+    the way Core's own `http_request.cpp` fuzz target drives
+    `HTTPRequest::LoadControlData`/`LoadHeaders` over a raw
+    `http_buffer` (at bitcoin/bitcoin@ca7162cde5) -- scoped the same
+    way that target is: request-line and header-field framing and the
+    `Content-Length`/keep-alive decisions drawn from them, never the
+    JSON-RPC body those bytes go on to carry, which is stdlib `json`'s
+    own business (`run` below) and not this node's.
+
+    Raises `IncompleteRequestHeadError` where `data` does not yet hold
+    `HEADER_TERMINATOR` -- `run`'s own call site never hits this,
+    since it only calls here once `_recv_until` has already confirmed
+    the terminator is present, but a fuzzed byte string has no such
+    guarantee. Raises `MalformedRequestHeadError` for a `Content-Length`
+    that is not a bare non-negative integer within `[0, MAX_BODY_BYTES]`,
+    or a header section `http.client` itself refuses (an unterminated
+    or oversized header line).
+    """
+    if HEADER_TERMINATOR not in data:
+        raise IncompleteRequestHeadError
+    head, _, _ = data.partition(HEADER_TERMINATOR)
+    consumed = len(head) + len(HEADER_TERMINATOR)
+    request_line, separator, fields = head.partition(b"\r\n")
+    try:
+        headers = parse_headers(BytesIO(fields + HEADER_TERMINATOR))
+        length = int(headers.get("Content-Length", 0))
+    except (ValueError, HTTPException) as e:
+        raise MalformedRequestHeadError(str(e)) from e
+    # int() admits a negative, which would make `run`'s own
+    # `_recv_until(lambda: len(self.buffer) >= length)` predicate true
+    # before a single body byte arrived and then slice the body from
+    # the wrong end.
+    if not 0 <= length <= MAX_BODY_BYTES:
+        detail = f"Content-Length {length}"
+        raise MalformedRequestHeadError(detail)
+    keep_alive = _wants_keep_alive(request_line, headers)
+    return RequestHead(
+        request_line=request_line,
+        separator=separator,
+        fields=fields,
+        length=length,
+        keep_alive=keep_alive,
+        consumed=consumed,
+    )
+
+
 class RpcConnection:
     """One accepted RPC socket, from the header read through the reply.
 
@@ -324,26 +416,17 @@ class RpcConnection:
                 await self._recv_until(
                     lambda: HEADER_TERMINATOR in self.buffer, MAX_HEADER_BYTES
                 )
-                head, _, self.buffer = self.buffer.partition(HEADER_TERMINATOR)
-                # parse_headers wants the field lines alone, so the
-                # request line is split off on its own rather than
-                # simply dropped -- its own trailing token is what
-                # `keep_alive` below reads.
-                request_line, _, fields = head.partition(b"\r\n")
-                headers = parse_headers(BytesIO(fields + HEADER_TERMINATOR))
-                length = int(headers.get("Content-Length", 0))
-                # int() admits a negative, which would make the
-                # predicate below true before a single body byte arrived
-                # and then slice the body from the wrong end.
-                if not 0 <= length <= MAX_BODY_BYTES:
-                    # kept inside the try, against TRY301: the outer
-                    # `except Exception: self.client.close()` below is
-                    # what every failure in this method already answers
-                    # through, abstracting this one raise to a helper
-                    # would not change what catches it, only add a call
-                    # for no reader
-                    raise ConnectionError  # noqa: TRY301
-                self.keep_alive = _wants_keep_alive(request_line, headers)
+                # `parse_request_head` is what `fuzz/fuzz_rpc_head.py`
+                # also drives, directly over octets -- its own docstring
+                # is where the framing/JSON-body scoping boundary is
+                # argued. `bytes(self.buffer)` rather than the
+                # `bytearray` itself: the function's own contract is
+                # over immutable octets, matching
+                # `p2p.connection.frame_message`'s.
+                head = parse_request_head(bytes(self.buffer))
+                self.buffer = self.buffer[head.consumed :]
+                length = head.length
+                self.keep_alive = head.keep_alive
                 await self._recv_until(lambda: len(self.buffer) >= length)
 
             body_bytes = self.buffer[:length]
@@ -447,10 +530,12 @@ class RpcConnection:
         # unauthenticated, all-interfaces port (#27) opened, on top of
         # losing the exception itself to that same unread Future.
         # `self.manager.connections.pop` below covers every other way
-        # this method fails: `ConnectionError` (an unterminated header,
-        # an overstated or negative Content-Length, a peer that goes away
-        # mid-request) and `TimeoutError` (`REQUEST_TIMEOUT` elapsing)
-        # never reach `send()` or `async_send`'s own close branch either,
+        # this method fails: `ConnectionError` (an unterminated header, a
+        # peer that goes away mid-request), `MalformedRequestHeadError`
+        # (an overstated or negative Content-Length, or a `Content-Length`
+        # `parse_request_head` otherwise refuses) and `TimeoutError`
+        # (`REQUEST_TIMEOUT` elapsing) never reach `send()` or
+        # `async_send`'s own close branch either,
         # and one of those two is otherwise the only place this id leaves
         # `manager.connections` (issue #437). Popped in the same
         # statement group as `self.client.close()` above rather than

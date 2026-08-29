@@ -202,6 +202,54 @@ def test_a_content_length_past_the_cap_is_refused() -> None:
     assert closed
 
 
+def test_a_content_length_that_is_not_an_integer_is_refused() -> None:
+    """A `Content-Length` `int()` cannot parse is refused, not read as one.
+
+    `parse_request_head`'s own `int(headers.get("Content-Length", 0))`
+    raises `ValueError` here, caught and reraised as
+    `MalformedRequestHeadError` -- `run`'s own bare `except Exception`
+    still catches it exactly as it caught the bare `ValueError` before
+    that wrapping existed.
+    """
+    _, messages, closed = drive([request(b"Content-Length: abc\r\n", BODY)])
+    assert not messages
+    assert closed
+
+
+def test_a_zero_header_request_leaves_the_next_ones_bytes_intact() -> None:
+    r"""A request with no header fields trims `self.buffer` by what it consumed.
+
+    Review round 1: `RequestHead.serialize()` used to insert a `\r\n`
+    between `request_line` and `fields` unconditionally, fabricating
+    two octets nothing in the wire carried whenever a request had no
+    header fields at all -- `head.partition(b"\r\n")` (inside
+    `parse_request_head`) then returns an empty separator, `fields`
+    empty. `run` trimmed `self.buffer` by that fabricated length,
+    eating the first two bytes of whatever followed: a second,
+    pipelined request on a kept-alive connection. `request()`'s own
+    helper always injects `Host: x`, which is why nothing else in this
+    file exercises the zero-field case.
+    """
+
+    async def main() -> tuple[bytes, bytes]:
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        theirs.setblocking(False)
+        loop = asyncio.get_running_loop()
+        manager = SimpleNamespace(messages=[], connections={0: None})
+        conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
+        second = with_length()
+        await loop.sock_sendall(theirs, b"POST / HTTP/1.1\r\n\r\n" + second)
+        await conn.run()
+        buffer = bytes(conn.buffer)
+        theirs.close()
+        ours.close()
+        return buffer, second
+
+    buffer, second = asyncio.run(main())
+    assert buffer == second
+
+
 def test_an_unterminated_header_section_is_refused() -> None:
     """A header section past MAX_HEADER_BYTES that never ends is refused."""
     flood = [b"POST / HTTP/1.1\r\n"] + [b"X: y\r\n" * 2000] * 12
