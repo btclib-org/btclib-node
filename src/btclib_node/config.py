@@ -248,7 +248,7 @@ class Config:
         addnode: Sequence[str] = (),
         listen: bool = True,
     ) -> None:
-        """Resolve `chain` and ports, and refuse `pruned=True`."""
+        """Resolve `chain` and ports."""
         self.chain = _resolve_chain(chain)
 
         data_dir = Path(data_dir) if data_dir else Path.home() / ".btclib"

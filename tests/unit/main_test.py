@@ -1790,13 +1790,14 @@ def test_a_pruned_node_deletes_blocks_more_than_the_retained_depth_behind_the_ti
 def test_a_pruned_node_leaves_headers_and_the_active_chain_untouched(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """Pruning deletes block and undo data only -- never a header or a status.
+    """Pruning never drops a header, a status, or the active chain itself.
 
     `BlockIndex` keeps every header this node has ever seen regardless
     of `Config.pruned`, matching Core's own block index -- pruning
-    clears `BLOCK_HAVE_DATA`/`BLOCK_HAVE_UNDO`, never the index entry
-    itself (`node/blockstorage.cpp`'s `UnlinkPrunedFiles`, at
-    bitcoin/bitcoin@ca7162cde5).
+    unlinks the file on disk (`node/blockstorage.cpp`'s
+    `UnlinkPrunedFiles`, at bitcoin/bitcoin@ca7162cde5), it does not
+    drop the `CBlockIndex` entry itself. What that entry's own
+    `BLOCK_HAVE_DATA`/`BLOCK_HAVE_UNDO` do on prune is the next test.
     """
     node = regtest_node(pruned=True)
     chain = generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
@@ -1804,4 +1805,35 @@ def test_a_pruned_node_leaves_headers_and_the_active_chain_untouched(
 
     assert len(block_index.active_chain) == len(chain) + 1
     for block_hash in block_index.active_chain:
+        assert block_index.get_block_info(block_hash) is not None
+
+
+def test_a_pruned_node_clears_downloaded_for_every_block_it_deletes(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Pruning clears `BlockInfo.downloaded`, matching Core's own index entry.
+
+    Core's own `BlockManager::PruneOneBlockFile`
+    (`node/blockstorage.cpp:270-286`, at bitcoin/bitcoin@ca7162cde5)
+    clears `BLOCK_HAVE_DATA`/`BLOCK_HAVE_UNDO` on the `CBlockIndex`
+    entry it prunes -- "any block we prune would have to be downloaded
+    again in order to consider its chain" -- matched here by
+    `BlockInfo.downloaded`, which `_prune_chain` clears for the same
+    range `block_db.prune_up_to` deletes. Genesis (height 0) is the one
+    exception: it is seeded `downloaded=True` and never written to
+    `block_db` in the first place, so it stays `True` regardless of how
+    deep pruning otherwise reaches.
+    """
+    node = regtest_node(pruned=True)
+    chain = generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
+    block_index = connect(node, chain)
+    tip_height = len(block_index.active_chain) - 1
+    oldest_kept = tip_height - MIN_BLOCKS_TO_KEEP + 1
+
+    assert block_index.get_block_info(block_index.active_chain[0]).downloaded is True
+    for height in range(1, oldest_kept):
+        block_hash = block_index.active_chain[height]
+        assert block_index.get_block_info(block_hash).downloaded is False
+    for height in range(oldest_kept, tip_height + 1):
+        block_hash = block_index.active_chain[height]
         assert block_index.get_block_info(block_hash).downloaded is True

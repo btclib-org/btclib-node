@@ -556,7 +556,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "Reduce storage requirements by pruning old blocks: any nonzero value "
             "keeps the last 288 blocks and their undo data (about two days) and "
             "deletes the rest as the chain advances; Core's own -prune=<n> MiB "
-            "target is not read, only whether <n> is zero"
+            "target is not read, only whether <n> is zero; a negative <n> refuses "
+            "to start, matching Core"
         ),
     )
     parser.add_argument(
@@ -674,6 +675,14 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
             rpc_port = rpcbind_port
 
     prune = _resolve_int(args.prune, collected, "prune")
+    if prune is not None and prune < 0:
+        # Core's own wording, node::ApplyArgsManOptions
+        # (node/blockmanager_args.cpp:23-25, at bitcoin/bitcoin@ca7162cde5):
+        # `if (nPruneArg < 0) return util::Error{_("Prune cannot be
+        # configured with a negative value.")};` -- bitcoind refuses to
+        # start rather than treating a negative value as "pruning is on".
+        err_msg = "Prune cannot be configured with a negative value."
+        raise ValueError(err_msg)
     debug = _resolve_bool(args.debug, "debug", default_section)
     connect = _resolve_list(args.connect, collected, "connect")
     listen = _resolve_listen(args.listen, default_section, connect_given=bool(connect))

@@ -50,7 +50,9 @@ being the first height still on disk. Core's own `-prune=<n>` MiB
 target and its `pruneblockchain` RPC are not read: this node honours
 only whether `<n>` is zero, and the retained depth is fixed rather than
 sized from disk usage
-([#705](https://github.com/btclib-org/btclib-node/issues/705)).
+([#705](https://github.com/btclib-org/btclib-node/issues/705)). A
+negative `<n>` refuses to start, Core's own behaviour, rather than
+silently pruning.
 
 A pruned node tells a peer so: `NODE_NETWORK_LIMITED` on its own
 `version`, `NODE_NETWORK` dropped, matching what Core's own pruned node

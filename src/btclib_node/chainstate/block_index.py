@@ -16,12 +16,14 @@ can hold the second half back across more than one block; `db.py`'s own
 docstring is where that staging, shared with `UtxoIndex`, is argued.
 
 `set_downloaded` writes straight through unconditionally, and correctly
-so: its one caller, `p2p.callbacks.block`, only ever runs it on a hash
-not yet downloaded, and every hash `stage_status` puts in `pending` came
-from `_finalize_fork`'s own to_add/to_remove loop, which only ever
-offers `main.update_chain` a hash already downloaded -- `_ready_fork`
-requires it. So a hash `set_downloaded` targets is never one `pending`
-holds.
+so: neither of its callers ever runs it on a hash `pending` holds.
+Every hash `stage_status` puts in `pending` came from `_finalize_fork`'s
+own to_add/to_remove loop, which only ever offers `main.update_chain` a
+hash already downloaded -- `_ready_fork` requires it -- and at or next
+to the tip. `p2p.callbacks.block` only ever sets the flag on a hash not
+yet downloaded, and `main._prune_chain` only ever clears it on one at
+least `MIN_BLOCKS_TO_KEEP` behind the tip, past where the fork
+`_finalize_fork` stages reaches.
 
 `set_status` cannot make that same assumption, because `invalidate`'s
 own caller can name a hash that already connected once. `update_chain`

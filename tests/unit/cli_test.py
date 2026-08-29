@@ -549,6 +549,19 @@ def test_build_config_prune_zero_leaves_pruned_false() -> None:
     assert cli.build_config(["-regtest"]).pruned is False
 
 
+def test_build_config_prune_negative_refuses_to_start() -> None:
+    """A negative `-prune` refuses to start, matching Core's own wording.
+
+    `node::ApplyArgsManOptions` (`node/blockmanager_args.cpp:23-25`, at
+    bitcoin/bitcoin@ca7162cde5): `if (nPruneArg < 0) return
+    util::Error{_("Prune cannot be configured with a negative value.")};`
+    """
+    with pytest.raises(
+        ValueError, match="Prune cannot be configured with a negative value"
+    ):
+        cli.build_config(["-regtest", "-prune", "-1"])
+
+
 def test_build_config_blocksdir_reaches_config(tmp_path: Path) -> None:
     """`-blocksdir` on the command line resolves through to `Config`."""
     config = cli.build_config(["-regtest", "-blocksdir", str(tmp_path)])

@@ -278,13 +278,36 @@ def _finalize_fork(node: Node, to_add: list[Block], to_remove: list[RevBlock]) -
 # trades away that depth of reorg safety by its own nature, on both, and
 # nothing here is a new gap this call opens.
 def _prune_chain(node: Node) -> None:
-    """Delete block and undo data past `MIN_BLOCKS_TO_KEEP` behind the tip."""
+    """Delete block and undo data past `MIN_BLOCKS_TO_KEEP` behind the tip.
+
+    Core's own `BlockManager::PruneOneBlockFile`
+    (`node/blockstorage.cpp:270-286`, at bitcoin/bitcoin@ca7162cde5) clears
+    `BLOCK_HAVE_DATA`/`BLOCK_HAVE_UNDO` on the `CBlockIndex` entry it
+    prunes, "any block we prune would have to be downloaded again in
+    order to consider its chain" -- matched here by clearing
+    `BlockInfo.downloaded` for the same range `block_db.prune_up_to`
+    below is about to delete, over `block_db.pruned_up_to` the same way
+    that call's own idempotency check is, before the data itself is
+    gone. `p2p.callbacks.block`'s own no-op-if-downloaded guard is the
+    reader this matters to: without this, a block re-offered after its
+    data was pruned would be silently discarded rather than re-stored.
+
+    Never clears height 0: `BlockIndex.__init__` seeds genesis with
+    `downloaded=True` and it is never written to `block_db` in the first
+    place (`chain.genesis` is known outright, not fetched), so `range`
+    below starts at `max(1, ...)` rather than at `pruned_up_to + 1`
+    unguarded -- a `target_height` of `0` would otherwise clear a flag
+    for a block this store never held and never asks a peer for again.
+    """
     if not node.config.pruned:
         return
     block_index = node.chainstate.block_index
     target_height = len(block_index.active_chain) - 1 - MIN_BLOCKS_TO_KEEP
     if target_height < 0:
         return
+    for height in range(max(1, node.block_db.pruned_up_to + 1), target_height + 1):
+        block_hash = block_index.active_chain[height]
+        block_index.set_downloaded(block_hash, downloaded=False)
     node.block_db.prune_up_to(target_height, block_index.active_chain.__getitem__)
 
 
