@@ -246,11 +246,12 @@ def build_block(
     two blocks built at the same height carry the same timestamp, which
     is fine for a caller building disjoint forks but not for one
     building a single chain out of order. `time` overrides that dating
-    outright, for the one caller that needs a block recent against the
-    real clock rather than dated relative to `GENESIS_TIME` -- a test of
-    `Node.is_initial_block_download`'s own tip-age half, which every
-    other block this function or `generate_random_chain` builds is far
-    too old to ever satisfy.
+    outright, for a caller that needs a block recent against the real
+    clock rather than dated relative to `GENESIS_TIME` --
+    `Node.is_initial_block_download`'s own tip-age half is never
+    satisfied by a block dated the ordinary way. `generate_random_chain`'s
+    own `tip_time` reaches this same parameter, for the one caller that
+    needs its own chain's tip to qualify.
     """
     header = BlockHeader(
         version=70015,
@@ -268,7 +269,9 @@ def build_block(
     return Block(header, transactions, check_validity=False)
 
 
-def generate_random_chain(length: int, start: bytes) -> list[Block]:
+def generate_random_chain(
+    length: int, start: bytes, *, tip_time: datetime | None = None
+) -> list[Block]:
     """Return `length` solved blocks extending `start`.
 
     `start` is assumed to be its own chain's genesis (height 0), so the
@@ -278,6 +281,17 @@ def generate_random_chain(length: int, start: bytes) -> list[Block]:
     `orphan`) -- which is the height each coinbase commits to (BIP34):
     regtest enforces it from height 1, and a chain meant to connect has
     to carry one that does.
+
+    `tip_time` overrides only the last block's own timestamp, `build_block`'s
+    own `time` reaching that one call site and no other: every earlier
+    block keeps its ordinary `GENESIS_TIME`-relative dating, spaced the
+    way BIP34 height and maturity above already need it to be, and the
+    chain's own tip is what `Node.is_initial_block_download`
+    (`main.update_ibd_status`) reads for its tip-age half -- a caller
+    whose test needs this node to read as caught up names a recent one
+    here rather than the whole chain being dated against the real clock,
+    which two-hour drift and this function's own second-per-height
+    spacing would answer for a chain of any real length.
 
     Every block up to `COINBASE_MATURITY` carries its own coinbase and
     nothing else: nothing this chain has made is old enough yet for a
@@ -311,7 +325,8 @@ def generate_random_chain(length: int, start: bytes) -> list[Block]:
             )
             transactions.append(tx)
             spendable = tx
-        chain.append(build_block(previous_block_hash, transactions, x))
+        time = tip_time if tip_time is not None and x == length - 1 else None
+        chain.append(build_block(previous_block_hash, transactions, x, time=time))
     return chain
 
 

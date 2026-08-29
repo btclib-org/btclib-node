@@ -1531,6 +1531,30 @@ where this file was written rather than where anything was tagged.
   here would mean parsing the whole block body off `block_db` for
   every call, a header lookup paying a block's own cost.
 
+### The feefilter gate reads the same IBD flag Core does (closes #661)
+
+- **`DownloadManager._send_due_feefilters` reads
+  `node.is_initial_block_download`**, matching Core's own
+  `MaybeSendFeefilter` (`net_processing.cpp`, at
+  bitcoin/bitcoin@ca7162cde5), in place of `NodeStatus.BlockSynced`: a
+  second, looser definition of the one Core concept #575 already built
+  a faithful `Node.is_initial_block_download` for. The swap had been
+  tried and reverted once before, in #575's own round 2, because the
+  suite's regtest fixtures dated every block `GENESIS_TIME`-relative
+  (2011), far older than `MAX_TIP_AGE` ever tolerates, so a node that
+  had validated its whole known chain still never left IBD and kept
+  every peer on the top feefilter bucket forever --
+  `tests/functional/p2p/tx_test.py::test_send_tx` was the one test that
+  measurably broke under it.
+- **`generate_random_chain` (`tests/__init__.py`) takes an optional
+  `tip_time`**, reaching `build_block`'s own `time` override for only
+  the chain's last block, so a caller whose test needs a recent tip
+  gets one without every earlier block losing the `GENESIS_TIME`-relative
+  dating BIP34 height and coinbase-maturity arithmetic elsewhere in the
+  same chain still depend on. `test_send_tx` is that caller now, both
+  of its nodes' chains built with a tip timestamped against the real
+  clock, closing the gap #575's round 2 left open.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
