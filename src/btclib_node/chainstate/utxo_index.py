@@ -327,6 +327,29 @@ class UtxoIndex:
         Removes every outpoint it created and restores every prevout it
         spent, staged the same way `add_block` stages its own changes.
 
+        `to_add` runs before `to_remove`, not the reverse order
+        `add_block` itself builds the two lists in, because an ordinary
+        chained transaction -- one spending an output another
+        transaction earlier in the *same* block created -- puts that
+        output's outpoint in both: `to_remove` from being created,
+        `to_add` from being spent before this block ever finalized it
+        to disk. Popping it in `to_remove` first would look it up while
+        it is in neither `updated_utxo_set` nor the database -- its net
+        effect on the persisted set is nothing, both before this block
+        and after it -- and raise `"output not found"` on a block that
+        did nothing wrong. Restoring it in `to_add` first stages it
+        back into `updated_utxo_set`, where `to_remove`'s own `_pop`
+        then finds and removes it, netting to the same nothing
+        `add_block` itself computed. Every other entry is unaffected by
+        the order: `to_add`'s outpoints predate this block and never
+        collide with `to_remove`'s own, which this block alone created,
+        a valid block spending a given outpoint at most once. Core's
+        `DisconnectBlock` (`src/validation.cpp`, at
+        bitcoin/bitcoin@05e49b342f) reaches the same result walking one
+        transaction at a time in reverse block order -- spend its own
+        outputs, then restore its own inputs -- rather than in the two
+        flat passes here (btclib-org/btclib-node#634).
+
         A restored prevout is unmarked from `removed_utxos` before it is
         put back, not merely put back: `add_block` staged that spend
         with `_mark_removed` whenever the prevout was already durable
@@ -351,6 +374,11 @@ class UtxoIndex:
         this call has put it back -- would connect instead of being
         refused `bad-txns-BIP30` (btclib-org/btclib-node#586).
         """
+        for out_point, coin in rev_block.to_add:
+            out_point_bytes = out_point.serialize(check_validity=False)
+            self._unmark_removed(out_point_bytes)
+            self._put(out_point_bytes, coin)
+
         for out_point in rev_block.to_remove:
             out_point_bytes = out_point.serialize(check_validity=False)
 
@@ -364,11 +392,6 @@ class UtxoIndex:
             else:
                 err_msg = "output not found"
                 raise ChainstateInconsistencyError(err_msg)
-
-        for out_point, coin in rev_block.to_add:
-            out_point_bytes = out_point.serialize(check_validity=False)
-            self._unmark_removed(out_point_bytes)
-            self._put(out_point_bytes, coin)
 
     def get_coin(self, prevout_bytes: bytes) -> Coin | None:
         """Return the `Coin` a serialized outpoint still resolves to, or `None`.
