@@ -1098,6 +1098,57 @@ def test_is_limited_peer_is_true_only_for_limited_without_network() -> None:
     assert not download_module._is_limited_peer(a_conn(1, version_message=None))
 
 
+def test_can_serve_blocks_is_true_for_either_service_bit_and_no_message() -> None:
+    """`_can_serve_blocks`: `NODE_NETWORK` or `NODE_NETWORK_LIMITED`, either."""
+    assert download_module._can_serve_blocks(
+        a_conn(1, version_message=a_version(_FULL))
+    )
+    assert download_module._can_serve_blocks(
+        a_conn(1, version_message=a_version(_LIMITED))
+    )
+    assert not download_module._can_serve_blocks(
+        a_conn(1, version_message=a_version(ServiceFlags.NODE_WITNESS))
+    )
+    # No `version_message` yet reads permissively, the same direction
+    # `_is_limited_peer`'s own same-shaped default does.
+    assert download_module._can_serve_blocks(a_conn(1, version_message=None))
+
+
+def test_a_peer_that_cannot_serve_blocks_gets_no_block_work() -> None:
+    """A peer with neither service bit is offered no candidate (closes #725).
+
+    Matches Core's own `CanServeBlocks` gate (net_processing.cpp:1254,
+    at bitcoin/bitcoin@ca7162cde5), rather than the whole download
+    window this peer used to be offered, as though it were archival.
+    """
+    wanted = [a_hash(n) for n in range(1, 4)]
+    witness_only = a_conn(1, version_message=a_version(ServiceFlags.NODE_WITNESS))
+    manager = make_manager([witness_only], block_index=FakeBlockIndex(wanted))
+    manager.block_download()
+    assert not witness_only.sent
+    assert witness_only.download_queue == []
+
+
+def test_a_peer_that_cannot_serve_blocks_leaves_work_for_the_next_peer() -> None:
+    """A peer that cannot serve blocks does not stall a peer that can.
+
+    Mirrors `test_a_limited_peer_with_nothing_in_reach_is_skipped_not_stalled`
+    below: the loop's own early `return` fires only once neither
+    `waiting` nor `pending` holds anything for *any* connection, so a
+    peer `_can_serve_blocks` refuses is `continue`d past rather than
+    ending the pass for everybody after it.
+    """
+    wanted = [a_hash(n) for n in range(1, 4)]
+    witness_only = a_conn(1, version_message=a_version(ServiceFlags.NODE_WITNESS))
+    healthy = a_conn(2, version_message=a_version(_FULL))
+    manager = make_manager([witness_only, healthy], block_index=FakeBlockIndex(wanted))
+    manager.block_download()
+    assert not witness_only.sent
+    assert witness_only.download_queue == []
+    (getdata,) = only(healthy, GetData)
+    assert hashes_of(getdata) == wanted
+
+
 def test_a_limited_peer_without_network_skips_a_block_far_behind_its_own_tip(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
