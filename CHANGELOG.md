@@ -2008,6 +2008,22 @@ where this file was written rather than where anything was tagged.
   shape, not a small refactor away from the other two. Left open,
   tracked forward as issue #698.
 
+### `test_download` no longer copies a running node's `LOCK` files (closes #683)
+
+- **`tests/functional/p2p/download_test.py::test_download` copies its
+  bootstrap node's directory with `shutil.ignore_patterns("LOCK")`**,
+  seeding the other nine download peers from everything but the three
+  `LOCK` files RocksDB keeps open for as long as a store is
+  (`src/btclib_node/db.py`) -- the bootstrap node stays running
+  throughout the copy, as a peer the rest of the test connects to.
+  Windows refuses to copy a file another handle still holds where
+  POSIX does not, so `shutil.copytree` failed on `windows-latest` with
+  `WinError 32` on those three files. Excluding them costs nothing a
+  fresh peer needs: RocksDB re-creates a store's `LOCK` file on every
+  `Rdict` open regardless of what, if anything, was already at that
+  path, measured directly by opening a `Node` against a directory
+  copied this way.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
