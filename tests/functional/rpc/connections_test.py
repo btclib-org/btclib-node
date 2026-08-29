@@ -139,6 +139,30 @@ def test_many_unpaced_calls_over_one_session_transport_do_not_reset(
     this many unpaced calls was never enough to reliably reproduce
     either (the issue's own report is one failure in roughly two
     thousand).
+
+    Failure discriminator (issue #664): this is 300 sequential real
+    round trips over one socket, each on `bitcoin_core_rpc.transport`'s
+    own fresh, per-call timeout rather than one shared across all 300,
+    so a single-test `FetchError: ... timed out` here means one of 300
+    individually stalled that long, not merely ordinary `-n auto`
+    contention from this suite's own workers -- a far larger exposure to
+    external load than any other test carries, for a shape neither this
+    file nor `CLAUDE.md`'s own coverage-floor bullets (issue #372, issue
+    #617) already cover. Measured during the review of
+    iss-640-642-rpc-connection-lifetime-and-batch, round 3: failed once
+    with a sibling session's own worktree running a full pytest
+    `-n auto` suite concurrently at 70-95% CPU per worker (`ps aux` at
+    the time), passed standalone every time (4 runs) and in whole-suite
+    runs both before and after, including one at comparable load with
+    that same sibling contention still running. Measured again fixing
+    issue #653: failed twice and passed once in three whole-suite runs
+    with `uptime` in the triple digits (up to 331 on this ten-core
+    machine, from unrelated sessions elsewhere on the box, confirmed
+    absent from this test's own worktree via `ps aux`), then passed
+    reliably once `uptime` came back down into the double digits. A
+    failure here with the rest of the suite clean and `uptime` this high
+    is that discriminator, not evidence this test's own diff regressed
+    anything; rerun standalone or at ordinary load before trusting it.
     """
     node = rpc_node
     wait_until_listening(node.rpc_manager)
