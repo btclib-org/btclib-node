@@ -221,7 +221,7 @@ def test_send_version_advertises_node_network_when_not_pruned() -> None:
 
 
 def test_send_version_drops_node_network_when_pruned() -> None:
-    """A pruned node's `version` keeps `NODE_NETWORK_LIMITED`, drops `NODE_NETWORK`.
+    """A pruned node's own `version` keeps `LIMITED`, drops `NODE_NETWORK`.
 
     Core's own `g_local_services` (`src/init.cpp`, at
     bitcoin/bitcoin@ca7162cde5): `NODE_NETWORK_LIMITED | NODE_WITNESS` from

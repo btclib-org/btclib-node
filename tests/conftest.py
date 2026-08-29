@@ -193,7 +193,7 @@ def unstarted_node_context(tmp_path: Path, *, pruned: bool = False) -> Iterator[
 
 
 @pytest.fixture
-def regtest_node(tmp_path: Path) -> Iterator[Callable[[], Node]]:
+def regtest_node(tmp_path: Path) -> Iterator[Callable[..., Node]]:
     """Give out header-synced regtest nodes, each closed at teardown.
 
     Every node it hands out shares `tmp_path`: a test that checks a

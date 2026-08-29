@@ -617,7 +617,7 @@ def test_prune_up_to_never_unlinks_the_file_still_open_for_writing(
     """
     block_db = a_db(None)
     chain = generate_random_chain(3, RegTest().genesis.hash)
-    hashes, hash_at_height = _hashes_and_rev_blocks(block_db, chain)
+    _hashes, hash_at_height = _hashes_and_rev_blocks(block_db, chain)
 
     block_db.prune_up_to(3, hash_at_height)
 
@@ -628,7 +628,7 @@ def test_prune_up_to_never_unlinks_the_file_still_open_for_writing(
 def test_prune_up_to_closes_a_stale_open_rev_file_before_unlinking_it(
     a_db: Callable[[Path | None], BlockDB],
 ) -> None:
-    """A `.rev` file `open_rev_file` still points at is closed, not just unlinked.
+    """A `.rev` file `open_rev_file` still names is closed, not just unlinked.
 
     `finalize` opens the `.rev` file named for a block's own `.blk` file
     index (`btclib-org/btclib-node#116`), not for whatever `.blk` file is

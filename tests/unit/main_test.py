@@ -1750,7 +1750,7 @@ def test_update_ibd_status_latches_off_and_never_back_as_the_tip_ages() -> None:
 
 
 def test_an_unpruned_node_never_calls_prune_up_to(
-    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`_prune_chain` is a no-op unless `Config.pruned` is set."""
     node = regtest_node(pruned=False)
@@ -1758,12 +1758,14 @@ def test_an_unpruned_node_never_calls_prune_up_to(
     monkeypatch.setattr(
         node.block_db, "prune_up_to", lambda target, _hash: calls.append(target)
     )
-    connect(node, generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash))
+    connect(
+        node, generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
+    )
     assert calls == []
 
 
 def test_a_pruned_node_deletes_blocks_more_than_the_retained_depth_behind_the_tip(
-    regtest_node: Callable[[], Node],
+    regtest_node: Callable[..., Node],
 ) -> None:
     """A pruned node keeps only the last `MIN_BLOCKS_TO_KEEP` blocks on disk.
 
@@ -1786,7 +1788,7 @@ def test_a_pruned_node_deletes_blocks_more_than_the_retained_depth_behind_the_ti
 
 
 def test_a_pruned_node_leaves_headers_and_the_active_chain_untouched(
-    regtest_node: Callable[[], Node],
+    regtest_node: Callable[..., Node],
 ) -> None:
     """Pruning deletes block and undo data only -- never a header or a status.
 

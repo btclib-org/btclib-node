@@ -5,13 +5,13 @@
 """A pruned node, over a real connection: what it serves and what it drops.
 
 The unit tests (`block_db_test.py`, `p2p/callbacks_test.py`, `main_test.py`)
-cover the mechanism -- `BlockDB.prune_up_to`'s own deletion, `main._prune_chain`'s
-own call into it, and `_below_prune_threshold`'s own disconnect decision --
-each against a double standing in for the rest of the node. What this
-checks is the same three things over an actual socket, between two real
-`Node`s: a pruned node's own `version` on the wire, an old `getdata`
-answered by dropping the connection rather than by a `notfound`, and a
-recent one still answered in full.
+cover the mechanism -- `BlockDB.prune_up_to`'s own deletion,
+`main._prune_chain`'s own call into it, and `_below_prune_threshold`'s own
+disconnect decision -- each against a double standing in for the rest of
+the node. What this checks is the same three things over an actual socket,
+between two real `Node`s: a pruned node's own `version` on the wire, an old
+`getdata` answered by dropping the connection rather than by a `notfound`,
+and a recent one still answered in full.
 """
 
 from collections import deque
@@ -77,8 +77,10 @@ class _RecordingDeque(deque[_Message]):
 
 
 @pytest.fixture
-def pruned_server_and_client(tmp_path: Path) -> Iterator[tuple[Node, Node]]:
-    """A pruned, fully-synced server and a plain client, connected.
+def pruned_server_and_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[tuple[Node, Node]]:
+    """Build a pruned, fully-synced server and a plain client, connected.
 
     The server is built `pruned=True` and driven by its own running
     loop -- headers added and every block marked downloaded, the same
@@ -112,7 +114,7 @@ def pruned_server_and_client(tmp_path: Path) -> Iterator[tuple[Node, Node]]:
     # own `GetData`. Silencing `step` keeps every `block` message these
     # tests see traceable to the one `GetData` each of them sends by
     # hand.
-    client.download_manager.step = lambda: None
+    monkeypatch.setattr(client.download_manager, "step", lambda: None)
     server.start()
     client.start()
     wait_until_listening(server.p2p_manager)

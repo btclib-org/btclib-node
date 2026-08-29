@@ -527,7 +527,7 @@ class BlockDB:
         self._release(location.filename, is_block=False)
 
     def _release(self, filename: str, *, is_block: bool) -> None:
-        """Drop one live reference to `filename`, unlinking it once none is left.
+        """Drop one live reference to `filename`, unlinking it once none remain.
 
         Core's own `UnlinkPrunedFiles` (`node/blockstorage.cpp`, at
         bitcoin/bitcoin@ca7162cde5) reaches the same file once every block

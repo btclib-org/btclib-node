@@ -717,7 +717,7 @@ def _below_prune_threshold(node: Node, block_hash: bytes) -> bool:
     if block_info is None:
         return False
     tip_height = len(block_index.active_chain) - 1
-    return tip_height - block_info.index > MIN_BLOCKS_TO_KEEP + 2  # noqa: PLR2004
+    return tip_height - block_info.index > MIN_BLOCKS_TO_KEEP + 2
 
 
 def _serve_getdata_item(

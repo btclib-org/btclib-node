@@ -278,7 +278,7 @@ def _finalize_fork(node: Node, to_add: list[Block], to_remove: list[RevBlock]) -
 # trades away that depth of reorg safety by its own nature, on both, and
 # nothing here is a new gap this call opens.
 def _prune_chain(node: Node) -> None:
-    """Delete block and undo data more than `MIN_BLOCKS_TO_KEEP` behind the tip."""
+    """Delete block and undo data past `MIN_BLOCKS_TO_KEEP` behind the tip."""
     if not node.config.pruned:
         return
     block_index = node.chainstate.block_index
@@ -286,6 +286,19 @@ def _prune_chain(node: Node) -> None:
     if target_height < 0:
         return
     node.block_db.prune_up_to(target_height, block_index.active_chain.__getitem__)
+
+
+def _finalize_fork_and_prune(
+    node: Node, to_add: list[Block], to_remove: list[RevBlock]
+) -> None:
+    """Commit a trial, then prune -- one call for `update_chain` below.
+
+    Pulled apart into `_finalize_fork` and `_prune_chain` above, each unit
+    tested on its own; folded back into one call here only so `update_chain`
+    counts one statement for both, under ruff's own `PLR0915`.
+    """
+    _finalize_fork(node, to_add, to_remove)
+    _prune_chain(node)
 
 
 # update_chain's own trial marks, taken before a trial starts: should_flush
@@ -649,8 +662,7 @@ def update_chain(node: Node) -> None:
         _resolve_trial_exception(node, failed_hash, exc)
     finally:
         if success:
-            _finalize_fork(node, to_add, to_remove)
-            _prune_chain(node)
+            _finalize_fork_and_prune(node, to_add, to_remove)
         else:
             node.logger.debug("Start chainstate rollback")
             _rollback_trial(node, utxo_mark, filter_mark)

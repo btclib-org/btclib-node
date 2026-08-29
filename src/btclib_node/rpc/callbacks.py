@@ -810,9 +810,7 @@ def _find_transaction(
         # same distinction, `BlockDB.prune_up_to`'s own docstring is
         # where deleting by height rather than by file is argued.
         if block_info.index <= node.block_db.pruned_up_to:
-            raise RpcError(
-                RpcErrorCode.MISC_ERROR, "Block not available (pruned data)"
-            )
+            raise RpcError(RpcErrorCode.MISC_ERROR, "Block not available (pruned data)")
         raise RpcError(
             RpcErrorCode.MISC_ERROR, "Block not available (not fully downloaded)"
         )

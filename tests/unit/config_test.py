@@ -105,7 +105,7 @@ def test_rpc_host_defaults_to_localhost_not_every_interface() -> None:
 
 
 def test_pruned_true_builds_a_config() -> None:
-    """`pruned=True` constructs rather than refusing, since btclib-org/btclib-node#601."""
+    """`pruned=True` constructs rather than refusing, closing #601."""
     assert Config(chain="regtest", pruned=True).pruned is True
 
 

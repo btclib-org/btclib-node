@@ -314,8 +314,6 @@ class InvalidChainTypeError(TypeError):
         super().__init__(f"chain must be a Chain or str, not {type(chain).__name__}")
 
 
-
-
 class PrevoutCountMismatchError(ValueError):
     """`check_transactions` was handed a prevout list the wrong length."""
 

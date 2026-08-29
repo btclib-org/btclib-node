@@ -800,7 +800,7 @@ def test_a_block_the_index_knows_and_the_store_does_not_is_not_fully_downloaded(
 
 
 def test_a_block_below_the_stores_own_pruned_height_is_pruned_data() -> None:
-    """`getrawtransaction` answers 'Block not available (pruned data)' once pruned.
+    """`getrawtransaction` answers 'Block not available (pruned data)' pruned.
 
     The same missing block as the test above, except `block_db.pruned_up_to`
     now covers its own height -- `BlockDB.prune_up_to`'s own doing on a
@@ -1826,7 +1826,7 @@ def test_blockchain_info_s_initialblockdownload_reads_the_node_s_own_latch() -> 
 
 
 def test_blockchain_info_s_pruned_reads_config() -> None:
-    """`pruned` is `Config.pruned`, and carries no `pruneheight` when `False`."""
+    """`pruned` is `Config.pruned`, with no `pruneheight` when `False`."""
     node = a_blockchain_info_node(pruned=False)
     result = get_blockchain_info(node, _CONN, [])
     assert result["pruned"] is False
@@ -1834,7 +1834,7 @@ def test_blockchain_info_s_pruned_reads_config() -> None:
 
 
 def test_blockchain_info_s_pruneheight_is_the_first_unpruned_block() -> None:
-    """`pruneheight` is `block_db.pruned_up_to + 1`, present once `pruned` is true.
+    """`pruneheight` is `pruned_up_to + 1`, present once `pruned` holds.
 
     Core's own "the first block unpruned, all previous blocks were
     pruned" (`rpc/blockchain.cpp:1400`, at bitcoin/bitcoin@ca7162cde5).
