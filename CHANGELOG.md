@@ -1760,6 +1760,23 @@ where this file was written rather than where anything was tagged.
   named the port a wait gave up on, so a future collision stays
   legible without a change there.
 
+### A page for running a node, and what a sync costs (closes #577, closes #576)
+
+- **`docs/source/running_a_node.md`** covers the command against each of
+  the four chains, `-connect`/`-addnode` for pointing at a peer of one's
+  own, reading a sync's progress off `getblockchaininfo`, the fourteen
+  RPC methods, and what this node validates against what it does not,
+  linking the issues rather than restating them; `README.md` points at
+  it, and `index.rst`'s toctree carries it into the docs build.
+- **The page also carries this tree's first measurement of an initial
+  block download** (#576): a mainnet header sync, block validation over
+  two ranges of different density, and the store's own cost curve, each
+  dated to the commit it was measured against. The store figure is the
+  sqlite3 store this tree used at the time of the measurement, not the
+  RocksDB store it ships now (#641); no committed script exists here to
+  re-run it, so the page says the RocksDB figure is unmeasured rather
+  than guessing at one.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

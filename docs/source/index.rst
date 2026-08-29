@@ -8,6 +8,7 @@ btclib-node documentation
    :caption: Contents:
 
    README <readme_link.md>
+   RUNNING A NODE <running_a_node.md>
    PYTHON PACKAGE <modules>
    CONTRIBUTING <contributing_link.md>
    REVIEWING <reviewing_link.md>
