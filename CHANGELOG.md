@@ -2309,6 +2309,21 @@ where this file was written rather than where anything was tagged.
   per-peer chainwork-ranked index of its own for `download.py` to read
   instead.
 
+### The free-threaded cell reports instead of gating (closes #723)
+
+- **`test.yml`'s `free-threaded` job runs `3.14t` beside `coverage`'s
+  `3.14` but is out of `test-passed`'s own `needs:`** -- `rocksdict`
+  has never published a `cp314t` wheel or an sdist on any release, so
+  the job cannot install this tree's own store and would otherwise
+  block every merge on a wheel no branch here can ship. Building
+  `rocksdict` from its own repository in CI was considered and
+  rejected: it is a Rust crate compiling RocksDB's own C++ source, and
+  that cost is not owed to a job whose entire purpose is a report
+  nobody is blocked on.
+- **`REPOSITORY.md`'s concurrent-job-ceiling section names the row's
+  new place**, still costing the same slot at the ceiling it always
+  did, no longer gated.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
