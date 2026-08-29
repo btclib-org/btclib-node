@@ -393,9 +393,8 @@ def test_a_kept_alive_connection_reads_a_second_request_off_the_same_socket() ->
     """A reply that keeps the connection open lets a second request through.
 
     Neither request here carries a `Connection` header, so both default
-    to HTTP/1.1's own keep-alive (issue #640): `async_send` re-adds this
-    connection to `manager.connections` and calls `run` again rather
-    than closing, and the second request queued this way is
+    to HTTP/1.1's own keep-alive (issue #640): `async_send` calls `run`
+    again rather than closing, and the second request queued this way is
     `manager.messages`'s second entry, off the very socket the first
     arrived on. The reply itself carries no `Connection` header of its
     own -- HTTP/1.1's default needs none.

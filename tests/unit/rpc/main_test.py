@@ -236,25 +236,36 @@ def test_stop_is_asked_of_the_batch_not_of_its_last_request() -> None:
     assert not sent
 
 
-def test_an_answered_connection_is_forgotten() -> None:
-    """handle_rpc pops a connection's own entry once it has answered it.
+def test_an_answered_connection_is_left_for_async_send_to_forget() -> None:
+    """handle_rpc leaves a connection's own entry for `async_send` to remove.
 
-    The entry used to stay in `connections` for the life of the node,
-    every request growing a dict nothing ever shrank (issue #64).
+    `handle_rpc` used to pop this entry itself, right after scheduling
+    `conn.send`, on the theory that every reply eventually closes --
+    every request growing `connections` without bound otherwise, since
+    nothing else shrank it (issue #64). Once a reply could keep the
+    connection open instead (issue #640), that pop could run after
+    `RpcConnection.async_send` had already read the *next* request off
+    the same, still-open connection and queued it, on `RpcManager`'s own
+    thread -- removing the entry that next request's own answer needed
+    rather than the one this call was meant to retire, and losing that
+    next request's answer with nothing logged on either side (issue
+    #688). `RpcConnection.async_send` is the sole owner of this dict's
+    membership now: this test pins `handle_rpc`'s own side of that, that
+    it touches `connections` not at all.
     """
     node, _, _, _ = make_node([PING])
     assert 0 in node.rpc_manager.connections
     handle_rpc(node)
-    assert 0 not in node.rpc_manager.connections
+    assert 0 in node.rpc_manager.connections
 
 
-def test_a_stopped_connection_is_forgotten_too() -> None:
-    """handle_rpc pops the connection's own entry for a stop request too."""
+def test_a_stopped_connection_is_left_registered_too() -> None:
+    """handle_rpc does not pop the connection's own entry for `stop` either."""
     stop = {"jsonrpc": "2.0", "id": "a", "method": "stop"}
     node, _, _, stopped = make_node([stop])
     handle_rpc(node)
     assert stopped == [True]
-    assert 0 not in node.rpc_manager.connections
+    assert 0 in node.rpc_manager.connections
 
 
 def test_a_message_for_a_connection_that_is_gone_is_dropped() -> None:
