@@ -1555,6 +1555,26 @@ where this file was written rather than where anything was tagged.
   of its nodes' chains built with a tip timestamped against the real
   clock, closing the gap #575's round 2 left open.
 
+### A one-member JSON-RPC batch is answered as an array (closes #653)
+
+- **`RpcConnection.async_send` now unwraps a reply to a bare object off
+  `self.is_batch`, set by `run` from whether the request it just parsed
+  was a JSON array, rather than off `len(response) == 1`.** A lone
+  request and a one-member batch both reached `async_send` as a
+  `response` list of the same one-element shape, with nothing left at
+  that point to tell the two apart, so a batch of exactly one member
+  used to be unwrapped the same way a lone request is. Matches Core's
+  own `ExecuteHTTPRPC`, which decides singleton against array at parse
+  time (`valRequest.isObject()` against `valRequest.isArray()`) and
+  answers an array of any size as an array, `UniValue::VARR`, never
+  unwrapped for holding only one member (`HTTPReq_JSONRPC`,
+  `src/httprpc.cpp:114` and `:135-169`, at bitcoin/bitcoin@ca7162cde5).
+  An empty `[]` batch is unchanged, still answered as the single
+  `Invalid request` object `tests/functional/rpc/errors_test.py::
+  test_an_empty_batch_does_not_end_the_node` already pins -- a separate
+  question this tree already answered before this issue and does not
+  revisit here.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

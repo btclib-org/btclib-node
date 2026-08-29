@@ -280,7 +280,7 @@ def test_the_response_is_crlf_framed_and_the_socket_closed() -> None:
 
 
 def test_a_response_of_several_stays_a_list() -> None:
-    """async_send does not unwrap a response of more than one entry."""
+    """async_send does not unwrap a batch's own response of several entries."""
 
     async def main() -> bytes:
         ours, theirs = socket.socketpair()
@@ -293,6 +293,10 @@ def test_a_response_of_several_stays_a_list() -> None:
             cast("RpcManager", SimpleNamespace(messages=[], connections={})),
             0,
         )
+        # What `run` would have set off a real two-member batch: this
+        # calls `async_send` directly, bypassing `run` and the parse it
+        # would otherwise read this off (issue #653).
+        conn.is_batch = True
         await conn.async_send([{"id": "a"}, {"id": "b"}])
         data = await loop.sock_recv(theirs, 4096)
         theirs.close()
@@ -300,6 +304,41 @@ def test_a_response_of_several_stays_a_list() -> None:
 
     body = asyncio.run(main()).partition(b"\r\n\r\n")[2]
     assert json.loads(body) == [{"id": "a"}, {"id": "b"}]
+
+
+def test_a_response_of_one_stays_a_list_where_the_request_was_a_batch() -> None:
+    """A one-member batch's own reply stays an array, not a bare object.
+
+    `async_send` used to unwrap purely from `len(response) == 1`, which
+    cannot tell a lone request from a one-member batch apart -- both
+    reached it as a response list of the same one-element shape. `run`
+    reads that off the request instead, before it is lost, matching
+    Core's own `ExecuteHTTPRPC`: an array of any size, `valRequest.
+    isArray()`, is always answered as an array, `UniValue::VARR`
+    (`HTTPReq_JSONRPC`, `src/httprpc.cpp:135-169`, at
+    bitcoin/bitcoin@ca7162cde5) -- never unwrapped for having only one
+    member (issue #653).
+    """
+
+    async def main() -> bytes:
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        theirs.setblocking(False)
+        loop = asyncio.get_running_loop()
+        conn = RpcConnection(
+            loop,
+            ours,
+            cast("RpcManager", SimpleNamespace(messages=[], connections={})),
+            0,
+        )
+        conn.is_batch = True
+        await conn.async_send([{"id": "a"}])
+        data = await loop.sock_recv(theirs, 4096)
+        theirs.close()
+        return data
+
+    body = asyncio.run(main()).partition(b"\r\n\r\n")[2]
+    assert json.loads(body) == [{"id": "a"}]
 
 
 def test_a_kept_alive_connection_reads_a_second_request_off_the_same_socket() -> None:
