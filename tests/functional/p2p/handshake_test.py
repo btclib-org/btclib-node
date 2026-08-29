@@ -7,9 +7,17 @@
 from typing import TYPE_CHECKING
 
 from btclib_node import Node
+from btclib_node.chains import RegTest
 from btclib_node.config import Config
-from btclib_node.constants import P2pConnStatus
-from tests import get_random_port, local_addr, wait_until, wait_until_listening
+from btclib_node.constants import NodeStatus, P2pConnStatus
+from btclib_node.main import update_chain
+from tests import (
+    generate_random_chain,
+    get_random_port,
+    local_addr,
+    wait_until,
+    wait_until_listening,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -55,6 +63,65 @@ def test_simple_connection(tmp_path: Path) -> None:
     wait_until(lambda: len(node2.p2p_manager.connections))
     connection = node2.p2p_manager.connections[0]
     wait_until(lambda: connection.status == P2pConnStatus.Connected)
+
+    node1.stop()
+    node2.stop()
+
+
+def test_a_connecting_node_carries_its_own_real_tip_height(tmp_path: Path) -> None:
+    """A node past genesis carries its own real height (closes #722).
+
+    `chain_length` blocks are added and validated through a real
+    `update_chain` loop, the same shape
+    `tests/functional/p2p/pruning_test.py`'s own fixture builds a synced
+    server with, so `node1.best_height` is proven driven by
+    `main._finalize_fork` itself rather than written directly by this
+    test -- and the peer this connects to reads it off the wire, not off
+    `node1`'s own attribute, so what is checked is what `send_version`
+    actually put in the `version` message.
+    """
+    chain_length = 5
+    chain = generate_random_chain(chain_length, RegTest().genesis.hash)
+    node1 = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path / "node1",
+            p2p_port=get_random_port(),
+            allow_rpc=False,
+        )
+    )
+    block_index = node1.chainstate.block_index
+    block_index.add_headers([block.header for block in chain])
+    node1.status = NodeStatus.HeaderSynced
+    for block in chain:
+        node1.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    for _ in range(len(chain)):
+        update_chain(node1)
+    assert node1.best_height == chain_length
+    node1.chainstate.flush()
+    node1.start()
+    wait_until_listening(node1.p2p_manager)
+
+    node2 = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path / "node2",
+            p2p_port=get_random_port(),
+            allow_rpc=False,
+        )
+    )
+    node2.start()
+    wait_until_listening(node2.p2p_manager)
+
+    node2.p2p_manager.connect(local_addr(node1.p2p_port))
+    wait_until(lambda: len(node2.p2p_manager.connections))
+    connection = node2.p2p_manager.connections[0]
+    wait_until(lambda: connection.status == P2pConnStatus.Connected)
+
+    version = connection.version_message
+    assert version is not None
+    assert version.start_height == chain_length
 
     node1.stop()
     node2.stop()

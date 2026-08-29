@@ -75,6 +75,10 @@ def a_connection(
     node = SimpleNamespace(
         chain=RegTest(),
         config=SimpleNamespace(pruned=False),
+        # what `send_version` now carries as `start_height`: 0, matching
+        # a fresh `Node`'s own initial value before `main._finalize_fork`
+        # ever writes it (`__init__.py`). btclib-org/btclib-node#722
+        best_height=0,
         logger=SimpleNamespace(
             warning=warning, info=lambda *a: None, debug=lambda *a: None
         ),
@@ -196,6 +200,35 @@ def test_send_version_announces_the_name_and_the_installed_version() -> None:
     assert user_agent == f"/btclib:{version('btclib-node')}/".encode()
 
 
+def test_send_version_carries_this_nodes_own_best_height() -> None:
+    """`start_height` on the wire is `manager.node.best_height` (closes #722).
+
+    Core's own `PushNodeVersion` (`net_processing.cpp:1673`, at
+    bitcoin/bitcoin@ca7162cde5) fills `my_height` from `m_best_height`;
+    `Node.best_height`'s own comment (`__init__.py`) is where reading it
+    here, off `Node`'s own thread's writes without a lock, is argued.
+    """
+    connection, _ = a_connection()
+    connection.manager.node.best_height = 741
+    manager = cast("Any", connection.manager)
+    manager.pending_outbound_nonces = set()
+    manager.add_pending_outbound_nonce = manager.pending_outbound_nonces.add
+    manager.port = 18444
+    sent: list[bytes] = []
+
+    async def _send(data: bytes) -> None:
+        sent.append(data)
+
+    connection._send = _send  # type: ignore[method-assign]
+
+    with connection.client:
+        asyncio.run(connection.send_version())
+
+    (framed,) = sent
+    start_height = Version.parse(Message.parse(framed).payload).start_height
+    assert start_height == 741
+
+
 def test_send_version_advertises_node_network_when_not_pruned() -> None:
     """An unpruned node's `version` carries `NODE_NETWORK`, among the rest."""
     connection, _ = a_connection()
@@ -311,6 +344,9 @@ def a_running_connection(
         chain=RegTest(),
         status=NodeStatus.Starting,
         config=SimpleNamespace(pruned=False),
+        # `send_version`'s own `start_height` (btclib-org/btclib-node#722),
+        # 0 matching a fresh `Node`'s own initial value (`__init__.py`).
+        best_height=0,
         logger=SimpleNamespace(
             warning=lambda *a: None, info=lambda *a: None, debug=lambda *a: None
         ),
