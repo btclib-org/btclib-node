@@ -35,7 +35,6 @@ from btclib_node.rpc.errors import RpcErrorCode, error_msg
 if TYPE_CHECKING:
     import socket
     from collections.abc import Callable
-    from concurrent.futures import Future
 
     from btclib_node.rpc.manager import RpcManager
 
@@ -320,7 +319,6 @@ class RpcConnection:
         # everything held so far on the other -- btclib-org/btclib-node#466,
         # the same shape btclib-org/btclib-node#438 fixed on the p2p side.
         self.buffer = bytearray()
-        self.task: Future[None] | None = None
         self.request_timeout = request_timeout
         # Recomputed by `run` from each request's own `Connection`
         # header, `False` until the first one is read: `async_send`
@@ -358,9 +356,25 @@ class RpcConnection:
         self._parse_error_reply: asyncio.Task[None] | None = None
 
     def close(self) -> None:
-        """Cancel the running `run` task, if any, and close `client`."""
-        if self.task:
-            self.task.cancel()
+        """Close `client`.
+
+        Cancelling whatever this connection is doing -- reading a
+        request, writing a reply -- is `RpcManager.stop`'s own job:
+        its `asyncio.all_tasks(self.loop)` sweep already reaches
+        whichever task is actually live for this connection, cancelled
+        and driven to completion before this is ever called, so this
+        method does not need a handle of its own to end one -- an
+        earlier version kept one anyway (`self.task`), set once at
+        accept and never again, so past a connection's first request
+        it named a long-finished `Future` and cancelled nothing
+        (issue #714). Core's own per-connection object,
+        `HTTPRemoteClient`, carries no such handle either:
+        `HTTPServer::ClearConnectedClients` (`src/httpserver.cpp:1160-1167`,
+        at bitcoin/bitcoin@ca7162cde5), its own shutdown-time sweep,
+        drops whatever is left in `m_connected` the same unconditional
+        way, once its own socket-handling thread has already been
+        joined, rather than reaching into a live worker to end it.
+        """
         self.client.close()
 
     async def _recv_until(

@@ -2133,6 +2133,25 @@ where this file was written rather than where anything was tagged.
   3.14, and a "two clocks" story the source does not support -- fixed
   here to the call path and deadline arithmetic actually traced.
 
+### `RpcConnection.close` no longer cancels a stale handle (closes #714)
+
+- **`RpcConnection` no longer carries a `task` attribute, and `close`
+  no longer tries to cancel one.** It was set once, at accept, and
+  never again -- every request on a kept-alive connection after the
+  first is read by a fresh call to `run` from inside `async_send`,
+  which never touched it -- so past a connection's first request
+  `close`'s own `self.task.cancel()` named a long-finished `Future`
+  and cancelled nothing. `RpcManager.stop`'s own
+  `asyncio.all_tasks(self.loop)` sweep is what actually cancels
+  whatever is live for a connection, run before `close` is ever
+  called; `close` now only closes the socket, matching Core's own
+  `HTTPRemoteClient`, which carries no handle onto whatever worker
+  thread might be answering a request for it either --
+  `HTTPServer::ClearConnectedClients` (`src/httpserver.cpp:1160-1167`, at
+  bitcoin/bitcoin@ca7162cde5) drops what is left the same
+  unconditional way, once its own socket-handling thread has already
+  been joined.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
