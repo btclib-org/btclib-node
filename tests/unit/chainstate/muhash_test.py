@@ -183,6 +183,17 @@ def test_muhash_removes_cancel_regardless_of_insert_order() -> None:
         (b"\x00" * 10_000, False),  # exactly MAX_SCRIPT_SIZE: not over it
         (b"\x00" * 10_001, True),  # one byte over MAX_SCRIPT_SIZE
     ],
+    # explicit, short and by length rather than pytest's own default --
+    # a `bytes` id escapes every byte, and PYTEST_CURRENT_TEST cannot be
+    # set past 32767 characters on Windows (issue #701)
+    ids=[
+        "empty",
+        "op_1",
+        "bare_op_return",
+        "op_return_with_data",
+        "at_max_script_size",
+        "over_max_script_size",
+    ],
 )
 def test_is_unspendable_matches_core(data: bytes, *, expected: bool) -> None:
     """`CScript::IsUnspendable`'s own two conditions, each tried alone."""

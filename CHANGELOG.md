@@ -1925,6 +1925,29 @@ where this file was written rather than where anything was tagged.
   every two-node functional test dialling through this helper waiting
   out its own 60-second timeout for a connection Windows never made.
 
+### A parametrize id fits in an environment variable (closes #701)
+
+- **`test_is_unspendable_matches_core`'s two largest vectors get an
+  explicit, short `ids=` rather than pytest's own default.** A `bytes`
+  parameter with no explicit id is escaped byte for byte, so the
+  10,000/10,001-byte all-zero vectors turned into a node id of roughly
+  40,000 characters; `PYTEST_CURRENT_TEST`, set to that id plus
+  `" (setup)"`/`" (call)"`/`" (teardown)"` through `os.environ[...] =`,
+  goes through `_wputenv_s`/`SetEnvironmentVariableW` on Windows, which
+  refuses a value past 32767 characters -- `ValueError: the environment
+  variable is longer than 32767 characters`, at both setup and teardown,
+  on every Windows run of btclib-org/btclib-node#681/#682's own branch.
+  POSIX has no such limit, which is why the suite was green everywhere
+  else. The six new ids name the vector by what it is rather than by its
+  bytes, matching the inline comments already beside each one.
+- **No other `parametrize` in the tree carries this risk.** Every one
+  without an explicit `ids=` parametrizes on a short, bounded string or
+  a small int -- the longest id the tree collects without one is
+  `test_is_bip30_unspendable`'s, 141 characters, its `"00" * 32` being a
+  64-character string rather than bytes escaped four to one -- and every
+  one whose values are `bytes` or read from a corpus already carries its
+  own `ids=`.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
