@@ -1575,6 +1575,19 @@ where this file was written rather than where anything was tagged.
   question this tree already answered before this issue and does not
   revisit here.
 
+### A load-contention discriminator for the unpaced-calls test (closes #664)
+
+- **`tests/functional/rpc/connections_test.py::
+  test_many_unpaced_calls_over_one_session_transport_do_not_reset`'s own
+  docstring now names the shape of a load-caused failure**, matching
+  `CLAUDE.md`'s own coverage-floor bullets (issue #372, issue #617):
+  measured `uptime` values from two real occurrences, what confirmed
+  each as external contention rather than a regression, and what to
+  check before trusting a future failure of this one test. The call
+  count is unchanged -- shrinking it would trade away the statistical
+  confidence issue #640's own report chose 300 for, without removing
+  the underlying exposure a documented discriminator already answers.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
