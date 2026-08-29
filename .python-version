@@ -8,13 +8,20 @@
 # measured `sys._is_gil_enabled()` still False after importing both
 # under 3.14.6+freethreaded, and both ship paired cp314/cp314t wheels.
 # `librt` is a dependency of mypy, a development-only package and not
-# part of the runtime closure at all, and every compiled package in
-# the lock, `librt` included, ships a cp314t wheel too.
-# The pin holds anyway: Node.worker_pool builds a ThreadPool rather
-# than a process Pool where sys._is_gil_enabled() is False
-# (btclib-org/btclib-node#388, building on btclib-org/btclib-node#385),
-# but choosing that at runtime is not the same as switching this
-# interpreter's own default over to 3.14t, which nothing here asks for.
+# part of the runtime closure at all. Every compiled package in the
+# lock used to ship a cp314t wheel too, `librt` included -- `rocksdict`
+# (btclib-org/btclib-node#641), which the store now depends on, breaks
+# that: checked directly against its own PyPI listing, it ships cp314
+# wheels on nine platforms and no cp314t wheel at all.
+# The pin holds regardless: it was never resting on that claim.
+# Node.worker_pool builds a ThreadPool rather than a process Pool where
+# sys._is_gil_enabled() is False (btclib-org/btclib-node#388, building
+# on btclib-org/btclib-node#385), but choosing that at runtime is not
+# the same as switching this interpreter's own default over to 3.14t,
+# which nothing here asks for -- and a compiled dependency with no
+# cp314t wheel at all, rocksdict now among them, is one more reason
+# there would be a real cost to asking for it, not evidence the pin
+# ever rested on every dependency already having one.
 # btclib-org/btclib-node#112, which asked whether 3.14t was worth it, is
 # answered and closed by this comment.
 # A trailing comment on the version line below would make uv ignore this

@@ -109,6 +109,27 @@ section fills in one landed change at a time — what a user of
   node's own corrupted storage. Read the log for
   `ChainstateInconsistencyError` rather than trusting either answer.
 
+- **The store is now RocksDB, not `sqlite3`; a data directory written
+  by an older release cannot be read** (issues #637, #641). A node
+  upgrading past this change refuses its existing directory rather than
+  reading it wrongly:
+
+  ```text
+  btclib_node.exceptions.IncompatibleStoreError: <data directory>
+  holds a sqlite3 database, which this version cannot read: delete
+  the directory and sync again
+  ```
+
+  Delete the data directory and sync again; there is no migration from
+  the old store's own `.sqlite` file into RocksDB's own format. This is
+  the same shape of refusal, and the same remedy, as the schema-version
+  one above -- it is a second, independent reason the same directory
+  can now be refused, not a repeat of it. What is gained for the cost:
+  a bit flipped on disk is now caught at the read that meets it, the
+  same per-block checksum Bitcoin Core's own LevelDB store already
+  carries, where the old store answered a corrupted value silently and
+  could lose a corrupted key without ever reading it at all.
+
 ## v2026.8.27
 
 **The first release of btclib-node.** Nothing here is an upgrade: no

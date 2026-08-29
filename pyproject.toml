@@ -39,6 +39,7 @@ dependencies = [
     # `test.yml`'s own packaging smoke test unable to do more than read
     # the wheel's metadata (btclib-org/btclib-node#381).
     "btclib[secp256k1]>=2026.8.29",
+    "rocksdict>=0.3.29",
 ]
 # What this repository is about, in the order a reader ranks them:
 # PyPI shows keywords as the metadata gives them, and GitHub sorts its
@@ -59,12 +60,14 @@ keywords = [
     "consensus",
     "p2p",
     "script-interpreter",
-    # sqlite and not leveldb, which is what this stores through today: a
-    # keyword is what somebody searches with, and the storage layer is
-    # moving. The classifiers below are the other kind of claim -- each
-    # has to be true on the day it is read -- which is why the difference
-    # is worth naming here rather than left to look like an oversight
-    "sqlite",
+    # rocksdb, not sqlite: a keyword is what somebody searches with, and
+    # the storage layer moved (btclib-org/btclib-node#641), through
+    # `rocksdict` rather than a `leveldb`-named binding, which is the
+    # name PyPI's own listing for that dependency uses. The classifiers
+    # below are the other kind of claim -- each has to be true on the
+    # day it is read -- which is why the difference is worth naming here
+    # rather than left to look like an oversight
+    "rocksdb",
 ]
 # What an index shows somebody deciding whether to install this, and
 # each line is a claim about this tree rather than a line copied from a
@@ -90,9 +93,11 @@ keywords = [
 # No `OS Independent` either, and the dependencies are not what argues
 # against it: what this installs is btclib and what btclib pulls in,
 # `btclib-secp256k1` and `cffi` among them compiled rather than pure
-# Python, but wheeled for macOS, Linux and Windows alike and carrying
-# an sdist besides, over a store that is the standard library's
-# `sqlite3`. What argues against it is this package's own code, the
+# Python, and the store itself pulls in one more such dependency,
+# `rocksdict` (btclib-org/btclib-node#641) -- all three wheeled for
+# macOS, Linux and Windows alike and carrying an sdist besides,
+# `rocksdict`'s own wheel matrix missing only `win_arm64`, which builds
+# from source. What argues against it is this package's own code, the
 # comment below naming the two POSIX calls and where they are reached.
 # `OS Independent` is a claim about every platform; the two
 # classifiers below are a claim about where the suite is run, which is

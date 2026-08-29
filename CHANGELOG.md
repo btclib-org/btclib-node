@@ -1222,6 +1222,53 @@ where this file was written rather than where anything was tagged.
   `DisconnectTip`'s own failure being fatal one level up, in
   `ActivateBestChainStep` (`src/validation.cpp`, at
   bitcoin/bitcoin@b91d983f66).
+### RocksDB, through `rocksdict`, replaces the store's own sqlite3 (closes #637, closes #641)
+
+- **`src/btclib_node/db.py`'s `KeyValueStore` moves from the standard
+  library's `sqlite3` to RocksDB, through `rocksdict`, behind its
+  unchanged interface.** #641 is where sqlite3's own lack of a checksum
+  layer was measured against `Coin.parse`'s own detection rate over a
+  corrupted `utxo-` record (4% of single-bit flips caught, 96% parsed
+  cleanly into a wrong `Coin`, 23% of those a silently wrong amount) and
+  against the fault an in-record checksum alone (#637) cannot reach at
+  all -- a corrupted key, which makes the record it names cease to
+  exist rather than read back wrong. RocksDB is LevelDB's own fork and
+  carries the per-block CRC32C checksum Core's own
+  `verify_checksums = true` relies on; `rocksdict` is what ships it as
+  a wheel, on nine platforms, against `plyvel`'s own dead `cp314`
+  support.
+- **The configuration matches Core's `GetOptions`/`DBParams`
+  (`src/dbwrapper.cpp`, `src/dbwrapper.h`) line by line**, cited at
+  bitcoin/bitcoin@ca7162cde5 in `db.py`'s own module docstring: no
+  compression, paranoid checks, checksums verified on every read and
+  scan, the storage engine's own bloom filter (unrelated to BIP37's
+  deprecated, peer-relay one), and a block cache and write buffer sized
+  from what Core's own default `-dbcache` gives the coins database
+  specifically, computed rather than guessed.
+- **The schema version moves out of `PRAGMA user_version` and into its
+  own RocksDB column family**, kept out of the default column family's
+  key order for the same reason the old version lived outside `kv`'s
+  own rows. **The datadir marker inverts**: RocksDB writes the
+  `CURRENT` file LevelDB used to, so the refusal this store raises is
+  now for a directory holding the old store's own `index.sqlite`, with
+  the same message.
+- **A corruption `rocksdict` itself detects is now `StoreCorruptionError`**
+  (`exceptions.py`), raised at every read this store makes -- `get`,
+  `__iter__`, and the open itself -- classified from `rocksdict`'s own
+  untyped `Exception`, whose message begins `Corruption:`, since only
+  its `DbClosedError` carries a type of its own to catch instead.
+  `ChainstateInconsistencyError`'s own docstring is corrected where it
+  used to say this tree carried no such layer; what a `Coin.parse`
+  failure now means on a record this new guard already passed as
+  intact is btclib-org/btclib-node#650's own question.
+- **`pyproject.toml` floors `rocksdict` at `0.3.29`**, the release
+  measured against; the `sqlite` keyword becomes `rocksdb`, and
+  `.python-version`'s own comment is corrected -- `rocksdict` ships
+  `cp314` wheels and no `cp314t` wheel at all, where the comment used
+  to claim every compiled dependency in the lock had one.
+- **`RELEASE_NOTES.md` carries the action this forces**: a datadir
+  written by the sqlite3 store cannot be read by this version, and is
+  refused by name rather than silently started over as an empty chain.
 
 ### The suite passing free-threaded is now a claim the metadata makes (closes #593)
 

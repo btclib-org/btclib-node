@@ -42,6 +42,7 @@ __all__ = [
     "PruningNotImplementedError",
     "ReimportedMainProcessError",
     "StoreClosedError",
+    "StoreCorruptionError",
     "UnknownChainError",
     "UnsupportedAddressTypeError",
     "WrongNetworkMagicError",
@@ -100,15 +101,19 @@ class ChainstateInconsistencyError(RuntimeError):
     (`src/dbwrapper.cpp:346-357`) ever returns and `Read`'s own `try`
     runs at all -- the deserialize failure that `try` actually catches
     is a format mismatch on an intact, checksummed read, not bit rot.
-    `db.py`'s own store sets no equivalent guard beneath it (no page
-    checksum, no integrity check, per its own docstring), so a
-    `Coin.parse` failure at either of the two `utxo-` reads above is the
-    only point this node ever learns that a record it wrote is
-    unreadable back. Answering Core's own way -- silently absent --
-    would fold that node-owned fault into an ordinary "prevout missing"
-    refusal, indistinguishable from a legitimate one and invisible to
-    whoever operates this node; raising instead puts a name in the log
-    to grep for.
+    `db.py`'s own store now carries an equivalent guard beneath it -- a
+    per-block checksum, verified on every read, the same mechanism
+    `verify_checksums = true` gives Core (btclib-org/btclib-node#641) --
+    so a genuinely corrupted `utxo-` record is caught there, as
+    `StoreCorruptionError`, before either `Coin.parse` call above ever
+    runs on it. What that leaves unsettled is what a `Coin.parse`
+    failure means on a record the guard above already passed as intact,
+    which is not answered here and is tracked at
+    btclib-org/btclib-node#650. Answering Core's own way -- silently
+    absent -- would fold that node-owned fault into an ordinary "prevout
+    missing" refusal, indistinguishable from a legitimate one and
+    invisible to whoever operates this node; raising instead puts a name
+    in the log to grep for.
 
     What Core's node does *after* its own storage layer throws is not
     settled here, and this class does not rest on it: `rpc/server.cpp`'s
@@ -119,10 +124,10 @@ class ChainstateInconsistencyError(RuntimeError):
     is to stop. Settling that needs more of Core's history than either
     of this tree's two call sites depends on: what they rest on is the
     paragraph above, which is measured -- Core detects at the storage
-    layer, this tree has nothing there, so `Coin.parse` is the only
-    detection point it has. btclib-org/btclib-node#637 is the missing
-    guard, and btclib-org/btclib-node#641 is whether the store that
-    lacks it is the right one. (btclib-org/btclib-node#636)
+    layer, and this tree's own store now does too
+    (btclib-org/btclib-node#641), so what a `Coin.parse` failure at
+    either of these two sites still means is btclib-org/btclib-node#650's
+    own question, not this class's. (btclib-org/btclib-node#636)
 
     `message` and not a structured payload per call site: what is
     inconsistent (a hash, a count, a status) differs by call site, and
@@ -237,15 +242,54 @@ class StoreClosedError(ValueError):
         super().__init__(message)
 
 
+class StoreCorruptionError(RuntimeError):
+    """The store itself found its own bytes unreadable, at a read.
+
+    Raised only by `db.KeyValueStore`, at every point it reads from the
+    RocksDB store beneath it -- `get`, `__iter__`, and the open itself
+    -- on a `rocksdict` exception whose message begins `Corruption:`.
+    `rocksdict` gives no typed class for that fault (only `DbClosedError`
+    is typed, per its own `.pyi`), so `db.py`'s own classification is a
+    string match on the message, argued where it sits.
+
+    A `KeyValueStore` is `PeerDB`'s own store as well as every
+    chainstate index's, so this is deliberately not
+    `ChainstateInconsistencyError`: a corrupted address book is a p2p
+    concern, not a chainstate one, and folding the two into one class
+    would make every catch of it answer a question about which store it
+    was. `RuntimeError`, matching `ChainstateInconsistencyError`'s own
+    choice and Core's `dbwrapper_error` (`src/dbwrapper.h`), for the
+    same reason: whichever caller this reaches, continuing to run past
+    a store that has just reported disagreeing with its own bytes is
+    not safe, and nothing here narrows that per call site the way
+    `ChainstateInconsistencyError`'s own three exceptions from ending
+    the node do.
+
+    `db.py`'s own module docstring is where the checksum this class
+    detects is argued against Core's `verify_checksums = true`
+    (btclib-org/btclib-node#641, closing btclib-org/btclib-node#637);
+    what a chainstate caller does with this once it is raised --
+    whether it is ever mapped onto `ChainstateInconsistencyError` rather
+    than left to propagate as itself -- is unsettled and tracked at
+    btclib-org/btclib-node#650, the same issue
+    `ChainstateInconsistencyError`'s own docstring points at for the
+    related question of what a `Coin.parse` failure means once this
+    guard has already passed a record as intact.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
 class IncompatibleStoreError(RuntimeError):
     """A data directory holds a store this version cannot open.
 
-    Two cases raise this: a LevelDB directory, the format the store
-    `db.KeyValueStore` replaced (#107) used and this one cannot read,
-    and a `KeyValueStore` written by a version that kept a different
-    shape under one of its keys or in a `block_db` flat file --
-    `db.py`'s own `_SCHEMA_VERSION` is where that second case is
-    checked and argued.
+    Two cases raise this: a directory `db.KeyValueStore` wrote a
+    `sqlite3` file into, the format this class replaced
+    (#107, #641) and this one cannot read, and a `KeyValueStore` written
+    by a version that kept a different shape under one of its keys or
+    in a `block_db` flat file -- `db.py`'s own `_SCHEMA_VERSION` is
+    where that second case is checked and argued.
     """
 
     def __init__(self, message: str) -> None:

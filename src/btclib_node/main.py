@@ -394,8 +394,9 @@ def _record_rejection(node: Node, failed_hash: bytes, exc: BaseException) -> Non
 #
 # Everything else the same iteration can raise is this node's own
 # storage or bookkeeping, not a verdict on the candidate: db.py's
-# StoreClosedError, whatever sqlite3 or the filesystem raises out of a
-# KeyValueStore read or write, and ChainstateInconsistencyError -- and
+# StoreClosedError and StoreCorruptionError, whatever RocksDB or the
+# filesystem raises out of a KeyValueStore read or write, and
+# ChainstateInconsistencyError -- and
 # that holds even where the call that raised it also raises one of the
 # three above for a different reason, utxo_index.add_block's own
 # self.db.get() being exactly that call. update_chain's own except below

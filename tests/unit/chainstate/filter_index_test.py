@@ -338,6 +338,7 @@ def test_an_index_survives_the_node_being_closed_and_opened(
     node = regtest_node()
     (block,) = a_chain(node, 1)
     header = node.chainstate.filter_index.get_header(block.header.hash)
+    node.p2p_manager.peer_db.close()
     node.chainstate.close()
     node.block_db.close()
 
@@ -359,6 +360,7 @@ def test_a_filter_index_reads_only_its_own_keys(
     """
     node = regtest_node()
     a_chain(node, 1)
+    node.p2p_manager.peer_db.close()
     node.chainstate.close()
     node.block_db.close()
 
@@ -384,6 +386,7 @@ def test_the_index_is_caught_up_before_the_node_is_built(
     for block in chain:
         filter_index.db.delete(b"cfilter-" + block.header.hash)
         filter_index.db.delete(b"cfheader-" + block.header.hash)
+    node.p2p_manager.peer_db.close()
     node.chainstate.close()
     node.block_db.close()
 
