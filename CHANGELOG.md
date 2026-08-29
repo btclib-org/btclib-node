@@ -1746,6 +1746,20 @@ where this file was written rather than where anything was tagged.
   incremental accumulator exists specifically to avoid paying on every
   call.
 
+### A unit test no longer binds regtest's own well-known port (closes #678)
+
+- **The `a_manager` fixture's default `port` is `get_random_port()`,
+  drawn fresh on every call rather than the fixed `18444`**: a test
+  that starts a manager without naming its own port used to bind
+  regtest's own well-known port for real, colliding with a second
+  suite of this same tree on one machine -- two sessions, or one
+  session's coder and reviewer -- and, within one `-n auto` run,
+  possibly with a second worker's own manager at the same default.
+  `test_connect_and_explicit_listen_binds_and_dials` is the one this
+  was measured landing on. `wait_until_listening`'s own error already
+  named the port a wait gave up on, so a future collision stays
+  legible without a change there.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
