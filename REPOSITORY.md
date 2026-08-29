@@ -335,6 +335,23 @@ rather than this file's.
 gh api repos/btclib-org/btclib-node/private-vulnerability-reporting
 # {"enabled":true}
 gh api repos/btclib-org/btclib-node/dependabot/alerts --jq 'length'
+# 27
+gh api repos/btclib-org/btclib-node/dependabot/alerts \
+  --jq '[.[].dependency.manifest_path] | unique'
+# ["poetry.lock","uv.lock"]
+gh api repos/btclib-org/btclib-node/dependabot/alerts \
+  --jq 'group_by(.dependency.manifest_path)
+        | map({(.[0].dependency.manifest_path): length}) | add'
+# {"poetry.lock":26,"uv.lock":1}
+gh api repos/btclib-org/btclib-node/dependabot/alerts \
+  --jq 'group_by(.state) | map({(.[0].state): length}) | add'
+# {"dismissed":21,"fixed":6}
+gh api repos/btclib-org/btclib-node/dependabot/alerts \
+  --jq '.[] | select(.dependency.manifest_path=="uv.lock")
+        | [.security_advisory.severity, .dependency.package.name,
+           .security_vulnerability.first_patched_version.identifier]
+        | @tsv'
+# medium pytest 9.0.3
 ```
 
 **Private vulnerability reporting is on**, so *Report a vulnerability* on
@@ -345,11 +362,13 @@ or not it keeps a policy of its own, this one now doing so as a tier-1
 repository. `.github/ISSUE_TEMPLATE/config.yml`'s Security vulnerability
 entry links straight to that advisory form.
 
-The second command is what the open alerts are. Every one of them today
-answers `poetry.lock` for its `dependency.manifest_path`, which is a file
-this tree no longer has — issue #37 is where that is worked off, and its
-remaining step is to read that list back now that `uv.lock` is what the
-tree carries.
+The alert list is not only the open alerts: Dependabot's own default
+listing carries every state. By manifest it is 26 `poetry.lock` and 1
+`uv.lock`; by state it is 21 `dismissed` and 6 `fixed`, none `open`.
+The one `uv.lock` alert is already `fixed`: `pytest`, medium severity,
+patched at `9.0.3`, and `uv.lock` on `main` already pins pytest above
+that. A future `uv.lock` alert answering `open` is this tree's own to
+act on, as a finding of its own — none is recorded here to defer to.
 
 ## Code scanning, and which setup performs it
 
