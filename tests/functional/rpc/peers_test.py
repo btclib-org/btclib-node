@@ -152,7 +152,7 @@ def test_get_peer_info(tmp_path: Path) -> None:
     assert body["result"][0]["id"] == 0
     assert body["result"][0]["addr"] == f"127.0.0.1:{local_port}"
     assert body["result"][0]["addrbind"] == f"127.0.0.1:{node1.p2p_port}"
-    assert body["result"][0]["addrlocal"] == f"0.0.0.0:{node1.p2p_port}"
+    assert body["result"][0]["addrlocal"] == f"127.0.0.1:{node1.p2p_port}"
     assert body["result"][0]["network"] == "ipv4"
     # network | witness | compact_filters | network_limited, which
     # is what send_version advertises, over the 64-bit field

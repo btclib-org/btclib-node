@@ -251,10 +251,10 @@ def test_a_built_block_carries_the_transactions_it_was_given() -> None:
     block.header.assert_valid_pow(RegTest().pow_limit_bits)
 
 
-def test_a_placeholder_address_is_unroutable() -> None:
-    """`local_addr` builds a `0.0.0.0` `NetworkAddressV2` for the given port."""
+def test_a_local_address_names_loopback() -> None:
+    """`local_addr` builds a `127.0.0.1` `NetworkAddressV2` for a port."""
     address = local_addr(18444)
-    assert address.address == b"\x00\x00\x00\x00"
+    assert address.address == b"\x7f\x00\x00\x01"
     assert address.network_id == BIP155Network.IPV4
     assert address.port == 18444
     assert local_addr(18444, timestamp=7, services=9).timestamp == 7

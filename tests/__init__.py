@@ -526,14 +526,18 @@ def brute_force_nonce(header: BlockHeader) -> None:
 def local_addr(
     port: int | None, timestamp: int = 0, services: int = 0
 ) -> NetworkAddressV2:
-    """Return a `NetworkAddressV2` naming `0.0.0.0` and `port`, to dial locally.
+    """Return a `NetworkAddressV2` naming `127.0.0.1` and `port`, to dial it.
 
     A test helper building an address to hand `P2pManager.connect`, not
-    a socket bind: a client socket connecting to `0.0.0.0` reaches
-    whatever is listening on that port on the same host, which is what
-    lets a test dial a node it started locally without hardcoding
-    `127.0.0.1`.
+    a socket bind. `0.0.0.0` until ISS 681's own Windows evidence: a
+    POSIX kernel remaps a client connect to `0.0.0.0` onto loopback, but
+    Windows' `ConnectEx` refuses it outright -- `OSError(22, 'The format
+    of the specified network name is invalid', None, 1214, None)`,
+    synchronous and immediate, measured in btclib-org/btclib-node run
+    33271519023 -- so every two-node functional test dialling through
+    this helper timed out there rather than connecting. `127.0.0.1`
+    reaches the same local listener on every platform this node runs
+    tests on, with no remapping for either kernel to differ over.
     """
     assert port is not None
-    addr = "0.0.0.0"  # noqa: S104
-    return peer_address(addr, port, timestamp, services)
+    return peer_address("127.0.0.1", port, timestamp, services)

@@ -1901,6 +1901,30 @@ where this file was written rather than where anything was tagged.
   checked either and is created the same way, lazily, by
   `GetBlocksDirPath`'s `fs::create_directories`.
 
+### Windows: dial reaches IPv6, notices a refusal (closes #681, closes #682)
+
+- **`dial`'s own peer tuple is four elements for an `AF_INET6` target,
+  not two.** Windows' Proactor loop hands a bare `(host, port)` straight
+  to `ConnectEx`, and CPython's `Modules/overlapped.c` (`parse_address`,
+  read at python/cpython@v3.14.0) dispatches on the tuple's length
+  rather than on the socket's own family: a two-tuple is always parsed
+  as `AF_INET`, so `WSAStringToAddressW` reads `"::1"` as an IPv4
+  dotted quad and answers `WSAEINVAL` before `ConnectEx` is ever
+  reached. The four-tuple form, `(host, port, 0, 0)`, names the family
+  explicitly and is accepted on every platform this node runs on.
+- **`_DIAL_TIMEOUT` is 5.0 seconds, Core's own `DEFAULT_CONNECT_TIMEOUT`
+  (`src/netbase.h` at bitcoin/bitcoin@ca7162cde5), not the 1.0 the old
+  poll loop's own ten-passes-at-0.1s budget left behind.** That figure
+  was never checked against Core's own default: it was too tight for
+  what Windows' Proactor loop needs to notice a refused loopback
+  connect, measured at a little over two seconds on a Windows run and
+  well inside Core's own five-second budget.
+- **`tests.local_addr` names `127.0.0.1`, not `0.0.0.0`.** A POSIX
+  kernel remaps a client connect to `0.0.0.0` onto loopback; Windows'
+  `ConnectEx` refuses it outright, synchronously, which is what left
+  every two-node functional test dialling through this helper waiting
+  out its own 60-second timeout for a connection Windows never made.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

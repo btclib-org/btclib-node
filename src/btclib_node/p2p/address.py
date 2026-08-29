@@ -193,12 +193,18 @@ def ip_and_port(ip: str, port: int) -> str:
     return f"[{parsed}]:{port}"
 
 
-# The old poll loop's budget, ten passes at 0.1s each -- what a dial
-# gave up after regardless of whether the peer was refusing or merely
-# slow. `loop.sock_connect` below does not need the two magic numbers a
-# poll needs, only this one: a real timeout wrapped around a wait that
-# is otherwise event-driven.
-_DIAL_TIMEOUT = 1.0
+# Core's own default (`DEFAULT_CONNECT_TIMEOUT`, src/netbase.h at
+# bitcoin/bitcoin@ca7162cde5), not the old poll loop's ten-passes-at-0.1s
+# budget this constant carried until ISS 681: that budget was never
+# itself checked against Core, and it was too tight for what
+# `loop.sock_connect` needs on Windows' Proactor loop to notice a
+# refused loopback connect -- measured on this tree's own
+# instrumentation, in btclib-org/btclib-node run 33271519023, at
+# elapsed=2.017810 for a `ConnectionRefusedError` the run's own kernel
+# raised. `loop.sock_connect` does not need the two magic numbers a poll
+# needs, only this one: a real timeout wrapped around a wait that is
+# otherwise event-driven.
+_DIAL_TIMEOUT = 5.0
 
 
 async def dial(address: NetworkAddressV2) -> socket.socket | None:
@@ -230,13 +236,29 @@ async def dial(address: NetworkAddressV2) -> socket.socket | None:
     if address.network_id == BIP155Network.IPV4:
         family = socket.AF_INET
         host = str(IPv4Address(address.address))
+        peer: tuple[str, int] | tuple[str, int, int, int] = (host, address.port)
     else:
         family = socket.AF_INET6
         host = str(IPv6Address(address.address))
+        # ISS 682: a bare 2-tuple is what a POSIX `socket.connect()`
+        # accepts for an IPv6 peer, defaulting flowinfo and scope id to
+        # 0. Windows' Proactor loop hands this straight to `ConnectEx`
+        # instead, and CPython's `Modules/overlapped.c`
+        # (`parse_address`, read at python/cpython@v3.14.0) dispatches
+        # on the tuple's length alone rather than on the socket's own
+        # family: a 2-tuple is always parsed as `AF_INET`, so
+        # `WSAStringToAddressW` is asked to read "::1" as an IPv4
+        # dotted quad and answers `WSAEINVAL` synchronously, before
+        # `ConnectEx` is ever reached -- confirmed from
+        # btclib-org/btclib-node run 33270966438's own instrumentation:
+        # `family=23 ... elapsed=0.000099 exc=OSError(22, 'An invalid
+        # argument was supplied', None, 10022, None)`. The four-tuple
+        # form names the family explicitly and is accepted on every
+        # platform this node runs on, POSIX included.
+        peer = (host, address.port, 0, 0)
     client = socket.socket(family, socket.SOCK_STREAM)
     client.settimeout(0)
     loop = asyncio.get_running_loop()
-    peer = (host, address.port)
     try:
         await asyncio.wait_for(loop.sock_connect(client, peer), _DIAL_TIMEOUT)
     except OSError, TimeoutError:

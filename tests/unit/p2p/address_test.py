@@ -536,20 +536,20 @@ def test_a_peer_that_is_not_listening_is_given_up_on() -> None:
     assert asyncio.run(dial(address)) is None
 
 
-def test_a_refused_dial_does_not_cost_the_old_poll_s_full_second() -> None:
-    """A refused connection comes back well under a second, not after one.
+def test_a_refused_dial_does_not_cost_the_full_timeout() -> None:
+    """A refused connection is noticed well before `_DIAL_TIMEOUT` elapses.
 
-    #90: a poll of ten passes at 0.1s apart cannot tell a refusal from
-    a peer that is merely slow to answer, so it always spent the whole
-    second either way. `SO_ERROR`, read through `loop.sock_connect`, is
-    answered by the kernel as soon as the refusal happens, so this
-    checks the bound the fix gives rather than the microseconds a
-    refusal actually costs.
+    #90: a poll of ten passes at 0.1s apart cannot tell a refusal from a
+    peer that is merely slow to answer, so it always spent the whole
+    budget either way. `SO_ERROR`, read through `loop.sock_connect`, is
+    answered by the kernel instead -- promptly on POSIX, where a refusal
+    is microseconds away, and measurably slower on Windows' own Proactor
+    loop (ISS 681), where it is still well short of `_DIAL_TIMEOUT`. The
+    bound below is what tells the two apart on either platform: a dial
+    that instead ran out `_DIAL_TIMEOUT`'s own clock would answer `None`
+    exactly the same way, with nothing else in this test able to see the
+    difference.
     """
-    # #90: a poll of ten passes at 0.1s apart cannot tell a refusal from
-    # a peer that is merely slow to answer, so it always spent the whole
-    # second either way. `SO_ERROR`, read through `loop.sock_connect`,
-    # is answered by the kernel as soon as the refusal happens.
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(("127.0.0.1", 0))
     port = listener.getsockname()[1]
@@ -557,10 +557,12 @@ def test_a_refused_dial_does_not_cost_the_old_poll_s_full_second() -> None:
     address = peer_address("127.0.0.1", port)
     start = time.monotonic()
     assert asyncio.run(dial(address)) is None
-    # generous next to the microseconds a refusal actually takes,
-    # measured directly outside the suite, and still far under the
-    # second the old poll spent
-    assert time.monotonic() - start < 0.5
+    # a full second of margin under `_DIAL_TIMEOUT` (5.0s): generous
+    # next to the microseconds a POSIX refusal costs, and next to the
+    # ~2s a Windows run measured (btclib-org/btclib-node run
+    # 33271519023), while still failing a dial that only gave up on its
+    # own deadline
+    assert time.monotonic() - start < address_module._DIAL_TIMEOUT - 1.0
 
 
 class FakeLoop:
