@@ -1777,6 +1777,23 @@ where this file was written rather than where anything was tagged.
   re-run it, so the page says the RocksDB figure is unmeasured rather
   than guessing at one.
 
+### `tests/interpreters_test.py` compares POSIX paths everywhere (closes #663)
+
+- **`_RUN`'s own keys are `path.relative_to(_ROOT).as_posix()` rather
+  than `str(path.relative_to(_ROOT))`.** A `PurePath`'s own `__str__`
+  renders with `os.sep` -- backslashes on a `WindowsPath`, `pathlib`'s
+  own documentation for `PurePath.__str__` -- while `_NAMES_ONE`
+  beside it is written with forward-slash literals, so `str()` there
+  compared a Windows path against a POSIX one on `windows-latest` and
+  nowhere else, `_NAMING == _NAMES_ONE` false for every entry despite
+  naming the same file. `as_posix()` renders with `/` on every
+  platform `pathlib` runs on, POSIX included, so this changes nothing
+  observable there.
+- **`tests/fuzz_corpus_test.py`'s own `_SEED_IDS` carries the same
+  `str(path.relative_to(...))` shape but not the same defect**: it
+  only ever feeds `pytest.mark.parametrize`'s own `ids=`, a display
+  string nothing compares against a literal, so it is left as `str()`.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
