@@ -69,13 +69,18 @@ def handle_rpc(node: Node) -> None:
     node.logger.debug("Received rpc message: %s", conn_id)
 
     response: list[dict[str, Any]] = []
-    # JSON-RPC 2.0: an empty batch is itself an invalid request, and
-    # the specification's own example for it is this single object. The
-    # append is also what keeps `response` from staying empty, which
-    # async_send would put on the wire as a bare `[]` -- no unwrapping,
-    # since its one-element case does not match, and no valid answer.
-    if not data:
-        response.append(error_msg(RpcErrorCode.INVALID_REQUEST, "Invalid request"))
+    # An empty batch -- `data == []` only where the client's own JSON
+    # was `[]`, `run` wrapping every lone object into a one-element list
+    # before this is ever reached -- adds nothing here and the loop
+    # below runs zero times, so `response` reaches `async_send` empty.
+    # `RpcConnection.is_batch`, `True` for this request the same as for
+    # any other array, is what keeps that from being written back
+    # unwrapped: `response` stays `[]` on the wire, matching Core's own
+    # `ExecuteHTTPRPC`, which answers an empty client-sent array with an
+    # empty array too (`src/httprpc.cpp:135-185`, at
+    # bitcoin/bitcoin@ca7162cde5) rather than the single `Invalid
+    # request` object a literal reading of JSON-RPC 2.0 section 6's own
+    # wording would give it (issue #669).
     for request in data:
         if not is_valid_rpc(request):
             response.append(error_msg(RpcErrorCode.INVALID_REQUEST, "Invalid request"))

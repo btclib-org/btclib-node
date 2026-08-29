@@ -72,15 +72,20 @@ def test_a_request_is_answered() -> None:
     assert sent == [[{"jsonrpc": "2.0", "result": None, "id": "a"}]]
 
 
-def test_an_empty_batch_is_an_invalid_request() -> None:
-    """handle_rpc answers an empty batch as JSON-RPC 2.0's own invalid request.
+def test_an_empty_batch_answers_an_empty_response() -> None:
+    """handle_rpc leaves `response` empty for an empty batch, not an error.
 
-    Reading the loop variable after a loop that never ran used to end
-    the node instead.
+    Matches Core's own `ExecuteHTTPRPC`, which answers an empty
+    client-sent array with an empty array rather than a single error
+    object (`src/httprpc.cpp:135-185`, at bitcoin/bitcoin@ca7162cde5,
+    issue #669); `RpcConnection.is_batch` is what keeps `async_send`
+    from unwrapping this empty `response` into something else on the
+    wire, covered at that level rather than this one. Reading the loop
+    variable after a loop that never ran used to end the node instead.
     """
     node, sent, _, stopped = make_node([])
     handle_rpc(node)
-    assert sent == [[error_msg(RpcErrorCode.INVALID_REQUEST, "Invalid request")]]
+    assert sent == [[]]
     assert not stopped
 
 
