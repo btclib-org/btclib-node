@@ -911,6 +911,23 @@ where this file was written rather than where anything was tagged.
   `workflow_dispatch`, so unlike the other four a required check on it
   could never be satisfied by any pull request at all.
 
+### The rpc listener's default port is Core's own, not `p2p_port + 1` (closes #605)
+
+- **`Chain` carries its own `rpc_port` now, one below `port` on every
+  leaf** — 8332/18332/38332/18443 for mainnet/testnet/signet/regtest,
+  Core's own `CreateBaseChainParams` (`src/chainparamsbase.cpp`, at
+  bitcoin/bitcoin@05e49b342f). `Config.__init__` derived it from
+  `chain.port + 1` instead, which happens to be Core's own Tor
+  incoming-connection port for each of these four chains rather than
+  its rpc one, so a client left on Core's own rpc default never found
+  this node.
+- **`tests/unit/config_test.py::test_default_rpc_port_is_cores_own`
+  checks the default for all four chains against
+  `bitcoin_core_rpc.rpc_port_from_chain`, read independently of this
+  node's own `Config`** — every functional rpc test passes an explicit
+  `rpc_port` of its own, so none of them exercised the default this
+  issue was about.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

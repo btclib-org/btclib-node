@@ -146,7 +146,7 @@ class Config:
 
         self.rpc_port = None
         if allow_rpc:
-            self.rpc_port = self.chain.port + 1
+            self.rpc_port = self.chain.rpc_port
             if rpc_port:
                 self.rpc_port = rpc_port
 

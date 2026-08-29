@@ -7,6 +7,7 @@
 from pathlib import Path
 
 import pytest
+from bitcoin_core_rpc import rpc_port_from_chain
 from btclib.fee import FeeRate
 
 from btclib_node.chains import Main, RegTest, SigNet, TestNet
@@ -39,6 +40,26 @@ def test_port() -> None:
     """A given `p2p_port` or `rpc_port` is stored back unchanged."""
     assert Config(chain="regtest", p2p_port=1).p2p_port == 1
     assert Config(chain="regtest", rpc_port=1).rpc_port == 1
+
+
+@pytest.mark.parametrize(
+    ("chain_name", "core_chain_name"),
+    [
+        ("mainnet", "main"),
+        ("testnet", "test"),
+        ("signet", "signet"),
+        ("regtest", "regtest"),
+    ],
+)
+def test_default_rpc_port_is_cores_own(chain_name: str, core_chain_name: str) -> None:
+    """The default `rpc_port` is Core's own for the chain, not `p2p_port + 1`.
+
+    `rpc_port_from_chain` (`bitcoin_core_rpc`) is Core's own table, read
+    independently of this node's `Config` -- a client built the way
+    `bitcoin-cli` is, against Core's own default rather than against
+    `node.rpc_port` read back from this node (btclib-org/btclib-node#605).
+    """
+    assert Config(chain=chain_name).rpc_port == rpc_port_from_chain(core_chain_name)
 
 
 def test_min_relay_feerate_defaults_to_cores_own_floor() -> None:
