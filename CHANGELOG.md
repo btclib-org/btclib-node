@@ -1356,6 +1356,58 @@ where this file was written rather than where anything was tagged.
   docstring (`src/btclib_node/rpc/callbacks.py`) has the citation for
   every member answered and every member still left out.
 
+### `btclib-node` reads `bitcoin.conf` (closes #583, closes #581, closes #573)
+
+- **`pip install btclib-node` puts `btclib-node` on `PATH`**
+  (`[project.scripts]`, `pyproject.toml`), and `python -m btclib_node`
+  reaches the same entry point (`src/btclib_node/__main__.py`) for a
+  checkout nobody has installed yet. `src/btclib_node/cli.py` is the
+  module behind both, built on `argparse` rather than click: this
+  wheel's SBOM (`.github/scripts/generate_sbom.py`) still names one
+  runtime component, `btclib`.
+- **Every flag is spelled the way Core spells its own** --
+  `-datadir=<dir>`, `-conf=<file>`, `-chain=`/`-testnet`/`-signet`/
+  `-regtest`, `-port=`, `-rpcport=`, `-rpcbind=`, `-prune=`, `-debug`,
+  `-connect=`, `-addnode=`, `-listen=`/`-nolisten`, each also accepted
+  with a double dash -- and `-h`/`--help` lists every one. A page
+  walking an installed user through what the command actually enforces
+  is still owed (issue #577), filed rather than written here.
+- **`-conf`'s file is read the way Core reads `bitcoin.conf`**: a
+  `key=value` line per option named without its leading `-`, a
+  `[section]` per chain (`main` included) plus one default section,
+  `includeconf=` resolved against the data directory, and the command
+  line always taking precedence over the file. `cli.py`'s own module
+  docstring is where the precedence, and every simplification against
+  Core's own reader, is argued.
+- **`Config` takes `connect` and `addnode`, sequences of `host:port`
+  pairs `Node.run` dials at startup** through
+  `p2p_manager.connect(peer_address(...))`, the same route the
+  integration suite already dials a real `bitcoind` through.
+  `-connect` dials those alone and turns off DNS seeding, every
+  automatically-drawn outbound connection
+  (`P2pManager.use_addrman_outgoing`) and, by default, this node's own
+  P2P listener (`P2pManager.listen`) -- Core's own
+  `InitParameterInteraction` turns off the same three, and an explicit
+  `-listen`/`-listen=1` still wins over that default the way Core's own
+  `SoftSetBoolArg` does. `-connect=0` dials nobody but still counts as
+  `-connect` for that interaction, matching
+  `connect.size() != 1 || connect[0] != "0"`. `-addnode` dials alongside
+  the ordinary draw. Reading Core's own `blk*.dat` files is not
+  implemented: the p2p route above already delivers the same blocks
+  with no new parser.
+- **`scripts/chains/mainnet.py`, `testnet.py` and `signet.py` are
+  gone**, replaced by the command above; `tests/unit/scripts_test.py`,
+  which existed only to check their own module-body guard, goes with
+  them -- `Node.__init__`'s own `ReimportedMainProcessError` (issue
+  #589) is what a re-imported `__main__` meets now, whichever entry
+  point built the `Node`.
+- **`-blocksdir` is not implemented**: `BlockDB` takes one directory
+  and giving it a second is wider than a flag, filed as
+  btclib-org/btclib-node#652 rather than carried here. A standing
+  reconnect for a dropped `-connect`/`-addnode` peer is filed as
+  btclib-org/btclib-node#651 for the same reason: each dials once, at
+  startup, and Core keeps redialling either forever.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

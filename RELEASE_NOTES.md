@@ -130,6 +130,14 @@ section fills in one landed change at a time — what a user of
   carries, where the old store answered a corrupted value silently and
   could lose a corrupted key without ever reading it at all.
 
+- **`scripts/chains/mainnet.py`, `testnet.py` and `signet.py` are gone**
+  (issues #583, #581, #573). `pip install btclib-node` now puts
+  `btclib-node` on `PATH`; run `btclib-node` in place of
+  `python scripts/chains/mainnet.py`, `btclib-node -testnet`/`-signet`/
+  `-regtest` in place of the other two, and `btclib-node -h` for every
+  flag. `btclib-node -conf=<file>` reads an existing `bitcoin.conf` the
+  way Core reads one.
+
 ## v2026.8.27
 
 **The first release of btclib-node.** Nothing here is an upgrade: no

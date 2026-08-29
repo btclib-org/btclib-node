@@ -37,6 +37,7 @@ from btclib_node.constants import NodeStatus
 from btclib_node.exceptions import NodeShutdownTimeoutError, ReimportedMainProcessError
 from btclib_node.interpreter import warm
 from btclib_node.main import update_chain
+from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
 from tests import generate_random_chain, wait_until
 from tests.conftest import unstarted_node_context
@@ -75,6 +76,11 @@ class AManager:
         # shutdown path reads it off whichever manager it holds without
         # checking which, so the stand-in carries it too (#263)
         self.peer_db = SimpleNamespace(close=lambda: None)
+        # what `run`'s own `config.connect`/`config.addnode` dial loop
+        # calls, in order -- only P2pManager's own attribute has a real
+        # `connect`, and this stand-in is asked for both managers, so
+        # both carry it the same way `peer_db` above does
+        self.connect_calls: list[Any] = []
 
     def start(self) -> None:
         """Record that `run`'s own start branch reached this stand-in."""
@@ -83,6 +89,10 @@ class AManager:
     def stop(self) -> None:
         """Record that `run`'s own teardown reached this stand-in."""
         self.stopped = True
+
+    def connect(self, address: Any) -> None:
+        """Record `address`, in the order `run` dialled it."""
+        self.connect_calls.append(address)
 
 
 @pytest.fixture
@@ -397,14 +407,17 @@ def test_node_refuses_to_build_inside_a_reimported_main(
 
     The two calls `__init__` reads are monkeypatched rather than driven
     through a real `Pool`: a real one reproduces the shape correctly
-    only when the caller *lacks* the guard `scripts/chains/*.py` now
-    carries (issue #579), and building one here to prove that would
-    fork-bomb the machine for no more information than these two calls
-    already give. `SpawnPoolWorker-3` and `spawn` are measured, not
-    invented -- a real `multiprocessing.get_context("spawn").Pool`
-    worker reports exactly that shape for `current_process().name`, and
-    a real `ctx.Process` re-importing this module raises exactly this
-    error before ever reaching a target function.
+    only when the caller *lacks* a module-body `if __name__ ==
+    "__main__":` guard around its own `Node(...)` call -- issue #579's
+    own shape, which `cli.py`'s own module docstring is where the
+    guard's two live places are named now that `scripts/chains/*.py`
+    is gone -- and building one here to prove that would fork-bomb the
+    machine for no more information than these two calls already give.
+    `SpawnPoolWorker-3` and `spawn` are measured, not invented -- a
+    real `multiprocessing.get_context("spawn").Pool` worker reports
+    exactly that shape for `current_process().name`, and a real
+    `ctx.Process` re-importing this module raises exactly this error
+    before ever reaching a target function.
     """
     monkeypatch.setattr(
         multiprocessing,
@@ -712,6 +725,53 @@ def test_a_port_configured_is_a_manager_started_and_stopped(
     # anything
     assert not quiet.p2p_manager.is_alive()
     assert not quiet.rpc_manager.is_alive()
+
+
+def test_run_dials_every_connect_and_addnode_peer_at_startup(tmp_path: Path) -> None:
+    """`run` calls `p2p_manager.connect` once per `connect`/`addnode` peer.
+
+    Built by hand rather than through `a_networked_node`, which carries
+    no `connect`/`addnode` of its own: the real `P2pManager` this
+    `Config` builds is torn down and replaced with the same `AManager`
+    stand-in that fixture swaps in, for the same reason (#263's own
+    `peer_db` needs closing before the only reference to it drops).
+    """
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            p2p_port=18444,
+            allow_rpc=False,
+            connect=["10.0.0.1:1"],
+            addnode=["10.0.0.2:2"],
+            debug=True,
+        )
+    )
+    node.p2p_manager.loop.close()
+    node.p2p_manager.peer_db.close()
+    node.p2p_manager = AManager()  # type: ignore[assignment]
+    p2p_manager = cast("AManager", node.p2p_manager)
+    try:
+        node.start()
+        wait_until(lambda: len(p2p_manager.connect_calls) == 2)
+        assert p2p_manager.connect_calls == [
+            peer_address("10.0.0.1", 1),
+            peer_address("10.0.0.2", 2),
+        ]
+    finally:
+        node.stop()
+
+
+def test_run_dials_nothing_extra_without_connect_or_addnode(
+    a_networked_node: Node,
+) -> None:
+    """`connect`/`addnode` empty, the ordinary case: no `connect` call."""
+    node = a_networked_node
+    p2p_manager = cast("AManager", node.p2p_manager)
+    node.start()
+    wait_until(lambda: p2p_manager.started)
+    node.stop()
+    assert p2p_manager.connect_calls == []
 
 
 def test_every_message_waiting_is_taken_before_the_loop_waits(

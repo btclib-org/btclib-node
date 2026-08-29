@@ -7,8 +7,8 @@
 Builds `Chainstate` against `.btclib/testnet` and binds `index` to its
 `BlockIndex`, then stops: meant to be run under `python -i` so the
 resulting prompt can query `index` directly, against a data directory a
-`scripts/chains/testnet.py` run has already populated. Its `_test.py`
-name is this tree's test-module suffix, but it lives under `scripts/`,
+`btclib-node -testnet` run has already populated. Its `_test.py` name
+is this tree's test-module suffix, but it lives under `scripts/`,
 outside `testpaths`, so pytest never collects it.
 """
 

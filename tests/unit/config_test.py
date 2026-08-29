@@ -11,7 +11,7 @@ from bitcoin_core_rpc import rpc_port_from_chain
 from btclib.fee import FeeRate
 
 from btclib_node.chains import Main, RegTest, SigNet, TestNet
-from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE, Config
+from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE, Config, split_host_port
 from btclib_node.exceptions import PruningNotImplementedError
 
 
@@ -116,3 +116,126 @@ def test_a_disallowed_port_is_none_rather_than_some_other_number() -> None:
     # is not a value a disallowed one can take either
     assert Config(chain="regtest", allow_p2p=False).p2p_port is None
     assert Config(chain="regtest", allow_rpc=False).rpc_port is None
+
+
+def test_connect_and_addnode_default_to_empty() -> None:
+    """Neither field is given: both resolve to an empty tuple."""
+    config = Config(chain="regtest")
+    assert config.connect == ()
+    assert config.addnode == ()
+    assert config.connect_given is False
+
+
+def test_connect_zero_dials_nobody_but_still_counts_as_given() -> None:
+    """Core's own `-connect=0`: an empty dial list, not a raised error.
+
+    `ip_address("0")` is not a valid literal, so `_resolve_peers` never
+    sees it -- `Config` special-cases the one-element `["0"]` list the
+    same way `CConnman`'s own options builder does
+    (`connect.size() != 1 || connect[0] != "0"`, `src/init.cpp:2333`,
+    at bitcoin/bitcoin@ca7162cde5) before resolving anything.
+    `connect_given` stays `True`: this is still the `-connect` arm,
+    dialling nobody rather than never having been asked to.
+    """
+    config = Config(chain="regtest", connect=["0"])
+    assert config.connect == ()
+    assert config.connect_given is True
+
+
+def test_listen_defaults_to_true() -> None:
+    """Core's own `DEFAULT_LISTEN`, unless a caller says otherwise."""
+    assert Config(chain="regtest").listen is True
+
+
+def test_listen_false_is_taken_as_given() -> None:
+    """`listen=False` is stored as given, not resolved by `Config` itself.
+
+    The `-connect`-implies-`-listen=0` default is `cli.py`'s own
+    `_resolve_listen`, argued against `connect_given` above one layer up
+    from here -- `Config` only ever stores what it is given.
+    """
+    assert Config(chain="regtest", connect=["127.0.0.1"], listen=False).listen is False
+    assert Config(chain="regtest", connect=["127.0.0.1"]).listen is True
+
+
+def test_connect_resolves_to_the_chains_own_default_port() -> None:
+    """A spec naming no port falls back to the chain's own P2P port."""
+    config = Config(chain="regtest", connect=["127.0.0.1"])
+    assert config.connect == (("127.0.0.1", RegTest().port),)
+
+
+def test_connect_explicit_port_overrides_the_default() -> None:
+    """A spec naming a port keeps it rather than the chain's own."""
+    config = Config(chain="regtest", connect=["127.0.0.1:9999"])
+    assert config.connect == (("127.0.0.1", 9999),)
+
+
+def test_addnode_is_the_same_shape_as_connect() -> None:
+    """`addnode` resolves the same way `connect` does, independently."""
+    config = Config(chain="regtest", addnode=["10.0.0.1:1", "10.0.0.2"])
+    assert config.addnode == (("10.0.0.1", 1), ("10.0.0.2", RegTest().port))
+    assert config.connect == ()
+
+
+def test_connect_and_addnode_both_take_several_entries() -> None:
+    """Every spec given is resolved, in order, not only the last one."""
+    config = Config(
+        chain="regtest",
+        connect=["10.0.0.1", "10.0.0.2"],
+        addnode=["10.0.0.3"],
+    )
+    assert len(config.connect) == 2
+    assert config.addnode == (("10.0.0.3", RegTest().port),)
+
+
+def test_connect_rejects_a_hostname() -> None:
+    """A spec whose host is not an IP literal raises rather than dialling wrong.
+
+    `p2p_manager.connect(peer_address(...))` -- the route `Node.run`
+    dials `connect`/`addnode` through -- takes a parsed IP; this node
+    resolves no hostname anywhere in its synchronous startup path
+    (`config.py`'s own `_resolve_peers` docstring), so a hostname here
+    is refused rather than silently mishandled.
+    """
+    with pytest.raises(
+        ValueError, match="does not appear to be an IPv4 or IPv6 address"
+    ):
+        Config(chain="regtest", connect=["example.com"])
+
+
+def test_split_host_port_bare_host_takes_the_default_port() -> None:
+    """No colon at all: the default port, host unchanged."""
+    assert split_host_port("127.0.0.1", 8333) == ("127.0.0.1", 8333)
+
+
+def test_split_host_port_reads_an_explicit_port() -> None:
+    """A colon followed by digits: that port, not the default."""
+    assert split_host_port("127.0.0.1:9000", 8333) == ("127.0.0.1", 9000)
+
+
+def test_split_host_port_reads_a_bracketed_ipv6_address_and_port() -> None:
+    """`[::1]:9000` splits on the colon after the closing bracket."""
+    assert split_host_port("[::1]:9000", 8333) == ("::1", 9000)
+
+
+def test_split_host_port_an_unbracketed_ipv6_address_has_no_port_of_its_own() -> None:
+    """An IPv6 literal's own colons need brackets to be a port separator."""
+    assert split_host_port("::1", 8333) == ("::1", 8333)
+
+
+def test_split_host_port_rejects_a_non_numeric_port() -> None:
+    """A port that does not parse as an integer raises."""
+    with pytest.raises(ValueError, match="invalid port"):
+        split_host_port("127.0.0.1:notaport", 8333)
+
+
+def test_split_host_port_rejects_port_zero() -> None:
+    """Port `0` is not a port to bind or dial, and is refused."""
+    with pytest.raises(ValueError, match="invalid port"):
+        split_host_port("127.0.0.1:0", 8333)
+
+
+def test_split_host_port_rejects_a_port_past_the_ceiling() -> None:
+    """A port above 65535 does not fit a `uint16_t`, and is refused."""
+    with pytest.raises(ValueError, match="invalid port"):
+        split_host_port("127.0.0.1:70000", 8333)

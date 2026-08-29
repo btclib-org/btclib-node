@@ -75,6 +75,23 @@ class P2pManager(threading.Thread):
         self.logger = node.logger
         self.port = port
         self.peer_db = peer_db
+        # Core's own `-connect`: dial only the peers it names, with DNS
+        # seeding and every automatically-drawn outbound connection off
+        # (`connOptions.m_use_addrman_outgoing = false`, `src/init.cpp`
+        # `InitParameterInteraction`, at bitcoin/bitcoin@ca7162cde5).
+        # `node.config.connect_given`, not `node.config.connect`'s own
+        # truthiness: the two disagree under `-connect=0`, which is
+        # still the `-connect` arm even though it dials nobody
+        # (`Config`'s own field comment). Read once here rather than at
+        # each call site below, so a `Config` a caller mutates after
+        # building this manager cannot change which arm `run` and
+        # `_maybe_dial_more_peers` take mid-flight.
+        self.use_addrman_outgoing = not node.config.connect_given
+        # Core's own `-listen`, read the same way and for the same
+        # reason: whether `_bind` below runs at all, decided once here
+        # rather than reread from a `Config` a caller could still
+        # mutate underneath `run`.
+        self.listen = node.config.listen
 
         self.connections: dict[int, Connection] = {}
         # A connection accepted or dialled but not yet past `verack`,
@@ -439,6 +456,13 @@ class P2pManager(threading.Thread):
             self.logger.exception("Exception occurred")
 
     async def _maybe_dial_more_peers(self) -> None:
+        # `-connect`'s own other half: `peer_db`'s table is never drawn
+        # from at all, on top of `run` below never scheduling the DNS
+        # lookup that would otherwise fill it. `Node.run` dials
+        # `node.config.connect` directly through `connect()`, which does
+        # not pass through here.
+        if not self.use_addrman_outgoing:
+            return
         connection_num = 1 if self.node.status < NodeStatus.HeaderSynced else 10
         # Locked, and the snapshot below locks separately rather than
         # sharing this one: `promote_connection` moves a connection
@@ -662,13 +686,21 @@ class P2pManager(threading.Thread):
         self.logger.info("Starting P2P manager")
         loop = self.loop
         asyncio.set_event_loop(loop)
-        try:
-            server_sockets = self._bind()
-        except OSError:
-            self.logger.exception("Could not bind the P2P listener")
-            raise
+        # Core's own `-listen=0`: no bind, no accept, outbound dialling
+        # untouched -- `_bind`'s own listener socket is the only thing
+        # this skips, `manage_connections` and the dial loop below both
+        # running on this same loop regardless of whether `_bind` below
+        # ever ran.
+        server_sockets: list[socket.socket] = []
+        if self.listen:
+            try:
+                server_sockets = self._bind()
+            except OSError:
+                self.logger.exception("Could not bind the P2P listener")
+                raise
         self._server_sockets = server_sockets
-        asyncio.run_coroutine_threadsafe(self.peer_db.get_addr_from_dns(), loop)
+        if self.use_addrman_outgoing:
+            asyncio.run_coroutine_threadsafe(self.peer_db.get_addr_from_dns(), loop)
         for server_socket in server_sockets:
             asyncio.run_coroutine_threadsafe(self.server(loop, server_socket), loop)
         asyncio.run_coroutine_threadsafe(self.manage_connections(), loop)

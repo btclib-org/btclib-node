@@ -63,9 +63,11 @@ python -m pip install --upgrade btclib-node
 
 Python 3.14 or newer: `pyproject.toml`'s `requires-python` says so and
 says why, and pip refuses the wheel below it rather than installing
-something that will not import. Read *Security* before running the node
-— the classifier is `3 - Alpha` and the JSON-RPC listener is not
-something to expose.
+something that will not import. `btclib-node` is the command this puts
+on `PATH`; `btclib-node -h` lists every option, spelled the way Bitcoin
+Core spells its own. Read *Security* before running the node — the
+classifier is `3 - Alpha` and the JSON-RPC listener is not something to
+expose.
 
 A checkout of `main` is a cycle in progress, declaring the month with no
 day, so it is not the same thing as what pip installs;

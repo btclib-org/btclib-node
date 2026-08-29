@@ -164,6 +164,13 @@ repository = "https://github.com/btclib-org/btclib-node"
 issues = "https://github.com/btclib-org/btclib-node/issues"
 pull_requests = "https://github.com/btclib-org/btclib-node/pulls"
 
+# `btclib-node` is what `pip install btclib-node` now puts on PATH,
+# `cli.py`'s own `main` behind it -- btclib-org/btclib-node#583, #581,
+# #573. `python -m btclib_node` reaches the same function through
+# `__main__.py` for a checkout nobody has installed yet.
+[project.scripts]
+btclib-node = "btclib_node.cli:main"
+
 [dependency-groups]
 # The test runner and its plugins, nothing else.
 harness = [

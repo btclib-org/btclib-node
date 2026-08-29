@@ -22,6 +22,13 @@ btclib\_node.chains module
    :members:
    :show-inheritance:
 
+btclib\_node.cli module
+-------------------------
+
+.. automodule:: btclib_node.cli
+   :members:
+   :show-inheritance:
+
 btclib\_node.config module
 ---------------------------
 

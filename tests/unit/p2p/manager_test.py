@@ -15,6 +15,7 @@ import socket
 import threading
 import time
 from contextlib import closing, suppress
+from functools import partial
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast, override
 
@@ -115,6 +116,8 @@ class AManagerFactory(Protocol):
         peer_db: Any = None,
         status: NodeStatus = NodeStatus.BlockSynced,
         port: int = 18444,
+        connect: Sequence[tuple[str, int]] = (),
+        listen: bool = True,
     ) -> P2pManager:
         """Build a `P2pManager` seeded with `conns`, `peer_db` and `status`."""
         ...
@@ -131,6 +134,8 @@ def a_manager() -> Iterator[AManagerFactory]:
         peer_db: Any = None,
         status: NodeStatus = NodeStatus.BlockSynced,
         port: int = 18444,
+        connect: Sequence[tuple[str, int]] = (),
+        listen: bool = True,
     ) -> P2pManager:
         node = SimpleNamespace(
             status=status,
@@ -144,6 +149,16 @@ def a_manager() -> Iterator[AManagerFactory]:
             # own: it hands the transaction to this, the same queue a
             # relayed transaction goes through. btclib-org/btclib-node#141
             download_manager=SimpleNamespace(received_txs=[]),
+            # `P2pManager.__init__` reads `node.config.connect_given` and
+            # `node.config.listen` directly, not through `Config` itself:
+            # a plain namespace is enough. `connect_given` mirrors what
+            # `Config.__init__` itself derives from `connect` -- true
+            # whenever the sequence is non-empty, `["0"]` included, which
+            # nothing here constructs -- and `listen` defaults to `True`
+            # so every existing caller here keeps binding and accepting.
+            config=SimpleNamespace(
+                connect=connect, connect_given=bool(connect), listen=listen
+            ),
         )
         # a peer db that refuses to be asked by default: a test that
         # should not reach for a peer proves it by the log staying quiet
@@ -876,6 +891,155 @@ def refuses_to_be_asked() -> NoReturn:
 async def asks_no_dns_server() -> None:
     """Stand in for a `get_addr_from_dns` that never touches a real server."""
     return
+
+
+def test_connect_turns_off_addrman_outgoing(a_manager: AManagerFactory) -> None:
+    """`node.config.connect` non-empty: `use_addrman_outgoing` is `False`."""
+    manager = a_manager(connect=[("1.2.3.4", 8333)])
+    assert manager.use_addrman_outgoing is False
+
+
+def test_no_connect_leaves_addrman_outgoing_on(a_manager: AManagerFactory) -> None:
+    """`node.config.connect` empty, the ordinary case: the draw stays on."""
+    manager = a_manager()
+    assert manager.use_addrman_outgoing is True
+
+
+def test_maybe_dial_more_peers_is_a_noop_under_connect(
+    a_manager: AManagerFactory,
+) -> None:
+    """Under `-connect`, the peer_db draw is never reached at all.
+
+    `refuses_to_be_asked` would raise into the housekeeping loop's own
+    handler the moment `random_address` is called; nothing here catches
+    that, so a clean return is the proof `_maybe_dial_more_peers`
+    returned before reaching for it.
+    """
+    peer_db = a_peer_db_stub(is_empty=False, random_address=refuses_to_be_asked)
+    manager = a_manager(peer_db=peer_db, connect=[("1.2.3.4", 8333)])
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert not manager.connections
+    assert not manager.pending_connections
+
+
+async def _record_dns_lookup(calls: list[int]) -> None:
+    """Stand in for `get_addr_from_dns`, recording that it was awaited.
+
+    One shared function rather than a `spy` nested in each of the two
+    tests below: the "never called" half of that pair would otherwise
+    pin a line the suite can never reach and the 100% floor can never
+    forgive. Sharing this one lets the positive control below cover it
+    while the skip test's own `calls` stays empty.
+    """
+    calls.append(1)
+
+
+def test_run_skips_the_dns_lookup_under_connect(a_manager: AManagerFactory) -> None:
+    """`-connect` also stops `run` from ever scheduling `get_addr_from_dns`.
+
+    `listen=False` alongside `connect`, matching what `-connect` alone
+    resolves to without an explicit `-listen=1` (`cli.py`'s own
+    `_resolve_listen`) -- so this is also where "no listener under
+    `-connect`" is pinned, in place of the `wait_until_listening` an
+    earlier version of this test waited on, which held regardless of
+    `-connect` and so proved nothing about it.
+    """
+    calls: list[int] = []
+    peer_db = a_peer_db_stub(
+        is_empty=True,
+        random_address=refuses_to_be_asked,
+        get_addr_from_dns=partial(_record_dns_lookup, calls),
+    )
+    manager = a_manager(
+        peer_db=peer_db,
+        port=get_random_port(),
+        connect=[("1.2.3.4", 8333)],
+        listen=False,
+    )
+    manager.start()
+    # `loop.is_running()` rather than `wait_until_listening`: nothing
+    # binds under `listen=False`, so `listening` never sets and a wait
+    # on it would only time out. Every scheduling decision `run` makes
+    # -- this one included -- runs synchronously before `run_forever`
+    # is ever reached, so this is still a sound point to check `calls`.
+    wait_until(manager.loop.is_running)
+    assert not manager.listening.is_set()
+    assert not calls
+
+
+def test_run_schedules_the_dns_lookup_without_connect(
+    a_manager: AManagerFactory,
+) -> None:
+    """The positive control for the test above: without `-connect`, it runs.
+
+    Proves the stand-in can actually observe a call at all, rather than
+    the skip above passing because nothing here would ever detect one.
+    """
+    calls: list[int] = []
+    peer_db = a_peer_db_stub(
+        is_empty=True,
+        random_address=refuses_to_be_asked,
+        get_addr_from_dns=partial(_record_dns_lookup, calls),
+    )
+    manager = a_manager(peer_db=peer_db, port=get_random_port())
+    manager.start()
+    wait_until_listening(manager)
+    wait_until(lambda: calls)
+
+
+def test_listen_false_binds_nothing_but_still_dials(a_manager: AManagerFactory) -> None:
+    """`listen=False`: no bound socket, and the explicit dial still works.
+
+    `-connect` alone resolves to exactly this combination
+    (`cli.py`'s own `_resolve_listen`): `Node.run`'s dial loop calls
+    `P2pManager.connect` for every `config.connect`/`config.addnode`
+    peer regardless of `listen`, so a manager with `listen=False` has to
+    still be able to reach one -- dialled here at a second, ordinary
+    manager that is listening, since one with `listen=False` has
+    nothing of its own to dial back into.
+    """
+    target_port = get_random_port()
+    target = a_running_manager(a_manager, target_port)
+    dialer = a_manager(connect=[("127.0.0.1", target_port)], listen=False)
+    try:
+        wait_until_listening(target)
+        dialer.start()
+        wait_until(dialer.loop.is_running)
+        assert not dialer.listening.is_set()
+        dialer.connect(peer_address("127.0.0.1", target_port))
+        wait_until(lambda: dialer.pending_connections)
+        wait_until(lambda: target.pending_connections)
+    finally:
+        dialer.stop()
+        dialer.join(timeout=10)
+        target.stop()
+        target.join(timeout=10)
+
+
+def test_connect_and_explicit_listen_binds_and_dials(
+    a_manager: AManagerFactory,
+) -> None:
+    """`-connect` plus `-listen=1`: both a bound socket and a working dial.
+
+    The explicit override case: `connect` set and `listen` left at its
+    own default `True` rather than the `False` `-connect` alone would
+    resolve to.
+    """
+    target_port = get_random_port()
+    target = a_running_manager(a_manager, target_port)
+    dialer = a_manager(connect=[("127.0.0.1", target_port)])
+    try:
+        wait_until_listening(target)
+        dialer.start()
+        wait_until_listening(dialer)
+        dialer.connect(peer_address("127.0.0.1", target_port))
+        wait_until(lambda: dialer.pending_connections)
+        wait_until(lambda: target.pending_connections)
+    finally:
+        dialer.stop()
+        dialer.join(timeout=10)
+        target.stop()
+        target.join(timeout=10)
 
 
 def test_a_peer_db_that_raises_does_not_stop_the_housekeeping(
