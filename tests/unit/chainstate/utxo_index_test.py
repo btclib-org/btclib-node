@@ -274,6 +274,47 @@ def test_a_rev_block_that_restores_a_written_output_unmarks_it_removed(
     chainstate.close()
 
 
+def test_a_restored_output_is_a_bip30_violation_again(tmp_path: Path) -> None:
+    """A block re-mining a restored output's own txid is refused.
+
+    `_unmark_removed` fixes two things, not one: alongside the
+    double-spend-guard consequence
+    `test_a_rev_block_that_restores_a_written_output_unmarks_it_removed`
+    above pins, the same stale flag also hid a genuine BIP30 duplicate.
+    `_bip30_violation` reads `removed_utxos` first and answers "no
+    violation" on a hit, before ever consulting `updated_utxo_set` or
+    the database -- so as long as the restored outpoint sat in
+    `removed_utxos`, a block recreating it connected instead of being
+    refused, even though `apply_rev_block`'s own `to_add` loop had just
+    made that coin real and unspent again. Goes through `add_block`
+    rather than calling `_bip30_violation` directly, the same level
+    every other BIP30 test in this file exercises the check at, below
+    -- and asserts only the raise, not `removed_utxos` itself, which
+    `test_a_rev_block_that_restores_a_written_output_unmarks_it_removed`
+    above already pins, so a mutation dropping `_unmark_removed` fails
+    this test specifically for not raising `bad-txns-BIP30`, rather
+    than for the unmark that test already covers
+    (btclib-org/btclib-node#586).
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+    funding = coinbase(b"\x15")
+    utxo_index.add_block(one_tx_block([funding], b"\x15" * 32), 1)
+    utxo_index.finalize()
+
+    out = OutPoint(funding.id, 0)
+    _, rev_block = utxo_index.add_block(
+        one_tx_block([coinbase(b"\x16"), spending(out, b"\x16")], b"\x16" * 32), 2
+    )
+    utxo_index.apply_rev_block(rev_block)
+
+    # the coinbase that originally created `out` duplicates a still-unspent
+    # output, restored by the rev block just applied
+    with pytest.raises(InvalidBlockInputError, match="bad-txns-BIP30"):
+        utxo_index.add_block(one_tx_block([funding], b"\x17" * 32), 3)
+    chainstate.close()
+
+
 def test_a_block_that_duplicates_an_unspent_output_is_refused(tmp_path: Path) -> None:
     """A block whose coinbase duplicates a still-unspent txid is refused.
 

@@ -107,6 +107,18 @@ class UtxoIndex:
         so a transaction earlier in this same block being processed can
         never make a later one's check see its own not-yet-applied
         write.
+
+        Checking `removed_utxos` before `updated_utxo_set` is safe only
+        because the two are disjoint: no outpoint bytes value is ever
+        staged in both at once, `_unmark_removed` running before every
+        `_put` that could restore one (`apply_rev_block`'s own docstring
+        argues this invariant). A restored prevout that stayed in
+        `removed_utxos` instead -- as one used to, before `_unmark_removed`
+        ran unconditionally -- would answer `False` here on that account
+        alone, before this order ever reaches `updated_utxo_set` or the
+        store, hiding a genuine BIP30 duplicate of that prevout rather
+        than only the double-spend-guard failure `apply_rev_block`'s own
+        docstring names (btclib-org/btclib-node#586).
         """
         if out_point_bytes in self.removed_utxos:
             return False
@@ -317,7 +329,12 @@ class UtxoIndex:
         `"prevout already spent in this batch"` guard and gets rejected
         as a double spend, invalidating that block and, through
         `update_header_index` -> `BlockIndex.invalidate`, everything
-        built on it (btclib-org/btclib-node#586).
+        built on it. Independently of that, the same stale flag hides a
+        genuine BIP30 duplicate too: `_bip30_violation` reads
+        `removed_utxos` first and answers "no violation" on a hit, so a
+        block recreating the restored outpoint -- still unspent once
+        this call has put it back -- would connect instead of being
+        refused `bad-txns-BIP30` (btclib-org/btclib-node#586).
         """
         for out_point in rev_block.to_remove:
             out_point_bytes = out_point.serialize(check_validity=False)

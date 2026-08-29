@@ -996,6 +996,13 @@ where this file was written rather than where anything was tagged.
   was unreachable before staging crossed trial boundaries -- the old,
   per-trial `finalize` wiped both dicts, and the stale flag along with
   them, before a second trial could ever see it.
+- **The same stale flag also hid a genuine BIP30 duplicate of the
+  restored output.** `_bip30_violation` reads `removed_utxos` before
+  `updated_utxo_set` or the store, so a block recreating an outpoint
+  that a reorg had just made unspent again connected instead of being
+  refused `bad-txns-BIP30` -- CVE-2012-1909's own shape, independently
+  of the double-spend-guard consequence above; `_unmark_removed`
+  running unconditionally fixes both at once.
 
 ### An I/O fault trying a block is not the block's own fault (closes #620)
 
