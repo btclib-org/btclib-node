@@ -1303,13 +1303,33 @@ def test_a_transaction_a_full_mempool_declined_is_not_reported_either(
 
 
 class FakeBlockIndex:
-    """A block index stand-in with fixed answers and recorded calls."""
+    """A block index stand-in with fixed answers and recorded calls.
 
-    def __init__(self, infos: dict[bytes, Any]) -> None:
-        """Answer `get_block_info`, record `marked`/`invalidated` calls."""
+    `header_dict` is `infos` itself, the same way the real `BlockIndex`'s
+    `get_block_info` reads `self.header_dict[block_hash]` -- a block
+    hash this stand-in was built with is "known" on both counts at once,
+    matching the real object rather than needing a second table kept in
+    step with the first.
+    """
+
+    def __init__(
+        self, infos: dict[bytes, Any], *, accepts_headers: bool = True
+    ) -> None:
+        """Answer `get_block_info`, record `marked`/`invalidated` calls.
+
+        `accepts_headers` is what `add_headers` answers with for a
+        header naming a hash `infos` does not already carry: `True`
+        indexes it (`get_block_info` sees it from then on), `False`
+        answers `None`, `BlockIndex.add_headers`'s own answer for a
+        single header whose own parent this index does not know either
+        -- btclib-org/btclib-node#711's own case.
+        """
         self.infos = infos
+        self.header_dict = infos
         self.marked: list[bytes] = []
         self.invalidated: list[bytes] = []
+        self.accepts_headers = accepts_headers
+        self.added_headers: list[BlockHeader] = []
 
     def get_block_info(self, block_hash: bytes) -> Any:
         """Return the fixed info this block hash was constructed with."""
@@ -1322,6 +1342,20 @@ class FakeBlockIndex:
     def invalidate(self, block_hash: bytes) -> None:
         """Record that this block hash was invalidated."""
         self.invalidated.append(block_hash)
+
+    def add_headers(self, headers: list[BlockHeader]) -> bytes | None:
+        """Index the one header `block` ever calls this with, or refuse it.
+
+        `BlockIndex.add_headers`'s own contract for a single header:
+        the hash it just indexed, or `None` for a header this stand-in
+        was built to refuse.
+        """
+        self.added_headers.extend(headers)
+        (header,) = headers
+        if not self.accepts_headers:
+            return None
+        self.infos[header.hash] = SimpleNamespace(downloaded=False)
+        return header.hash
 
 
 def a_block() -> Block:
@@ -1427,6 +1461,68 @@ def test_a_block_whose_proof_of_work_does_not_hold_up_is_refused() -> None:
     assert added == []
     assert index.marked == []
     assert index.invalidated == [broken.header.hash]
+
+
+def test_an_unsolicited_block_extending_a_known_parent_is_indexed_and_stored() -> None:
+    """A block this node never separately indexed is not a `KeyError`.
+
+    `a_block()` extends regtest's own genesis, so its own header's
+    parent is known even though this test's own `FakeBlockIndex` starts
+    with nothing in it -- the shape a block arrives in unannounced by a
+    prior `headers` round, over `inv`/`getdata` alone, or the exact
+    reproduction issue #711 itself carries: before the fix, `block`
+    called `get_block_info` on a hash this stand-in had no entry for at
+    all, `KeyError` and not `BTClibValueError` -- an exception `main.
+    handle_p2p`'s own `except Exception` still catches, but never
+    discourages the peer for, `isinstance(e, BTClibException)` being
+    `False` for it. This is the accepting half of #711's fix; the
+    refusing half is
+    `test_an_unsolicited_block_with_an_unknown_parent_is_refused` below.
+    """
+    block = a_block()
+    index = FakeBlockIndex({})
+    added: list[Block] = []
+    node = a_data_node(
+        block_index=index, block_db=SimpleNamespace(add_block=added.append)
+    )
+    payload = BlockMsg(block, include_witness=True, check_validity=False).serialize(
+        check_validity=False
+    )
+    block_callback(node, payload, a_peer())
+    assert added == [block]
+    assert index.marked == [block.header.hash]
+    assert index.invalidated == []
+    assert [header.hash for header in index.added_headers] == [block.header.hash]
+
+
+def test_an_unsolicited_block_with_an_unknown_parent_is_refused() -> None:
+    """A block naming a parent this node has never heard of is not a `KeyError`.
+
+    Core's own `AcceptBlockHeader` (`validation.cpp`, at
+    bitcoin/bitcoin@ca7162cde5) refuses exactly this shape with
+    `BLOCK_MISSING_PREV`, and `MaybePunishNodeForBlock`
+    (`net_processing.cpp`, same sha) calls `Misbehaving` for it --
+    `BTClibValueError` here is what `main.handle_p2p`'s own `except`
+    reads the same way, discouraging and dropping the peer
+    (`test_a_callback_that_raises_drops_the_peer`, `p2p/main_test.py`,
+    already covers that mechanics generically). Before the fix this
+    raised `KeyError` instead, which is not discouraged.
+    btclib-org/btclib-node#711
+    """
+    (orphan,) = generate_random_chain(1, b"\x11" * 32)
+    index = FakeBlockIndex({}, accepts_headers=False)
+    added: list[Block] = []
+    node = a_data_node(
+        block_index=index, block_db=SimpleNamespace(add_block=added.append)
+    )
+    payload = BlockMsg(orphan, include_witness=True, check_validity=False).serialize(
+        check_validity=False
+    )
+    with pytest.raises(BTClibValueError):
+        block_callback(node, payload, a_peer())
+    assert added == []
+    assert index.marked == []
+    assert orphan.header.hash not in index.infos
 
 
 def test_an_inventory_is_ignored_until_the_blocks_are_synced() -> None:
