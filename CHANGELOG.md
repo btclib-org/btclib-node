@@ -910,6 +910,24 @@ where this file was written rather than where anything was tagged.
   required checks.** It carries neither a `pull_request` trigger nor
   `workflow_dispatch`, so unlike the other four a required check on it
   could never be satisfied by any pull request at all.
+
+### The rpc listener's default port is Core's own, not `p2p_port + 1` (closes #605)
+
+- **`Chain` carries its own `rpc_port` now, one below `port` on every
+  leaf** — 8332/18332/38332/18443 for mainnet/testnet/signet/regtest,
+  Core's own `CreateBaseChainParams` (`src/chainparamsbase.cpp`, at
+  bitcoin/bitcoin@05e49b342f). `Config.__init__` derived it from
+  `chain.port + 1` instead, which happens to be Core's own Tor
+  incoming-connection port for each of these four chains rather than
+  its rpc one, so a client left on Core's own rpc default never found
+  this node.
+- **`tests/unit/config_test.py::test_default_rpc_port_is_cores_own`
+  checks the default for all four chains against
+  `bitcoin_core_rpc.rpc_port_from_chain`, read independently of this
+  node's own `Config`** — every functional rpc test passes an explicit
+  `rpc_port` of its own, so none of them exercised the default this
+  issue was about.
+
 ### An I/O fault trying a block is not the block's own fault (closes #620)
 
 - **`update_chain`'s trial loop tells a content failure from a storage one
@@ -930,23 +948,6 @@ where this file was written rather than where anything was tagged.
   catch stops the main loop and closes every database, the same path a
   failure out of `_blocks_to_add`, `_rev_blocks_to_remove` or
   `_finalize_fork` already took.
-
-### The rpc listener's default port is Core's own, not `p2p_port + 1` (closes #605)
-
-- **`Chain` carries its own `rpc_port` now, one below `port` on every
-  leaf** — 8332/18332/38332/18443 for mainnet/testnet/signet/regtest,
-  Core's own `CreateBaseChainParams` (`src/chainparamsbase.cpp`, at
-  bitcoin/bitcoin@05e49b342f). `Config.__init__` derived it from
-  `chain.port + 1` instead, which happens to be Core's own Tor
-  incoming-connection port for each of these four chains rather than
-  its rpc one, so a client left on Core's own rpc default never found
-  this node.
-- **`tests/unit/config_test.py::test_default_rpc_port_is_cores_own`
-  checks the default for all four chains against
-  `bitcoin_core_rpc.rpc_port_from_chain`, read independently of this
-  node's own `Config`** — every functional rpc test passes an explicit
-  `rpc_port` of its own, so none of them exercised the default this
-  issue was about.
 
 ## v2026.8.27
 

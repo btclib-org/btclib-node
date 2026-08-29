@@ -12,6 +12,7 @@ block would need to undo it.
 
 from typing import TYPE_CHECKING
 
+from btclib.exceptions import BTClibValueError
 from btclib.tx.out_point import OutPoint
 
 from btclib_node.block_db import Coin, RevBlock
@@ -149,7 +150,18 @@ class UtxoIndex:
                 else:
                     prevout_data = self.db.get(b"utxo-" + prevout_bytes)
                     if prevout_data:
-                        coin = Coin.parse(prevout_data, check_validity=False)
+                        # prevout_data is present under a key only this
+                        # node's own finalize() ever writes -- the
+                        # candidate block never supplied these bytes, so
+                        # a Coin.parse this raises on is this node's own
+                        # stored record being corrupted, not the block's
+                        # content, unlike every other raise in this loop
+                        # (btclib-org/btclib-node#620)
+                        try:
+                            coin = Coin.parse(prevout_data, check_validity=False)
+                        except BTClibValueError as exc:
+                            err_msg = "stored utxo- record failed to parse"
+                            raise ChainstateInconsistencyError(err_msg) from exc
                         prev_coins.append(coin)
                         self.removed_utxos.add(prevout_bytes)
                     else:

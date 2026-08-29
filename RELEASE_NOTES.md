@@ -79,6 +79,13 @@ section fills in one landed change at a time — what a user of
   or a firewall rule pointed at an old default has to move; a caller
   passing `rpc_port=` explicitly is unaffected.
 
+- **A storage fault while connecting a block used to be recorded as
+  that block's own rejection, silently, and the node kept running; it
+  now stops the node** (issue #620). Where a node exits this way, do
+  not restart it before reading the log for the exception and clearing
+  whatever the store or disk reported -- restarting against the same
+  fault reaches the same exit again.
+
 ## v2026.8.27
 
 **The first release of btclib-node.** Nothing here is an upgrade: no

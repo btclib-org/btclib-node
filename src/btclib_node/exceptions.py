@@ -66,15 +66,21 @@ class ChainstateInconsistencyError(RuntimeError):
     invariant this violates -- a block marked downloaded that
     `block_db` does not hold, a reverse patch `set_status` already
     trusts that is not on disk, a UTXO `apply_rev_block` is asked to
-    remove that this node's own earlier `add_block` did not just add.
-    That last one is the test that actually separates this class from
-    `InvalidBlockInputError` below, which shares its two messages
-    ("prevout not found", "prevout already spent in this batch") but
-    not the invariant: `apply_rev_block` only ever inverts a reverse
+    remove that this node's own earlier `add_block` did not just add,
+    a stored `utxo-` record `add_block`'s own prevout resolution reads
+    back that does not parse. That last one differs from the other
+    three in shape -- the key is found, so nothing upstream misnamed
+    it, only the bytes underneath are wrong -- but not in kind: the
+    same test that separates this class from `InvalidBlockInputError`
+    below, which shares two of its messages ("prevout not found",
+    "prevout already spent in this batch") but not the invariant,
+    applies here too. `apply_rev_block` only ever inverts a reverse
     patch this node wrote for a block it already validated and
-    connected, so a failure there is this tree's own bookkeeping
-    disagreeing with itself. A peer's bad data is refused earlier and
-    differently (`BTClibException`, a `None` handled in place, or
+    connected, and `add_block`'s own read of a `utxo-` record is the
+    same: the key is one only this node's own `finalize` ever writes,
+    so a failure there is this tree's own bookkeeping disagreeing with
+    itself, not a peer's block. A peer's bad data is refused earlier
+    and differently (`BTClibException`, a `None` handled in place, or
     `InvalidBlockInputError`); reaching here is never that.
 
     `message` and not a structured payload per call site: what is
