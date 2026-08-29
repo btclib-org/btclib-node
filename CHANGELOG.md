@@ -1188,6 +1188,15 @@ where this file was written rather than where anything was tagged.
   btclib-org/btclib-node#641 is whether the store lacking it is the
   right one (#636).
 
+### The btclib floor is the release cut today
+
+- **`pyproject.toml` floors `btclib[secp256k1]` at the sibling's
+  v2026.8.29**, the release this tree is developed against: the one
+  that puts btclib itself on the post-vendorability
+  `bitcoin-core-rpc` and publishes `SessionTransport` in its fetch
+  seam. `uv.lock`'s git pin moves to btclib's `main` past that
+  release, which is what the suite exercises.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
