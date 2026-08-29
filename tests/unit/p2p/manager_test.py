@@ -14,6 +14,7 @@ import asyncio
 import socket
 import threading
 import time
+from concurrent.futures import Future
 from contextlib import closing, suppress
 from functools import partial
 from types import SimpleNamespace
@@ -2057,10 +2058,28 @@ def test_server_closes_a_connection_queued_in_the_instant_it_is_cancelled(
     The two `call_soon` callbacks below are that instant, made deterministic:
     they run in the order they were scheduled, so the item has certainly landed
     by the time the cancel reaches the task.
+
+    `listening_socket` is bound and put into `listen`, matching what `_bind`
+    always hands `server` in production (#430): left merely constructed, as
+    an earlier revision of this test had it, `_accept_loop`'s own
+    `sock_accept` fails on it synchronously and every retry races this
+    test's own cancellation against Windows' Proactor allocating and
+    abandoning its own internal accept socket, which is a real leak but not
+    the one this test is for -- accepting nothing at all, bound and
+    listening, is the ordinary idle shutdown `_accept_loop` is cancelled out
+    of on every platform this node runs on, ceasing there without raising --
+    `settimeout(0.0)` beside it for the same reason `_bind_one` carries its
+    own: a blocking `accept()` reached synchronously, which is what a freshly
+    constructed socket still is, freezes this single thread's event loop for
+    the length of `pyproject.toml`'s own per-test ceiling rather than ever
+    reaching `_accept_loop`'s `await`.
     """
     manager = a_manager()
     loop = manager.loop
     listening_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listening_socket.bind(("127.0.0.1", 0))
+    listening_socket.listen()
+    listening_socket.settimeout(0.0)
     accepted, theirs = socket.socketpair()
 
     task = loop.create_task(manager.server(loop, listening_socket))
@@ -2078,43 +2097,130 @@ def test_server_closes_a_connection_queued_in_the_instant_it_is_cancelled(
     assert accepted.fileno() == -1
 
 
-def test_accept_one_leaves_the_queue_alone_where_nothing_is_pending(
-    a_manager: AManagerFactory,
+def test_accept_loop_logs_and_retries_on_a_refused_accept(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`_accept_one`'s `BlockingIOError` arm leaves the queue untouched.
-
-    A reader callback can fire on a listening socket with an empty
-    backlog, and this is what lets it return without touching the
-    queue at all rather than raising out of a callback nothing awaits.
-    """
-    manager = a_manager()
-    accepted: asyncio.Queue[Any] = asyncio.Queue()
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listening_socket:
-        listening_socket.bind(("127.0.0.1", 0))
-        listening_socket.listen()
-        listening_socket.settimeout(0.0)
-        manager._accept_one(listening_socket, accepted)
-    assert accepted.empty()
-
-
-def test_accept_one_logs_and_returns_on_a_refused_accept(
-    a_manager: AManagerFactory,
-) -> None:
-    """`_accept_one`'s `OSError` arm logs and returns rather than raising.
+    """`_accept_loop`'s `OSError` arm logs and retries the accept.
 
     `accept()` can fail outright -- `ECONNABORTED` being the ordinary
     way, a peer resetting the connection between the kernel reporting
-    it readable and this callback reaching it -- and this is what keeps
-    that from raising out of a reader callback asyncio has no coroutine
-    frame to deliver it to, the queue this manager's own `server`
-    awaits left untouched.
+    it readable and the accept reaching it -- and this is what keeps
+    that from ending the task outright: the queue `server` awaits is
+    left untouched, and a fresh `sock_accept` is tried again rather than
+    this coroutine returning.
+
+    `sock_accept` itself is monkeypatched to fail rather than handed a
+    socket engineered to make the real one fail: a duck-typed stand-in
+    with a `fileno` of -1, this test's own shape before #430's Windows
+    run, reaches a selector loop's `sock.accept()` call harmlessly but
+    reaches Windows' Proactor at the raw `AcceptEx` level, on the real
+    fd it reads off that -1 rather than through any Python-level
+    `.accept()` call -- which is what crashed the worker process outright
+    rather than raising, on that platform only. What this test is for is
+    `_accept_loop`'s own retry-and-log arm, not the kernel's accept
+    machinery underneath `sock_accept`, so a fake replacing `sock_accept`
+    itself is the narrower fake and is what stays clear of it.
+
+    The failure below is synchronous, so `loop.sock_accept`'s own
+    internal future is already done the instant this loop's `await`
+    reaches it -- awaiting an already-done future never suspends a task,
+    so nothing but `_accept_loop`'s own `await asyncio.sleep(0)` lets the
+    loop below step it more than once; without that yield this test hangs
+    to `pyproject.toml`'s own per-test ceiling rather than reaching three
+    attempts.
     """
     manager = a_manager()
+    loop = manager.loop
     accepted: asyncio.Queue[Any] = asyncio.Queue()
+    logged: list[Any] = []
+    monkeypatch.setattr(manager.logger, "exception", lambda *a, **k: logged.append(a))
 
-    class RefusingSocket:
-        def accept(self) -> NoReturn:
-            raise OSError("accept refused")  # noqa: TRY003
+    async def refuse(
+        sock: socket.socket,
+    ) -> tuple[socket.socket, tuple[str, int]]:
+        raise OSError("accept refused")  # noqa: TRY003
 
-    manager._accept_one(cast("socket.socket", RefusingSocket()), accepted)
+    monkeypatch.setattr(loop, "sock_accept", refuse)
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+        task = loop.create_task(manager._accept_loop(server_socket, accepted))
+        try:
+            while len(logged) < 3:
+                loop.run_until_complete(asyncio.sleep(0))
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                loop.run_until_complete(task)
     assert accepted.empty()
+
+
+def test_report_server_failure_logs_a_real_exception(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_report_server_failure` logs whatever `server`'s own task raised.
+
+    `run`'s own `.add_done_callback` is what reaches this, not a live
+    listener -- a `future` neither cancelled nor holding a
+    `CancelledError`, the two arms the tests beside this one cover.
+    """
+    manager = a_manager()
+    logged: list[BaseException | None] = []
+    monkeypatch.setattr(
+        manager.logger,
+        "error",
+        lambda *a, exc_info=None, **k: logged.append(exc_info),
+        raising=False,
+    )
+    future: Future[None] = Future()
+    boom = ValueError("boom")
+    future.set_exception(boom)
+    manager._report_server_failure(future)
+    assert logged == [boom]
+
+
+def test_report_server_failure_suppresses_a_cancelled_future(
+    a_manager: AManagerFactory,
+) -> None:
+    """`_report_server_failure` does not raise where `future.cancelled()`.
+
+    This is the ordinary shape `stop`'s own sweep leaves behind: cancelling
+    the `asyncio.Task` underneath `future` puts `future` itself into the
+    cancelled state through `run_coroutine_threadsafe`'s own chaining
+    (`asyncio.futures._set_concurrent_future_state`), and
+    `future.exception()` on a cancelled future raises rather than
+    returning -- which is what the `with suppress` this method opens
+    with answers, before the `isinstance` arm below it is ever reached.
+    """
+    manager = a_manager()
+    future: Future[None] = Future()
+    assert future.cancel()
+    manager._report_server_failure(future)
+
+
+def test_report_server_failure_does_not_log_a_returned_cancelled_error(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_report_server_failure`'s `isinstance` arm, `stop` never reaches.
+
+    `future.cancelled()` being true is what the test above covers, and
+    is the only way `stop`'s own sweep actually ends this task -- so
+    this arm has no path of its own through this class's ordinary use,
+    only through a `future` built to carry a `CancelledError` as its
+    stored exception rather than through `.cancel()`: what a `server`
+    coroutine that caught and re-raised one not thrown by `Task.cancel`
+    would leave behind, `Task.cancelled()` still false. Moved here
+    rather than removed, on the same reasoning the coverage floor
+    argues for a safety branch generally.
+    """
+    manager = a_manager()
+    logged: list[BaseException | None] = []
+    monkeypatch.setattr(
+        manager.logger,
+        "error",
+        lambda *a, exc_info=None, **k: logged.append(exc_info),
+        raising=False,
+    )
+    future: Future[None] = Future()
+    future.set_exception(asyncio.CancelledError())
+    manager._report_server_failure(future)
+    assert logged == []

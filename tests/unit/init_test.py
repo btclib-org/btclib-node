@@ -389,6 +389,25 @@ def test_a_signal_asks_the_node_to_stop(
     assert not node.is_alive()
 
 
+def test_install_signal_handlers_skips_sigtstp_where_the_platform_has_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SIGINT/SIGTERM still register where the platform carries no SIGTSTP.
+
+    `signal.SIGTSTP` does not exist on Windows (issue #429): the
+    `signal` module itself carries no such attribute there, `Lib/signal.py`
+    defining it conditionally, rather than merely refusing to register a
+    handler for it -- `monkeypatch.delattr` reproduces that absence on
+    this platform, which does carry it, rather than this branch running
+    only where the CI matrix does not (btclib-org/btclib-node#430).
+    """
+    monkeypatch.delattr(signal, "SIGTSTP", raising=False)
+    with unstarted_node_context(tmp_path) as node:
+        install_signal_handlers(node)
+        assert callable(signal.getsignal(signal.SIGINT))
+        assert callable(signal.getsignal(signal.SIGTERM))
+
+
 def test_building_a_node_touches_no_process_signal_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

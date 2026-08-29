@@ -651,7 +651,13 @@ def install_signal_handlers(node: Node) -> None:
     handler is called with `(signum, frame)`, unread here since the
     three signals below share one handler and `stop` takes neither.
     SIGTSTP is for hibernation and does not exist on Windows
-    (btclib-org/btclib-node#429).
+    (btclib-org/btclib-node#429): the `signal` module itself carries no
+    `SIGTSTP` attribute there, CPython's own `Lib/signal.py` defining it
+    conditionally, so `hasattr` is what keeps the attribute access this
+    call needs from raising before this function ever reaches its
+    `return` -- SIGINT and SIGTERM registering correctly ahead of it was
+    not enough to save a caller that let this propagate
+    (btclib-org/btclib-node#430).
     """
 
     def stop_handler(_signum: int, _frame: FrameType | None) -> None:
@@ -659,4 +665,5 @@ def install_signal_handlers(node: Node) -> None:
 
     signal.signal(signal.SIGINT, stop_handler)
     signal.signal(signal.SIGTERM, stop_handler)
-    signal.signal(signal.SIGTSTP, stop_handler)
+    if hasattr(signal, "SIGTSTP"):
+        signal.signal(signal.SIGTSTP, stop_handler)

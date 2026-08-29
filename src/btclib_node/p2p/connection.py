@@ -572,11 +572,25 @@ class Connection:
         idempotency (argued there) can schedule this twice -- and nothing
         is registered against a socket already closed, so there is
         nothing to remove either.
+
+        `remove_reader`/`remove_writer` themselves raise
+        `NotImplementedError` outright on Windows' own Proactor loop,
+        registration or none -- the same family of gap `P2pManager.server`
+        and `RpcManager.server` each answer for `add_reader`
+        (btclib-org/btclib-node#430), and here with nothing to work
+        around it with: `sock_recv`/`sock_sendall` are what `run` and
+        `_send` already call, on both loop families, and neither one
+        registers anything a Proactor loop would need unregistered, so
+        `contextlib.suppress` below is not papering over a skipped
+        cleanup, it is the whole of what #518's own fix has to do on a
+        loop that was never asked to register a reader or a writer for
+        this fd in the first place.
         """
         fd = self.client.fileno()
         if fd != -1:
-            self.loop.remove_reader(fd)
-            self.loop.remove_writer(fd)
+            with contextlib.suppress(NotImplementedError):
+                self.loop.remove_reader(fd)
+                self.loop.remove_writer(fd)
         self.client.close()
 
     async def run(self) -> None:
@@ -617,7 +631,28 @@ class Connection:
                 # argument for: fewer syscalls, and -- quadratically,
                 # through `parse_messages`'s own gate below -- far fewer
                 # bytes copied per message. btclib-org/btclib-node#438
-                data = await self.loop.sock_recv(self.client, 65536)
+                try:
+                    data = await self.loop.sock_recv(self.client, 65536)
+                except OSError:
+                    # A peer that reset the connection rather than
+                    # closing it gracefully -- `ConnectionResetError`,
+                    # `ConnectionAbortedError` -- is `sock_recv` raising
+                    # rather than the empty read the `if not data:` arm
+                    # below answers for; Core's own `SocketHandler`
+                    # (`src/net.cpp` at bitcoin/bitcoin@ca7162cde5)
+                    # treats every `Recv` failure that is not
+                    # `WOULDBLOCK`/`MSGSIZE`/`EINTR`/`EINPROGRESS` the
+                    # same way it treats a `nBytes == 0` graceful close:
+                    # `CloseSocketDisconnect`, not a crash -- so this is
+                    # that same hangup, not this node's own bug, whether
+                    # the peer that reset it is real or, as
+                    # `test_a_peer_that_hangs_up_is_dropped` reproduces
+                    # it, `socket.socketpair()`'s own Windows fallback
+                    # answering an abrupt local close with a hard reset
+                    # that a POSIX pair, backed by the kernel rather
+                    # than a real TCP loopback, never sends
+                    # (btclib-org/btclib-node#430).
+                    return self.stop(cancel_task=False)
                 if not data:
                     return self.stop(cancel_task=False)
                 try:
