@@ -1207,6 +1207,22 @@ where this file was written rather than where anything was tagged.
   than refuse it, so a developer off Linux gets a `dev` sync that installs
   nothing from `fuzz` instead of one that fails. `uv.lock` moves with it.
 
+### A failed rollback stops the node instead of continuing on it (closes #623)
+
+- **`update_chain`'s `to_remove` loop no longer swallows a
+  `ChainstateInconsistencyError` its own `apply_rev_block` raises**
+  (`src/btclib_node/main.py`): the exception now propagates out of
+  `update_chain`, the same way a non-content failure already does for
+  the `to_add` loop, `_blocks_to_add`, `_rev_blocks_to_remove` and
+  `_finalize_fork`, and `Node`'s own loop leaves and closes the
+  databases on it. Undoing an already-connected block is this node's
+  own bookkeeping rather than a verdict on a new block, so the trial
+  still rolls back first and still blames no block for it -- only
+  whether the failure is fatal to the node has changed, matching
+  `DisconnectTip`'s own failure being fatal one level up, in
+  `ActivateBestChainStep` (`src/validation.cpp`, at
+  bitcoin/bitcoin@b91d983f66).
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
