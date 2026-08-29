@@ -71,7 +71,18 @@ def test_download(tmp_path: Path) -> None:
 
     download_nodes = [bootstrap_node]
     for i in range(1, 10):
-        shutil.copytree(tmp_path / "node0", tmp_path / f"node{i}")
+        # Not `LOCK`: `bootstrap_node` is running and holds it open, and
+        # RocksDB re-creates it fresh on every `Rdict` open regardless of
+        # what -- if anything -- was there before, so a copy carries no
+        # state a fresh open would not already write itself. Copying it
+        # anyway is what raised `shutil.Error: [WinError 32]` on
+        # `windows-latest`, Windows refusing to copy a file another
+        # handle still holds where POSIX does not (closes #683).
+        shutil.copytree(
+            tmp_path / "node0",
+            tmp_path / f"node{i}",
+            ignore=shutil.ignore_patterns("LOCK"),
+        )
         node = Node(
             config=Config(
                 chain="regtest",
