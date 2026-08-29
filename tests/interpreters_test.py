@@ -75,7 +75,6 @@ _NAMES_ONE = (
     ".github/workflows/mutation.yml",
     ".github/workflows/os-macos.yml",
     ".github/workflows/os-ubuntu.yml",
-    ".github/workflows/os-windows.yml",
     # pypi-install.yml installs the published package from the index and
     # imports it, the runner's own default interpreter being below this
     # project's `requires-python`, so it names the one uv resolves

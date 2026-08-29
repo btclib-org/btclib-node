@@ -2274,6 +2274,25 @@ where this file was written rather than where anything was tagged.
   remainder. A negative `-prune` refuses to start, Core's own wording
   from `node::ApplyArgsManOptions`, rather than silently pruning.
 
+### `windows-latest` gates the suite, and the package claims it (closes #430)
+
+- **`test.yml` carries a `windows` job, `windows-latest` at `3.14`
+  alone** -- not crossed with `3.14t`, the same axis the interpreter
+  cells argue -- gated on the suite passing rather than on the
+  coverage floor the `ubuntu-latest` cells still carry: the floor is a
+  claim about one interpreter on one image, and this cell answers a
+  different question, whether the suite runs at all on a platform
+  nothing in the gate ran before.
+- **`pyproject.toml` now carries `Operating System :: Microsoft ::
+  Windows`** beside `POSIX` and `MacOS`, checked by the job above.
+- **`os-windows.yml` is gone.** Its runs priced the job above before
+  it existed; the job now runs what the sentinel ran, so the sentinel
+  is removed rather than kept beside a gate cell duplicating it.
+- **`REPOSITORY.md`'s concurrent-job-ceiling section names the new
+  job** and records that `test.yml`'s required check, being its own
+  aggregate job rather than any cell by name, needs no ruleset change
+  to cover it.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

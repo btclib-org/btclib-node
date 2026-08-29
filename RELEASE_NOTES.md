@@ -155,6 +155,12 @@ section fills in one landed change at a time — what a user of
   Nothing to migrate for an existing, unpruned data directory: pruning
   only ever removes data going forward from when it is first turned on.
 
+### Windows
+
+- **`pip install btclib-node` now claims Windows** (issue #430): its
+  classifiers name it, and `test.yml`'s gate checks the claim on every
+  pull request.
+
 ## v2026.8.27
 
 **The first release of btclib-node.** Nothing here is an upgrade: no

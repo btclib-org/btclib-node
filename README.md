@@ -46,7 +46,6 @@ along with the command that reads the index back. -->
 [![deps-latest workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/deps-latest.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/deps-latest.yml)
 [![os-macos workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/os-macos.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/os-macos.yml)
 [![os-ubuntu workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/os-ubuntu.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/os-ubuntu.yml)
-[![os-windows workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/os-windows.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/os-windows.yml)
 [![links workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/links.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/links.yml)
 [![codeql workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/codeql.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/codeql.yml)
 

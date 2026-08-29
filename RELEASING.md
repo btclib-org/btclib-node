@@ -4,11 +4,12 @@ Releases are published by GitHub Actions
 ([release.yml](./.github/workflows/release.yml)), not from a developer
 machine. Pushing a `v<version>` tag runs the test workflow, the lint
 workflow and the documentation build, builds and checks the distribution
-files, publishes them to PyPI, and creates the GitHub release. It does
-not call the platform sentinels: `os-macos.yml`, `os-ubuntu.yml` and
-`os-windows.yml` gate no commit and no merge today, and a release is not
-carved out as the one place that changes — `release.yml`'s own header
-has why. There is no PyPI token anywhere:
+files, publishes them to PyPI, and creates the GitHub release. The test
+workflow it calls carries the Windows cell along with it (issue #430);
+it does not call the platform sentinels beside that workflow --
+`os-macos.yml` and `os-ubuntu.yml` gate no commit and no merge today,
+and a release is not carved out as the one place that changes —
+`release.yml`'s own header has why. There is no PyPI token anywhere:
 both indices are configured to trust the workflow itself
 ([Trusted Publishing](https://docs.pypi.org/trusted-publishers/)).
 
