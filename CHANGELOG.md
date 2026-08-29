@@ -2233,6 +2233,47 @@ where this file was written rather than where anything was tagged.
   discourages and drops the peer for -- where the pre-fix `KeyError`
   was neither.
 
+### `Config(pruned=True)` builds a node that actually prunes (closes #601)
+
+- **`BlockDB.prune_up_to` deletes a block and its reverse patch once
+  more than `MIN_BLOCKS_TO_KEEP` (`constants.py`, Core's own 288, two
+  days) blocks behind the tip**, called from `main._prune_chain` after
+  every fork `update_chain` connects, which also clears
+  `BlockInfo.downloaded` for the same range, matching Core's own
+  `BlockManager::PruneOneBlockFile` clearing `BLOCK_HAVE_DATA`/
+  `BLOCK_HAVE_UNDO` on the index entry it prunes -- genesis stays
+  `downloaded=True`, since it is never written to `block_db` in the
+  first place. `BlockIndex.set_downloaded` now checks `pending` before
+  writing through, the same shape `set_status` already used
+  (`btclib-org/btclib-node#586`): a fork longer than the retained depth
+  connects in one `update_chain` trial, staging every hash it adds into
+  `pending` before that trial's own flush, which a write-through clear
+  reaching one of them would have lost to the next `finalize`. Deletion
+  is by height rather than by file, this store's
+  own rotation tracking append order rather than a height range the way
+  Core's `FlatFilePos` does; a `.blk`/`.rev` file is unlinked once every
+  block it ever held has been pruned this way, `BlockDB.live` counting
+  down to that point.
+- **`send_version` drops `NODE_NETWORK` and keeps `NODE_NETWORK_LIMITED`
+  once `Config.pruned` is true**, matching Core's own `g_local_services`
+  gate on `!fPruneMode`.
+- **A `getdata` for a block below a pruned node's own retained depth
+  disconnects the peer** rather than answering silently, matching
+  Core's own `ProcessGetBlockData` -- fired on height alone, not on
+  whether the block happens to still be on disk. `getrawtransaction`'s
+  block-hash lookup answers `"Block not available (pruned data)"` or
+  `"Block not available (not fully downloaded)"`, Core's own
+  `CheckBlockDataAvailability` distinction, in place of the one
+  undifferentiated message both cases used to share.
+  `getblockchaininfo` answers `pruneheight` once `pruned` is true.
+- **`Config.__init__` no longer refuses `pruned=True`**, and
+  `PruningNotImplementedError` is gone along with the refusal. `-prune`
+  on the command line keeps Core's own spelling but not its `<n>` MiB
+  target: any nonzero value turns pruning on at the fixed retained
+  depth above, the size-target axis being this issue's own deferred
+  remainder. A negative `-prune` refuses to start, Core's own wording
+  from `node::ApplyArgsManOptions`, rather than silently pruning.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

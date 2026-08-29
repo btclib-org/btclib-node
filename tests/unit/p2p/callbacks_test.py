@@ -68,7 +68,12 @@ from btclib_node.chains import RegTest
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import BlockStatus
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
-from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion
+from btclib_node.constants import (
+    MIN_BLOCKS_TO_KEEP,
+    NodeStatus,
+    P2pConnStatus,
+    ProtocolVersion,
+)
 from btclib_node.exceptions import ChainstateInconsistencyError, MissingPrevoutError
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
@@ -442,7 +447,7 @@ def a_handshake_node(
     own_nonces = set(pending_outbound_nonces)
     return SimpleNamespace(
         status=status,
-        config=SimpleNamespace(min_relay_feerate=min_relay_feerate),
+        config=SimpleNamespace(min_relay_feerate=min_relay_feerate, pruned=False),
         p2p_manager=SimpleNamespace(
             pending_outbound_nonces=own_nonces,
             is_self_connect_nonce=own_nonces.__contains__,
@@ -1737,6 +1742,124 @@ def test_a_block_this_node_does_not_hold_is_not_answered() -> None:
     items = [Inventory(InventoryType.MSG_BLOCK, b"\x11" * 32)]
     getdata(node, GetData(items).serialize(), peer)
     assert not peer.sent
+
+
+def a_tall_block_index(length: int) -> Any:
+    """Build a `block_index` double `length` blocks tall, height by hash."""
+    active_chain = [height.to_bytes(32, "big") for height in range(length)]
+    header_dict = {
+        block_hash: SimpleNamespace(index=height)
+        for height, block_hash in enumerate(active_chain)
+    }
+    return SimpleNamespace(active_chain=active_chain, header_dict=header_dict)
+
+
+def test_a_pruned_node_disconnects_a_getdata_below_its_own_retained_depth() -> None:
+    """A pruned node disconnects rather than silently drops a stale request.
+
+    Core's own `ProcessGetBlockData` (`net_processing.cpp`, at
+    bitcoin/bitcoin@ca7162cde5): "Avoid leaking prune-height by never
+    sending blocks below the NODE_NETWORK_LIMITED threshold" -- fired on
+    height alone, whether or not this node still happens to hold the
+    block asked for, which is why `get_block` here still answers one.
+    """
+    block_index = a_tall_block_index(MIN_BLOCKS_TO_KEEP + 10)
+    node = a_data_node(
+        block_index=block_index, block_db=SimpleNamespace(get_block=lambda h: a_block())
+    )
+    node.config.pruned = True
+    peer = a_peer()
+    old_hash = block_index.active_chain[0]
+    items = [Inventory(InventoryType.MSG_BLOCK, old_hash)]
+    getdata(node, GetData(items).serialize(), peer)
+    assert not peer.sent
+    assert peer.stopped == [True]
+
+
+def test_a_pruned_node_serves_a_block_within_its_own_retained_depth() -> None:
+    """A pruned node still answers a `getdata` inside `MIN_BLOCKS_TO_KEEP`."""
+    block_index = a_tall_block_index(MIN_BLOCKS_TO_KEEP + 10)
+    block = a_block()
+    node = a_data_node(
+        block_index=block_index, block_db=SimpleNamespace(get_block=lambda h: block)
+    )
+    node.config.pruned = True
+    peer = a_peer()
+    recent_hash = block_index.active_chain[-1]
+    items = [Inventory(InventoryType.MSG_BLOCK, recent_hash)]
+    getdata(node, GetData(items).serialize(), peer)
+    (answer,) = peer.sent
+    assert isinstance(answer, BlockMsg)
+    assert not peer.stopped
+
+
+def test_an_unpruned_node_never_disconnects_over_a_stale_getdata() -> None:
+    """`Config.pruned=False` never reaches `_below_prune_threshold` at all."""
+    block_index = a_tall_block_index(MIN_BLOCKS_TO_KEEP + 10)
+    node = a_data_node(
+        block_index=block_index, block_db=SimpleNamespace(get_block=lambda h: None)
+    )
+    peer = a_peer()
+    old_hash = block_index.active_chain[0]
+    items = [Inventory(InventoryType.MSG_BLOCK, old_hash)]
+    getdata(node, GetData(items).serialize(), peer)
+    assert not peer.sent
+    assert not peer.stopped
+
+
+def test_a_pruned_node_ignores_a_hash_it_has_never_indexed() -> None:
+    """A hash the block index has never seen is silence, not a disconnect.
+
+    Core's own `!pindex: return;`, immediately ahead of the check
+    `_below_prune_threshold` mirrors.
+    """
+    block_index = a_tall_block_index(MIN_BLOCKS_TO_KEEP + 10)
+    node = a_data_node(
+        block_index=block_index, block_db=SimpleNamespace(get_block=lambda h: None)
+    )
+    node.config.pruned = True
+    peer = a_peer()
+    items = [Inventory(InventoryType.MSG_BLOCK, b"\xff" * 32)]
+    getdata(node, GetData(items).serialize(), peer)
+    assert not peer.sent
+    assert not peer.stopped
+
+
+def test_a_pruned_node_s_own_threshold_is_strictly_greater_than_the_buffer() -> None:
+    """`MIN_BLOCKS_TO_KEEP + 2` behind the tip is still served, one past is not.
+
+    Core's own check is `>`, not `>=` (`ProcessGetBlockData`, at
+    bitcoin/bitcoin@ca7162cde5), so a block sitting exactly at the "+ 2 for
+    possible races" buffer is inside it rather than past it.
+    """
+    length = MIN_BLOCKS_TO_KEEP + 10
+    block_index = a_tall_block_index(length)
+    block = a_block()
+    node = a_data_node(
+        block_index=block_index, block_db=SimpleNamespace(get_block=lambda h: block)
+    )
+    node.config.pruned = True
+    tip_index = length - 1
+
+    peer = a_peer()
+    at_buffer_hash = block_index.active_chain[tip_index - (MIN_BLOCKS_TO_KEEP + 2)]
+    getdata(
+        node,
+        GetData([Inventory(InventoryType.MSG_BLOCK, at_buffer_hash)]).serialize(),
+        peer,
+    )
+    assert peer.sent
+    assert not peer.stopped
+
+    peer = a_peer()
+    past_buffer_hash = block_index.active_chain[tip_index - (MIN_BLOCKS_TO_KEEP + 3)]
+    getdata(
+        node,
+        GetData([Inventory(InventoryType.MSG_BLOCK, past_buffer_hash)]).serialize(),
+        peer,
+    )
+    assert not peer.sent
+    assert peer.stopped == [True]
 
 
 def test_an_inventory_of_neither_kind_is_skipped() -> None:

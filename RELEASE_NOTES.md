@@ -145,6 +145,16 @@ section fills in one landed change at a time — what a user of
   flag. `btclib-node -conf=<file>` reads an existing `bitcoin.conf` the
   way Core reads one.
 
+- **`Config(pruned=True)` now builds a node and actually prunes,
+  instead of raising `PruningNotImplementedError`** (issue #601). A
+  caller catching that exception around the constructor no longer has
+  one to catch; `pruned=False`, the default, is unaffected. A pruned
+  node keeps only the last 288 blocks and their undo data on disk and
+  deletes the rest as the chain advances -- there is no `-prune=<n>`
+  MiB target and no `pruneblockchain` RPC, only whether pruning is on.
+  Nothing to migrate for an existing, unpruned data directory: pruning
+  only ever removes data going forward from when it is first turned on.
+
 ## v2026.8.27
 
 **The first release of btclib-node.** Nothing here is an upgrade: no

@@ -654,7 +654,11 @@ def a_tx_lookup_node(
         SimpleNamespace(
             mempool=mempool,
             chainstate=SimpleNamespace(block_index=block_index),
-            block_db=SimpleNamespace(get_block=(blocks or {}).get),
+            # -1: BlockDB's own "nothing pruned yet" (block_db/__init__.py),
+            # matching the default here for the same reason `pruned=False`
+            # is `Config`'s: every test not about pruning gets the answer
+            # that reads as "this store has never pruned anything".
+            block_db=SimpleNamespace(get_block=(blocks or {}).get, pruned_up_to=-1),
         ),
     )
 
@@ -771,11 +775,18 @@ def test_an_unknown_block_hash_is_refused_by_name() -> None:
     assert raised.value.message == "Block hash not found"
 
 
-def test_a_block_the_index_knows_and_the_store_does_not_is_unavailable() -> None:
-    """`getrawtransaction` answers 'Block not available' for a pruned block.
+def test_a_block_the_index_knows_and_the_store_does_not_is_not_fully_downloaded() -> (
+    None
+):
+    """`getrawtransaction` answers Core's own not-downloaded wording, unpruned.
 
     `BlockIndex` and `BlockDb` are two stores; a hash the first carries
-    and the second does not is a pruned block, not a wrong request.
+    and the second does not, with nothing yet pruned
+    (`block_db.pruned_up_to` at its own default), is a block never
+    downloaded rather than one deleted -- Core's own
+    `CheckBlockDataAvailability` (`rpc/blockchain.cpp`, at
+    bitcoin/bitcoin@ca7162cde5) answers the same way for the same
+    reason: `IsBlockPruned` false, `check_for_undo` false.
     """
     tx = a_tx()
     header = generate_random_header_chain(1, RegTest().genesis.hash)[0]
@@ -785,7 +796,27 @@ def test_a_block_the_index_knows_and_the_store_does_not_is_unavailable() -> None
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, [tx.id.hex(), False, header.hash.hex()])
     assert raised.value.code == RpcErrorCode.MISC_ERROR
-    assert raised.value.message == "Block not available"
+    assert raised.value.message == "Block not available (not fully downloaded)"
+
+
+def test_a_block_below_the_stores_own_pruned_height_is_pruned_data() -> None:
+    """`getrawtransaction` answers 'Block not available (pruned data)' pruned.
+
+    The same missing block as the test above, except `block_db.pruned_up_to`
+    now covers its own height -- `BlockDB.prune_up_to`'s own doing on a
+    real store, stood in here by setting the field directly the way
+    `a_tx_lookup_node`'s own default already does for the unpruned case.
+    """
+    tx = a_tx()
+    header = generate_random_header_chain(1, RegTest().genesis.hash)[0]
+    node = a_tx_lookup_node(blocks={header.hash: SimpleNamespace(header=header)})
+    node.block_db.get_block = lambda _hash: None
+    node.block_db.pruned_up_to = 0
+
+    with pytest.raises(RpcError) as raised:
+        get_raw_transaction(node, _CONN, [tx.id.hex(), False, header.hash.hex()])
+    assert raised.value.code == RpcErrorCode.MISC_ERROR
+    assert raised.value.message == "Block not available (pruned data)"
 
 
 def test_no_txid_at_all_is_answered_with_the_usage() -> None:
@@ -1653,6 +1684,7 @@ def a_blockchain_info_node(
     header_index: list[bytes] | None = None,
     is_initial_block_download: bool = False,
     pruned: bool = False,
+    pruned_up_to: int = -1,
 ) -> Node:
     """Build a node carrying just what `get_blockchain_info` reads.
 
@@ -1690,6 +1722,7 @@ def a_blockchain_info_node(
             ),
             is_initial_block_download=is_initial_block_download,
             config=SimpleNamespace(pruned=pruned),
+            block_db=SimpleNamespace(pruned_up_to=pruned_up_to),
         ),
     )
 
@@ -1793,9 +1826,21 @@ def test_blockchain_info_s_initialblockdownload_reads_the_node_s_own_latch() -> 
 
 
 def test_blockchain_info_s_pruned_reads_config() -> None:
-    """`pruned` is `Config.pruned`, always `False` per `Config.__init__`."""
+    """`pruned` is `Config.pruned`, with no `pruneheight` when `False`."""
     node = a_blockchain_info_node(pruned=False)
-    assert get_blockchain_info(node, _CONN, [])["pruned"] is False
+    result = get_blockchain_info(node, _CONN, [])
+    assert result["pruned"] is False
+    assert "pruneheight" not in result
+
+
+def test_blockchain_info_s_pruneheight_is_the_first_unpruned_block() -> None:
+    """`pruneheight` is `pruned_up_to + 1`, present once `pruned` holds.
+
+    Core's own "the first block unpruned, all previous blocks were
+    pruned" (`rpc/blockchain.cpp:1400`, at bitcoin/bitcoin@ca7162cde5).
+    """
+    node = a_blockchain_info_node(pruned=True, pruned_up_to=41)
+    assert get_blockchain_info(node, _CONN, [])["pruneheight"] == 42
 
 
 def a_chain_index_node(chain: list[bytes]) -> Node:

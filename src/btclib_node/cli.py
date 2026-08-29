@@ -161,7 +161,6 @@ from typing import TYPE_CHECKING
 
 from btclib_node import Node, install_signal_handlers
 from btclib_node.config import Config, split_host_port
-from btclib_node.exceptions import PruningNotImplementedError
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -554,8 +553,11 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help=(
-            "Reduce storage requirements by pruning old blocks (not implemented: any "
-            "nonzero value refuses to start, PruningNotImplementedError)"
+            "Reduce storage requirements by pruning old blocks: any nonzero value "
+            "keeps the last 288 blocks and their undo data (about two days) and "
+            "deletes the rest as the chain advances; Core's own -prune=<n> MiB "
+            "target is not read, only whether <n> is zero; a negative <n> refuses "
+            "to start, matching Core"
         ),
     )
     parser.add_argument(
@@ -647,9 +649,7 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
     """Parse `argv` (`sys.argv[1:]` if `None`) and its `-conf` into a `Config`.
 
     Raises `ValueError` on a malformed argument, a malformed
-    configuration file, or an unknown chain; raises
-    `PruningNotImplementedError` for a nonzero `-prune`, `Config`'s own
-    refusal (`config.py`).
+    configuration file, or an unknown chain.
     """
     args = _build_parser().parse_args(argv)
 
@@ -675,6 +675,14 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
             rpc_port = rpcbind_port
 
     prune = _resolve_int(args.prune, collected, "prune")
+    if prune is not None and prune < 0:
+        # Core's own wording, node::ApplyArgsManOptions
+        # (node/blockmanager_args.cpp:23-25, at bitcoin/bitcoin@ca7162cde5):
+        # `if (nPruneArg < 0) return util::Error{_("Prune cannot be
+        # configured with a negative value.")};` -- bitcoind refuses to
+        # start rather than treating a negative value as "pruning is on".
+        err_msg = "Prune cannot be configured with a negative value."
+        raise ValueError(err_msg)
     debug = _resolve_bool(args.debug, "debug", default_section)
     connect = _resolve_list(args.connect, collected, "connect")
     listen = _resolve_listen(args.listen, default_section, connect_given=bool(connect))
@@ -707,7 +715,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     """
     try:
         config = build_config(argv)
-    except (ValueError, PruningNotImplementedError) as error:
+    except ValueError as error:
         sys.stderr.write(f"btclib-node: {error}\n")
         raise SystemExit(1) from error
 

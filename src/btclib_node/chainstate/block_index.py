@@ -15,17 +15,15 @@ download is allowed to run, read from both `download.py` and here.
 can hold the second half back across more than one block; `db.py`'s own
 docstring is where that staging, shared with `UtxoIndex`, is argued.
 
-`set_downloaded` writes straight through unconditionally, and correctly
-so: its one caller, `p2p.callbacks.block`, only ever runs it on a hash
-not yet downloaded, and every hash `stage_status` puts in `pending` came
-from `_finalize_fork`'s own to_add/to_remove loop, which only ever
-offers `main.update_chain` a hash already downloaded -- `_ready_fork`
-requires it. So a hash `set_downloaded` targets is never one `pending`
-holds.
+`set_downloaded` and `set_status` both check `pending` before writing
+through, and for the same reason: either can be asked to change a hash
+`pending` already holds, unflushed, and a write-through there would only
+be undone the next time `finalize` writes that pending entry's own stale
+snapshot back over it.
 
-`set_status` cannot make that same assumption, because `invalidate`'s
-own caller can name a hash that already connected once. `update_chain`
-sets `failed_hash` to a block across `utxo_index.add_block`,
+For `set_status` this is reached because `invalidate`'s own caller can
+name a hash that already connected once. `update_chain` sets
+`failed_hash` to a block across `utxo_index.add_block`,
 `_validate_block`, `block_db.add_rev_block` and
 `filter_index.add_connected_block` alike, so a fault in either of the
 last two -- an I/O failure, nothing to do with the block's own content
@@ -38,6 +36,19 @@ updated in `pending`, exactly as `stage_status` would leave it, rather
 than written straight through, so the next `finalize` writes the
 invalidation instead of clobbering it with the stale entry write-through
 would otherwise race against. btclib-org/btclib-node#586.
+
+For `set_downloaded` this is reached from `main._prune_chain`:
+`_finalize_fork`'s own to_add loop stages every hash a fork connects,
+through `stage_status`, before that fork's own `finalize` ever runs --
+and `to_add` is not bounded by `MIN_BLOCKS_TO_KEEP` anywhere.
+`get_fork_details` walks back to the common ancestor with no depth
+limit, `_ready_fork` accepts whatever it returns once every hash is
+downloaded, and `MAX_DOWNLOAD_WINDOW` allows up to 1024 -- so a single
+`update_chain` call connecting a fork longer than the retained depth
+stages hashes into `pending` that `_prune_chain`, run once at the end of
+that same call, reaches too. `p2p.callbacks.block` only ever sets the
+flag on a hash not yet downloaded, at or next to the tip, which is never
+one `pending` holds; `_prune_chain` is the caller this check is for.
 """
 
 import enum
@@ -441,9 +452,27 @@ class BlockIndex:
         self.pending = {}
 
     def set_downloaded(self, block_hash: bytes, *, downloaded: bool = True) -> None:
-        """Set `block_hash`'s `downloaded` flag, replacing its `BlockInfo`."""
-        block_info = self.get_block_info(block_hash)
-        self._insert_block_info(replace(block_info, downloaded=downloaded))
+        """Set `block_hash`'s `downloaded` flag, replacing its `BlockInfo`.
+
+        Checks `pending` first, the same shape `set_status` above
+        already does and for the same reason: a hash `pending` still
+        holds would have a write-through here undone the next time
+        `finalize` writes that pending entry's own stale snapshot back
+        over it. `main._prune_chain` calling this on a hash
+        `_finalize_fork`'s own `to_add` loop just staged, in the same
+        `update_chain` call, before that fork's own `finalize` ever
+        runs, is exactly that: `to_add` is not bounded by
+        `MIN_BLOCKS_TO_KEEP` anywhere, so a fork longer than the
+        retained depth reaches `pending` at least as far back as
+        `_prune_chain`'s own clearing range -- Core has no counterpart to
+        this race, since `CBlockIndex` flags are in-memory and
+        `m_dirty_blockindex` is flushed whole rather than in halves.
+        """
+        block_info = replace(self.get_block_info(block_hash), downloaded=downloaded)
+        if block_info.header.hash in self.pending:
+            self._stage(block_info)
+            return
+        self._insert_block_info(block_info)
 
     def get_block_info(self, block_hash: bytes) -> BlockInfo:
         """Return the `BlockInfo` stored for `block_hash`."""

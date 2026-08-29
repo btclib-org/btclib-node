@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import pytest
 from btclib.hashes import hash256
+from btclib.p2p.address import ServiceFlags
 from btclib.p2p.block_filters import BlockFilterType, CFilter
 from btclib.p2p.handshake import Verack, Version
 from btclib.p2p.inventory import GetData, Inventory, InventoryType
@@ -73,6 +74,7 @@ def a_connection(
     logged, warning = log_recorder()
     node = SimpleNamespace(
         chain=RegTest(),
+        config=SimpleNamespace(pruned=False),
         logger=SimpleNamespace(
             warning=warning, info=lambda *a: None, debug=lambda *a: None
         ),
@@ -194,6 +196,60 @@ def test_send_version_announces_the_name_and_the_installed_version() -> None:
     assert user_agent == f"/btclib:{version('btclib-node')}/".encode()
 
 
+def test_send_version_advertises_node_network_when_not_pruned() -> None:
+    """An unpruned node's `version` carries `NODE_NETWORK`, among the rest."""
+    connection, _ = a_connection()
+    manager = cast("Any", connection.manager)
+    manager.pending_outbound_nonces = set()
+    manager.add_pending_outbound_nonce = manager.pending_outbound_nonces.add
+    manager.port = 18444
+    sent: list[bytes] = []
+
+    async def _send(data: bytes) -> None:
+        sent.append(data)
+
+    connection._send = _send  # type: ignore[method-assign]
+
+    with connection.client:
+        asyncio.run(connection.send_version())
+
+    (framed,) = sent
+    services = Version.parse(Message.parse(framed).payload).services
+    assert services & ServiceFlags.NODE_NETWORK
+    assert services & ServiceFlags.NODE_NETWORK_LIMITED
+    assert services & ServiceFlags.NODE_WITNESS
+
+
+def test_send_version_drops_node_network_when_pruned() -> None:
+    """A pruned node's own `version` keeps `LIMITED`, drops `NODE_NETWORK`.
+
+    Core's own `g_local_services` (`src/init.cpp`, at
+    bitcoin/bitcoin@ca7162cde5): `NODE_NETWORK_LIMITED | NODE_WITNESS` from
+    the start, `NODE_NETWORK` added only where `!fPruneMode`.
+    """
+    connection, _ = a_connection()
+    connection.manager.node.config.pruned = True
+    manager = cast("Any", connection.manager)
+    manager.pending_outbound_nonces = set()
+    manager.add_pending_outbound_nonce = manager.pending_outbound_nonces.add
+    manager.port = 18444
+    sent: list[bytes] = []
+
+    async def _send(data: bytes) -> None:
+        sent.append(data)
+
+    connection._send = _send  # type: ignore[method-assign]
+
+    with connection.client:
+        asyncio.run(connection.send_version())
+
+    (framed,) = sent
+    services = Version.parse(Message.parse(framed).payload).services
+    assert not services & ServiceFlags.NODE_NETWORK
+    assert services & ServiceFlags.NODE_NETWORK_LIMITED
+    assert services & ServiceFlags.NODE_WITNESS
+
+
 def test_a_connection_names_the_peer_it_is_to() -> None:
     """`repr(connection)` names the real peer address a live socket has."""
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -254,6 +310,7 @@ def a_running_connection(
     node = SimpleNamespace(
         chain=RegTest(),
         status=NodeStatus.Starting,
+        config=SimpleNamespace(pruned=False),
         logger=SimpleNamespace(
             warning=lambda *a: None, info=lambda *a: None, debug=lambda *a: None
         ),

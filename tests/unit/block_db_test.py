@@ -32,6 +32,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
     from pathlib import Path
 
+    from btclib.block import Block
+
 MAX_FILE_SIZE = 128 * 1000**2
 
 
@@ -498,3 +500,164 @@ def test_the_store_comes_back_from_disk(a_db: Callable[[Path | None], BlockDB]) 
     assert reopened.get_block(block.header.hash) == block
     assert reopened.get_rev_block(rev_block.hash) == rev_block
     reopened.close()
+
+
+def _hashes_and_rev_blocks(
+    block_db: BlockDB, chain: list[Block]
+) -> tuple[list[bytes], Callable[[int], bytes]]:
+    """Add every block of `chain` with a rev patch, and return hash-by-height.
+
+    Height 0 is a hash nothing here ever adds to `block_db` -- every
+    caller's own genesis, matching `BlockIndex.active_chain[0]`, which
+    `prune_up_to` is never given anything else for in production.
+    """
+    hashes = [b"\x00" * 32] + [block.header.hash for block in chain]
+    for height, block in enumerate(chain, start=1):
+        block_db.add_block(block)
+        block_db.add_rev_block(a_rev_block(tag=height, block_hash=block.header.hash))
+    block_db.finalize()
+    return hashes, hashes.__getitem__
+
+
+def test_prune_up_to_deletes_every_block_and_rev_patch_through_the_target(
+    a_db: Callable[[Path | None], BlockDB],
+) -> None:
+    """`prune_up_to` deletes both stores through its own target, inclusive."""
+    block_db = a_db(None)
+    chain = generate_random_chain(10, RegTest().genesis.hash)
+    hashes, hash_at_height = _hashes_and_rev_blocks(block_db, chain)
+
+    block_db.prune_up_to(4, hash_at_height)
+
+    for height in range(1, 5):
+        assert block_db.get_block(hashes[height]) is None
+        assert block_db.get_rev_block(hashes[height]) is None
+    for height in range(5, 11):
+        assert block_db.get_block(hashes[height]) is not None
+        assert block_db.get_rev_block(hashes[height]) is not None
+    assert block_db.pruned_up_to == 4
+
+
+def test_prune_up_to_is_a_no_op_at_or_behind_what_it_already_reached(
+    a_db: Callable[[Path | None], BlockDB],
+) -> None:
+    """A second call at or behind the last target deletes nothing further."""
+    block_db = a_db(None)
+    chain = generate_random_chain(10, RegTest().genesis.hash)
+    hashes, hash_at_height = _hashes_and_rev_blocks(block_db, chain)
+
+    block_db.prune_up_to(4, hash_at_height)
+    block_db.prune_up_to(4, hash_at_height)
+    block_db.prune_up_to(2, hash_at_height)
+
+    assert block_db.pruned_up_to == 4
+    assert block_db.get_block(hashes[5]) is not None
+
+
+def test_prune_up_to_persists_across_a_reopen(
+    a_db: Callable[[Path | None], BlockDB],
+) -> None:
+    """`pruned_up_to` and the deletion it stands for both survive a close."""
+    block_db = a_db(None)
+    chain = generate_random_chain(6, RegTest().genesis.hash)
+    hashes, hash_at_height = _hashes_and_rev_blocks(block_db, chain)
+    block_db.prune_up_to(3, hash_at_height)
+    block_db.close()
+
+    reopened = a_db(None)
+    assert reopened.pruned_up_to == 3
+    assert reopened.get_block(hashes[3]) is None
+    assert reopened.get_block(hashes[4]) is not None
+    reopened.close()
+
+
+def test_prune_up_to_reclaims_a_file_once_every_block_in_it_is_pruned(
+    a_db: Callable[[Path | None], BlockDB],
+) -> None:
+    """A `.blk` file is unlinked once `prune_up_to` has emptied it, not before.
+
+    Forces a rotation by hand, the same way `test_add_block_rotates_past_
+    the_size_bound` (above) does, so the chain's first three blocks land
+    in one file and the rest in a second -- `_release`'s own docstring
+    is where reclaiming by "every block in this file pruned" rather than
+    by height range is argued against Core's own file-granularity
+    `UnlinkPrunedFiles`.
+    """
+    block_db = a_db(None)
+    chain = generate_random_chain(6, RegTest().genesis.hash)
+    hashes: list[bytes] = [b"\x00" * 32]
+    for block in chain[:3]:
+        block_db.add_block(block)
+        hashes.append(block.header.hash)
+    block_db.files["000001.blk"].size = MAX_FILE_SIZE + 1
+    for block in chain[3:]:
+        block_db.add_block(block)
+        hashes.append(block.header.hash)
+    assert set(block_db.files) == {"000001.blk", "000002.blk"}
+
+    block_db.prune_up_to(2, hashes.__getitem__)
+    assert set(block_db.files) == {"000001.blk", "000002.blk"}
+    assert (block_db.data_dir / "000001.blk").exists()
+
+    block_db.prune_up_to(3, hashes.__getitem__)
+    assert set(block_db.files) == {"000002.blk"}
+    assert not (block_db.data_dir / "000001.blk").exists()
+    assert (block_db.data_dir / "000002.blk").exists()
+
+
+def test_prune_up_to_never_unlinks_the_file_still_open_for_writing(
+    a_db: Callable[[Path | None], BlockDB],
+) -> None:
+    """The file `file_index` currently names is never reclaimed mid-prune.
+
+    A single-file chain pruned through its own tip would otherwise have
+    `_release` unlink the very file `add_block` is still appending to --
+    the next `add_block` would have to recreate it from nothing, silently,
+    rather than this store ever noticing it had deleted its own live file.
+    """
+    block_db = a_db(None)
+    chain = generate_random_chain(3, RegTest().genesis.hash)
+    _hashes, hash_at_height = _hashes_and_rev_blocks(block_db, chain)
+
+    block_db.prune_up_to(3, hash_at_height)
+
+    assert "000001.blk" in block_db.files
+    assert (block_db.data_dir / "000001.blk").exists()
+
+
+def test_prune_up_to_closes_a_stale_open_rev_file_before_unlinking_it(
+    a_db: Callable[[Path | None], BlockDB],
+) -> None:
+    """A `.rev` file `open_rev_file` still names is closed, not just unlinked.
+
+    `finalize` opens the `.rev` file named for a block's own `.blk` file
+    index (`btclib-org/btclib-node#116`), not for whatever `.blk` file is
+    current, so a `.blk` rotation can move `self.file_index` on while
+    `open_rev_file` still names the older file's own `.rev` -- the guard
+    above this one, comparing against `self.file_index`, is already past
+    by then, since that now names the *new* `.blk` file rather than this
+    `.rev` file's own index.
+    """
+    block_db = a_db(None)
+    chain = generate_random_chain(6, RegTest().genesis.hash)
+    hashes: list[bytes] = [b"\x00" * 32]
+    for tag, block in enumerate(chain[:3], start=1):
+        block_db.add_block(block)
+        block_db.add_rev_block(a_rev_block(tag=tag, block_hash=block.header.hash))
+        hashes.append(block.header.hash)
+    block_db.finalize()
+    assert block_db.open_rev_file is not None
+    assert block_db.open_rev_file.name.endswith("000001.rev")
+
+    block_db.files["000001.blk"].size = MAX_FILE_SIZE + 1
+    for block in chain[3:]:
+        block_db.add_block(block)
+        hashes.append(block.header.hash)
+    assert block_db.file_index == 2
+    assert block_db.open_rev_file.name.endswith("000001.rev")
+
+    block_db.prune_up_to(3, hashes.__getitem__)
+
+    assert "000001.rev" not in block_db.files
+    assert not (block_db.data_dir / "000001.rev").exists()
+    assert block_db.open_rev_file is None

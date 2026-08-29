@@ -26,7 +26,7 @@ from btclib_node.chainstate.contextual import (
     header_at_height,
     median_time_past,
 )
-from btclib_node.constants import MAX_TIP_AGE, NodeStatus
+from btclib_node.constants import MAX_TIP_AGE, MIN_BLOCKS_TO_KEEP, NodeStatus
 from btclib_node.exceptions import (
     ChainstateInconsistencyError,
     InvalidBlockInputError,
@@ -263,6 +263,65 @@ def _finalize_fork(node: Node, to_add: list[Block], to_remove: list[RevBlock]) -
     if utxo_index.should_flush():
         node.chainstate.flush()
     node.logger.debug("End chainstate finalize")
+
+
+# update_chain's own finalize-branch step, run right after _finalize_fork:
+# Core's own prune step inside Chainstate::FlushStateToDisk
+# (src/validation.cpp, at bitcoin/bitcoin@ca7162cde5) -- a no-op unless
+# fPruneMode/Config.pruned says this node prunes at all, and never
+# reaching back past MIN_BLOCKS_TO_KEEP (constants.py, 288), the same
+# depth Core's own FindFilesToPrune is bounded by. A fork replacing the
+# last MIN_BLOCKS_TO_KEEP blocks still finds what it needs on disk, the
+# same guarantee that retained depth gives Core's own pruned node against
+# an ordinary reorg; a reorg deeper than that finds its own missing
+# blocks and fails on this node exactly as it does on Core's -- pruning
+# trades away that depth of reorg safety by its own nature, on both, and
+# nothing here is a new gap this call opens.
+def _prune_chain(node: Node) -> None:
+    """Delete block and undo data past `MIN_BLOCKS_TO_KEEP` behind the tip.
+
+    Core's own `BlockManager::PruneOneBlockFile`
+    (`node/blockstorage.cpp:270-286`, at bitcoin/bitcoin@ca7162cde5) clears
+    `BLOCK_HAVE_DATA`/`BLOCK_HAVE_UNDO` on the `CBlockIndex` entry it
+    prunes, "any block we prune would have to be downloaded again in
+    order to consider its chain" -- matched here by clearing
+    `BlockInfo.downloaded` for the same range `block_db.prune_up_to`
+    below is about to delete, over `block_db.pruned_up_to` the same way
+    that call's own idempotency check is, before the data itself is
+    gone. `p2p.callbacks.block`'s own no-op-if-downloaded guard is the
+    reader this matters to: without this, a block re-offered after its
+    data was pruned would be silently discarded rather than re-stored.
+
+    Never clears height 0: `BlockIndex.__init__` seeds genesis with
+    `downloaded=True` and it is never written to `block_db` in the first
+    place (`chain.genesis` is known outright, not fetched), so `range`
+    below starts at `max(1, ...)` rather than at `pruned_up_to + 1`
+    unguarded -- a `target_height` of `0` would otherwise clear a flag
+    for a block this store never held and never asks a peer for again.
+    """
+    if not node.config.pruned:
+        return
+    block_index = node.chainstate.block_index
+    target_height = len(block_index.active_chain) - 1 - MIN_BLOCKS_TO_KEEP
+    if target_height < 0:
+        return
+    for height in range(max(1, node.block_db.pruned_up_to + 1), target_height + 1):
+        block_hash = block_index.active_chain[height]
+        block_index.set_downloaded(block_hash, downloaded=False)
+    node.block_db.prune_up_to(target_height, block_index.active_chain.__getitem__)
+
+
+def _finalize_fork_and_prune(
+    node: Node, to_add: list[Block], to_remove: list[RevBlock]
+) -> None:
+    """Commit a trial, then prune -- one call for `update_chain` below.
+
+    Pulled apart into `_finalize_fork` and `_prune_chain` above, each unit
+    tested on its own; folded back into one call here only so `update_chain`
+    counts one statement for both, under ruff's own `PLR0915`.
+    """
+    _finalize_fork(node, to_add, to_remove)
+    _prune_chain(node)
 
 
 # update_chain's own trial marks, taken before a trial starts: should_flush
@@ -626,7 +685,7 @@ def update_chain(node: Node) -> None:
         _resolve_trial_exception(node, failed_hash, exc)
     finally:
         if success:
-            _finalize_fork(node, to_add, to_remove)
+            _finalize_fork_and_prune(node, to_add, to_remove)
         else:
             node.logger.debug("Start chainstate rollback")
             _rollback_trial(node, utxo_mark, filter_mark)
