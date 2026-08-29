@@ -241,12 +241,23 @@ class BlockDB:
     together with the first, never instead of it.
     """
 
-    def __init__(self, data_dir: Path, logger: Logger) -> None:
-        """Open the key-value store under `data_dir` and load its own index."""
+    def __init__(
+        self, data_dir: Path, logger: Logger, blocks_dir: Path | None = None
+    ) -> None:
+        """Open the store under `blocks_dir` or `data_dir`, and load its index.
+
+        `blocks_dir` is `Config`'s own field of the same name -- already
+        absolute and chain-suffixed there, `None` unless a caller named
+        one -- so this is the one place Core's own "default: <datadir>"
+        (`-blocksdir=<dir>`'s own help text, `src/init.cpp:514`, at
+        bitcoin/bitcoin@ca7162cde5) is actually applied: a `BlockDB`
+        built directly, the way every test here does, still gets it
+        without going through `Config` at all.
+        """
         self.logger = logger
         self._lock = threading.RLock()
 
-        self.data_dir = data_dir / "blocks"
+        self.data_dir = (blocks_dir if blocks_dir is not None else data_dir) / "blocks"
         self.data_dir.mkdir(exist_ok=True, parents=True)
         self.db = KeyValueStore(self.data_dir)
         self.files: dict[str, FileMetadata] = {}

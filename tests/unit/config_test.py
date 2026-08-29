@@ -36,6 +36,24 @@ def test_data_dir() -> None:
     assert config.data_dir == Path("dir").absolute() / "regtest"
 
 
+def test_blocks_dir_defaults_to_none() -> None:
+    """Not given: `Config` leaves it for `BlockDB`'s own default."""
+    assert Config(chain="regtest").blocks_dir is None
+
+
+def test_blocks_dir_absolute_and_chain_suffixed(tmp_path: Path) -> None:
+    """Given, and it exists: absolute, chain-suffixed the same as `data_dir`."""
+    config = Config(chain="regtest", blocks_dir=str(tmp_path))
+    assert config.blocks_dir == tmp_path.absolute() / "regtest"
+
+
+def test_blocks_dir_missing_raises(tmp_path: Path) -> None:
+    """A `blocks_dir` that does not exist is fatal, not silently created."""
+    missing = tmp_path / "nope"
+    with pytest.raises(ValueError, match="does not exist"):
+        Config(chain="regtest", blocks_dir=str(missing))
+
+
 def test_port() -> None:
     """A given `p2p_port` or `rpc_port` is stored back unchanged."""
     assert Config(chain="regtest", p2p_port=1).p2p_port == 1

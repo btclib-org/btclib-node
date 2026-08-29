@@ -144,6 +144,18 @@ class Config:
     # a Path, which is what __init__ below stores and what every reader
     # of it does path arithmetic on
     data_dir: Path
+    # `None`, Core's own "default: <datadir>" (`-blocksdir=<dir>`'s own
+    # help text, `src/init.cpp:514`, at bitcoin/bitcoin@ca7162cde5),
+    # unless a caller names a base directory of its own for `BlockDB`'s
+    # files -- chain-suffixed here the same way `data_dir` above is,
+    # matching `ArgsManager::GetBlocksDirPath`'s own append of the
+    # chain-specific subdirectory (and then `blocks`) onto whichever
+    # base it resolved, file first or `-datadir` (`src/common/
+    # args.cpp:298-319`, same sha). `BlockDB.__init__` is where the
+    # `blocks` leaf itself, and the `data_dir` fallback, are appended --
+    # not here, so a caller building a `BlockDB` directly still gets
+    # Core's own default without going through `Config` at all.
+    blocks_dir: Path | None
     # `None` and not an int is the whole of what `allow_p2p=False` and
     # `allow_rpc=False` do: __init__ below leaves the port unset, and
     # Node reads it as the answer to whether that listener is started
@@ -224,6 +236,7 @@ class Config:
         *,
         chain: Chain | str = DEFAULT_CHAIN,
         data_dir: str | Path | None = None,
+        blocks_dir: str | Path | None = None,
         p2p_port: int | None = None,
         rpc_port: int | None = None,
         rpc_host: str = "127.0.0.1",
@@ -242,6 +255,21 @@ class Config:
 
         data_dir = Path(data_dir) if data_dir else Path.home() / ".btclib"
         self.data_dir = data_dir.absolute() / self.chain.name
+
+        self.blocks_dir = None
+        if blocks_dir is not None:
+            # Core's own check, on the raw value, before the
+            # chain-specific subdirectory below is ever appended to it
+            # (`GetBlocksDirPath`, same citation as the field comment):
+            # "Specified blocks directory ... does not exist"
+            # (`src/init.cpp:1006`, same sha) is fatal there too, not a
+            # silent `mkdir` -- unlike `data_dir` above, which every
+            # caller here is content to have created on first use.
+            resolved = Path(blocks_dir).absolute()
+            if not resolved.is_dir():
+                err_msg = f"specified blocks directory {resolved} does not exist"
+                raise ValueError(err_msg)
+            self.blocks_dir = resolved / self.chain.name
 
         self.connect_given = bool(connect)
         # Core's own "-connect=0": still the -connect arm above, but

@@ -72,6 +72,27 @@ def test_init(a_db: Callable[[Path | None], BlockDB]) -> None:
     a_db(None)
 
 
+def test_no_blocks_dir_writes_under_data_dir(tmp_path: Path) -> None:
+    """No `blocks_dir` given: files land under `data_dir / "blocks"`."""
+    db = BlockDB(tmp_path, Logger(debug=True))
+    try:
+        assert db.data_dir == tmp_path / "blocks"
+    finally:
+        db.close()
+
+
+def test_blocks_dir_overrides_data_dir(tmp_path: Path) -> None:
+    """A `blocks_dir` given: files land there instead, `data_dir` untouched."""
+    data_dir = tmp_path / "data"
+    blocks_dir = tmp_path / "elsewhere"
+    db = BlockDB(data_dir, Logger(debug=True), blocks_dir)
+    try:
+        assert db.data_dir == blocks_dir / "blocks"
+        assert not (data_dir / "blocks").exists()
+    finally:
+        db.close()
+
+
 def test_blocks(a_db: Callable[[Path | None], BlockDB], tmp_path: Path) -> None:
     """Every block of a long chain is read back, across ten fresh stores."""
     chain = generate_random_chain(2000, RegTest().genesis.hash)

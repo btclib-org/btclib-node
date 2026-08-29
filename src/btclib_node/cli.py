@@ -21,11 +21,11 @@ this sentence is this module's copy of it, not a second decision.
 
 Every flag below is one of `Config`'s own fields (`config.py`), named
 and defaulted the way `SetupServerArgs` (`src/init.cpp`, same sha)
-names and defaults its own -- `-datadir=<dir>`, `-conf=<file>`,
-`-chain=`/`-testnet`/`-signet`/`-regtest`, `-port=`, `-rpcport=`,
-`-rpcbind=`, `-prune=`, `-debug`, `-connect=`, `-addnode=`,
-`-listen=`/`-nolisten`. Three `Config` fields have no flag here:
-`min_relay_feerate` (Core's own
+names and defaults its own -- `-datadir=<dir>`, `-blocksdir=<dir>`,
+`-conf=<file>`, `-chain=`/`-testnet`/`-signet`/`-regtest`, `-port=`,
+`-rpcport=`, `-rpcbind=`, `-prune=`, `-debug`, `-connect=`,
+`-addnode=`, `-listen=`/`-nolisten`. Three `Config` fields have no flag
+here: `min_relay_feerate` (Core's own
 `-minrelaytxfee` is BTC/kvB and this field is priced in sat/kvB
 already, `config.py`'s own comment on `DEFAULT_MIN_RELAY_FEERATE`
 argues why nothing enforces it yet; the unit translation is deferred
@@ -39,11 +39,14 @@ choice for a caller who ran them directly instead), and `allow_p2p`/
 `allow_rpc=False` here because Core has none either -- the RPC server
 not starting is a consequence of a bind failure, not a flag).
 
-`-blocksdir`, Core's second data directory for the blocks alone, has no
-counterpart: `BlockDB` (`block_db/__init__.py`) takes one directory and
-writes its own files under it next to `Chainstate`'s, and giving it a
-second is wider than a flag -- filed as btclib-org/btclib-node#652
-rather than carried here.
+`-blocksdir=<dir>` names the base `BlockDB` (`block_db/__init__.py`)
+writes its own files under, Core's own "default: <datadir>" applying
+when it is not given -- unlike `-datadir`, it is read from
+`bitcoin.conf` normally, since which file to read never depends on it
+the way it depends on `-datadir`. `-blocksdir` naming a directory that
+does not already exist is fatal, `Config.__init__`'s own refusal,
+matching Core's "Specified blocks directory ... does not exist"
+(`src/init.cpp:1006`, same sha) rather than creating one silently.
 
 Reading Core's own `blk*.dat` is not implemented, and is not started
 here either: the files are Core's format and the validation order is
@@ -223,6 +226,7 @@ _RECOGNIZED_KEYS = frozenset(
         "connect",
         "addnode",
         "listen",
+        "blocksdir",
         "includeconf",
     }
 )
@@ -488,6 +492,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "-datadir", "--datadir", metavar="<dir>", help="Specify data directory"
     )
     parser.add_argument(
+        "-blocksdir",
+        "--blocksdir",
+        metavar="<dir>",
+        help="Specify directory to hold blocks subdirectory for *.dat files "
+        "(default: <datadir>)",
+    )
+    parser.add_argument(
         "-chain",
         "--chain",
         metavar="<chain>",
@@ -622,10 +633,12 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
     debug = _resolve_bool(args.debug, "debug", default_section)
     connect = _resolve_list(args.connect, collected, "connect")
     listen = _resolve_listen(args.listen, default_section, connect_given=bool(connect))
+    blocksdir = _resolve_str(args.blocksdir, collected, "blocksdir")
 
     return Config(
         chain=chain_name,
         data_dir=base_dir,
+        blocks_dir=blocksdir,
         p2p_port=p2p_port,
         rpc_port=rpc_port,
         rpc_host=rpc_host,
