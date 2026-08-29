@@ -236,19 +236,22 @@ class RpcConnection:
         # the socket or read another request off it (issue #640).
         self.keep_alive = False
         # Recomputed by `run` alongside `keep_alive`, off the same
-        # request: whether the JSON `run` just parsed was a non-empty
-        # array, which is what `async_send` below reads instead of its
+        # request: whether the JSON `run` just parsed was an array at
+        # all, which is what `async_send` below reads instead of its
         # own former `len(response) == 1` to decide whether to answer
         # as a bare object or keep the array shape the client sent
-        # (issue #653). `len(body) > 0` rather than `isinstance(body,
-        # list)` alone -- unlike Core's own `isArray()`
-        # (`HTTPReq_JSONRPC`, `src/httprpc.cpp:114`, at
-        # bitcoin/bitcoin@ca7162cde5), which draws no such line -- is
-        # this tree's own, separate, already-tested choice to answer an
-        # empty `[]` batch as a single `Invalid request` object
-        # (`rpc.main.handle_rpc`'s own docstring has why); ISS 653 is
-        # about a batch of one, not that one, so this keeps it as it
-        # was rather than deciding it here.
+        # (issue #653). Plain `isinstance(body, list)`, with no length
+        # condition, matching Core's own `isArray()` (`HTTPReq_JSONRPC`,
+        # `src/httprpc.cpp:114`, at bitcoin/bitcoin@ca7162cde5) exactly:
+        # an empty `[]` batch used to be excepted from this, kept
+        # `False` so it stayed answered as this tree's own single
+        # `Invalid request` object, but Core's `ExecuteHTTPRPC` answers
+        # an empty client-sent array with an empty array too --
+        # `reply` stays the `UniValue::VARR` it started as and is
+        # returned unchanged, `HTTP_NO_CONTENT` being gated on
+        # `valRequest.size() > 0` (`src/httprpc.cpp:172-181`) and so
+        # never reached by a `valRequest` that is empty to begin with
+        # (issue #669).
         self.is_batch = False
         # A parse error's own reply, set by `run` below and never read
         # back: `asyncio.Task` only holds a *weak* reference to itself
@@ -429,7 +432,7 @@ class RpcConnection:
                 )
                 return
 
-            self.is_batch = isinstance(body, list) and len(body) > 0
+            self.is_batch = isinstance(body, list)
             if not isinstance(body, list):
                 body = [body]
             self.manager.messages.append((body, self.id))

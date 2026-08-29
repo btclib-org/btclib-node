@@ -1820,6 +1820,28 @@ where this file was written rather than where anything was tagged.
   11 of the standard states a rule about the squash title, so the older
   spelling of it is not a field the standard is silent about.
 
+### An empty JSON-RPC batch is answered `[]`, matching Core (closes #669)
+
+- **`RpcConnection.is_batch` is now plain `isinstance(body, list)`, with
+  no length condition, and `handle_rpc` no longer injects an `Invalid
+  request` object for an empty batch.** An empty `[]` used to be
+  excepted from `is_batch` on purpose, so #653's own array-shape fix
+  left it answered as a single error object -- a literal reading of
+  JSON-RPC 2.0 section 6's own wording for a batch that "fails to be
+  recognized... as an Array with at least one value." Core's own
+  `ExecuteHTTPRPC` does not read it that way: the array branch loops
+  zero times over an empty `valRequest`, and its own `HTTP_NO_CONTENT`
+  exception is gated on `valRequest.size() > 0`, so an empty input falls
+  through unchanged and is answered with the empty array it started as
+  (`src/httprpc.cpp:135-185`, at bitcoin/bitcoin@ca7162cde5). This tree
+  now matches that.
+- **`tests/functional/rpc/errors_test.py::
+  test_an_empty_batch_answers_an_empty_array`** (renamed from
+  `test_an_empty_batch_does_not_end_the_node`) **and
+  `tests/unit/rpc/main_test.py::test_an_empty_batch_answers_an_empty_response`**
+  (renamed from `test_an_empty_batch_is_an_invalid_request`) now assert
+  Core's own answer.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

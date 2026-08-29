@@ -102,13 +102,22 @@ def test_invalid_method(tmp_path: Path) -> None:
     node.stop()
 
 
-def test_an_empty_batch_does_not_end_the_node(rpc_node: Node) -> None:
-    """An empty batch is answered Invalid request, and the node's loop survives.
+def test_an_empty_batch_answers_an_empty_array(rpc_node: Node) -> None:
+    """An empty batch is answered `[]`, matching Core; the node's loop survives.
 
     `[]` is legal JSON and legal JSON-RPC, and it used to leave
     `Node.run` by exception -- ending the thread and skipping every
-    close after the loop. The node answering the request after it is
-    what says the loop survived (issue #55).
+    close after the loop (issue #55); the node answering the request
+    after it is what says the loop survived, still. What it answers
+    changed since: this used to be a single `Invalid request` object, a
+    literal reading of JSON-RPC 2.0 section 6's own wording for a batch
+    that "fails to be recognized... as an Array with at least one
+    value" -- but Core's own `ExecuteHTTPRPC` does not read it that way,
+    answering an empty client-sent array with an empty array instead
+    (`src/httprpc.cpp:135-185`, at bitcoin/bitcoin@ca7162cde5), and
+    CLAUDE.md's Following Bitcoin Core section leaves no room for a
+    convention of this tree's own on an axis Core's own behaviour
+    already decides (issue #669).
     """
     node = rpc_node
     wait_until_listening(node.rpc_manager)
@@ -120,7 +129,7 @@ def test_an_empty_batch_does_not_end_the_node(rpc_node: Node) -> None:
     # neither `call_raw` (one object per post) nor `call_batch` (refuses
     # an empty `calls`) can send a bare `[]`, so this stays on `post`
     answer = json.loads(post(node, []))
-    assert answer["error"]["message"] == "Invalid request"
+    assert answer == []
 
     assert node.is_alive()
     _, body = client.call_raw("getbestblockhash", jsonrpc="2.0")
