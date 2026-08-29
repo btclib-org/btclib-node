@@ -101,13 +101,19 @@ section fills in one landed change at a time — what a user of
 - **A corrupted, node-owned `utxo-` record read back while accepting a
   transaction into the mempool used to be answered as that transaction's
   own refusal, and could get the peer that sent it discouraged; it now
-  answers as this node's own fault instead** (issue #631).
-  `sendrawtransaction` answers an internal-error response rather than
-  `VERIFY_REJECTED`/`"Invalid signatures or script"`; `testmempoolaccept`
-  reports the entry `"Unknown error"` rather than the same reason; the
-  peer-to-peer path no longer discourages a peer for exposing this
-  node's own corrupted storage. Read the log for
-  `ChainstateInconsistencyError` rather than trusting either answer.
+  answers as this node's own fault instead** (issue #631). Corrupted
+  here means what the store's own checksum catches, raised as
+  `StoreCorruptionError` (issue #641): `sendrawtransaction` answers an
+  internal-error response rather than `VERIFY_REJECTED`/`"Invalid
+  signatures or script"`; `testmempoolaccept` reports the entry
+  `"Unknown error"` rather than the same reason; the peer-to-peer path
+  no longer discourages a peer for exposing this node's own corrupted
+  storage. Read the log for `StoreCorruptionError` rather than trusting
+  either answer. A record whose bytes pass that checksum and still
+  cannot be parsed is a different case, answered as absent (issue
+  #650): the spend is refused as `"Missing prevouts"`, exactly as a
+  genuinely missing prevout is, and nothing is logged -- which is what
+  Core's own `CCoinsViewDB::GetCoin` answers for the same record.
 
 - **The store is now RocksDB, not `sqlite3`; a data directory written
   by an older release cannot be read** (issues #637, #641). A node

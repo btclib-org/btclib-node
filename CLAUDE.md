@@ -105,11 +105,15 @@ docstring argues the store against Core's on exactly those terms.
 Mimicry is of the observed behaviour end to end, not of a local
 `catch`: where a layer below differs, the same behaviour can need
 different code above it, and that is still matching rather than
-diverging. Core's `CDBWrapper::Read` answers "absent" on a deserialize
-failure, but LevelDB's own checksum has already turned real corruption
-into a fatal error before that line ever runs — so a tree without that
-checksum which raises instead of answering "absent" is reproducing
-Core's behaviour, not departing from it.
+diverging. `db.py`'s own store verifies a per-block checksum on every
+read (btclib-org/btclib-node#641), the same guarantee LevelDB's own
+checksum gives Core's `CDBWrapper::Read` before its own deserialize
+`try` ever runs. `UtxoIndex`'s two `Coin.parse` fallbacks answer
+`None` for a checksum-clean record that still does not deserialize,
+matching `CDBWrapper::Read`/`CCoinsViewDB::GetCoin`'s own "absent"
+rather than raising (btclib-org/btclib-node#650) —
+`ChainstateInconsistencyError`'s own docstring is where that
+decision is argued end to end, uncomfortable half included.
 
 A capability Core has that this tree lacks is a gap to close, not a
 constraint to design around, wherever the reason is a library fact
