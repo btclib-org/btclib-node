@@ -10,10 +10,15 @@ on which interfaces, and the feerate floor it tells a peer about in
 `DEFAULT_MIN_RELAY_TX_FEE`. `_resolve_chain` is what turns a chain
 already built, or a network's name, into the `Chain` a `Config` carries.
 `pruned` is reserved rather than honoured: see its own field comment.
+`split_host_port` is `cli.py`'s own splitter for `-rpcbind`'s optional
+port too, which is why it is public here rather than named with a
+leading underscore.
 """
 
 from dataclasses import dataclass
+from ipaddress import ip_address
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from btclib.fee import FeeRate
 
@@ -24,7 +29,10 @@ from btclib_node.exceptions import (
     UnknownChainError,
 )
 
-__all__ = ["DEFAULT_MIN_RELAY_FEERATE", "Config"]
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+__all__ = ["DEFAULT_MIN_RELAY_FEERATE", "Config", "split_host_port"]
 
 # Core's own floor, `DEFAULT_MIN_RELAY_TX_FEE` (`src/policy/policy.h`,
 # read at bitcoin/bitcoin@58a7869f86): 100 sat/kvB. This node prices
@@ -40,6 +48,70 @@ DEFAULT_MIN_RELAY_FEERATE = FeeRate(sats_per_kvbyte=100)
 # shape `DEFAULT_MIN_RELAY_FEERATE` above already uses for the same
 # reason.
 DEFAULT_CHAIN = Main()
+
+
+def split_host_port(spec: str, default_port: int) -> tuple[str, int]:
+    """Split "host[:port]" the way Core's own `SplitHostPort` does.
+
+    The last colon is the port separator, unless it is not the only one
+    and does not close an IPv6 literal's own `[...]` -- an IPv6 address
+    given without brackets and without a port is read whole rather than
+    split on one of its own colons, exactly what
+    `src/util/strencodings.cpp`'s `SplitHostPort` does (read at
+    bitcoin/bitcoin@ca7162cde5). `default_port` is what a spec naming
+    none falls back to: Core's own callers pre-fill the port before
+    calling `SplitHostPort`, which only overwrites it when the spec
+    actually names one (`ConnectNode`, `src/net.cpp:505-507`, same sha)
+    -- `-connect=1.2.3.4` and `-addnode=1.2.3.4` both dial the chain's
+    own default P2P port this way.
+    """
+    host = spec
+    port = default_port
+    colon = spec.rfind(":")
+    if colon != -1:
+        bracketed = spec.startswith("[") and spec[:colon].endswith("]")
+        multi_colon = spec.rfind(":", 0, colon) != -1
+        if colon == 0 or bracketed or not multi_colon:
+            host, port_text = spec[:colon], spec[colon + 1 :]
+            try:
+                port = int(port_text)
+            except ValueError:
+                port = -1
+            if not 0 < port <= 0xFFFF:  # noqa: PLR2004
+                err_msg = f"{spec!r} names an invalid port"
+                raise ValueError(err_msg)
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    return host, port
+
+
+def _resolve_peers(
+    specs: Sequence[str], default_port: int
+) -> tuple[tuple[str, int], ...]:
+    """Split every spec in `specs` and check its host is a literal IP.
+
+    A hostname is not resolved here, unlike Core's own `-connect`/
+    `-addnode`, which dial through `CConnman::ConnectNode` and resolve
+    one via `Resolve` (`src/net.cpp`) same as any other peer. This
+    node's own dial route -- `p2p_manager.connect(peer_address(...))`,
+    the one ISS 573 (btclib-org/btclib-node#573) asks these two fields
+    to use -- takes a `NetworkAddressV2` built straight off a parsed IP
+    (`p2p/address.py`'s `peer_address`), and nothing in this node's
+    synchronous startup path resolves a name into one: the only DNS
+    lookup here is `PeerDB.get_addr_from_dns`'s own coroutine, on
+    `P2pManager`'s asyncio loop, which is not reachable before that
+    manager's thread exists. Widening `peer_address` or plumbing an
+    async resolve into `Node.run` for two config fields is a larger
+    change than this branch's scope; a hostname is refused up front,
+    at `Config` construction, rather than dialled wrong or silently
+    dropped later.
+    """
+    peers: list[tuple[str, int]] = []
+    for spec in specs:
+        host, port = split_host_port(spec, default_port)
+        ip_address(host)  # raises ValueError on a hostname or garbage
+        peers.append((host, port))
+    return tuple(peers)
 
 
 def _resolve_chain(chain: Chain | str) -> Chain:
@@ -99,6 +171,36 @@ class Config:
     pruned: bool
     debug: bool
     min_relay_feerate: FeeRate
+    # (ip, port) pairs, resolved by `_resolve_peers` above: Core's own
+    # `-connect`, which dials these alone and turns off DNS seeding and
+    # every automatically-drawn outbound connection
+    # (`InitParameterInteraction`, `src/init.cpp:814-819`, and
+    # `connOptions.m_use_addrman_outgoing = false`, `src/init.cpp:2337`,
+    # both at bitcoin/bitcoin@ca7162cde5). Empty for `-connect=0` too --
+    # Core's own "dial nobody, but still on the -connect arm" spelling
+    # (`connect.size() != 1 || connect[0] != "0"`, `src/init.cpp:2333`,
+    # same sha) -- which is why `connect_given` below, not this tuple's
+    # truthiness, is what `P2pManager` reads to decide the two above.
+    connect: tuple[tuple[str, int], ...]
+    # Whether `-connect` was named at all, `["0"]` included: Core's own
+    # `!args.GetArgs("-connect").empty()`, read off the raw sequence
+    # `__init__` below was given rather than off `connect` above, since
+    # the two disagree on exactly that one value.
+    connect_given: bool
+    # the same pairs, dialled alongside the ordinary draw rather than
+    # instead of it: Core's own `-addnode`
+    # (`connOptions.m_added_nodes`, `src/init.cpp:2193-2198`, same sha).
+    addnode: tuple[tuple[str, int], ...]
+    # Core's own `-listen`, `DEFAULT_LISTEN` (`src/net.h`) true unless
+    # `-connect` is given, in which case `InitParameterInteraction`
+    # (`src/init.cpp:814-819`, same sha) soft-sets it false -- a default
+    # `cli.py`'s own `_resolve_listen` computes the same way, an explicit
+    # `-listen`/`-nolisten` always winning over it. `False` here means
+    # Core's own `-listen=0`: no bound listening socket, outbound
+    # connections still made -- not `allow_p2p=False`, which unsets the
+    # port and starts no `P2pManager` at all, so nothing could dial out
+    # either.
+    listen: bool
 
     # every parameter here is one independent setting, not a group of
     # related ones this signature happens to expose together: `chain` is
@@ -131,12 +233,26 @@ class Config:
         debug: bool = False,
         log_path: str | None = "history.log",
         min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
+        connect: Sequence[str] = (),
+        addnode: Sequence[str] = (),
+        listen: bool = True,
     ) -> None:
         """Resolve `chain` and ports, and refuse `pruned=True`."""
         self.chain = _resolve_chain(chain)
 
         data_dir = Path(data_dir) if data_dir else Path.home() / ".btclib"
         self.data_dir = data_dir.absolute() / self.chain.name
+
+        self.connect_given = bool(connect)
+        # Core's own "-connect=0": still the -connect arm above, but
+        # nobody named to dial -- `_resolve_peers` never sees the "0"
+        # itself, since `ip_address("0")` is not a valid literal and
+        # would raise where Core instead special-cases the value.
+        self.connect = (
+            () if list(connect) == ["0"] else _resolve_peers(connect, self.chain.port)
+        )
+        self.addnode = _resolve_peers(addnode, self.chain.port)
+        self.listen = listen
 
         self.p2p_port = None
         if allow_p2p:

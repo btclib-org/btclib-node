@@ -35,7 +35,7 @@ from btclib_node.interpreter import warm
 from btclib_node.log import Logger
 from btclib_node.main import update_chain
 from btclib_node.mempool import Mempool
-from btclib_node.p2p.address import PeerDB
+from btclib_node.p2p.address import PeerDB, peer_address
 from btclib_node.p2p.main import (
     handle_p2p,
     handle_p2p_handshake,
@@ -59,7 +59,7 @@ if TYPE_CHECKING:
 # named here so this module can wire them together, and nothing outside
 # this repository has ever imported one of them from the package root
 # rather than from its own module. `Node` and `install_signal_handlers`
-# below are the two names a caller reaches for -- `scripts/chains/`
+# below are the two names a caller reaches for -- `cli.py`'s own `main`
 # reaches for both, and every functional test builds a `Node` without
 # ever calling the other -- so together they are the whole of `__all__`
 # (btclib-org/.github#239).
@@ -537,6 +537,26 @@ class Node(threading.Thread):
         self.status = NodeStatus.SyncingHeaders
         if self.p2p_port:
             self.p2p_manager.start()
+            # `config.connect` and `config.addnode` together, right
+            # after this manager's own loop exists to schedule onto
+            # (`P2pManager.__init__` builds `self.loop` before `start()`
+            # is ever called, so this does not have to wait for
+            # `listening`, which only the two bound sockets set).
+            #
+            # A one-shot dial, not the standing connection Core keeps:
+            # `CConnman::ThreadOpenConnections`'s own `-connect` arm
+            # loops forever, redialling with backoff
+            # (`for (int64_t nLoop = 0;; nLoop++)`, `src/net.cpp:2599`,
+            # at bitcoin/bitcoin@ca7162cde5), and
+            # `ThreadOpenAddedConnections` does the same for `-addnode`.
+            # `P2pManager._maybe_dial_more_peers` is this node's own
+            # equivalent of that loop and, under `-connect`, is exactly
+            # what `use_addrman_outgoing` above turns off -- so a peer
+            # named here that drops after the handshake is not redialled
+            # by anything. btclib-org/btclib-node#651 is the follow-up
+            # this leaves open, filed rather than solved in this branch.
+            for host, port in (*self.config.connect, *self.config.addnode):
+                self.p2p_manager.connect(peer_address(host, port))
         if self.rpc_port:
             self.rpc_manager.start()
         while not self.terminate_flag.is_set():
@@ -610,10 +630,10 @@ def install_signal_handlers(node: Node) -> None:
     `signal.signal` keeps one handler per signal per process, replacing
     whatever was there before, so this is for the one caller in a
     process that wants an operator's interrupt to reach a node at all --
-    `scripts/chains/`, and whatever a future CLI ends up being. Calling
-    it a second time, for a second node, replaces the first node's
-    handler rather than adding to it: that is the same `signal.signal`
-    the first call made, not a defect this function introduces.
+    `cli.py`'s own `main`. Calling it a second time, for a second node,
+    replaces the first node's handler rather than adding to it: that is
+    the same `signal.signal` the first call made, not a defect this
+    function introduces.
 
     Kept out of `Node.__init__` for two reasons (issue #436). A second
     `Node` built in one process used to silently disown the first,
