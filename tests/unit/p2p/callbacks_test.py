@@ -1198,6 +1198,32 @@ def test_a_transaction_whose_parents_are_missing_is_not_kept(
     assert node.download_manager.received_txs == []
 
 
+def test_a_corrupted_stored_record_propagates_out_of_tx(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`tx` has no catch of its own for `ChainstateInconsistencyError`.
+
+    Unlike `MissingPrevoutError` above, it propagates uncaught, for
+    `handle_p2p`'s own generic catch to stop the one connection without
+    discouraging the peer --
+    `test_a_callback_that_raises_drops_the_peer` (`p2p/main_test.py`)
+    already proves that half by type, `ChainstateInconsistencyError`
+    being a plain `RuntimeError`. btclib-org/btclib-node#631
+    """
+
+    def corrupted(node: Any, transaction: Any) -> NoReturn:
+        err_msg = "stored utxo- record failed to parse"
+        raise ChainstateInconsistencyError(err_msg)
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", corrupted)
+    transaction = a_transaction()
+    node = a_data_node()
+    with pytest.raises(ChainstateInconsistencyError):
+        tx(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
+    assert not node.mempool.contains_tx(transaction)
+    assert node.download_manager.received_txs == []
+
+
 def test_a_transaction_received_before_the_node_is_synced_is_dropped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

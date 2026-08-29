@@ -1137,6 +1137,57 @@ where this file was written rather than where anything was tagged.
   outpoint at most once, so a chained output's create and spend never
   collide with anything but each other.
 
+### A corrupted stored coin is this node's fault (closes #631, closes #636)
+
+- **`Coin.parse` reading back a `utxo-` record inside
+  `UtxoIndex.get_coin`'s own store fallback is now wrapped the way #620
+  wrapped `UtxoIndex.add_block`'s own read of the same kind of record: a
+  `BTClibValueError` it raises re-raises `ChainstateInconsistencyError`,
+  the key it reads being one only this node's own `UtxoIndex.finalize`
+  ever writes, so a submitted transaction's own bytes never reach that
+  call.** `send_raw_transaction` and `test_mempool_accept`
+  (`rpc/callbacks.py`) used to answer a corrupted own-stored record the
+  same way they answer a genuinely bad script --
+  `VERIFY_REJECTED`/`"Invalid signatures or script"` -- misattributing
+  this node's own storage fault to the transaction it happened to be
+  checking.
+- **Neither RPC handler needed a new catch of its own.**
+  `send_raw_transaction` has no clause for `ChainstateInconsistencyError`,
+  so it propagates into `handle_rpc`'s own generic catch and is answered
+  as an internal error instead of a refusal; `test_mempool_accept`'s own
+  per-entry loop already carries a catch-all beneath its two specific
+  ones, and reports the one entry `"Unknown error"` instead.
+- **The peer-to-peer `tx` handler (`p2p/callbacks.py`) needed no change
+  either.** It already lets anything but `MissingPrevoutError` propagate
+  into `handle_p2p`'s own generic catch, which stops that one connection
+  and discourages the peer only for a `BTClibException`.
+  `ChainstateInconsistencyError` is a plain `RuntimeError`, so a
+  corrupted own-stored record no longer discourages the peer that sent
+  a transaction this node itself could not read back -- a
+  `BTClibValueError` reaching the same path used to.
+- **Core detects this at the storage layer, where this tree has
+  nothing, so the two differ in where the fault is caught rather than
+  in what either chose.** `CDBWrapper::Read`
+  (`src/dbwrapper.h:220-237`, at bitcoin/bitcoin@05e49b342f) does catch
+  a deserialize failure and treat the record as absent -- but it never
+  sees storage-layer corruption to begin with: `CDBWrapper` reads with
+  `verify_checksums = true` and a mismatch reaches `HandleError`, which
+  throws before `Read`'s own `try` runs at all, so what that `try`
+  catches is a format mismatch on an intact record. `db.py`'s own store
+  carries no equivalent guard, which makes `Coin.parse` the only point
+  this node ever learns a `utxo-` record it wrote is unreadable back --
+  at the read above and at `UtxoIndex.add_block`'s own read of the same
+  kind of record (#620). Answering Core's literal way there, silently
+  absent, would fold a node-owned fault into an ordinary "prevout
+  missing" refusal. `ChainstateInconsistencyError`'s own docstring
+  carries the argument, including what about Core's behaviour is *not*
+  settled: whether its RPC and net-processing paths, which each catch
+  `std::exception`, absorb `dbwrapper_error` where its own `AbortNode`
+  machinery says the intent is to stop. Neither call site here rests on
+  that. btclib-org/btclib-node#637 is the missing guard and
+  btclib-org/btclib-node#641 is whether the store lacking it is the
+  right one (#636).
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

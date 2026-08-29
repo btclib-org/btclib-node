@@ -31,7 +31,7 @@ import btclib_node.rpc.callbacks as cb
 from btclib_node.chains import Main, RegTest
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import P2pConnStatus
-from btclib_node.exceptions import MissingPrevoutError
+from btclib_node.exceptions import ChainstateInconsistencyError, MissingPrevoutError
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from btclib_node.rpc.callbacks import (
@@ -775,6 +775,32 @@ def test_mempool_acceptance_reports_a_reason_for_each_refusal(
         else:
             assert result["allowed"] is False
             assert result["reject-reason"] == reason
+
+
+def test_mempool_acceptance_reports_a_corrupted_stored_record_as_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `ChainstateInconsistencyError` is reported the same as an unknown one.
+
+    Neither `MissingPrevoutError` nor `BTClibValueError`, so it falls
+    through to the same catch-all the test above already proves for a
+    plain `RuntimeError` -- named on its own class rather than relying
+    on that inheritance, since it is the one exception
+    `verify_mempool_acceptance` raises for this node's own storage
+    rather than for `tx`'s content (btclib-org/btclib-node#631).
+    """
+
+    def corrupted(node: Any, tx: Any) -> NoReturn:
+        err_msg = "stored utxo- record failed to parse"
+        raise ChainstateInconsistencyError(err_msg)
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", corrupted)
+    tx = a_tx()
+    (result,) = mempool_accept(
+        a_node(), _CONN, [[tx.serialize(include_witness=True).hex()]]
+    )
+    assert result["allowed"] is False
+    assert result["reject-reason"] == "Unknown error"
 
 
 def test_an_unparsable_transaction_is_named_as_such() -> None:
@@ -1544,5 +1570,34 @@ def test_a_transaction_whose_scripts_do_not_verify_is_answered_with_the_refusal(
         send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
     assert raised.value.code == RpcErrorCode.VERIFY_REJECTED
     assert raised.value.message == "Invalid signatures or script"
+    assert not mempool.contains_tx(tx)
+    assert broadcast == []
+
+
+def test_a_corrupted_stored_record_is_not_answered_as_the_tx_s_own_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`send_raw_transaction` has no catch of its own for a storage fault.
+
+    Unlike `MissingPrevoutError` and `BTClibValueError` above,
+    `ChainstateInconsistencyError` propagates out of
+    `send_raw_transaction` uncaught, for `handle_rpc`'s own generic
+    catch to answer as this node's own fault rather than as a refusal
+    of `tx` (btclib-org/btclib-node#631).
+    """
+
+    def corrupted(node: Any, transaction: Any) -> NoReturn:
+        err_msg = "stored utxo- record failed to parse"
+        raise ChainstateInconsistencyError(err_msg)
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", corrupted)
+    tx = a_tx()
+    mempool = Mempool(Logger(debug=True))
+    broadcast: list[Tx] = []
+    node = a_node(mempool=mempool)
+    node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: broadcast.append(tx)
+
+    with pytest.raises(ChainstateInconsistencyError):
+        send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
     assert not mempool.contains_tx(tx)
     assert broadcast == []

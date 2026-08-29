@@ -630,7 +630,12 @@ def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
         # blocks' own worth of staging created or already spent is real
         # before UtxoIndex.finalize ever writes it out, staying staged
         # across more than one block being what btclib-org/btclib-node#586
-        # is about.
+        # is about. A stored utxo- record this reads back that fails to
+        # parse is this node's own fault, not tx's -- get_coin's own
+        # store fallback raises ChainstateInconsistencyError for that,
+        # the same distinction UtxoIndex.add_block's own read of the
+        # same kind of record draws (btclib-org/btclib-node#620,
+        # btclib-org/btclib-node#631, btclib-org/btclib-node#636).
         coin = utxo_index.get_coin(prevout_bytes)
         if coin:
             coins_from_utxo_set.append(coin)

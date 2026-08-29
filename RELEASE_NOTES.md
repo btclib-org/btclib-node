@@ -98,6 +98,17 @@ section fills in one landed change at a time — what a user of
   closes either way, and this cost is only ever paid by the shutdown
   that skips that step.
 
+- **A corrupted, node-owned `utxo-` record read back while accepting a
+  transaction into the mempool used to be answered as that transaction's
+  own refusal, and could get the peer that sent it discouraged; it now
+  answers as this node's own fault instead** (issue #631).
+  `sendrawtransaction` answers an internal-error response rather than
+  `VERIFY_REJECTED`/`"Invalid signatures or script"`; `testmempoolaccept`
+  reports the entry `"Unknown error"` rather than the same reason; the
+  peer-to-peer path no longer discourages a peer for exposing this
+  node's own corrupted storage. Read the log for
+  `ChainstateInconsistencyError` rather than trusting either answer.
+
 ## v2026.8.27
 
 **The first release of btclib-node.** Nothing here is an upgrade: no
