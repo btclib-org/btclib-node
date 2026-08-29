@@ -17,7 +17,7 @@ import threading
 from typing import TYPE_CHECKING
 
 import pytest
-from rocksdict import Options, Rdict
+from rocksdict import Options, Rdict, RdictIter
 
 from btclib_node import db as db_module
 from btclib_node.db import KeyValueStore
@@ -34,6 +34,24 @@ if TYPE_CHECKING:
 def a_store(tmp_path: Path, name: str = "store") -> KeyValueStore:
     """Open a `KeyValueStore` in its own subdirectory of `tmp_path`."""
     return KeyValueStore(tmp_path / name)
+
+
+def flip_a_bit_of(directory: Path, needle: bytes) -> None:
+    """Flip one bit of the first `needle` found in a `*.sst` under `directory`.
+
+    What every corruption test below shares: `needle` has to be
+    findable uncompressed on disk -- `db.py`'s own module docstring
+    argues why compression is off, and this is where that choice pays
+    for itself -- and the flip has to land inside it rather than beside
+    it.
+    """
+    matches = [sst for sst in directory.glob("*.sst") if needle in sst.read_bytes()]
+    assert matches, f"{needle!r} not found uncompressed in any *.sst under {directory}"
+    target = matches[0]
+    data = bytearray(target.read_bytes())
+    offset = data.index(needle)
+    data[offset] ^= 0xFF
+    target.write_bytes(bytes(data))
 
 
 def test_what_is_put_comes_back(tmp_path: Path) -> None:
@@ -403,12 +421,7 @@ def test_a_flipped_bit_in_an_sst_raises_this_tree_s_own_error(tmp_path: Path) ->
     This is the guarantee the whole move to RocksDB bought
     (btclib-org/btclib-node#641, closing btclib-org/btclib-node#637): a
     flipped bit on disk is an exception at the read, not a wrong answer
-    nothing notices. Compression is off (`db.py`'s own module docstring
-    argues why against Core's own configuration) specifically so a
-    value's own bytes are findable, uncompressed, inside the `*.sst`
-    file this flips a bit of -- with compression on, the needle below
-    would not be there to find, and this test could not be written the
-    way it is.
+    nothing notices.
     """
     store = a_store(tmp_path)
     value = b"V" * 39
@@ -417,27 +430,171 @@ def test_a_flipped_bit_in_an_sst_raises_this_tree_s_own_error(tmp_path: Path) ->
     store._db.flush()
     store.close()
 
-    directory = tmp_path / "store"
-    target = None
-    for sst in directory.glob("*.sst"):
-        if value in sst.read_bytes():
-            target = sst
-            break
-    assert target is not None, "value not found uncompressed in any *.sst"
+    flip_a_bit_of(tmp_path / "store", value)
+    reopened = KeyValueStore(tmp_path / "store")
 
-    corrupted = bytearray(target.read_bytes())
-    offset = corrupted.index(value)
-    corrupted[offset] ^= 0xFF
-    target.write_bytes(corrupted)
-
-    def reopen_and_read_every_key() -> None:
-        reopened = KeyValueStore(directory)
-        for i in range(2000):
-            reopened.get(i.to_bytes(4, "big"))
-
-    # the exception can surface at the open itself or at the first read
-    # that reaches the corrupted block, depending on what RocksDB's own
-    # paranoid checks manage to validate while opening -- either is
-    # "the open itself" or "get", both of db.py's own three read paths
+    # key 0's own record: `flip_a_bit_of` flips the first match of
+    # `value` in the file, and every record here shares that 39-byte
+    # prefix, so the first match on disk is the smallest key's own
     with pytest.raises(StoreCorruptionError, match="Corruption"):
-        reopen_and_read_every_key()
+        reopened.get((0).to_bytes(4, "big"))
+
+
+def test_a_flipped_bit_is_caught_by_the_iterator_too(tmp_path: Path) -> None:
+    """A corrupted block stops the walk, and it does not stop it silently.
+
+    `db.py`'s own module docstring is where this is measured against
+    the higher-level `Rdict.items`, which does not raise here at all --
+    it answers a corrupted block the way it answers the genuine end of
+    the store, silently short. `__iter__`'s own walk goes through the
+    lower-level `Rdict.iter` instead, checking `status()` once after,
+    which is what turns that same corruption into an exception here.
+    """
+    store = a_store(tmp_path)
+    value = b"V" * 39
+    for i in range(2000):
+        store.put(i.to_bytes(4, "big"), value + i.to_bytes(4, "big"))
+    store._db.flush()
+    store.close()
+
+    flip_a_bit_of(tmp_path / "store", value)
+    reopened = KeyValueStore(tmp_path / "store")
+
+    with pytest.raises(StoreCorruptionError, match="Corruption"):
+        list(reopened)
+
+
+def test_a_flipped_bit_is_caught_while_checking_whether_a_version_less_store_has_data(
+    tmp_path: Path,
+) -> None:
+    """`_has_any_data`'s own scan raises too, rather than reading as empty.
+
+    The same silent-truncation risk `__iter__`'s own test above pins,
+    for `Rdict.keys` rather than `Rdict.items`: over a store whose only
+    block is the corrupted one, `keys()` answers nothing at all,
+    indistinguishable from a genuinely empty store -- and this is
+    exactly the read `_check_schema_version` trusts to tell an empty
+    store from one this class predates. A version-less store already
+    holding data has to be refused, per
+    `test_a_pre_versioning_store_with_data_is_refused` above; this pins
+    that it is refused as `StoreCorruptionError` rather than silently
+    re-stamped current when what holds the data is unreadable.
+    """
+    store = a_store(tmp_path)
+    value = b"V" * 39
+    for i in range(2000):
+        store.put(i.to_bytes(4, "big"), value + i.to_bytes(4, "big"))
+    store._db.flush()
+    store._meta.delete(db_module._VERSION_KEY)
+    store.close()
+
+    flip_a_bit_of(tmp_path / "store", value)
+
+    with pytest.raises(StoreCorruptionError, match="Corruption"):
+        KeyValueStore(tmp_path / "store")
+
+
+def test_a_corrupted_meta_column_family_is_caught_while_opening(tmp_path: Path) -> None:
+    """The schema-version check's own read raises on a corrupted stamp.
+
+    Targets the `_META_COLUMN_FAMILY`'s own tiny SST specifically --
+    found through `Rdict.live_files`'s own `start_key`, rather than
+    guessed by size -- so what is corrupted is the version stamp
+    `_check_schema_version` reads before `__init__` ever hands the
+    store back, not the default column family's own data.
+    """
+    store = a_store(tmp_path)
+    store.put(b"k", b"v")
+    store._db.flush()
+    store._meta.flush()
+    (meta_file,) = (
+        f["name"].removeprefix("/")
+        for f in store._db.live_files()
+        if f["start_key"] == b"schema-version"
+    )
+    store.close()
+
+    needle = db_module._SCHEMA_VERSION.to_bytes(4, "big")
+    target = tmp_path / "store" / meta_file
+    data = bytearray(target.read_bytes())
+    offset = data.index(needle)
+    data[offset] ^= 0xFF
+    target.write_bytes(bytes(data))
+
+    with pytest.raises(StoreCorruptionError, match="Corruption"):
+        KeyValueStore(tmp_path / "store")
+
+
+def test_a_corrupted_manifest_is_caught_at_the_open_itself(tmp_path: Path) -> None:
+    """A structurally corrupted store raises out of the open, not a read.
+
+    `Rdict`'s own constructor is the third of `db.py`'s three read
+    paths: RocksDB reads its `MANIFEST` while opening to learn its own
+    structure, and a corrupted one is a fault this class meets before
+    `__init__` ever gets past building `self._db`.
+    """
+    store = a_store(tmp_path)
+    for i in range(500):
+        store.put(i.to_bytes(4, "big"), b"V" * 39)
+    store._db.flush()
+    store.close()
+
+    directory = tmp_path / "store"
+    (manifest,) = directory.glob("MANIFEST-*")
+    data = bytearray(manifest.read_bytes())
+    offset = len(data) // 2
+    data[offset] ^= 0xFF
+    manifest.write_bytes(bytes(data))
+
+    with pytest.raises(StoreCorruptionError, match="Corruption"):
+        KeyValueStore(directory)
+
+
+def test_a_non_corruption_exception_is_never_reclassified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a message beginning `Corruption:` becomes `StoreCorruptionError`.
+
+    Exercised at each of the five points `db.py` reads through
+    `_raise_if_corrupted`: the open itself, the schema-version check's
+    own read, `_has_any_data`'s own scan, `get`, and `__iter__`. A
+    genuine defect this guards against: swallowing an unrelated fault
+    -- a disk-full `OSError`, a permission error -- under the same
+    classification as a checksummed corruption would hide it from
+    whoever reads the log for the name that is supposed to be specific.
+    """
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("boom")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(db_module, "Rdict", boom)
+        with pytest.raises(RuntimeError, match="boom"):
+            KeyValueStore(tmp_path / "open")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(Rdict, "get", boom)
+        with pytest.raises(RuntimeError, match="boom"):
+            a_store(tmp_path, "schema-version-read")
+
+    with monkeypatch.context() as patched:
+        # `status()`, called after the walk `_has_any_data` makes,
+        # rather than `Rdict.iter` itself: `iter()` only ever
+        # constructs the iterator, never reads anything, so patching it
+        # would never reach `_raise_if_corrupted` at all
+        patched.setattr(RdictIter, "status", boom)
+        with pytest.raises(RuntimeError, match="boom"):
+            a_store(tmp_path, "has-any-data-scan")
+
+    store = a_store(tmp_path, "already-open")
+    with monkeypatch.context() as patched:
+        patched.setattr(Rdict, "get", boom)
+        with pytest.raises(RuntimeError, match="boom"):
+            store.get(b"k")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(RdictIter, "status", boom)
+        with pytest.raises(RuntimeError, match="boom"):
+            list(store)
+
+    store.close()

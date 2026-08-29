@@ -1261,6 +1261,15 @@ where this file was written rather than where anything was tagged.
   used to say this tree carried no such layer; what a `Coin.parse`
   failure now means on a record this new guard already passed as
   intact is btclib-org/btclib-node#650's own question.
+- **`__iter__` and the internal read `_check_schema_version` uses to
+  tell an empty store from one this class predates both walk the store
+  through `rocksdict`'s lower-level `Rdict.iter`, not the higher-level
+  `Rdict.items`/`Rdict.keys`.** Measured directly: the higher-level
+  wrappers answer a corrupted block the way they answer the genuine end
+  of the store -- nothing raised, fewer pairs than were written, in one
+  case none at all -- because neither ever calls the separate `status()`
+  the underlying iterator reports its own fault through. `db.py`'s own
+  module docstring has the two measurements.
 - **`pyproject.toml` floors `rocksdict` at `0.3.29`**, the release
   measured against; the `sqlite` keyword becomes `rocksdb`, and
   `.python-version`'s own comment is corrected -- `rocksdict` ships

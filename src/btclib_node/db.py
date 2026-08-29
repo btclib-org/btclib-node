@@ -204,6 +204,27 @@ the same reason `rocksdict` itself gives it no type.
 every chainstate index's, and a corrupted address book is not a
 chainstate concern.
 
+**A point lookup and a scan report corruption differently, and only one
+of them raises on its own.** `Rdict.get` -- what `get` and the
+schema-version check above both call -- raises the moment it meets a
+corrupted block, measured directly. `Rdict.items` and `Rdict.keys` do
+not: RocksDB's own iterator, underneath either, answers a corrupted
+block the way it answers the genuine end of the store -- `Valid()`
+turns false, and the fault is only ever in a separate `status()` call,
+which neither wrapper makes. Measured directly, twice: over a store
+with one corrupted block partway through, `items()` returned every pair
+before that block and then stopped, silently, and `keys()` on a store
+whose only intact block was the corrupted one returned nothing at all,
+indistinguishable from a genuinely empty store. The second is not a
+theoretical risk -- `_has_any_data` is exactly the read
+`_check_schema_version` trusts to tell an empty store from one this
+class predates, so trusting `keys()` there would have let a corrupted,
+version-less store be silently stamped current rather than refused.
+`__iter__` and `_has_any_data` below both go through the lower-level
+`Rdict.iter` instead -- `seek_to_first`, walk `valid()`, and call
+`status()` once after -- which is what makes them raise the same way
+`get` already does.
+
 ## The lock stays, for a different reason than before
 
 RocksDB is internally thread-safe -- unlike SQLite's connection under
@@ -478,16 +499,25 @@ class KeyValueStore:
     def _has_any_data(self) -> bool:
         """Whether the default column family already holds a key.
 
-        Read the same way `_check_schema_version` below reads
-        everything else -- one key, peeled off the front of an
-        ascending walk, rather than every key counted.
+        One key, peeled off the front of an ascending walk, rather than
+        every key counted. Through `Rdict.iter` and not the
+        higher-level `Rdict.keys`, for the same reason `__iter__` below
+        is: `keys()` answers a corrupted first block the same way it
+        answers a genuinely empty store, nothing there to see, and this
+        is exactly the read `_check_schema_version` trusts to tell an
+        empty store from one this class predates -- trusting `keys()`
+        here would let a corrupted, version-less store be silently
+        stamped current instead of refused.
         """
+        iterator = self._db.iter(read_opt=_READ_OPTIONS)
+        iterator.seek_to_first()
+        valid = iterator.valid()
         try:
-            first = next(iter(self._db.keys(read_opt=_READ_OPTIONS)), None)
+            iterator.status()
         except Exception as exc:
             self._raise_if_corrupted(exc)
             raise
-        return first is not None
+        return valid
 
     def _check_schema_version(self) -> None:
         """Refuse a store this version's own shape cannot make sense of.
@@ -566,15 +596,33 @@ class KeyValueStore:
         `close()` is measured -- the reason this still runs the whole
         walk to a list before returning has changed, but the shape has
         not.
+
+        Walked through `Rdict.iter`, not the higher-level `Rdict.items`:
+        RocksDB's own iterator does not raise when it meets a corrupted
+        block, it stops -- `valid()` turns `False` the same way it would
+        at the genuine end of the store, and the only place the reason
+        ever surfaces is `status()`, called once here after the walk
+        rather than left unread. `items()` wraps that same iterator and
+        never calls `status()` of its own -- measured directly: over a
+        store with one corrupted block partway through, it returned
+        every pair before the corrupted one and then stopped, silently,
+        which would make a truncated store look like the whole of it to
+        every caller of this method.
         """
         with self._lock:
             self._ensure_open()
+            rows: list[tuple[bytes, bytes]] = []
+            iterator = self._db.iter(read_opt=_ITER_READ_OPTIONS)
+            iterator.seek_to_first()
+            while iterator.valid():
+                rows.append((iterator.key(), iterator.value()))
+                iterator.next()
             try:
-                rows = list(self._db.items(read_opt=_ITER_READ_OPTIONS))
+                iterator.status()
             except Exception as exc:
                 self._raise_if_corrupted(exc)
                 raise
-            return iter(cast("list[tuple[bytes, bytes]]", rows))
+            return iter(rows)
 
     @contextmanager
     def write_batch(self) -> Iterator[KeyValueStore]:
