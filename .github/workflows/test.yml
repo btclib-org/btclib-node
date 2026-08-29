@@ -2,12 +2,8 @@
 name: test
 
 # The suite, gated at the coverage floor pyproject.toml declares, on the
-# one image btclib-org/.github#85 asks a merge to wait for, over an
-# interpreter axis of two cells: `3.14`, the version `.python-version`
-# pins and `requires-python` floors, and `3.14t`, that same interpreter's
-# free-threaded build. The pin does not move for this -- `3.14t` is not
-# a second interpreter the package claims to support, it is the one it
-# already claims, run a second time with the GIL off (issue #387).
+# one image btclib-org/.github#85 asks a merge to wait for, at `3.14`,
+# the version `.python-version` pins and `requires-python` floors.
 #
 # A platform cell runs beside them, `windows-latest` at `3.14` alone --
 # not crossed with `3.14t`, which would spend a second slot asking the
@@ -32,6 +28,40 @@ name: test
 # regressions yet, only defects, which a week's sentinel wait would
 # leave unnoticed for a week rather than caught at the pull request
 # that introduced them (issue #430).
+#
+# `3.14t`, that same interpreter's free-threaded build, runs beside it
+# in the `free-threaded` job below but does not gate. Issue #387 put
+# this row in the merge gate rather than a weekly sentinel, on
+# `os-macos.yml`'s own rule for a platform row -- a place in the gate
+# only where waiting for it costs less than the review does -- because
+# two cells running as parallel jobs cost one more slot at the ceiling
+# and no extra wait. That rule cannot be evaluated once the row cannot
+# install at all: `rocksdict`, this tree's own store since issue #641,
+# has never published a `cp314t` wheel or an sdist, on any of its
+# releases (issue #723), so `uv run` on the free-threaded interpreter
+# fails at environment sync, before a single test collects -- a wait
+# with no bound to compare against a review, rather than a short one.
+# Building `rocksdict` from its own repository instead was considered
+# and rejected: it is a Rust crate over `rust-rocksdb`/`librocksdb-sys`,
+# which compiles RocksDB's own C++ source, so this job would need a
+# Rust toolchain and a full native RocksDB build, from nothing, on
+# every run, to keep one report-only cell green -- the opposite of the
+# wheel-only design `db.py`'s own docstring argues for this dependency.
+# The pin does not move for any of this: `3.14t` was never a second
+# interpreter the package claims to support, it is the one it already
+# claims, run a second time with the GIL off, and whether this tree's
+# own code passes the suite that way was answered once already, at the
+# same 100% floor, in issue #387's own comment -- worth asking again
+# the day the row can install, which is when issue #723 closes and
+# `free-threaded` rejoins `test-passed`'s own `needs:` below. Until
+# then it stays a job of this file, run on every pull request, rather
+# than a weekly sentinel of its own, because what decides that in
+# section 10 of btclib-org/.github's README is the clock and not the
+# trigger: a job that fails at environment sync is over in seconds,
+# where the ten minutes of exploration `fuzz.yml`'s own header
+# declines to spend on a pull request are the sentinel's own work --
+# and the day the row installs again, it is this job, already on
+# every pull request, that says so.
 #
 # What the design puts beside this file is a platform sentinel each for
 # what stays out of the gate: `os-macos.yml` runs this suite on Darwin,
@@ -211,20 +241,13 @@ jobs:
           fi
 
   coverage:
-    name: Measure coverage, gated at 100% (${{ matrix.python-version }})
+    name: Measure coverage, gated at 100%
     if: >-
       ${{ !github.event.pull_request.draft
       && github.event.action != 'closed'
       && needs.changes.outputs.code == 'true' }}
     needs: changes
     runs-on: ubuntu-latest
-    # the two cells this file's own header argues, run in parallel: a
-    # cell failing does not cancel the other, since each answers its own
-    # question and a red 3.14t says nothing about 3.14
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.14", "3.14t"]
     # the suite is bounded test by test in pyproject.toml, so this bounds
     # what that cannot: a runner wedged before or between the tests, and
     # it is well above the whole of a local run
@@ -250,15 +273,14 @@ jobs:
           # the cache holds what uv.lock resolves, which is wheels and
           # no build: what this job spends its time on is the suite
           enable-cache: true
-          # the matrix cell: `3.14`, what .python-version pins and what a
-          # bare `uv run` gives a maintainer locally, or `3.14t`, that
-          # interpreter's free-threaded build. Neither is read from that
-          # file, because the coupling belongs where the gate is: the
-          # number this job fails on is a ratio of statements, and a
-          # statement count moves between interpreters, so each cell
-          # measures its own copy of that ratio against pyproject.toml's
-          # one floor rather than one cell inheriting the other's number
-          python-version: ${{ matrix.python-version }}
+          # `3.14`, what .python-version pins and what a bare `uv run`
+          # gives a maintainer locally. Not read from that file, because
+          # the coupling belongs where the gate is: the number this job
+          # fails on is a ratio of statements, and a statement count
+          # moves between interpreters, so `free-threaded` below
+          # measures its own copy against the same floor rather than
+          # inheriting this cell's number
+          python-version: "3.14"
       # no pytest argument at all: addopts in pyproject.toml carries the
       # coverage flags and the report format, [tool.coverage.report] the
       # floor, and this file is not what anybody runs locally. A second
@@ -308,6 +330,40 @@ jobs:
       - name: Run the suite
         run: >
           uv run --locked --no-default-groups --group test pytest --no-cov
+
+  # `3.14t`, the free-threaded build of the interpreter the job above
+  # runs -- this file's own header has why it runs here and not in that
+  # job's matrix, and why it is not in `test-passed`'s own `needs:`
+  # below. `if` and `needs` otherwise match every other job here: a
+  # report nobody waits on still has no reason to run on a draft or a
+  # closed pull request
+  free-threaded:
+    name: Run the suite free-threaded (3.14t), report-only
+    if: >-
+      ${{ !github.event.pull_request.draft
+      && github.event.action != 'closed'
+      && needs.changes.outputs.code == 'true' }}
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          python-version: "3.14t"
+      # coverage stays on, matching the `coverage` job above: issue
+      # #387's own measurement found no per-build difference in what
+      # the floor requires, so this cell's own environment-sync failure
+      # is the whole of what distinguishes it from that job today, not
+      # a weaker check written around it
+      - name: Run the suite under coverage
+        run: >
+          uv run --locked --no-default-groups --group test pytest
 
   # the packaging metadata is checked on every pull request, not only on
   # the tag that ships it: a release is the one place where finding a

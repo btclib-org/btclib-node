@@ -414,13 +414,27 @@ cell existed; the cell now runs what the sentinel ran, so the sentinel
 is gone rather than kept beside a gate cell duplicating it
 ([issue #430](https://github.com/btclib-org/btclib-node/issues/430)).
 
+`3.14t`, the interpreter axis's own second cell, is the row that trade
+stopped covering: it still runs, in `test.yml`'s `free-threaded` job,
+at the same cost as any other cell, but no longer gates, because
+`rocksdict` -- this tree's own store -- has never published a wheel or
+an sdist for it on any release
+([issue #723](https://github.com/btclib-org/btclib-node/issues/723)),
+so there is no wait left to weigh against a review, only a job that
+cannot install.
+[Issue #387](https://github.com/btclib-org/btclib-node/issues/387) is
+where that row entered the gate on this section's own rule; #723 is
+where it left again on the same rule, unmet rather than repealed, and
+where it goes back in once a wheel exists.
+
 Gating a cell inside `test.yml` cost no change to the ruleset: *Required
 checks on main* above names `test.yml`'s aggregate job, not any cell by
 name, so the `windows` job reached that aggregate's own `needs:` by
-being added to the workflow, the same way `3.14t` did for
-[issue #387](https://github.com/btclib-org/btclib-node/issues/387).
-Re-run that section's own first command to confirm the required checks
-still hold; its answer, not this paragraph, is what is true today.
+being added to the workflow, the same way `3.14t` did for issue #387 --
+and the same way taking `3.14t` back out needed no ruleset change
+either, for issue #723. Re-run that section's own first command to
+confirm the required checks still hold; its answer, not this paragraph,
+is what is true today.
 
 ## The two publishing environments
 
