@@ -451,6 +451,57 @@ def test_a_refused_duplicate_leaves_the_original_output_untouched(
     chainstate.close()
 
 
+def test_apply_rev_block_undoes_an_in_block_chained_transaction(
+    tmp_path: Path,
+) -> None:
+    """Undoing a block whose second transaction spends the first's output.
+
+    An ordinary chained transaction -- one spending an output another
+    transaction earlier in the *same* block created -- puts that
+    output's outpoint in both `rev_block.to_remove` (created) and
+    `rev_block.to_add` (spent before ever reaching disk). Its net effect
+    on the persisted set is nothing, both before this block and after
+    it, and undoing the block must leave it exactly that absent rather
+    than raising on a block that did nothing wrong
+    (btclib-org/btclib-node#634).
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    utxo_index = chainstate.utxo_index
+
+    funding = coinbase(b"\x01")
+    utxo_index.add_block(one_tx_block([funding], b"\x01" * 32), 1)
+    utxo_index.finalize()
+    out0 = OutPoint(funding.id, 0)
+
+    tx1 = spending(out0, b"\x02")  # spends out0, creates Y
+    chained_output = OutPoint(tx1.id, 0)
+    tx2 = spending(chained_output, b"\x03")  # spends Y, in the same block
+    coinbase2 = coinbase(b"\x02")
+    _, rev_block2 = utxo_index.add_block(
+        one_tx_block([coinbase2, tx1, tx2], b"\x02" * 32), 2
+    )
+    utxo_index.finalize()
+
+    utxo_index.apply_rev_block(rev_block2)
+
+    out0_key = out0.serialize(check_validity=False)
+    chained_key = chained_output.serialize(check_validity=False)
+    coinbase2_key = OutPoint(coinbase2.id, 0).serialize(check_validity=False)
+    tx2_out_key = OutPoint(tx2.id, 0).serialize(check_validity=False)
+
+    # out0 is spendable again, restored from the database into staging
+    assert utxo_index.updated_utxo_set[out0_key].tx_out == funding.vout[0]
+    # the chained output never touches either staging set: its creation
+    # and its in-block spend cancel exactly the way add_block computed
+    assert chained_key not in utxo_index.updated_utxo_set
+    assert chained_key not in utxo_index.removed_utxos
+    # block 2's own coinbase and tx2's output were finalized to disk and
+    # are staged for deletion
+    assert coinbase2_key in utxo_index.removed_utxos
+    assert tx2_out_key in utxo_index.removed_utxos
+    chainstate.close()
+
+
 def test_add_block_skips_bip30_when_asked_to(tmp_path: Path) -> None:
     """`check_bip30=False` is what `Chain.bip30_exceptions`' two blocks use.
 

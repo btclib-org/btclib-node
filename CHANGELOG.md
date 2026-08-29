@@ -1109,6 +1109,34 @@ where this file was written rather than where anything was tagged.
   argues for `SessionTransport` at the integration client and not for
   the functional one.
 
+### `apply_rev_block` undoes an in-block chained transaction (closes #634)
+
+- **`UtxoIndex.apply_rev_block` applies `to_add` before `to_remove`**
+  (`src/btclib_node/chainstate/utxo_index.py`), the reverse of the
+  order `add_block` builds them in. An ordinary chained transaction --
+  one spending an output another transaction earlier in the *same*
+  block created -- puts that output's outpoint in both lists:
+  `to_remove` from being created, `to_add` from being spent before the
+  block ever finalized it to disk. Its net effect on the persisted set
+  is nothing, both before the block and after it, and removing first
+  looked it up while it was in neither `updated_utxo_set` nor the
+  database, raising `ChainstateInconsistencyError("output not found")`
+  on a block that did nothing wrong.
+- **The consequence was a stuck node, not a corrupted one.**
+  `update_chain`'s `to_remove` loop (`src/btclib_node/main.py`) never
+  sets `failed_hash`, so the raise rolled the trial back without
+  writing anything and without invalidating the block, and the next
+  pass of `update_chain` picked the same fork again -- any reorg
+  disconnecting a block with a chained transaction, ordinary on
+  mainnet, retried forever rather than completing.
+- **Core's `DisconnectBlock` (`src/validation.cpp`, at
+  bitcoin/bitcoin@05e49b342f) reaches the same result walking one
+  transaction at a time in reverse block order** -- spend its own
+  outputs, then restore its own inputs -- rather than in the two flat
+  passes here; the two agree because a valid block spends a given
+  outpoint at most once, so a chained output's create and spend never
+  collide with anything but each other.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
