@@ -9,17 +9,23 @@ dictionary would not give: keys come back in order, and a batch is all
 or nothing. The rest of the suite exercises this through the indexes;
 what is here is the store on its own, including the paths no index
 reaches -- a datadir written by the version before it, a batch that
-raises, and a second thread.
+raises, a second thread, and a store whose own bytes come back
+corrupted.
 """
 
-import sqlite3
 import threading
 from typing import TYPE_CHECKING
 
 import pytest
+from rocksdict import Options, Rdict, RdictIter
 
+from btclib_node import db as db_module
 from btclib_node.db import KeyValueStore
-from btclib_node.exceptions import IncompatibleStoreError, StoreClosedError
+from btclib_node.exceptions import (
+    IncompatibleStoreError,
+    StoreClosedError,
+    StoreCorruptionError,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -28,6 +34,24 @@ if TYPE_CHECKING:
 def a_store(tmp_path: Path, name: str = "store") -> KeyValueStore:
     """Open a `KeyValueStore` in its own subdirectory of `tmp_path`."""
     return KeyValueStore(tmp_path / name)
+
+
+def flip_a_bit_of(directory: Path, needle: bytes) -> None:
+    """Flip one bit of the first `needle` found in a `*.sst` under `directory`.
+
+    What every corruption test below shares: `needle` has to be
+    findable uncompressed on disk -- `db.py`'s own module docstring
+    argues why compression is off, and this is where that choice pays
+    for itself -- and the flip has to land inside it rather than beside
+    it.
+    """
+    matches = [sst for sst in directory.glob("*.sst") if needle in sst.read_bytes()]
+    assert matches, f"{needle!r} not found uncompressed in any *.sst under {directory}"
+    target = matches[0]
+    data = bytearray(target.read_bytes())
+    offset = data.index(needle)
+    data[offset] ^= 0xFF
+    target.write_bytes(bytes(data))
 
 
 def test_what_is_put_comes_back(tmp_path: Path) -> None:
@@ -41,6 +65,21 @@ def test_what_is_put_comes_back(tmp_path: Path) -> None:
 def test_a_key_nobody_wrote_is_answered_with_nothing(tmp_path: Path) -> None:
     """`get` on a key that was never `put` returns `None`, not an error."""
     store = a_store(tmp_path)
+    assert store.get(b"absent") is None
+    store.close()
+
+
+def test_an_empty_value_is_not_the_same_as_no_key(tmp_path: Path) -> None:
+    """A key `put` with `b""` reads back as `b""`, not as absent.
+
+    The SQLite store this class replaced pinned this the same fact by
+    declaring `v BLOB NOT NULL` in its own schema; RocksDB draws no
+    schema this class could read back the same way, so this pins the
+    behaviour it stated instead.
+    """
+    store = a_store(tmp_path)
+    store.put(b"k", b"")
+    assert store.get(b"k") == b""
     assert store.get(b"absent") is None
     store.close()
 
@@ -82,6 +121,25 @@ def test_the_walk_is_in_key_order(tmp_path: Path) -> None:
     store.close()
 
 
+def test_values_are_stored_raw_not_pickled_or_type_tagged(tmp_path: Path) -> None:
+    """`raw_mode=True` is what every `Options` this store builds carries.
+
+    `rocksdict`'s own default mode pickles a value that is not one of a
+    handful of native types, and tags even those with a type byte --
+    read back independently, through a fresh handle opened the same
+    `raw_mode=True` way rather than through `KeyValueStore` itself, a
+    value put through the store comes back exactly the bytes it was
+    put as, with nothing of either kind wrapped around it.
+    """
+    store = a_store(tmp_path)
+    store.put(b"k", b"v")
+    store.close()
+
+    direct = Rdict(str(tmp_path / "store"), Options(raw_mode=True))
+    assert direct[b"k"] == b"v"
+    direct.close()
+
+
 def test_a_batch_is_written_whole(tmp_path: Path) -> None:
     """Every `put` inside a `write_batch` block is visible once it exits."""
     store = a_store(tmp_path)
@@ -90,6 +148,19 @@ def test_a_batch_is_written_whole(tmp_path: Path) -> None:
         batch.put(b"b", b"2")
     assert store.get(b"a") == b"1"
     assert store.get(b"b") == b"2"
+    store.close()
+
+
+def test_a_batch_does_not_nest(tmp_path: Path) -> None:
+    """An inner batch would commit outside the outer one's atomicity."""
+    store = KeyValueStore(tmp_path)
+    with store.write_batch() as batch:
+        batch.put(b"k", b"v")
+        with pytest.raises(RuntimeError, match="does not nest"), store.write_batch():
+            pass  # pragma: no cover -- never entered
+        batch.put(b"k2", b"v2")
+    assert store.get(b"k") == b"v"
+    assert store.get(b"k2") == b"v2"
     store.close()
 
 
@@ -114,30 +185,35 @@ def test_a_batch_that_raises_leaves_nothing_behind(tmp_path: Path) -> None:
 
 
 def test_a_datadir_from_before_this_store_is_refused(tmp_path: Path) -> None:
-    """A directory with LevelDB's own `CURRENT` marker raises, not opens."""
-    # a LevelDB directory, which this store cannot read. Starting an
+    """A directory with sqlite3's own `index.sqlite` raises, not opens."""
+    # a sqlite3 datadir, which this store cannot read. Starting an
     # empty chain over the top of one is the wrong failure: it looks
-    # like a node that has never synced rather than one that cannot
+    # like a node that has never synced rather than one that cannot.
+    # The marker inverted with the engine: RocksDB writes CURRENT,
+    # the file the LevelDB-shaped marker this replaced used to refuse
+    # -- db.py's own module docstring argues the swap.
     directory = tmp_path / "old"
     directory.mkdir()
-    (directory / "CURRENT").write_text("MANIFEST-000001\n", encoding="ascii")
-    with pytest.raises(IncompatibleStoreError, match="holds a LevelDB database"):
+    (directory / "index.sqlite").write_bytes(b"SQLite format 3\x00")
+    with pytest.raises(IncompatibleStoreError, match="holds a sqlite3 database"):
         KeyValueStore(directory)
 
 
-def test_a_pre_versioning_sqlite_store_with_data_is_refused(tmp_path: Path) -> None:
-    """A version-0 store that already holds a row is refused, not silently kept.
+def test_a_pre_versioning_store_with_data_is_refused(tmp_path: Path) -> None:
+    """A version-less store already holding a row is refused, not kept.
 
-    Version 0 is also what a brand-new file answers before anything has
-    stamped it -- `kv` already holding a row is what tells the two apart,
-    the module docstring's own argument for keeping the version out of
-    `kv` in the first place. A store from before this schema version
-    existed is simulated here rather than fixture data, since nothing in
-    this tree still writes one on purpose.
+    An absent version key is also what a brand-new store answers before
+    anything has stamped it -- `kv` (the default column family) already
+    holding a row is what tells the two apart, `db.py`'s own module
+    docstring argument for keeping the version out of it in the first
+    place. A store from before this class ever stamped one is simulated
+    here rather than fixture data, since nothing this class writes today
+    can produce it: `_check_schema_version` stamps the version before
+    `__init__` ever hands the object back.
     """
     store = a_store(tmp_path)
     store.put(b"k", b"v")
-    store._run("PRAGMA user_version = 0")
+    store._meta.delete(db_module._VERSION_KEY)
     store.close()
 
     with pytest.raises(IncompatibleStoreError, match="version 0 store"):
@@ -147,7 +223,7 @@ def test_a_pre_versioning_sqlite_store_with_data_is_refused(tmp_path: Path) -> N
 def test_a_store_from_a_newer_schema_version_is_refused(tmp_path: Path) -> None:
     """A store stamped with a version this code does not know is refused."""
     store = a_store(tmp_path)
-    store._run("PRAGMA user_version = 999")
+    store._meta.put(db_module._VERSION_KEY, (999).to_bytes(4, "big"))
     store.close()
 
     with pytest.raises(IncompatibleStoreError, match="version 999 store"):
@@ -232,13 +308,15 @@ def test_a_store_is_read_and_written_from_more_than_one_thread(tmp_path: Path) -
 def test_closing_while_another_thread_reads_does_not_take_the_process_down(
     tmp_path: Path,
 ) -> None:
-    """The reason there is one connection and a lock, and not one each.
+    """The reason there is one lock around every use of the store.
 
-    A connection per thread meant `close` reaching into a connection
-    another thread was inside, and CPython's sqlite3 answers that with a
-    segmentation fault rather than an exception -- the whole process,
-    from a fixture teardown. Whatever a reader meets here it has to be
-    something it can catch.
+    `RLock` is what keeps a `close()` from ever racing a `get()` still
+    in progress on another thread: measured directly, without it, that
+    race raises a raw `RuntimeError` from `rocksdict`'s own Rust layer
+    (`"Already mutably borrowed"`) rather than anything a caller here
+    can be expected to catch -- `db.py`'s own module docstring is where
+    that measurement is recorded. With the lock, whatever a reader meets
+    here is instead one of two things it already knows how to catch.
     """
     store = a_store(tmp_path)
     store.put(b"k", b"v")
@@ -263,9 +341,9 @@ def test_closing_while_another_thread_reads_does_not_take_the_process_down(
     thread.join(timeout=10)
 
     assert not thread.is_alive()
-    # a value, or this store's own refusal, and nothing else: SQLite's
-    # own ProgrammingError would mean the connection was closed under
-    # somebody, which is the state that used to crash
+    # a value, or this store's own refusal, and nothing else: a raw
+    # RuntimeError from rocksdict's own layer would mean the lock let
+    # the race through, which is the state the lock exists to prevent
     assert outcomes <= {b"v", "the store"}
 
 
@@ -282,10 +360,8 @@ def test_what_is_written_is_still_there_when_it_is_opened_again(tmp_path: Path) 
 
 def test_close_waits_for_whoever_is_using_the_connection(tmp_path: Path) -> None:
     """`close` blocks on the same lock a caller elsewhere already holds."""
-    # the guard the segfault above is prevented by, pinned rather than
-    # raced for: with the lock held, `close` has to wait, because
-    # closing a connection out from under a statement is what CPython's
-    # sqlite3 answers with a crash
+    # the guard the race above is prevented by, pinned rather than
+    # raced for: with the lock held, `close` has to wait
     store = a_store(tmp_path)
     closed = threading.Event()
 
@@ -307,8 +383,8 @@ def test_close_waits_for_whoever_is_using_the_connection(tmp_path: Path) -> None
 def test_a_batch_rolls_back_on_what_is_not_an_exception_either(tmp_path: Path) -> None:
     """A `KeyboardInterrupt` mid-batch rolls back, leaving the store usable."""
     # BaseException and not Exception: a KeyboardInterrupt or a
-    # cancelled task through an open batch would otherwise leave the
-    # transaction open and the connection unusable for everything after
+    # cancelled task through an open batch would otherwise leave
+    # self._pending_batch set to a batch nothing ever commits or clears
     store = a_store(tmp_path)
     store.put(b"before", b"kept")
 
@@ -325,53 +401,213 @@ def test_a_batch_rolls_back_on_what_is_not_an_exception_either(tmp_path: Path) -
     store.close()
 
 
-def test_a_batch_takes_the_write_lock_when_it_opens(tmp_path: Path) -> None:
-    """`write_batch` locks out another writer before its own first write."""
-    # BEGIN IMMEDIATE and not a plain BEGIN. With one connection it is
-    # another process that this is about -- a second node on the same
-    # datadir -- so the second writer is a second connection here.
+def test_the_store_takes_the_directory_lock_when_it_opens(tmp_path: Path) -> None:
+    """A second handle on the same directory is refused from the start.
+
+    SQLite's own `BEGIN IMMEDIATE` took the write lock when a batch
+    opened rather than at its first write, so a second writer in
+    another process waited from the start of the batch rather than
+    failing partway through with nothing done. RocksDB draws that same
+    line earlier still: the directory `LOCK` is exclusive from the
+    moment this store's own `__init__` opens it, well before any batch,
+    so there is no window for a second writer to find open that this
+    test's own second `Rdict` does not already meet closed.
+    """
     store = a_store(tmp_path)
-    other = sqlite3.connect(store.file, isolation_level=None)
-    other.execute("PRAGMA busy_timeout=0")
-    try:
-        with store.write_batch() as batch:
-            # before the batch has written anything: a plain BEGIN takes
-            # no lock until its first write, and would let this through
-            with pytest.raises(sqlite3.OperationalError, match="locked"):
-                other.execute("INSERT INTO kv VALUES (?, ?)", (b"theirs", b"v"))
-            batch.put(b"mine", b"v")
-    finally:
-        other.close()
-    assert store.get(b"mine") == b"v"
-    assert store.get(b"theirs") is None
+    with pytest.raises(Exception, match="lock"):
+        Rdict(str(tmp_path / "store"), Options(raw_mode=True))
     store.close()
 
 
-def test_a_commit_does_not_wait_for_the_disk(tmp_path: Path) -> None:
-    """The store runs WAL journalling with `synchronous=NORMAL`, not `FULL`."""
-    # synchronous=NORMAL, which is what LevelDB gives by default too: a
-    # kill loses the last transactions rather than corrupting the store,
-    # and the alternative costs an fsync per block connected
+def test_a_write_does_not_wait_for_the_disk(tmp_path: Path) -> None:
+    """`WriteOptions`' own default, `sync=False`, is what every write uses."""
+    # sync=False, which is what LevelDB's own NORMAL synchronous mode
+    # gave the sqlite3 store too: a kill loses the last writes rather
+    # than corrupting the store, and the alternative costs an fsync per
+    # write
+    assert db_module._WRITE_OPTIONS.sync is False
+
+
+def test_a_flipped_bit_in_an_sst_raises_this_tree_s_own_error(tmp_path: Path) -> None:
+    """A corrupted value's own bytes are found unreadable, not read wrong.
+
+    This is the guarantee the whole move to RocksDB bought
+    (btclib-org/btclib-node#641, closing btclib-org/btclib-node#637): a
+    flipped bit on disk is an exception at the read, not a wrong answer
+    nothing notices.
+    """
     store = a_store(tmp_path)
-    ((synchronous,),) = store._rows("PRAGMA synchronous")
-    ((journal,),) = store._rows("PRAGMA journal_mode")
-    assert synchronous == 1  # NORMAL
-    assert journal == "wal"
+    value = b"V" * 39
+    for i in range(2000):
+        store.put(i.to_bytes(4, "big"), value + i.to_bytes(4, "big"))
+    store._db.flush()
     store.close()
 
+    flip_a_bit_of(tmp_path / "store", value)
+    reopened = KeyValueStore(tmp_path / "store")
 
-def test_the_table_is_the_key_s_own_b_tree(tmp_path: Path) -> None:
-    """The `kv` table's schema declares `WITHOUT ROWID` and a non-null value."""
-    # WITHOUT ROWID is what makes the ordered walk the table's own order
-    # rather than a sort, and it is not visible from any of the six
-    # operations -- so it is read off the schema
+    # key 0's own record: `flip_a_bit_of` flips the first match of
+    # `value` in the file, and every record here shares that 39-byte
+    # prefix, so the first match on disk is the smallest key's own
+    with pytest.raises(StoreCorruptionError, match="Corruption"):
+        reopened.get((0).to_bytes(4, "big"))
+
+
+def test_a_flipped_bit_is_caught_by_the_iterator_too(tmp_path: Path) -> None:
+    """A corrupted block stops the walk, and it does not stop it silently.
+
+    `db.py`'s own module docstring is where this is measured against
+    the higher-level `Rdict.items`, which does not raise here at all --
+    it answers a corrupted block the way it answers the genuine end of
+    the store, silently short. `__iter__`'s own walk goes through the
+    lower-level `Rdict.iter` instead, checking `status()` once after,
+    which is what turns that same corruption into an exception here.
+    """
     store = a_store(tmp_path)
-    connection = sqlite3.connect(store.file)
-    (schema,) = connection.execute(
-        "SELECT sql FROM sqlite_master WHERE name = 'kv'"
-    ).fetchone()
-    connection.close()
-    assert "WITHOUT ROWID" in schema
-    # and a value is never absent, which is what `get` reads as "no key"
-    assert "v BLOB NOT NULL" in schema
+    value = b"V" * 39
+    for i in range(2000):
+        store.put(i.to_bytes(4, "big"), value + i.to_bytes(4, "big"))
+    store._db.flush()
+    store.close()
+
+    flip_a_bit_of(tmp_path / "store", value)
+    reopened = KeyValueStore(tmp_path / "store")
+
+    with pytest.raises(StoreCorruptionError, match="Corruption"):
+        list(reopened)
+
+
+def test_a_flipped_bit_is_caught_while_checking_whether_a_version_less_store_has_data(
+    tmp_path: Path,
+) -> None:
+    """`_has_any_data`'s own scan raises too, rather than reading as empty.
+
+    The same silent-truncation risk `__iter__`'s own test above pins,
+    for `Rdict.keys` rather than `Rdict.items`: over a store whose only
+    block is the corrupted one, `keys()` answers nothing at all,
+    indistinguishable from a genuinely empty store -- and this is
+    exactly the read `_check_schema_version` trusts to tell an empty
+    store from one this class predates. A version-less store already
+    holding data has to be refused, per
+    `test_a_pre_versioning_store_with_data_is_refused` above; this pins
+    that it is refused as `StoreCorruptionError` rather than silently
+    re-stamped current when what holds the data is unreadable.
+    """
+    store = a_store(tmp_path)
+    value = b"V" * 39
+    for i in range(2000):
+        store.put(i.to_bytes(4, "big"), value + i.to_bytes(4, "big"))
+    store._db.flush()
+    store._meta.delete(db_module._VERSION_KEY)
+    store.close()
+
+    flip_a_bit_of(tmp_path / "store", value)
+
+    with pytest.raises(StoreCorruptionError, match="Corruption"):
+        KeyValueStore(tmp_path / "store")
+
+
+def test_a_corrupted_meta_column_family_is_caught_while_opening(tmp_path: Path) -> None:
+    """The schema-version check's own read raises on a corrupted stamp.
+
+    Targets the `_META_COLUMN_FAMILY`'s own tiny SST specifically --
+    found through `Rdict.live_files`'s own `start_key`, rather than
+    guessed by size -- so what is corrupted is the version stamp
+    `_check_schema_version` reads before `__init__` ever hands the
+    store back, not the default column family's own data.
+    """
+    store = a_store(tmp_path)
+    store.put(b"k", b"v")
+    store._db.flush()
+    store._meta.flush()
+    (meta_file,) = (
+        f["name"].removeprefix("/")
+        for f in store._db.live_files()
+        if f["start_key"] == b"schema-version"
+    )
+    store.close()
+
+    needle = db_module._SCHEMA_VERSION.to_bytes(4, "big")
+    target = tmp_path / "store" / meta_file
+    data = bytearray(target.read_bytes())
+    offset = data.index(needle)
+    data[offset] ^= 0xFF
+    target.write_bytes(bytes(data))
+
+    with pytest.raises(StoreCorruptionError, match="Corruption"):
+        KeyValueStore(tmp_path / "store")
+
+
+def test_a_corrupted_manifest_is_caught_at_the_open_itself(tmp_path: Path) -> None:
+    """A structurally corrupted store raises out of the open, not a read.
+
+    `Rdict`'s own constructor is the third of `db.py`'s three read
+    paths: RocksDB reads its `MANIFEST` while opening to learn its own
+    structure, and a corrupted one is a fault this class meets before
+    `__init__` ever gets past building `self._db`.
+    """
+    store = a_store(tmp_path)
+    for i in range(500):
+        store.put(i.to_bytes(4, "big"), b"V" * 39)
+    store._db.flush()
+    store.close()
+
+    directory = tmp_path / "store"
+    (manifest,) = directory.glob("MANIFEST-*")
+    data = bytearray(manifest.read_bytes())
+    offset = len(data) // 2
+    data[offset] ^= 0xFF
+    manifest.write_bytes(bytes(data))
+
+    with pytest.raises(StoreCorruptionError, match="Corruption"):
+        KeyValueStore(directory)
+
+
+def test_a_non_corruption_exception_is_never_reclassified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a message beginning `Corruption:` becomes `StoreCorruptionError`.
+
+    Exercised at each of the five points `db.py` reads through
+    `_raise_if_corrupted`: the open itself, the schema-version check's
+    own read, `_has_any_data`'s own scan, `get`, and `__iter__`. A
+    genuine defect this guards against: swallowing an unrelated fault
+    -- a disk-full `OSError`, a permission error -- under the same
+    classification as a checksummed corruption would hide it from
+    whoever reads the log for the name that is supposed to be specific.
+    """
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("boom")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(db_module, "Rdict", boom)
+        with pytest.raises(RuntimeError, match="boom"):
+            KeyValueStore(tmp_path / "open")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(Rdict, "get", boom)
+        with pytest.raises(RuntimeError, match="boom"):
+            a_store(tmp_path, "schema-version-read")
+
+    with monkeypatch.context() as patched:
+        # `status()`, called after the walk `_has_any_data` makes,
+        # rather than `Rdict.iter` itself: `iter()` only ever
+        # constructs the iterator, never reads anything, so patching it
+        # would never reach `_raise_if_corrupted` at all
+        patched.setattr(RdictIter, "status", boom)
+        with pytest.raises(RuntimeError, match="boom"):
+            a_store(tmp_path, "has-any-data-scan")
+
+    store = a_store(tmp_path, "already-open")
+    with monkeypatch.context() as patched:
+        patched.setattr(Rdict, "get", boom)
+        with pytest.raises(RuntimeError, match="boom"):
+            store.get(b"k")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(RdictIter, "status", boom)
+        with pytest.raises(RuntimeError, match="boom"):
+            list(store)
+
     store.close()
