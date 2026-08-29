@@ -107,6 +107,13 @@ def test_a_run_through_the_console_script_stays_one_process(tmp_path: Path) -> N
     wait_until_listening(bootstrap.p2p_manager)
 
     data_dir = tmp_path / "main"
+    # `build_config`'s own `_check_datadir` (btclib-org/btclib-node#693)
+    # refuses a missing explicit `-datadir` the way Core's own
+    # `CheckDataDirOption` does, so this subprocess needs its directory
+    # ready before it starts -- the same `.mkdir()`
+    # `tests/integration/conftest.py`'s `bitcoind` fixture already does
+    # for its own `-datadir`.
+    data_dir.mkdir()
     rpc_port = get_random_port()
     process = subprocess.Popen(  # noqa: S603
         [
