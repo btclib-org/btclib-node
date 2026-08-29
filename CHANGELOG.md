@@ -2152,6 +2152,67 @@ where this file was written rather than where anything was tagged.
   unconditional way, once its own socket-handling thread has already
   been joined.
 
+### The p2p callbacks are fuzzed through a node (closes #698, closes #516)
+
+- **`fuzz/fuzz_process_message.py`** is the third parser #516 left open:
+  one atheris harness driving `p2p.callbacks`' every handler --
+  `handshake_callbacks` through `p2p.main.handle_p2p_handshake`,
+  `callbacks` through `handle_p2p` -- the way `Node`'s own loop does,
+  over one regtest `Node` built once and reused across every call,
+  cheaper by orders of magnitude than rebuilding one per call. Core's
+  own `process_message.cpp` differs from this rather than being the
+  same shape at less cost: it discards and rebuilds its own `connman`,
+  `banman`, `addrman` and `peerman` fresh on every single pass, for a
+  sanitizer reason -- catching a dangling pointer -- this harness's own
+  Python objects have no counterpart to, and resets only `chainman` and
+  `mempool` conditionally, on a pass that leaves either dirty. This
+  harness's own `Node` is reused whole, with nothing inside it rebuilt
+  or reset either way. `dispatch`'s own docstring is where that
+  comparison, and what it costs to leave `peer_db` unreset across
+  calls, measured the same way, are argued.
+- **The command a message dispatches under is picked by index from the
+  fixed set `p2p.callbacks` actually dispatches, not read from whatever
+  twelve octets the fuzz input itself spells** -- Core's own
+  `LIMIT_TO_MESSAGE_TYPE` exists for the same reason, an environment
+  variable this tree's own script-per-harness `fuzz.yml` has no
+  per-target corpus to key one on, so the harness takes the same
+  outcome structurally instead. A header is built from the command and
+  payload through `btclib.p2p.message.Message`, so only the command and
+  the payload are ever fuzzed and the header is always well-formed --
+  `fuzz_framing.py` already fuzzes the header on its own.
+- **`p2p.main.handle_p2p`/`handle_p2p_handshake` themselves catch
+  anything a callback raises**, discouraging the peer only for a
+  `BTClibException` and otherwise only logging, so a harness that
+  merely called them and trusted what escaped would never see a
+  callback's own bug -- nor tell a callback's own refusal of the input
+  apart from genuine acceptance, both landing on `dispatch`'s own
+  `None` return otherwise. `_CrashCapture`, a `logging.Handler` attached
+  directly to `node.logger` -- the one way this tree's own logger can be
+  observed, not being reached through `logging.getLogger()` -- reads
+  `record.exc_info` off every such log call and sorts it the way
+  `handle_p2p` itself already does, into `escaped` for a bug and
+  `refused` for a `BTClibException`; `dispatch` re-raises `escaped`
+  first and `refused` after, so a crash, a refusal and an acceptance are
+  three outcomes a seed test can tell apart rather than two.
+- **`_built_node`'s `tempfile.mkdtemp()` directory is removed with
+  `atexit.register(shutil.rmtree, ...)`**, registered the moment it is
+  built: nothing else ever closed or removed it, and
+  `tests/fuzz_corpus_test.py` collects into the ordinary suite, so every
+  `pytest` worker process that ever imported this module was leaving one
+  behind under the real temp directory, forever, on every run.
+- **`fuzz/corpus/fuzz_process_message/`** holds one seed per command
+  `p2p.callbacks` dispatches, each built from the same fixtures
+  `tests/unit/p2p/callbacks_test.py` uses. `tests/fuzz_corpus_test.py`
+  is extended to exercise them: `_resolve` loads this one harness by
+  path rather than through the installed package, since it needs no
+  atheris to run and is not reachable through it either, and `_REFUSED`
+  replaces `None` as what a refused seed is marked with, since
+  `dispatch`'s own successful return is `None` and reusing it for
+  "refused" would count every accepted seed of this harness as refused
+  instead.
+- **`fuzz.yml`'s own `-max_total_time` is now split four ways** rather
+  than three, unchanged in total.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
