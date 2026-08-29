@@ -155,11 +155,6 @@ section fills in one landed change at a time — what a user of
   Nothing to migrate for an existing, unpruned data directory: pruning
   only ever removes data going forward from when it is first turned on.
 
-### Windows
-
-- **`pip install btclib-node` now claims Windows** (issue #430): its
-  classifiers name it, and `test.yml`'s gate checks the claim on every
-  pull request.
 - **`-prune=<n>` now matches Core's own manual/automatic split, instead
   of collapsing every nonzero `<n>` to the fixed depth above** (issue
   #705). `-prune=1` is manual pruning: nothing is deleted on its own any
@@ -172,6 +167,12 @@ section fills in one landed change at a time — what a user of
   `-prune=<n>` at `550` or above is new: automatic pruning to roughly
   `<n>` MiB on disk, `getblockchaininfo`'s own `automatic_pruning` and
   `prune_target_size` answering for it.
+
+### Windows
+
+- **`pip install btclib-node` now claims Windows** (issue #430): its
+  classifiers name it, and `test.yml`'s gate checks the claim on every
+  pull request.
 
 ## v2026.8.27
 

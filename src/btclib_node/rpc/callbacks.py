@@ -156,7 +156,7 @@ def get_blockchain_info(
     `Chain.minimum_chain_work` and tip age against `MAX_TIP_AGE`, not
     merely whether this node has run out of candidates to try.
     `size_on_disk` is `block_db.BlockDB.current_usage`, Core's own
-    `CalculateCurrentUsage` (src/rpc/blockchain.cpp:1450, same commit).
+    `CalculateCurrentUsage` (src/rpc/blockchain.cpp:1451, same commit).
     `pruned` is `Config.pruned` (src/rpc/blockchain.cpp:1452, same
     commit); `pruneheight`, present only where `pruned` is true, is the
     first height `block_db.BlockDB.prune_up_to` has not deleted --
@@ -285,7 +285,7 @@ def prune_blockchain(node: Node, conn: RpcConnection, params: list[Any]) -> int:
 
     Core's own `pruneblockchain` (`rpc/blockchain.cpp:918-975`, at
     bitcoin/bitcoin@ca7162cde5). Requires `Config.pruned`, matching
-    `IsPruneMode()`'s own refusal (`rpc/blockchain.cpp:933-935`) --
+    `IsPruneMode()`'s own refusal (`rpc/blockchain.cpp:936-938`) --
     manual pruning (`Config.prune_target_mib` unset) and automatic
     pruning (set) both answer this RPC the same way, Core drawing no
     such distinction for it either; `main._prune_chain` is the one
@@ -297,15 +297,15 @@ def prune_blockchain(node: Node, conn: RpcConnection, params: list[Any]) -> int:
     Refused the way Core refuses it, in Core's own order and wording:
     a missing or wrongly typed `height` (`RPCMethod::HandleRequest`'s
     own generic argument check, same as `get_block_hash` above), a
-    negative one (`rpc/blockchain.cpp:939-941`), a chain shorter than
-    `MIN_BLOCKS_TO_KEEP` (`rpc/blockchain.cpp:958-960`, Core's own
-    per-chain `nPruneAfterHeight` collapsed to this tree's one uniform
-    floor -- `MIN_BLOCKS_TO_KEEP` is already what every other prune
-    decision here is bounded by, where Core's own value differs per
-    chain, 100000 on mainnet and 1000 elsewhere), and a `height` past
-    the tip (`rpc/blockchain.cpp:963-965`). A `height` within
-    `MIN_BLOCKS_TO_KEEP` of the tip is not refused, only clamped down to
-    it (`rpc/blockchain.cpp:966-969`), and pruning still runs.
+    negative one (`rpc/blockchain.cpp:945-947`), a chain shorter than
+    `chain.prune_after_height` (`rpc/blockchain.cpp:962-963`, Core's own
+    per-chain `nPruneAfterHeight` -- 100000 on mainnet, 1000 elsewhere,
+    `chains.py`'s own leaves carrying the line each comes from), and a
+    `height` past the tip (`rpc/blockchain.cpp:964-965`). A `height`
+    within `MIN_BLOCKS_TO_KEEP` of the tip is not refused, only clamped
+    down to it (`rpc/blockchain.cpp:966-969`), and pruning still runs --
+    that clamp's own floor is `MIN_BLOCKS_TO_KEEP`, not
+    `prune_after_height`, matching Core drawing the two apart too.
 
     Answers `block_db.BlockDB.pruned_up_to`, Core's own "height of the
     last block pruned" (`rpc/blockchain.cpp:927-928`) -- this store
@@ -322,7 +322,7 @@ def prune_blockchain(node: Node, conn: RpcConnection, params: list[Any]) -> int:
         height_param = _height_from_timestamp(node, height_param)
 
     chain_height = len(node.chainstate.block_index.active_chain) - 1
-    if chain_height < MIN_BLOCKS_TO_KEEP:
+    if chain_height < node.chain.prune_after_height:
         err_msg = "Blockchain is too short for pruning."
         raise RpcError(RpcErrorCode.MISC_ERROR, err_msg)
     if height_param > chain_height:

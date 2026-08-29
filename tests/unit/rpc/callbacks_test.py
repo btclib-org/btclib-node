@@ -1893,7 +1893,7 @@ def test_blockchain_info_s_prune_target_size_is_in_bytes() -> None:
 def test_prune_blockchain_refuses_when_not_in_prune_mode(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """Core's own `IsPruneMode()` refusal (`rpc/blockchain.cpp:933-935`)."""
+    """Core's own `IsPruneMode()` refusal (`rpc/blockchain.cpp:936-938`)."""
     node = regtest_node(pruned=False)
     with pytest.raises(RpcError) as raised:
         prune_blockchain(node, _CONN, [10])
@@ -1952,7 +1952,7 @@ def test_prune_blockchain_refuses_a_fractional_height(
 def test_prune_blockchain_refuses_a_negative_height(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """Core's own `heightParam < 0` check (`rpc/blockchain.cpp:939-941`)."""
+    """Core's own `heightParam < 0` check (`rpc/blockchain.cpp:945-947`)."""
     node = regtest_node(pruned=True, prune_target_mib=None)
     with pytest.raises(RpcError) as raised:
         prune_blockchain(node, _CONN, [-1])
@@ -1963,9 +1963,20 @@ def test_prune_blockchain_refuses_a_negative_height(
 def test_prune_blockchain_refuses_a_chain_too_short_for_pruning(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """A chain shorter than `MIN_BLOCKS_TO_KEEP` refuses to prune at all."""
+    """A chain shorter than `chain.prune_after_height` refuses to prune at all.
+
+    Regtest's own `prune_after_height` is 1000
+    (`src/kernel/chainparams.cpp:601`, at bitcoin/bitcoin@ca7162cde5,
+    without `-fastprune`), not `MIN_BLOCKS_TO_KEEP` -- the two are
+    separate constants in Core and this checks the one this refusal
+    actually reads. A thousand-block chain connects in well under a
+    second on regtest's own trivial target, measured before writing
+    this test rather than assumed.
+    """
     node = regtest_node(pruned=True, prune_target_mib=None)
-    chain = generate_random_chain(MIN_BLOCKS_TO_KEEP - 1, node.chain.genesis.hash)
+    chain = generate_random_chain(
+        node.chain.prune_after_height - 1, node.chain.genesis.hash
+    )
     connect(node, chain)
     with pytest.raises(RpcError) as raised:
         prune_blockchain(node, _CONN, [1])
@@ -1973,12 +1984,30 @@ def test_prune_blockchain_refuses_a_chain_too_short_for_pruning(
     assert raised.value.message == "Blockchain is too short for pruning."
 
 
+def test_prune_blockchain_allows_a_chain_at_exactly_prune_after_height(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A chain exactly `chain.prune_after_height` tall is not refused."""
+    node = regtest_node(pruned=True, prune_target_mib=None)
+    chain = generate_random_chain(
+        node.chain.prune_after_height, node.chain.genesis.hash
+    )
+    connect(node, chain)
+
+    result = prune_blockchain(node, _CONN, [1])
+
+    assert result == 1
+    assert node.block_db.pruned_up_to == 1
+
+
 def test_prune_blockchain_refuses_a_height_past_the_tip(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """Core's own `height > chainHeight` check (`blockchain.cpp:963-965`)."""
+    """Core's own `height > chainHeight` check (`blockchain.cpp:964-965`)."""
     node = regtest_node(pruned=True, prune_target_mib=None)
-    chain = generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
+    chain = generate_random_chain(
+        node.chain.prune_after_height + 5, node.chain.genesis.hash
+    )
     block_index = connect(node, chain)
     tip_height = len(block_index.active_chain) - 1
     with pytest.raises(RpcError) as raised:
@@ -1999,7 +2028,9 @@ def test_prune_blockchain_deletes_up_to_the_given_height(
     afterwards is this one RPC call.
     """
     node = regtest_node(pruned=True, prune_target_mib=None)
-    chain = generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
+    chain = generate_random_chain(
+        node.chain.prune_after_height + 5, node.chain.genesis.hash
+    )
     block_index = connect(node, chain)
     assert node.block_db.pruned_up_to == -1
 
@@ -2020,7 +2051,9 @@ def test_prune_blockchain_clamps_a_height_close_to_the_tip(
     retained depth rather than up to the height actually asked for.
     """
     node = regtest_node(pruned=True, prune_target_mib=None)
-    chain = generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
+    chain = generate_random_chain(
+        node.chain.prune_after_height + 5, node.chain.genesis.hash
+    )
     block_index = connect(node, chain)
     tip_height = len(block_index.active_chain) - 1
 
@@ -2041,7 +2074,9 @@ def test_prune_blockchain_reads_a_large_height_as_a_timestamp(
     apart, so no earlier block shares that same time.
     """
     node = regtest_node(pruned=True, prune_target_mib=None)
-    chain = generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
+    chain = generate_random_chain(
+        node.chain.prune_after_height + 5, node.chain.genesis.hash
+    )
     block_index = connect(node, chain)
     target_height = 3
     target_header = node.chainstate.block_index.header_dict[
@@ -2060,7 +2095,9 @@ def test_prune_blockchain_refuses_a_timestamp_after_every_block(
 ) -> None:
     """A timestamp past every block's own time finds nothing to prune to."""
     node = regtest_node(pruned=True, prune_target_mib=None)
-    chain = generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
+    chain = generate_random_chain(
+        node.chain.prune_after_height + 5, node.chain.genesis.hash
+    )
     block_index = connect(node, chain)
     tip_header = node.chainstate.block_index.header_dict[
         block_index.active_chain[-1]

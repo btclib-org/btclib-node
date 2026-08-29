@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 from btclib_node import Node
 from btclib_node.chains import RegTest
 from btclib_node.config import Config
-from btclib_node.constants import MIN_BLOCKS_TO_KEEP, NodeStatus
+from btclib_node.constants import NodeStatus
 from tests import (
     generate_random_chain,
     get_random_port,
@@ -47,7 +47,8 @@ def test_pruneblockchain_deletes_up_to_the_given_height(tmp_path: Path) -> None:
     node.start()
     wait_until_listening(node.rpc_manager)
 
-    chain = generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, RegTest().genesis.hash)
+    regtest = RegTest()
+    chain = generate_random_chain(regtest.prune_after_height + 5, regtest.genesis.hash)
     block_index = node.chainstate.block_index
     block_index.add_headers([block.header for block in chain])
     node.status = NodeStatus.HeaderSynced

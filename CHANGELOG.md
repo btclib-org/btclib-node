@@ -2308,30 +2308,6 @@ where this file was written rather than where anything was tagged.
   raises it off every batch that peer itself sends, this tree keeping no
   per-peer chainwork-ranked index of its own for `download.py` to read
   instead.
-### `-prune=<n>` has a MiB target and a `pruneblockchain` RPC (closes #705)
-
-- **`-prune=<n>` for `n >= MIN_PRUNE_TARGET_MIB` (550) prunes
-  automatically to roughly `<n>` MiB on disk**, `Config.prune_target_mib`
-  carrying the target and `BlockDB.current_usage` summing every
-  still-tracked `.blk`/`.rev` file's own size, this store's counterpart
-  of Core's `BlockManager::CalculateCurrentUsage`. `main._prune_to_target`
-  walks height by height rather than Core's own file-by-file
-  `FindFilesToPrune`, this store's own rotation tracking append order
-  rather than a file's height range, and stops as soon as usage is back
-  under target, `MIN_BLOCKS_TO_KEEP` behind the tip never crossed either
-  way. `getblockchaininfo` answers `size_on_disk`, `automatic_pruning`
-  and `prune_target_size` accordingly.
-- **`-prune=1` is manual pruning: nothing is deleted on its own**,
-  matching Core's own `PRUNE_TARGET_MANUAL`. The new `pruneblockchain`
-  RPC deletes block and undo data up to a height or a timestamp, clamped
-  short of `MIN_BLOCKS_TO_KEEP` behind the tip rather than refused, and
-  answers the height of the last block actually pruned -- Core's own
-  `pruneblockchain`, with this tree's own uniform `MIN_BLOCKS_TO_KEEP`
-  floor standing in for Core's per-chain `nPruneAfterHeight`.
-- **`-prune=<n>` for `2 <= n < MIN_PRUNE_TARGET_MIB` now refuses to
-  start**, Core's own wording: too small a target to actually run a
-  node on, rather than the fixed 288-block depth every such value used
-  to collapse to.
 
 ### The free-threaded cell reports instead of gating (closes #723)
 
@@ -2347,6 +2323,33 @@ where this file was written rather than where anything was tagged.
 - **`REPOSITORY.md`'s concurrent-job-ceiling section names the row's
   new place**, still costing the same slot at the ceiling it always
   did, no longer gated.
+
+### `-prune=<n>` has a MiB target and a `pruneblockchain` RPC (closes #705)
+
+- **`-prune=<n>` for `n >= MIN_PRUNE_TARGET_MIB` (550) prunes
+  automatically to roughly `<n>` MiB on disk**, `Config.prune_target_mib`
+  carrying the target and `BlockDB.current_usage` summing every
+  still-tracked `.blk`/`.rev` file's own size, this store's counterpart
+  of Core's `BlockManager::CalculateCurrentUsage`. `main._prune_to_target`
+  walks height by height rather than Core's own file-by-file
+  `FindFilesToPrune`, this store's own rotation tracking append order
+  rather than a file's height range, and stops as soon as usage is back
+  under target, `MIN_BLOCKS_TO_KEEP` behind the tip never crossed either
+  way. `getblockchaininfo` answers `size_on_disk`, `automatic_pruning`
+  and `prune_target_size` accordingly.
+- **`-prune=1` is manual pruning: nothing is deleted on its own**,
+  matching Core's own `PRUNE_TARGET_MANUAL`. The new `pruneblockchain`
+  RPC deletes block and undo data up to a height or a timestamp, refuses
+  a chain shorter than `Chain.prune_after_height` -- a new field on
+  `chains.py`'s four leaves, matching Core's own per-chain
+  `nPruneAfterHeight` (100000 mainnet, 1000 elsewhere) rather than this
+  tree's uniform `MIN_BLOCKS_TO_KEEP` -- clamps a height closer than
+  `MIN_BLOCKS_TO_KEEP` to the tip rather than refusing it, and answers
+  the height of the last block actually pruned.
+- **`-prune=<n>` for `2 <= n < MIN_PRUNE_TARGET_MIB` now refuses to
+  start**, Core's own wording: too small a target to actually run a
+  node on, rather than the fixed 288-block depth every such value used
+  to collapse to.
 
 ## v2026.8.27
 

@@ -145,6 +145,13 @@ class Chain:
     # `IsInitialBlockDownload`, whatever the tip's own age. Each leaf's
     # own `__init__` below cites the line its value comes from.
     minimum_chain_work: int
+    # Core's `nPruneAfterHeight` (`src/kernel/chainparams.cpp`, at
+    # bitcoin/bitcoin@ca7162cde5): `rpc.callbacks.prune_blockchain`'s own
+    # "Blockchain is too short for pruning." floor, below which Core
+    # refuses `pruneblockchain` outright rather than merely clamping it.
+    # Each leaf's own `__init__` below cites the line its value comes
+    # from.
+    prune_after_height: int
 
     @property
     def genesis(self) -> BlockHeader:
@@ -243,6 +250,8 @@ class Main(Chain):
         self.minimum_chain_work = int(
             "0000000000000000000000000000000000000001128750f82f4c366153a3a030", 16
         )
+        # src/kernel/chainparams.cpp:154, at bitcoin/bitcoin@ca7162cde5
+        self.prune_after_height = 100000
 
 
 @dataclass
@@ -283,6 +292,8 @@ class TestNet(Chain):
         self.minimum_chain_work = int(
             "0000000000000000000000000000000000000000000017dde1c649f3708d14b6", 16
         )
+        # src/kernel/chainparams.cpp:273, at bitcoin/bitcoin@ca7162cde5
+        self.prune_after_height = 1000
 
 
 @dataclass
@@ -325,6 +336,8 @@ class SigNet(Chain):
         self.minimum_chain_work = int(
             "00000000000000000000000000000000000000000000000000000b463ea0a4b8", 16
         )
+        # src/kernel/chainparams.cpp:518, at bitcoin/bitcoin@ca7162cde5
+        self.prune_after_height = 1000
 
 
 @dataclass
@@ -365,3 +378,8 @@ class RegTest(Chain):
         # already being 0 lets this leaf skip every other consensus
         # ramp-up too
         self.minimum_chain_work = 0
+        # src/kernel/chainparams.cpp:601, at bitcoin/bitcoin@ca7162cde5:
+        # `opts.fastprune ? 100 : 1000` -- this tree never passes
+        # `-fastprune`, Core's own knob for a lower regtest value in its
+        # test suite, so 1000 is the one value that applies here
+        self.prune_after_height = 1000
