@@ -81,6 +81,46 @@ where this file was written rather than where anything was tagged.
   and dropping one on the other, which reads as a two-line seam that is
   not there.
 
+### The suite gains the property layer the fuzzer presupposes (closes #742)
+
+- **`tests/property_test.py` states, over generated octets, the property
+  every harness in `fuzz/` already encodes as a `contextlib.suppress`**:
+  a declared entry point either returns or raises `BTClibException`, and
+  nothing else. A property test answers *does this hold over the domain
+  I described*; a fuzzer answers *what is in the domain I did not
+  describe*, and the second presupposes the first -- so what the weekly
+  `fuzz` run reported was bounded by a description the suite did not
+  carry.
+- **hypothesis, section 7's named shape, and not hand-rolled
+  properties.** The domain is unconstrained octets, which is `binary()`
+  and nothing more, so hand-rolling buys no fidelity and loses the
+  shrink; this tree also had no hand-rolled property machinery to build
+  on. Executed rather than reasoned about: with a `RuntimeError` planted
+  in `frame_message_bytes`, the layer went red on that entry point alone
+  and reported the minimal `data=b'\x00\x00\x00'`, where a seeded
+  generator reports whichever blob it drew. The mutation was reverted
+  and the revert proved by the marker's absence.
+- **The specs come from the harnesses' own `ENTRY_POINTS`**, through
+  `fuzz_corpus_test.py`'s existing walk rather than a second one: two
+  walks over one fact are two things that can disagree, and a harness
+  added for a new parser now gets a property test by being added.
+- **What the walk skips is structural, not a name list.** A
+  `fuzz.`-prefixed spec is one `_resolve` loads out of `fuzz/` by path,
+  and today's names a dispatch through a whole `Node` rather than a
+  parse -- section 7's own carve-out being that a subject which is not a
+  parser does not owe the layer.
+- **An empty walk is guarded.** `parametrize` over an empty sequence
+  collects nothing and reports no failure, so the layer would be green
+  having stated nothing; a test asserts the walk finds something.
+- **Profiles are registered once in `tests/conftest.py`**: `default` at
+  500 examples, `thorough` at 2000, selected by `HYPOTHESIS_PROFILE`,
+  `deadline=None` because a per-example limit is a timing flake on the
+  slowest cell of the matrix and this suite runs one on
+  `windows-latest`. 500 is affordable measured rather than assumed --
+  the whole file runs in 1.31s against a suite of about ninety.
+- `tests/README.md` records the choice where section 7 says a reader
+  meets it.
+
 ### `links.yml` asks lychee for the fragment too (issue btclib-org/.github#583)
 
 - **`.github/workflows/links.yml` passes `--include-fragments`.** A link
