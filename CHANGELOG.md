@@ -14,6 +14,36 @@ where this file was written rather than where anything was tagged.
 
 ## Unreleased
 
+### The free-threaded cell stops reddening the run (closes #747)
+
+- **`test.yml`'s `free-threaded` job branches on its own environment
+  sync instead of failing at it.** A workflow run's conclusion
+  aggregates every job in it, `needs:` or not, so a report-only cell
+  that cannot install concluded every push to `main` `failure` while
+  `test: every job passed` was green. #723 closed that as a *gate*, by
+  taking the cell out of `test-passed`'s `needs:` (#727), and left the
+  run conclusion exactly where it was.
+- **The saturation had already cost something.** #737's red
+  `windows-latest` went unreported through eight consecutive pushes:
+  with the run red for a known and accepted reason, a second red reason
+  changed nothing a reader could see.
+- **Not `continue-on-error` on the job**, which would buy the green by
+  hiding every outcome including the two worth hearing. No `cp314t`
+  wheel is now a `::notice::` and a green job; an installed wheel is
+  interrogated before the suite runs. #746 measured why that second
+  step is needed: rocksdict builds for `3.14t` unmodified but declares
+  a bare `#[pymodule]`, which PyO3 documents as `gil_used = true` for
+  0.23 through 0.27, so importing it hands the GIL back -- and
+  `Node.worker_pool` reads `sys._is_gil_enabled()` at first use, after
+  that import. A cell that simply ran the suite would report a
+  free-threaded pass measured entirely on the process-pool arm.
+- **The two states that are news fail the job and colour the run**: a
+  wheel that installs but gives the GIL back, and a suite that
+  genuinely fails free-threaded.
+- **A false sentence in the file's header is corrected.** It tied
+  `free-threaded` rejoining `needs:` to #723 closing; #723 closed by
+  doing the opposite, and the row still does not install.
+
 ### The per-test timeout is remeasured (closes #737)
 
 - **`pyproject.toml`'s `timeout` is 300, from 120.** The old number was

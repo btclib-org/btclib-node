@@ -52,16 +52,31 @@ name: test
 # claims, run a second time with the GIL off, and whether this tree's
 # own code passes the suite that way was answered once already, at the
 # same 100% floor, in issue #387's own comment -- worth asking again
-# the day the row can install, which is when issue #723 closes and
-# `free-threaded` rejoins `test-passed`'s own `needs:` below. Until
-# then it stays a job of this file, run on every pull request, rather
-# than a weekly sentinel of its own, because what decides that in
-# section 10 of btclib-org/.github's README is the clock and not the
-# trigger: a job that fails at environment sync is over in seconds,
-# where the ten minutes of exploration `fuzz.yml`'s own header
-# declines to spend on a pull request are the sentinel's own work --
-# and the day the row installs again, it is this job, already on
-# every pull request, that says so.
+# the day the row can install, which is when `free-threaded` can
+# rejoin `test-passed`'s own `needs:` below. That sentence used to
+# name issue #723's own closing as the moment, which it was not:
+# #723 was closed by taking this cell *out* of `needs:` (PR #727),
+# the row still does not install, and a rejoining tied to an issue
+# already closed is a promise this file cannot keep (issue #747).
+# Until it does install, the cell stays a job of this file, run on
+# every pull request, rather than a weekly sentinel of its own,
+# because what decides that in section 10 of btclib-org/.github's
+# README is the clock and not the trigger: a job that fails at
+# environment sync is over in seconds, where the ten minutes of
+# exploration `fuzz.yml`'s own header declines to spend on a pull
+# request are the sentinel's own work -- and the day the row installs
+# again, it is this job, already on every pull request, that says so.
+#
+# **It says so without reddening the run.** A workflow run's own
+# conclusion aggregates every job in it, `needs:` or not, so this
+# cell's expected failure concluded each push to `main` `failure`
+# while the gate was green -- and that saturation is how issue #737's
+# red `windows-latest` went unreported through eight consecutive
+# pushes, a second red reason changing nothing a reader could see. The
+# job's steps below branch on the sync instead: the two known states
+# are quiet, and the two that are news -- an installed wheel that
+# hands the GIL back, and a suite that genuinely fails free-threaded --
+# fail the job and colour the run (issue #747, issue #746).
 #
 # What the design puts beside this file is a platform sentinel each for
 # what stays out of the gate: `os-macos.yml` runs this suite on Darwin,
@@ -356,12 +371,61 @@ jobs:
         with:
           enable-cache: true
           python-version: "3.14t"
+      # in a step of its own, and tolerated, so that the one state this
+      # cell has been in since issue #723 -- no `cp314t` wheel to
+      # install -- stops concluding the whole run `failure` while the
+      # gate below is green. That saturation is not cosmetic: it is
+      # how issue #737's own red `windows-latest` went unreported
+      # through eight consecutive pushes, there being nothing left for
+      # a second red reason to change (issue #747)
+      - name: Can the free-threaded environment install at all?
+        id: sync
+        continue-on-error: true
+        run: >
+          uv sync --locked --no-default-groups --group test
+      # a notice and not a warning: what deserves a warning is the
+      # day the row installs badly, which the step below raises. One
+      # line, a workflow annotation being a single line by
+      # construction
+      - name: Report the missing wheel rather than reddening the run
+        if: steps.sync.outcome == 'failure'
+        run: |
+          echo "::notice::no cp314t rocksdict wheel and no sdist: suite not run, issue #746"
+      # the day the row installs, `success` here would otherwise be
+      # taken for a free-threaded pass, and issue #746 measured that it
+      # would not be one: rocksdict builds for `3.14t` unmodified but
+      # declares a bare `#[pymodule]`, which PyO3 documents as
+      # `gil_used = true` for 0.23 through 0.27, so importing it hands
+      # the GIL back. `Node.worker_pool` reads `sys._is_gil_enabled()`
+      # at first use, after that import, so the whole suite would run
+      # the process-pool arm and report a free-threaded success it
+      # never measured. `import btclib_node` is what pulls rocksdict
+      # in -- `'rocksdict' in sys.modules` is `True` after it -- so
+      # this is the point the question can be asked at all
+      - name: Refuse a free-threaded report that got the GIL back
+        if: steps.sync.outcome == 'success'
+        run: |
+          uv run --no-sync python -c '
+          import sys
+          import btclib_node
+          print("imported", btclib_node.__name__, "for its rocksdict")
+          print("rocksdict in sys.modules:", "rocksdict" in sys.modules)
+          if sys._is_gil_enabled():
+              raise SystemExit(
+                  "::error::the GIL is back on this free-threaded "
+                  "interpreter, so this cell measures the GIL build "
+                  "rather than the free-threaded one. An extension "
+                  "declared gil_used = true: see issue #746"
+              )
+          print("the GIL is off: this cell measures what it claims to")
+          '
       # coverage stays on, matching the `coverage` job above: issue
       # #387's own measurement found no per-build difference in what
       # the floor requires, so this cell's own environment-sync failure
       # is the whole of what distinguishes it from that job today, not
       # a weaker check written around it
       - name: Run the suite under coverage
+        if: steps.sync.outcome == 'success'
         run: >
           uv run --locked --no-default-groups --group test pytest
 
