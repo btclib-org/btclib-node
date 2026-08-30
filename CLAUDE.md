@@ -428,6 +428,29 @@ Do not use Fable unless explicitly instructed.
   catch, which is how two branches reached review with the markdown gate
   red.
 
+  **`RELEASE_NOTES.md` is not rebuilt the same way.** `CHANGELOG.md`'s
+  open section is flat, so "the base plus exactly the branch's lines,
+  appended at the end of the open section" is the right reconstruction
+  there and only there. `RELEASE_NOTES.md` carries subsections under
+  `## Unreleased`, and the driver's damage there is not confined to a
+  blank line: at btclib-org/btclib-node#728's rebase it placed the
+  branch's `### Breaking changes` bullet *inside* the `### Windows`
+  subsection btclib-org/btclib-node#724 had landed meanwhile, nothing
+  missing and nothing removed, so a "nothing lost from the base" check
+  and an end-of-section rebuild both pass it -- the rebuild reproduced
+  the same misplacement, and only reading the resulting diff caught it.
+  Reconstruct `RELEASE_NOTES.md` against the entry's own anchor, the
+  subsection heading it belongs under, and compare byte for byte with
+  a control, as for the other file.
+
+- **`sysctl -n vm.loadavg` prints comma decimals under this machine's
+  locale** (`{ 3,57 4,10 4,22 }`), so a shell wait-for-load loop that
+  strips the fraction with `${l%.*}` never parses a number and waits
+  its whole timeout on every run, reading as a machine that is always
+  loaded. `${l%%[.,]*}` strips either separator. Measured on
+  2026-08-29, after every suite of one session had waited ten minutes
+  for a load that was under the bound the whole time.
+
 - **The docs build is a third gate, and it is the one a report leaves
   out.** `CONTRIBUTING.md` names three; a report naming two reads as
   complete, and the reader supplies the third from memory. What it
