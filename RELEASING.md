@@ -232,15 +232,26 @@ this release included.
    `.github/actions/` is one the tag is about to run, so leaving it in
    review means running the defect it fixes on the release.
 
-1. Retitle the work-in-progress sections of
+1. Retitle the `## Unreleased` sections of
    [RELEASE_NOTES.md](./RELEASE_NOTES.md) and
    [CHANGELOG.md](./CHANGELOG.md) to `## v<version>` — the heading must
    be the version alone, and the section must not be empty.
    `release.yml` checks both before anything is built, because a version
-   cannot be unpublished once an index has accepted it. On the first
-   release this is also where `## Unreleased` in both files becomes
-   `## v<version>` for the first time, the placeholder-version heading
-   this file's introduction describes not existing until then.
+   cannot be unpublished once an index has accepted it.
+
+   In the same pull request, open the next cycle's `## Unreleased`
+   section in both files, above the one just retitled, with no entry
+   under it yet. That is what keeps the topmost heading of either file
+   on `main` a work-in-progress heading at every commit. Opening the
+   next cycle in a pull request of its own after this one, ahead of
+   anything else landing, is the rejected alternative: until that pull
+   request lands the topmost section of each file is the release's, so
+   a branch landing in between files its entry under a release it is
+   not in, and nothing reports it, the release commit having touched
+   only the heading. `release.yml`'s check reads the `## v<version>` section
+   alone, so an `## Unreleased` above it is nothing it sees, and it is
+   not what the release publishes: the notes are lifted from the
+   section whose heading is the tag's own.
 
 1. Set the version in `pyproject.toml`, which is the one place it is
    declared, and re-lock so `uv.lock` agrees:
@@ -272,7 +283,8 @@ this release included.
    git rebase origin/main
    git show origin/main:CHANGELOG.md > /tmp/expected.md
    # apply this release's own edits to /tmp/expected.md: retitle
-   # `## Unreleased` to `## v$version`, and whatever the intro needs
+   # `## Unreleased` to `## v$version`, open the next `## Unreleased`
+   # above it, and whatever the intro needs
    git show HEAD:CHANGELOG.md > /tmp/actual.md
    cmp /tmp/expected.md /tmp/actual.md      # silent, exit 0
    ```
@@ -311,8 +323,8 @@ this release included.
    would notice. A squash leaves one commit whose message is that title,
    so the pull request is where the rest stays.
 
-   The work-in-progress section of `RELEASE_NOTES.md` is what that body
-   is written from. Check it against
+   The section of `RELEASE_NOTES.md` the retitle step renamed is what
+   that body is written from. Check it against
    `git log v<previous version>..main --oneline` regardless of how
    current it looks, rather than trust that every line landed when it
    should have.
@@ -499,15 +511,21 @@ this release included.
    covers the wheel, the sdist and the bill of materials, so all three
    verify against the same bundle.
 
-1. Open the next cycle, in a pull request of its own and before anything
-   else lands: set a generic next version without the day (e.g. after
-   `2026.8`, use `2026.9`) in `pyproject.toml`, and start a new
-   "work in progress" section in `RELEASE_NOTES.md` and `CHANGELOG.md`.
-   Re-lock so `uv.lock` agrees:
+1. Open the next cycle: set a generic next version without the day
+   (e.g. after `2026.8`, use `2026.9`) in `pyproject.toml`, through a
+   pull request like any other, and re-lock so `uv.lock` agrees:
 
    ```shell
    uv lock
    ```
+
+   The `## Unreleased` sections of `RELEASE_NOTES.md` and `CHANGELOG.md`
+   are already there, the retitle step above having opened them in the
+   release's own pull request. What stays here is the version, which
+   cannot move earlier with them: `version-check` compares the tag
+   against what `pyproject.toml` declares, so a tree already bumped
+   would offer it the next cycle's month instead of the version being
+   released.
 
 ## Rebuild a release from its tag
 
