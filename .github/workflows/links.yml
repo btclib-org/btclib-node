@@ -107,13 +107,27 @@ jobs:
           # No --cache: a run starts from a fresh workspace, so the cache
           # file one run writes is read by the next only if a step
           # restores it, and none does; within one run lychee asks each
-          # URL once whatever the flag says
+          # URL once whatever the flag says.
+          # --include-fragments, or a heading renamed in the tree a
+          # link here points into breaks that link with nothing red
+          # anywhere: the forge serves the page and drops a fragment it
+          # cannot resolve, so the run that notices is the linking
+          # tree's. The check reads the page already fetched for the
+          # link, so it adds no request. What can override it is the
+          # token below: on a failed github.com/<owner>/<repo> link
+          # lychee falls back to the repositories API, so a missing
+          # fragment on that shape -- the one CONTRIBUTING.md and
+          # REPOSITORY.md cite the standard by, and the only shape an
+          # anchor into another tree takes here -- is read, found
+          # missing, and then answered OK because the repository exists.
+          # btclib-org/.github#630 is where that is weighed.
           args: >-
             --no-progress
             --max-retries 3
             --retry-wait-time 10
             --timeout 45
             --accept 100..=103,200..=299,429
+            --include-fragments
             "*.md" "tests/**/*.md"
           # fail the job rather than only summarizing: a green run that
           # found dead links is the state this workflow exists to end

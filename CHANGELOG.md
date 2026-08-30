@@ -14,6 +14,22 @@ where this file was written rather than where anything was tagged.
 
 ## Unreleased
 
+### `links.yml` asks lychee for the fragment too (issue btclib-org/.github#583)
+
+- **`.github/workflows/links.yml` passes `--include-fragments`.** A link
+  into a heading is then checked as an anchor and not only as a page,
+  where the forge serves the page and drops a fragment it cannot resolve,
+  so a heading renamed in the tree a link here points into is red in this
+  run rather than nowhere. The check reads the page already fetched for
+  the link and adds no request, and no fragment this tree links to fails
+  it today.
+- **What the flag reaches here is bounded by the token the step already
+  holds.** Every anchor this tree carries into another repository is the
+  bare `github.com/btclib-org/.github#<heading>` shape, and on a failed
+  link of that shape lychee falls back to the repositories API and takes
+  the repository's existence as the answer, so those anchors are not what
+  this buys; btclib-org/.github#630 is where that is weighed.
+
 ### The free-threaded cell stops reddening the run (closes #747)
 
 - **`test.yml`'s `free-threaded` job branches on its own environment
