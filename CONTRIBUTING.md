@@ -333,7 +333,10 @@ server answered, and
 and its own header says it must not become a required check.
 `vendored-vectors.yml` re-checks `tests/_data/README.md`'s pin against
 upstream, `deps-latest.yml` upgrades every dependency and runs the suite and
-the lint gate against the result, `pypi-install.yml` installs `btclib-node`
+the lint gate against the result, `deps-oldest.yml` is that sentinel's mirror
+and takes the registry specifiers down to their oldest allowed release
+instead, its own header saying which declared floor that leaves out and
+why, `pypi-install.yml` installs `btclib-node`
 from the index rather than from a checkout and runs it past import, and
 `mutation.yml` is its own section below. `fuzz.yml` runs the atheris harnesses
 under `fuzz/` against octets nobody chose, and its own header says which

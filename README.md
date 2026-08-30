@@ -44,6 +44,8 @@ along with the command that reads the index back. -->
 [![fuzz workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/fuzz.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/fuzz.yml)
 [![integration-bitcoind workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/integration-bitcoind.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/integration-bitcoind.yml)
 [![deps-latest workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/deps-latest.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/deps-latest.yml)
+[![pypi-install workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/pypi-install.yml/badge.svg?branch=main)](https://github.com/btclib-org/btclib-node/actions/workflows/pypi-install.yml)
+[![deps-oldest workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/deps-oldest.yml/badge.svg?branch=main)](https://github.com/btclib-org/btclib-node/actions/workflows/deps-oldest.yml)
 [![os-macos workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/os-macos.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/os-macos.yml)
 [![os-ubuntu workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/os-ubuntu.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/os-ubuntu.yml)
 [![links workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/links.yml/badge.svg)](https://github.com/btclib-org/btclib-node/actions/workflows/links.yml)
