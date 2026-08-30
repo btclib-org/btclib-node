@@ -2691,6 +2691,15 @@ where this file was written rather than where anything was tagged.
   from `--python`, or whole from between a pair of quotes, and answers
   its emptiness check with a name that is not one.
 
+### `local-link-prefix`'s comment matches what `README.md` holds
+
+- **The comment said this tree carried no badge link, and `README.md`
+  carries a row of them.** It now names that row, and says what the row
+  does not settle: every destination on it is absolute, so the pattern's
+  scheme lookahead decides each of those lines before its badge handling
+  is reached, and the case is unmeasured here for that reason rather
+  than for the absent row the comment claimed (closes #743).
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
