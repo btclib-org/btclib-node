@@ -190,6 +190,13 @@ harness = [
     # shuffles every run and prints the seed, section 7's default;
     # tests/README.md says what pytest-order above still holds under it.
     "pytest-randomly>=4.1.0",
+    # section 7's named shape for the property layer, and a pytest
+    # plugin of its own: it registers the `hypothesis` mark and the
+    # --hypothesis-* options, and tests/conftest.py registers the
+    # profiles. tests/property_test.py is what draws with it, and
+    # tests/README.md is where the choice of it over hand-rolled
+    # properties is argued (btclib-org/btclib-node#742).
+    "hypothesis>=6.140.3",
 ]
 # harness, plus what the suite delegates to.
 test = [
@@ -521,6 +528,7 @@ package = ["src/btclib_node"]
 testpaths = [
     "tests/fuzz_corpus_test.py",
     "tests/interpreters_test.py",
+    "tests/property_test.py",
     "tests/unit",
     "tests/functional",
     "tests/integration",

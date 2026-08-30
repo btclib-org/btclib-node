@@ -9,11 +9,13 @@ have crossed it; the fixtures start and stop real `Node` instances,
 on their own ports, for the functional and unit tests that need one.
 """
 
+import os
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from hypothesis import settings
 
 from btclib_node import Node
 from btclib_node.config import Config
@@ -22,6 +24,29 @@ from tests import get_random_port
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
+
+
+# The property layer's profiles, registered once here rather than
+# repeated on every `@given`, which is the shape section 7 of
+# btclib-org/.github's README names (btclib-org/btclib-node#742).
+#
+# `deadline=None` because a per-example time limit is a timing flake on
+# whichever cell of the matrix is slowest -- and this suite runs one on
+# `windows-latest`, where the same work is measurably slower than on the
+# image the floor is set against (btclib-org/btclib-node#737's own
+# durations). A deadline here would be pyproject.toml's `timeout`
+# problem a second time, at a hundredth of the scale.
+#
+# 500 is section 7's own figure and it is affordable here, measured
+# rather than assumed: `tests/property_test.py` draws 500 examples for
+# each entry point the walk finds and the whole file runs in under two
+# seconds, against a suite of about ninety. The deep profile is opt-in
+# because the search that finds a latent defect is not one to run at
+# every commit, and what it finds graduates into a vector test rather
+# than staying in a search that may not repeat it.
+settings.register_profile("default", deadline=None, max_examples=500)
+settings.register_profile("thorough", deadline=None, max_examples=2_000)
+settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
 
 
 def asks_for_everything(config: pytest.Config) -> bool:
