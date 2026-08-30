@@ -2397,6 +2397,19 @@ where this file was written rather than where anything was tagged.
   tip", this tree computing no counterpart to Core's own
   `ApproximateBestBlockDepth()`.
 
+### The release pull request opens the next cycle (issue btclib-org/.github#528)
+
+- **`RELEASING.md`'s release pull request retitles the `## Unreleased`
+  sections of `CHANGELOG.md` and `RELEASE_NOTES.md` and opens the next
+  cycle's above them, in the one pull request.** Opened in a pull
+  request of their own after the release's, the sections were missing
+  from `main` for as long as that pull request took to land, and a
+  branch landing in between filed its entry under a release it is not
+  in, with nothing to say so. The version bump stays in the pull request
+  that opens the cycle, `version-check` comparing the tag against what
+  `pyproject.toml` declares. Section 12 of btclib-org/.github's
+  `README.md` is the decision; this is its port.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
