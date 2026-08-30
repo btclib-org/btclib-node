@@ -53,8 +53,8 @@ on:
 # The pull_request trigger is a trade in the direction opposite to the
 # one this file made while the push and the schedule were the whole of
 # it: two more cells on every push to a branch, against the ceiling on
-# the organization's concurrent jobs that REPOSITORY.md's *The
-# concurrent-job ceiling* measures and btclib-org/.github#85 argues.
+# the organization's concurrent jobs that REPOSITORY.md's *Plan-gated
+# settings* measures and btclib-org/.github#85 argues.
 # What buys it back is that a finding arrives while the branch can still
 # answer it, rather than on the commit a merge creates -- which is
 # already the default branch. The OpenSSF Scorecard's SAST check reads

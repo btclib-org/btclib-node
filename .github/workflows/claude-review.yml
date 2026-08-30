@@ -15,9 +15,9 @@ name: claude-review
 #
 # It is one job on every pull request, which is not free: the ceiling on
 # concurrent jobs is the organization's, and the other repositories'
-# matrices compete for the same slots. REPOSITORY.md's *The
-# concurrent-job ceiling* has the command that reads the plan the limit
-# is documented for. It earns the slot by being short -- it reads a
+# matrices compete for the same slots. REPOSITORY.md's *Plan-gated
+# settings* has the command that reads the plan the limit is documented
+# for. It earns the slot by being short -- it reads a
 # diff, it does not build anything -- and by skipping a draft.
 
 on:

@@ -2500,6 +2500,41 @@ where this file was written rather than where anything was tagged.
   keys it on the property `fuzz.yml` claims for this tree, and #742 is
   the gap.
 
+### `REPOSITORY.md`'s perimeter is section 11's (issue btclib-org/.github#550)
+
+- **The scope statement carries section 11's three limbs in the
+  standard's own words** (issue btclib-org/.github#582). The third --
+  the settings a behaviour the standard describes rests on -- is what
+  keeps `.visibility` under *Features, and the topics* now that the wiki
+  and the projects board have left it.
+- **The opening no longer claims that nothing below is recoverable by
+  reading the repository** (issue btclib-org/.github#571). The topics
+  and `.homepage` have a copy in `pyproject.toml`, which *Features, and
+  the topics* and *Read the Docs* already said, so the clause names
+  those two and holds of the rest; this tree is where that contradiction
+  was found.
+- **`has_wiki` and `has_projects` leave the file** (issue
+  btclib-org/.github#550). Section 11 puts both outside the perimeter,
+  so the sentence calling each this repository's own answer goes, and
+  the measurement that the wiki is empty goes with it; the foot names
+  the pair as outside.
+- **The `scorecard` sentinel's bar is why the visibility is read back**
+  (issue btclib-org/.github#584), section 10 asking a repository that is
+  public and nothing else. `.fork` is read back nowhere, nothing setting
+  it.
+- **The ceiling's section takes the heading section 10 names as its one
+  home, *Plan-gated settings*, with GitHub's table beside the plan
+  command** (issue btclib-org/.github#569, issue btclib-org/.github#412).
+  `CONTRIBUTING.md`'s shared half already pointed there;
+  `claude-review.yml`'s and `codeql.yml`'s headers pointed at the old
+  name and point at the new one now. Secret scanning's two plan-gated
+  settings stay where the call that answers them is.
+- **The Dependabot secret store leaves the facilities nobody reached
+  for** (issue btclib-org/.github#572). It is empty because the standard
+  holds that token at the organization, in both stores, which is a
+  decision rather than an absence, and the bullet that already said so
+  for the Actions store reads both back now.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
