@@ -2410,6 +2410,24 @@ where this file was written rather than where anything was tagged.
   `pyproject.toml` declares. Section 12 of btclib-org/.github's
   `README.md` is the decision; this is its port.
 
+### The verbatim files are the standard's copies, byte for byte
+
+- **`.gitattributes` states the union price as section 9 of the
+  standard does** (issue btclib-org/.github#423): the driver is a
+  checkout's and the forge does not apply it, so a pull request whose
+  `CHANGELOG.md` or `RELEASE_NOTES.md` overlaps its base is reported
+  `CONFLICTING` however cleanly the pair merges locally, and a rebase on
+  a checkout is what clears it.
+- **`.markdownlint.jsonc` points at section 14 of the standard for who
+  carries it** (issue btclib-org/.github#316), in place of an
+  enumeration of trees.
+- **`CONTRIBUTING.md`'s shared half is btclib-org/.github's** (issue
+  btclib-org/.github#281): the half is replaced whole rather than each
+  change applied by hand, a hand-written list of them being what comes
+  up short. Among them, *The landing queue* points at `REPOSITORY.md`'s
+  *Plan-gated settings* for the ceiling's figure (issue
+  btclib-org/.github#412).
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
