@@ -55,14 +55,109 @@ _CI = sorted((_ROOT / ".github/workflows").glob("*.yml")) + sorted(
 # say something about the major version rather than about an interpreter
 _CLASSIFIER = re.compile(r"^Programming Language :: Python :: (3\.\d+)$")
 _PYPY_CLASSIFIER = "Programming Language :: Python :: Implementation :: PyPy"
+# PyPI's free-threading classifiers, the bare one and its maturity
+# levels alike: each is a claim about the code under a free-threaded
+# build, and which level is claimed is not this module's question
+_FREE_THREADING_CLASSIFIER = "Programming Language :: Python :: Free Threading"
 
 # `python-version: "3.14"` and `python-version: ["3.14", "3.14t"]`, the
 # two shapes the setup steps here are given, and the `--python 3.14` a
 # `run:` step hands uv directly. `python-version: ${{ matrix.* }}` is
 # neither: an expression names no version, and the matrix it reads is
-# already matched where that matrix is written
-_NAMED = re.compile(r'python-version: ("[^"\n]*"|\[[^]\n]*\])|--python (\S+)')
-_QUOTED = re.compile(r'"([^"]*)"')
+# already matched where that matrix is written.
+#
+# `_VERSION` is what says so, and both arms are held to it rather than
+# one: the closure below asks whether the gate names an interpreter at
+# all, so a token that is not a version but arrives as one leaves that
+# question answered by nothing. A run of non-space hands it `${{` out
+# of `--python ${{ matrix.python }}`, and whatever sits between the
+# quotes hands it `${{ matrix.python }}` out of a quoted expression --
+# two characters apart, and the second is the ordinary thing to write.
+# No expression reaches either arm now; what the closure still cannot
+# see is named where it is read.
+_VERSION = r"[\w.+-]+"
+_NAMED = re.compile(rf'python-version: ("[^"\n]*"|\[[^]\n]*\])|--python ({_VERSION})')
+_QUOTED = re.compile(rf'"({_VERSION})"')
+
+# the merge gate, and inside it the jobs a landing waits on. Section 3
+# of the organization standard declares a free-threading classifier
+# where the gate exercises that build, a gate being what refuses the
+# landing that breaks it, so what answers here is the aggregate's
+# `needs:` closure rather than the file: a job of this workflow that no
+# required check waits on reports what a sweep reports, which is the
+# ground that section declines. The aggregate is found by the name
+# `main`'s required contexts hold, which is a job's `name:` and not its
+# key
+_GATE = _ROOT / ".github/workflows/test.yml"
+_AGGREGATE = "test: every job passed"
+# `jobs:` and everything under it: the trigger keys of `on:` sit at the
+# same indent as a job key, so a pattern that did not cut here would
+# offer `pull_request` to the closure below as though it were a job
+_JOBS = re.compile(r"^jobs:\n(?P<block>.*)\Z", re.MULTILINE | re.DOTALL)
+# a job key at the one indent `jobs:` gives them, and the block that
+# follows it
+_JOB = re.compile(
+    r"^  (?P<key>[a-z0-9_-]+):\n(?P<block>(?:^ {3,}.*\n|^\n)*)", re.MULTILINE
+)
+_NEEDS = re.compile(r"^    needs: (?P<needs>\[[^]\n]*\]|\S+)", re.MULTILINE)
+_NAME = re.compile(r'^    name: "?(?P<name>[^"\n]*)"?', re.MULTILINE)
+# comments are dropped before the read above runs, where `_named` above
+# keeps them on purpose. The two want opposite things: a stale comment
+# naming a version this tree no longer classifies is worth catching,
+# where this file's own header argues at length about `3.14t` and a
+# comment is not a job that runs it.
+#
+# What this read does not answer shows in `dist`. A setup step naming
+# no interpreter takes the one `.python-version` pins, so that job's
+# own interpreter is nowhere in this workflow -- `_PIN` above is where
+# the pin is read, and a free-threaded pin reaches it as `3.14t`. And a
+# version a job names counts whatever that job does with it: `dist`'s
+# `--python` runs the sdist normalizer and the bill-of-materials writer
+# under `--no-project`, which import nothing of this package. A step
+# skipped on its own condition counts the same way -- `free-threaded`'s
+# suite runs only where its sync succeeded -- and issue #750 is the
+# gap. Nor does this read leave the workflow: an interpreter a gating
+# job takes from a composite action it calls is outside it, `dist`
+# calling `./.github/actions/dev-version`, which hands uv a version of
+# its own.
+_UNCOMMENTED = re.compile(r"(?:^|\s)#.*$", re.MULTILINE)
+
+
+def _jobs() -> dict[str, str]:
+    """Return each job of the merge gate, its comments dropped."""
+    text = _JOBS.search(_UNCOMMENTED.sub("", _GATE.read_text(encoding="utf-8")))
+    assert text, f"{_GATE.name} declares no jobs"
+    return {match["key"]: match["block"] for match in _JOB.finditer(text["block"])}
+
+
+def _needed(jobs: dict[str, str], key: str) -> set[str]:
+    """Return `key` and every job it waits on, however deep."""
+    found = {key}
+    pending = [key]
+    while pending:
+        block = jobs.get(pending.pop(), "")
+        for match in _NEEDS.finditer(block):
+            listed = match["needs"].strip("[]").replace(",", " ").split()
+            for name in listed:
+                if name not in found:
+                    found.add(name)
+                    pending.append(name)
+    return found
+
+
+def _gating() -> set[str]:
+    """Return every interpreter a job the merge gate waits on names."""
+    jobs = _jobs()
+    named = {key: _NAME.search(block) for key, block in jobs.items()}
+    aggregate = next(
+        (key for key, name in named.items() if name and name["name"] == _AGGREGATE), ""
+    )
+    assert aggregate, f"{_GATE.name} carries no job named {_AGGREGATE!r}"
+    found: set[str] = set()
+    for key in _needed(jobs, aggregate):
+        found.update(_named(jobs[key]))
+    return found
+
 
 # the files naming an interpreter, named rather than counted: a pattern
 # that stopped matching one of them would leave the rest agreeing with
@@ -187,4 +282,27 @@ def test_pypy_is_classified_exactly_when_it_is_run() -> None:
     assert classified == run, (
         f"the PyPy classifier is {'present' if classified else 'absent'} and"
         f" CI {'runs' if run else 'does not run'} a PyPy interpreter"
+    )
+
+
+def test_free_threading_is_classified_exactly_when_the_gate_runs_it() -> None:
+    """The free-threading classifier is a claim about the merge gate.
+
+    Section 3 of the organization standard declares one where the gate
+    exercises the free-threaded build, a gate being what refuses the
+    landing that breaks it. So a report-only cell does not answer for
+    the classifier however loudly it runs: what it says is that the
+    build passed somewhere, which is the claim that section rejects.
+    """
+    gating = _gating()
+    assert gating, f"no job {_AGGREGATE!r} waits on names an interpreter"
+    classified = any(
+        classifier.startswith(_FREE_THREADING_CLASSIFIER)
+        for classifier in _PROJECT["classifiers"]
+    )
+    run = sorted(version for version in gating if version.endswith("t"))
+    assert classified == bool(run), (
+        f"the free-threading classifier is {'present' if classified else 'absent'}"
+        f" and the jobs {_AGGREGATE!r} waits on run"
+        f" {', '.join(run) or 'no free-threaded interpreter'}"
     )

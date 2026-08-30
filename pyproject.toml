@@ -90,6 +90,21 @@ keywords = [
 # 3.14. `Implementation :: CPython` is that bound restated where an
 # index reads it, and it needs no dependency to justify it.
 #
+# No `Free Threading` classifier, and `3.14t` running in this repository
+# is not what would earn one: section 3 of btclib-org/.github declares
+# it where the merge gate exercises that build, a gate being what
+# refuses the landing that breaks it, and `test.yml`'s `free-threaded`
+# job sits outside `test-passed`'s `needs:` -- it reports. What it
+# reports is that the environment does not install: `rocksdict`
+# publishes no `cp314t` wheel and no sdist, so that job's sync step
+# fails, a `::notice::` says so and the suite step behind it is skipped
+# (issue #746). The classifier would promise a consumer of this package
+# a build nothing here runs. It returns when a job the merge gate waits
+# on runs the suite free-threaded; a place in those `needs:` is not
+# that condition, a job green with its suite step skipped refusing no
+# landing. `tests/interpreters_test.py` is what refuses the classifier
+# and the gate's own matrix coming apart.
+#
 # No `OS Independent` either, and the dependencies are not what argues
 # against it: what this installs is btclib and what btclib pulls in,
 # `btclib-secp256k1` and `cffi` among them compiled rather than pure
@@ -108,15 +123,6 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: Implementation :: CPython",
-    # Stable, and stable is the whole claim: the suite passes
-    # free-threaded, at the same 100% coverage floor, before every
-    # merge -- test.yml's `3.14t` cell in the `coverage` job's matrix.
-    # It is not a claim that this node runs faster with the GIL off.
-    # Script validation is the half that scales across cores, but the
-    # UTXO store is the larger half in wall clock and is serial, one
-    # writer whatever the caller does, so the dominant cost gets
-    # nothing from free threading (issue #576).
-    "Programming Language :: Python :: Free Threading :: 3 - Stable",
     "Typing :: Typed",
     # the README's own claim, made of the 2023 prototype and still made
     # here: this node downloaded and validated the whole chain, which is

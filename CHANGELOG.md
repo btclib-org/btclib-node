@@ -2551,6 +2551,39 @@ where this file was written rather than where anything was tagged.
   decision rather than an absence, and the bullet that already said so
   for the Actions store reads both back now.
 
+### The `Free Threading` classifier goes (closes #745) (issue btclib-org/.github#577)
+
+- **`pyproject.toml` declares no `Free Threading` classifier.** Section
+  3 of the organization standard declares one where the merge gate
+  exercises the free-threaded build, a gate being what refuses the
+  landing that breaks it, and `test.yml`'s `free-threaded` job sits
+  outside `test-passed`'s `needs:`. It runs no suite either:
+  `rocksdict` publishes no `cp314t` wheel and no sdist, so that job's
+  sync step fails, a `::notice::` reports the miss and the suite step
+  behind it is skipped (#746). The classifier would promise a consumer
+  of this package a build nothing here runs. Where that job gates is
+  not reopened by this -- #723 and #747 are where it was decided -- and
+  the declaration is the half that moves. The classifier returns when a
+  job the gate waits on runs the suite free-threaded; a place in those
+  `needs:` is not that condition, a job green with its suite step
+  skipped refusing no landing.
+- **`tests/interpreters_test.py` gates that classifier on the
+  interpreters the merge gate waits on** (issue btclib-org/.github#577),
+  the biconditional the PyPy classifier already carries over a narrower
+  second side: the PyPy one reads every CI file, where section 3 keys
+  free threading on the gate. That side is the `needs:` closure of
+  `test: every job passed` and not this workflow's own text: a job
+  nothing waits on says the build passed somewhere, which is the ground
+  section 3 declines. Comments are dropped before that read, where
+  `_named` above it keeps them on purpose, and what the read leaves is
+  what `dist` shows: a setup step naming no interpreter takes the
+  `.python-version` pin, and a version a job names counts whatever that
+  job does with it, a step skipped on its own condition included (#750).
+  Both arms of that read take the characters a version is made of and
+  nothing else: an expression otherwise reaches the closure as `${{`
+  from `--python`, or whole from between a pair of quotes, and answers
+  its emptiness check with a name that is not one.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
