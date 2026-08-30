@@ -38,6 +38,49 @@ where this file was written rather than where anything was tagged.
   classic branch protection in this tree, not a ruleset. Each now names
   the mechanism, or is written to hold of either.
 
+### CLAUDE.md's union bullet gains the seam model (closes #753)
+
+- **The unit of the damage is the seam, not the rebase.** One blank line
+  eaten per seam, a seam being where the two sides' added blocks abut in
+  the fused output; a blank line internal to one side's own addition
+  survives. `origin/iss-547-changelog-boundary` is the case that
+  isolates it -- two insertions in one merge, the line lost at the
+  second and not the first. Eighteen seams across two sessions in one
+  day, eighteen eaten.
+- **The `merge-tree` sentence was read as licence to skip the command,
+  which it is not.** It was, and remains, true about *conflict
+  detection*: exit code and silence are not evidence of a safe rebase.
+  What it left a reader to infer is that merge-tree is no use here. It
+  writes the tree the rebase will produce, and the damage is in that
+  blob with a line number. The case that shows both halves at once is a
+  merge that conflicts: exit `1`, stage-1/2/3 entries for seven source
+  paths, `CHANGELOG.md` present only as `Auto-merging`, tree written
+  anyway, flush heading readable at line 2853.
+- **The hunk header does not predict a seam**, recorded so it is not
+  re-invented. Anchor equality is necessary and not sufficient, and a
+  first-hunk `grep` reads the wrong hunk on a branch making two
+  insertions.
+- **A no-seam case has to be shown to be a case at all.** Two branches
+  whose entry already landed produce a fused blob byte-identical to the
+  base: nothing arrives, no seam is possible, and every check passes
+  including the rebuild. Correct measurement, different question. The
+  guard is one `cmp` against the base with a real arrival as control.
+- **The general form is what outranks the rest**: a check that can only
+  report the absence of damage passes on an input that cannot carry the
+  damage, silently and correctly. Three instances in one day -- the null
+  case, the cached badge render whose `failing` is worthless and whose
+  `passing` is sound, and the `-n auto` mutation already listed.
+- **And what says whether a check needs a guard is whether its input can
+  go empty without anyone choosing it.** A walk can, through a refactor
+  nobody thinks of as touching the test; a module literal cannot, a
+  count set to zero being deliberate. So the rule carries a condition
+  rather than demanding ceremony everywhere -- a sibling tree whose
+  equivalent layer is driven by a literal needs no such guard.
+- **A reconstruction is a control only once the block's own boundaries
+  have been read**, the splice otherwise duplicating a blank on one side
+  and dropping one on the other, which reads as a two-line seam that is
+  not there.
+
 ### `links.yml` asks lychee for the fragment too (issue btclib-org/.github#583)
 
 - **`.github/workflows/links.yml` passes `--include-fragments`.** A link

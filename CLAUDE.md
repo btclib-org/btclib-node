@@ -385,7 +385,21 @@ Do not use Fable unless explicitly instructed.
   conflict cannot ever report one, clean or not. `git merge-tree --write-tree`
   answers the same way and is not a dry run of this question either: it too
   reads `.gitattributes` from the trees it merges and writes the fused blob at
-  exit `0`. Of the forge's own two signals, `gh pr view --json mergeable` is
+  exit `0`.
+
+  **That is about conflict detection, and it is not licence to skip the
+  command — read the blob it writes, not its exit code.** merge-tree
+  writes the tree the rebase will produce, so the damage is there with a
+  line number, before a branch is touched, and three real rebases
+  elsewhere produced trees byte-identical to what it had predicted. The
+  sharpest case is a merge that *does* conflict:
+  `origin/iss-507-381-interpreter-window-and-btclib-floor` exits `1` with
+  stage-1/2/3 entries for seven source paths, `CHANGELOG.md` appears in
+  that same output only as `Auto-merging CHANGELOG.md`, and the tree is
+  written anyway — `eaa8f182`, flush heading at line 2853. One run
+  showing both halves: merge-tree is not blind to conflicts, it finds
+  seven; the union file passes silently through it; the blob is what
+  answers. Of the forge's own two signals, `gh pr view --json mergeable` is
   not the one to trust: it is an asynchronous, cached read that can still
   answer `UNKNOWN` on a pull request already `MERGED`, so a `CONFLICTING` seen
   there is not yet confirmed real. The merge the endpoint actually attempts
@@ -414,6 +428,27 @@ Do not use Fable unless explicitly instructed.
   bad luck, it is a report that this branch was rebased twice and lost
   its blank line the first time.
 
+  **The unit is the *seam*, not the rebase and not the branch.** One
+  blank line eaten per seam, a seam being where the two sides' added
+  blocks abut in the fused output. A blank line internal to one side's
+  own addition is not at a seam and survives:
+  `origin/workflows-say-what-they-hold` arrives with three entries,
+  makes one seam against the base's last bullet, and loses one line of
+  the three. `origin/iss-547-changelog-boundary` makes two insertions
+  in one merge -- prose into the preamble, a `###` lower down -- and
+  loses the line at the second and not the first, the same branch and
+  the same merge answering both ways, which is the case that isolates
+  the seam from everything else. Eighteen seams measured across two
+  sessions in one day, eighteen eaten, and no case yet of two blocks
+  abutting with the line surviving.
+
+  **What does not predict a seam is the hunk header**, recorded so that
+  it is not re-invented: anchor equality is necessary and not
+  sufficient, and `grep -m1` reads the wrong hunk on a branch making two
+  insertions -- `iss-547` seams at its second while its first differs
+  from `main`'s by two lines. There is no `grep` shortcut. merge-tree is
+  the answer.
+
   **The repair is a rebuild, and the check is a full comparison.**
   Reconstruct the file as `origin/main` plus exactly the lines the
   branch adds over it, appended at the end of the open section, and
@@ -427,6 +462,68 @@ Do not use Fable unless explicitly instructed.
   inherits the missing blank line and matches the damage it was meant to
   catch, which is how two branches reached review with the markdown gate
   red.
+
+  **A no-seam case has to be shown to be a case at all**, or the whole
+  comparison reports a match for the emptiest reason there is.
+  `origin/iss-586-finish` and `origin/iss-586-utxo-cache-across-blocks`
+  look like perfect negatives -- anchors coinciding, nothing eaten --
+  and their fused blobs are byte-identical to `main`'s file, because the
+  entry they add is already on `main` (`1ce7b20`, #643). Nothing
+  arrives, so there is no second side and no seam, and *every* check
+  passes, the rebuild among them, the reconstruction matching too. The
+  measurement is correct and answers a different question than the one
+  asked: *did the line survive* is not *does a seam eat one*. The guard
+  is one `cmp` of the fused blob against the base, with a real arrival
+  as the positive control.
+
+  **That generalizes, and is the thing to carry out of this bullet: a
+  check that can only report the absence of damage passes on an input
+  that cannot carry the damage -- silently, and correctly.** This tree
+  met the shape three times on 2026-08-30 and no instance was found by
+  anything going red.
+
+  **What says whether a given check needs a guard is whether its input
+  can go empty without anyone choosing it.** A walk can -- a
+  `parametrize` over a walk that finds nothing collects nothing and
+  reports no failure, and a refactor nobody thinks of as touching the
+  test is enough to empty it, which is why `tests/property_test.py`
+  asserts its own walk is non-empty. A module literal cannot: a count
+  set to zero is a deliberate act, and demanding a guard there is
+  ceremony. So a sibling tree whose equivalent layer is driven by a
+  literal rather than a walk needs no such guard, and that is the
+  condition holding rather than an exception to it.
+
+  The null case above is one instance. The badge render is
+  another: `curl -s '<workflow>/badge.svg?branch=main' | grep '<title>'`
+  answered `test - failing` nine minutes after a green run and
+  `test - passing` at the same moment with `-H 'Cache-Control:
+  no-cache'` and a cache-busting parameter, so a `failing` from the bare
+  form is indistinguishable from a stale copy and only a `passing` is
+  evidence -- and a control on an already-green workflow cannot catch
+  it, cached and fresh agreeing there. The third is the `-n auto`
+  mutation that never reaches a worker, already in the list above.
+
+  **A structural diff against the base is the cheaper check, and
+  "nothing removed" is not enough there either.** Run
+  `difflib.SequenceMatcher` over the base and the rebased file: a clean
+  rebase is exactly *one* `insert` opcode and no `delete` and no
+  `replace`, which catches a removal and a reordering at once. It does
+  **not** catch the eaten line -- measured on this file's own rebase at
+  btclib-org/btclib-node#753, a copy with the blank line eaten again
+  reports the identical single `insert`. What separates them is that
+  the inserted block *starts* with the blank line: assert
+  `inserted[0] == ""` beside the opcode count, or the check passes the
+  damage. Prove both with controls -- drop a base line and see
+  `delete`, re-eat the blank and see `blank-first` go false.
+
+  **A reconstruction is a control only once the block's own boundaries
+  have been read.** Print the block's first and last lines and the
+  anchor's neighbours before trusting any `cmp`: get the boundaries
+  wrong and the splice duplicates a blank on one side and drops one on
+  the other, which reads exactly like a two-line seam and sends a reader
+  hunting a second defect that does not exist. It earns a line because
+  it was the first-attempt outcome in both of two trees -- the default
+  result of the obvious implementation rather than an edge case.
 
   **`RELEASE_NOTES.md` is not rebuilt the same way.** `CHANGELOG.md`'s
   open section is flat, so "the base plus exactly the branch's lines,
