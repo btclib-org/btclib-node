@@ -14,6 +14,35 @@ where this file was written rather than where anything was tagged.
 
 ## Unreleased
 
+### The per-test timeout is remeasured (closes #737)
+
+- **`pyproject.toml`'s `timeout` is 300, from 120.** The old number was
+  the same ratio the comment still argues -- nearly three times the
+  worst test -- against a suite whose worst was
+  `tests/functional/p2p/download_test.py::test_download` at 42.09s.
+  That suite has since grown
+  `tests/unit/chainstate/utxo_index_test.py::test_rev_patch` and its
+  `::test_long_init` beside it, 75.30s and 63.78s on `ubuntu-latest`
+  under coverage and 86.20s for the second of them on
+  `windows-latest` without it, where the first exceeded 120 outright.
+  What moved is the suite and not the runner: `::test_rev_patch`
+  stages a 20000-block chain and unwinds all 20000 of its `RevBlock`s
+  in 34s serial on a ten-core machine, at a 143 MiB peak.
+- **The `windows-latest` cell had been red on every push to `main`
+  since #728 for exactly that**, reporting it as
+  `worker 'gw3' crashed while running ...::test_rev_patch` rather than
+  as a timeout. pytest-timeout picks `signal` where `SIGALRM` exists
+  and `thread` where it does not, and the `thread` handler ends the
+  process with `os._exit`; under `-n auto` that is a worker that
+  stopped answering, which xdist reports as a crash with no traceback
+  and nothing naming the bound. Reproduced away from Windows by giving
+  the `thread` method a test that sleeps past it, which produces the
+  same two lines. The comment beside `timeout` says so, so that a
+  crash on that image is read as a suspected timeout first.
+- **One bound rather than a marker on the slow tests**: three tests now
+  sit within a factor of two of it, so marking two of them would leave
+  the third to be the next to fail.
+
 ### The three chain scripts guard their module body (closes #579)
 
 - **`scripts/chains/mainnet.py`, `testnet.py` and `signet.py` build and

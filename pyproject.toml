@@ -538,16 +538,45 @@ addopts = "-n auto --strict-config --strict-markers --cov --cov-report term-miss
 # nobody notices it stopped meaning anything.
 xfail_strict = true
 # What a single test is given before the run says which test hung and
-# where, instead of sitting there. Measured rather than picked, over
-# repeated runs of the whole suite under `-n auto`: the slowest test
-# is tests/functional/p2p/download_test.py::test_download, 9.51s on an
-# idle machine, 27.85s on one shared with other work, and 42.09s on
-# one loaded past three times its core count. That is the bound that
+# where, instead of sitting there. Measured rather than picked, on the
+# two images that gate a merge, from one run's own `--durations=10`
+# (run 33304347389, at btclib-org/btclib-node#737): the slowest tests
+# are tests/unit/chainstate/utxo_index_test.py::test_rev_patch and its
+# ::test_long_init beside it, 75.30s and 63.78s on `ubuntu-latest`
+# under coverage, and 86.20s for the second of them on
+# `windows-latest` without it, where the first exceeded the 120 this
+# line used to carry. tests/functional/p2p/download_test.py's own
+# ::test_download is third at 81.60s there. That is the bound that
 # matters rather than the spread: a limit anywhere near where the suite
 # reports which condition it was waiting on trades a diagnosis for a
 # timeout, and this is nearly three times the worst of them while still
 # turning the ten-minute hangs of btclib-org/btclib-node#98 into a
 # failure that names its test.
+#
+# 120 was that same ratio against a suite whose worst was
+# ::test_download at 42.09s, which this tree has since grown past: what
+# moved is the suite and not the runner, ::test_rev_patch staging a
+# 20000-block chain and unwinding all 20000 of its `RevBlock`s in 34s
+# serial on a ten-core machine, at a 143 MiB peak, rather than leaking
+# or thrashing on the four-vCPU one.
+#
+# The number is one measured bound and not a per-test marker beside a
+# tighter one, because three tests now sit within a factor of two of
+# it: marking two of them leaves the third to be the next to fail.
+#
+# **A firing here is not reported the same way on both images.**
+# pytest-timeout picks `signal` where `SIGALRM` exists and `thread`
+# where it does not, so `ubuntu-latest` gets a named timeout raised
+# inside the test and `windows-latest` gets a handler that ends the
+# process with `os._exit`. Under `-n auto` that is a worker that
+# stopped answering, which xdist reports as
+#
+#     worker 'gwN' crashed while running '<test>'
+#
+# with no traceback and nothing naming the bound -- so on Windows the
+# diagnosis this line exists to produce is exactly what is lost when it
+# fires, and a crash there is to be read as a suspected timeout first
+# (btclib-org/btclib-node#737).
 #
 # It does not bound the deadlines beneath it and is not meant to. A test
 # that waits seven times at wait_until's own default could in
@@ -557,7 +586,7 @@ xfail_strict = true
 # comes near it: the longest single wait measured anywhere is 12.60s,
 # and the run that failed on a four-core runner reported at 20.24s.
 # Issue #46 is where that starvation is tracked.
-timeout = 120
+timeout = 300
 # `["error"]`, once the fixtures in tests/conftest.py closed what
 # tests/unit/main_test.py's regtest_node and its kind (issue #111,
 # issue #195) left open -- a sqlite connection, a socket, an event
