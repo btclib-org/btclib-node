@@ -2457,6 +2457,19 @@ where this file was written rather than where anything was tagged.
   *Plan-gated settings* for the ceiling's figure (issue
   btclib-org/.github#412).
 
+### The suite shuffles after one marker (closes btclib-org/.github#428) (issue btclib-org/.github#426)
+
+- **`pytest-randomly` is in the `harness` group**, section 7's default.
+  `pytest.mark.order` sits on one test and holds a place at the head of
+  the queue rather than a sequence, and the two plugins' own hook order
+  keeps that place under the shuffle; `tests/README.md` says so.
+  `test_download`'s docstring called it the slowest test in the suite,
+  which `pyproject.toml`'s own `timeout` measurement refutes, and now
+  says among the slowest.
+- **`tests/README.md` declares the property layer absent.** Section 7
+  keys it on the property `fuzz.yml` claims for this tree, and #742 is
+  the gap.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

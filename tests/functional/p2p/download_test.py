@@ -41,7 +41,8 @@ def test_download(tmp_path: Path) -> None:
     already has the whole chain; a fresh `main_node` is then connected
     to all ten at once, which is what exercises spreading the download
     across several connections rather than one. `pytest.mark.order(1)`
-    runs it first because it is the slowest test in the suite.
+    runs it first because it is among the slowest tests in the suite,
+    and `tests/README.md` says what that marker holds under the shuffle.
     """
     length = 3000
     chain = generate_random_chain(length, RegTest().genesis.hash)

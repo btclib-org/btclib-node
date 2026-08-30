@@ -181,6 +181,9 @@ harness = [
     # instead of hanging it (btclib-org/btclib-node#98). The limit is in
     # [tool.pytest.ini_options] below.
     "pytest-timeout>=2.4.0",
+    # shuffles every run and prints the seed, section 7's default;
+    # tests/README.md says what pytest-order above still holds under it.
+    "pytest-randomly>=4.1.0",
 ]
 # harness, plus what the suite delegates to.
 test = [
