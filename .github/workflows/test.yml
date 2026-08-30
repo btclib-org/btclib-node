@@ -97,7 +97,7 @@ on:
     # a commit that only edits prose would otherwise run the suite. The
     # changes job below asks the same question on the pull_request side,
     # where this list must not be repeated: "test: every job passed" is
-    # the name main's ruleset can require, and a required check that
+    # the name main's protection requires, and a required check that
     # produces no run at all blocks the merge instead of passing it.
     # What that job exempts is exempt here: the root prose, and the
     # detect-secrets baseline, which is a lint hook's input and nothing
@@ -582,7 +582,7 @@ jobs:
           assert not any('@' in req for req in reqs), reqs
           "
 
-  # the one name main's ruleset should have to name to require this
+  # the one name main's protection has to carry to require this
   # workflow, and it exists because such a rule names its checks as
   # literal strings, stored outside the repository: a job named there is
   # a name no pull request can review, and one that stops being produced
@@ -590,15 +590,22 @@ jobs:
   # until somebody remembers where the rule lives. This job depends on
   # the others instead, so the rule names one thing that never changes
   # and a job added here is gated on by being added.
-  # Naming it in the rule is not part of issue #33, which is the
-  # workflow files themselves rather than the repository settings around
-  # them. Nothing requires a status check here today: main-integrity
-  # carries signatures, linear history and no force push, and the
-  # classic protection where the aligned siblings keep their required
-  # contexts is empty -- see btclib-org/.github#88, which names this
-  # repository. This name is what it can require now
+  # It carries it: this name is a required check on main today, one of
+  # four, set through classic branch protection and not through any of
+  # the three rulesets -- main-integrity, main-self-merge and
+  # tag-integrity hold signatures, linear history, no force push,
+  # deletion and pull_request between them, and none of them a
+  # required_status_checks rule. REPOSITORY.md's *Required checks on
+  # main* is where that is read back off both endpoints, and is the one
+  # place it is stated: no list of the four is repeated here.
+  # This comment said the opposite until issue #749 -- that nothing
+  # required a status check and the classic protection was empty, citing
+  # btclib-org/.github#88. That was true when it was written and stopped
+  # being true with nothing to notice, #88 being the issue that records
+  # the state moving rather than one that holds it still
   test-passed:
-    # the name and not the id is what a ruleset matches, and it carries
+    # the name and not the id is what a required-check rule matches, in
+    # classic protection here and in a ruleset alike, and it carries
     # the workflow on purpose: a check is keyed by name alone, so two
     # workflows with a job named "every job passed" would produce one
     # ambiguous context. lint.yml needs no aggregate while it has one
@@ -607,7 +614,7 @@ jobs:
     name: "test: every job passed"
     needs: [changes, coverage, windows, dist]
     # not success(): a job whose dependencies failed is skipped, and a
-    # skipped check reports "skipped", which a ruleset counts as
+    # skipped check reports "skipped", which branch protection counts as
     # satisfied. The gate has to run to be able to fail.
     # not always() either: a cancellation of this run itself -- the
     # concurrency group superseding it with a newer push -- would reach
