@@ -5,15 +5,21 @@ and the answer that call gives today. A setting recorded as prose alone
 is one nobody can check; recorded this way, a drift is one command away
 from being seen.
 
-The rules and the settings live *outside* the tree: nothing below is
-recoverable by reading the repository. What is recorded is the settings
-[the standard](https://github.com/btclib-org/.github) asks about — the
-ones [section 16's
+The rules and the settings live *outside* the tree. What is recorded is
+the settings [the standard](https://github.com/btclib-org/.github) asks
+about — the ones [section 16's
 checklist](https://github.com/btclib-org/.github#16-checklists) sets on a
-new repository, and the ones a section of the standard states a rule
-for — together with whatever a call quoted for one of those answers
-alongside it. Where that scope ends is *What this file passes over*, at
-the foot.
+new repository, the ones a section of the standard states a rule for, and
+the ones a behaviour it describes rests on — together with whatever a
+call quoted for one of those answers alongside it. Where that scope ends
+is *What this file passes over*, at the foot.
+
+The topics and `.homepage` have a second form in the tree —
+`pyproject.toml`'s `keywords` and its `[project.urls]` field of that
+name — so each is read back here for comparison rather than as the only
+place the answer lives, which is what *Features, and the topics* and
+*Read the Docs* say of them. Nothing else here is recoverable by reading
+the repository.
 
 ## Required checks on main
 
@@ -239,26 +245,18 @@ than merged.
 
 ```shell
 gh api repos/btclib-org/btclib-node \
-  --jq '{wiki: .has_wiki, projects: .has_projects, issues: .has_issues,
-         visibility: .visibility, default_branch: .default_branch}'
-# {"default_branch":"main","issues":true,"projects":true,
-#  "visibility":"public","wiki":true}
+  --jq '{issues: .has_issues, visibility: .visibility,
+         default_branch: .default_branch}'
+# {"default_branch":"main","issues":true,"visibility":"public"}
 ```
 
-The wiki and the projects board are on, and the standard states no rule
-about either, so each is this repository's own answer rather than a
-divergence from one. The wiki holds nothing, this tree's documentation
-sitting beside what it describes:
+`has_issues` is what `CONTRIBUTING.md`'s *The issue tracker* rests on: an
+issue about this tree alone stays here.
 
-```shell
-git ls-remote https://github.com/btclib-org/btclib-node.wiki.git
-# remote: Repository not found.
-git ls-remote https://github.com/btclib-org/btclib-node.git
-# (the refs of this repository)
-```
-
-The second call is what says the first reports the wiki rather than the
-network or the credentials.
+Section 10's `scorecard` sentinel rests on the visibility: public is what
+it reads at all, so a flip to private leaves `scorecard.yml` and
+`README.md`'s badge standing while the run stops producing a score, and
+the answer above is what puts that flip one command from being seen.
 
 ```shell
 gh api repos/btclib-org/btclib-node --jq '.topics | join(", ")'
@@ -387,14 +385,21 @@ a run would build its database, be refused the SARIF, and report a
 failure it did not have. The `languages` and `query_suite` fields are
 what the setting *would* analyse, which is why `codeql.yml` matches them.
 
-## The concurrent-job ceiling
+## Plan-gated settings
+
+The ceiling on concurrent jobs is a number the plan decides rather than
+anything this repository configures, and section 10 of the standard
+makes this section its one home in the tree, beside the command that
+re-derives it:
 
 ```shell
 gh api orgs/btclib-org --jq '{plan: .plan.name}'
 # {"plan":"free"}
 ```
 
-The concurrent-job limit GitHub documents for that plan belongs to the
+[GitHub's own table](https://docs.github.com/en/actions/reference/limits)
+turns that answer into a number, twenty concurrent jobs on the free
+plan. They belong to the
 organization and not to this repository: every repository in it draws on
 the same allowance. So a matrix on every commit here is a slot a reviewer
 in a sibling repository waits behind, which is the argument for keeping
@@ -435,6 +440,10 @@ and the same way taking `3.14t` back out needed no ruleset change
 either, for issue #723. Re-run that section's own first command to
 confirm the required checks still hold; its answer, not this paragraph,
 is what is true today.
+
+The other plan-gated pair is secret scanning's non-provider patterns and
+its validity checks, read back under *Security and analysis* above,
+where the call that answers them is.
 
 ## The two publishing environments
 
@@ -627,12 +636,17 @@ rule grows this file with GitHub's API rather than with the standard.
 from the other end: they compose a merge commit *Merge methods* above
 reads back as a button this repository does not offer.
 
-**A facility nobody reached for.** Actions variables, Dependabot secrets,
-self-hosted runners, deploy keys, autolinks and custom property values
-each answer empty, and an empty answer records no decision:
+`has_wiki` and `has_projects` are outside the perimeter by section 11's
+own sentence, which states no rule about either, so this file neither
+reads them back nor explains an answer to them; that sentence is what the
+loop above would count, which is why the pair is not in its list.
+
+**A facility nobody reached for.** Actions variables, self-hosted
+runners, deploy keys, autolinks and custom property values each answer
+empty, and an empty answer records no decision:
 
 ```shell
-for e in actions/variables dependabot/secrets actions/runners \
+for e in actions/variables actions/runners \
          keys autolinks properties/values; do
   gh api "repos/btclib-org/btclib-node/$e" \
     --jq 'if type=="array" then length else .total_count end'
@@ -651,19 +665,24 @@ repository's.
 
 **A credential the organization holds.** `claude-review.yml` runs on
 `CLAUDE_CODE_OAUTH_TOKEN`, an organization secret visible to every
-repository, so this repository sets nothing for it and has nothing of its
-own to read back:
+repository, in both stores, so this repository sets nothing for it and
+has nothing of its own to read back:
 
 ```shell
 gh api orgs/btclib-org/actions/secrets \
   --jq '.secrets[] | "\(.name) \(.visibility)"'
-# CLAUDE_CODE_OAUTH_TOKEN all
+gh api orgs/btclib-org/dependabot/secrets \
+  --jq '.secrets[] | "\(.name) \(.visibility)"'
+# CLAUDE_CODE_OAUTH_TOKEN all, from each
 gh api repos/btclib-org/btclib-node/actions/secrets --jq '.total_count'
-# 0
+gh api repos/btclib-org/btclib-node/dependabot/secrets --jq '.total_count'
+# 0, from each
 ```
 
-The pair is what says the repository's own zero is inheritance rather
-than a credential it lacks.
+The pair is what says the repository's own zeros are inheritance rather
+than a credential it lacks, and it is why the Dependabot store is here
+rather than among the facilities above: an empty store there is where the
+standard's decision shows, not a facility nobody reached for.
 
 The price of the scope is a silent flip. A change to any of the above
 shows up in nothing here, and what would find it is somebody reading the
