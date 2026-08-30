@@ -2457,6 +2457,51 @@ where this file was written rather than where anything was tagged.
   *Plan-gated settings* for the ceiling's figure (issue
   btclib-org/.github#412).
 
+### `release.yml` says what `public-api`'s `needs:` entry orders (closes #733)
+
+- **The comment above `public-api` and the one on `publish-testpypi`
+  name the upload as what that entry orders.** `public-api` carries no
+  `needs:` of its own, so it starts when the run starts, beside the
+  lint and docs calls; the test call waits on `version-check`, and the
+  graph orders the two against each other neither way. The jobs that
+  name it are `publish-testpypi` and `publish-pypi`, so what the entry
+  holds is an upload until the surface has been read. The
+  job-to-`needs:` map the wording is checked against is
+  `grep -nE '^  [a-z0-9-]+:$|^    needs:' .github/workflows/release.yml`.
+  btclib-org/btclib#1536 is the same sentence in that tree's own
+  `release.yml`.
+
+### Every workflow-status badge reads `main` (closes #736)
+
+- **`README.md`'s workflow-status badges carry `?branch=main`**, which
+  section 2 of the organization standard requires of the gates' and the
+  sentinels' alike (issue btclib-org/.github#579): unqualified, such a
+  badge renders another branch's run where the workflow has none on
+  `main`, and nothing in the render says so.
+- **The whole row is qualified and not only the badge that was visibly
+  wrong**, which is wider than issue #736 measured: that issue is about
+  `vendored-vectors`, whose runs were all a feature branch's, where every
+  other badge in the row was reading `main` only because `main` happened
+  to have a run. A row qualified in part is one a reader cannot tell the
+  audited half of.
+- **`vendored-vectors.yml` is dispatched from `main`** rather than left
+  at `no status` until its calendar day, which is what section 2 asks
+  of a tree landing the badge and what its own `workflow_dispatch`
+  trigger is there for.
+
+### `REPOSITORY.md` names where the `os-windows` record is settled (issue #735)
+
+- **Section 10's *Which trees carry which sentinel* names this
+  repository under `os-windows`**, which the paragraph arguing the
+  `windows-latest` gate cell now says beside it, with
+  btclib-org/.github#618 as where the record and the tree are
+  reconciled.
+- **Nothing under `.github/workflows/` moves for it.** Section 10 makes
+  its record the decision a tree is short of, and also keeps what runs
+  weekly out of the gate; those point opposite ways for a tree whose
+  Windows cell gates, so #618 is the decision and this is not the tree
+  to take it in.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

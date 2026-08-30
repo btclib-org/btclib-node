@@ -225,9 +225,12 @@ jobs:
   # about which ones are allowed. Here the answer arrives while
   # RELEASE_NOTES.md is already being written, so a break with no entry
   # is refused at the moment somebody is already writing entries.
-  # Ahead of the test workflow below: a broken surface is worth knowing
-  # before that call's suite and dist build spend the wall clock they
-  # take
+  # It carries no `needs:`, so it starts when the run starts, beside the
+  # lint and docs calls; the test call waits on version-check and starts
+  # after it. Nothing in the graph orders this job against that one
+  # either way. What its place in the graph orders is the other end: the
+  # two publish jobs below name it, so no upload happens before the
+  # surface has been read.
   public-api:
     name: Check the public API against the last release
     runs-on: ubuntu-latest
@@ -378,9 +381,9 @@ jobs:
 
   publish-testpypi:
     name: Publish to TestPyPI
-    # public-api stays a need for ordering -- reading a broken surface
-    # before spending the platform sweeps' wall clock is the point,
-    # public-api's own comment says so -- but not for its result: that
+    # public-api stays a need for ordering -- this entry is what holds
+    # the upload until the surface has been read, public-api's own
+    # comment says so -- but not for its result: that
     # job's own comment calls it deliberately not a merge gate, and
     # `needs` without `always()` gates on every listed job regardless, a
     # skipped or failed job counting the same as one that never ran.

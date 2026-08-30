@@ -414,6 +414,14 @@ cell existed; the cell now runs what the sentinel ran, so the sentinel
 is gone rather than kept beside a gate cell duplicating it
 ([issue #430](https://github.com/btclib-org/btclib-node/issues/430)).
 
+Section 10's *Which trees carry which sentinel* names this repository
+under `os-windows`, so the organization's record and this tree disagree
+over whether a gate cell may stand in for a platform sentinel.
+[btclib-org/.github#618](https://github.com/btclib-org/.github/issues/618)
+is where that is settled, and
+[issue #735](https://github.com/btclib-org/btclib-node/issues/735) is
+this tree's half of it.
+
 `3.14t`, the interpreter axis's own second cell, is the row that trade
 stopped covering: it still runs, in `test.yml`'s `free-threaded` job,
 at the same cost as any other cell, but no longer gates, because
