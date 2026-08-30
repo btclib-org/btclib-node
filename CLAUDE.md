@@ -540,6 +540,22 @@ Do not use Fable unless explicitly instructed.
   subsection heading it belongs under, and compare byte for byte with
   a control, as for the other file.
 
+- **`CHANGELOG.md`'s own open section carries its citations on the
+  headings, and a new entry does not follow that.** A coder deriving the
+  convention from the file alone reads every `### heading` there closing
+  the issue beside it and would write the next one the same way; section
+  9's `CHANGELOG.md` and `RELEASE_NOTES.md` now says the citation sits
+  in the bullet making the claim, not on the heading above it, precisely
+  because a heading answering for the entry as a whole leaves the
+  bullets under it free to name issues of their own with nothing saying
+  how the two sets relate — which is what this tree's own
+  `### btclib-node reads bitcoin.conf (closes #583, closes #581, closes
+  #573)` heading and its bullets citing `#577` and `#589` separately
+  already show. Nothing already landed is rewritten for it (*Nothing
+  already written is rewritten*, same subsection): the next entry's
+  heading takes no citation, and each of its bullets cites the issue it
+  answers for (issue btclib-org/.github#586).
+
 - **`sysctl -n vm.loadavg` prints comma decimals under this machine's
   locale** (`{ 3,57 4,10 4,22 }`), so a shell wait-for-load loop that
   strips the fraction with `${l%.*}` never parses a number and waits
