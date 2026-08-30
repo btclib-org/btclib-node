@@ -14,6 +14,30 @@ where this file was written rather than where anything was tagged.
 
 ## Unreleased
 
+### `test.yml` says which checks `main` actually requires (closes #749)
+
+- **The comment above `test-passed` said nothing required a status
+  check, and four do.** It named `main-integrity` for signatures and
+  linear history and called the classic protection "empty", citing
+  btclib-org/.github#88. Read back today, classic protection carries
+  `Lint and type-check`, `test: every job passed`, `Build the
+  documentation` and `Regtest against Bitcoin Core`, and none of the
+  three rulesets holds a `required_status_checks` rule. #88 is the
+  issue that records that state *moving*, so the comment cited its own
+  evidence for the thing that evidence had stopped saying.
+- **It is the comment a reader consults to learn whether anything in
+  this file refuses a landing**, so anything keyed on it -- what a job's
+  place in `test-passed`'s `needs:` buys, how a report-only cell differs
+  from a gating one -- started from a false premise.
+- **`REPOSITORY.md`'s *Required checks on main* stays the one place the
+  four are listed**, and the comment points there instead of repeating
+  them, which is what kept the two statements able to disagree.
+- **Four other places named the wrong mechanism-holder.** The push
+  trigger's "the name main's ruleset can require", this job's own "what
+  a ruleset matches", and "which a ruleset counts as satisfied" are
+  classic branch protection in this tree, not a ruleset. Each now names
+  the mechanism, or is written to hold of either.
+
 ### `links.yml` asks lychee for the fragment too (issue btclib-org/.github#583)
 
 - **`.github/workflows/links.yml` passes `--include-fragments`.** A link
