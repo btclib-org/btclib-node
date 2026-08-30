@@ -176,13 +176,51 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
         node.p2p_manager.discourage(conn.address)
         conn.stop()
         return
-    if (
-        not version_msg.services & ServiceFlags.NODE_NETWORK
-        and node.status >= NodeStatus.BlockSynced
-    ):
-        node.p2p_manager.discourage(conn.address)
-        conn.stop()
-        return
+    # Core disconnects for missing services too, on a narrower and
+    # differently-shaped condition than this used to be:
+    # `ExpectServicesFromConn` (`net.h:847-856`, at
+    # bitcoin/bitcoin@ca7162cde5) is `false` for `INBOUND`, `MANUAL` and
+    # `FEELER` connections, `true` only for an outbound one Core itself
+    # dialled expecting given services from addrman. This tree has only
+    # two of Core's connection types -- inbound, and the outbound this
+    # node dials itself; no manual add-node, no feeler -- so the check
+    # below now runs only for `not conn.inbound`, an inbound peer never
+    # being disconnected for its services, matching Core's own scope
+    # rather than every connection (btclib-org/btclib-node#725; this
+    # used to test `NODE_NETWORK` alone on every connection, inbound
+    # included, and disconnected a peer this node itself never dialled
+    # for a service it never asked that peer to have).
+    #
+    # `desirable` below is `GetDesirableServiceFlags`'s own shape
+    # (`net_processing.cpp:1861-1869`): `NODE_NETWORK | NODE_WITNESS`
+    # ordinarily, or `NODE_NETWORK_LIMITED | NODE_WITNESS` -- satisfied
+    # by a `NODE_NETWORK_LIMITED`-only peer -- once this node's own
+    # `ApproximateBestBlockDepth()` is under
+    # `NODE_NETWORK_LIMITED_ALLOW_CONN_BLOCKS` (144). This tree computes
+    # no block-time depth estimate; `node.status >= NodeStatus.BlockSynced`
+    # stands in for "close to the tip" instead, kept as the gate on the
+    # whole check rather than only on the substitution below, matching
+    # this rule's own pre-#725 scope of tolerating a missing service
+    # until this node actually wants blocks -- a one-way latch
+    # `main.finish_sync` sets once `_ready_fork` finds no candidate left
+    # to beat the active chain (`main.settle_at_no_candidate`'s own
+    # docstring), stricter than Core's own 144-block allowance (true
+    # only once this node is fully caught up, not merely close) but the
+    # only "caught up" signal this tree already carries without
+    # computing a new one. The comparison itself is
+    # `HasAllDesirableServiceFlags`'s own shape (`net_processing.cpp:3850`,
+    # `!(desirable & ~services)`): `NODE_WITNESS` is already required of
+    # every connection above, so it is never the bit that trips this
+    # once reached, but it is kept in `desirable` for the same shape
+    # Core's own check has rather than a narrower one this tree invented.
+    if not conn.inbound and node.status >= NodeStatus.BlockSynced:
+        desirable = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
+        if version_msg.services & ServiceFlags.NODE_NETWORK_LIMITED:
+            desirable = ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS
+        if desirable & ~version_msg.services:
+            node.p2p_manager.discourage(conn.address)
+            conn.stop()
+            return
 
     conn.send(WtxidRelay())
     conn.send(SendAddrV2())

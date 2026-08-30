@@ -2367,6 +2367,36 @@ where this file was written rather than where anything was tagged.
   gives `PushNodeVersion` without `cs_main`, CPython's GIL making a
   single attribute's read and write each one uninterruptible step.
 
+### A peer that cannot serve blocks gets no block work (closes #725)
+
+- **`_request_new_block_work` now skips a connection outright when
+  neither `NODE_NETWORK` nor `NODE_NETWORK_LIMITED` is in its
+  `version_message.services`**, matching Core's own `CanServeBlocks`
+  gate (`net_processing.cpp:1254`, at bitcoin/bitcoin@ca7162cde5),
+  applied at the same point Core applies it, the call site of
+  `FindNextBlocksToDownload` (`net_processing.cpp:6495`). Such a peer
+  used to be offered the whole download window, as though it were
+  archival, because `_is_limited_peer` alone answers only "which
+  blocks", not "any at all" -- the two questions Core keeps as two
+  separate gates.
+- **`callbacks.version`'s own disconnect for a peer missing
+  `NODE_NETWORK` now runs only for an outbound connection, and now
+  accepts `NODE_NETWORK_LIMITED` alone once this node is close to the
+  tip**, matching Core's own `ExpectServicesFromConn`
+  (`net.h:847-856`, false for `INBOUND`, `MANUAL` and `FEELER`
+  connections) and `GetDesirableServiceFlags`
+  (`net_processing.cpp:1861-1869`, `NODE_NETWORK_LIMITED | NODE_WITNESS`
+  desirable once this node's own tip is within 144 blocks of its best
+  header). This used to test `NODE_NETWORK` alone on every connection,
+  inbound included, and discouraged and dropped a
+  `NODE_NETWORK_LIMITED`-only peer this tree's own new
+  `_can_serve_blocks` gate above (and Core's) both consider
+  block-capable -- exactly once this node was closest to the tip,
+  the condition under which Core is most willing to keep such a peer.
+  `node.status >= NodeStatus.BlockSynced` stands in for "close to the
+  tip", this tree computing no counterpart to Core's own
+  `ApproximateBestBlockDepth()`.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

@@ -563,6 +563,56 @@ def test_a_pruned_peer_is_let_go_only_once_the_blocks_are_synced() -> None:
     assert node.p2p_manager.discouraged == [peer.address]  # #283
 
 
+def test_a_node_network_limited_only_dialled_peer_is_kept_once_synced() -> None:
+    """A `NODE_NETWORK_LIMITED`-only peer this node dialled is not dropped.
+
+    Block-capable by this tree's own `_can_serve_blocks` (download.py)
+    and by Core's own `CanServeBlocks`, and accepted by Core's
+    `GetDesirableServiceFlags` (net_processing.cpp:1861-1869) once close
+    to the tip -- exactly the condition `BlockSynced` stands in for.
+    Closes the gap #725's round 1 review found: this used to test
+    `NODE_NETWORK` alone and refused such a peer.
+    """
+    limited = ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS
+    node = a_handshake_node(status=NodeStatus.BlockSynced)
+    peer = a_peer(inbound=False)
+    version(node, a_version(services=limited), peer)
+    assert not peer.stopped
+    assert not node.p2p_manager.discouraged
+
+
+def test_an_inbound_peer_with_neither_service_is_kept() -> None:
+    """An inbound peer is never disconnected for its services, Core's own scope.
+
+    `ExpectServicesFromConn` (net.h:847-856, at bitcoin/bitcoin@ca7162cde5)
+    is `false` for an inbound connection -- this node accepted it, and
+    never asked it for any particular service, so a missing one is not
+    grounds to drop it, however synced this node is.
+    """
+    pruned = ServiceFlags.NODE_WITNESS
+    node = a_handshake_node(status=NodeStatus.BlockSynced)
+    peer = a_peer(inbound=True)
+    version(node, a_version(services=pruned), peer)
+    assert not peer.stopped
+    assert not node.p2p_manager.discouraged
+
+
+def test_a_dialled_peer_with_neither_service_is_dropped_once_synced() -> None:
+    """A peer this node dialled, offering neither service, is refused.
+
+    The pruned-peer test above already covers this with `a_peer()`'s
+    own default `inbound=False`; spelled out explicitly here as the
+    third of the three cases #725's round 1 review asked for, beside
+    the two above.
+    """
+    pruned = ServiceFlags.NODE_WITNESS
+    node = a_handshake_node(status=NodeStatus.BlockSynced)
+    peer = a_peer(inbound=False)
+    version(node, a_version(services=pruned), peer)
+    assert peer.stopped == [True]
+    assert node.p2p_manager.discouraged == [peer.address]
+
+
 def test_a_version_that_says_it_relays_nothing_is_taken_at_its_word() -> None:
     """A `version` with `relay=False` sets `relay_tx` false, right attribute.
 

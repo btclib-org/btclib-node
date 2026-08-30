@@ -187,20 +187,52 @@ def _inbound_net_class(address: NetworkAddressV2) -> BIP155Network | int:
     return address.network_id
 
 
+def _can_serve_blocks(conn: Connection) -> bool:
+    """Whether `conn` can serve this node blocks at all.
+
+    Core's own `CanServeBlocks` (net_processing.cpp:1254, at
+    bitcoin/bitcoin@ca7162cde5): `NODE_NETWORK` or `NODE_NETWORK_LIMITED`
+    advertised, either being enough. Core applies it at the call site of
+    `FindNextBlocksToDownload` (net_processing.cpp:6495) -- the same
+    point `_request_new_block_work` below applies it, gating a
+    connection out of block work entirely rather than folding it into
+    `_reachable_blocks`' own per-candidate filter, which is Core's own
+    separation too: `CanServeBlocks` and `IsLimitedPeer` are two
+    different questions there, "can this peer serve blocks at all" and
+    "which ones", and `FindNextBlocks`
+    (net_processing.cpp:1575-1645) only asks the second once the first
+    has already passed. `True` for a connection with no
+    `version_message` rather than a raised `AttributeError` or a `False`
+    that would newly restrict it: `_is_limited_peer` below reads the
+    same absence permissively, `False` there meaning "not limited" and
+    so unrestricted, and the two gates read the same missing state the
+    same direction for the same reason -- every connection
+    `_request_new_block_work` below ever sees has a `version_message` by
+    the time it is promoted, `callbacks.verack` guaranteeing it, so this
+    branch is only ever exercised defensively and never in place of the
+    real check. btclib-org/btclib-node#725
+    """
+    version_msg = conn.version_message
+    if version_msg is None:
+        return True
+    services = version_msg.services
+    return bool(
+        services & (ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_NETWORK_LIMITED)
+    )
+
+
 def _is_limited_peer(conn: Connection) -> bool:
     """Whether `conn` can only serve blocks near its own tip.
 
     Core's own `IsLimitedPeer` (net_processing.cpp:1261, at
     bitcoin/bitcoin@ca7162cde5): `NODE_NETWORK_LIMITED` advertised and
     `NODE_NETWORK` not -- a full archival peer sets both, so this misses
-    it, and so does a peer with neither, which Core keeps out of
-    `FindNextBlocksToDownload` with a separate gate, `CanServeBlocks`
-    (net_processing.cpp:1254, at bitcoin/bitcoin@ca7162cde5), that this
-    tree does not have: `callbacks.version` refuses such a peer only
-    once the node is `BlockSynced`, so during initial block download it
-    is offered the whole window here as if it were archival (issue
-    #725). `False` for a connection with no `version_message` rather
-    than a raised
+    it, and so does a peer with neither, which is `_can_serve_blocks`
+    above's own question rather than this one: this tree used to have
+    no counterpart to Core's separate `CanServeBlocks` gate, offering
+    such a peer the whole download window as if it were archival
+    (issue #725, fixed in `_request_new_block_work` below). `False` for
+    a connection with no `version_message` rather than a raised
     `AttributeError`: every connection `_request_new_block_work` below
     ever sees has one, `callbacks.verack` refusing to promote one that
     does not, but that invariant lives in `p2p/callbacks.py` and not
@@ -785,6 +817,17 @@ class DownloadManager:
             if conn.download_queue == [] and not conn.pending_eviction:
                 if not waiting and not pending:
                     return
+                # `_can_serve_blocks`'s own docstring is where gating a
+                # connection out of block work entirely, here rather
+                # than inside `_reachable_blocks`, is argued against
+                # Core's own two-gate structure. A peer that fails it is
+                # `continue`, not `return`, for the same reason
+                # `_reachable_blocks` finding nothing reachable is:
+                # `waiting` and `pending` still hold work for whichever
+                # other connection this same pass reaches next.
+                # btclib-org/btclib-node#725
+                if not _can_serve_blocks(conn):
+                    continue
                 reachable_waiting = self._reachable_blocks(conn, waiting)
                 if reachable_waiting:
                     new = reachable_waiting[:MAX_BLOCKS_PER_GETDATA_BURST]
