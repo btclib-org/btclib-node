@@ -388,7 +388,7 @@ repos:
   # comment until this hook reads it. Both this and actionlint report
   # nothing on this tree today, which is the state they are here to keep
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
-    rev: v1.29.0
+    rev: v1.30.0
     hooks:
       - id: zizmor
         # offline is what it does by default, said out loud: it warns
@@ -420,7 +420,7 @@ repos:
   # checked only staged files unless given --enforce-all, so under
   # "pre-commit run --all-files" it checked nothing
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.4
+    rev: v0.16.5
     hooks:
       - id: ruff-check
         name: ruff check (in place fixes)
@@ -463,7 +463,7 @@ repos:
         pass_filenames: false
         require_serial: true
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 0.12.5
+    rev: 0.12.7
     hooks:
       # keep uv.lock in sync with pyproject.toml
       - id: uv-lock
