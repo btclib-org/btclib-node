@@ -2929,6 +2929,40 @@ where this file was written rather than where anything was tagged.
   decides whether that coroutine's body runs, and nothing in the test
   asserts on it.
 
+### `release.yml` says what `public-api`'s `needs:` entry orders
+
+- **The comment above `public-api` and the one on `publish-testpypi`
+  name the upload as what that entry orders** (closes #733).
+  `public-api` carries no `needs:` of its own, so it starts when the
+  run starts, beside the lint and docs calls; the test call waits on
+  `version-check`, and the graph orders the two against each other
+  neither way. The jobs that name it are `publish-testpypi` and
+  `publish-pypi`, so what the entry holds is an upload until the
+  surface has been read. The job-to-`needs:` map the wording is
+  checked against is
+  `grep -nE '^  [a-z0-9-]+:$|^    needs:' .github/workflows/release.yml`.
+  btclib-org/btclib#1536 is the same sentence in that tree's own
+  `release.yml`.
+
+### Every workflow-status badge reads `main`
+
+- **Every one of `README.md`'s fifteen workflow-status badges carries
+  `?branch=main`** (closes #767), which section 2 of the organization
+  standard requires of the gates' and the sentinels' alike (issue
+  btclib-org/.github#579): unqualified, such a badge renders another
+  branch's run where the workflow has none on `main`, and nothing in
+  the render says so.
+- **The badge that was visibly wrong is `vendored-vectors`** (closes
+  #736), whose runs were all a feature branch's, where every other
+  badge in the row was reading `main` only because `main` happened to
+  have a run. #767 is the row, #736 the one member of it whose render
+  had already gone wrong, and a row qualified in part is one a reader
+  cannot tell the audited half of.
+- **`vendored-vectors.yml` is dispatched from `main`** (closes #736)
+  rather than left at `no status` until its calendar day, which is what
+  section 2 asks of a tree landing the badge and what its own
+  `workflow_dispatch` trigger is there for.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
