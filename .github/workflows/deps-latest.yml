@@ -2,8 +2,9 @@
 name: deps-latest
 
 # the dependency sentinel: everything uv resolves, upgraded to the newest
-# release that satisfies pyproject.toml, and then put through the suite
-# and the lint gate.
+# release that satisfies pyproject.toml, and then put through the suite,
+# the lint gate and the packaging checks -- the three btclib-org/.github's
+# README.md section 10 names this sentinel for.
 #
 # Every dependency of this project is declared as a floor rather than a
 # pin, and the reason is in pyproject.toml: btclib's `main` moves under
@@ -102,12 +103,15 @@ jobs:
       # --upgrade re-resolves every entry to the newest release that
       # satisfies pyproject.toml, which nothing else off a pull request
       # does -- btclib's own `main` included, since [tool.uv.sources]
-      # points there rather than at a release. It prints one
-      # "Update <pkg> vA -> vB" line per package it moves, so the log
-      # names the suspects without a diff of uv.lock; a run that moved
-      # nothing says so, and its green means nothing new. This rewrites
-      # uv.lock, harmless on an ephemeral checkout and worth knowing
-      # before running the same command in a working tree
+      # points there rather than at a release. It prints one "Updated
+      # <pkg> vA -> vB" line per package it moves, so the log names the
+      # suspects without a diff of uv.lock. The same command under
+      # --dry-run prints "Update" instead, so a reader checking this
+      # quotation the cheap way is told the line is wrong when it is
+      # right; a run that moved nothing says so, and its green means
+      # nothing new. This rewrites uv.lock, harmless on an ephemeral
+      # checkout and worth knowing before running the same command in a
+      # working tree
       - name: Upgrade every dependency to its latest release
         run: uv lock --upgrade
 
@@ -189,3 +193,64 @@ jobs:
         run: >-
           uv run --locked --only-group lint
           pre-commit run --all-files --show-diff-on-failure
+
+  # the check group, and the only run of it against an upgraded lock.
+  # These steps are --locked too, keeping the convention suite-latest
+  # states above -- no uv command in these workflows installs from a
+  # lock it has not checked -- so what differs is which lock and not the
+  # flag: the step above has just rewritten this one, where test.yml's
+  # dist job, the group's other consumer, runs twine,
+  # check-wheel-contents and pyroma against the committed lock and so at
+  # the releases uv.lock pins.
+  # A pyroma that scores this metadata below the --min 10 ratchet, or a
+  # twine that refuses metadata this project publishes, is otherwise met
+  # on the tag that consumes the version rather than on a schedule.
+  #
+  # Narrower than test.yml's dist deliberately. What that job does and
+  # this one does not is produce the files release.yml's publish jobs
+  # download -- the build timestamp pin, the sdist normalizer, the bill
+  # of materials, the checksums and the two uploads -- which a run that
+  # commits nothing and publishes nothing has no consumer for; and its
+  # wheel smoke-test, which installs into a fresh venv with no lock in
+  # play, so the resolution that step reads is already the newest
+  # releases on every pull request that reaches it -- dist is gated on
+  # the pull request being neither a draft nor closed and on `changes`
+  # answering that code moved, so a prose-only one does not run it
+  #
+  # check-sdist, the fourth member of the group, is not a step of this
+  # job either: it is a pre-commit hook pinned by rev, which the upgrade
+  # above does not reach, and lint-latest already runs it at that rev.
+  dist-latest:
+    name: Build the distribution and inspect it, dependencies at latest
+    runs-on: ubuntu-latest
+    # a build and three inspections of what it wrote; a job that takes
+    # minutes is hung
+    timeout-minutes: 15
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      - name: Upgrade every dependency to its latest release
+        run: uv lock --upgrade
+
+      # uv build builds the sdist first and then the wheel from it, not
+      # both from the source tree, so the three steps below read what a
+      # user installing from source would get
+      - name: Build the distribution files
+        run: uv build
+
+      - name: Check the metadata and the long description
+        run: uv run --locked --only-group check twine check --strict dist/*
+
+      - name: Check the wheel contents
+        run: uv run --locked --only-group check check-wheel-contents dist/*.whl
+
+      - name: Rate the packaging metadata
+        run: uv run --locked --only-group check pyroma --min 10 dist/*.tar.gz
