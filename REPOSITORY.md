@@ -661,13 +661,12 @@ own sentence, which states no rule about either, so this file neither
 reads them back nor explains an answer to them; that sentence is what the
 loop above would count, which is why the pair is not in its list.
 
-**A facility nobody reached for.** Actions variables, self-hosted
-runners, deploy keys, autolinks and custom property values each answer
-empty, and an empty answer records no decision:
+**A facility nobody reached for.** Self-hosted runners, deploy keys,
+autolinks and custom property values each answer empty, and an empty
+answer records no decision:
 
 ```shell
-for e in actions/variables actions/runners \
-         keys autolinks properties/values; do
+for e in actions/runners keys autolinks properties/values; do
   gh api "repos/btclib-org/btclib-node/$e" \
     --jq 'if type=="array" then length else .total_count end'
 done
@@ -681,7 +680,9 @@ answers non-empty, so the zeros above it are absences rather than a
 call that reports nothing. Webhooks are not among them: *Read
 the Docs* above reads that endpoint back, an empty answer there being
 what says the integration is the GitHub App rather than a hook of this
-repository's.
+repository's. The repository's Actions variables are not among them
+either: *A switch this repository does not set* below reads that store,
+its zero being half of what records the review switch's off state.
 
 **A credential the organization holds.** `claude-review.yml` runs on
 `CLAUDE_CODE_OAUTH_TOKEN`, an organization secret visible to every
@@ -703,6 +704,30 @@ The pair is what says the repository's own zeros are inheritance rather
 than a credential it lacks, and it is why the Dependabot store is here
 rather than among the facilities above: an empty store there is where the
 standard's decision shows, not a facility nobody reached for.
+
+**A switch this repository does not set.** `claude-review.yml` guards
+its jobs with `vars.CLAUDE_REVIEW_ENABLED`, and neither variable store
+holds it:
+
+```shell
+gh api repos/btclib-org/btclib-node/actions/variables --jq '.total_count'
+# 0
+gh api orgs/btclib-org/actions/variables --jq '.variables[].name'
+# (nothing)
+gh api orgs/btclib-org/actions/variables --jq '.total_count'
+# 0
+```
+
+The organization secret above answering with a name is what makes these
+zeros absences rather than an endpoint that answers empty for everyone.
+The variable store prints nothing at all when it answers, so its own
+`total_count` of `0` is what shows the call reached it: one that does not
+reach it prints an error and exits non-zero. Section 11 reads that empty
+name list as `vars.CLAUDE_REVIEW_ENABLED`'s off state, an undefined
+`vars.X` being the empty string. Both stores are read because a variable
+set here would take precedence over one of the same name set on the
+organization, so the organization's answer alone would not show the
+switch off for this tree.
 
 The price of the scope is a silent flip. A change to any of the above
 shows up in nothing here, and what would find it is somebody reading the
