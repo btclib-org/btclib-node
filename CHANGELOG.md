@@ -2798,6 +2798,49 @@ where this file was written rather than where anything was tagged.
   SQLite the interpreter was built against. It asks for the version of
   `rocksdict`, the wheel platform and interpreter pick.
 
+### `_gating()` reads a conditioned step as one that may not have run
+
+- **A job whose pytest steps all carry an `if:` no longer counts as the
+  merge gate running the interpreter it names.** Its setup step still
+  names that interpreter unconditionally, but the job's own conclusion
+  does not require the gated step to have run -- `free-threaded`'s own
+  sync fails on every run today (issue #723), so the job is green with
+  its suite never exercised. `_runs_the_suite` tells the two apart, and
+  no job the gate waits on takes that branch today (closes #750).
+- **A `uses: ./...` an unconditioned step of a gating job calls is read
+  too, the same way `test_every_declaration_was_read` already reads
+  every workflow and composite action** (closes #757): what such an
+  action pins is invisible to a read that stops at the workflow file,
+  the call site naming no interpreter of its own.
+- **The two are one rule, applied once.** A step that may not run is
+  not evidence the gate runs what it names, and it is no more evidence
+  of what it reaches, so every conditioned step is excised from a job
+  before either reader looks at it -- a `python-version:`, a `--python`
+  and a `uses: ./...` all refused by the same excision rather than by a
+  rule restated per reader. That matters here rather than in the
+  abstract: the gate's only local-action call is `dist`'s, gated
+  `if: inputs.version-suffix != ''`, which holds on a release rehearsal
+  and on neither a pull request nor a push to `main`. Followed
+  unconditionally it would have made an interpreter the gate never runs
+  count as one it does, which is the "it passed somewhere" section 3 of
+  the organization standard refuses and the whole ground of issue #750.
+  No job the gate waits on calls a local action from an unconditioned
+  step today, so the follow is held by a unit test on job text of its
+  own rather than by the real workflow -- a walk that finds nothing,
+  named as one rather than left to read as coverage.
+- **An action's own comments are dropped before it is read**, as a
+  workflow's already were (issue #757): a commented-out step carries
+  `--python` in exactly the form this read matches, so an unstripped
+  read would have reported an interpreter the gate does not run --
+  the same false positive as the two above, one scale further down.
+- **A step conditioned on its own dash line counts as conditioned**
+  (issue #750): YAML puts a mapping's first key on the sequence's dash
+  or on the line below it indifferently, and this tree writes both
+  forms, so a read anchored on the deeper indent alone saw only the
+  second. For a `uses:` that miss withheld; for an `if:` it admitted,
+  reading a conditioned step as one that always runs -- which is the
+  over-count the entry above exists to refuse.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
