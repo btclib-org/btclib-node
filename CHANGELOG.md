@@ -3032,6 +3032,31 @@ where this file was written rather than where anything was tagged.
   PyPI install, and names a commit through the release tag. The two
   templates are one sentence in two files, so they are one change.
 
+### `test.yml`'s header cites the design, not an issue tracking its absence
+
+- **The paragraph on the organization's one-image, one-interpreter gate
+  states section 10's own interpreter carve-out** (closes #764). It named
+  btclib-org/.github#390 as tracking this file's divergence, in the
+  present tense, where that issue is closed as completed and the pull
+  request closing it is what wrote the section 10 paragraph carving an
+  interpreter axis out of the rule.
+- **Section 10 now carves out the platform axis too, and the paragraph
+  states that rather than pointing at the issue that settled it.** A
+  platform row leaves a tree's entry where a gate cell asks the whole of
+  what that tree's sentinel asked, and section 10 names this tree on that
+  ground -- the `windows` job gating a `windows-latest` cell at the
+  interpreter `.python-version` pins, on the suite passing and not on the
+  coverage floor. So the Windows row here is sanctioned rather than
+  merely unreviewed, and no `os-windows.yml` is owed back.
+- **That second half was written twice, and the first version was the
+  same defect this entry is about.** It named the question as open and
+  cited btclib-org/.github#618 for it, which was true when written and
+  false once that issue landed -- a citation in the present tense
+  outliving what it cites, which is exactly what the `#390` reference
+  above had done. A paragraph that names an open
+  question cannot be written to survive the answer; only one that states
+  what the standard says can.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

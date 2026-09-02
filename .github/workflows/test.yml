@@ -16,18 +16,32 @@ name: test
 #
 # The organization's own design keeps a gate to one image and one
 # interpreter, at the ceiling the plan puts on the organization's
-# concurrent jobs, and a platform row belongs in the weekly calendar
-# under that design -- `os-macos.yml`'s own header states the rule, for
-# the row it keeps out of this file, and btclib-org/.github#390 tracks
-# this file's own growing divergence from it, the interpreter cell
-# above having opened it. Here it puts the Windows row in too: every
-# cell above runs as a parallel job rather than in sequence, so each
-# one's cost is one more job at the ceiling and no extra wait, against a
-# review that takes longer than any of them does regardless -- and for
-# this row specifically, a platform with no history here has no
-# regressions yet, only defects, which a week's sentinel wait would
-# leave unnoticed for a week rather than caught at the pull request
-# that introduced them (issue #430).
+# concurrent jobs. Section 10 of btclib-org/.github's README carves two
+# axes out of that, and the Windows row below is on the second. An extra
+# interpreter cell belongs in the gate rather than in the calendar
+# exactly where it runs in parallel with the cells already in the job,
+# so the ceiling absorbs it without lengthening the wait, and where what
+# it claims is the pinned interpreter run a second time rather than a
+# version the package newly claims to support. Section 10's own
+# "exactly" is what makes those two conditions rather than a
+# description. A platform row leaves a tree's entry where a gate cell
+# asks the whole of what that tree's sentinel asked -- and section 10
+# names this tree on that ground, `btclib-node` being out of the
+# `os-windows` entry because the `windows` job below gates a
+# `windows-latest` cell at the interpreter `.python-version` pins, which
+# is the whole of what the sentinel ran. That cell gates on the suite
+# passing and not on the coverage floor, which is what section 10 asks
+# of it. So the Windows row here is sanctioned rather than merely
+# unreviewed, and this tree owes no `os-windows.yml` back
+# (btclib-org/.github#618, btclib-org/btclib-node#735). Every cell above
+# runs as a parallel job rather than in sequence, so each one's cost is
+# one more job at the ceiling and no extra wait, against a review that
+# takes longer than any of them does regardless -- and for this row
+# specifically, a platform with no history here has no regressions yet,
+# only defects, which a week's sentinel wait would leave unnoticed for a
+# week rather than caught at the pull request that introduced them
+# (issue #430). `os-macos.yml`'s own header states the trade for the row
+# it keeps out of this file.
 #
 # `3.14t`, that same interpreter's free-threaded build, runs beside it
 # in the `free-threaded` job below but does not gate. Issue #387 put
