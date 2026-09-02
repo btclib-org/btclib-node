@@ -9,21 +9,27 @@ name: pypi-install
 # index and not to a source tree.
 #
 # `import btclib_node` runs __init__.py alone, and what a bare import
-# cannot see is the runtime path a user actually exercises. The store's
-# own compiled extension is not that gap: the store is RocksDB through
-# `rocksdict`, which `import btclib_node` pulls in of its own accord,
-# `src/btclib_node/db.py` being what depends on it. This package
-# unconditionally depends on `btclib[secp256k1]` as well, and there an
-# import that returns settles nothing -- `btclib._libsecp256k1` degrades
-# a broken pair silently to the Python arithmetic, tens of times slower
-# and not constant-time, rather than failing on import. So the checks
-# below ask past the import: that the bindings this package always
-# pulls in actually serve, and that a
-# `Node` this package's own class builds and starts on regtest comes
-# back down cleanly, which is the one thing every one of this
-# repository's own functional tests already exercises against a source
-# tree and this workflow is the only place that exercises against the
-# index.
+# cannot see is the runtime path a user actually exercises. The store
+# is where the tree and the index currently disagree: this tree's own
+# store is RocksDB through `rocksdict`, `src/btclib_node/db.py` being
+# what depends on it, but the one release this workflow installs --
+# `btclib-node` 2026.8.27 -- declares no store dependency at all, its
+# own `db.py` importing the stdlib `sqlite3` instead, so no cell below
+# resolves a `rocksdict` wheel. `pyproject.toml` already depends on
+# `rocksdict>=0.3.29`, unreleased, so what this paragraph describes holds
+# for as long as 2026.8.27 is the newest release and for no longer:
+# whoever reads it against a later one measures the index again rather
+# than trusting the sentence. This package unconditionally depends on
+# `btclib[secp256k1]` as well, and there an import that returns settles
+# nothing -- `btclib._libsecp256k1` degrades a broken pair silently to
+# the Python arithmetic, tens of times slower and not constant-time,
+# rather than failing on import. So the checks below ask past the
+# import: that the bindings this package always pulls in actually
+# serve, and that a `Node` this package's own class builds and starts
+# on regtest comes back down cleanly, which is the one thing every one
+# of this repository's own functional tests already exercises against
+# a source tree and this workflow is the only place that exercises
+# against the index.
 #
 # A schedule is also something GitHub itself stops firing: it suspends a
 # workflow's cron trigger after sixty days without repository activity,
@@ -107,13 +113,13 @@ jobs:
         # own header is why aarch64 Linux is here at all -- this package
         # resolves a different published btclib_secp256k1 wheel there
         # from the one ubuntu-latest installs -- os-macos.yml's is why
-        # both macOS images are here rather than one, the wheels a
-        # Darwin cell resolves, the store's among them, being the
-        # architecture's where the start method that file argues from
-        # is the platform's -- and test.yml's `windows` job is why
-        # windows-latest is here: this package's classifiers now name
-        # Windows too (issue #430), and this workflow checks that claim
-        # against the index the way it already checks the other two
+        # both macOS images are here rather than one, the btclib_secp256k1
+        # wheel a Darwin cell resolves being the architecture's where the
+        # start method that file argues from is the platform's -- and
+        # test.yml's `windows` job is why windows-latest is here: this
+        # package's classifiers now name Windows too (issue #430), and
+        # this workflow checks that claim against the index the way it
+        # already checks the other two
         os:
           - ubuntu-latest
           - ubuntu-24.04-arm
