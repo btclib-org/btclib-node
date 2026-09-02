@@ -239,11 +239,15 @@ repos:
   # widening that grep either: an autodoc anchor renders the identical
   # shape, "#btclib_node.chains.Chain" among them.
   #
-  # This tree carries no badge link today (`grep -rn '!\[' *.md` answers
-  # nothing), so the badge case the pattern below also has to survive is
-  # untested evidence here rather than measured; the pattern itself is
-  # the organization's own (btclib-org/.github#20), read from a sibling
-  # that does carry one.
+  # `git grep -c -- '!\[' -- '*.md'` answers `README.md` alone: the tree
+  # does carry a badge row, and the badge case the pattern below also has
+  # to survive is still not measured by it. Every destination on that row
+  # is absolute, so the scheme lookahead decides each of those lines
+  # before the lookbehind's `!` and `[` are reached, and a pattern with
+  # that half deleted leaves the row green along with the rest of the
+  # tree -- an input that cannot carry the damage rather than a test of
+  # it. The pattern itself is the organization's own
+  # (btclib-org/.github#20).
   #
   # "../" is the row with nothing downstream behind it at all, which is
   # why it is refused here rather than allowed as an ordinary relative
