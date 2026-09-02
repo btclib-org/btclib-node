@@ -37,10 +37,13 @@ spendable simply gone. `rocksdict` was chosen over `plyvel` -- the
 library #107 measured LevelDB itself through -- because `plyvel` is
 dead against this tree's `requires-python = ">=3.14"`: no cp314 wheel
 at all, one platform, last released 2024-01
-(btclib-org/btclib-node#641). `rocksdict` ships cp314 wheels on nine
-platforms (`win_arm64` alone building from source), `py.typed` plus a
-`.pyi`, current releases -- #107's own packaging argument, answered on
-today's numbers rather than assumed to still hold.
+(btclib-org/btclib-node#641). `rocksdict` ships cp314 wheels for
+macOS, Linux and `win_amd64`, `py.typed` plus a `.pyi`, current
+releases -- #107's own packaging argument, answered on today's numbers
+rather than assumed to still hold. What it does not ship is an sdist,
+on any of its releases, so a platform its wheel matrix does not carry,
+`win_arm64` among them, fails at resolution rather than building from
+source.
 
 What is accepted in exchange, stated whole rather than left implicit: a
 compiled dependency returns, narrowing "wherever Python runs" to

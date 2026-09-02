@@ -2841,6 +2841,25 @@ where this file was written rather than where anything was tagged.
   reading a conditioned step as one that always runs -- which is the
   over-count the entry above exists to refuse.
 
+### What `rocksdict` publishes, and what a dropped resource warns
+
+- **`pyproject.toml`'s argument against an `OS Independent` classifier
+  said `rocksdict` carries an sdist, and `src/btclib_node/db.py`'s
+  argument for choosing it over `plyvel` said `win_arm64` builds from
+  source** (closes #777). It publishes wheels and no sdist, on every
+  one of its releases, and no `win_arm64` wheel on any of them, so
+  that platform fails at resolution rather than compiling. The
+  paragraph's own opening went with it: it had said the dependencies
+  are not what argues against the classifier, which held only while
+  they were believed to install everywhere. One of them now makes the
+  install fail outright on one architecture, so the paragraph names two
+  arguments rather than dismissing one.
+- **The comment above `filterwarnings` named a sqlite connection**
+  (closes #774) among what `tests/conftest.py`'s fixtures close, and
+  the store is RocksDB through `rocksdict` (#641). A dropped `Rdict`
+  raises no `ResourceWarning`, where a socket, an event loop, a worker
+  pool and an open file each raise one, so the comment names those.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
