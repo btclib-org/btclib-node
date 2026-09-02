@@ -74,14 +74,15 @@ body:
   - type: input
     id: platform
     attributes:
-      label: Platform, interpreter and SQLite
+      label: Platform, interpreter and store
       description: >
         `python -VV`, the operating system with its architecture, and
-        `python -c 'import sqlite3; print(sqlite3.sqlite_version)'`. The
-        store is the standard library's `sqlite3`, which binds whatever
-        SQLite the interpreter was built against, so its version is part
-        of the environment rather than of the lock file.
-      placeholder: "CPython 3.14.6, Ubuntu 24.04 x86_64, SQLite 3.45.1"
+        `python -c 'from importlib.metadata import version;
+        print(version("rocksdict"))'`. The store is RocksDB through
+        `rocksdict`, a compiled wheel picked by platform and
+        interpreter, so which RocksDB is running follows the
+        environment and not the source tree.
+      placeholder: "CPython 3.14.6, Ubuntu 24.04 x86_64, rocksdict 0.3.29"
     validations:
       required: true
 
