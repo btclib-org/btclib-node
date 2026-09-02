@@ -30,7 +30,9 @@ name: deps-oldest
 # [dependency-groups] entries the suite step below installs, which uv
 # calls direct dependencies too and which this resolution moves. A
 # group entry declaring no lower bound at all has no floor to verify,
-# and uv warns on each one it finds -- issue #761 is that list.
+# and uv warns on each one it finds; pyproject.toml's own header over
+# [dependency-groups] is where the bound every entry there carries is
+# argued (issue #761).
 #
 # One interpreter and one image, on requires-python's own floor: no
 # matrix, because a floor is one claim to verify rather than a range to
