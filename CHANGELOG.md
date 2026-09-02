@@ -3073,6 +3073,31 @@ where this file was written rather than where anything was tagged.
   by the test until this teardown runs, so a test that reopens the
   same store needs the `close()` to have actually run.
 
+### The docs-gate bullet states the condition it actually catches
+
+- **`CLAUDE.md` said the docs build refuses a closing backtick right
+  before a bare letter, and `src/btclib_node/db.py`'s own docstring
+  carries `` `Coin`s `` while the gate stays green over it** (closes
+  #784). Docutils only reports that shape where its paragraph has no
+  *later* single backtick to close a title-reference with instead;
+  where one exists, as it does in `db.py` and in
+  `src/btclib_node/p2p/connection.py`, the reference is rendered --
+  swallowing everything between the two backticks -- and nothing warns.
+- **The two-sided reproduction is a scratch page, not a hand trace**
+  (closes #784): the identical sentence with a later backtick to
+  rescue it builds silently, and the same sentence with nothing after
+  it draws "Inline interpreted text or phrase reference start-string
+  without end-string" at the line the backtick opens, which
+  `sphinx-build -W` turns into exit 1.
+- **The citation the old bullet carried for its underscore-prefixed
+  claim named the wrong issue** (closes #784): #569 is the
+  `verify_mempool_acceptance` height off-by-one `CLAUDE.md` argues two
+  paragraphs above it, reused here by mistake rather than naming
+  anything about a docs build. The exemption itself still holds --
+  `_default_worker_count`, `_tasks` and `Node.__del__` all carry the
+  construct, and autodoc renders none of their docstrings without
+  `:private-members:` or `:special-members:`.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

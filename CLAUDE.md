@@ -641,18 +641,33 @@ Do not use Fable unless explicitly instructed.
   2026-08-29, after every suite of one session had waited ten minutes
   for a load that was under the bound the whole time.
 
-- **The docs build is a third gate, and it is the one a report leaves
-  out.** `CONTRIBUTING.md` names three; a report naming two reads as
-  complete, and the reader supplies the third from memory. What it
-  catches that nothing else does is RST: a closing backtick directly
-  followed by a bare letter -- `` `Coin`s `` -- is not a valid
-  end-string, so docutils reports the *opening* backtick as
-  unterminated and `sphinx-build -W` turns that warning into exit 1,
-  where `pytest` and the lint gate both stay green. It is latent rather
-  than obvious because autodoc never renders an underscore-prefixed
-  function's docstring, so the same pattern sat unreported in
-  `_default_worker_count` and `_tasks` until a branch put it on a class
-  in `__all__` (btclib-org/btclib-node#569).
+- **The docs build is a third gate, and it does not refuse every closing
+  backtick directly followed by a bare letter.** `CONTRIBUTING.md`
+  names three gates; a report naming two reads as complete, and the
+  reader supplies the third from memory. `` `Coin`s `` only fails the
+  build where its paragraph carries no *later* single backtick:
+  docutils, having rejected the one right after `Coin` as an
+  end-string, keeps scanning the same block rather than stopping
+  there, and a backtick further down closes a title-reference that
+  swallows everything in between -- legal, silent, and wrong on the
+  rendered page. `src/btclib_node/db.py`'s own module docstring
+  carries the construct this way, autodoc renders it, and the docs
+  gate is green over it: the built page's `<cite>` runs from `Coin`
+  through two more sentences and closes on `` `Chainstate.close` ``,
+  and `src/btclib_node/p2p/connection.py`'s module docstring does the
+  same, rescued by a later `` `P2pManager` ``. Only a paragraph with no
+  rescuing backtick at all draws "Inline interpreted text or phrase
+  reference start-string without end-string", which `sphinx-build -W`
+  turns into exit 1 -- reproduced on a scratch page carrying the
+  identical sentence with nothing after it to rescue it, one warning
+  at the line the unrescued backtick opens on
+  (btclib-org/btclib-node#784). `pytest` and the lint gate stay green
+  in both cases, catching neither. Autodoc's own exemption still
+  holds beside this: a leading-underscore function or method and a
+  dunder method such as `__del__` are never rendered without
+  `:private-members:` or `:special-members:`, so `_default_worker_count`
+  and `_tasks` carry the identical construct and neither docstring
+  ever reaches the build.
 - **`caplog` cannot see anything this tree's logger emits, and fails
   silently when asked to.** `Node.logger` is a `Logger(logging.Logger)`
   instantiated directly rather than through `logging.getLogger()`, so
