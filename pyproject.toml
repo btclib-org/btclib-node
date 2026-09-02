@@ -105,24 +105,24 @@ keywords = [
 # landing. `tests/interpreters_test.py` is what refuses the classifier
 # and the gate's own matrix coming apart.
 #
-# No `OS Independent` either, and two things argue against it. What
-# this installs is btclib and what btclib pulls in, `btclib-secp256k1`
-# and `cffi` among them compiled rather than pure Python, and the store
+# No `OS Independent` either, and two things argue against it. The first
+# is a dependency, and it takes the inventory to see which: what this
+# installs is btclib and what btclib pulls in, `btclib-secp256k1` and
+# `cffi` among them compiled rather than pure Python, and the store
 # itself pulls in one more such dependency, `rocksdict`
-# (btclib-org/btclib-node#641) -- all three wheeled for macOS, Linux
-# and `win_amd64` alike, `btclib-secp256k1` and `cffi` carrying an
-# sdist besides. What `rocksdict` does not ship is an sdist, on any of
-# its releases, so `win_arm64`, which its wheel matrix does not reach,
-# fails at resolution rather than building from source: one
-# architecture on which a dependency makes the install fail outright,
-# which is a claim about every platform failing on one. The other
-# argument is this package's own code, the comment below naming what
-# in it still branches by platform, and that one holds wherever the
-# install succeeds.
+# (btclib-org/btclib-node#641) -- all three wheeled for macOS, Linux and
+# `win_amd64` alike, `btclib-secp256k1` and `cffi` carrying an sdist
+# besides. What `rocksdict` does not ship is an sdist, on any of its
+# releases, so `win_arm64`, which its wheel matrix does not reach, fails
+# at resolution rather than building from source: one architecture on
+# which a dependency makes the install fail outright. The second
+# argument is this package's own code, the comment below naming what in
+# it still branches by platform, and that one holds wherever the install
+# succeeds.
 # `OS Independent` is a claim about every platform; the three
 # classifiers below are a claim about where the suite is run, which is
 # `ubuntu-latest` and `windows-latest` before every merge and
-# `ubuntu-24.04-arm` and `macos-latest` weekly.
+# `ubuntu-24.04-arm`, `macos-26-intel` and `macos-latest` weekly.
 classifiers = [
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3",

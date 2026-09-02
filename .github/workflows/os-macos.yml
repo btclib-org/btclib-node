@@ -26,19 +26,20 @@ name: os-macos
 #
 # The store is a second argument, and `src/btclib_node/db.py` is where
 # it is argued: RocksDB through `rocksdict`, a compiled extension, so
-# this image resolves a published wheel of it different from the one
-# the gate's cell installs. `uv.lock` names wheels for `rocksdict` and
-# no sdist, so a cell resolves that wheel or fails at environment sync,
-# and no compiler runs here on either branch -- which is what makes a
-# macOS wheel that stops being published a red run rather than a source
-# build nobody asked for. The suite is what reads the Darwin build back
-# across every path this tree's own store takes; pypi-install.yml's own
-# macOS cell opens the store and closes it, which is a much smaller
-# question asked of the index rather than of this tree.
+# each image here resolves a published wheel of it different from the
+# one the gate's cell installs. `uv.lock` names wheels for `rocksdict`
+# and no sdist, so a cell resolves that wheel or fails at environment
+# sync, and no compiler runs here on either branch -- which is what
+# makes a macOS wheel that stops being published a red run rather than a
+# source build nobody asked for. The suite is what reads each Darwin
+# build back across every path this tree's own store takes;
+# pypi-install.yml's own macOS cells open the store and close it, which
+# is a much smaller question asked of the index rather than of this
+# tree.
 #
-# What this runs is the gate's own job on the other image: the same
-# interpreter, the same lock, the same coverage floor. The variable is
-# the platform and nothing else.
+# What this runs is the gate's own job on another image: the same
+# interpreter, the same lock, the same coverage floor. What varies is
+# the platform, and between the two cells below the architecture.
 #
 # It gates no commit and no merge. A macOS regression sits on main for at
 # most a week, and that is the trade btclib-org/.github#85 makes for
@@ -84,19 +85,29 @@ concurrency:
 
 jobs:
   suite-macos:
-    name: Run the suite on macOS
+    name: Run the suite on ${{ matrix.os }}
     # a draft pull request is work its author is not asking anyone to
     # read yet, and spends no runner here either. A closed one spends
     # none: the trigger above takes that event only so the landing
     # supersedes a run this ref's group is still holding
     if: ${{ !github.event.pull_request.draft && github.event.action != 'closed' }}
-    # the arm64 image, which is what `macos-latest` is and what a
-    # developer on this platform has. There is no second image here: the
-    # start method a macOS cell answers is the platform's and not the
-    # architecture's, so the Intel runner would answer it twice. Whether
-    # the store's wheel, which is the architecture's, buys a second cell
-    # is issue #772 rather than something this file settles
-    runs-on: macos-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # each cell answers for its own architecture, and a red one says
+      # nothing about the other, so the first failure does not take the
+      # answer to the second with it
+      fail-fast: false
+      matrix:
+        # `macos-latest` is the arm64 image and what a developer on this
+        # platform has; `macos-26-intel` is the x86_64 one. The start
+        # method is the platform's and either cell answers it, so what
+        # the second one buys is the wheel its own architecture selects,
+        # the store's among them, which the header above is the argument
+        # for. Two images is the shape btclib-org/.github#85 gives a
+        # platform sentinel
+        os:
+          - macos-26-intel
+          - macos-latest
     # the same bound test.yml sets on the same suite: what it bounds is
     # a runner wedged before or between the tests, not the work
     timeout-minutes: 30
