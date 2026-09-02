@@ -25,6 +25,15 @@ name: os-ubuntu
 # building the library on the runner -- which the run reads back, being
 # the only thing that can.
 #
+# The store is the other thing it buys, and `src/btclib_node/db.py` is
+# where that dependency is argued: RocksDB through `rocksdict`, a
+# compiled extension whose wheel this image selects by architecture the
+# same way (issue #641). What a missing one costs differs. `uv.lock`
+# names wheels for `rocksdict` and no sdist, where the bindings carry
+# one besides their wheels, so an aarch64 build that stops being
+# published fails this cell at environment sync rather than resolving
+# slower.
+#
 # It gates no commit and no merge. An aarch64 regression sits on main
 # for at most a week, and that is the trade btclib-org/.github#85 makes
 # for every row that is not one of the first four: at the

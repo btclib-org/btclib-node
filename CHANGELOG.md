@@ -2860,6 +2860,38 @@ where this file was written rather than where anything was tagged.
   raises no `ResourceWarning`, where a socket, an event loop, a worker
   pool and an open file each raise one, so the comment names those.
 
+### The platform sentinels answer for the store's own wheel
+
+- **`os-macos.yml` runs `macos-26-intel` beside `macos-latest`**
+  (closes #772). The start method a macOS cell answers is the
+  platform's and either image answers it; what the second image adds is
+  the store, `rocksdict` being a compiled extension whose
+  `macosx_10_14_x86_64` wheel `uv.lock` names beside the
+  `macosx_11_0_arm64` one, with no sdist behind either, so a cell
+  resolves the wheel its own architecture selects or fails at
+  environment sync. Two images is the shape btclib-org/.github#85 gives
+  a platform sentinel.
+- **`os-ubuntu.yml`'s header named the compiled `libsecp256k1` as what
+  the second image buys, and the store is the other** (closes #773).
+  What a missing wheel costs differs between the two: the bindings
+  publish an sdist and build on the runner, `rocksdict` publishes none
+  and fails the cell at environment sync.
+- **`pypi-install.yml`'s matrix is every image a sentinel or a gate
+  cell of this repository runs**, its own rule, so the Intel macOS cell
+  is there too; the comment says what a Darwin cell resolves rather
+  than quoting a sentence about one macOS image.
+- **`pyproject.toml`'s operating-system classifiers are a claim about
+  where the suite is run**, and the comment listing those images names
+  the new one.
+
+- **The `pyproject.toml` paragraph this branch edits gained two prose
+  fixes review left to it** (issue #777): a trailing relative clause
+  that attached to the wrong noun and duplicated a sentence four lines
+  below, and a missing connective that made the dependency inventory
+  read as the first of the two arguments when it is the evidence for
+  it. They belong here rather than in a round of their own, being the
+  same comment block.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

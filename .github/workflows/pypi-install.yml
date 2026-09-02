@@ -107,16 +107,17 @@ jobs:
         # own header is why aarch64 Linux is here at all -- this package
         # resolves a different published btclib_secp256k1 wheel there
         # from the one ubuntu-latest installs -- os-macos.yml's is why
-        # there is one macOS image and not two ("the start method a macOS
-        # cell answers is the platform's and not the architecture's, so
-        # the Intel runner would answer it twice"), and test.yml's
-        # `windows` job is why windows-latest is
-        # here: this package's classifiers now name Windows too (issue
-        # #430), and this workflow checks that claim against the index
-        # the way it already checks the other two
+        # both macOS images are here rather than one, the wheels a
+        # Darwin cell resolves, the store's among them, being the
+        # architecture's where the start method that file argues from
+        # is the platform's -- and test.yml's `windows` job is why
+        # windows-latest is here: this package's classifiers now name
+        # Windows too (issue #430), and this workflow checks that claim
+        # against the index the way it already checks the other two
         os:
           - ubuntu-latest
           - ubuntu-24.04-arm
+          - macos-26-intel
           - macos-latest
           - windows-latest
         include:
