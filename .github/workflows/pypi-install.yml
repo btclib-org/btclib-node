@@ -9,15 +9,16 @@ name: pypi-install
 # index and not to a source tree.
 #
 # `import btclib_node` runs __init__.py alone, and what a bare import
-# cannot see is the runtime path a user actually exercises: the store
-# is sqlite3 from the standard library (btclib-org/btclib-node#107, no
-# wheel to be missing there), but this package unconditionally depends
-# on `btclib[secp256k1]`, so a compiled extension is resolved and
-# imported the moment the interpreter's own script engine needs it --
-# and `btclib._libsecp256k1` degrades a broken pair silently to the
-# Python arithmetic, tens of times slower and not constant-time, rather
-# than failing on import. So the checks below ask past the import: that
-# the bindings this package always pulls in actually serve, and that a
+# cannot see is the runtime path a user actually exercises. The store's
+# own compiled extension is not that gap: the store is RocksDB through
+# `rocksdict`, which `import btclib_node` pulls in of its own accord,
+# `src/btclib_node/db.py` being what depends on it. This package
+# unconditionally depends on `btclib[secp256k1]` as well, and there an
+# import that returns settles nothing -- `btclib._libsecp256k1` degrades
+# a broken pair silently to the Python arithmetic, tens of times slower
+# and not constant-time, rather than failing on import. So the checks
+# below ask past the import: that the bindings this package always
+# pulls in actually serve, and that a
 # `Node` this package's own class builds and starts on regtest comes
 # back down cleanly, which is the one thing every one of this
 # repository's own functional tests already exercises against a source
@@ -106,10 +107,10 @@ jobs:
         # own header is why aarch64 Linux is here at all -- this package
         # resolves a different published btclib_secp256k1 wheel there
         # from the one ubuntu-latest installs -- os-macos.yml's is why
-        # there is one macOS image and not two ("what a macOS cell
-        # answers is the start method, which is the platform's and not
-        # the architecture's, and the Intel runner would answer it
-        # twice"), and test.yml's `windows` job is why windows-latest is
+        # there is one macOS image and not two ("the start method a macOS
+        # cell answers is the platform's and not the architecture's, so
+        # the Intel runner would answer it twice"), and test.yml's
+        # `windows` job is why windows-latest is
         # here: this package's classifiers now name Windows too (issue
         # #430), and this workflow checks that claim against the index
         # the way it already checks the other two

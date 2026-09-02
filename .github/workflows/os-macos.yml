@@ -5,8 +5,8 @@ name: os-macos
 # macOS in its classifiers, and until this file nothing here ran a line
 # of this package on it.
 #
-# That is the whole of the argument, and it is a small one: a classifier
-# is a claim about where this runs, and nothing here had run it there.
+# That much is a small argument: a classifier is a claim about where
+# this runs, and nothing here had run it there.
 #
 # What differs beneath the suite is how a worker process comes into
 # being. `src/btclib_node/__init__.py` builds a `multiprocessing.pool.Pool`
@@ -24,10 +24,17 @@ name: os-macos
 # either, so pickling is not what this cell catches and nothing here is
 # to be read as claiming it is.
 #
-# The store is no argument for this file. It is `sqlite3` from the
-# standard library since btclib-org/btclib-node#107 -- no wheel to be
-# missing, no compiler to be present -- and `src/btclib_node/db.py` says
-# so at length.
+# The store is a second argument, and `src/btclib_node/db.py` is where
+# it is argued: RocksDB through `rocksdict`, a compiled extension, so
+# this image resolves a published wheel of it different from the one
+# the gate's cell installs. `uv.lock` names wheels for `rocksdict` and
+# no sdist, so a cell resolves that wheel or fails at environment sync,
+# and no compiler runs here on either branch -- which is what makes a
+# macOS wheel that stops being published a red run rather than a source
+# build nobody asked for. The suite is what reads the Darwin build back
+# across every path this tree's own store takes; pypi-install.yml's own
+# macOS cell opens the store and closes it, which is a much smaller
+# question asked of the index rather than of this tree.
 #
 # What this runs is the gate's own job on the other image: the same
 # interpreter, the same lock, the same coverage floor. The variable is
@@ -84,10 +91,11 @@ jobs:
     # supersedes a run this ref's group is still holding
     if: ${{ !github.event.pull_request.draft && github.event.action != 'closed' }}
     # the arm64 image, which is what `macos-latest` is and what a
-    # developer on this platform has. There is no second image here: what
-    # a macOS cell answers is the start method, which is the platform's
-    # and not the architecture's, and the Intel runner would answer it
-    # twice
+    # developer on this platform has. There is no second image here: the
+    # start method a macOS cell answers is the platform's and not the
+    # architecture's, so the Intel runner would answer it twice. Whether
+    # the store's wheel, which is the architecture's, buys a second cell
+    # is issue #772 rather than something this file settles
     runs-on: macos-latest
     # the same bound test.yml sets on the same suite: what it bounds is
     # a runner wedged before or between the tests, not the work

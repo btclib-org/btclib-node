@@ -2772,6 +2772,32 @@ where this file was written rather than where anything was tagged.
   schedules the workflow, and this is that tree
   (issue btclib-org/.github#323).
 
+### `os-macos.yml` and its neighbours name the store this tree runs
+
+- **`os-macos.yml`'s header called the store no argument for the file:
+  `sqlite3` from the standard library, no wheel to be missing and no
+  compiler to be present** (closes #765). It is RocksDB through
+  `rocksdict`, so the paragraph says instead what the store adds to
+  this cell -- a compiled extension whose published wheel this image
+  resolves and the gate's own cell does not, read back by the suite.
+  `uv.lock` names wheels for `rocksdict` and no sdist, which is what
+  "no compiler runs here" now rests on.
+- **The paragraph above it no longer calls the classifier the whole of
+  the argument**, and the comment above `runs-on:` no longer argues for
+  one macOS image on the start method alone: the store's wheel is the
+  architecture's, where the start method is the platform's, and
+  `os-macos.yml` names issue #772 rather than settling it.
+- **`pypi-install.yml` carried the same clause in its own words**,
+  contrasting a standard-library store against `btclib[secp256k1]`'s
+  compiled extension. `import btclib_node` pulls `rocksdict` in, so
+  what a bare import leaves open there is the bindings that degrade
+  silently and not the store; the quotation of `os-macos.yml` in its
+  matrix comment tracks the sentence as that file now reads.
+- **`.github/ISSUE_TEMPLATE/bug_report.yml` asked a reporter for
+  `sqlite3.sqlite_version`**, explaining that the store bound whatever
+  SQLite the interpreter was built against. It asks for the version of
+  `rocksdict`, the wheel platform and interpreter pick.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
