@@ -64,10 +64,14 @@ body:
     attributes:
       label: Commit
       description: >
-        `git rev-parse HEAD`. The version in pyproject.toml is not enough
-        to identify a tree: this package is not on an index, so what
-        anybody runs is a checkout.
-      placeholder: "3facec5"
+        `git rev-parse HEAD` for a checkout. For an install from PyPI,
+        the installed version names an exact commit through its own
+        `v<version>` tag --
+        `python -c 'from importlib.metadata import version;
+        print(version("btclib-node"))'` -- where `pyproject.toml`'s own
+        `version` read from a checkout between releases does not, since
+        it names only the month a cycle is open on.
+      placeholder: "3facec5, or 2026.8.27 from a PyPI install"
     validations:
       required: true
 
@@ -77,11 +81,13 @@ body:
       label: Platform, interpreter and store
       description: >
         `python -VV`, the operating system with its architecture, and
+        which store is running. A checkout depends on `rocksdict`, a
+        compiled wheel picked by platform and interpreter --
         `python -c 'from importlib.metadata import version;
-        print(version("rocksdict"))'`. The store is RocksDB through
-        `rocksdict`, a compiled wheel picked by platform and
-        interpreter, so which RocksDB is running follows the
-        environment and not the source tree.
+        print(version("rocksdict"))'` -- and the one release published
+        to PyPI does not: its `db.py` imports the stdlib `sqlite3`
+        instead, so say that rather than running a command that raises
+        `PackageNotFoundError` against it.
       placeholder: "CPython 3.14.6, Ubuntu 24.04 x86_64, rocksdict 0.3.29"
     validations:
       required: true

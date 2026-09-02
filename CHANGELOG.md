@@ -3011,6 +3011,27 @@ where this file was written rather than where anything was tagged.
   Dependabot does, takes those specifiers to the other end and so reports
   nothing about the release being offered.
 
+### The issue templates ask what a reporter actually has
+
+- **The *Commit* field said this package is not on an index**, which
+  `v2026.8.27` on PyPI (`CONTRIBUTING.md`'s *A release path, and what
+  it has published*) falsifies: it now asks for `git rev-parse HEAD`
+  from a checkout or the installed version from a PyPI install, the
+  latter naming an exact commit through its own `v<version>` tag
+  (closes #789).
+- **The *Platform* field asked every reporter for a `rocksdict`
+  version**, which the published `2026.8.27` release has none of --
+  its `requires_dist` is `['btclib[secp256k1]>=2026.8.27']` and its
+  `db.py` imports the stdlib `sqlite3` -- so the field now asks a
+  reporter on that release to say so instead of running a command that
+  raises against it (closes #789).
+- **`question.yml`'s own *Commit* field carried the same sentence**
+  (closes #792), a `git rev-parse HEAD` and the claim that a checkout
+  is all anybody runs. It takes the same repair, shorter for being the
+  field that says *if it matters*: the installed version answers for a
+  PyPI install, and names a commit through the release tag. The two
+  templates are one sentence in two files, so they are one change.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

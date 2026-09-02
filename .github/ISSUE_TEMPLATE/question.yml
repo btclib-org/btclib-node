@@ -32,6 +32,9 @@ body:
     attributes:
       label: Commit, if it matters
       description: >
-        `git rev-parse HEAD`. This package is not on an index, so what
-        anybody runs is a checkout rather than a release.
-      placeholder: "3facec5"
+        `git rev-parse HEAD` for a checkout, or the installed version
+        for an install from PyPI --
+        `python -c 'from importlib.metadata import version;
+        print(version("btclib-node"))'` -- which names an exact commit
+        through its own `v<version>` tag.
+      placeholder: "3facec5, or 2026.8.27 from a PyPI install"
