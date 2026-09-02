@@ -2712,6 +2712,19 @@ where this file was written rather than where anything was tagged.
   sentences beside it are theirs too: what an empty right-hand side
   means, and why both sides are sorted.
 
+### A convention name wrapped in its middle is read as it is written (closes btclib-org/.github#651)
+
+- **`tests/unit/conventions_test.py` collapses the whitespace of the
+  *Not tested here* list and then of each name in it.** `strip()` takes
+  whitespace off a name's ends and leaves what an eighty-column wrap puts
+  in its middle, so a name the break splits matched none of section 7's
+  and was reported as a convention the declaration invented -- a red test
+  on a declaration that reads correctly in the file. `tests/README.md`'s
+  line here breaks at a semicolon, so nothing was red; what goes is the
+  dependence on where the column falls, which nothing enforces.
+  `btclib-benchmarks` reads its own line this way, its wrap falling
+  inside a name.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
