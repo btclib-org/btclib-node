@@ -269,6 +269,26 @@ spelling; the API answers them alphabetically and the metadata carries an
 order, which decides only which one is dropped once the ceiling on topics
 is reached.
 
+Half the pair is a repository setting and half a tracked file, and this
+is the command that reads both: it prints the difference and exits
+nonzero on one.
+
+```shell
+diff <(gh api repos/btclib-org/btclib-node --jq '.topics[]' | sort) \
+     <(sed -n '/^keywords = \[/,/^]/s/^ *"\(.*\)",$/\1/p' pyproject.toml \
+       | sort)
+```
+
+An empty right-hand side is the `sed` having stopped matching
+`pyproject.toml`'s spelling rather than an empty `keywords`, and it makes
+`diff` name every topic: run the `sed` alone before reading that as
+drift. The right-hand side is whatever `pyproject.toml` the shell can
+see, so this is run from a checkout of this repository rather than from
+anywhere.
+
+Both sides are sorted so that the comparison is of sets: a difference in
+sequence is not drift.
+
 ## Token permissions
 
 ```shell
