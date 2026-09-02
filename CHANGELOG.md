@@ -3213,6 +3213,26 @@ they were written in.
   so the sentence excluding webhooks from that list gains its
   counterpart for the variable store.
 
+### `REPOSITORY.md` records the Read the Docs automation rule
+
+- **The Read the Docs section's expected outputs are current**:
+  `v2026.8.27` now reads `active: true, built: true` and
+  `/en/v2026.8.27/` answers `200`, where the rule's absence had left
+  both false (closes #596).
+- **Its automation-rule bullet records what Read the Docs' dashboard now
+  carries** -- Match: SemVer versions, Version type: Tag, Action:
+  Activate version, matching the three sibling projects' -- and why
+  `v2026.8.27` needed a second, manual activation: a rule fires only on
+  a version Read the Docs creates or updates from a webhook, which a tag
+  already on the dashboard when the rule is added never triggers
+  (closes #596).
+- **The rule itself stays outside what any call here reads back**: the
+  automation-rules endpoint answers `404` unauthenticated for
+  `btclib-secp256k1`'s own rule too, so that `404` is an absent token
+  rather than an absent rule, and "What this file passes over" is
+  reworded from "would build" to name the rule rather than a still-future
+  effect (closes #596).
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
