@@ -386,6 +386,33 @@ mutated file: the file-edit form is the one CLAUDE.md's *Non-obvious
 facts* names as reaching a worker, and cosmic-ray's own mutation is the
 same form, applied to the file rather than to a running process.
 
+### Building the distribution and checking it
+
+`test.yml`'s `dist` job builds the sdist and the wheel and reads them
+with the `check` dependency group, and `release.yml`'s publish jobs
+download what that job built rather than building again. Running the
+same commands here answers before a pull request does.
+
+```shell
+export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
+uv build
+uv run --no-project --python 3.14 .github/scripts/normalize_sdist.py dist/
+uv run --locked --only-group check twine check --strict dist/*
+uv run --locked --only-group check check-wheel-contents dist/*.whl
+uv run --locked --only-group check pyroma --min 10 dist/*.tar.gz
+```
+
+The epoch and the normalizer come first because they rewrite the sdist's
+member metadata, so what the three checks read is the archive that job
+would hand on. `--only-group` is right here where it is wrong for the
+documentation build above: these three read `dist/` and none of them
+needs `btclib_node` installed.
+
+`check-sdist` is not among them: `.pre-commit-config.yaml` runs it as a
+hook, so the lint gate already asks it, and it builds an archive of its
+own rather than reading the one above. `dist/` is ignored, so building
+here does not dirty the tree that gate reads.
+
 ### A release path, and what it has published
 
 `.github/workflows/release.yml` exists and section 2 of

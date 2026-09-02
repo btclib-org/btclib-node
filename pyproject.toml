@@ -180,6 +180,25 @@ pull_requests = "https://github.com/btclib-org/btclib-node/pulls"
 btclib-node = "btclib_node.cli:main"
 
 [dependency-groups]
+# Every entry here declares a lower bound, and `uv lock --resolution
+# lowest-direct` is what reads them: it takes each entry down to its own
+# bound, and one declaring no bound as far down as the rest of the
+# resolution allows. deps-oldest.yml is the workflow that runs that
+# resolution, and its own header says which direct dependency it
+# structurally cannot take to a floor.
+#
+# What decides the number is a run. That workflow installs `--group
+# test` alone, so for a group it does not install, the run behind the
+# number is that group's own consumer: mutation.yml's cosmic-ray
+# session, the sphinx-build of docs.yml and CONTRIBUTING.md, test.yml's
+# `dist` job. `check-sdist` is the one whose consumer is not a workflow
+# step: it runs as a pre-commit hook, so the run behind its number is
+# the `rev:` .pre-commit-config.yaml pins it at, which is where that
+# floor has to stay in step. Declaring no bound is the alternative, and
+# it would have to hold that lint's own floors are worth stating where
+# a tooling group's are not, no job installing either at a floor
+# (btclib-org/btclib-node#761).
+
 # The test runner and its plugins, nothing else.
 harness = [
     "pytest>=9.1.1",
@@ -235,7 +254,7 @@ lint = [
 # none of them runs this -- the scheduled mutation workflow is the only
 # consumer, and it asks for --group test as well, cosmic-ray shelling
 # out to pytest.
-mutation = ["cosmic-ray"]
+mutation = ["cosmic-ray>=8.7.0"]
 # what fuzz.yml runs the harnesses under fuzz/ with, and its own group
 # for the reason mutation above is one: no cell of the gate runs a
 # fuzzer, and the sentinel is the only consumer.
@@ -249,14 +268,23 @@ fuzz = ["atheris>=3.1.0; sys_platform == 'linux'"]
 # myst-parser for the root markdown files pulled into the toctree,
 # sphinx itself, and furo, the theme `docs/source/conf.py` sets as
 # `html_theme` (btclib-org/.github#329).
-docs = ["furo", "myst-parser", "sphinx"]
+docs = [
+    "furo>=2025.12.19",
+    "myst-parser>=5.1.0",
+    "sphinx>=9.1.0",
+]
 # the distribution files are built and published by uv itself; what this
 # group holds is what inspects them, before an upload consumes the
 # version release.yml's `dist` job checks. Named check, not build, for
 # the reason bitcoin-core-rpc's own pyproject.toml gives: `--only-group
 # build` would mean one thing here and a wheel-building group in a
 # repository that compiles one
-check = ["check-sdist", "check-wheel-contents", "pyroma", "twine"]
+check = [
+    "check-sdist>=1.6.0",
+    "check-wheel-contents>=0.6.3",
+    "pyroma>=5.0.1",
+    "twine>=7.0.0",
+]
 dev = [
     { include-group = "test" },
     { include-group = "lint" },

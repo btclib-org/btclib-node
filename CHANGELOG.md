@@ -2963,6 +2963,31 @@ where this file was written rather than where anything was tagged.
   section 2 asks of a tree landing the badge and what its own
   `workflow_dispatch` trigger is there for.
 
+### Every dependency-group entry declares a floor, and `check` has a local run
+
+- **`mutation`, `docs` and `check` declared no lower bound, and
+  `uv lock --resolution lowest-direct` takes an entry that declares
+  none as far down as the rest of the resolution allows** (closes
+  #761): a `furo` from 2021, a `cosmic-ray` at `0.0.0`, a `twine` at
+  `1.0.1`. The command warns on an entry that declares no bound, and now
+  has none to warn about. The bound each gains names the release its own
+  consumer is run against, and the head of `[dependency-groups]` is
+  where that is argued: `deps-oldest.yml` installs `--group test` alone,
+  so for a group it does not install, the run behind the number is that
+  group's own workflow rather than the sentinel's, and that workflow's
+  own header names the argument in place of a list of what declares
+  none. The re-lock this takes changes `uv.lock` only inside
+  `[package.metadata.requires-dev]`, where the specifiers are recorded:
+  no package version and no pinned commit moves with them.
+- **`CONTRIBUTING.md` gives the commands that build the distribution
+  and read it with the `check` group** (closes #778): `uv build`, the
+  sdist normalizer, and `twine check --strict`, `check-wheel-contents`
+  and `pyroma --min 10` under `--only-group check`, which is the form
+  `test.yml`'s `dist` job runs them in. It goes under *This repository
+  in particular*, the half of that file this tree writes for itself.
+  The group's `check-sdist` is left out: `.pre-commit-config.yaml` runs
+  it as a hook the lint gate already asks.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
