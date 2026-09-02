@@ -2892,6 +2892,43 @@ where this file was written rather than where anything was tagged.
   it. They belong here rather than in a round of their own, being the
   same comment block.
 
+### `CLAUDE.md` checks the rebased file, not `difflib`'s tie-break
+
+- **`inserted[0] == ""` is named as a tie-break rather than a fact**
+  (closes #771). An entry is bounded by a blank line at each end, so at
+  a clean append two alignments reproduce the rebased blob byte for
+  byte -- one whose block begins with the blank line, one whose block
+  ends with it -- and `difflib` reports whichever its own tie-break
+  reaches, with nothing in its output saying the other exists. The
+  damaged file admits one. So the assertion reads which alignment was
+  reached, not whether the file is whole.
+- **What the file now says is the check is the byte-for-byte rebuild**
+  (issue #771), with the cheap ones named as cheap ones beside it: the
+  opcode shape, which catches a line lost from the base and a
+  reordering of what the base held; the reconstruction identity
+  `B.replace(X, "", 1) == A`,
+  whose occurrence count does not move under an eaten blank; and
+  `markdownlint`'s `MD022/blanks-around-headings`, a detector of exactly
+  this damage that the tree already runs and that the hook's own
+  `--fix` repairs. Neither the opcode shape nor the identity says where
+  the block sits, and the bullet says so.
+- **Whether the base side moved at all is one `git diff` away, and is
+  asked first** (issue #771): a seam needs two sides, so where the
+  commits being rebased over never touched the file, nothing abuts and
+  nothing can be eaten. `git diff --stat <old base> <new base> --
+  CHANGELOG.md` answering empty settles that half before a blob is
+  read. The bullet is explicit that this is **not** the *no-seam case
+  has to be shown to be a case* guard, which is about the arriving side
+  going empty and which this command cannot see: a first draft said it
+  was, and review produced the branch on which the command answers 301
+  insertions while nothing arrives at all.
+- **A third shape of the coverage-floor flake sits beside the two
+  already recorded** (closes #762): one statement of a coroutine defined
+  inside a test in `tests/unit/p2p/manager_test.py`, at ordinary load,
+  every test green, and the next run meeting the floor. The scheduler
+  decides whether that coroutine's body runs, and nothing in the test
+  asserts on it.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

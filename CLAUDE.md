@@ -327,6 +327,23 @@ Do not use Fable unless explicitly instructed.
   — rerun once before trusting it, and rerun with that same
   `COVERAGE_DEBUG` pair set if it persists, since that is the only way
   a dropped file leaves a mark a plain `uv run pytest` does not.
+- **The coverage floor can also fail on one statement of a test's own
+  helper, at ordinary load, and not reproduce.**
+  [ISS 762](https://github.com/btclib-org/btclib-node/issues/762) is
+  where that happened: one statement of a coroutine defined inside a
+  test in `tests/unit/p2p/manager_test.py` reported missing, every test
+  green, `uptime` ordinary, and the next run of the same suite in the
+  same worktree met the floor. Neither of the two above is that shape —
+  ISS 372's miss is a branch of `src/` under heavy load, ISS 617's is a
+  whole file's worth of lines. The coroutine stands in for
+  `P2pManager.server` for the length of one test, and its body runs
+  only where the loop gives that task a first step before `stop`
+  cancels it; the test asserts on `manager._server_sockets` and never
+  on the coroutine having run, so the scheduler decides whether
+  coverage sees the line while the test passes either way. The
+  discriminator is the missing line itself: a statement in a test
+  helper whose execution nothing asserts on is not a report about the
+  branch under review, and one rerun settles it.
 - **A mutation applied outside the runner's own process never reaches an
   `-n auto` worker, and the guarded test passes.** A wrapper that
   monkeypatches an attribute and then calls `pytest.main` mutates the
@@ -428,6 +445,16 @@ Do not use Fable unless explicitly instructed.
   bad luck, it is a report that this branch was rebased twice and lost
   its blank line the first time.
 
+  **The eaten line is not silent: the lint gate is a witness.** Fed a
+  damaged `CHANGELOG.md`, `markdownlint-cli2` exits 1 naming
+  `MD022/blanks-around-headings` and `MD032/blanks-around-lists` at the
+  line, against the repaired file at exit 0 as the control, and the
+  hook's own `--fix` restores it byte for byte. The rule and the autofix
+  are section 9's and section 4's; what is worth adding is that a
+  detector the tree already runs beats building one, and that this one
+  says nothing about the misplacement -- a copy with two entries
+  swapped lints clean.
+
   **The unit is the *seam*, not the rebase and not the branch.** One
   blank line eaten per seam, a seam being where the two sides' added
   blocks abut in the fused output. A blank line internal to one side's
@@ -507,14 +534,64 @@ Do not use Fable unless explicitly instructed.
   "nothing removed" is not enough there either.** Run
   `difflib.SequenceMatcher` over the base and the rebased file: a clean
   rebase is exactly *one* `insert` opcode and no `delete` and no
-  `replace`, which catches a removal and a reordering at once. It does
-  **not** catch the eaten line -- measured on this file's own rebase at
-  btclib-org/btclib-node#753, a copy with the blank line eaten again
-  reports the identical single `insert`. What separates them is that
-  the inserted block *starts* with the blank line: assert
-  `inserted[0] == ""` beside the opcode count, or the check passes the
-  damage. Prove both with controls -- drop a base line and see
-  `delete`, re-eat the blank and see `blank-first` go false.
+  `replace`, which catches a line lost from the base and a reordering
+  of what the base already held. It does **not** catch the eaten line
+  -- measured on this file's own rebase at btclib-org/btclib-node#753,
+  a copy with the blank line eaten again reports the identical single
+  `insert`. Drop a base line and watch a `delete` appear, or the opcode
+  shape is measuring nothing.
+
+  **Where the inserted block starts is not a fact about the file.** An
+  entry is bounded by a blank line at each end, so at a clean append
+  two alignments reproduce the rebased blob byte for byte -- one whose
+  block begins with the blank line, one whose block ends with it -- and
+  `difflib` reports whichever its own tie-break reaches, under
+  `autojunk` either way, with nothing in its output saying the other
+  exists. Enumerating every `j` for which `A[:j] + B[j:j+n] + A[j:] ==
+  B` at btclib-org/btclib-node@4cf1370 finds both; the same enumeration
+  over the damaged copy finds one, whose block begins with the heading.
+  So `inserted[0] == ""` reports which alignment was reached and not
+  whether the file is whole (btclib-org/btclib-node#771).
+
+  **What discriminates is a statement about the text.** With `A` the
+  new base's blob, `B` the rebased blob and `X` exactly the block the
+  branch adds over its own old base: `X` occurs in `B` once, and
+  `B.replace(X, "", 1) == A`. It needs no splice point, and it is
+  indifferent to which alignment `X` was taken at -- both satisfy it on
+  the whole file and both break it on the damaged one. The equality is
+  the half an eaten blank breaks; the occurrence count stays at one
+  there, the block's own leading newline being indistinguishable from
+  the line terminator before it, and answers the stacked duplicate
+  instead. Run the controls every time: `B.count(X + "zz")` and a
+  perturbed `X` at zero, `B != A` against the vacuous pass above, and
+  the blank re-eaten breaking the equality.
+
+  **Neither of those says where the block sits.** `X` spliced above the
+  entry that landed while the branch waited satisfies the identity and
+  reports the same single `insert`, both asking what `B` holds rather
+  than where. The misplacement is the byte-for-byte rebuild's to
+  answer, which is why that one is the check and these are the cheap
+  ones beside it.
+
+  **The cheapest question is whether the base side moved at all.** A
+  seam needs two sides, and `git diff --stat <old base> <new base> --
+  CHANGELOG.md` answers for one of them: empty means the commits being
+  rebased over never touched the file, so nothing can abut and nothing
+  can be eaten, before any blob is read. It answered empty three times
+  in one session -- `btclib-org/.github@b1aeb3a` and `6279da8` each
+  touching only `.pre-commit-config.yaml`.
+
+  **It is emphatically not the *no-seam case has to be shown to be a
+  case* guard above, and reading it as one is worse than not running
+  it.** That bullet is about the *arriving* side going empty, which
+  this command cannot see: `origin/iss-586-finish` against the `1ce7b20`
+  that already carried its entry answers **301 insertions**, and its
+  fused blob is nevertheless byte-identical to the base, so nothing
+  arrives and every check is vacuous exactly as that bullet describes.
+  A non-empty answer here licenses nothing. The arriving side still
+  wants its own `cmp` of the fused blob against the base, and the
+  rebuild still runs after both -- it is what says the block landed
+  where it belongs, which no amount of *nothing was eaten* answers.
 
   **A reconstruction is a control only once the block's own boundaries
   have been read.** Print the block's first and last lines and the
