@@ -191,13 +191,29 @@ btclib-node = "btclib_node.cli:main"
 # test` alone, so for a group it does not install, the run behind the
 # number is that group's own consumer: mutation.yml's cosmic-ray
 # session, the sphinx-build of docs.yml and CONTRIBUTING.md, test.yml's
-# `dist` job. `check-sdist` is the one whose consumer is not a workflow
-# step: it runs as a pre-commit hook, so the run behind its number is
-# the `rev:` .pre-commit-config.yaml pins it at, which is where that
-# floor has to stay in step. Declaring no bound is the alternative, and
-# it would have to hold that lint's own floors are worth stating where
-# a tooling group's are not, no job installing either at a floor
-# (btclib-org/btclib-node#761).
+# `dist` job, lint.yml's own `uv run --locked --only-group lint
+# pre-commit run` step. Two entries have no workflow step behind them
+# and take their number from a `rev:` instead: `check-sdist` and `ruff`
+# run as pre-commit hooks, out of an environment pre-commit builds from
+# .pre-commit-config.yaml rather than out of the group, so the run
+# behind each of those floors is the `rev:` that file pins and that is
+# where the two have to stay in step (btclib-org/btclib-node#761,
+# btclib-org/btclib-node#785, btclib-org/btclib-node#800).
+#
+# A floor that has fallen below the lock is not what those two issues
+# name. A lower bound is meant to sit at or under the resolution, and
+# nothing re-widens one: .github/dependabot.yml's own comment says the
+# uv-lock hook "does not upgrade", and deps-latest.yml's `uv lock
+# --upgrade` moves uv.lock's resolution and never this file's text. So
+# every number here drifts below the lock by design and that is not the
+# defect. The defect is a bound no run has ever exercised -- `mypy`'s
+# `1.18.2` was installed by nothing, so it claimed a compatibility
+# nothing had tested. A number that was the resolution when it was
+# written stays a number some run did exercise, which is the property
+# that matters and the only one that does not decay. What a reader
+# checks against this table is therefore that the consumer named beside
+# an entry is still that entry's consumer, not that the digits still
+# match uv.lock.
 
 # The test runner and its plugins, nothing else.
 harness = [
@@ -242,11 +258,19 @@ test = [
     "bitcoin-core-rpc>=2026.8.29",
 ]
 # mypy runs from this environment rather than from a hook's own --
-# .pre-commit-config.yaml's mypy hook is where that decision is argued.
+# .pre-commit-config.yaml's mypy hook is where that decision is argued
+# -- and `pre-commit` itself is what lint.yml's own step invokes out of
+# it. `ruff` is neither: the `ruff-check` and `ruff-format` hooks come
+# from astral-sh/ruff-pre-commit at its own `rev:`, which pre-commit
+# builds as an environment of its own, so the entry below is installed
+# here and run nowhere, and its floor answers to that `rev:` rather
+# than to anything this group resolves. The two had already drifted
+# apart -- `0.16.4` here against `v0.16.5` there -- when
+# btclib-org/btclib-node#800 measured them.
 lint = [
     "pre-commit>=4.6.2",
-    "ruff>=0.16.4",
-    "mypy>=1.18.2",
+    "ruff>=0.16.5",
+    "mypy>=2.3.1",
 ]
 # mutation testing, which asks the question coverage cannot: a line the
 # suite executes is not a line the suite checks. Its own group and not

@@ -3116,6 +3116,34 @@ where this file was written rather than where anything was tagged.
   claim** -- that the wheels a Darwin cell resolves included the store
   -- and is corrected alongside the header (closes #783).
 
+### The `lint` group's floors name the runs behind them
+
+- **`mypy`'s floor moves from `1.18.2` to `2.3.1`** (closes #785).
+  Nothing had ever installed the group at `1.18.2`: `deps-oldest.yml`
+  installs `--group test` alone, and its own header says lowest-direct
+  "moves mypy to its own floor instead, which is not a release this
+  tree has yet to see." The `mypy` hook is `language: system` over
+  `uv run --locked --no-default-groups --group lint --group test mypy`,
+  so this group's own resolution is what it type-checks under, and the
+  bound now names a release that run has exercised.
+- **`ruff`'s floor moves from `0.16.4` to `0.16.5`, the `rev:` that
+  actually runs it** (closes #800). Nothing runs the group's own
+  `ruff`: `ruff-check` and `ruff-format` come from
+  `astral-sh/ruff-pre-commit`, which pre-commit builds as an
+  environment of its own, and the two numbers had already drifted
+  apart. That entry's consumer is a `rev:` rather than a workflow step,
+  as `check-sdist`'s is, and `[dependency-groups]`'s header now says so
+  of both instead of of one.
+- **The header says what a floor falling below the lock does and does
+  not mean** (closes #785, closes #800). Nothing re-widens a bound --
+  `dependabot.yml`'s own comment says the uv-lock hook does not
+  upgrade, and `deps-latest.yml` moves `uv.lock` and never this file --
+  so drifting under the resolution is what every entry here does by
+  design. What neither issue tolerates is a bound no run has ever
+  exercised, which is why the check the header asks a reader for is
+  that the consumer named beside an entry is still that entry's
+  consumer, not that the digits still match.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
