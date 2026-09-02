@@ -3181,6 +3181,38 @@ they were written in.
   something states which is which. Nothing already written is rewritten,
   that being the standard's own answer to the retrofit.
 
+### `git worktree remove --force "$WT"` stands in a block of its own
+
+- **The removal no longer sits under a line that ends in a
+  placeholder** (closes btclib-org/.github#676): `<` and `>` are the
+  shell's redirection operators, so the `WT=` line fails on its own
+  redirection without clearing whatever `WT` already held, and a shell
+  that discards that failure as a parse error reads the next line as a
+  fresh command against that value. The removal stands in a fence of
+  its own, with prose between the two fences saying why the first one
+  closes early, so the line that deletes a directory is reached by
+  pasting it on purpose.
+
+### `REPOSITORY.md` reads both variable stores back for the review switch
+
+- **The file records `vars.CLAUDE_REVIEW_ENABLED`, the switch
+  `claude-review.yml` guards both its jobs with** (closes
+  btclib-org/.github#682). Both stores are read: the repository's
+  because a variable set here would take precedence over one of the
+  same name set on the organization, so the organization's answer alone
+  would not show the switch off for this tree, and the organization's
+  for the empty name list section 11 reads as the off state -- with a
+  `total_count` beside it, a store that prints nothing at all when it
+  answers needing one to show the call reached it. The paragraph sits
+  beside *A credential the organization holds*, which is where this tree
+  already records what the organization sets on its behalf, rather than
+  under a heading of its own.
+- **The repository's Actions variables leave the list of facilities
+  whose empty answer records no decision** (closes
+  btclib-org/.github#682): that zero is half of what records this one,
+  so the sentence excluding webhooks from that list gains its
+  counterpart for the variable store.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
