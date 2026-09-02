@@ -3233,6 +3233,26 @@ they were written in.
   reworded from "would build" to name the rule rather than a still-future
   effect (closes #596).
 
+### `CLAUDE.md` says what a worktree does not isolate, and what load does to a run
+
+- **The worktree rules gain the object store beside `refs/stash`**
+  (closes #806): a commit written in a worktree is in the one shared
+  store the moment it exists, so every local read -- content, diff,
+  signature -- answers for it exactly as it would after a push, and a
+  reviewer handed that sha confirms all of it while reading something
+  the forge does not have. The ref is the read that answers, and it is
+  given with the `--force-with-lease` that makes a concurrent writer a
+  refusal rather than a clobber.
+- **The ports bullet says what a load-decided failure presents as**
+  (closes #807): a timeout and never an assertion. The three
+  coverage-floor bullets below it are each a run with every test green
+  and say so as their own discriminator, so a reader holding actual `F`s
+  matches three bullets that all rule themselves out; the measurement
+  beside it is two tests timing out at load 107 -- one functional, one a
+  unit test that is merely slow, which is why the discriminator is the
+  timeout and not the directory -- against the same sha green at 7.96,
+  on a diff touching no Python at all.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

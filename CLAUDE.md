@@ -237,6 +237,28 @@ worktree isolates files, not refs, so `git stash push` pushes onto the
 same stack every other session pops from. Commit to your own branch
 instead.
 
+**It does not isolate objects either, which is how an unpushed branch
+reads as pushed.** A commit written in a worktree is in that one shared
+object store the moment it exists, so `git cat-file -t`, `git show
+<sha>:<path>`, a diff and `git log --format='%h %G? %GS'` all answer for
+it exactly as they would after a push -- the right content, a good
+signature, nothing stale and nothing erroring. Hand that sha to a
+reviewer and it confirms every one of those, having read something the
+forge does not have. The ref is the only read that answers:
+
+```shell
+git -C "$WT" fetch origin
+git -C "$WT" rev-parse "origin/<branch>"  # against the sha you sent
+```
+
+Twice in one campaign a branch was reported pushed while `origin/` still
+held the pre-rebase commit, the second time to a reviewer that caught it
+only by resolving the ref rather than the bare sha
+(btclib-org/btclib-node#783, btclib-org/btclib-node#806). Push with
+`--force-with-lease=<ref>:<expected old sha>` so a concurrent writer is
+refused rather than clobbered, and read the ref back before saying the
+word.
+
 **Do not rewrite `refs/heads/main`, or advance it with work that is not
 yours.** Your own branch is what you push, and the pull request is what
 moves `main`.
@@ -266,6 +288,33 @@ Do not use Fable unless explicitly instructed.
   machine loaded past its core count is where the per-test `timeout`
   starts deciding runs; measuring anything on one is measuring the
   machine.
+
+  **What that decides presents as a timeout and never as an assertion**,
+  which is the discriminator to reach for while holding a red run, and
+  the three coverage-floor bullets below do not supply it: each of those
+  is a run with **every test green**, says so as its own discriminator,
+  and therefore rules itself out for a reader looking at actual `F`s --
+  who is then left concluding the branch broke something. Measured at
+  one-minute load 107 on this ten-core machine, another session's suite
+  live, on a diff touching no `.py` file at all: `test_download` raised
+  `WaitTimeoutError` and `test_rev_patch` hit its own per-test bound,
+  and the same sha at load 7.96 was `1441 passed, 3 skipped` with the
+  floor met (btclib-org/btclib-node#807).
+
+  **The two are not the same kind of test, and that is the half worth
+  keeping.** `test_download` is `tests/functional/`'s, starts nodes and
+  waits on them, and is what the sentence above already predicts.
+  `test_rev_patch` is a unit test -- `tests/unit/chainstate/`'s -- that
+  builds a twenty-thousand-block chain in process and unwinds it,
+  touching no socket and no node at all: it is merely slow, and a
+  machine at ten times its core count is enough to push it past its
+  bound. So what discriminates is the timeout itself and never the
+  directory the test sits in -- which is `pyproject.toml`'s own design
+  rather than an induction from these two: the comment beside its
+  `timeout = 300` argues one measured global bound against per-test
+  markers, and is where the tests that bound was measured against are
+  named and re-measured. An assertion failure is not this shape, and
+  load does not explain one.
 - **Collection under `tests/unit` and `tests/functional` follows
   pytest's own default `python_files`** (`test_*.py`, `*_test.py`).
   `pyproject.toml` carries no override, and its own comment beside
