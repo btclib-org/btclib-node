@@ -2700,6 +2700,18 @@ where this file was written rather than where anything was tagged.
   is reached, and the case is unmeasured here for that reason rather
   than for the absent row the comment claimed (closes #743).
 
+### The topics and the keywords are compared by a command
+
+- **`REPOSITORY.md`'s *Features, and the topics* carries the `diff` that
+  reads the topics and `pyproject.toml`'s `keywords` together** (issue
+  btclib-org/.github#636). It stated the pair and gave no command for
+  it, half being a repository setting and half a tracked file, so the
+  comparison was left to whoever thought to make it by eye. The command
+  is the one sibling copies of this file carry, running here unchanged
+  but for the repository name, and it exits nonzero on a drift. The
+  sentences beside it are theirs too: what an empty right-hand side
+  means, and why both sides are sorted.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
