@@ -548,7 +548,7 @@ curl -s https://app.readthedocs.org/api/v3/projects/btclib-node/versions/ \
 for v in json.load(sys.stdin)["results"]:
     if v["type"] == "tag":
         print(v["slug"], v["active"], v["built"])'
-# v2026.8.27 False False
+# v2026.8.27 True True
 # stable True True
 for v in latest stable v2026.8.27; do
   printf '%s ' "$v"
@@ -557,7 +557,7 @@ for v in latest stable v2026.8.27; do
 done
 # latest 200
 # stable 200
-# v2026.8.27 404
+# v2026.8.27 200
 ```
 
 - **`latest` follows the default branch, which is `main`**, and
@@ -582,13 +582,32 @@ done
   # 0
   ```
 
-- **A release tag has no URL of its own.** The version created for
-  `v2026.8.27` is inactive and unbuilt, which is the 404 above. What
-  activates each new tag is an automation rule the sibling projects
-  carry and this one does not -- issue #596 has its form and the
-  measurement -- and adding it is an action on Read the Docs' own side
-  that no `gh api` call in this file takes or reads back, the same
-  boundary the trusted publishers above sit on.
+- **A release tag now has a URL of its own.** The dashboard carries an
+  automation rule matching the three siblings' -- Match: SemVer
+  versions, Version type: Tag, Action: Activate version -- added by the
+  maintainer directly on Read the Docs' own side (issue #596), an
+  action no `gh api` call in this file takes. Nor does one read the rule
+  back afterwards: the automation-rules endpoint answers `404`
+  unauthenticated for every project on the dashboard, `btclib-secp256k1`'s
+  own rule included, so the `404` is the absence of a token this file
+  does not carry rather than the absence of a rule:
+
+  ```shell
+  for slug in btclib-node btclib-secp256k1; do
+    curl -s -o /dev/null -w '%{http_code}\n' \
+      "https://app.readthedocs.org/api/v3/projects/$slug/automation-rules/"
+  done
+  # 404
+  # 404
+  ```
+
+  Read the Docs evaluates a rule when it creates or updates a version
+  from a webhook event, not against a version that already exists, which
+  is why `v2026.8.27` -- tagged before the rule was added -- needed the
+  maintainer's own second action to activate by hand rather than
+  following from the rule. What the versions call above reads back is
+  that effect rather than the rule itself: `v2026.8.27` now reports
+  `True True` beside `stable`.
 - **The repository's `.homepage` names this same site**, read back from
   the endpoint rather than from `pyproject.toml`'s own copy of it
   (issue btclib-org/.github#533):
@@ -616,8 +635,8 @@ done
 decided against. This section is the other edge of the scope at the top:
 what the API answers for and no section here reads back. What another
 service decides and no call here reaches — the trusted publishers on the
-two indices, the Read the Docs automation rule that would build a release
-tag — is named where each of those arises above instead.
+two indices, the Read the Docs automation rule itself, as against the
+versions it acts on — is named where each of those arises above instead.
 
 **What no call sets.** `gh api repos/btclib-org/btclib-node` answers the
 whole repository document, and most of it is URLs, counts and state
