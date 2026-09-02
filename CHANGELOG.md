@@ -2734,6 +2734,44 @@ where this file was written rather than where anything was tagged.
   two branches writing an entry at one anchor rather than a bullet
   appended to one of a few changelog groups.
 
+### The tree gains the `deps-oldest` sentinel, and the badge row two badges
+
+- **`README.md`'s row carried no badge for `pypi-install.yml`**
+  (closes #740), though the workflow was already here: section 2 of
+  the organization standard ties a sentinel's badge and its workflow
+  together as one membership, and the row was short of its half. The
+  new line sits after `deps-latest` and before `deps-oldest`, section
+  10's calendar order over that stretch, and carries `?branch=main`,
+  which section 2 has asked of every workflow-status badge since
+  btclib-org/.github#579.
+- **`deps-oldest` was nowhere in this tree** (closes #739): section 10's
+  *Which trees carry which sentinel* names `btclib-node` for it, and
+  nothing here ran the workflow or showed its badge.
+  `.github/workflows/deps-oldest.yml` runs
+  `uv lock --resolution lowest-direct` on `requires-python`'s own floor
+  and then the suite, the mirror of `deps-latest.yml`'s `--upgrade`;
+  its badge sits after `pypi-install` and before `os-macos`, the
+  calendar order again, with the same `?branch=main`. Unlike
+  `deps-latest.yml`, this workflow carries no lint job: that job exists
+  there because a new mypy release can add a check the codebase fails
+  before the next re-lock catches it, and a floor resolution moves mypy
+  to a release already behind rather than one ahead, which is not a
+  claim `pyproject.toml`'s dependencies make to an installer. `btclib`
+  is the one direct dependency the new job cannot take to a floor:
+  `[tool.uv.sources]` points it at the git branch `main` rather than at
+  a registry range, so the specifier beside it is a claim to an
+  installer and not to this checkout, and the resolution moves it to
+  that branch's tip as `--upgrade` does rather than to the floor. What
+  it verifies at a floor is every specifier uv resolves from a
+  registry: `rocksdict` among the runtime dependencies, and the
+  `[dependency-groups]` entries the suite step installs.
+- **No repository of the organization carried
+  `.github/workflows/deps-oldest.yml` before this branch**, measured
+  across the organization by HTTP status line with `deps-latest.yml` as
+  the positive control. The debt is carried until the first tree
+  schedules the workflow, and this is that tree
+  (issue btclib-org/.github#323).
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

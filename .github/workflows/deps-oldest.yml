@@ -1,0 +1,131 @@
+---
+name: deps-oldest
+
+# the floor sentinel: everything uv resolves, taken down to the oldest
+# release pyproject.toml's own specifier still allows, on the one
+# interpreter requires-python names, and then put through the suite.
+# deps-latest.yml asks whether a newer release still works; this asks
+# whether the oldest release this tree still claims to support does --
+# section 10 of btclib-org/.github calls the two a mirrored pair.
+#
+# --resolution lowest-direct, not lowest: lowest also takes every
+# transitive dependency to its own minimum, resolving environments
+# nothing published has ever run and turning a red into noise about a
+# release this tree never claimed to support. lowest-direct moves only
+# what pyproject.toml itself declares a floor for, which is the claim
+# this workflow exists to check.
+#
+# btclib is the one direct dependency this cannot take to a floor:
+# [tool.uv.sources] points it at the git branch main rather than at a
+# registry range (see pyproject.toml), so the specifier beside it there
+# is a claim about what `pip install btclib-node` resolves and never
+# about what this checkout's own uv.lock holds. The resolution does
+# still move btclib -- it re-fetches that branch's tip, as
+# deps-latest.yml's --upgrade does and as that file's own header says
+# -- but to whatever main is on the day, so a red from it is not a
+# floor's report and is not what this workflow is here to read.
+#
+# What it does verify at a floor is every specifier uv resolves from a
+# registry: rocksdict among the runtime dependencies, and the
+# [dependency-groups] entries the suite step below installs, which uv
+# calls direct dependencies too and which this resolution moves. A
+# group entry declaring no lower bound at all has no floor to verify,
+# and uv warns on each one it finds -- issue #761 is that list.
+#
+# One interpreter and one image, on requires-python's own floor: no
+# matrix, because a floor is one claim to verify rather than a range to
+# scan, and deps-latest.yml already covers the newest release.
+#
+# No lint job here, unlike deps-latest.yml's: that job exists there
+# because mypy is a local hook that shells out to uv, so a new mypy
+# release can add a check this codebase fails before the next re-lock
+# catches it. lowest-direct moves mypy to its own floor instead, which is
+# not a release this tree has yet to see: the rationale does not mirror,
+# and that is the whole of the reason. The lint group declares floors of
+# its own and this run moves onto them like any other's -- what it does
+# not do is ask a lint gate about them, section 10 giving this sentinel
+# the claim a floor makes to whoever installs and not a second opinion
+# on the tooling.
+#
+# Nothing here gates anything, by construction: a separate workflow, with
+# no aggregate job, named by no branch protection rule. This job is
+# expected to go red for reasons no pull request introduced, and a red
+# check nobody can act on from a branch is noise. It opens no issue on
+# failure either, which would cost issues: write in a job that needs
+# nothing but read; a failed scheduled run notifies the last person to
+# have touched the cron below, and that is the signal
+
+on:
+  schedule:
+    # section 10's grid in btclib-org/.github names the day and the
+    # hour this tree schedules at, and this file does not restate them.
+    # Only the default branch schedules workflows, so on any other
+    # branch this is reachable through the dispatch below alone
+    - cron: "20 3 * * 4"
+  # the escape hatch: worth reaching for on a branch that moves a floor
+  # in pyproject.toml, which is the one edit whose effect this workflow
+  # is the only thing that measures
+  workflow_dispatch:
+
+# least privilege for the GITHUB_TOKEN: everything running in a job
+# (actions, dependencies) can read the token, so it must not be able to
+# write to the repository
+permissions:
+  contents: read
+
+# named literally rather than with github.workflow: nothing calls this
+# workflow, but that expression is the caller's name when something does,
+# and the convention is what keeps the groups distinct
+concurrency:
+  group: deps-oldest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suite-oldest:
+    name: Run the suite, dependencies at their declared floor
+    runs-on: ubuntu-latest
+    # the resolution mode, declared once for the whole job rather than
+    # passed to the step that resolves. `uv lock` records a non-default
+    # mode inside uv.lock, and any later uv command running under the
+    # default `highest` reads that lock as stale -- so `--locked` below
+    # would refuse the lock the step above it had just written, before
+    # installing anything and before reaching pytest. Setting it here
+    # is what makes both commands agree, and keeps `--locked` meaning
+    # what it says
+    env:
+      UV_RESOLUTION: lowest-direct
+    # far above what a run of the suite needs, the resolution below and
+    # the source build of btclib it triggers included: what it bounds is
+    # a hung job holding a runner
+    timeout-minutes: 30
+    steps:
+      # every action is pinned to a commit SHA, the tag in the comment: a
+      # tag, let alone a branch, is a name its owner can move
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          python-version: "3.14"
+
+      # re-resolves every direct dependency to the oldest release its own
+      # specifier in pyproject.toml still allows, the mode coming from
+      # the job's own env above; the header says what this moves and
+      # what it structurally cannot. This rewrites uv.lock, harmless on
+      # an ephemeral checkout and worth knowing before running the same
+      # command in a working tree
+      - name: Resolve every direct dependency to its declared floor
+        run: uv lock
+
+      # still --locked: the step above just wrote that lock, under the
+      # same mode this job's env declares, so this asserts nothing moved
+      # between the two.
+      # no pytest argument: addopts in pyproject.toml carries the
+      # coverage flags and the report format, [tool.coverage.report] the
+      # floor
+      - name: Run pytest
+        run: uv run --locked --no-default-groups --group test pytest
