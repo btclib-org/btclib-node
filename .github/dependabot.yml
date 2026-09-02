@@ -10,14 +10,19 @@
 #
 # Weekly, and no target-branch on either: without one dependabot opens
 # against the default branch, which is the only branch a change lands on.
-# The uv ecosystem below has a sentinel now: deps-latest.yml resolves the
-# same floor pyproject.toml declares a day earlier, Wednesday against
-# Thursday, and runs it through the suite and the lint gate -- so a
-# Thursday pull request there is not the first run that tries the bump,
-# though it still waits on its own required checks rather than on that
-# earlier report. The github-actions ecosystem has no such sentinel:
-# nothing here resolves an action version the way uv resolves a
-# dependency, so that pull request remains the first run that tries one.
+# The uv ecosystem below has a sentinel: deps-latest.yml runs
+# `uv lock --upgrade`, which takes every floor pyproject.toml declares
+# to the newest release that floor admits, a day earlier -- Wednesday
+# against Thursday -- and puts the result through the suite, the lint
+# gate and the packaging checks, so a Thursday pull request there is not
+# the first run that tries the bump, though it still waits on its own
+# required checks rather than on that earlier report. deps-oldest.yml
+# runs that same Thursday and is not a second such report: it takes
+# those specifiers to the other end, so it says nothing about the
+# release being offered. The github-actions ecosystem has no such
+# sentinel: nothing here resolves an action version the way uv resolves
+# a dependency, so that pull request remains the first run that tries
+# one.
 # Weekly rather than monthly either way: a week of drift is a diff
 # somebody can still read and revert, where a month of it arrives as one.
 #

@@ -2988,6 +2988,29 @@ where this file was written rather than where anything was tagged.
   The group's `check-sdist` is left out: `.pre-commit-config.yaml` runs
   it as a hook the lint gate already asks.
 
+### deps-latest builds the distribution and inspects it
+
+- **`deps-latest.yml` gains a `dist-latest` job** (closes #763): it runs
+  `uv build` after `uv lock --upgrade`, then `twine check --strict`,
+  `check-wheel-contents` and `pyroma --min 10` over what that wrote.
+  Section 10 of `btclib-org/.github`'s `README.md` names the packaging
+  checks as one of the three things this sentinel is, and `test.yml`'s
+  `dist` job -- the other consumer of the `check` group -- runs them
+  against the committed lock, where these run against the one
+  `uv lock --upgrade` has just rewritten: a pyroma that scores this
+  metadata below the `--min 10` ratchet, or a twine that refuses metadata
+  this project publishes, reports on the schedule rather than on the tag
+  that consumes the version. The job is narrower than `test.yml`'s
+  `dist`, which also produces the files `release.yml`'s publish jobs
+  download and smoke-tests the wheel with no lock in play.
+- **`.github/dependabot.yml` names what each uv sentinel resolves**
+  (closes #775): `uv lock --upgrade` takes every floor `pyproject.toml`
+  declares to the newest release that floor admits, and the comment above
+  the `uv` ecosystem says that and the three things the run puts it
+  through. It says too that `deps-oldest.yml`, which runs the Thursday
+  Dependabot does, takes those specifiers to the other end and so reports
+  nothing about the release being offered.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
