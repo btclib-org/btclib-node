@@ -182,12 +182,29 @@ def unstarted_node_context(
     `block_db.close()`, both managers' event loops and `logger.close()`
     -- only runs once a node's thread has reached the end of its loop,
     which a node built here and driven on the thread that built it
-    never does. Each is closed explicitly rather than dropped: a
-    dropped database or file is a `ResourceWarning` raised against
-    whichever test the collector is running when it reaches it, not
-    against this one, and `tests/unit/init_test.py`'s `a_networked_node`
-    is the precedent for the two loops. The managers' own `stop()` is
-    not called -- it waits on a thread that `start()` never began.
+    never does, so each is closed explicitly here instead. The two
+    loops and `logger.close()`'s own file close for the reason
+    `tests/unit/init_test.py`'s `a_networked_node` is already the
+    precedent for the loops: a dropped event loop or open file is a
+    `ResourceWarning` raised against whichever test the collector is
+    running when it reaches it, not against this one. The managers'
+    own `stop()` is not called -- it waits on a thread that `start()`
+    never began.
+
+    The three stores close for a different reason. The store is
+    RocksDB through `rocksdict` (btclib-org/btclib-node#641), and a
+    dropped `Rdict` raises no `ResourceWarning` at all -- measured
+    directly, where dropping this function's own event loop or open
+    file does. What a live handle holds instead is `db.py`'s own
+    directory `LOCK` ("The lock stays" section): a second `Rdict`
+    opened on the same path while the first is still referenced fails
+    outright with an IO error naming the lock, measured directly,
+    never merely a warning. `regtest_node` hands out several nodes
+    sharing one `tmp_path`, and the node holding a store's handle
+    stays referenced by the test for as long as the test holds it --
+    nothing here drops that reference on its own -- so a test that
+    reopens the same store needs this `close()` to have actually run,
+    not a collector that may never reach the handle in time.
 
     The worker pool is taken down here too, rather than left to
     `Node.__del__`'s own backstop: that backstop only runs once the

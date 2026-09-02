@@ -3057,6 +3057,22 @@ where this file was written rather than where anything was tagged.
   question cannot be written to survive the answer; only one that states
   what the standard says can.
 
+### `unstarted_node_context`'s docstring says why the stores close
+
+- **The docstring justified all six of its closes as avoiding a
+  `ResourceWarning`, and a dropped `rocksdict` `Rdict` raises none**
+  (closes #781). Measured directly: `del`-ing an `Rdict` and
+  collecting warns nothing, where dropping this same function's event
+  loop or open file each raise one.
+- **The three stores close for a different, measured reason: a live
+  handle holds `db.py`'s own directory `LOCK`.** A second `Rdict`
+  opened on the same path while the first is still referenced fails
+  outright with an IO error naming the lock, also measured directly,
+  never a warning. `regtest_node` hands out several nodes sharing one
+  `tmp_path`, and the node holding a store's handle stays referenced
+  by the test until this teardown runs, so a test that reopens the
+  same store needs the `close()` to have actually run.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
