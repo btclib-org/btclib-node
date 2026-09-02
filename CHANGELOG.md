@@ -3098,6 +3098,24 @@ where this file was written rather than where anything was tagged.
   construct, and autodoc renders none of their docstrings without
   `:private-members:` or `:special-members:`.
 
+### `pypi-install.yml` says which store it installs
+
+- **The header said the store was what `import btclib_node` pulls in
+  of its own accord -- true of this tree, not of the one release the
+  workflow installs.** `btclib-node` 2026.8.27's `requires_dist` is
+  `['btclib[secp256k1]>=2026.8.27']` and its own `db.py` imports the
+  stdlib `sqlite3`, read from the index on 2026-09-02; no cell resolves
+  a `rocksdict` wheel (closes #783).
+- **`pyproject.toml` already depends on `rocksdict>=0.3.29` and no
+  published release carries it**, which is what makes the gap between
+  the tree and the index one release wide rather than something here
+  wanting a further change (closes #783). The header says so in those
+  terms rather than predicting the next release, a sentence true only
+  until it lands being the defect issue #764 is about.
+- **The matrix comment beside the two macOS images carried the same
+  claim** -- that the wheels a Darwin cell resolves included the store
+  -- and is corrected alongside the header (closes #783).
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
