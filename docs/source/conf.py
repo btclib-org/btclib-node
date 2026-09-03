@@ -78,6 +78,35 @@ intersphinx_mapping = {
     "btclib": ("https://btclib.readthedocs.io/en/latest/", None),
 }
 
+# every build fetches both inventories, rather than reading back the copy
+# sphinx writes beside the doctrees and reuses until that copy expires.
+# The copy sits under docs/build, which .gitignore covers, so neither a
+# diff nor git status says which of the two a build resolved against, and
+# the same commit then answers green in a worktree building for the first
+# time and red in one re-reading a page against a copy taken days
+# earlier -- a build re-reading nothing resolves nothing and answers
+# green whatever its copy holds, which is why the red comes and goes.
+# btclib publishes
+# this inventory from its own main, so a name added there since a copy
+# was taken resolves for docs.yml's fresh checkout and not for that
+# worktree. The other direction is the worse one -- a name btclib has
+# removed still resolves off the copy, so a reference the gate exists to
+# refuse passes here and fails on docs.yml. -E is not the way out: it
+# discards the environment and reads the copy back.
+#
+# What it costs is a fetch of each inventory on every build, which is
+# what docs.yml and .readthedocs.yaml already do, their checkouts
+# carrying no copy to read; and a build with no route to the two hosts
+# fails under -W where one reading the copy would have passed.
+#
+# Not -d, putting the doctrees outside the tree: that relocates the copy
+# rather than expiring it, and reaches only the command CONTRIBUTING.md
+# documents, leaving those two files building against whatever their own
+# doctree directory holds. Not a vendored inventory either, which fixes
+# the reference set at the commit that added it and leaves the build
+# unable to say whether btclib still publishes the name
+intersphinx_cache_limit = 0
+
 # What the mapping above cannot answer for, and each entry below carries
 # its own reason rather than a nitpick_ignore_regex that would give the
 # check up entirely:
