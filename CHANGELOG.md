@@ -3692,6 +3692,75 @@ they were written in.
   `BINARY_PARSERS`, does not name it: btclib-org/btclib#1629 is where
   the per-commit half of fuzzing that codec is tracked.
 
+### `RELEASING.md` gives a placeholder a fence of its own
+
+- **A placeholder line and a line that runs no longer share a fence.**
+  A shell reads an unfilled `<...>` as a redirection, and the failure
+  stops at the command it is part of, so what stood below a placeholder
+  ran where the reader stood: `git rebase origin/main`, a `git show`
+  redirected over `/tmp/expected.md`, `gh release download`,
+  `gh run download` and `mv attestation/attestation.jsonl`
+  (issue btclib-org/.github#745).
+- **A placeholder is not always a parse error, and what it costs is
+  decided by the reader's directory.** `gh release download v<version>
+  --repo ...` reads as an input redirection then an output one, fails on
+  the input half, and carries on to the lines below;
+  `git show v<version>:pyproject.toml | grep '^version'` forks `grep`
+  regardless (btclib-org/.github#751). Where the directory holds a file
+  the placeholder names, the input half succeeds instead: that same
+  tagging line runs `git show v` and creates `./:pyproject.toml`, and
+  `gh run rerun <run id> --failed` re-runs a workflow and leaves a file
+  called `--failed`. So every block splits, a one-line block included.
+- **A placeholder inside a quoted string is not a redirection at all,
+  so the block holding it has no parse error in it.** The PyPI-state
+  check carries `<version>` inside a `python -c` program and the job
+  audit carries `<id>` inside a `gh api` URL, and an unfilled paste of
+  either runs whole: the first makes the request and prints `False`,
+  which this file says is what licenses deleting the tag.
+- **A second fence is live where the first is inert, and takes two
+  guards.** Each value it reads from the fence above is written
+  `${name:?}`, the shell's own must-be-set form, and its lines are
+  chained with `&&`. Neither closes it alone: an interactive shell
+  answers a parameter-expansion failure by ending one command rather
+  than the input, and a chain below a discarded placeholder line never
+  forms, the parse error taking that line's trailing `&&` with it.
+- **The rebuild block keeps its chain and stops resting on it.** `&&`
+  closed that block only because the `cd` under the discarded line
+  failed and took the rest with it. What the chain carries now is the
+  `${version:?}` failure, on top of stopping the rebuild where a build
+  or a verification fails. The sentence naming which shells discard that
+  line and which abort the whole feed moves to the introduction, the
+  mechanism belonging with the rule rather than with one block, and it
+  names an interactive `bash` among those that read on rather than among
+  those that abort: fed the block on standard input, it invokes what
+  stands under the placeholder line.
+- **The rebase reconstruction's manual step moves into the prose between
+  two fences.** A chain cannot express a step a person performs, so the
+  block ends where the hand edit begins and the comparison after it is a
+  fence of its own. The first asserts `: "${version:?}"` at its head, no
+  command in it reading the value the hand edit needs; the second writes
+  the scratch directory it takes from above as `${scratch:?}`, in the
+  redirection that is its own first write. The comparison's trailing `#`
+  comment moves to the prose above the fence, an interactive `zsh`
+  leaving `INTERACTIVE_COMMENTS` unset and passing it to `cmp` as
+  arguments.
+- **The guard pair is section 9's.** Its *The fence a split leaves
+  below is live* names both — each value written `${name:?}`, the lines
+  chained with `&&` — and puts each read at or above the fence's first
+  line that writes.
+- **Three more fences held a placeholder beside commands.** The
+  clean-export rebuild and the tag deletion were inert only by the parse
+  error their own placeholder line raises; the recovery's `gh release
+  create` was already behind the `${version:?}` at its chain's head.
+  Each takes its value from a fence above now, and the recovery's notes
+  placeholder names a file, which is what `--notes-file` takes.
+- **The `mkdir` guard keeps the half of its paragraph the split leaves
+  true.** `git worktree add` enters a pre-existing empty
+  `/tmp/btclib-node-rebuild` exactly as a fresh one, so the guard is
+  what refuses a leftover on a correctly filled paste. The `mkdir` is
+  the fence's first line and it writes, so a `: "${version:?}"` heads
+  the fence: a guard below the first writing line arrives too late.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
