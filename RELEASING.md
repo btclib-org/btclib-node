@@ -569,7 +569,21 @@ fatal on its own — `|| exit`, or a `set -e` above the block — which
 refuses the same paste by ending the shell the reader pasted into,
 where the chain leaves the session standing.
 
+The `mkdir` immediately above the checkout closes a second gap, on a
+*correctly* filled paste: `git worktree add` checks out into a
+pre-existing empty `/tmp/btclib-node-rebuild` exactly as into a fresh
+one, saying nothing about which happened, so a directory left over
+from an earlier rebuild is reused silently rather than refused.
+`mkdir` without `-p` fails wherever the target already exists, empty
+or not, and — placed first — takes the rest of the chain with it the
+same way the `cd` above does. It buys the unfilled paste nothing:
+execution there resumes at the first complete command after the parse
+error, in the reader's own working directory, and a leftover directory
+is exactly what lets that resumption reach past the `cd` regardless of
+what a guard ahead of the placeholder line said.
+
 ```shell
+mkdir /tmp/btclib-node-rebuild &&
 git worktree add --detach /tmp/btclib-node-rebuild v<version> &&
 cd /tmp/btclib-node-rebuild &&
 export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct) &&
