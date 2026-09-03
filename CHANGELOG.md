@@ -3626,6 +3626,22 @@ they were written in.
   leaves every other btclib name a signature carries reading the same
   copy.
 
+### The rebuild block refuses a leftover checkout target
+
+- **`git worktree add --detach <path> <ref>` checks out into a
+  pre-existing *empty* `<path>` exactly as into a fresh one**, refusing
+  only where the directory is non-empty, so a `/tmp/btclib-node-rebuild`
+  left over from an earlier rebuild was reused with nothing in the
+  transcript saying so. A `mkdir` of that same literal path, ahead of
+  the checkout, now fails there instead: `mkdir` without `-p` rejects an
+  existing target whether or not it is empty, and that failure carries
+  the same short-circuit the `cd` below it already relies on for the
+  placeholder-unfilled paste (closes #823).
+- **The guard is silent on that same unfilled paste**, since a parse
+  error consumes it exactly as it consumes the `git worktree add` line
+  it precedes; only a correctly filled paste is protected against a
+  leftover target.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
