@@ -60,6 +60,43 @@ It cannot bite again while the file keeps its name; a rename or a
 second publishing workflow is what would bring it back, which is why
 the paragraph stays.
 
+**A fence that fills in a placeholder holds nothing else.** A shell
+reads an unfilled `<...>` as a redirection, and what that costs depends
+on where it sits. A trailing `>` with nothing after it is a parse error;
+a `<` naming a file the reader does not have is a redirection that
+merely fails; and neither reaches past the command it is part of, so the
+far side of a pipe is forked anyway. How much of a paste the parse error
+takes is the reading shell's: `bash` and `sh` reading the block as a
+script abort the whole feed on it, and so does `zsh` given it as a file,
+where an interactive `bash` or `zsh`, and `zsh` reading the block on
+standard input, discard that line alone and read the next as a fresh
+command. What looks like a guard is therefore the reader's own directory
+rather than the line — `git show v<version>:pyproject.toml | grep
+'^version'` runs `grep`, and in a directory holding a file named
+`version` it runs `git show v` and creates `./:pyproject.toml`
+([ISS btclib-org/.github#751][gh-751]). A placeholder inside a quoted
+string — a `python -c` program's — is not a redirection at all, so the
+block holding it has no parse error in it and runs whole. Section 9 of
+[btclib-org/.github's README][gh-readme] is the rule that a line which
+writes goes in a fence of its own;
+[ISS btclib-org/.github#745][gh-745] is the measurement that a trailing
+`&&` does not stand in for it, the discarded line taking its own `&&`
+with it and the line below starting a fresh chain. So a block needing a
+value typed into it puts the placeholder in a fence of its own, and what
+uses the value in the fence after it, which github.com gives a copy
+button of its own. That second fence is live where the first is inert,
+so each value it takes from the fence above is written `${name:?}` —
+the shell's own must-be-set form — and its lines are chained with `&&`.
+The two answer different failures and neither covers the other: a fence
+taken alone names the variable and stops on the line that reads it, and
+the chain is what keeps the lines below that one from running, a
+run-time failure being what `&&` short-circuits where a discarded
+placeholder line takes its own trailing `&&` away with it. A
+`: "${version:?}"` at a fence's head asserts a value nothing below it
+guards in time: one that a step the reader performs needs, there being
+no command for the guard to sit on, and one first read below a line
+that writes.
+
 ## Which version string is which
 
 Telling these apart is most of what can go wrong when cutting a release.
@@ -168,10 +205,14 @@ publishes the very files those checks passed to
 1. Check the upload, and optionally install it:
 
    ```shell
+   rehearsal=<version>.dev<run*100+attempt>
+   ```
+
+   ```shell
    uv run --isolated --no-project --python 3.14 \
      --index https://test.pypi.org/simple/ \
      --index-strategy unsafe-best-match \
-     --with btclib-node==<version>.dev<run*100+attempt> \
+     --with "btclib-node==${rehearsal:?}" \
      python -c "from btclib_node import Node; print(Node)"
    ```
 
@@ -282,14 +323,25 @@ this release included.
 
    ```shell
    version=<the version being released>
-   git rebase origin/main
-   scratch=$(mktemp -d)
+   ```
+
+   ```shell
+   : "${version:?}" &&
+   git rebase origin/main &&
+   scratch=$(mktemp -d) &&
    git show origin/main:CHANGELOG.md > "$scratch/expected.md"
-   # apply this release's own edits to $scratch/expected.md: retitle
-   # `## Unreleased` to `## v$version`, open the next `## Unreleased`
-   # above it, and whatever the intro needs
-   git show HEAD:CHANGELOG.md > "$scratch/actual.md"
-   cmp "$scratch/expected.md" "$scratch/actual.md"   # silent, exit 0
+   ```
+
+   Apply this release's own edits to `$scratch/expected.md` by hand:
+   retitle `## Unreleased` to `## v<version>`, open the next
+   `## Unreleased` above it, and whatever the intro needs. That step is
+   a person's, so it ends the chain rather than sitting inside it, and
+   what follows is a fence of its own, whose `cmp` prints nothing where
+   it passes:
+
+   ```shell
+   git show HEAD:CHANGELOG.md > "${scratch:?}/actual.md" &&
+   cmp "${scratch:?}/expected.md" "${scratch:?}/actual.md"
    ```
 
    and the same pair, in a `scratch=$(mktemp -d)` of its own, for
@@ -374,9 +426,14 @@ this release included.
    commit**, and read the tag back before pushing it:
 
    ```shell
-   git tag -s v<version> -m "release v<version>" <sha of the release commit>
-   git show v<version>:pyproject.toml | grep '^version'
-   git push origin v<version>
+   version=<the version being released>
+   sha=<sha of the release commit>
+   ```
+
+   ```shell
+   git tag -s "v${version:?}" -m "release v${version:?}" "${sha:?}" &&
+   git show "v${version:?}:pyproject.toml" | grep '^version' &&
+   git push origin "v${version:?}"
    ```
 
    `git tag` with no commit tags whatever `HEAD` the shell is in, and
@@ -385,7 +442,8 @@ this release included.
    tagging the commit before the version bump. `version-check` would
    refuse it, comparing the declared version against the tag's; the
    `git show` above is the same check one step earlier, where it costs
-   nothing.
+   nothing, and the chain is what makes it binding — `grep` fails where
+   the line is not there, and the push below it does not run.
 
 1. Approve the `pypi` environment when the workflow asks. Up to here
    nothing is public and the tag can still be deleted; the upload that
@@ -396,7 +454,12 @@ this release included.
    `skipped` with **zero steps**:
 
    ```shell
-   gh api "repos/btclib-org/btclib-node/actions/runs/<id>/jobs?per_page=100" \
+   run_id=<the release.yml run>
+   ```
+
+   ```shell
+   gh api \
+     "repos/btclib-org/btclib-node/actions/runs/${run_id:?}/jobs?per_page=100" \
      --jq '.jobs[] | [.conclusion, (.steps|length), .name] | @tsv'
    ```
 
@@ -433,7 +496,11 @@ this release included.
    the attestations, which that job carries no token for:
 
    ```shell
-   pypi-attestations verify pypi <file> --repository \
+   file=<the distribution file to verify>
+   ```
+
+   ```shell
+   pypi-attestations verify pypi "${file:?}" --repository \
      https://github.com/btclib-org/btclib-node
    ```
 
@@ -462,12 +529,15 @@ this release included.
 
    ```shell
    version=<the released version>
-   gh release download "v$version" --repo btclib-org/btclib-node \
-     --pattern '*.cdx.json'
+   ```
+
+   ```shell
+   gh release download "v${version:?}" --repo btclib-org/btclib-node \
+     --pattern '*.cdx.json' &&
    python3 -c "import json,sys; d=json.load(open(sys.argv[1])); \
      print(len(d['components']), 'components'); \
      print('git+https:// present:', 'git+https://' in json.dumps(d))" \
-     "btclib_node-$version.cdx.json"
+     "btclib_node-${version:?}.cdx.json"
    # 1 components
    # git+https:// present: False
    ```
@@ -503,7 +573,11 @@ this release included.
    being what a green run looks like from the Actions page:
 
    ```shell
-   gh release view v<version> --json name,assets,author
+   version=<the released version>
+   ```
+
+   ```shell
+   gh release view "v${version:?}" --json name,assets,author
    ```
 
    `author` is the cheap second question: `github-actions` is the
@@ -515,19 +589,24 @@ this release included.
 1. Verify the provenance of an asset:
 
    ```shell
-   gh release download v<version> --repo btclib-org/btclib-node
-   wheel=btclib_node-<version>-py3-none-any.whl
-   repo=btclib-org/btclib-node
+   version=<the released version>
+   ```
+
+   ```shell
+   gh release download "v${version:?}" --repo btclib-org/btclib-node &&
+   wheel=btclib_node-${version:?}-py3-none-any.whl &&
+   repo=btclib-org/btclib-node &&
    gh attestation verify "$wheel" --repo "$repo" \
-     --signer-workflow "$repo/.github/workflows/release.yml"
+     --signer-workflow "$repo/.github/workflows/release.yml" &&
    gh attestation verify "$wheel" --repo "$repo" \
-     --bundle v<version>.attestation.jsonl
+     --bundle "v${version:?}.attestation.jsonl"
    ```
 
    the first asks the attestations API for the signed statement, the
-   second reads it from the asset and asks nothing. One attestation
-   covers the wheel, the sdist and the bill of materials, so all three
-   verify against the same bundle.
+   second reads it from the asset and asks nothing, and the chain runs
+   the second only where the first passed. One attestation covers the
+   wheel, the sdist and the bill of materials, so all three verify
+   against the same bundle.
 
 1. Open the next cycle: set a generic next version without the day
    (e.g. after `2026.8`, use `2026.9`) in `pyproject.toml`, through a
@@ -557,17 +636,15 @@ A worktree and not `git checkout`, for the reason `CLAUDE.md` gives: the
 primary checkout is the maintainer's, and a rebuild wants a tree of its
 own regardless.
 
-The block chains so that a paste made before `<version>` is filled in
-reaches no command outside that tree: an interactive shell, and `zsh`
-reading the block from standard input, answers the placeholder line
-with a parse error and reads the `cd` below it as a fresh command —
-`bash` and `sh` abort the whole feed on that same error regardless of
-channel, and so does `zsh` given the block as a file rather than on
-its own standard input — and a failing `cd` inside the chain takes
-every line under it with it. The rejected alternative makes the `cd`
-fatal on its own — `|| exit`, or a `set -e` above the block — which
-refuses the same paste by ending the shell the reader pasted into,
-where the chain leaves the session standing.
+The version is a fence of its own, for the reason the introduction
+gives. The `&&` below carries the `${version:?}` failure down the block,
+and stops the rebuild where `git worktree add`, `uv build` or a
+verification fails; what it is not is the guard on the placeholder line
+above ([ISS btclib-org/.github#745][gh-745]). The
+rejected alternative makes each step fatal on its own — `|| exit`, or a
+`set -e` above the block — which refuses the same paste by ending the
+shell the reader pasted into, where the chain leaves the session
+standing.
 
 The `mkdir` immediately above the checkout closes a second gap, on a
 *correctly* filled paste: `git worktree add` checks out into a
@@ -575,16 +652,19 @@ pre-existing empty `/tmp/btclib-node-rebuild` exactly as into a fresh
 one, saying nothing about which happened, so a directory left over
 from an earlier rebuild is reused silently rather than refused.
 `mkdir` without `-p` fails wherever the target already exists, empty
-or not, and — placed first — takes the rest of the chain with it the
-same way the `cd` above does. It buys the unfilled paste nothing:
-execution there resumes at the first complete command after the parse
-error, in the reader's own working directory, and a leftover directory
-is exactly what lets that resumption reach past the `cd` regardless of
-what a guard ahead of the placeholder line said.
+or not, and — placed first — takes the rest of the chain with it. The
+`mkdir` is the fence's first line and it writes, so the
+`: "${version:?}"` above it is what refuses an unfilled paste: a guard
+below the first writing line arrives too late.
 
 ```shell
+version=<the released version>
+```
+
+```shell
+: "${version:?}" &&
 mkdir /tmp/btclib-node-rebuild &&
-git worktree add --detach /tmp/btclib-node-rebuild v<version> &&
+git worktree add --detach /tmp/btclib-node-rebuild "v${version:?}" &&
 cd /tmp/btclib-node-rebuild &&
 export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct) &&
 uv build &&
@@ -593,11 +673,11 @@ uv run --no-project --python 3.14 \
 uv run --no-project --python 3.14 \
   .github/scripts/generate_sbom.py dist/ sbom/ &&
 repo=btclib-org/btclib-node &&
-gh attestation verify dist/btclib_node-<version>-py3-none-any.whl \
+gh attestation verify "dist/btclib_node-${version:?}-py3-none-any.whl" \
   --repo "$repo" --signer-workflow "$repo/.github/workflows/release.yml" &&
-gh attestation verify dist/btclib_node-<version>.tar.gz \
+gh attestation verify "dist/btclib_node-${version:?}.tar.gz" \
   --repo "$repo" --signer-workflow "$repo/.github/workflows/release.yml" &&
-gh attestation verify sbom/btclib_node-<version>.cdx.json \
+gh attestation verify "sbom/btclib_node-${version:?}.cdx.json" \
   --repo "$repo" --signer-workflow "$repo/.github/workflows/release.yml"
 ```
 
@@ -607,10 +687,14 @@ reading a mismatch as tampering:
 - **the build reads the working directory, not git.** `uv_build` walks
   the tree through the glob patterns of `[tool.uv.build-backend]`, so an
   *untracked* file matching one of them is packed like any other and
-  changes the digest. Rebuild in a clean export:
+  changes the digest. Rebuild in a clean export, which takes the
+  version from the fence above:
 
   ```shell
-  d=$(mktemp -d) && git archive v<version> | tar -x -C "$d" && cd "$d"
+  : "${version:?}" &&
+  d=$(mktemp -d) &&
+  git archive "v${version:?}" | tar -x -C "$d" &&
+  cd "$d"
   ```
 
 - **the build backend is bounded, not pinned.** `[build-system] requires`
@@ -635,10 +719,15 @@ reading a mismatch as tampering:
   that in fact landed fails a second time on top of the first.
 
   ```shell
+  version=<the released version>
+  ```
+
+  ```shell
+  : "${version:?}" &&
   curl -s -H "Accept: application/vnd.pypi.simple.v1+json" \
     https://pypi.org/simple/btclib-node/ \
     | python3 -c "import json,sys; \
-      print('<version>' in json.load(sys.stdin)['versions'])"
+      print('${version:?}' in json.load(sys.stdin)['versions'])"
   ```
 
   `False`, and only `False`, is what licenses the delete — retry the
@@ -646,8 +735,8 @@ reading a mismatch as tampering:
   paragraph above describes. Delete the tag, fix, and tag again:
 
   ```shell
-  git tag -d v<version>
-  git push origin :refs/tags/v<version>
+  git tag -d "v${version:?}" &&
+  git push origin ":refs/tags/v${version:?}"
   ```
 
   Both lines, and the local one is the half that is easy to skip: a tag
@@ -661,7 +750,11 @@ reading a mismatch as tampering:
   what is already built:
 
   ```shell
-  gh run rerun <run id> --failed
+  run_id=<the release.yml run>
+  ```
+
+  ```shell
+  gh run rerun "${run_id:?}" --failed
   ```
 
   a fresh approval of the `pypi` environment is still required, the
@@ -682,21 +775,24 @@ reading a mismatch as tampering:
   ```shell
   run_id=<the release.yml run>
   version=<the released version, e.g. 2026.8.4>
-  tag="v$version"
-  gh run download "$run_id" -n dist -n sbom -n attestation
+  notes=<a file holding the release notes for this tag>
+  ```
 
+  ```shell
+  tag="v${version:?}" &&
+  : "${notes:?}" &&
+  gh run download "${run_id:?}" -n dist -n sbom -n attestation &&
   for f in dist/*.whl dist/*.tar.gz; do
     sha=$(curl -s -H "Accept: application/vnd.pypi.simple.v1+json" \
       https://pypi.org/simple/btclib-node/ |
       jq -r --arg n "$(basename "$f")" \
         '.files[] | select(.filename==$n) | .hashes.sha256')
     echo "$sha  $f" | sha256sum -c -
-  done
-
-  mv attestation/attestation.jsonl "$tag.attestation.jsonl"
-  gh release create "$tag" dist/*.whl dist/*.tar.gz \
-    sbom/*.cdx.json "$tag.attestation.jsonl" \
-    --title "$tag" --notes-file <the tag's RELEASE_NOTES.md section>
+  done &&
+  mv attestation/attestation.jsonl "${tag:?}.attestation.jsonl" &&
+  gh release create "${tag:?}" dist/*.whl dist/*.tar.gz \
+    sbom/*.cdx.json "${tag:?}.attestation.jsonl" \
+    --title "${tag:?}" --notes-file "${notes:?}"
   ```
 
   The digest comparison is not optional: it is what stands in for the
@@ -709,3 +805,6 @@ reading a mismatch as tampering:
 [iss-561]: https://github.com/btclib-org/btclib-node/issues/561
 [iss-553]: https://github.com/btclib-org/btclib-node/issues/553
 [gh-105]: https://github.com/btclib-org/.github/issues/105
+[gh-745]: https://github.com/btclib-org/.github/issues/745
+[gh-751]: https://github.com/btclib-org/.github/issues/751
+[gh-readme]: https://github.com/btclib-org/.github/blob/main/README.md
