@@ -163,6 +163,22 @@ def generate_random_header_chain(
     return chain
 
 
+def anyone_can_spend() -> bytes:
+    """Return a script_pub_key that a one-push script_sig satisfies cleanly.
+
+    `interpreter.STANDARD_FLAGS` carries CLEANSTACK, which
+    `verify_mempool_acceptance` checks a candidate against, so a
+    script_pub_key that only pushes leaves the spender's own push
+    standing beside its own and the spend is refused as non-standard.
+    `OP_2DROP` clears both, and `OP_1` leaves the single true element
+    CLEANSTACK asks for. The random push is what keeps two of these
+    distinct: `generate_coinbase`'s own BIP34 script_sig is a function
+    of the height and nothing else, so the output script is what makes
+    two coinbases at one height two transactions.
+    """
+    return script.serialize([secrets.token_bytes(32), "OP_2DROP", "OP_1"])
+
+
 def generate_random_transaction(
     prevouthash: bytes | None = None, value: int = 50 * 10**8
 ) -> Tx:
@@ -182,10 +198,7 @@ def generate_random_transaction(
         script_sig=script.serialize([secrets.token_bytes(32)]),
         sequence=0xFFFFFFFF,
     )
-    tx_out = TxOut(
-        value=value,
-        script_pub_key=script.serialize([secrets.token_bytes(32)]),
-    )
+    tx_out = TxOut(value=value, script_pub_key=anyone_can_spend())
     return Tx(
         version=1,
         lock_time=0,
@@ -209,7 +222,7 @@ def generate_coinbase(value: int | None = None, height: int | None = None) -> Tx
     and `build_coinbase` cannot produce -- its own docstring names the
     escape this takes, a `Tx` built by hand.
     """
-    script_pub_key = script.serialize([secrets.token_bytes(32)])
+    script_pub_key = anyone_can_spend()
     if height is None:
         return Tx(
             version=1,

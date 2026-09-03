@@ -18,15 +18,17 @@ pay for.
 
 from typing import TYPE_CHECKING
 
+from btclib.exceptions import BTClibValueError
 from btclib.script.engine import verify_amounts, verify_input, verify_transaction
+from btclib.script.engine.flags import ALL_FLAGS, ScriptFlag
 from btclib.script.sig_hash import PrecomputedTxData
 
-from btclib_node.exceptions import PrevoutCountMismatchError
+from btclib_node.exceptions import NonStandardTxError, PrevoutCountMismatchError
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from btclib.script.engine.flags import ScriptFlag, ScriptFlags
+    from btclib.script.engine.flags import ScriptFlags
     from btclib.tx.tx import Tx
     from btclib.tx.tx_out import TxOut
 
@@ -35,12 +37,50 @@ if TYPE_CHECKING:
     from btclib_node.config import Config
 
 __all__ = [
+    "STANDARD_FLAGS",
     "check_transaction",
     "check_transactions",
     "f",
     "get_flags",
     "warm",
 ]
+
+# Core's own `STANDARD_SCRIPT_VERIFY_FLAGS` (`src/policy/policy.h:118-131`,
+# at bitcoin/bitcoin@9be056a8a7): what a transaction has to satisfy to be
+# relayed and held, over what it has to satisfy to be mined.
+# `btclib.script.engine.flags.ALL_FLAGS` is the consensus set and is
+# Core's `MANDATORY_SCRIPT_VERIFY_FLAGS` member for member, so the union
+# below is Core's own construction rather than a second transcription of
+# the seven.
+#
+# A constant reading neither a height nor a block hash, as Core's
+# `constexpr` is: relay policy is not gated on an activation height, and
+# a tip that is one of the blocks `ConsensusParams.script_flags_at`
+# exempts by hash would otherwise relax it.
+#
+# `SIGPUSHONLY` is a standardness flag btclib carries and this set leaves
+# out, Core leaving it out of `STANDARD_SCRIPT_VERIFY_FLAGS` too.
+# `CONST_SCRIPTCODE` is in, and btclib reads it more widely than Core:
+# `btclib.script.engine._check_script_sig_policy` refuses a signature
+# check carried anywhere in the script_sig, where Core errors inside the
+# executed branch its `FindAndDelete` reaches, and that comment calls
+# its own rule stricter in one direction and short in another.
+STANDARD_FLAGS = (
+    ALL_FLAGS
+    | ScriptFlag.STRICTENC
+    | ScriptFlag.LOW_S
+    | ScriptFlag.MINIMALDATA
+    | ScriptFlag.DISCOURAGE_UPGRADABLE_NOPS
+    | ScriptFlag.CLEANSTACK
+    | ScriptFlag.DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM
+    | ScriptFlag.MINIMALIF
+    | ScriptFlag.NULLFAIL
+    | ScriptFlag.WITNESS_PUBKEYTYPE
+    | ScriptFlag.CONST_SCRIPTCODE
+    | ScriptFlag.DISCOURAGE_UPGRADABLE_PUBKEYTYPE
+    | ScriptFlag.DISCOURAGE_OP_SUCCESS
+    | ScriptFlag.DISCOURAGE_UPGRADABLE_TAPROOT_VERSION
+)
 
 
 def get_flags(
@@ -53,8 +93,8 @@ def get_flags(
     block, and `index` decides only the four rules gated on a buried
     deployment. `block_hash` is what answers for the handful of blocks
     that predate one of the three always-on rules and would fail it,
-    exempted by hash rather than by height -- `None` where no block is
-    being connected, as for a mempool candidate.
+    exempted by hash rather than by height -- `None` names no block at
+    all, and answers as a hash on no exception row does.
     """
     return config.chain.consensus.script_flags_at(index, block_hash)
 
@@ -174,30 +214,75 @@ def check_transactions(
     node.worker_pool.starmap(f, _tasks(transaction_data, flags))
 
 
-def check_transaction(
-    prevouts: list[TxOut], tx: Tx, index: int, node: Node, tip_hash: bytes
-) -> None:
-    """Verify one transaction against its prevouts, on the caller's own thread.
+def _consensus_accepts(prevouts: list[TxOut], tx: Tx) -> bool:
+    """Answer whether `ALL_FLAGS` takes a transaction `STANDARD_FLAGS` refused.
+
+    Which separates a candidate a block may carry from one no chain
+    will hold, and btclib's engine does not: every rule it enforces is
+    refused with the same `BTClibValueError`, so the flag set a refusal
+    was produced under is all there is to read it by. A second run is
+    what that costs, and it is paid only where the candidate is already
+    refused.
+
+    `ALL_FLAGS` and not `get_flags`, which is what keeps
+    `check_transaction` free of a height: it is the consensus set with
+    every buried deployment binding, so it contains whatever
+    `get_flags` answers at any height (`interpreter_test.py`) and a
+    transaction it takes is one a block at any height carries. The two
+    differ only for a transaction from before a soft fork, which
+    `main.verify_mempool_acceptance`'s own docstring argues a mempool
+    never holds.
+    """
+    try:
+        verify_transaction(prevouts, tx, ALL_FLAGS)
+    except BTClibValueError:
+        return False
+    return True
+
+
+def check_transaction(prevouts: list[TxOut], tx: Tx) -> None:
+    """Verify one mempool candidate against its prevouts, on this thread.
 
     Not routed through `Node.worker_pool`, unlike `check_transactions`
     above: this runs once per mempool acceptance rather than once per
     block's worth of inputs, so the pool's own process-pickling cost
     would outweigh what it buys here.
 
-    `tip_hash` is the active chain's own tip, not a hash of `tx` or of
-    the candidate block it would join: there is no candidate block,
-    `index` already being one past the tip (`main.verify_mempool_acceptance`'s
-    own `spend_height`), so no block hash names the transaction being
-    checked. Core's own re-check of a mempool candidate against
-    consensus (`ConsensusScriptChecks`, `src/validation.cpp:1175-1185`,
-    at bitcoin/bitcoin@9be056a8a7) reads `GetBlockScriptFlags` off
-    `m_chain.Tip()` for the same reason -- the exception table is a
-    lookup by hash and the tip is the one real, connected block this
-    check has -- so `get_flags` below is asked the same way.
+    `STANDARD_FLAGS` and not `get_flags`, which is Core's
+    `PolicyScriptChecks` (`src/validation.cpp:1139-1160`,
+    at bitcoin/bitcoin@9be056a8a7): a candidate is judged against relay
+    policy, and the consensus set alone admits to this node's mempool a
+    transaction Core will not relay. Nothing here reads the chain, so
+    this takes neither a height nor a `Node`.
+
+    Core follows that call with `ConsensusScriptChecks` (`:1162-1193`,
+    same commit) and this does not. That second call fills the script
+    execution cache `ConnectBlock` reads later, which is not a structure
+    this tree has -- `check_transactions` above verifies every input of
+    every block transaction, mempool or not. What is left of it is an
+    assertion: `STANDARD_FLAGS` is a superset of every set `get_flags`
+    can answer, so a candidate this accepts is one the consensus rules
+    accept unless the engine below disagrees with itself, which is why
+    Core's own failure there is a `LogError("BUG! PLEASE REPORT THIS!")`
+    under an `Assume(false)` rather than a verdict on the transaction.
+    `interpreter_test.py` holds the superset claim that assertion rests
+    on.
+
+    A refusal the consensus set would not have made raises
+    `NonStandardTxError` rather than reaching the caller as the engine
+    gave it, which is what lets `p2p.callbacks.tx` keep the peer that
+    relayed the transaction. Core's own comment above the set this one
+    copies asks for that: a node forwarding a transaction which breaks
+    one of the non-mandatory rules is neither banned nor disconnected
+    (`src/policy/policy.h:112-117`, same commit).
     """
     # No copy: btclib's engine leaves the transaction alone -- sig_hash
     # builds the blanked transaction each preimage commits to rather
     # than editing the one it was handed. What the copy paid for was a
     # defect that is not there, once per mempool acceptance.
-    flags = get_flags(node.config, index, tip_hash)
-    verify_transaction(prevouts, tx, flags)
+    try:
+        verify_transaction(prevouts, tx, STANDARD_FLAGS)
+    except BTClibValueError as refusal:
+        if _consensus_accepts(prevouts, tx):
+            raise NonStandardTxError(str(refusal)) from refusal
+        raise

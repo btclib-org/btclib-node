@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any, NoReturn, cast
 import pytest
 from btclib.amount import sats_from_btc
 from btclib.block import Block, BlockHeader
-from btclib.exceptions import BTClibValueError
+from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.hashes import hash256
 from btclib.p2p.address import Addr, NetworkAddress, ServiceFlags
 from btclib.p2p.addrv2 import (
@@ -72,7 +72,11 @@ from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import BlockStatus
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, NodeStatus, P2pConnStatus
-from btclib_node.exceptions import ChainstateInconsistencyError, MissingPrevoutError
+from btclib_node.exceptions import (
+    ChainstateInconsistencyError,
+    MissingPrevoutError,
+    NonStandardTxError,
+)
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import PeerDB, endpoint_key, peer_address
@@ -1258,6 +1262,38 @@ def test_a_transaction_whose_parents_are_missing_is_not_kept(
     monkeypatch.setattr(cb, "verify_mempool_acceptance", missing)
     transaction = a_transaction()
     node = a_data_node()
+    tx(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
+    assert not node.mempool.contains_tx(transaction)
+    assert node.download_manager.received_txs == []
+
+
+def test_a_transaction_only_relay_policy_refuses_costs_the_peer_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`NonStandardTxError` out of verification drops the transaction alone.
+
+    Core's own rule above the flag set `interpreter.STANDARD_FLAGS`
+    copies: "we do not ban/disconnect nodes that forward txs violating
+    the additional (non-mandatory) rules here, to improve forwards and
+    backwards compatibility" (`src/policy/policy.h:112-117`,
+    at bitcoin/bitcoin@9be056a8a7). The class is a `BTClibValueError`,
+    so letting it out of `tx` would reach `handle_p2p`'s own
+    `isinstance(e, BTClibException)` and discourage the peer --
+    `test_a_callback_that_raises_a_btclib_exception_costs_the_peer`
+    (`p2p/main_test.py`) is that half, by type -- which is what the
+    catch this pins exists to prevent.
+    """
+
+    def non_standard(node: Any, transaction: Any) -> NoReturn:
+        err_msg = "non-minimal push"
+        raise NonStandardTxError(err_msg)
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", non_standard)
+    transaction = a_transaction()
+    node = a_data_node()
+    # the class is on the discouraging side of that test, so this catch
+    # is the whole of what keeps the peer
+    assert issubclass(NonStandardTxError, BTClibException)
     tx(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
     assert not node.mempool.contains_tx(transaction)
     assert node.download_manager.received_txs == []

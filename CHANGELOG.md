@@ -3821,6 +3821,74 @@ The tag is annotated, which is the part worth writing down. `gh api
 and pinning that is a reference no runner can check out. `git/tags/<sha>`
 dereferences it, and `refs/tags/v1^{}` does the same from a checkout.
 
+### Mempool acceptance reads a candidate against relay policy
+
+- **`interpreter.STANDARD_FLAGS` is Core's own
+  `STANDARD_SCRIPT_VERIFY_FLAGS`** (`src/policy/policy.h:118-131`, at
+  bitcoin/bitcoin@9be056a8a7), and `check_transaction` reads a mempool
+  candidate against it in place of the consensus set `get_flags`
+  answers (closes #810). Core's `PolicyScriptChecks`
+  (`src/validation.cpp:1139-1160`, same commit) is that call; a spend
+  breaking a standardness rule alone -- a non-minimal push, a high-s
+  signature, a leftover stack element -- was one this node held in its
+  mempool and Core refuses before its own second check is reached.
+- **The set reads neither a height nor a block hash**, as Core's
+  `constexpr` is, and `check_transaction` takes neither a `Node` nor an
+  index: relay policy here is not gated on an activation height, and a
+  tip that is one of the blocks
+  `btclib.consensus.ConsensusParams.script_flags_at` exempts by hash
+  cannot relax what this node will hold.
+- **Core's `ConsensusScriptChecks` (`src/validation.cpp:1162-1193`,
+  same commit) is not reproduced, and `check_transaction`'s docstring
+  says what is left of it.** That call fills the script execution cache
+  `ConnectBlock` reads later, where `check_transactions` here verifies
+  every input of every block transaction whether the mempool held it or
+  not; the rest of it is an assertion, which is why Core answers a
+  failure there with `LogError("BUG! PLEASE REPORT THIS!")` under an
+  `Assume(false)` rather than with a verdict on the transaction.
+- **A candidate only a standardness rule refuses raises
+  `NonStandardTxError`, and `p2p.callbacks.tx` drops the transaction
+  rather than the peer that relayed it.** Core puts that rule above the
+  set this one copies -- "we do not ban/disconnect nodes that forward
+  txs violating the additional (non-mandatory) rules here, to improve
+  forwards and backwards compatibility" (`src/policy/policy.h:112-117`,
+  at bitcoin/bitcoin@9be056a8a7) -- where `p2p.main.handle_p2p`
+  discourages a peer on `isinstance(e, BTClibException)`, which every
+  refusal btclib's engine raises answers yes to. The class is a
+  `BTClibValueError`, so both RPC paths answer a candidate refused this
+  way through the clause they already have.
+- **`interpreter._consensus_accepts` is what tells the two apart**, a
+  second run of the engine under `ALL_FLAGS` and only where the
+  candidate is already refused: btclib raises one class for a
+  standardness rule and for a consensus one, so the flag set a refusal
+  was produced under is all there is to read it by. A candidate no
+  chain would carry reaches `handle_p2p` as the engine raised it, which
+  discourages the peer for it.
+- **`STANDARD_FLAGS` contains every set `script_flags_at` can answer**,
+  over every network `btclib.consensus.CONSENSUS_PARAMS` names and over
+  each of their by-hash exception rows. `ALL_FLAGS` contains every one
+  of them too, which is what lets the classification above read a
+  refusal without being told a height. Both are the claims the
+  paragraphs above rest on, so they are tests rather than sentences.
+- **One spend per rule the set adds, each accepted by the consensus
+  flags and refused by these**, so a rule dropped from the set leaves
+  exactly its own case red. `SIGPUSHONLY` is the `ScriptFlag` member
+  the set leaves out, Core leaving it out of
+  `STANDARD_SCRIPT_VERIFY_FLAGS` too, and a test names it so a member
+  btclib adds later cannot be omitted here in silence.
+- **`CONST_SCRIPTCODE` is in the set, and btclib reads it more widely
+  than Core does.** `btclib.script.engine._check_script_sig_policy`
+  refuses a signature check carried anywhere in the script_sig, where
+  Core errors inside the executed branch its `FindAndDelete` reaches --
+  that comment calling its own rule stricter in one direction and short
+  in another.
+- **`tests.anyone_can_spend` is the script_pub_key the suite's
+  synthetic outputs carry.** A script that only pushes leaves the
+  spender's own push standing beside its own, which CLEANSTACK refuses,
+  so `generate_random_transaction` and `generate_coinbase` build an
+  `OP_2DROP` and an `OP_1` over the random push that keeps two of them
+  distinct.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

@@ -39,6 +39,7 @@ __all__ = [
     "MalformedRequestHeadError",
     "MissingPrevoutError",
     "NodeShutdownTimeoutError",
+    "NonStandardTxError",
     "PrevoutCountMismatchError",
     "ReimportedMainProcessError",
     "StoreClosedError",
@@ -57,6 +58,31 @@ class MissingPrevoutError(ValueError):
     set and the mempool together and neither has the prevout --
     `InvalidBlockInputError` below is the same check, made instead while
     a freshly-downloaded candidate block is first connected.
+    """
+
+
+class NonStandardTxError(BTClibValueError):
+    """A mempool candidate the relay rules refuse and the consensus rules take.
+
+    Raised only by `interpreter.check_transaction`, for a candidate that
+    fails `interpreter.STANDARD_FLAGS` and passes
+    `btclib.script.engine.flags.ALL_FLAGS`: the scripts are ones a block
+    may carry, so the refusal is this node's own relay policy rather
+    than anything the peer that relayed it did wrong. Core says so where
+    it defines the same set -- "we do not ban/disconnect nodes that
+    forward txs violating the additional (non-mandatory) rules here, to
+    improve forwards and backwards compatibility"
+    (`src/policy/policy.h:112-117`, at bitcoin/bitcoin@9be056a8a7) --
+    and `p2p.callbacks.tx` is what honours it, catching this and
+    dropping the transaction alone.
+
+    `BTClibValueError`, so that both RPC paths answer this through the
+    clause they already answer a refused candidate with:
+    `rpc.callbacks.test_mempool_accept` reports the entry not allowed
+    and `send_raw_transaction` answers `VERIFY_REJECTED`. The cost of
+    that base is that `p2p.main.handle_p2p`'s own `isinstance(e,
+    BTClibException)` would discourage the peer for it, which is why
+    `tx`'s catch is what keeps the peer and has a test of its own.
     """
 
 
