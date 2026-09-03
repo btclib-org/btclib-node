@@ -561,12 +561,16 @@ this release included.
    having said the opposite until then).
 
    What is worth reading rather than assuming is that a `git+https://`
-   in it is a release that should not have got this far,
-   `[tool.uv.sources]`'s pin to btclib's `main` branch being dropped
-   from a built wheel's own metadata in favor of
-   `project.dependencies`' floor — the comment beside that table says
-   so, and the smoke test in `test.yml`'s `dist` job checks it on every
-   pull request, not only at a release.
+   in it is a release that should not have got this far: any dependency
+   resolved through a `[tool.uv.sources]` override is dropped from a
+   built wheel's own metadata in favor of the floor
+   `project.dependencies` names for it, and the smoke test in
+   `test.yml`'s `dist` job installs that wheel from a clean resolve and
+   imports it on every pull request, not only at a release.
+   `pyproject.toml` carries no `[tool.uv.sources]` table today
+   (btclib-org/btclib-node#848 is where the one that did, on btclib, was
+   removed), so a `git+https://` line here would mean one had been added
+   since.
 
 1. Check the GitHub release the `github-release` job created — **ask for
    the release itself, not for the run's conclusion**, a skipped job

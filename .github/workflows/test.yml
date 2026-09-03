@@ -562,13 +562,13 @@ jobs:
       # what none of the three above does: install the wheel, alone, from
       # an empty directory, resolving `Requires-Dist` from PyPI exactly as
       # `pip install btclib-node` would, and import `Node` from what that
-      # installs. A dependency this checkout resolves through
-      # [tool.uv.sources] -- btclib off its `main` branch -- is what the
-      # published wheel has to declare as an ordinary floor instead, PyPI
-      # refusing a direct reference in metadata; the assertions below are
-      # the check for it, since nothing before `publish-pypi` in
-      # release.yml otherwise reads the built wheel's own metadata rather
-      # than pyproject.toml's.
+      # installs. That is a real resolve rather than `uv.lock`'s, so it
+      # is what catches a floor in `[project.dependencies]` naming a
+      # release that does not actually carry what `src/` imports
+      # (btclib-org/btclib-node#848); the assertions below are the check
+      # for it, since nothing before `publish-pypi` in release.yml
+      # otherwise reads the built wheel's own metadata rather than
+      # pyproject.toml's.
       # This was `--no-deps`, metadata-only, from the day this job first
       # landed until issue #381 closed: PyPI carried no release with
       # `btclib.p2p.negotiation`, which `src/btclib_node/download.py`

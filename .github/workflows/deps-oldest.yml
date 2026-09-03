@@ -15,18 +15,8 @@ name: deps-oldest
 # what pyproject.toml itself declares a floor for, which is the claim
 # this workflow exists to check.
 #
-# btclib is the one direct dependency this cannot take to a floor:
-# [tool.uv.sources] points it at the git branch main rather than at a
-# registry range (see pyproject.toml), so the specifier beside it there
-# is a claim about what `pip install btclib-node` resolves and never
-# about what this checkout's own uv.lock holds. The resolution does
-# still move btclib -- it re-fetches that branch's tip, as
-# deps-latest.yml's --upgrade does and as that file's own header says
-# -- but to whatever main is on the day, so a red from it is not a
-# floor's report and is not what this workflow is here to read.
-#
-# What it does verify at a floor is every specifier uv resolves from a
-# registry: rocksdict among the runtime dependencies, and the
+# What it verifies at a floor is every specifier uv resolves from a
+# registry: btclib and rocksdict among the runtime dependencies, and the
 # [dependency-groups] entries the suite step below installs, which uv
 # calls direct dependencies too and which this resolution moves. A
 # group entry declaring no lower bound at all has no floor to verify,
@@ -96,9 +86,8 @@ jobs:
     # what it says
     env:
       UV_RESOLUTION: lowest-direct
-    # far above what a run of the suite needs, the resolution below and
-    # the source build of btclib it triggers included: what it bounds is
-    # a hung job holding a runner
+    # far above what a run of the suite needs, the resolution below
+    # included: what it bounds is a hung job holding a runner
     timeout-minutes: 30
     steps:
       # every action is pinned to a commit SHA, the tag in the comment: a

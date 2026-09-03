@@ -30,6 +30,29 @@ they were written in.
 
 ## Unreleased
 
+### btclib resolves from the released package, not from git `main`
+
+- **`[tool.uv.sources]`'s pin of btclib to its `main` branch is gone**:
+  `btclib` 2026.9.3, on PyPI, carries every module and name `src/`
+  imports, so the floor in `[project.dependencies]` is what a clean
+  install resolves and it is now also what this checkout resolves
+  (closes #848).
+- **Dropping the table removes the class of defect it created and not
+  only this instance of it**: nothing here can diverge from what a
+  clean `pip install` resolves through a `[tool.uv.sources]` override
+  any longer, because there is no longer one (closes #848).
+- **The re-lock is `uv lock --upgrade`**, so every dependency was
+  offered its newest resolvable release rather than btclib alone being
+  moved (closes #848).
+- **The resolution policy
+  [ISS 145](https://github.com/btclib-org/btclib-node/issues/145) argued
+  for ends here**, and what it bought is what is given up: resolving
+  btclib from its `main` made a defect found in this tree fixable there
+  the same week, where a release pin waits for the next release. What
+  guards against an unannounced break is `test.yml`'s own
+  `pull_request` run, where that issue recorded no test job running on
+  a pull request at all (issue #145).
+
 ### `test.yml` says which checks `main` actually requires (closes #749)
 
 - **The comment above `test-passed` said nothing required a status
