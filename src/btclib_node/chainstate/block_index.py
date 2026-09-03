@@ -59,12 +59,16 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from btclib import var_int
-from btclib.block import BlockHeader
+from btclib.block import (
+    BlockHeader,
+    ParentOf,
+    median_time_past,
+    next_bits_required,
+)
 from btclib.block.proof_of_work import block_work
 from btclib.exceptions import BTClibValueError
 from btclib.utils import bytesio_from_binarydata
 
-from btclib_node.chainstate.contextual import assert_valid_in_context
 from btclib_node.exceptions import ChainstateInconsistencyError
 
 if TYPE_CHECKING:
@@ -79,6 +83,7 @@ __all__ = [
     "BlockIndex",
     "BlockInfo",
     "BlockStatus",
+    "block_time",
     "calculate_work",
 ]
 
@@ -93,6 +98,60 @@ MAX_DOWNLOAD_WINDOW = 1024
 def calculate_work(header: BlockHeader) -> int:
     """Return the work `header`'s own target represents."""
     return block_work(header.bits)
+
+
+def block_time(header: BlockHeader) -> int:
+    """Return the second the header's four timestamp bytes hold.
+
+    Core's `CBlockHeader::GetBlockTime`. `BlockHeader.serialize` writes
+    `int(time.timestamp())`, so that is the value the rules here
+    compare: a header is weighed as it goes on the wire and not as it
+    was built. `main.py` and `rpc.callbacks` read it from here rather
+    than from a module of their own, `chainstate` being the lowest
+    layer both already depend on.
+    """
+    return int(header.time.timestamp())
+
+
+def _assert_valid_in_context(  # noqa: PLR0913, PLR0917
+    chain: Chain,
+    header: BlockHeader,
+    parent: BlockHeader,
+    parent_height: int,
+    parent_of: ParentOf,
+    now: datetime,
+) -> None:
+    """Assert what the chain before `header` requires of it.
+
+    Core's `ContextualCheckBlockHeader`: `GetNextWorkRequired` for the
+    target and `CBlockIndex::GetMedianTimePast` for the timestamp, both
+    btclib's own (`btclib.block.next_bits_required`,
+    `median_time_past`), over `chain.consensus` -- the per-network row
+    that tells `next_bits_required` which of Core's branches apply,
+    `pow_no_retargeting` and `pow_allow_min_difficulty_blocks` among
+    them, in Core's own order rather than one this tree chooses.
+    `BlockHeader.assert_valid_time` is the one check that needs no
+    chain at all. `BlockHeader.assert_valid_pow` answers the other half
+    of the proof-of-work question -- whether the hash meets the target
+    the header itself claims -- and `_validate_header_batch`'s own loop
+    has already asked it of `header`, ahead of this.
+    """
+    required = next_bits_required(
+        header, parent, parent_height, parent_of, chain.consensus
+    )
+    if header.bits != required:
+        err_msg = f"proof-of-work target not the required one: {header.bits.hex()}"
+        err_msg += f" instead of {required.hex()}"
+        raise BTClibValueError(err_msg)
+
+    median = median_time_past(parent, parent_height, parent_of)
+    time = block_time(header)
+    if time <= median:
+        err_msg = f"invalid timestamp (not after the median past): {time}"
+        err_msg += f" <= {median}"
+        raise BTClibValueError(err_msg)
+
+    header.assert_valid_time(now)
 
 
 class BlockStatus(enum.IntEnum):
@@ -627,7 +686,7 @@ class BlockIndex:
                             # kept inside the try, against TRY301: the
                             # except right below logs every refusal this
                             # loop finds the same way, whether it is
-                            # this raise or assert_valid_in_context's
+                            # this raise or _assert_valid_in_context's
                             # own, and abstracting this one out would
                             # split that one log line into two shapes
                             # for no reader's benefit.
@@ -636,7 +695,7 @@ class BlockIndex:
                         continue
                     found = (block_info.header, block_info.index)
                 parent, parent_height = found
-                assert_valid_in_context(
+                _assert_valid_in_context(
                     self.chain, header, parent, parent_height, parent_of, now
                 )
             except BTClibValueError as e:

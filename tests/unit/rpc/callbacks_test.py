@@ -30,8 +30,7 @@ from btclib.tx.tx_out import TxOut
 import btclib_node.rpc.callbacks as cb
 from btclib_node.block_db import Coin
 from btclib_node.chains import Chain, Main, RegTest
-from btclib_node.chainstate.block_index import calculate_work
-from btclib_node.chainstate.contextual import block_time
+from btclib_node.chainstate.block_index import block_time, calculate_work
 from btclib_node.chainstate.muhash import CoinStats
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import (

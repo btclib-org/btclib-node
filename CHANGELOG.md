@@ -3319,6 +3319,39 @@ they were written in.
   is nothing for `>` to open, which is what section 9 of the
   organization standard asks of a bare placeholder.
 
+### `Chain.subsidy` and this tree's own coinbase and block builders are btclib's
+
+- **`Chain.subsidy` is gone; `interpreter.check_coinbase_value` reads
+  `btclib.consensus.subsidy(height, chain.consensus.subsidy_halving_interval)`
+  directly** (issue #801). `chains.create_genesis` stays: btclib left a
+  network's genesis block out of `btclib.block.build`, filed as
+  [btclib#1602](https://github.com/btclib-org/btclib/issues/1602),
+  `Network.genesis_block` being 32 bytes rather than a `Block` and a
+  `Network` field holding one closing an import cycle.
+- **`tests/__init__.py`'s `generate_coinbase` and `build_block` build
+  through btclib's own `block.build.build_coinbase` and
+  `block.mining.candidate_block_header`.** A coinbase committing to no
+  height at all is still built by hand, `build_coinbase`'s own
+  docstring naming that as the escape for a deliberately invalid
+  candidate (issue #801).
+
+### `chainstate/contextual.py` is gone, and the bug found in it closes with it
+
+- **The module is deleted: `chainstate/block_index.py` checks a
+  header's required target and its timestamp over btclib's own
+  `block.next_bits_required` and `median_time_past`, `main.parent_lookup`
+  the one callable of it that stays** (issue #801).
+- **`next_bits_required` used to return the parent's own target
+  whenever `chain.consensus.pow_no_retargeting` was set, before ever
+  reading `pow_allow_min_difficulty_blocks`** (closes #812). Regtest
+  sets both flags at once: Bitcoin Core's `GetNextWorkRequired`
+  (`bitcoin/bitcoin@9be056a8a7`, v31.1) reads
+  `fPowAllowMinDifficultyBlocks` first, `fPowNoRetargeting` gating only
+  `CalculateNextWorkRequired`, reached solely at a difficulty period
+  boundary -- 144 blocks on regtest, not 2016, `pow_target_timespan`
+  being one day rather than two weeks there. btclib's own
+  `next_bits_required` keeps Core's order.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

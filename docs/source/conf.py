@@ -97,8 +97,8 @@ intersphinx_mapping = {
 #   add_tx, among others), Block (utxo_index.py's and filter_index.py's
 #   own add_block), NetworkAddressV2 and Payload (p2p/connection.py,
 #   p2p/manager.py), Path (p2p/address.py, chainstate/__init__.py,
-#   log.py), datetime (contextual.py's assert_valid_in_context) and
-#   ScriptFlag/ScriptFlags (interpreter.py's own get_flags and f) are
+#   log.py) and ScriptFlag/ScriptFlags (interpreter.py's own get_flags
+#   and f) are
 #   this tree's own public API doing exactly what "TC"'s own reason asks
 #   of it. p2p/manager.py's own Tx is besides imported under the alias
 #   BtclibTx, which resolves to nothing under that name for the same
@@ -112,7 +112,7 @@ intersphinx_mapping = {
 #   for a name a *compound* annotation could not resolve, rather than as
 #   that name itself. __annotationlib_name_2__ is the same placeholder a
 #   second time, over a different compound annotation: main.py's own
-#   _parent_of returns `Callable[[BlockHeader], BlockHeader]`, and
+#   parent_lookup returns `Callable[[BlockHeader], BlockHeader]`, and
 #   interpreter.py's own check_sequence_locks takes
 #   `Callable[[int], int]` -- Callable itself is what each file imports
 #   under TYPE_CHECKING, so the whole subscript is unresolved regardless
@@ -123,11 +123,9 @@ intersphinx_mapping = {
 #   resolved, and the class's own `__module__` is asyncio's private
 #   implementation module, not the public one docs.python.org publishes
 #   an inventory entry under
-# - a name this tree documents nowhere. contextual.py's own ParentOf is
-#   a module-level type alias with no docstring of its own, so
-#   `:members:` renders no page for a signature naming it to link to;
-#   messages/errors.py's BinaryData is btclib's own alias.py type alias,
-#   undocumented there for the same reason
+# - a name this tree documents nowhere. messages/errors.py's BinaryData
+#   is btclib's own alias.py type alias, undocumented there, so
+#   `:members:` renders no page for a signature naming it to link to
 nitpick_ignore = [
     ("py:class", "Tx"),
     ("py:class", "TxOut"),
@@ -136,12 +134,10 @@ nitpick_ignore = [
     ("py:class", "NetworkAddressV2"),
     ("py:class", "Payload"),
     ("py:class", "Path"),
-    ("py:class", "datetime"),
     ("py:class", "BtclibTx"),
     ("py:class", "__annotationlib_name_1__"),
     ("py:class", "__annotationlib_name_2__"),
     ("py:class", "asyncio.events.AbstractEventLoop"),
-    ("py:class", "ParentOf"),
     ("py:class", "BinaryData"),
     ("py:class", "ScriptFlag"),
     ("py:class", "ScriptFlags"),

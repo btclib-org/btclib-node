@@ -7,10 +7,11 @@
 All three share the one `db.KeyValueStore` `Chainstate` opens, told apart
 by each's own key prefix -- `db.py`'s own docstring is where that shared
 store's key order is argued. `block_index.BlockIndex` tracks headers and
-which chain is active, `utxo_index.UtxoIndex` the spendable outputs on
-it, and `filter_index.FilterIndex` the BIP157/BIP158 filters served over
-p2p; `contextual.py` is the height- and time-dependent validation the
-first of those calls before extending the active chain.
+which chain is active, checking a header's own height- and
+time-dependent rules over btclib's `block.next_bits_required` and
+`median_time_past` before it is indexed; `utxo_index.UtxoIndex` is the
+spendable outputs on it, and `filter_index.FilterIndex` the BIP157/BIP158
+filters served over p2p.
 
 `flush` is what writes all three indexes' own staged changes in one
 batch, and `close` calls it before closing the store -- `db.py`'s

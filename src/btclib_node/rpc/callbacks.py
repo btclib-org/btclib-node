@@ -14,11 +14,12 @@ authenticates nothing.
 
 from typing import TYPE_CHECKING, Any, cast
 
+from btclib.block import median_time_past
 from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.p2p.address import ServiceFlags
 from btclib.tx import Tx
 
-from btclib_node.chainstate.contextual import block_time, median_time_past
+from btclib_node.chainstate.block_index import block_time
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, P2pConnStatus
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.main import (
@@ -136,9 +137,9 @@ def get_blockchain_info(
     against that literal loop on regtest's own genesis bits `0x207fffff`
     in this callback's own unit test.
 
-    `time` is the tip header's own timestamp, `contextual.block_time`
+    `time` is the tip header's own timestamp, `block_index.block_time`
     (Core's `CBlockHeader::GetBlockTime`, src/rpc/blockchain.cpp:1433,
-    same commit). `mediantime` is `contextual.median_time_past` of the
+    same commit). `mediantime` is btclib's own `median_time_past` of the
     tip, over `main.parent_lookup`'s own walk -- the same call
     `main.verify_mempool_acceptance` already makes of the tip, for
     Core's own `CBlockIndex::GetMedianTimePast` (src/rpc/blockchain.cpp

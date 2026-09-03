@@ -18,6 +18,7 @@ pay for.
 
 from typing import TYPE_CHECKING
 
+from btclib.consensus import subsidy
 from btclib.exceptions import BTClibValueError
 from btclib.script.engine import verify_amounts, verify_input, verify_transaction
 from btclib.script.sig_hash import PrecomputedTxData
@@ -248,7 +249,7 @@ def check_coinbase_value(
         for prevouts, tx in transaction_data
     )
     coinbase_value = sum(x.value for x in coinbase.vout)
-    ceiling = node.chain.subsidy(index) + fees
+    ceiling = subsidy(index, node.chain.consensus.subsidy_halving_interval) + fees
     if coinbase_value > ceiling:
         err_msg = f"coinbase pays too much: {coinbase_value} instead of {ceiling}"
         raise BTClibValueError(err_msg)
