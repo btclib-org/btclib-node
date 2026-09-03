@@ -3305,6 +3305,20 @@ they were written in.
   also why Core's own consensus re-check of one reads the tip's flags
   rather than the next block's (issue #801).
 
+### `git worktree add` ends in the placeholder it names
+
+- **`-b <branch>` sits after the path and the commit-ish, and a
+  paragraph under the fence says why** (issue btclib-org/.github#687):
+  `<` and `>` are the shell's redirection operators, so a placeholder
+  with a word after it leaves `>` that word as its target, and ahead of
+  `"$WT"` the target is the worktree path itself. In a directory holding
+  a file named `branch` the `<` succeeds and the line runs; the removal
+  fence below leaves no directory at `$WT`, which is the state a second
+  paste starts from, so the `>` creates a regular file where the next
+  `git worktree add` needs a free path. At the end of the command there
+  is nothing for `>` to open, which is what section 9 of the
+  organization standard asks of a bare placeholder.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
