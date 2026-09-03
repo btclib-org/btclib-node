@@ -3908,6 +3908,23 @@ dereferences it, and `refs/tags/v1^{}` does the same from a checkout.
   btclib's own dependency on it; the declaration is what makes that
   import provable rather than incidental now that `src/` reads it.
 
+### `verify_mempool_acceptance` checks scripts after the cheap checks
+
+- **`interpreter.check_transaction`, the script verification, now runs
+  after `is_final` and `assert_sequence_locks` rather than before them**
+  (closes #829), matching `MemPoolAccept::AcceptSingleTransactionInternal`,
+  which runs `PreChecks` -- where Core's own finality and sequence-lock
+  checks sit -- ahead of `PolicyScriptChecks`
+  (`src/validation.cpp:1378`, at bitcoin/bitcoin@4519933391) for the
+  same reason its own comment there gives: to spend no signature
+  verification on a candidate a comparison of two integers already
+  refuses. `assert_coinbase_maturity` already ran ahead of the script
+  check and keeps its place; only the two lock checks moved.
+- **A test asserts the order, not only the verdict**: a candidate both
+  non-final and unverifiable is refused with `bad-txns-nonfinal` rather
+  than with its script's own failure, which either order would raise as
+  a `BTClibValueError`.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
