@@ -4035,6 +4035,31 @@ dereferences it, and `refs/tags/v1^{}` does the same from a checkout.
   their form too: `reorg_test.py`'s `_COMMON` comment names `v31.1` and
   says the module runs against that release.
 
+### The badge render greps a whole title element (closes btclib-org/.github#724)
+
+- **`<title>` is the badge SVG's own element name and not a value a
+  reader fills in**, so unquoting it -- what section 9 of the
+  organization standard asks of a placeholder standing as a whole
+  argument -- leaves the angle brackets as redirections and a line no
+  shell will run. What the render takes instead is that bullet's other
+  clause: a `<...>` inside a larger string is not the shape it refuses.
+- **The pattern is the one section 15 of that standard already reads a
+  badge's title with**, `grep -oE '<title>[^<]*</title>'`, so the line
+  converges on the standard rather than on a form invented for it.
+  Against this repository's `test.yml` badge both forms select the same
+  `<title>` element, the one lacking the closing tag selecting it inside
+  the whole matching line, so what the paragraph quotes the render for
+  is unchanged.
+- **The `unquoted-placeholder` hook cannot see the shape this entry
+  corrects.** Its single-quote branch crosses a quoted run of the other
+  kind only, and `'<workflow>/badge.svg?branch=main'` earlier on the
+  line is of the same kind, which is the blind spot section 4 states at
+  the hook. The port that would ordinarily surface such a line does not
+  surface this one, which is why the fix is written here and the hook is
+  not widened.
+- **The paragraph is rewrapped around the longer pattern**, which also
+  brings `-H 'Cache-Control: no-cache'` onto one line.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
