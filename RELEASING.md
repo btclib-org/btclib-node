@@ -404,7 +404,7 @@ this release included.
    the checks are in. `REPOSITORY.md`'s "Branch protection" is the pair
    that lets an admin bypass a review that will not arrive on a
    solo-maintainer repository — `gh pr merge <n> --squash --admin
-   --subject "<title>" --body-file <path>` is the form that names the
+   --body-file <path> --subject <title>` is the form that names the
    release commit explicitly rather than leaving it to
    `squash_merge_commit_message`'s repository default.
 
