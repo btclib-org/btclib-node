@@ -334,7 +334,7 @@ this release included.
 
    ```shell
    uv run --locked --no-default-groups --group docs \
-       sphinx-build -W -n --keep-going -b html docs/source docs/build/html
+       sphinx-build -W -n -b html docs/source docs/build/html
    ```
 
    the same build `docs.yml` runs on every pull request and `release.yml`

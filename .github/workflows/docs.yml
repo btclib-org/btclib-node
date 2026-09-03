@@ -113,15 +113,16 @@ jobs:
       # Not --only-group docs: autodoc imports the module it documents,
       # so the project has to be installed -- with sphinx alone the
       # build renders an empty module heading and says nothing about it.
-      # -W makes a failed import a failed build, --keep-going reports
-      # every problem in one run instead of one per push, and -n turns
-      # an unresolved cross-reference into a warning for -W to catch --
-      # conf.py's own intersphinx_mapping and nitpick_ignore are what -n
-      # is checked against
+      # -W makes a failed import a failed build, and reports every
+      # warning a run raises before failing at the end of it, so one
+      # broken page does not hide the next. -n turns an unresolved
+      # cross-reference into a warning for -W to catch -- conf.py's own
+      # intersphinx_mapping and nitpick_ignore are what -n is checked
+      # against
       - name: Build the docs
         run: >
           uv run --locked --no-default-groups --group docs
-          sphinx-build -W -n --keep-going -b html docs/source docs/build/html
+          sphinx-build -W -n -b html docs/source docs/build/html
       # the one defect the build above cannot report on itself: a link
       # myst cannot resolve is rendered as an anchor on the page it is
       # already on -- an id nothing has -- so -W passes over a dead

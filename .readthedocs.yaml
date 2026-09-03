@@ -44,13 +44,14 @@ build:
   # that, and a uv too old to read the lock fails loudly rather than
   # resolving something else.
   # -W turns a failed import into a failed build, which is the point of
-  # the whole file; --keep-going reports every problem in the same run
-  # instead of one per push, and -n turns an unresolved cross-reference
-  # into a warning for -W to catch -- conf.py's own intersphinx_mapping
-  # and nitpick_ignore are what -n is checked against
+  # the whole file, and reports every warning a run raises before failing
+  # at the end of it, so one broken page does not hide the next. -n turns
+  # an unresolved cross-reference into a warning for -W to catch --
+  # conf.py's own intersphinx_mapping and nitpick_ignore are what -n is
+  # checked against
   commands:
     - pip install uv
     - uv sync --locked --no-default-groups --group docs
     - >-
       uv run --locked --no-default-groups --group docs
-      sphinx-build -W -n --keep-going -b html docs/source $READTHEDOCS_OUTPUT/html
+      sphinx-build -W -n -b html docs/source $READTHEDOCS_OUTPUT/html

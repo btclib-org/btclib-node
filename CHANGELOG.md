@@ -3352,6 +3352,17 @@ they were written in.
   being one day rather than two weeks there. btclib's own
   `next_bits_required` keeps Core's order.
 
+### The documentation build is `sphinx-build -W -n` at every site
+
+- **`--keep-going` is passed nowhere.** `.github/workflows/docs.yml`,
+  `.readthedocs.yaml`, `CONTRIBUTING.md`'s gate block and
+  `RELEASING.md`'s pre-tag build each run `sphinx-build -W -n`, which is
+  what section 2 of the organization standard's *The documentation* asks
+  for, with the reason written there (issue btclib-org/.github#347).
+- **`-W` reports every warning a build raises and fails at the end of
+  it**, which is what the comment beside the command in `docs.yml` and
+  `.readthedocs.yaml` says, so one broken page does not hide the next.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
