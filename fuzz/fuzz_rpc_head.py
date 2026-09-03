@@ -30,11 +30,11 @@ catch is a strict superset of: that catch is a bare `except Exception`
 `RpcManager.stop`'s own sweep), so nothing this harness can find here
 escapes unhandled in production, only unmeasured by this suite before
 this issue. Suppressing that one family is what makes a green run
-narrow enough to be evidence, the same way `fuzz_reject.py`'s own does.
+narrow enough to be evidence.
 
 `fuzz.yml` runs this file as an ordinary script under the interpreter
-`.python-version` pins, the same way it runs `fuzz_reject.py` -- see
-that file's own docstring for why not a container.
+`.python-version` pins, and its own header is where that is argued
+against the container ClusterFuzzLite would build instead.
 """
 
 from __future__ import annotations

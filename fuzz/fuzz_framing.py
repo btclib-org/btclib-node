@@ -9,8 +9,7 @@ building a stream at all, then loops `Message.parse` over whatever
 whole messages the buffer already holds and checks each one's magic
 against the chain this node runs -- hostile-input arithmetic of this
 tree's own, ahead of `btclib`'s own wire codec, that
-btclib-org/btclib-node#516 asks this directory to cover the way
-`fuzz_reject.py` already covers `Reject.parse`.
+btclib-org/btclib-node#516 asks this directory to cover.
 
 `p2p.connection.frame_message_bytes` is that arithmetic pulled into a
 function of octets alone -- `p2p.connection`'s own module docstring is
@@ -28,14 +27,14 @@ at framing rather than reaching `Connection.run`.
 for a message `stream` does not yet hold whole, `btclib`'s own parse
 refusals from `Message.parse` itself, and `WrongNetworkMagicError` for
 a message whose magic names a chain other than the one this node runs.
-Suppressing that family alone is what makes this harness report the
-same way `fuzz_reject.py` does: what leaves `fuzz_target` below is then
-either a crash or a refusal outside the family `Connection.run` itself
-tolerates from a peer, and each is a finding.
+Suppressing that family alone is what makes this harness report: what
+leaves `fuzz_target` below is then either a crash or a refusal outside
+the family `Connection.run` itself tolerates from a peer, and each is a
+finding.
 
 `fuzz.yml` runs this file as an ordinary script under the interpreter
-`.python-version` pins, the same way it runs `fuzz_reject.py` -- see
-that file's own docstring for why not a container.
+`.python-version` pins, and its own header is where that is argued
+against the container ClusterFuzzLite would build instead.
 """
 
 from __future__ import annotations

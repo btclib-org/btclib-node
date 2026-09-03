@@ -3653,6 +3653,45 @@ they were written in.
   worktree that raised it is not evidence of a flake for that reason
   alone** (closes #835).
 
+### BIP61's `reject` is fuzzed where its codec lives
+
+- **`fuzz/fuzz_reject.py` and its seed corpus are gone** (closes #827).
+  `Reject.parse` is `btclib`'s codec, and `btclib`'s own
+  `fuzz/fuzz_reject.py` declares the same entry point under the same
+  suppressed family; `.clusterfuzzlite/build.sh` there discovers it with
+  its own `find "$SRC/btclib/fuzz" -maxdepth 1 -name 'fuzz_*.py'` loop
+  and zips the seed corpus beside it, so the parser is fuzzed in the
+  package that implements it, with a corpus that outlives a run --
+  which `fuzz.yml`'s own header says this job gives up. Keeping the
+  harness buys a second run of one entry point under one family, and
+  seeds this suite maintains, for a parser this tree does not implement.
+- **The reach that argued for keeping it is `fuzz_process_message.py`'s.**
+  `p2p.callbacks.reject` is in `p2p.callbacks.callbacks`, so a peer's
+  own octets select it through that harness's selector byte and reach
+  `Reject.parse` behind it, seeded by that harness's own `reject.bin`.
+  `tests/fuzz_corpus_test.py` holds that seed to selecting the command
+  it is named for and to being refused by the callback where it is cut
+  inside its reason string: the surface the retired harness's docstring
+  argued for -- what a stranger reaches with no verification in front
+  of it -- is still driven with a stranger's own octets.
+- **Retargeting the harness at `p2p.callbacks.reject` is the rejected
+  alternative.** That callback takes a `Node`, a `P2pManager` and a
+  `Connection` rather than a bare buffer, which is issue #698's own
+  shape and `fuzz_process_message.py`'s already, so the retarget trades
+  a duplication against `btclib` for one inside `fuzz/`; and what the
+  callback does past the parse is a `RejectCode` test, a format and a
+  log, so a fuzzer aimed at it spends its run inside `btclib`'s parser
+  either way.
+- **`fuzz.yml`'s fuzzing budget is the job's and not each harness's.**
+  `-max_total_time` divides the same total across the harnesses the loop
+  names, so retiring one lengthens the runs of the rest rather than
+  shortening the step.
+- **`tests/property_test.py` draws for the entry points the harnesses
+  declare**, so `Reject.parse` leaves that layer with the harness.
+  `btclib`'s own hypothesis layer, `tests/fuzz_test.py`'s
+  `BINARY_PARSERS`, does not name it: btclib-org/btclib#1629 is where
+  the per-commit half of fuzzing that codec is tracked.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
