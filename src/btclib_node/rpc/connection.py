@@ -28,9 +28,11 @@ from http.client import HTTPException, HTTPMessage, parse_headers
 from io import BytesIO
 from typing import TYPE_CHECKING, Any, override
 
+from bitcoin_core_rpc import RPCErrorCode
+
 from btclib_node.exceptions import IncompleteRequestHeadError, MalformedRequestHeadError
 from btclib_node.p2p.address import ip_and_port
-from btclib_node.rpc.errors import RpcErrorCode, error_msg
+from btclib_node.rpc.errors import error_msg
 
 if TYPE_CHECKING:
     import socket
@@ -521,7 +523,7 @@ class RpcConnection:
                 self.is_batch = False
                 self._parse_error_reply = self.loop.create_task(
                     self.async_send(
-                        [error_msg(RpcErrorCode.PARSE_ERROR, "Parse error")]
+                        [error_msg(RPCErrorCode.PARSE_ERROR, "Parse error")]
                     )
                 )
                 return

@@ -13,11 +13,13 @@ from collections import deque
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
+from bitcoin_core_rpc import RPCErrorCode
+
 import btclib_node.rpc.callbacks as rpc_callbacks
 from btclib_node.exceptions import StoreCorruptionError
 from btclib_node.log import Logger
 from btclib_node.rpc.callbacks import callbacks
-from btclib_node.rpc.errors import RpcError, RpcErrorCode, error_msg
+from btclib_node.rpc.errors import RpcError, error_msg
 from btclib_node.rpc.main import (
     get_connection,
     handle_rpc,
@@ -94,7 +96,7 @@ def test_a_batch_ending_in_something_that_is_not_an_object() -> None:
     node, sent, _, stopped = make_node([PING, "garbage"])
     handle_rpc(node)
     answers = sent[0]
-    assert answers[1] == error_msg(RpcErrorCode.INVALID_REQUEST, "Invalid request")
+    assert answers[1] == error_msg(RPCErrorCode.INVALID_REQUEST, "Invalid request")
     assert not stopped
 
 
@@ -102,14 +104,14 @@ def test_an_unknown_method_is_answered_not_found() -> None:
     """handle_rpc answers a method not in the callback table as not found."""
     node, sent, _, _ = make_node([{"jsonrpc": "2.0", "id": "a", "method": "nosuch"}])
     handle_rpc(node)
-    assert sent == [[error_msg(RpcErrorCode.METHOD_NOT_FOUND, "Method not found", "a")]]
+    assert sent == [[error_msg(RPCErrorCode.METHOD_NOT_FOUND, "Method not found", "a")]]
 
 
 def test_a_request_without_an_id_is_invalid() -> None:
     """handle_rpc refuses a request missing JSON-RPC 2.0's own required id."""
     node, sent, _, _ = make_node([{"jsonrpc": "2.0", "method": "ping"}])
     handle_rpc(node)
-    assert sent == [[error_msg(RpcErrorCode.INVALID_REQUEST, "Invalid request")]]
+    assert sent == [[error_msg(RPCErrorCode.INVALID_REQUEST, "Invalid request")]]
 
 
 def test_a_callback_that_raises_is_answered_internal_error() -> None:
@@ -122,7 +124,7 @@ def test_a_callback_that_raises_is_answered_internal_error() -> None:
     logged: list[Any] = []
     node.logger.exception = logged.append
     handle_rpc(node)
-    assert sent == [[error_msg(RpcErrorCode.INTERNAL_ERROR, "Internal Error", "a")]]
+    assert sent == [[error_msg(RPCErrorCode.INTERNAL_ERROR, "Internal Error", "a")]]
     # -32603 is the node reporting itself broken, so it is the one
     # answer that is also an event of the node's
     assert logged == ["Exception occurred"]
@@ -161,7 +163,7 @@ def test_testmempoolaccept_own_store_error_reaches_the_log(
     handle_rpc(node)
     logger.close()
 
-    assert sent == [[error_msg(RpcErrorCode.INTERNAL_ERROR, "Internal Error", "a")]]
+    assert sent == [[error_msg(RPCErrorCode.INTERNAL_ERROR, "Internal Error", "a")]]
     lines = [
         line
         for line in log_path.read_text(encoding="utf-8").splitlines()
@@ -179,7 +181,7 @@ def test_a_callback_that_refuses_names_its_own_code_and_reason() -> None:
     """
 
     def refuse() -> NoReturn:
-        raise RpcError(RpcErrorCode.INVALID_ADDRESS_OR_KEY, "Block not found")
+        raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Block not found")
 
     node, sent, _, _ = make_node([PING], callback=refuse)
     logged: list[Any] = []
@@ -303,7 +305,7 @@ def test_a_method_that_is_not_a_string_is_answered_invalid_request() -> None:
     """handle_rpc answers a non-string method invalid, not a crash."""
     node, sent, _, stopped = make_node([{"jsonrpc": "2.0", "id": 1, "method": ["a"]}])
     handle_rpc(node)
-    assert sent == [[error_msg(RpcErrorCode.INVALID_REQUEST, "Invalid request")]]
+    assert sent == [[error_msg(RPCErrorCode.INVALID_REQUEST, "Invalid request")]]
     assert not stopped
 
 

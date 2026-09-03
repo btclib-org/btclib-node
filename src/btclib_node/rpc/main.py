@@ -13,8 +13,10 @@ loop.
 
 from typing import TYPE_CHECKING, Any
 
+from bitcoin_core_rpc import RPCErrorCode
+
 from btclib_node.rpc.callbacks import callbacks
-from btclib_node.rpc.errors import RpcError, RpcErrorCode, error_msg
+from btclib_node.rpc.errors import RpcError, error_msg
 
 if TYPE_CHECKING:
     from btclib_node import Node
@@ -108,11 +110,11 @@ def handle_rpc(node: Node) -> None:
     # wording would give it (issue #669).
     for request in data:
         if not is_valid_rpc(request):
-            response.append(error_msg(RpcErrorCode.INVALID_REQUEST, "Invalid request"))
+            response.append(error_msg(RPCErrorCode.INVALID_REQUEST, "Invalid request"))
         elif request["method"] not in callbacks:
             response.append(
                 error_msg(
-                    RpcErrorCode.METHOD_NOT_FOUND, "Method not found", request["id"]
+                    RPCErrorCode.METHOD_NOT_FOUND, "Method not found", request["id"]
                 )
             )
         else:
@@ -135,7 +137,7 @@ def handle_rpc(node: Node) -> None:
                 node.logger.exception("Exception occurred")
                 response.append(
                     error_msg(
-                        RpcErrorCode.INTERNAL_ERROR, "Internal Error", request["id"]
+                        RPCErrorCode.INTERNAL_ERROR, "Internal Error", request["id"]
                     )
                 )
 

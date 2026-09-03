@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, cast, override
 
 import pytest
+from bitcoin_core_rpc import RPCErrorCode
 from btclib.exceptions import BTClibValueError
 from btclib.fee import FeeRate
 from btclib.p2p.address import NetworkAddress, ServiceFlags
@@ -64,7 +65,7 @@ from btclib_node.rpc.callbacks import (
 # one is a production function that would be handed fixtures
 from btclib_node.rpc.callbacks import test_mempool_accept as mempool_accept
 from btclib_node.rpc.connection import RawJSON
-from btclib_node.rpc.errors import RpcError, RpcErrorCode
+from btclib_node.rpc.errors import RpcError
 from tests import generate_random_chain, generate_random_header_chain
 from tests.unit.main_test import connect
 
@@ -475,7 +476,7 @@ def test_verbose_and_mempool_sequence_together_are_refused() -> None:
     node = a_node(mempool=Mempool(Logger(debug=True)))
     with pytest.raises(RpcError) as raised:
         get_raw_mempool(node, _CONN, [True, True])
-    assert raised.value.code == RpcErrorCode.INVALID_PARAMETER
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
     assert raised.value.message == (
         "Verbose results cannot contain mempool sequence values."
     )
@@ -492,7 +493,7 @@ def test_a_raw_mempool_parameter_of_the_wrong_json_type_is_named() -> None:
 
     with pytest.raises(RpcError) as raised:
         get_raw_mempool(node, _CONN, ["true"])
-    assert raised.value.code == RpcErrorCode.TYPE_ERROR
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
     assert raised.value.message == (
         'Wrong type passed:\n{\n    "Position 1 (verbose)": "JSON value of '
         'type string is not of expected type bool"\n}'
@@ -500,7 +501,7 @@ def test_a_raw_mempool_parameter_of_the_wrong_json_type_is_named() -> None:
 
     with pytest.raises(RpcError) as raised:
         get_raw_mempool(node, _CONN, [False, 1])
-    assert raised.value.code == RpcErrorCode.TYPE_ERROR
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
     assert raised.value.message == (
         'Wrong type passed:\n{\n    "Position 2 (mempool_sequence)": "JSON '
         'value of type number is not of expected type bool"\n}'
@@ -572,7 +573,7 @@ def test_tx_out_set_info_defaults_to_hash_serialized_3_and_refuses_it() -> None:
     node = a_coin_stats_node(CoinStats(), [b"\x11" * 32])
     with pytest.raises(RpcError) as raised:
         get_tx_out_set_info(node, _CONN, [])
-    assert raised.value.code == RpcErrorCode.INVALID_PARAMETER
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
     assert raised.value.message == "'hash_serialized_3' is not a valid hash_type"
 
 
@@ -581,7 +582,7 @@ def test_tx_out_set_info_refuses_an_unknown_hash_type_by_name() -> None:
     node = a_coin_stats_node(CoinStats(), [b"\x11" * 32])
     with pytest.raises(RpcError) as raised:
         get_tx_out_set_info(node, _CONN, ["not_a_real_type"])
-    assert raised.value.code == RpcErrorCode.INVALID_PARAMETER
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
     assert raised.value.message == "'not_a_real_type' is not a valid hash_type"
 
 
@@ -590,7 +591,7 @@ def test_tx_out_set_info_hash_type_of_the_wrong_json_type_is_named() -> None:
     node = a_coin_stats_node(CoinStats(), [b"\x11" * 32])
     with pytest.raises(RpcError) as raised:
         get_tx_out_set_info(node, _CONN, [1])
-    assert raised.value.code == RpcErrorCode.TYPE_ERROR
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
     assert raised.value.message == (
         'Wrong type passed:\n{\n    "Position 1 (hash_type)": "JSON value '
         'of type number is not of expected type string"\n}'
@@ -608,7 +609,7 @@ def test_tx_out_set_info_refuses_a_specific_block_the_way_an_unindexed_node_does
     node = a_coin_stats_node(CoinStats(), [b"\x11" * 32])
     with pytest.raises(RpcError) as raised:
         get_tx_out_set_info(node, _CONN, ["muhash", 5])
-    assert raised.value.code == RpcErrorCode.INVALID_PARAMETER
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
     assert raised.value.message == (
         "Querying specific block heights requires coinstatsindex"
     )
@@ -633,7 +634,7 @@ def test_tx_out_set_info_use_index_is_type_checked_but_changes_nothing() -> None
 
     with pytest.raises(RpcError) as raised:
         get_tx_out_set_info(node, _CONN, ["none", None, "true"])
-    assert raised.value.code == RpcErrorCode.TYPE_ERROR
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
 
 
 def a_tx_lookup_node(
@@ -710,7 +711,7 @@ def test_a_transaction_neither_mempool_nor_named_block_is_refused() -> None:
     node = a_tx_lookup_node()
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, ["11" * 32])
-    assert raised.value.code == RpcErrorCode.INVALID_ADDRESS_OR_KEY
+    assert raised.value.code == RPCErrorCode.INVALID_ADDRESS_OR_KEY
     assert raised.value.message.startswith("No such mempool transaction.")
 
 
@@ -768,7 +769,7 @@ def test_a_transaction_the_named_block_does_not_hold_is_refused() -> None:
 
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, [tx.id.hex(), False, header.hash.hex()])
-    assert raised.value.code == RpcErrorCode.INVALID_ADDRESS_OR_KEY
+    assert raised.value.code == RPCErrorCode.INVALID_ADDRESS_OR_KEY
     assert raised.value.message.startswith(
         "No such transaction found in the provided block."
     )
@@ -779,7 +780,7 @@ def test_an_unknown_block_hash_is_refused_by_name() -> None:
     node = a_tx_lookup_node()
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, ["11" * 32, False, "22" * 32])
-    assert raised.value.code == RpcErrorCode.INVALID_ADDRESS_OR_KEY
+    assert raised.value.code == RPCErrorCode.INVALID_ADDRESS_OR_KEY
     assert raised.value.message == "Block hash not found"
 
 
@@ -803,7 +804,7 @@ def test_a_block_the_index_knows_and_the_store_does_not_is_not_fully_downloaded(
 
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, [tx.id.hex(), False, header.hash.hex()])
-    assert raised.value.code == RpcErrorCode.MISC_ERROR
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
     assert raised.value.message == "Block not available (not fully downloaded)"
 
 
@@ -823,7 +824,7 @@ def test_a_block_below_the_stores_own_pruned_height_is_pruned_data() -> None:
 
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, [tx.id.hex(), False, header.hash.hex()])
-    assert raised.value.code == RpcErrorCode.MISC_ERROR
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
     assert raised.value.message == "Block not available (pruned data)"
 
 
@@ -832,7 +833,7 @@ def test_no_txid_at_all_is_answered_with_the_usage() -> None:
     node = a_tx_lookup_node()
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, [])
-    assert raised.value.code == RpcErrorCode.MISC_ERROR
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
     assert raised.value.message == 'getrawtransaction "txid" ( verbose "blockhash" )'
 
 
@@ -841,7 +842,7 @@ def test_a_txid_of_the_wrong_json_type_is_named() -> None:
     node = a_tx_lookup_node()
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, [5])
-    assert raised.value.code == RpcErrorCode.TYPE_ERROR
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
     assert raised.value.message == (
         'Wrong type passed:\n{\n    "Position 1 (txid)": "JSON value of '
         'type number is not of expected type string"\n}'
@@ -853,7 +854,7 @@ def test_a_txid_that_is_not_hex_is_named_back_to_the_client() -> None:
     node = a_tx_lookup_node()
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, ["zz"])
-    assert raised.value.code == RpcErrorCode.INVALID_PARAMETER
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
     assert "zz" in raised.value.message
 
 
@@ -862,7 +863,7 @@ def test_a_blockhash_of_the_wrong_json_type_is_named() -> None:
     node = a_tx_lookup_node()
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, ["11" * 32, False, 5])
-    assert raised.value.code == RpcErrorCode.TYPE_ERROR
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
     assert raised.value.message == (
         'Wrong type passed:\n{\n    "Position 3 (blockhash)": "JSON value '
         'of type number is not of expected type string"\n}'
@@ -874,7 +875,7 @@ def test_a_blockhash_that_is_not_hex_is_named_back_to_the_client() -> None:
     node = a_tx_lookup_node()
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, ["11" * 32, False, "zz"])
-    assert raised.value.code == RpcErrorCode.INVALID_PARAMETER
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
     assert "zz" in raised.value.message
 
 
@@ -893,7 +894,7 @@ def test_a_verbose_of_the_wrong_json_type_is_named() -> None:
     node = a_tx_lookup_node()
     with pytest.raises(RpcError) as raised:
         get_raw_transaction(node, _CONN, ["11" * 32, "true"])
-    assert raised.value.code == RpcErrorCode.TYPE_ERROR
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
     assert raised.value.message == (
         'Wrong type passed:\n{\n    "Position 2 (verbose)": "JSON value of '
         'type string is not of expected type bool"\n}'
@@ -998,7 +999,7 @@ def test_test_mempool_accept_with_no_params_is_answered_the_usage() -> None:
     """
     with pytest.raises(RpcError) as raised:
         mempool_accept(a_node(), _CONN, [])
-    assert raised.value.code == RpcErrorCode.MISC_ERROR
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
     assert raised.value.message == 'testmempoolaccept ["rawtx",...] ( maxfeerate )'
 
 
@@ -1013,7 +1014,7 @@ def test_test_mempool_accept_rawtxs_of_the_wrong_json_type_is_named() -> None:
     """
     with pytest.raises(RpcError) as raised:
         mempool_accept(a_node(), _CONN, ["not an array"])
-    assert raised.value.code == RpcErrorCode.TYPE_ERROR
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
     assert raised.value.message == (
         'Wrong type passed:\n{\n    "Position 1 (rawtxs)": "JSON value of '
         'type string is not of expected type array"\n}'
@@ -1048,7 +1049,7 @@ def test_something_that_is_not_a_transaction_is_refused_rather_than_relayed() ->
     """`sendrawtransaction` refuses a string that fails to decode as a tx."""
     with pytest.raises(RpcError) as raised:
         send_raw_transaction(a_node(), _CONN, ["not a transaction"])
-    assert raised.value.code == RpcErrorCode.DESERIALIZATION_ERROR
+    assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
     assert raised.value.message == (
         "TX decode failed. Make sure the tx has at least one input."
     )
@@ -1075,14 +1076,14 @@ def test_a_transaction_truncated_inside_a_script_is_the_same_refusal() -> None:
     )
     with pytest.raises(RpcError) as raised:
         send_raw_transaction(a_node(), _CONN, [truncated])
-    assert raised.value.code == RpcErrorCode.DESERIALIZATION_ERROR
+    assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
 
 
 def test_a_rawtx_of_the_wrong_json_type_is_named() -> None:
     """`sendrawtransaction`'s rawtx of the wrong JSON type is named."""
     with pytest.raises(RpcError) as raised:
         send_raw_transaction(a_node(), _CONN, [5])
-    assert raised.value.code == RpcErrorCode.TYPE_ERROR
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
     assert raised.value.message == (
         'Wrong type passed:\n{\n    "Position 1 (hexstring)": "JSON value '
         'of type number is not of expected type string"\n}'
@@ -1099,7 +1100,7 @@ def test_send_raw_transaction_with_no_params_is_answered_the_usage() -> None:
     """
     with pytest.raises(RpcError) as raised:
         send_raw_transaction(a_node(), _CONN, [])
-    assert raised.value.code == RpcErrorCode.MISC_ERROR
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
     assert (
         raised.value.message
         == 'sendrawtransaction "hexstring" ( maxfeerate maxburnamount )'
@@ -1127,7 +1128,7 @@ def test_a_transaction_the_mempool_will_not_have_is_not_reported_relayed(
 
     with pytest.raises(RpcError) as raised:
         send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
-    assert raised.value.code == RpcErrorCode.VERIFY_ERROR
+    assert raised.value.code == RPCErrorCode.VERIFY_ERROR
     assert raised.value.message == "Missing prevouts"
     assert not mempool.contains_tx(tx)
     assert broadcast == []
@@ -1158,7 +1159,7 @@ def test_a_transaction_a_full_mempool_cannot_keep_is_refused_not_relayed(
 
     with pytest.raises(RpcError) as raised:
         send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
-    assert raised.value.code == RpcErrorCode.VERIFY_REJECTED
+    assert raised.value.code == RPCErrorCode.VERIFY_REJECTED
     assert raised.value.message == "Mempool is full"
     assert not mempool.contains_tx(tx)
     assert broadcast == []
@@ -1469,7 +1470,7 @@ def test_a_verbose_of_the_wrong_json_type_is_named_rather_than_coerced() -> None
     )
     with pytest.raises(RpcError) as raised:
         get_block_header(node, _CONN, [chain[0].hash.hex(), "false"])
-    assert raised.value.code == RpcErrorCode.TYPE_ERROR
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
     assert raised.value.message == (
         'Wrong type passed:\n{\n    "Position 2 (verbose)": "JSON value of '
         'type string is not of expected type bool"\n}'
@@ -1568,7 +1569,7 @@ def test_a_block_hash_nothing_indexed_is_refused_rather_than_raising() -> None:
     )
     with pytest.raises(RpcError) as raised:
         get_block_header(node, _CONN, ["11" * 32])
-    assert raised.value.code == RpcErrorCode.INVALID_ADDRESS_OR_KEY
+    assert raised.value.code == RPCErrorCode.INVALID_ADDRESS_OR_KEY
     assert raised.value.message == "Block not found"
 
 
@@ -1581,7 +1582,7 @@ def test_a_block_hash_that_is_not_hex_is_named_back_to_the_client() -> None:
     )
     with pytest.raises(RpcError) as raised:
         get_block_header(node, _CONN, ["zz"])
-    assert raised.value.code == RpcErrorCode.INVALID_PARAMETER
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
     assert "zz" in raised.value.message
 
 
@@ -1600,7 +1601,7 @@ def test_a_block_hash_of_the_wrong_json_type_is_named_rather_than_faulted() -> N
     )
     with pytest.raises(RpcError) as raised:
         get_block_header(node, _CONN, [5])
-    assert raised.value.code == RpcErrorCode.TYPE_ERROR
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
     assert raised.value.message == (
         'Wrong type passed:\n{\n    "Position 1 (blockhash)": "JSON value '
         'of type number is not of expected type string"\n}'
@@ -1621,7 +1622,7 @@ def test_a_null_block_hash_is_the_same_wrong_type_as_any_other() -> None:
     )
     with pytest.raises(RpcError) as raised:
         get_block_header(node, _CONN, [None])
-    assert raised.value.code == RpcErrorCode.TYPE_ERROR
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
     assert raised.value.message == (
         'Wrong type passed:\n{\n    "Position 1 (blockhash)": "JSON value '
         'of type null is not of expected type string"\n}'
@@ -1637,7 +1638,7 @@ def test_no_block_hash_at_all_is_answered_with_the_usage() -> None:
     )
     with pytest.raises(RpcError) as raised:
         get_block_header(node, _CONN, [])
-    assert raised.value.code == RpcErrorCode.MISC_ERROR
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
     assert raised.value.message == 'getblockheader "blockhash" ( verbose )'
 
 
@@ -1896,7 +1897,7 @@ def test_prune_blockchain_refuses_when_not_in_prune_mode(
     node = regtest_node(pruned=False)
     with pytest.raises(RpcError) as raised:
         prune_blockchain(node, _CONN, [10])
-    assert raised.value.code == RpcErrorCode.MISC_ERROR
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
     assert (
         raised.value.message == "Cannot prune blocks because node is not in prune mode."
     )
@@ -1909,7 +1910,7 @@ def test_prune_blockchain_refuses_a_missing_height(
     node = regtest_node(pruned=True, prune_target_mib=None)
     with pytest.raises(RpcError) as raised:
         prune_blockchain(node, _CONN, [])
-    assert raised.value.code == RpcErrorCode.MISC_ERROR
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
     assert raised.value.message == "pruneblockchain height"
 
 
@@ -1920,7 +1921,7 @@ def test_prune_blockchain_refuses_a_height_of_the_wrong_json_type(
     node = regtest_node(pruned=True, prune_target_mib=None)
     with pytest.raises(RpcError) as raised:
         prune_blockchain(node, _CONN, ["10"])
-    assert raised.value.code == RpcErrorCode.TYPE_ERROR
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
     assert raised.value.message == (
         'Wrong type passed:\n{\n    "Position 1 (height)": "JSON value '
         'of type string is not of expected type number"\n}'
@@ -1934,7 +1935,7 @@ def test_prune_blockchain_refuses_a_bool_height(
     node = regtest_node(pruned=True, prune_target_mib=None)
     with pytest.raises(RpcError) as raised:
         prune_blockchain(node, _CONN, [True])
-    assert raised.value.code == RpcErrorCode.TYPE_ERROR
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
 
 
 def test_prune_blockchain_refuses_a_fractional_height(
@@ -1944,7 +1945,7 @@ def test_prune_blockchain_refuses_a_fractional_height(
     node = regtest_node(pruned=True, prune_target_mib=None)
     with pytest.raises(RpcError) as raised:
         prune_blockchain(node, _CONN, [10.5])
-    assert raised.value.code == RpcErrorCode.MISC_ERROR
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
     assert raised.value.message == "JSON integer out of range"
 
 
@@ -1955,7 +1956,7 @@ def test_prune_blockchain_refuses_a_negative_height(
     node = regtest_node(pruned=True, prune_target_mib=None)
     with pytest.raises(RpcError) as raised:
         prune_blockchain(node, _CONN, [-1])
-    assert raised.value.code == RpcErrorCode.INVALID_PARAMETER
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
     assert raised.value.message == "Negative block height."
 
 
@@ -1979,7 +1980,7 @@ def test_prune_blockchain_refuses_a_chain_too_short_for_pruning(
     connect(node, chain)
     with pytest.raises(RpcError) as raised:
         prune_blockchain(node, _CONN, [1])
-    assert raised.value.code == RpcErrorCode.MISC_ERROR
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
     assert raised.value.message == "Blockchain is too short for pruning."
 
 
@@ -2011,7 +2012,7 @@ def test_prune_blockchain_refuses_a_height_past_the_tip(
     tip_height = len(block_index.active_chain) - 1
     with pytest.raises(RpcError) as raised:
         prune_blockchain(node, _CONN, [tip_height + 1])
-    assert raised.value.code == RpcErrorCode.INVALID_PARAMETER
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
     assert (
         raised.value.message == "Blockchain is shorter than the attempted prune height."
     )
@@ -2105,7 +2106,7 @@ def test_prune_blockchain_refuses_a_timestamp_after_every_block(
 
     with pytest.raises(RpcError) as raised:
         prune_blockchain(node, _CONN, [timestamp_param])
-    assert raised.value.code == RpcErrorCode.INVALID_PARAMETER
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
     assert raised.value.message == (
         "Could not find block with at least the specified timestamp."
     )
@@ -2132,7 +2133,7 @@ def test_a_negative_height_is_refused_rather_than_read_off_the_chain_s_end() -> 
     node = a_chain_index_node([b"\x11" * 32, b"\x22" * 32])
     with pytest.raises(RpcError) as raised:
         get_block_hash(node, _CONN, [-1])
-    assert raised.value.code == RpcErrorCode.INVALID_PARAMETER
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
     assert raised.value.message == "Block height out of range"
 
 
@@ -2141,7 +2142,7 @@ def test_a_height_past_the_tip_is_refused() -> None:
     node = a_chain_index_node([b"\x11" * 32, b"\x22" * 32])
     with pytest.raises(RpcError) as raised:
         get_block_hash(node, _CONN, [2])
-    assert raised.value.code == RpcErrorCode.INVALID_PARAMETER
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
     assert raised.value.message == "Block height out of range"
 
 
@@ -2161,7 +2162,7 @@ def test_a_height_of_the_wrong_json_type_is_named_rather_than_faulted() -> None:
     ):
         with pytest.raises(RpcError) as raised:
             get_block_hash(node, _CONN, [bad])
-        assert raised.value.code == RpcErrorCode.TYPE_ERROR
+        assert raised.value.code == RPCErrorCode.TYPE_ERROR
         assert raised.value.message == (
             'Wrong type passed:\n{\n    "Position 1 (height)": "JSON value '
             f'of type {type_name} is not of expected type number"\n}}'
@@ -2180,7 +2181,7 @@ def test_a_fractional_height_is_refused_the_way_core_s_own_parse_refuses_it() ->
     node = a_chain_index_node([b"\x11" * 32])
     with pytest.raises(RpcError) as raised:
         get_block_hash(node, _CONN, [1.0])
-    assert raised.value.code == RpcErrorCode.MISC_ERROR
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
     assert raised.value.message == "JSON integer out of range"
 
 
@@ -2194,7 +2195,7 @@ def test_no_height_at_all_is_answered_with_the_usage() -> None:
     node = a_chain_index_node([b"\x11" * 32])
     with pytest.raises(RpcError) as raised:
         get_block_hash(node, _CONN, [])
-    assert raised.value.code == RpcErrorCode.MISC_ERROR
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
     assert raised.value.message == "getblockhash height"
 
 
@@ -2218,7 +2219,7 @@ def test_a_transaction_whose_scripts_do_not_verify_is_answered_with_the_refusal(
 
     with pytest.raises(RpcError) as raised:
         send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
-    assert raised.value.code == RpcErrorCode.VERIFY_REJECTED
+    assert raised.value.code == RPCErrorCode.VERIFY_REJECTED
     assert raised.value.message == "Invalid signatures or script"
     assert not mempool.contains_tx(tx)
     assert broadcast == []
