@@ -557,11 +557,14 @@ ignore = ["W002"]
 package = ["src/btclib_node"]
 
 [tool.pytest.ini_options]
-# The two modules beside the directories rather than under either are
-# named on their own: `tests/interpreters_test.py` reads pyproject.toml,
-# .python-version and the CI files against one another, and
-# `tests/fuzz_corpus_test.py` reads fuzz/ -- so each mirrors no module of
-# the package and drives no node. Naming one is what collects it -- and
+# The modules beside the directories rather than under either are named
+# one at a time: `tests/fuzz_corpus_test.py` reads fuzz/,
+# `tests/interpreters_test.py` reads pyproject.toml, .python-version and
+# the CI files against one another, `tests/property_test.py` draws
+# unconstrained octets against the entry points those harnesses declare,
+# and `tests/wait_for_readthedocs_build_test.py` loads a script under
+# .github/scripts/ by path -- so each mirrors no module of the package
+# and drives no node. Naming one is what collects it -- and
 # [tool.coverage.run]'s `source` takes all of tests/, so a module no run
 # collects is a file the floor reports at zero.
 #
@@ -586,6 +589,7 @@ testpaths = [
     "tests/fuzz_corpus_test.py",
     "tests/interpreters_test.py",
     "tests/property_test.py",
+    "tests/wait_for_readthedocs_build_test.py",
     "tests/unit",
     "tests/functional",
     "tests/integration",
@@ -915,6 +919,11 @@ ignore = [
 # value, so `check_vendored_pin.py`'s prints are its report and not
 # debug residue either.
 ".github/scripts/check_vendored_pin.py" = ["T20"]
+# and the same for the read the docs wait: `release.yml`'s
+# `documented` job reads the retry, the deadline and the
+# `::error::` annotation off this script's stdout, which is where
+# a GitHub Actions annotation has to be written to be one
+".github/scripts/wait_for_readthedocs_build.py" = ["T20"]
 # every __init__ in this file is one line, super().__init__(message) or
 # a formatted message built from its own arguments -- what it does is
 # already the whole of what the class's own docstring says, so a

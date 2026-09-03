@@ -401,12 +401,24 @@ this release included.
    a job two hops from something that failed by design is skipped
    without ever being mentioned.
 
-   **One skip is correct and is the one a reader will cite as the
-   defect**: `publish-testpypi` reports `skipped` on a tag push, its
-   guard being `workflow_dispatch`. On a rehearsal the mirror image is
-   correct for the same reason — `publish-pypi` skips, its guard being
-   `push`. Everything else that skipped wants explaining before the
-   release is called done.
+   **Some skips are correct, and they are the ones a reader will cite
+   as the defect**: `publish-testpypi` reports `skipped` on a tag push,
+   its guard being `workflow_dispatch`. On a rehearsal the mirror image
+   is correct for the same reason — `publish-pypi` skips, its guard
+   being `push` — and `documented` skips on its own account, its guard
+   being the push. Everything else that skipped wants explaining before
+   the release is called done.
+
+1. Read the `documented` job rather than the site: read the docs
+   activates and builds a new release tag from the automation rule
+   `REPOSITORY.md` records, and that job waits for
+   `https://btclib-node.readthedocs.io/en/<tag>/` to be served and is
+   red if it never is. Green means the release has a permanent URL of
+   its own, which is the one to link when the version is named
+   anywhere. Red means the build is missing and
+   [the builds page](https://app.readthedocs.org/projects/btclib-node/builds/)
+   says why: nothing about the publication depends on it, so the fix is
+   a build on their side and never a moved tag.
 
 1. `release.yml`'s own `pypi-install` job already installed what was
    just published and ran it past import, on every image this

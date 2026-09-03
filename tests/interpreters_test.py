@@ -335,6 +335,11 @@ _NAMES_ONE = (
     # project's `requires-python`, so it names the one uv resolves
     # (btclib-org/btclib-node#502)
     ".github/workflows/pypi-install.yml",
+    # release.yml's `documented` job runs the read the docs wait through
+    # `uv run --no-project`, which avoids discovering this project
+    # altogether, so the interpreter that step runs on is the one its
+    # own command line names (btclib-org/.github#644)
+    ".github/workflows/release.yml",
     ".github/workflows/test.yml",
 )
 
