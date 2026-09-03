@@ -14,6 +14,7 @@ authenticates nothing.
 
 from typing import TYPE_CHECKING, Any, cast
 
+from bitcoin_core_rpc import RPCErrorCode
 from btclib.block import median_time_past
 from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.p2p.address import ServiceFlags
@@ -29,7 +30,7 @@ from btclib_node.main import (
 )
 from btclib_node.p2p.address import ip_and_port
 from btclib_node.rpc.connection import RawJSON
-from btclib_node.rpc.errors import RpcError, RpcErrorCode, bool_param, type_error
+from btclib_node.rpc.errors import RpcError, bool_param, type_error
 
 if TYPE_CHECKING:
     from btclib.p2p.addrv2 import BIP155Network
@@ -238,14 +239,14 @@ def _height_param(params: list[Any]) -> int:
     repeated in this docstring.
     """
     if not params:
-        raise RpcError(RpcErrorCode.MISC_ERROR, "pruneblockchain height")
+        raise RpcError(RPCErrorCode.MISC_ERROR, "pruneblockchain height")
     height_param = params[0]
     if isinstance(height_param, bool) or not isinstance(height_param, (int, float)):
         raise type_error(1, "height", height_param, "number")
     if isinstance(height_param, float):
-        raise RpcError(RpcErrorCode.MISC_ERROR, "JSON integer out of range")
+        raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
     if height_param < 0:
-        raise RpcError(RpcErrorCode.INVALID_PARAMETER, "Negative block height.")
+        raise RpcError(RPCErrorCode.INVALID_PARAMETER, "Negative block height.")
     return height_param
 
 
@@ -276,7 +277,7 @@ def _height_from_timestamp(node: Node, timestamp: int) -> int:
     )
     if found_height is None:
         raise RpcError(
-            RpcErrorCode.INVALID_PARAMETER,
+            RPCErrorCode.INVALID_PARAMETER,
             "Could not find block with at least the specified timestamp.",
         )
     return found_height
@@ -316,7 +317,7 @@ def prune_blockchain(node: Node, conn: RpcConnection, params: list[Any]) -> int:
     """
     if not node.config.pruned:
         raise RpcError(
-            RpcErrorCode.MISC_ERROR,
+            RPCErrorCode.MISC_ERROR,
             "Cannot prune blocks because node is not in prune mode.",
         )
     height_param = _height_param(params)
@@ -326,10 +327,10 @@ def prune_blockchain(node: Node, conn: RpcConnection, params: list[Any]) -> int:
     chain_height = len(node.chainstate.block_index.active_chain) - 1
     if chain_height < node.chain.prune_after_height:
         err_msg = "Blockchain is too short for pruning."
-        raise RpcError(RpcErrorCode.MISC_ERROR, err_msg)
+        raise RpcError(RPCErrorCode.MISC_ERROR, err_msg)
     if height_param > chain_height:
         err_msg = "Blockchain is shorter than the attempted prune height."
-        raise RpcError(RpcErrorCode.INVALID_PARAMETER, err_msg)
+        raise RpcError(RPCErrorCode.INVALID_PARAMETER, err_msg)
     height_param = min(height_param, chain_height - MIN_BLOCKS_TO_KEEP)
 
     prune_up_to_height(node, height_param)
@@ -359,7 +360,7 @@ def get_block_hash(node: Node, conn: RpcConnection, params: list[Any]) -> bytes:
         # for Type::STR/STR_HEX, and height is Type::NUM
         # (src/rpc/blockchain.cpp:585), which formats bare
         # (src/rpc/util.cpp:1265-1286)
-        raise RpcError(RpcErrorCode.MISC_ERROR, "getblockhash height")
+        raise RpcError(RPCErrorCode.MISC_ERROR, "getblockhash height")
 
     height = params[0]
     if isinstance(height, bool) or not isinstance(height, (int, float)):
@@ -379,13 +380,13 @@ def get_block_hash(node: Node, conn: RpcConnection, params: list[Any]) -> bytes:
         # `catch (const std::exception&)` case, RPC_MISC_ERROR and not
         # RPC_TYPE_ERROR (src/rpc/server.cpp:884-887, src/univalue
         # /include/univalue.h:139-150)
-        raise RpcError(RpcErrorCode.MISC_ERROR, "JSON integer out of range")
+        raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
 
     if height < 0 or height >= len(active_chain):
         # src/rpc/blockchain.cpp:599-601: one check either direction,
         # and the same message both ways -- height < 0 is what used to
         # read the active chain from its own end instead of raising
-        raise RpcError(RpcErrorCode.INVALID_PARAMETER, "Block height out of range")
+        raise RpcError(RPCErrorCode.INVALID_PARAMETER, "Block height out of range")
 
     return active_chain[height]
 
@@ -425,7 +426,7 @@ def get_block_header(
         # in its own trailing `( ... )` for being optional --
         # read at bitcoin/bitcoin@b91d983f66, src/rpc/blockchain.cpp:614-617
         raise RpcError(
-            RpcErrorCode.MISC_ERROR, 'getblockheader "blockhash" ( verbose )'
+            RPCErrorCode.MISC_ERROR, 'getblockheader "blockhash" ( verbose )'
         )
     if not isinstance(params[0], str):
         # RPCMethod::HandleRequest checks a declared argument's JSON
@@ -447,7 +448,7 @@ def get_block_header(
     except ValueError as error:
         # ParseHashV, src/rpc/util.cpp:125, down to the sentence
         raise RpcError(
-            RpcErrorCode.INVALID_PARAMETER,
+            RPCErrorCode.INVALID_PARAMETER,
             f"hash must be hexadecimal string (not '{params[0]}')",
         ) from error
     try:
@@ -456,7 +457,7 @@ def get_block_header(
         # a hash nothing indexed is a question about a block, not a
         # fault of this node: src/rpc/blockchain.cpp:665
         raise RpcError(
-            RpcErrorCode.INVALID_ADDRESS_OR_KEY, "Block not found"
+            RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Block not found"
         ) from error
     header = block_info.header
 
@@ -794,11 +795,11 @@ def get_tx_out_set_info(
         raise type_error(1, "hash_type", hash_type, "string")
     if hash_type not in _TX_OUT_SET_HASH_TYPES:
         err_msg = f"'{hash_type}' is not a valid hash_type"
-        raise RpcError(RpcErrorCode.INVALID_PARAMETER, err_msg)
+        raise RpcError(RPCErrorCode.INVALID_PARAMETER, err_msg)
 
     if len(params) > 1 and params[1] is not None:
         err_msg = "Querying specific block heights requires coinstatsindex"
-        raise RpcError(RpcErrorCode.INVALID_PARAMETER, err_msg)
+        raise RpcError(RPCErrorCode.INVALID_PARAMETER, err_msg)
 
     # type-checked and otherwise unused -- this method's own docstring
     # argues why
@@ -838,7 +839,7 @@ def get_raw_mempool(
         # answering one and dropping the other: src/rpc/mempool.cpp
         # :608-611
         raise RpcError(
-            RpcErrorCode.INVALID_PARAMETER,
+            RPCErrorCode.INVALID_PARAMETER,
             "Verbose results cannot contain mempool sequence values.",
         )
 
@@ -877,7 +878,7 @@ def _parse_txid(params: list[Any]) -> bytes:
         # the full 0/1/2 verbosity Core's name is for --
         # read at bitcoin/bitcoin@b91d983f66
         raise RpcError(
-            RpcErrorCode.MISC_ERROR,
+            RPCErrorCode.MISC_ERROR,
             'getrawtransaction "txid" ( verbose "blockhash" )',
         )
     if not isinstance(params[0], str):
@@ -888,7 +889,7 @@ def _parse_txid(params: list[Any]) -> bytes:
         return bytes.fromhex(params[0])
     except ValueError as error:
         raise RpcError(
-            RpcErrorCode.INVALID_PARAMETER,
+            RPCErrorCode.INVALID_PARAMETER,
             f"parameter 1 must be hexadecimal string (not '{params[0]}')",
         ) from error
 
@@ -906,7 +907,7 @@ def _parse_optional_block_hash(params: list[Any]) -> bytes | None:
         return bytes.fromhex(params[2])
     except ValueError as error:
         raise RpcError(
-            RpcErrorCode.INVALID_PARAMETER,
+            RPCErrorCode.INVALID_PARAMETER,
             f"parameter 3 must be hexadecimal string (not '{params[2]}')",
         ) from error
 
@@ -919,7 +920,7 @@ def _find_transaction(
         tx = node.mempool.get_tx(txid)
         if tx is None:
             raise RpcError(
-                RpcErrorCode.INVALID_ADDRESS_OR_KEY,
+                RPCErrorCode.INVALID_ADDRESS_OR_KEY,
                 "No such mempool transaction. This node keeps no "
                 "transaction index; name the block it confirmed in to "
                 "look there instead. Use gettransaction for wallet "
@@ -931,7 +932,7 @@ def _find_transaction(
         block_info = node.chainstate.block_index.get_block_info(block_hash)
     except KeyError as error:
         raise RpcError(
-            RpcErrorCode.INVALID_ADDRESS_OR_KEY, "Block hash not found"
+            RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Block hash not found"
         ) from error
     block = node.block_db.get_block(block_hash)
     if block is None:
@@ -944,14 +945,14 @@ def _find_transaction(
         # same distinction, `BlockDB.prune_up_to`'s own docstring is
         # where deleting by height rather than by file is argued.
         if block_info.index <= node.block_db.pruned_up_to:
-            raise RpcError(RpcErrorCode.MISC_ERROR, "Block not available (pruned data)")
+            raise RpcError(RPCErrorCode.MISC_ERROR, "Block not available (pruned data)")
         raise RpcError(
-            RpcErrorCode.MISC_ERROR, "Block not available (not fully downloaded)"
+            RPCErrorCode.MISC_ERROR, "Block not available (not fully downloaded)"
         )
     tx = next((t for t in block.transactions if t.id == txid), None)
     if tx is None:
         raise RpcError(
-            RpcErrorCode.INVALID_ADDRESS_OR_KEY,
+            RPCErrorCode.INVALID_ADDRESS_OR_KEY,
             "No such transaction found in the provided block. Use "
             "gettransaction for wallet transactions.",
         )
@@ -1023,9 +1024,9 @@ _INVALID_SCRIPT_REASON = "Invalid signatures or script"
 # commit) turns that into `TransactionError::MEMPOOL_REJECTED`, and
 # `RPCErrorFromTransactionError` (`rpc/util.cpp`) answers it with
 # `RPC_TRANSACTION_REJECTED`, which `rpc/protocol.h` declares as a bare
-# alias of `RPC_VERIFY_REJECTED` (`-26`) -- the same code this tree's
-# own `RpcErrorCode.VERIFY_REJECTED` already answers a transaction the
-# mempool refused with, above. btclib-org/btclib-node#293
+# alias of `RPC_VERIFY_REJECTED` (`-26`) -- the same code
+# `RPCErrorCode.VERIFY_REJECTED` (`bitcoin_core_rpc`) already answers a
+# transaction the mempool refused with, above. btclib-org/btclib-node#293
 _MEMPOOL_FULL_REASON = "Mempool is full"
 
 
@@ -1057,7 +1058,7 @@ def test_mempool_accept(
         # `( ... )` for being optional --
         # read at bitcoin/bitcoin@b91d983f66, src/rpc/mempool.cpp:291-298
         raise RpcError(
-            RpcErrorCode.MISC_ERROR,
+            RPCErrorCode.MISC_ERROR,
             'testmempoolaccept ["rawtx",...] ( maxfeerate )',
         )
     rawtxs = params[0]
@@ -1128,7 +1129,7 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
         # for being consecutively optional --
         # read at bitcoin/bitcoin@b91d983f66, src/rpc/mempool.cpp:72-77
         raise RpcError(
-            RpcErrorCode.MISC_ERROR,
+            RPCErrorCode.MISC_ERROR,
             'sendrawtransaction "hexstring" ( maxfeerate maxburnamount )',
         )
     rawtx = params[0]
@@ -1148,7 +1149,7 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
         # itself raised, is the base both share and the one clause this
         # catches them with
         raise RpcError(
-            RpcErrorCode.DESERIALIZATION_ERROR,
+            RPCErrorCode.DESERIALIZATION_ERROR,
             "TX decode failed. Make sure the tx has at least one input.",
         ) from error
     try:
@@ -1157,11 +1158,11 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
         # Core's own missing-inputs code, RPC_VERIFY_ERROR
         # (src/rpc/protocol.h): a transaction this node cannot verify
         # for want of what it spends, not one it refuses
-        raise RpcError(RpcErrorCode.VERIFY_ERROR, _MISSING_PREVOUTS_REASON) from exc
+        raise RpcError(RPCErrorCode.VERIFY_ERROR, _MISSING_PREVOUTS_REASON) from exc
     except BTClibValueError as exc:
         # Core's own RPC_VERIFY_REJECTED: the mempool looked at the
         # transaction and refused it
-        raise RpcError(RpcErrorCode.VERIFY_REJECTED, _INVALID_SCRIPT_REASON) from exc
+        raise RpcError(RPCErrorCode.VERIFY_REJECTED, _INVALID_SCRIPT_REASON) from exc
     # `Mempool.add_tx` now evicts to make room rather than refusing
     # outright past its old `is_full()` gate (btclib-org/btclib-node#294),
     # so whether this call is answered with the refusal below is no
@@ -1200,7 +1201,7 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
         # one held once `Mempool.bytesize_limit` was restored -- exactly
         # the case `_MEMPOOL_FULL_REASON`'s own comment names, Core's
         # `TX_RECONSIDERABLE` "mempool full". btclib-org/btclib-node#294
-        raise RpcError(RpcErrorCode.VERIFY_REJECTED, _MEMPOOL_FULL_REASON)
+        raise RpcError(RPCErrorCode.VERIFY_REJECTED, _MEMPOOL_FULL_REASON)
     node.p2p_manager.broadcast_raw_transaction(to_announce, fee)
     return tx.id.hex()
 

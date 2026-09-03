@@ -72,16 +72,21 @@ source_suffix = [".rst", ".md"]
 # builtins (int, bytes, str), so no mapping is needed for those.
 # btclib is mapped alongside python rather than left to the entries
 # below: this tree's own public surface carries a btclib type in nearly
-# every signature it exports, and btclib publishes its own inventory
+# every signature it exports, and btclib publishes its own inventory.
+# bitcoin-core-rpc joins it for the same reason, since issue #801's row
+# 8: rpc/errors.py imports RPCErrorCode from it directly now, and the
+# package publishes its own inventory the same way btclib does
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
     "btclib": ("https://btclib.readthedocs.io/en/latest/", None),
+    "bitcoin-core-rpc": ("https://bitcoin-core-rpc.readthedocs.io/en/latest/", None),
 }
 
-# every build fetches both inventories, rather than reading back the copy
-# sphinx writes beside the doctrees and reuses until that copy expires.
-# The copy sits under docs/build, which .gitignore covers, so neither a
-# diff nor git status says which of the two a build resolved against, and
+# every build fetches every mapped inventory, rather than reading back
+# the copy sphinx writes beside the doctrees and reuses until that copy
+# expires. The copy sits under docs/build, which .gitignore covers, so
+# neither a diff nor git status says which of them a build resolved
+# against, and
 # the same commit then answers green in a worktree building for the first
 # time and red in one re-reading a page against a copy taken days
 # earlier -- a build re-reading nothing resolves nothing and answers
@@ -96,7 +101,7 @@ intersphinx_mapping = {
 #
 # What it costs is a fetch of each inventory on every build, which is
 # what docs.yml and .readthedocs.yaml already do, their checkouts
-# carrying no copy to read; and a build with no route to the two hosts
+# carrying no copy to read; and a build with no route to a mapped host
 # fails under -W where one reading the copy would have passed.
 #
 # Not -d, putting the doctrees outside the tree: that relocates the copy

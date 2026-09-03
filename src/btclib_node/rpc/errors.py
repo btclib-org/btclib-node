@@ -4,33 +4,11 @@
 
 """How a callback refuses a request rather than failing on it."""
 
-import enum
 from typing import Any
 
-__all__ = ["RpcError", "RpcErrorCode", "bool_param", "error_msg", "type_error"]
+from bitcoin_core_rpc import RPCErrorCode
 
-
-class RpcErrorCode(enum.IntEnum):
-    """The codes of Bitcoin Core's RPCErrorCode, `src/rpc/protocol.h`.
-
-    A client reads the code before it reads the message, so a refusal
-    this node makes carries the number Core gives the same refusal.
-    `INTERNAL_ERROR` is what Core's own header reserves for a genuine
-    fault of the server, which is why nothing here answers a bad request
-    with it.
-    """
-
-    MISC_ERROR = -1
-    TYPE_ERROR = -3
-    INVALID_ADDRESS_OR_KEY = -5
-    INVALID_PARAMETER = -8
-    DESERIALIZATION_ERROR = -22
-    VERIFY_ERROR = -25
-    VERIFY_REJECTED = -26
-    PARSE_ERROR = -32700
-    INVALID_REQUEST = -32600
-    METHOD_NOT_FOUND = -32601
-    INTERNAL_ERROR = -32603
+__all__ = ["RpcError", "bool_param", "error_msg", "type_error"]
 
 
 class RpcError(Exception):
@@ -38,10 +16,12 @@ class RpcError(Exception):
 
     `handle_rpc` turns it into the error object of JSON-RPC 2.0's section
     5.1, so raising it is how a callback says which of the two was wrong,
-    the request or the node.
+    the request or the node. Opposite in direction from
+    `bitcoin_core_rpc.RpcError`, which names an error a node's answer
+    already carries -- this one is raised here, not read off a reply.
     """
 
-    def __init__(self, code: RpcErrorCode, message: str) -> None:
+    def __init__(self, code: RPCErrorCode, message: str) -> None:
         """Name the refusal `code` and `message`, `handle_rpc` reads back."""
         super().__init__(f"{code.name}: {message}")
         self.code = code
@@ -112,7 +92,7 @@ def type_error(position: int, name: str, value: object, expected: str) -> RpcErr
     argues.
     """
     return RpcError(
-        RpcErrorCode.TYPE_ERROR,
+        RPCErrorCode.TYPE_ERROR,
         "Wrong type passed:\n{\n"
         f'    "Position {position} ({name})": '
         f'"JSON value of type {json_type_name(value)} is '
@@ -122,7 +102,7 @@ def type_error(position: int, name: str, value: object, expected: str) -> RpcErr
 
 
 def error_msg(
-    code: RpcErrorCode, message: str, request_id: object = None
+    code: RPCErrorCode, message: str, request_id: object = None
 ) -> dict[str, Any]:
     """Build the error response of JSON-RPC 2.0's section 5, code and message.
 

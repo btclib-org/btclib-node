@@ -40,6 +40,13 @@ dependencies = [
     # the wheel's metadata (btclib-org/btclib-node#381).
     "btclib[secp256k1]>=2026.8.29",
     "rocksdict>=0.3.29",
+    # `rpc/errors.py` imports `RPCErrorCode` directly now, so this is a
+    # direct runtime dependency rather than the transitive arrival
+    # btclib's own `[project.dependencies]` already brings in -- depend
+    # on what is imported rather than rest on what a sibling happens to
+    # declare. The floor is 2026.9.3, the release `RPCErrorCode` first
+    # ships in (btclib-org/btclib-node#801).
+    "bitcoin-core-rpc>=2026.9.3",
 ]
 # What this repository is about, in the order a reader ranks them:
 # PyPI shows keywords as the metadata gives them, and GitHub sorts its

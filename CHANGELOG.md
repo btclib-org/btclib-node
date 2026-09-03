@@ -3889,6 +3889,25 @@ dereferences it, and `refs/tags/v1^{}` does the same from a checkout.
   `OP_2DROP` and an `OP_1` over the random push that keeps two of them
   distinct.
 
+### `rpc/errors.py` imports `bitcoin_core_rpc`'s `RPCErrorCode` (issue #801)
+
+- **`rpc/errors.py` no longer defines its own error-code enum; every call
+  site imports `RPCErrorCode` from `bitcoin_core_rpc` instead.** Checked
+  member by member before the deletion: every name this tree used exists
+  in the package's enum with the same integer value, so no code on the
+  wire changes. The package transcribes the whole of Core's
+  `RPCErrorCode` (`src/rpc/protocol.h`); this tree still raises only the
+  subset it always has.
+- **`RpcError`, `json_type_name`, `type_error`, `bool_param` and
+  `error_msg` stay in `rpc/errors.py`.** `RpcError` is this node's own
+  refusal exception, opposite in direction from `bitcoin_core_rpc`'s own
+  `RpcError`, which reads an error a node's answer already carries.
+- **`bitcoin-core-rpc` moves from the `test` group alone into
+  `[project.dependencies]`, at `>=2026.9.3`, the release `RPCErrorCode`
+  first ships in.** It was already importable at runtime through
+  btclib's own dependency on it; the declaration is what makes that
+  import provable rather than incidental now that `src/` reads it.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

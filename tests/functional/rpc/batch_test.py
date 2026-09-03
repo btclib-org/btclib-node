@@ -15,11 +15,10 @@ over a real socket, through `BitcoinCoreRpcClient.call_batch` (issue
 import json
 from typing import TYPE_CHECKING
 
-from bitcoin_core_rpc import RpcError, SessionTransport
+from bitcoin_core_rpc import RpcError, RPCErrorCode, SessionTransport
 
 from btclib_node import Node
 from btclib_node.config import Config
-from btclib_node.rpc.errors import RpcErrorCode
 from tests import get_random_port, post, rpc_client, wait_until_listening
 
 if TYPE_CHECKING:
@@ -95,7 +94,7 @@ def test_a_mixed_valid_and_invalid_batch_answers_each_member_on_its_own(
 
     assert results[0]
     assert isinstance(results[1], RpcError)
-    assert results[1].code == RpcErrorCode.METHOD_NOT_FOUND
+    assert results[1].code == RPCErrorCode.METHOD_NOT_FOUND
     assert results[2] is None
 
 
