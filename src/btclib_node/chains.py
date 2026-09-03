@@ -5,17 +5,21 @@
 """The networks this node can join, and the genesis block of each.
 
 `Chain` and its four leaves -- `Main`, `TestNet`, `SigNet`, `RegTest` --
-carry a network's magic, its seed addresses, its script-flag activation
-heights and its own genesis block, built once by `create_genesis` below
-from the constants each leaf supplies. `config.py`'s `_resolve_chain` is
-what turns a chain's name, read from the command line or a functional
-test, into one of these.
+carry a network's magic, its seed addresses, its own genesis block, and
+what identifies this node's own copy of it -- a pruning floor and the
+port it dials. Consensus, an activation height, a subsidy interval, the
+easiest target and the exceptions a chain's own history forces, is
+`btclib.consensus`'s, reached below through `Chain.consensus` keyed by
+the same `name` `magic_from_network` already resolves. `config.py`'s
+`_resolve_chain` is what turns a chain's name, read from the command
+line or a functional test, into one of these.
 """
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from btclib.block import Block, BlockHeader, merkle_root_and_mutated_from_transactions
+from btclib.consensus import CONSENSUS_PARAMS, ConsensusParams
 from btclib.p2p.magic import magic_from_network
 from btclib.script import script
 from btclib.tx.out_point import OutPoint
@@ -112,39 +116,6 @@ class Chain:
     rpc_port: int
     addresses: list[str]
     genesis_block: Block
-    # (height, name) pairs, each read by interpreter.get_flags as the
-    # activation height of a script flag; every leaf below sets this in
-    # its own __init__, which is why it carries no default here.
-    flags: list[tuple[int, str]]
-    # Core's fPowAllowMinDifficultyBlocks: a block more than two target
-    # spacings after its parent may be mined at the network's easiest
-    # target, so that a chain nobody is hashing still moves.
-    pow_allow_min_difficulty_blocks: bool
-    # Core's fPowNoRetargeting: the target never moves off the one the
-    # genesis carries.
-    pow_no_retargeting: bool
-    # Core's nSubsidyHalvingInterval: how many blocks the coinbase reward
-    # stays at one level before halving again. subsidy() below is what
-    # reads it.
-    subsidy_halving_interval: int
-    # Core's BIP34Height: the first height a coinbase must commit to its
-    # own height (BIP34, bad-cb-height). Read by main.update_chain,
-    # through BlockContext.bip34_height.
-    bip34_height: int
-    # Core's `IsBIP30Repeat` (`src/validation.cpp:6218-6222`,
-    # at bitcoin/bitcoin@204256c73f): the (height, block hash) of every
-    # block this chain's own history already carries a BIP30 violation
-    # in, exempted from `chainstate.utxo_index.UtxoIndex.add_block`'s own
-    # BIP30 check rather than failing it. Empty on every leaf but `Main`,
-    # since the two blocks that violate it are two specific mainnet
-    # blocks mined in 2010, not a property of the rule.
-    bip30_exceptions: list[tuple[int, bytes]]
-    # Core's `nMinimumChainWork` (`src/kernel/chainparams.cpp`,
-    # at bitcoin/bitcoin@ca7162cde5), read as `int(hex_string, 16)`: the
-    # chain work below which `main.update_ibd_status` will not leave
-    # `IsInitialBlockDownload`, whatever the tip's own age. Each leaf's
-    # own `__init__` below cites the line its value comes from.
-    minimum_chain_work: int
     # Core's `nPruneAfterHeight` (`src/kernel/chainparams.cpp`, at
     # bitcoin/bitcoin@ca7162cde5): `rpc.callbacks.prune_blockchain`'s own
     # "Blockchain is too short for pruning." floor, below which Core
@@ -158,6 +129,19 @@ class Chain:
         """Return the genesis header, which is what most callers want."""
         return self.genesis_block.header
 
+    @property
+    def consensus(self) -> ConsensusParams:
+        """This chain's consensus row, from btclib's own per-network table.
+
+        `btclib.consensus.CONSENSUS_PARAMS` is keyed by the same `name`
+        `magic` below already resolves through `btclib.network`, so the
+        two never disagree about which networks exist. Every activation
+        height, the subsidy interval, the easiest target, and the
+        exceptions this chain's own history forces are read off it
+        rather than held here a second time.
+        """
+        return CONSENSUS_PARAMS[self.name]
+
     def subsidy(self, height: int) -> int:
         """Return the block reward at `height`: fifty bitcoin, halved by height.
 
@@ -166,7 +150,7 @@ class Chain:
         per `subsidy_halving_interval` blocks, forced to zero once that
         shift is undefined for a native int.
         """
-        halvings = height // self.subsidy_halving_interval
+        halvings = height // self.consensus.subsidy_halving_interval
         if halvings >= 64:  # noqa: PLR2004
             return 0
         return (50 * 10**8) >> halvings
@@ -219,37 +203,6 @@ class Main(Chain):
         self.genesis_block = create_genesis(
             1231006505, 2083236893, 0x1D00FFFF, 1, 50 * 10**8
         )
-        self.flags = [
-            (170061, "P2SH"),
-            (363725, "DERSIG"),
-            (388381, "CHECKLOCKTIMEVERIFY"),
-            (419328, "CHECKSEQUENCEVERIFY"),
-            (481824, "WITNESS"),
-            (481824, "NULLDUMMY"),
-            (709632, "TAPROOT"),
-        ]
-        self.pow_allow_min_difficulty_blocks = False
-        self.pow_no_retargeting = False
-        self.subsidy_halving_interval = 210000
-        self.bip34_height = 227931
-        self.bip30_exceptions = [
-            (
-                91842,
-                bytes.fromhex(
-                    "00000000000a4d0a398161ffc163c503763b1f4360639393e0e4c8e300e0caec"
-                ),
-            ),
-            (
-                91880,
-                bytes.fromhex(
-                    "00000000000743f190a18c5577a3c2d2a1f610ae9601ac046a38084ccb7cd721"
-                ),
-            ),
-        ]
-        # src/kernel/chainparams.cpp:141, at bitcoin/bitcoin@ca7162cde5
-        self.minimum_chain_work = int(
-            "0000000000000000000000000000000000000001128750f82f4c366153a3a030", 16
-        )
         # src/kernel/chainparams.cpp:154, at bitcoin/bitcoin@ca7162cde5
         self.prune_after_height = 100000
 
@@ -274,24 +227,6 @@ class TestNet(Chain):
         self.genesis_block = create_genesis(
             1296688602, 414098458, 0x1D00FFFF, 1, 50 * 10**8
         )
-        self.flags = [
-            (395, "P2SH"),
-            (330776, "DERSIG"),
-            (581885, "CHECKLOCKTIMEVERIFY"),
-            (770112, "CHECKSEQUENCEVERIFY"),
-            (834624, "WITNESS"),
-            (834624, "NULLDUMMY"),
-            (1628640000, "TAPROOT"),  # wrong, this is the date
-        ]
-        self.pow_allow_min_difficulty_blocks = True
-        self.pow_no_retargeting = False
-        self.subsidy_halving_interval = 210000
-        self.bip34_height = 21111
-        self.bip30_exceptions = []
-        # src/kernel/chainparams.cpp:265, at bitcoin/bitcoin@ca7162cde5
-        self.minimum_chain_work = int(
-            "0000000000000000000000000000000000000000000017dde1c649f3708d14b6", 16
-        )
         # src/kernel/chainparams.cpp:273, at bitcoin/bitcoin@ca7162cde5
         self.prune_after_height = 1000
 
@@ -300,8 +235,9 @@ class TestNet(Chain):
 class SigNet(Chain):
     """The default public signet, not a custom one built from its own challenge.
 
-    Every flag activates at height 0, since signet is a fresh chain each
-    time it is reset rather than one carrying mainnet's own history.
+    `btclib.consensus.CONSENSUS_PARAMS["signet"]` gates every buried
+    deployment at height 1, since signet is a fresh chain each time it is
+    reset rather than one carrying mainnet's own history.
     """
 
     # the class docstring above already says which network this is; the
@@ -315,27 +251,6 @@ class SigNet(Chain):
         self.genesis_block = create_genesis(
             1598918400, 52613770, 0x1E0377AE, 1, 50 * 10**8
         )
-        self.flags = [
-            (0, "P2SH"),
-            (0, "DERSIG"),
-            (0, "CHECKLOCKTIMEVERIFY"),
-            (0, "CHECKSEQUENCEVERIFY"),
-            (0, "WITNESS"),
-            (0, "NULLDUMMY"),
-            (0, "TAPROOT"),
-        ]
-        self.pow_allow_min_difficulty_blocks = False
-        self.pow_no_retargeting = False
-        self.subsidy_halving_interval = 210000
-        self.bip34_height = 1
-        self.bip30_exceptions = []
-        # the default public signet's own value, not the empty one a
-        # custom signet's challenge carries: src/kernel/chainparams.cpp
-        # :457, at bitcoin/bitcoin@ca7162cde5, this class's own docstring
-        # above already arguing which of the two this leaf is
-        self.minimum_chain_work = int(
-            "00000000000000000000000000000000000000000000000000000b463ea0a4b8", 16
-        )
         # src/kernel/chainparams.cpp:518, at bitcoin/bitcoin@ca7162cde5
         self.prune_after_height = 1000
 
@@ -344,9 +259,13 @@ class SigNet(Chain):
 class RegTest(Chain):
     """A local, disposable chain: no seeds, an easy target, no retargeting.
 
-    Every flag activates at height 0 and the difficulty never moves off
-    the genesis's own, so a functional test can mine past any of them
-    in as many blocks as it needs, on demand.
+    P2SH, segwit v0 and taproot are on from the genesis block on every
+    chain btclib's own `ConsensusParams.script_flags_at` answers for;
+    `btclib.consensus.CONSENSUS_PARAMS["regtest"]` gates DERSIG,
+    CHECKLOCKTIMEVERIFY and CHECKSEQUENCEVERIFY at height 1 and
+    NULLDUMMY at height 0, and the difficulty never moves off the
+    genesis's own, so a functional test can mine past any of them in as
+    few blocks as it needs, on demand.
     """
 
     # the class docstring above already says which network this is; the
@@ -358,26 +277,6 @@ class RegTest(Chain):
         self.rpc_port = 18443
         self.addresses = []
         self.genesis_block = create_genesis(1296688602, 2, 0x207FFFFF, 1, 50 * 10**8)
-        self.flags = [
-            (0, "P2SH"),
-            (0, "DERSIG"),
-            (0, "CHECKLOCKTIMEVERIFY"),
-            (0, "CHECKSEQUENCEVERIFY"),
-            (0, "WITNESS"),
-            (0, "NULLDUMMY"),
-            (0, "TAPROOT"),
-        ]
-        self.pow_allow_min_difficulty_blocks = True
-        self.pow_no_retargeting = True
-        self.subsidy_halving_interval = 150
-        self.bip34_height = 1
-        self.bip30_exceptions = []
-        # src/kernel/chainparams.cpp:593, at bitcoin/bitcoin@ca7162cde5:
-        # an empty `uint256{}`, zero -- a regtest node counts as caught
-        # up on work alone, the way every regtest activation height
-        # already being 0 lets this leaf skip every other consensus
-        # ramp-up too
-        self.minimum_chain_work = 0
         # src/kernel/chainparams.cpp:601, at bitcoin/bitcoin@ca7162cde5:
         # `opts.fastprune ? 100 : 1000` -- this tree never passes
         # `-fastprune`, Core's own knob for a lower regtest value in its

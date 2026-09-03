@@ -3253,6 +3253,58 @@ they were written in.
   timeout and not the directory -- against the same sha green at 7.96,
   on a diff touching no Python at all.
 
+### `chains.py` reads consensus off `btclib.consensus` instead of holding it
+
+- **`Chain.consensus` is `btclib.consensus.CONSENSUS_PARAMS[chain.name]`,
+  and `flags`, `bip34_height`, `subsidy_halving_interval`,
+  `pow_allow_min_difficulty_blocks`, `pow_no_retargeting`,
+  `bip30_exceptions` and `minimum_chain_work` are gone from `Chain`
+  itself.** `Chain` keeps what identifies this node's own copy of a
+  network rather than the network itself -- its ports, its seed
+  addresses, `prune_after_height` and its genesis block -- and every
+  caller that used to read one of the seven off `Chain` now reads it off
+  `chain.consensus` instead (issue #801).
+- **Testnet3's `TAPROOT` row, which carried `1628640000` -- Core's own
+  deployment timeout, a unix timestamp, marked "wrong, this is the
+  date" in this file -- disappears with the rest of the height table
+  rather than being replaced by a number.**
+  `btclib.consensus.ConsensusParams` carries no BIP9 deployment data --
+  Core's own `vDeployments`, of which a taproot activation height is one
+  field -- by its own design: a table of heights does not model
+  signalling, and no caller of it asks for one (issue #801).
+- **The removed `(170061, "P2SH")` matched no Bitcoin Core parameter at
+  any ref.** `BIP16Height` was `173805` on mainnet and `514` on
+  testnet3, and `bitcoin/bitcoin@ce650182f4` removed it outright, with
+  no successor field of any spelling since. The removed
+  `(709632, "TAPROOT")` is a different kind of number: it **was**
+  Core's own `DEPLOYMENT_TAPROOT.min_activation_height` at
+  `bitcoin/bitcoin@9be056a8a7` (v31.1, the tag this table transcribes
+  against), and is gone from Core's own `master` since
+  `bitcoin/bitcoin@74f71c5054` dropped taproot's BIP9 tracking
+  entirely. `GetBlockScriptFlags` never read that height even while
+  Core carried one -- only DERSIG, CLTV, CSV and NULLDUMMY consult a
+  per-height activation there -- so this row's own defect was always
+  the height gate itself, and after this change the gate exists in
+  neither tree (issue #801).
+
+### `interpreter.get_flags` stops gating P2SH, segwit v0 and taproot on height
+
+- **`get_flags` is `chain.consensus.script_flags_at(height, block_hash)`,
+  Bitcoin Core's own `GetBlockScriptFlags`, in place of a table of
+  `(height, name)` pairs.** P2SH, segwit v0 and taproot are on for every
+  block of every chain rather than gated on an activation height, so a
+  mainnet block below height 170061 is now checked with P2SH on where
+  it used to be checked with P2SH off -- the permissive direction, this
+  node having accepted a spend Core rejects on a chain whose history it
+  is replaying (closes #809).
+- **`block_hash` is what answers for the handful of historical blocks
+  Core exempts by hash rather than by height**, `check_transactions`
+  threading the connecting block's own hash through and mempool
+  acceptance threading the active chain's own tip -- there being no
+  candidate block a mempool transaction is checked against, which is
+  also why Core's own consensus re-check of one reads the tip's flags
+  rather than the next block's (issue #801).
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

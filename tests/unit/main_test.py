@@ -1433,13 +1433,16 @@ def test_a_stop_mid_reorg_rolls_the_trial_back_without_invalidating_it(
     calls = 0
 
     def stop_after_the_second_block(
-        transaction_data: list[tuple[list[Coin], Tx]], index: int, node: Node
+        transaction_data: list[tuple[list[Coin], Tx]],
+        index: int,
+        node: Node,
+        block_hash: bytes,
     ) -> None:
         nonlocal calls
         calls += 1
         if calls == 2:
             node.terminate_flag.set()
-        return check_transactions(transaction_data, index, node)
+        return check_transactions(transaction_data, index, node, block_hash)
 
     monkeypatch.setattr(main, "check_transactions", stop_after_the_second_block)
 
@@ -1701,7 +1704,9 @@ def an_ibd_node(
     return cast(
         "Node",
         SimpleNamespace(
-            chain=SimpleNamespace(minimum_chain_work=minimum_chain_work),
+            chain=SimpleNamespace(
+                consensus=SimpleNamespace(minimum_chain_work=minimum_chain_work)
+            ),
             chainstate=SimpleNamespace(
                 block_index=SimpleNamespace(
                     active_chain=[tip_hash],
@@ -1717,7 +1722,7 @@ def an_ibd_node(
 
 
 def test_update_ibd_status_stays_true_below_the_chain_s_minimum_work() -> None:
-    """Below `Chain.minimum_chain_work`, the tip's own age is never read."""
+    """Below `Chain.consensus.minimum_chain_work`, the tip's age is unread."""
     node = an_ibd_node(chainwork=5, minimum_chain_work=10, tip_time=datetime.now(UTC))
     main.update_ibd_status(node)
     assert node.is_initial_block_download is True

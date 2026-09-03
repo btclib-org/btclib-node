@@ -158,7 +158,7 @@ def test_blockchain_info_s_initialblockdownload_flips_off_once_caught_up_and_rec
 ) -> None:
     """A regtest node leaves IBD once its own tip is actually recent.
 
-    `RegTest.minimum_chain_work` is 0, trivially met by any block, so
+    `RegTest.consensus.minimum_chain_work` is 0, trivially met by any block, so
     the tip's own age against `MAX_TIP_AGE` is what this test is
     actually exercising -- `generate_random_chain`'s own blocks all
     carry `GENESIS_TIME`'s 2011 timestamp, which the header-sync test

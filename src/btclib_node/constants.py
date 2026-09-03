@@ -29,12 +29,13 @@ ProtocolVersion = 70016
 # :24, at bitcoin/bitcoin@ca7162cde5): how old the active chain's own
 # tip may be and still count as recent, half of what
 # `main.update_ibd_status` reads to decide `IsInitialBlockDownload` --
-# the other half is `Chain.minimum_chain_work` (chains.py).
+# the other half is `Chain.consensus.minimum_chain_work`
+# (`btclib.consensus`).
 MAX_TIP_AGE = timedelta(hours=24)
 
 # Core's own `COINBASE_MATURITY` (`src/consensus/consensus.h`,
 # at bitcoin/bitcoin@204256c73f): how many blocks a coinbase output has
-# to sit before a spend of it may connect. Not part of `Chain` below
+# to sit before a spend of it may connect. Not part of `btclib.consensus`
 # despite `bip34_height` living there -- Core keeps this one a bare
 # `constexpr`, the same across every network rather than a
 # `Consensus::Params` field, and regtest does not relax it either;

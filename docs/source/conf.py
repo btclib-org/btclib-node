@@ -97,7 +97,8 @@ intersphinx_mapping = {
 #   add_tx, among others), Block (utxo_index.py's and filter_index.py's
 #   own add_block), NetworkAddressV2 and Payload (p2p/connection.py,
 #   p2p/manager.py), Path (p2p/address.py, chainstate/__init__.py,
-#   log.py) and datetime (contextual.py's assert_valid_in_context) are
+#   log.py), datetime (contextual.py's assert_valid_in_context) and
+#   ScriptFlag/ScriptFlags (interpreter.py's own get_flags and f) are
 #   this tree's own public API doing exactly what "TC"'s own reason asks
 #   of it. p2p/manager.py's own Tx is besides imported under the alias
 #   BtclibTx, which resolves to nothing under that name for the same
@@ -142,6 +143,8 @@ nitpick_ignore = [
     ("py:class", "asyncio.events.AbstractEventLoop"),
     ("py:class", "ParentOf"),
     ("py:class", "BinaryData"),
+    ("py:class", "ScriptFlag"),
+    ("py:class", "ScriptFlags"),
 ]
 
 # anchors for h1 to h3, which is what makes a link to a heading of the same

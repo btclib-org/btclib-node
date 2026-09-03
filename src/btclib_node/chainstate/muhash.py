@@ -116,9 +116,10 @@ either answers.
 mainnet blocks, 91722 and 91812, each mined before BIP34 gave a
 coinbase's own outpoint a height it could never collide with,
 whose coinbase transaction was later duplicated verbatim by a different
-block (91842, 91880 -- `IsBIP30Repeat`, the pair `chains.py`'s own
-`Chain.bip30_exceptions` names, which is what `_check_bip30` on the
-*second* occurrence is waived against, not this one).
+block (91842, 91880 -- `IsBIP30Repeat`, the pair `btclib.consensus`'s
+own `Chain.consensus.bip30_exceptions` names, which is what
+`_check_bip30` on the *second* occurrence is waived against, not this
+one).
 `CoinStatsIndex::CustomAppend` skips a duplicated coinbase's own outputs
 entirely -- never inserted, so never later removed either -- on
 whichever of the two connects *first* carrying that flag: the first
@@ -130,9 +131,9 @@ block's own coinbase in `UtxoIndex.add_block` -- `chains.py` is other
 work's own region for this branch, so the pair is local rather than a
 new `Chain` attribute. Both blocks are ninety-odd thousand mainnet
 blocks deep and neither height nor hash is reachable on any chain this
-tree's own test suite runs (`Chain.bip30_exceptions` is empty on every
-chain but mainnet), so this exclusion is matched against Core's source
-rather than against a live run of it.
+tree's own test suite runs (`Chain.consensus.bip30_exceptions` is empty
+on every chain but mainnet), so this exclusion is matched against
+Core's source rather than against a live run of it.
 """
 
 from __future__ import annotations
@@ -424,8 +425,8 @@ def is_bip30_unspendable(height: int, block_hash: bytes) -> bool:
     """Report whether `block_hash`/`height` is one `CoinStatsIndex` skips.
 
     The module docstring's own "The two blocks history exempts" argues
-    why, and `chains.py`'s own `Chain.bip30_exceptions` is the
-    *different* pair this is not.
+    why, and `btclib.consensus`'s own `Chain.consensus.bip30_exceptions`
+    is the *different* pair this is not.
     """
     return (height, block_hash) in _BIP30_UNSPENDABLE_ORIGINALS
 

@@ -514,7 +514,7 @@ def test_apply_rev_block_undoes_an_in_block_chained_transaction(
 
 
 def test_add_block_skips_bip30_when_asked_to(tmp_path: Path) -> None:
-    """`check_bip30=False` is what `Chain.bip30_exceptions`' two blocks use.
+    """`check_bip30=False` is what the two `bip30_exceptions` blocks use.
 
     A block reused rather than a real historical one: regtest carries
     no chain deep enough to name one of its own, and what this proves is
