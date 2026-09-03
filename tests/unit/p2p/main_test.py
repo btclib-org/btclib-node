@@ -16,9 +16,12 @@ from typing import TYPE_CHECKING, Any
 
 from btclib.exceptions import BTClibValueError
 from btclib.p2p.addrv2 import NetworkAddressV2
+from btclib.p2p.data import TxPayload as TxMsg
 
-from btclib_node.constants import P2pConnStatus
+import btclib_node.p2p.callbacks as cb
+from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.log import Logger
+from btclib_node.mempool import Mempool
 from btclib_node.p2p import main as main_module
 from btclib_node.p2p.callbacks import callbacks, handshake_callbacks
 from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
@@ -28,6 +31,7 @@ from btclib_node.p2p.main import (
     resume_cfilters,
     resume_getdata,
 )
+from tests import generate_random_transaction
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -389,6 +393,40 @@ def test_a_callback_that_raises_a_btclib_exception_costs_the_peer(
     handle_p2p(node)
     assert stopped == [True]
     assert node.p2p_manager.discouraged == [_AN_ADDRESS]  # #283
+
+
+def test_a_consensus_invalid_transaction_costs_the_peer_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mempool candidate failing a consensus check drops the tx, not the peer.
+
+    Unlike the two tests above, whose stand-in callback raises straight
+    into `handle_p2p`'s own generic catch: `tx` (`p2p/callbacks.py`) is
+    the real callback here, dispatched exactly as `callbacks["tx"]`
+    reaches it, so its own `except BTClibValueError` is what has to
+    keep this from ever reaching that catch at all. Core does not
+    discourage a peer for a transaction failure of any kind,
+    consensus-level ones included -- `test_a_transaction_only_relay_
+    policy_refuses_costs_the_peer_nothing` (`p2p/callbacks_test.py`) is
+    the same claim for the standardness-only half, by calling `tx`
+    directly rather than through this dispatch. btclib-org/btclib-node#843
+    """
+
+    def consensus_invalid(node: Node, transaction: Any) -> None:
+        err_msg = "bad-txns-nonfinal"
+        raise BTClibValueError(err_msg)
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", consensus_invalid)
+    transaction = generate_random_transaction()
+    payload = TxMsg(transaction, include_witness=True).serialize()
+    node, stopped = make_node(
+        "messages", ("tx", payload, 0, len(payload)), status=P2pConnStatus.Connected
+    )
+    node.status = NodeStatus.BlockSynced
+    node.mempool = Mempool(Logger(debug=True))
+    handle_p2p(node)
+    assert not stopped
+    assert not node.p2p_manager.discouraged
 
 
 def test_a_message_for_a_connection_that_is_gone_is_dropped() -> None:

@@ -14,6 +14,7 @@ below being `ROLLING_FEE_HALFLIFE` (`src/txmempool.h`).
 
 import heapq
 import time
+from collections import deque
 from fractions import Fraction
 from typing import TYPE_CHECKING
 
@@ -27,6 +28,20 @@ if TYPE_CHECKING:
     from btclib_node.log import Logger
 
 __all__ = ["Mempool"]
+
+# Core's own `CRollingBloomFilter(120'000, 0.000'001)`
+# (`src/node/txdownloadman_impl.h`, at bitcoin/bitcoin@4519933391): "a
+# flooding attacker attempting to roll-over the filter using
+# minimum-sized, 60byte, transactions might manage to send 1000/sec if
+# we have fast peers, so we pick 120,000 to give our peers a two minute
+# window" -- reasoning about the attacker's own bandwidth, not about
+# btclib-node's implementation, so the element count carries over even
+# though the structure holding them does not: a plain `set` of 32-byte
+# wtxids has no false-positive rate to pick a filter size against, so
+# there is no analogue of Core's other parameter (one in a million)
+# here at all. `Mempool.mark_rejected` below is where the set this
+# bounds is kept.
+_RECENT_REJECTS_CAPACITY = 120_000
 
 # Core's own `DEFAULT_INCREMENTAL_RELAY_FEE` (`src/policy/policy.h`,
 # at bitcoin/bitcoin@58a7869f86): what an eviction round bumps the rolling
@@ -61,6 +76,11 @@ class Mempool:
     `_heap_current_seq` is the sixth, and is what tells a heap entry for
     a wtxid still held apart from one superseded by a later re-add of
     the same wtxid -- `_pop_worst_wtxid` again being where that is read.
+    `_recent_rejects` is the seventh, a bounded record of refused
+    candidates rather than held ones, `_recent_rejects_order` alongside
+    it tracking insertion order for eviction -- `mark_rejected` below is
+    where both are written and `was_recently_rejected` where the first
+    is read.
     """
 
     def __init__(self, logger: Logger) -> None:
@@ -158,6 +178,21 @@ class Mempool:
         self._last_rolling_fee_update: float = 0.0
         self._block_since_last_rolling_fee_bump: bool = False
 
+        # Core's own `m_recent_rejects` (`src/node/txdownloadman_impl.h`,
+        # at bitcoin/bitcoin@4519933391): every wtxid `mark_rejected`
+        # below has recorded, oldest first, so a resubmission is dropped
+        # before it reaches `interpreter.check_transaction`'s own
+        # two-flag-set verification again -- `p2p.callbacks.tx` is the
+        # only caller. `_recent_rejects_order` is what makes the set
+        # bounded: a plain `set` has no eviction of its own, and
+        # `deque(maxlen=...)` would silently drop the wtxid that falls
+        # off the far end without telling this class to drop it from the
+        # set as well, which is why the two are kept apart and
+        # `mark_rejected` retires an entry from both together rather
+        # than trusting the deque to do it alone. btclib-org/btclib-node#845
+        self._recent_rejects: set[bytes] = set()
+        self._recent_rejects_order: deque[bytes] = deque()
+
     def is_full(self) -> bool:
         """Whether `bytesize` has already reached `bytesize_limit`."""
         return self.bytesize >= self.bytesize_limit
@@ -180,6 +215,54 @@ class Mempool:
         if key is None:
             return None
         return self.transactions.get(key)
+
+    def was_recently_rejected(self, wtxid: bytes) -> bool:
+        """Whether `mark_rejected` has recorded `wtxid` since the last block.
+
+        `p2p.callbacks.tx`'s own guard against paying
+        `interpreter.check_transaction`'s two-flag-set verification a
+        second time for a resubmission of a candidate this mempool has
+        already refused once.
+        """
+        return wtxid in self._recent_rejects
+
+    def mark_rejected(self, wtxid: bytes) -> None:
+        """Record a mempool candidate's own refusal, oldest evicted first.
+
+        `p2p.callbacks.tx` calls this from its own `except
+        BTClibValueError`, for every refusal `verify_mempool_acceptance`
+        can make except `MissingPrevoutError` -- a relay-policy-only one
+        exactly as much as a genuine consensus one, since Core bounds a
+        resubmission of either the same way. `note_block_connected`
+        below clears the whole cache, the same trigger Core's own
+        `ActiveTipChange` (`src/node/txdownloadman_impl.cpp`, at
+        bitcoin/bitcoin@4519933391) resets `m_recent_rejects` on: a
+        refusal recorded here can turn on the chain tip -- finality, a
+        sequence lock, coinbase maturity -- and stop holding once that
+        tip moves, so nothing here can outlive the block that might
+        invalidate it.
+
+        Keyed on wtxid alone, matching Core's own general case
+        (`RecentRejectsFilter().insert(ptx->GetWitnessHash())`,
+        `src/node/txdownloadman_impl.cpp`, same commit), not Core's
+        narrower `TX_INPUTS_NOT_STANDARD` special case, which also
+        records the txid because that one failure is provably
+        independent of the witness -- nothing here tells a
+        witness-dependent refusal from a witness-independent one, every
+        refusal reaching this call through the same `except` clause. So
+        a sender that mutates the witness of an already-refused
+        candidate (a different trailing push, say) draws a different
+        wtxid and is verified again in full: the same gap Core's own
+        filter leaves open for the identical reason, not one specific
+        to this mempool. btclib-org/btclib-node#845
+        """
+        if wtxid in self._recent_rejects:
+            return
+        if len(self._recent_rejects_order) >= _RECENT_REJECTS_CAPACITY:
+            oldest = self._recent_rejects_order.popleft()
+            self._recent_rejects.discard(oldest)
+        self._recent_rejects_order.append(wtxid)
+        self._recent_rejects.add(wtxid)
 
     # Don't need lock because handled in same thread
     def add_tx(self, tx: Tx, fee: int = 0) -> bool:
@@ -511,9 +594,17 @@ class Mempool:
         block from `main.update_chain`'s own connect loop, and not folded
         into `remove_tx`, which already runs once per transaction inside
         that same loop rather than once per block.
+
+        Also clears `mark_rejected`'s own cache, whichever peer's
+        transaction the connected block held or did not: a reorg's own
+        multi-block connect loop calls this once per block added, so the
+        cache is emptied at least once for any active tip change, the
+        same event Core's `ActiveTipChange` resets `m_recent_rejects` on.
         """
         self._last_rolling_fee_update = time.time()
         self._block_since_last_rolling_fee_bump = True
+        self._recent_rejects.clear()
+        self._recent_rejects_order.clear()
 
     def get_min_fee_rate(self) -> FeeRate:
         """Return the rolling minimum feerate, decayed since it last moved.
