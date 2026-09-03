@@ -3490,6 +3490,30 @@ they were written in.
   itself given the block as a file all abort the whole feed on that
   same error instead (closes #818).
 
+### `chainstate/muhash.py`'s MuHash arithmetic is `btclib.muhash`'s
+
+- **`MuHash3072`, `_chacha20_block`, `chacha20_keystream` and `_num3072`
+  are gone.** `CoinStats.muhash` is now `btclib.muhash.MuHash3072`
+  (issue #801,
+  [btclib#1122](https://github.com/btclib-org/btclib/issues/1122)),
+  which carries the same construction under a different shape:
+  `digest` and `serialize` are properties there, not methods, so
+  `CoinStats.digest`/`CoinStats.serialize` -- which stay methods,
+  this tree's own on-disk shape being unchanged -- read
+  `self.muhash.digest`/`self.muhash.serialize` rather than calling
+  them. `CoinStats`, `tx_out_ser`, `_bogo_size` and
+  `is_bip30_unspendable` stay: they are this tree's own index and its
+  on-disk shapes. Where each belongs is decided in btclib and not here:
+  [btclib#1623](https://github.com/btclib-org/btclib/issues/1623)
+  carries btclib#1122's own deferred second step for `CoinStats`,
+  `tx_out_ser` and `_bogo_size`, and `is_bip30_unspendable`, which 1122
+  never named, has no issue of its own yet.
+- **The two vendored vector files move with the code they tested.**
+  `tests/unit/chainstate/_data/chacha20_vectors.json` and
+  `muhash_vectors.json`, and `tests/_data/README.md`'s entry for both,
+  are deleted; btclib carries its own copy under its own `tests/_data/`
+  now that the arithmetic they check is btclib's.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
