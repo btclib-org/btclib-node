@@ -4,8 +4,8 @@
 
 """Script and transaction validation, dispatched across `Node.worker_pool`.
 
-`get_flags` reads which script rules are active at a given height off
-`Config.chain.flags`; `check_transactions` fans a block's inputs out
+`get_flags` is `Config.chain.consensus.script_flags_at`, Bitcoin Core's
+own `GetBlockScriptFlags`: `check_transactions` fans a block's inputs out
 across the worker pool and `warm` is what a fresh worker process runs
 once, under `Node.worker_pool`'s process arm, on `Node.warm_worker_pool`'s
 dispatch, so the cost of importing `btclib.script.engine` is paid before
@@ -28,6 +28,7 @@ from btclib_node.exceptions import PrevoutCountMismatchError
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
+    from btclib.script.engine.flags import ScriptFlag, ScriptFlags
     from btclib.tx.tx import Tx
     from btclib.tx.tx_out import TxOut
 
@@ -68,21 +69,27 @@ _SEQUENCE_LOCKTIME_MASK = 0x0000FFFF
 _SEQUENCE_LOCKTIME_GRANULARITY = 9
 
 
-def get_flags(config: Config, index: int) -> tuple[str, ...]:
-    """Return every script flag already active at block height `index`.
+def get_flags(
+    config: Config, index: int, block_hash: bytes | None = None
+) -> ScriptFlag:
+    """Return every script rule active at block height `index`.
 
-    `config.chain.flags` is a chain's own `(height, name)` pairs,
-    ordered by activation height; a flag activated at or before `index`
-    is one that applies to a block at that height and every one after.
+    `config.chain.consensus.script_flags_at` is Bitcoin Core's own
+    `GetBlockScriptFlags`: P2SH, segwit v0 and taproot are on for every
+    block, and `index` decides only the four rules gated on a buried
+    deployment. `block_hash` is what answers for the handful of blocks
+    that predate one of the three always-on rules and would fail it,
+    exempted by hash rather than by height -- `None` where no block is
+    being connected, as for a mempool candidate.
     """
-    return tuple(f for (i, f) in config.chain.flags if index >= i)
+    return config.chain.consensus.script_flags_at(index, block_hash)
 
 
 def f(
     prevouts: list[TxOut],
     tx: Tx,
     i: int,
-    flags: tuple[str, ...],
+    flags: ScriptFlags,
     precomputed: PrecomputedTxData,
 ) -> None:
     """Verify input `i` of `tx` against its own prevout, one `starmap` task."""
@@ -110,8 +117,8 @@ def warm() -> None:
 
 
 def _tasks(
-    transaction_data: list[tuple[list[Coin], Tx]], flags: tuple[str, ...]
-) -> Iterator[tuple[list[TxOut], Tx, int, tuple[str, ...], PrecomputedTxData]]:
+    transaction_data: list[tuple[list[Coin], Tx]], flags: ScriptFlag
+) -> Iterator[tuple[list[TxOut], Tx, int, ScriptFlag, PrecomputedTxData]]:
     """One `f` task per input, carrying its own transaction's precomputed data.
 
     Core keeps this same pair of properties -- per-input granularity and
@@ -152,7 +159,10 @@ def _tasks(
 
 
 def check_transactions(
-    transaction_data: list[tuple[list[Coin], Tx]], index: int, node: Node
+    transaction_data: list[tuple[list[Coin], Tx]],
+    index: int,
+    node: Node,
+    block_hash: bytes,
 ) -> None:
     """Verify a candidate block's own transactions, fanned out across the pool.
 
@@ -164,14 +174,17 @@ def check_transactions(
     each prevout as a `Coin` -- what `check_coinbase_maturity` below
     needs of it -- and every btclib call here wants a bare `TxOut`, so
     each is unwrapped where it is used rather than threaded through as
-    two parallel lists.
+    two parallel lists. `block_hash` is the candidate block's own --
+    `main._validate_block`'s caller already has it -- so `get_flags`
+    below can answer for the handful of blocks the buried heights alone
+    get wrong.
     """
     if not transaction_data:
         return
     if any(len(x[0]) != len(x[1].vin) for x in transaction_data):
         raise PrevoutCountMismatchError
 
-    flags = get_flags(node.config, index)
+    flags = get_flags(node.config, index, block_hash)
 
     # Script validation never reads the amounts except through the
     # sig_hash, so a block's transactions have to be checked against
@@ -186,19 +199,32 @@ def check_transactions(
     node.worker_pool.starmap(f, _tasks(transaction_data, flags))
 
 
-def check_transaction(prevouts: list[TxOut], tx: Tx, index: int, node: Node) -> None:
+def check_transaction(
+    prevouts: list[TxOut], tx: Tx, index: int, node: Node, tip_hash: bytes
+) -> None:
     """Verify one transaction against its prevouts, on the caller's own thread.
 
     Not routed through `Node.worker_pool`, unlike `check_transactions`
     above: this runs once per mempool acceptance rather than once per
     block's worth of inputs, so the pool's own process-pickling cost
     would outweigh what it buys here.
+
+    `tip_hash` is the active chain's own tip, not a hash of `tx` or of
+    the candidate block it would join: there is no candidate block,
+    `index` already being one past the tip (`main.verify_mempool_acceptance`'s
+    own `spend_height`), so no block hash names the transaction being
+    checked. Core's own re-check of a mempool candidate against
+    consensus (`ConsensusScriptChecks`, `src/validation.cpp:1175-1185`,
+    at bitcoin/bitcoin@9be056a8a7) reads `GetBlockScriptFlags` off
+    `m_chain.Tip()` for the same reason -- the exception table is a
+    lookup by hash and the tip is the one real, connected block this
+    check has -- so `get_flags` below is asked the same way.
     """
     # No copy: btclib's engine leaves the transaction alone -- sig_hash
     # builds the blanked transaction each preimage commits to rather
     # than editing the one it was handed. What the copy paid for was a
     # defect that is not there, once per mempool acceptance.
-    flags = get_flags(node.config, index)
+    flags = get_flags(node.config, index, tip_hash)
     verify_transaction(prevouts, tx, flags)
 
 
@@ -310,12 +336,12 @@ def check_sequence_locks(
     `enforce_bip68` is Core's own
     `DeploymentActiveAt(pindex, ..., DEPLOYMENT_CSV)`: this tree has no
     BIP9 deployment tracking of its own, so `main.py`'s own callers pass
-    whether `"CHECKSEQUENCEVERIFY"` is active in `Chain.flags` instead --
-    sound because Core deploys BIP68, BIP112 and BIP113 together as one
-    soft fork, so the height that turns on the opcode is the height that
-    turns on this. A transaction below version 2, or an input whose
-    sequence carries `_SEQUENCE_LOCKTIME_DISABLE_FLAG`, is skipped rather
-    than refused, matching BIP68.
+    whether `ScriptFlag.CHECKSEQUENCEVERIFY` is in `get_flags`'s answer
+    instead -- sound because Core deploys BIP68, BIP112 and BIP113
+    together as one soft fork, so the height that turns on the opcode is
+    the height that turns on this. A transaction below version 2, or an
+    input whose sequence carries `_SEQUENCE_LOCKTIME_DISABLE_FLAG`, is
+    skipped rather than refused, matching BIP68.
 
     `tip_median_time_past` is Core's own `block.pprev->GetMedianTimePast()`
     -- the reference a height-based lock is compared against directly,

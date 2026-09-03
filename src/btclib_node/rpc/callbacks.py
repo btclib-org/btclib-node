@@ -153,8 +153,9 @@ def get_blockchain_info(
     `main.update_ibd_status`'s own latch, matching Core's own
     `IsInitialBlockDownload` (src/rpc/blockchain.cpp:1436, at
     bitcoin/bitcoin@ca7162cde5) field for field: chain work against
-    `Chain.minimum_chain_work` and tip age against `MAX_TIP_AGE`, not
-    merely whether this node has run out of candidates to try.
+    `Chain.consensus.minimum_chain_work` and tip age against
+    `MAX_TIP_AGE`, not merely whether this node has run out of
+    candidates to try.
     `size_on_disk` is `block_db.BlockDB.current_usage`, Core's own
     `CalculateCurrentUsage` (src/rpc/blockchain.cpp:1451, same commit).
     `pruned` is `Config.pruned` (src/rpc/blockchain.cpp:1452, same

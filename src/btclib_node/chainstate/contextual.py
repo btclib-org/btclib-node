@@ -147,11 +147,11 @@ def next_bits_required(
     below off a chain on which each of its steps is one more block back
     to the genesis.
     """
-    if chain.pow_no_retargeting:
+    if chain.consensus.pow_no_retargeting:
         return parent.bits
 
     if (parent_height + 1) % DIFFICULTY_ADJUSTMENT_INTERVAL:
-        if chain.pow_allow_min_difficulty_blocks:
+        if chain.consensus.pow_allow_min_difficulty_blocks:
             return _min_difficulty_bits(chain, parent, parent_height, time, parent_of)
         return parent.bits
 

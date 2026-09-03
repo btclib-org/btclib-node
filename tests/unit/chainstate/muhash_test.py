@@ -239,8 +239,8 @@ def test_tx_out_ser_packs_height_and_coinbase_as_a_fixed_le_uint32() -> None:
             True,
         ),
         # the *other* BIP30 pair -- IsBIP30Repeat's own two blocks, which
-        # chains.py's own Chain.bip30_exceptions names and this function
-        # does not
+        # btclib.consensus's own Chain.consensus.bip30_exceptions names
+        # and this function does not
         (
             91842,
             "00000000000a4d0a398161ffc163c503763b1f4360639393e0e4c8e300e0caec",

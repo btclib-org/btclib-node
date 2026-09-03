@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, cast
 from btclib.block.block_context import BlockContext
 from btclib.exceptions import BTClibValueError
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
+from btclib.script.engine.flags import ScriptFlag
 
 from btclib_node.block_db import Coin
 from btclib_node.chainstate.block_index import BlockIndex, BlockStatus
@@ -113,8 +114,8 @@ def update_ibd_status(node: Node) -> None:
 
     Core's own `ChainstateManager::UpdateIBDStatus`
     (`src/validation.cpp:3302`, at bitcoin/bitcoin@ca7162cde5): once the
-    active chain's own tip carries at least `node.chain`'s own
-    `minimum_chain_work` (`chains.py`) and is no older than
+    active chain's own tip carries at least `node.chain.consensus`'s own
+    `minimum_chain_work` (`btclib.consensus`) and is no older than
     `MAX_TIP_AGE` (`constants.py`), this node counts as caught up --
     `CChain::IsTipRecent`, `src/chain.h:431`, same commit. A no-op past
     the first call for the same reason `finish_sync` above is one:
@@ -129,7 +130,7 @@ def update_ibd_status(node: Node) -> None:
         return
     block_index = node.chainstate.block_index
     tip_hash = block_index.active_chain[-1]
-    if block_index.chainwork[tip_hash] < node.chain.minimum_chain_work:
+    if block_index.chainwork[tip_hash] < node.chain.consensus.minimum_chain_work:
         return
     tip_header = block_index.header_dict[tip_hash].header
     if datetime.now(UTC) - tip_header.time > MAX_TIP_AGE:
@@ -473,15 +474,15 @@ def parent_lookup(node: Node) -> Callable[[BlockHeader], BlockHeader]:
     return parent_of
 
 
-# the two 2010 blocks Chain.bip30_exceptions names are the only ones
-# this node ever lets past UtxoIndex.add_block's own BIP30 check --
-# add_block's own docstring is where that check and the exception are
-# argued. A function of its own rather than inline in update_chain,
-# which ruff's own too-many-statements already counts every statement
-# gained here against.
+# the two 2010 blocks Chain.consensus.bip30_exceptions names are the
+# only ones this node ever lets past UtxoIndex.add_block's own BIP30
+# check -- add_block's own docstring is where that check and the
+# exception are argued. A function of its own rather than inline in
+# update_chain, which ruff's own too-many-statements already counts
+# every statement gained here against.
 def _check_bip30(node: Node, index: int, block_hash: bytes) -> bool:
     """Whether `block_hash`, connecting at `index`, is checked for BIP30."""
-    return (index, block_hash) not in node.chain.bip30_exceptions
+    return (index, block_hash) not in node.chain.consensus.bip30_exceptions
 
 
 # update_chain's own per-block gate, once a candidate's spends and
@@ -492,8 +493,8 @@ def _check_bip30(node: Node, index: int, block_hash: bytes) -> bool:
 # two rules a height and a clock decide on their own
 # (Block.assert_valid_contextual) -- time-too-new, already checked on the
 # header path (chainstate/contextual.py), and bad-cb-height, wherever
-# BIP34 binds (Chain.bip34_height, per network) -- and now every
-# transaction's own finality (interpreter.check_final_transactions,
+# BIP34 binds (Chain.consensus.bip34_height, per network) -- and now
+# every transaction's own finality (interpreter.check_final_transactions,
 # BIP113-aware) and BIP68 relative lock (interpreter.check_sequence_locks).
 # BIP30 runs earlier still, inside utxo_index.add_block, before this is
 # ever called: its own docstring is where that ordering and the two 2010
@@ -503,8 +504,9 @@ def _check_bip30(node: Node, index: int, block_hash: bytes) -> bool:
 def _validate_block(
     node: Node, block: Block, transactions: list[tuple[list[Coin], Tx]], index: int
 ) -> None:
+    block_hash = block.header.hash
     block.assert_valid_contextual(
-        BlockContext(index, datetime.now(UTC), node.chain.bip34_height)
+        BlockContext(index, datetime.now(UTC), node.chain.consensus.bip34_height)
     )
 
     block_index = node.chainstate.block_index
@@ -515,12 +517,14 @@ def _validate_block(
 
     # Core deploys BIP68, BIP112 (the CHECKSEQUENCEVERIFY opcode) and
     # BIP113 (this cutoff) together, as one soft fork -- this tree has
-    # no BIP9 deployment tracking of its own, so the height Chain.flags
+    # no BIP9 deployment tracking of its own, so the height get_flags
     # already turns the opcode on at is read here too, rather than a
     # second activation table naming the same height for the same fork.
     # interpreter.check_sequence_locks' own docstring argues this the
     # same way.
-    bip113_active = "CHECKSEQUENCEVERIFY" in get_flags(node.config, index)
+    bip113_active = ScriptFlag.CHECKSEQUENCEVERIFY in get_flags(
+        node.config, index, block_hash
+    )
     lock_time_cutoff = parent_mtp if bip113_active else block_time(block.header)
     check_final_transactions(block.transactions, index, lock_time_cutoff)
 
@@ -538,7 +542,7 @@ def _validate_block(
 
     for prevouts, _tx in transactions:
         check_coinbase_maturity(prevouts, index)
-    check_transactions(transactions, index, node)
+    check_transactions(transactions, index, node, block_hash)
     check_coinbase_value(block.transactions[0], transactions, index, node)
 
 
@@ -853,9 +857,9 @@ def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
                 raise MissingPrevoutError
 
     check_coinbase_maturity(coins_from_utxo_set, spend_height)
-    check_transaction(prev_outputs, tx, spend_height, node)
-
     tip_hash = block_index.active_chain[-1]
+    check_transaction(prev_outputs, tx, spend_height, node, tip_hash)
+
     tip_header = block_index.header_dict[tip_hash].header
     tip_height = spend_height - 1
     parent_of = parent_lookup(node)

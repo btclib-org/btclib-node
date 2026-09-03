@@ -361,8 +361,8 @@ class UtxoIndex:
         of the two loops below stages a single write, since Core's own
         check runs against the view exactly as it stood before this
         block, coinbase and ordinary spends alike. `False` only for the
-        two 2010 blocks `Chain.bip30_exceptions` names, which predate
-        BIP34 (btclib-org/btclib-node#571) and so predate the property
+        two 2010 blocks `Chain.consensus.bip30_exceptions` names, which
+        predate BIP34 (btclib-org/btclib-node#571) and so predate the property
         that makes a new violation of this kind unreachable once BIP34
         binds: a block's own coinbase commits to its own real height,
         which two different heights can never share, so the outpoint a

@@ -130,9 +130,16 @@ def make_node() -> Any:
     )
 
 
+# an ordinary hash: RegTest's own `script_flag_exceptions` is empty, so
+# no by-hash lookup below ever matches it, and every test using it is
+# about the height-gated flags rather than about the exception table,
+# which is btclib's own to test
+_A_BLOCK_HASH = bytes(32)
+
+
 def test_nothing_to_check_is_not_an_error() -> None:
     """An empty transaction list returns without touching the pool."""
-    check_transactions([], 1, make_node())
+    check_transactions([], 1, make_node(), _A_BLOCK_HASH)
 
 
 def test_a_prevout_count_that_does_not_match_the_inputs_is_refused() -> None:
@@ -140,14 +147,14 @@ def test_a_prevout_count_that_does_not_match_the_inputs_is_refused() -> None:
     # one input, no prevout for it: the caller built the pair wrong, and
     # verifying nothing would look like verifying everything
     with pytest.raises(ValueError, match="prevout count does not match input count"):
-        check_transactions([([], spend(b""))], 1, make_node())
+        check_transactions([([], spend(b""))], 1, make_node(), _A_BLOCK_HASH)
 
 
 def test_a_transaction_that_prints_money_is_refused() -> None:
     """An output worth more than its prevout raises before script checks run."""
     tx = spend(script.serialize([b"\x11" * 32]), value=51 * 10**8)
     with pytest.raises(BTClibValueError, match="Invalid transaction amounts"):
-        check_transactions([(coins([prevout()]), tx)], 1, make_node())
+        check_transactions([(coins([prevout()]), tx)], 1, make_node(), _A_BLOCK_HASH)
 
 
 _PRV = 0x1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF
@@ -245,18 +252,28 @@ def test_the_transaction_checked_is_left_as_it_was(
     # blanking differs between them and between hash types.
     prevouts, tx = build(hash_type)
     before = tx.serialize(include_witness=True)
-    check_transaction(prevouts, tx, 1, make_node())
+    check_transaction(prevouts, tx, 1, make_node(), _A_BLOCK_HASH)
     assert tx.serialize(include_witness=True) == before
 
 
-def test_the_flags_are_the_forks_active_at_that_height() -> None:
-    """`get_flags` returns flags activated at or before the given height."""
-    config = SimpleNamespace(
-        chain=SimpleNamespace(flags=[(0, "P2SH"), (10, "WITNESS"), (20, "TAPROOT")])
+def test_get_flags_is_the_chains_consensus_row_asked_by_height_and_hash() -> None:
+    """`get_flags` is `chain.consensus.script_flags_at`, both args forwarded.
+
+    Which flags bind at a height, and which handful of blocks are
+    exempted by hash, is `btclib.consensus.ConsensusParams.script_flags_at`'s
+    own rule, tested there; what this call site owes is that `index` and
+    `block_hash` reach it unchanged, `block_hash` included where it is
+    left at its default. Asserted against a second, direct call to the
+    same method rather than against a literal answer, so this stays a
+    test of the delegation and not a second copy of btclib's own table.
+    """
+    config = SimpleNamespace(chain=RegTest())
+    consensus = RegTest().consensus
+    assert get_flags(cast("Config", config), 10) == consensus.script_flags_at(10)
+    block_hash = b"\x11" * 32
+    assert get_flags(cast("Config", config), 10, block_hash) == (
+        consensus.script_flags_at(10, block_hash)
     )
-    assert get_flags(cast("Config", config), 0) == ("P2SH",)
-    assert get_flags(cast("Config", config), 10) == ("P2SH", "WITNESS")
-    assert get_flags(cast("Config", config), 25) == ("P2SH", "WITNESS", "TAPROOT")
 
 
 def _multi_input_p2wpkh_spend(n: int) -> tuple[list[TxOut], Tx]:
@@ -284,7 +301,7 @@ def _multi_input_p2wpkh_spend(n: int) -> tuple[list[TxOut], Tx]:
 def test_check_transactions_verifies_every_input_of_a_multi_input_transaction() -> None:
     """`check_transactions` raises nothing when every input verifies."""
     prevouts, tx = _multi_input_p2wpkh_spend(3)
-    check_transactions([(coins(prevouts), tx)], 1, make_node())
+    check_transactions([(coins(prevouts), tx)], 1, make_node(), _A_BLOCK_HASH)
 
 
 def test_check_transactions_still_raises_when_one_input_does_not_verify() -> None:
@@ -295,7 +312,7 @@ def test_check_transactions_still_raises_when_one_input_does_not_verify() -> Non
     sig, pub = tx.vin[2].script_witness.stack
     tx.vin[2].script_witness = Witness([bytes([sig[0] ^ 1]) + sig[1:], pub])
     with pytest.raises(ScriptError):
-        check_transactions([(coins(prevouts), tx)], 1, make_node())
+        check_transactions([(coins(prevouts), tx)], 1, make_node(), _A_BLOCK_HASH)
 
 
 def _count_transaction_wide_serializations(
@@ -367,7 +384,7 @@ def test_check_transactions_builds_the_precomputed_data_once_per_transaction(
         )
     ]
     count = _count_transaction_wide_serializations(monkeypatch)
-    check_transactions(transaction_data, 1, make_node())
+    check_transactions(transaction_data, 1, make_node(), _A_BLOCK_HASH)
     # three transactions, three serializers each called once per
     # transaction by PrecomputedTxData.__init__ -- not once per input,
     # whichever of the 1, 7 or 20 inputs each transaction carries
