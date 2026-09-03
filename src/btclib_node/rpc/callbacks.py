@@ -14,7 +14,7 @@ authenticates nothing.
 
 from typing import TYPE_CHECKING, Any, cast
 
-from bitcoin_core_rpc import RPCErrorCode
+from bitcoin_core_rpc import RPCErrorCode, chain_from_network
 from btclib.block import median_time_past
 from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.p2p.address import ServiceFlags
@@ -72,21 +72,6 @@ def get_block_count(node: Node, conn: RpcConnection, _: list[Any]) -> int:
     # is 0 (src/validation.h's nHeight on the genesis CBlockIndex), so
     # the count is the list's own last index, not its length
     return len(node.chainstate.block_index.active_chain) - 1
-
-
-# Core's own five names for `-chain=` and `getblockchaininfo`'s own
-# "chain" member, keyed by the network name Chain.name (chains.py)
-# carries -- the two vocabularies btclib-org/btclib's own
-# `chain_from_network` translates between, kept local rather than
-# imported from `bitcoin_core_rpc`: that package is a dependency of
-# btclib's fetcher and not one this node declares for itself.
-# `testnet4` is missing on both sides -- chains.py has no such `Chain`.
-_CORE_CHAIN_NAMES = {
-    "mainnet": "main",
-    "testnet": "test",
-    "signet": "signet",
-    "regtest": "regtest",
-}
 
 
 def get_blockchain_info(
@@ -194,7 +179,7 @@ def get_blockchain_info(
     tip_height = len(active_chain) - 1
     tip_mtp = median_time_past(tip_header, tip_height, parent_lookup(node))
     out: dict[str, Any] = {
-        "chain": _CORE_CHAIN_NAMES[node.chain.name],
+        "chain": chain_from_network(node.chain.name),
         "blocks": tip_height,
         "headers": len(block_index.header_index) - 1,
         "bestblockhash": tip_hash,

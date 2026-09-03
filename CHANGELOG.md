@@ -3952,6 +3952,21 @@ dereferences it, and `refs/tags/v1^{}` does the same from a checkout.
   proven independent of the witness, and nothing in this tree's own
   single flag comparison tells that case apart from one that is not.
 
+### `getblockchaininfo`'s `chain` member calls `bitcoin_core_rpc.chain_from_network`
+
+- **`_CORE_CHAIN_NAMES` duplicated `chain_from_network`'s own table** --
+  the BIP32/BIP173 network names `Chain.name` (`chains.py`) carries,
+  against Core's own chain names -- and `chain_from_network` is exported
+  at `bitcoin_core_rpc`'s own top level rather than being one of
+  `chains.py`'s private tables. `getblockchaininfo`'s `chain` now calls
+  it directly, and the local table is gone (closes #846).
+- **The comment above the table named `chain_from_network` as btclib's
+  own, and reasoned that `bitcoin-core-rpc` was not this node's own
+  dependency.** Neither held: the function is `bitcoin_core_rpc.chains`'s,
+  imported rather than defined by btclib's `fetch.bitcoin_core`, and
+  `rpc/errors.py`'s own `RPCErrorCode` import (#801) had already made the
+  package a direct dependency (closes #846).
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
