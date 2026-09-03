@@ -12,6 +12,8 @@ import pytest
 from btclib.exceptions import BTClibValueError
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
 from btclib.script import script
+from btclib.script.engine.flags import ScriptFlag
+from btclib.tx.limits import COINBASE_MATURITY
 from btclib.tx.out_point import OutPoint
 from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
@@ -24,14 +26,13 @@ from btclib_node.chainstate import utxo_index as utxo_index_module
 from btclib_node.chainstate.block_index import BlockIndex, BlockInfo, BlockStatus
 from btclib_node.config import Config
 from btclib_node.constants import (
-    COINBASE_MATURITY,
     MAX_TIP_AGE,
     MIN_BLOCKS_TO_KEEP,
     MIN_PRUNE_TARGET_MIB,
     NodeStatus,
 )
 from btclib_node.exceptions import ChainstateInconsistencyError, MissingPrevoutError
-from btclib_node.interpreter import check_transactions
+from btclib_node.interpreter import check_transactions, get_flags
 from btclib_node.main import update_chain, verify_mempool_acceptance
 from tests import (
     build_block,
@@ -212,7 +213,7 @@ def test_reject_block_whose_coinbase_pays_more_than_subsidy_plus_fees(
 
     assert bad.header.hash not in block_index.active_chain
     assert len(block_index.active_chain) == connected
-    rejected_because(node, bad, "coinbase pays too much")
+    rejected_because(node, bad, "bad-cb-amount")
 
 
 def test_reject_block_whose_coinbase_does_not_commit_to_its_height(
@@ -325,7 +326,8 @@ def relative_locked_spend(prevout_tx: Tx, value: int, sequence: int) -> Tx:
     """Return a version-2 transaction spending `prevout_tx`, sequence set.
 
     Version 2, not 1: BIP68 binds a relative lock only from that version
-    on (`interpreter.check_sequence_locks`' own docstring says why).
+    on (`btclib.tx.tx_context.assert_sequence_locks`' own docstring says
+    why).
     """
     return locked_spend(prevout_tx, value, lock_time=0, sequence=sequence, version=2)
 
@@ -435,6 +437,45 @@ def test_reject_block_whose_relative_lock_is_not_satisfied(node: Node) -> None:
     assert bad.header.hash not in block_index.active_chain
     assert len(block_index.active_chain) == connected
     rejected_because(node, bad, "bad-txns-nonfinal")
+
+
+def test_relative_lock_is_not_enforced_when_bip113_is_not_active(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same unmet relative lock connects once BIP113 reads as inactive.
+
+    `_validate_block` skips `assert_sequence_locks` entirely rather than
+    calling it with a flag, `btclib.tx.tx_context`'s own module
+    docstring says why -- so what this proves is the skip itself, not
+    the rule `test_reject_block_whose_relative_lock_is_not_satisfied`
+    above already covers. `main.get_flags` is patched to answer as if
+    RegTest had not yet activated CHECKSEQUENCEVERIFY, which it does
+    from height 1 on (`chains.RegTest`'s own docstring), so there is no
+    real chain height this scenario reaches otherwise.
+    """
+
+    def flags_without_csv(*args: Any, **kwargs: Any) -> ScriptFlag:
+        return get_flags(*args, **kwargs) & ~ScriptFlag.CHECKSEQUENCEVERIFY
+
+    monkeypatch.setattr(main, "get_flags", flags_without_csv)
+
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    connected = len(block_index.active_chain)
+
+    funding = chain[0].transactions[0]
+    unmet = relative_locked_spend(
+        funding, funding.vout[0].value, sequence=COINBASE_MATURITY + 50
+    )
+    good = build_block(
+        chain[-1].header.hash,
+        [generate_coinbase(height=len(chain) + 1), unmet],
+        len(chain),
+    )
+    connect(node, [good])
+
+    assert good.header.hash in block_index.active_chain
+    assert len(block_index.active_chain) == connected + 1
 
 
 def test_a_relative_lock_satisfied_by_elapsed_blocks_connects(node: Node) -> None:

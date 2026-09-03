@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, BinaryIO
 
 from btclib import var_int
 from btclib.block import Block
+from btclib.tx.coin import Coin as _BtclibCoin
 from btclib.tx.out_point import OutPoint
 from btclib.tx.tx_out import TxOut
 from btclib.utils import bytesio_from_binarydata
@@ -47,25 +48,27 @@ if TYPE_CHECKING:
 __all__ = ["BlockDB", "BlockLocation", "Coin", "FileMetadata", "RevBlock"]
 
 
-@dataclass
-class Coin:
-    """One UTXO row: an output paired with when it was made and how.
+class Coin(_BtclibCoin):
+    """One UTXO row: `btclib.tx.coin.Coin`, plus this store's own wire format.
 
-    Core's `Coin` (`src/coins.h`, at bitcoin/bitcoin@204256c73f) is the
-    shape matched -- a varint packing `(height << 1) | coinbase`, ahead
-    of the output itself -- and not matched in full: Core's own version
-    additionally runs the output through `TxOutCompression`, a space
-    optimisation this class does not reproduce, so the two do not agree
-    byte for byte and are not meant to. `KeyValueStore`'s own store is
-    measured write-dominated rather than read-dominated -- a modern
-    block's own reads costing on the order of 3us each against 17us for
-    a delete or a put at eight million rows (btclib-org/btclib-node#586)
-    -- which argues for a varint kept as tight as `var_int` already makes
-    it, not for folding in a second space optimisation on top of it.
+    `tx_out`, `height` and `is_coinbase` -- what a coinbase-maturity or a
+    sequence-lock rule needs of a prevout -- are `btclib.tx.coin.Coin`'s;
+    that class carries no `parse` and no `serialize` on purpose (its own
+    docstring, and btclib-org/btclib#1123), on-disk shape being a node's
+    own decision. `parse` and `serialize` below are that decision: a
+    varint packing `(height << 1) | coinbase`, ahead of the output
+    itself, matching Core's own `Coin` (`src/coins.h`, at
+    bitcoin/bitcoin@204256c73f) except for one thing -- Core additionally
+    runs the output through `TxOutCompression`, a space optimisation not
+    reproduced here, so the two do not agree byte for byte and are not
+    meant to. `KeyValueStore`'s own store is measured write-dominated
+    rather than read-dominated -- a modern block's own reads costing on
+    the order of 3us each against 17us for a delete or a put at eight
+    million rows (btclib-org/btclib-node#586) -- which argues for a
+    varint kept as tight as `var_int` already makes it, not for folding
+    in a second space optimisation on top of it.
 
-    `height` is the height of the block whose own transaction created
-    this output, and `is_coinbase` is whether that transaction was the
-    block's own coinbase. `UtxoIndex.add_block` sets both when an output
+    `UtxoIndex.add_block` sets `height` and `is_coinbase` when an output
     is first created; `UtxoIndex.apply_rev_block` restores a `Coin`
     exactly as `add_block` staged it for removal, so a coin a reorg
     brings back carries the height and the coinbase bit it was created
@@ -73,17 +76,18 @@ class Coin:
     reconnecting it.
     """
 
-    tx_out: TxOut
-    height: int
-    is_coinbase: bool
-
     @classmethod
     def parse(cls, data: BinaryData, *, check_validity: bool = True) -> Coin:
         """Build a `Coin` by parsing the bytes `serialize` produced."""
         stream = bytesio_from_binarydata(data)
         packed = var_int.parse(stream)
         tx_out = TxOut.parse(stream, check_validity=check_validity)
-        return cls(tx_out, packed >> 1, is_coinbase=bool(packed & 1))
+        return cls(
+            tx_out,
+            packed >> 1,
+            is_coinbase=bool(packed & 1),
+            check_validity=check_validity,
+        )
 
     def serialize(self, *, check_validity: bool = True) -> bytes:
         """Serialize this `Coin` to the bytes kept under a `utxo-` key."""

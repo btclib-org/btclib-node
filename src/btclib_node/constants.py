@@ -6,15 +6,15 @@
 
 `ProtocolVersion`, `P2pConnStatus` for a single peer connection's own
 handshake state, `NodeStatus` for what stage of startup, sync or
-shutdown the node as a whole is in, `COINBASE_MATURITY`, and
-`MAX_TIP_AGE`.
+shutdown the node as a whole is in, and `MAX_TIP_AGE`. `COINBASE_MATURITY`
+is `btclib.tx.limits`'s own, a function of a `Coin`'s own arguments
+rather than a node's knob (btclib-org/btclib#1580).
 """
 
 import enum
 from datetime import timedelta
 
 __all__ = [
-    "COINBASE_MATURITY",
     "MAX_TIP_AGE",
     "MIN_BLOCKS_TO_KEEP",
     "MIN_PRUNE_TARGET_MIB",
@@ -32,16 +32,6 @@ ProtocolVersion = 70016
 # the other half is `Chain.consensus.minimum_chain_work`
 # (`btclib.consensus`).
 MAX_TIP_AGE = timedelta(hours=24)
-
-# Core's own `COINBASE_MATURITY` (`src/consensus/consensus.h`,
-# at bitcoin/bitcoin@204256c73f): how many blocks a coinbase output has
-# to sit before a spend of it may connect. Not part of `btclib.consensus`
-# despite `bip34_height` living there -- Core keeps this one a bare
-# `constexpr`, the same across every network rather than a
-# `Consensus::Params` field, and regtest does not relax it either;
-# `tests/__init__.py`'s own `generate_random_chain` is where that is
-# argued against a chain short enough to have nothing mature to spend.
-COINBASE_MATURITY = 100
 
 # Core's own `MIN_BLOCKS_TO_KEEP` (`src/validation.h:76`, at
 # bitcoin/bitcoin@ca7162cde5): block files within this many blocks of the
