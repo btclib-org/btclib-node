@@ -4,11 +4,12 @@
 
 """The small enumerations and constants shared across this package.
 
-`ProtocolVersion`, `P2pConnStatus` for a single peer connection's own
-handshake state, `NodeStatus` for what stage of startup, sync or
-shutdown the node as a whole is in, and `MAX_TIP_AGE`. `COINBASE_MATURITY`
-is `btclib.tx.limits`'s own, a function of a `Coin`'s own arguments
-rather than a node's knob (btclib-org/btclib#1580).
+`P2pConnStatus` for a single peer connection's own handshake state,
+`NodeStatus` for what stage of startup, sync or shutdown the node as a
+whole is in, and `MAX_TIP_AGE`. `COINBASE_MATURITY` is
+`btclib.tx.limits`'s own, a function of a `Coin`'s own arguments rather
+than a node's knob (btclib-org/btclib#1580), and `PROTOCOL_VERSION` is
+`btclib.p2p.limits`'s own the same way (btclib-org/btclib#1582).
 """
 
 import enum
@@ -20,10 +21,7 @@ __all__ = [
     "MIN_PRUNE_TARGET_MIB",
     "NodeStatus",
     "P2pConnStatus",
-    "ProtocolVersion",
 ]
-
-ProtocolVersion = 70016
 
 # Core's own `DEFAULT_MAX_TIP_AGE` (`src/kernel/chainstatemanager_opts.h`
 # :24, at bitcoin/bitcoin@ca7162cde5): how old the active chain's own

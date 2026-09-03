@@ -22,13 +22,14 @@ from concurrent.futures import CancelledError
 from contextlib import suppress
 from typing import TYPE_CHECKING, override
 
+from btclib.p2p.addrv2 import network_address
+
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.p2p.address import (
     PeerDB,
     dial,
     endpoint_key,
     ip_and_port,
-    network_address,
     peer_address,
 )
 from btclib_node.p2p.connection import Connection

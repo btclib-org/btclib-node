@@ -2,13 +2,13 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""`PeerDB`, dialling a socket, and the addr-entry/BIP155 translation.
+"""`PeerDB`, and dialling a socket for a peer it names.
 
-Three surfaces sharing a module: the table of known and active
-addresses and its own two locks, `dial`'s handling of a peer that
-refuses, hangs or is cancelled on, and the round trip between BIP155's
-`NetworkAddressV2` and the narrower `addr` entry an addrv1 peer is
-sent.
+Two surfaces sharing a module: the table of known and active addresses
+and its own two locks, and `dial`'s handling of a peer that refuses,
+hangs or is cancelled on. The round trip between BIP155's
+`NetworkAddressV2` and the narrower `addr` entry an addrv1 peer is sent
+is btclib's own and is tested there (btclib-org/btclib#1581).
 """
 
 import asyncio
@@ -20,18 +20,15 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from btclib.p2p.address import NetworkAddress
-from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
+from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2, is_embedded_ipv6
 
 import btclib_node.p2p.address as address_module
 from btclib_node.p2p.address import (
     PeerDB,
-    addr_entry,
-    can_addrv1,
     can_connect,
     dial,
     ip_and_port,
     peer_address,
-    peer_from_addr_entry,
 )
 from tests import call_within
 
@@ -222,7 +219,7 @@ def test_add_addresses_and_random_address_do_not_interleave(
     from `callbacks.addr`/`addrv2`) mutates the same set on `Node`'s --
     unprotected, CPython raises `RuntimeError: Set changed size during
     iteration` for that pairing rather than merely losing an update.
-    `_is_embedded_ipv6` is paused here, inside the loop that reads and
+    `is_embedded_ipv6` is paused here, inside the loop that reads and
     mutates `addresses` before any entry is added, which is a
     deliberate pause rather than a race against real timing.
     """
@@ -232,20 +229,20 @@ def test_add_addresses_and_random_address_do_not_interleave(
     # unprotected, CPython raises `RuntimeError: Set changed size during
     # iteration` for that pairing rather than merely losing an update.
     # Paused mid-add_addresses here rather than raced on timing:
-    # `_is_embedded_ipv6` is where the pause is forced, inside the loop
+    # `is_embedded_ipv6` is where the pause is forced, inside the loop
     # that reads and mutates `addresses`, before any entry is added.
     peer_db = a_peer_db()
 
     entered_add = threading.Event()
     release_add = threading.Event()
-    real_check = address_module._is_embedded_ipv6
+    real_check = is_embedded_ipv6
 
     def paused_check(address: NetworkAddressV2) -> bool:
         entered_add.set()
         assert release_add.wait(timeout=5)
         return real_check(address)
 
-    monkeypatch.setattr(address_module, "_is_embedded_ipv6", paused_check)
+    monkeypatch.setattr(address_module, "is_embedded_ipv6", paused_check)
 
     adder = threading.Thread(
         target=peer_db.add_addresses, args=([peer_address("1.2.3.4", 8333)],)
@@ -301,51 +298,6 @@ def test_the_two_ip_networks_are_told_apart_by_the_text_of_the_address() -> None
     assert len(peer_address("2001:db8::1", 8333).address) == 16
 
 
-def test_only_an_ip_address_fits_in_an_addr_version_1() -> None:
-    """`can_addrv1` accepts both IP networks and refuses onion and CJDNS.
-
-    IPv6 is accepted here too, which is the half that says the filter
-    is about the network being an IP one at all, rather than about
-    whether the address is otherwise dialable -- `can_connect` is where
-    that second question is asked.
-    """
-    assert can_addrv1(peer_address("1.2.3.4", 8333))
-    # the other half of the same question, and the half that says the
-    # filter is about the network rather than about being dialable
-    assert can_addrv1(peer_address("2001:db8::1", 8333))
-    assert not can_addrv1(an_onion_address())
-    assert not can_addrv1(a_cjdns_address())
-
-
-def test_an_address_of_no_ip_network_has_no_addr_version_1_form() -> None:
-    """`addr_entry` refuses a non-IP address rather than misreading its octets.
-
-    The refusal is the network id's and not the length's: CJDNS is
-    sixteen octets, so `IPv6Address` would take one for an IP address
-    and answer with a peer nobody gossiped.
-    """
-    # the refusal is the network id's and not the length's: cjdns is
-    # sixteen octets, so IPv6Address would take one for an IP address
-    # and answer with a peer nobody gossiped
-    for address in (an_onion_address(), a_cjdns_address()):
-        with pytest.raises(ValueError, match="not an ip address"):
-            addr_entry(address)
-
-
-def test_a_v4_peer_survives_the_round_trip_through_an_addr_version_1_entry() -> None:
-    """An IPv4 or IPv6 peer parses back the same after an addrv1 round trip.
-
-    The mapping is where it could not: an entry holds every address in
-    sixteen octets, so what comes back has to be the v4 record again,
-    not the sixteen-octet form IPv6 uses natively.
-    """
-    # the mapping is where it could not: an entry holds every address in
-    # sixteen octets, so what comes back has to be the v4 record again
-    for text in ("1.2.3.4", "2001:db8::1"):
-        address = peer_address(text, 8333, timestamp=7, services=9)
-        assert peer_from_addr_entry(addr_entry(address)) == address
-
-
 def test_an_address_is_shown_the_way_core_writes_one() -> None:
     """`ip_and_port` formats like Core's `CService::ToStringAddrPort`.
 
@@ -377,10 +329,10 @@ def test_a_host_that_is_not_an_ip_address_is_refused() -> None:
 def test_the_two_ip_networks_are_dialled_and_an_onion_address_is_not() -> None:
     """`can_connect` accepts both IP networks and refuses an onion address.
 
-    `can_connect` answers a different question from `can_addrv1` above
-    -- whether this node has a dial for the network, not whether the
-    wire format has room for the address -- even though both currently
-    agree on every network this node knows of.
+    `can_connect` answers a different question from
+    `btclib.p2p.addrv2.can_addrv1` -- whether this node has a dial for
+    the network, not whether the wire format has room for the address --
+    even though both agree on every network this node knows of today.
     """
     assert can_connect(peer_address("1.2.3.4", 8333))
     assert can_connect(peer_address("2001:db8::1", 8333))

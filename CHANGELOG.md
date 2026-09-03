@@ -3514,6 +3514,23 @@ they were written in.
   are deleted; btclib carries its own copy under its own `tests/_data/`
   now that the arithmetic they check is btclib's.
 
+### `p2p/address.py`'s BIP155 translation and `constants.ProtocolVersion` are btclib's
+
+- **`network_address`, `addr_entry`, `peer_from_addr_entry`, `can_addrv1`
+  and the embedded-IPv6 check are gone from `p2p/address.py`; `PeerDB`,
+  `can_connect`, `ip_and_port` and `peer_address` stay.** The five now
+  live in `btclib.p2p.addrv2`, the last public there as
+  `is_embedded_ipv6` where this tree's own copy was `_is_embedded_ipv6`
+  (issue #801,
+  [btclib#1581](https://github.com/btclib-org/btclib/issues/1581)).
+- **`constants.ProtocolVersion` is gone; every call site reads
+  `btclib.p2p.limits.PROTOCOL_VERSION` instead, the same value.**
+- **`btclib.p2p.handshake.Version`'s `version` field defaults to
+  `PROTOCOL_VERSION` now rather than `0`, a breaking change on btclib's
+  side** ([btclib#1582](https://github.com/btclib-org/btclib/issues/1582)).
+  Every `Version(...)` this tree builds already passes `version=`
+  explicitly, so the new default changes nothing here.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

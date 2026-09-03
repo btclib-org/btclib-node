@@ -30,6 +30,7 @@ from btclib.p2p.addrv2 import (
     BIP155Network,
     NetworkAddressV2,
     SendAddrV2,
+    addr_entry,
 )
 from btclib.p2p.block_filters import (
     BlockFilterType,
@@ -59,6 +60,7 @@ from btclib.p2p.limits import (
     MAX_ADDR_TO_SEND,
     MAX_GETCFHEADERS_SIZE,
     MAX_GETCFILTERS_SIZE,
+    PROTOCOL_VERSION,
 )
 from btclib.p2p.negotiation import FeeFilter, GetAddr, SendHeaders, WtxidRelay
 from btclib.script.witness import Witness
@@ -68,16 +70,11 @@ from btclib_node.chains import RegTest
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import BlockStatus
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
-from btclib_node.constants import (
-    MIN_BLOCKS_TO_KEEP,
-    NodeStatus,
-    P2pConnStatus,
-    ProtocolVersion,
-)
+from btclib_node.constants import MIN_BLOCKS_TO_KEEP, NodeStatus, P2pConnStatus
 from btclib_node.exceptions import ChainstateInconsistencyError, MissingPrevoutError
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
-from btclib_node.p2p.address import PeerDB, addr_entry, endpoint_key, peer_address
+from btclib_node.p2p.address import PeerDB, endpoint_key, peer_address
 from btclib_node.p2p.callbacks import (
     MAX_CFILTERS_INFLIGHT_BYTES,
     MAX_GETDATA_INFLIGHT_BYTES,
@@ -350,7 +347,7 @@ def test_the_cached_sample_is_redrawn_once_it_expires(
 
 def a_version(
     *,
-    protocol: int = ProtocolVersion,
+    protocol: int = PROTOCOL_VERSION,
     services: ServiceFlags = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS,
     nonce: int = 7,
     relay: bool | None = True,
@@ -368,7 +365,7 @@ def a_version(
 
 def a_parsed_version(
     *,
-    protocol: int = ProtocolVersion,
+    protocol: int = PROTOCOL_VERSION,
     services: ServiceFlags = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS,
     nonce: int = 7,
     relay: bool | None = True,
@@ -524,10 +521,10 @@ def test_a_version_carrying_our_own_nonce_is_this_node_calling_itself() -> None:
 
 
 def test_a_peer_speaking_an_older_protocol_is_let_go() -> None:
-    """A `version` below `ProtocolVersion` is refused, the peer discouraged."""
+    """A `version` below `PROTOCOL_VERSION` is refused, the peer discouraged."""
     node = a_handshake_node()
     peer = a_peer()
-    version(node, a_version(protocol=ProtocolVersion - 1), peer)
+    version(node, a_version(protocol=PROTOCOL_VERSION - 1), peer)
     assert peer.stopped == [True]
     assert node.p2p_manager.discouraged == [peer.address]  # #283
 
@@ -2376,7 +2373,7 @@ def test_this_node_answers_a_getheaders_from_what_it_knows() -> None:
     )
     peer = a_peer()
     locator, stop = [b"\x11" * 32, b"\x22" * 32], b"\x33" * 32
-    getheaders(node, GetHeaders(ProtocolVersion, locator, stop).serialize(), peer)
+    getheaders(node, GetHeaders(PROTOCOL_VERSION, locator, stop).serialize(), peer)
     # the peer's question reaches the index as the peer asked it, which
     # a locator and a stop of the same value could not tell
     assert asked == [(locator, stop)]
@@ -2394,7 +2391,7 @@ def test_a_getheaders_this_node_cannot_answer_is_not_answered() -> None:
     peer = a_peer()
     getheaders(
         node,
-        GetHeaders(ProtocolVersion, [b"\x11" * 32], b"\x00" * 32).serialize(),
+        GetHeaders(PROTOCOL_VERSION, [b"\x11" * 32], b"\x00" * 32).serialize(),
         peer,
     )
     assert not peer.sent

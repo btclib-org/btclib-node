@@ -599,7 +599,7 @@ class DownloadManager:
         Core's `GetCommonVersion() < FEEFILTER_VERSION` return is absent
         on different grounds, this tree having a peer version where it
         has none of the above: the `version` handshake callback
-        discourages and stops a peer below `ProtocolVersion`, which
+        discourages and stops a peer below `PROTOCOL_VERSION`, which
         sits above Core's `FEEFILTER_VERSION`, so a connection reached
         here has cleared that floor already.
         """
