@@ -3531,6 +3531,29 @@ they were written in.
   Every `Version(...)` this tree builds already passes `version=`
   explicitly, so the new default changes nothing here.
 
+### `p2p/messages/errors.py` is `btclib.p2p.reject`'s (issue #801)
+
+- **`Reject` and `RejectCode` are `btclib.p2p.reject`'s, and
+  `p2p/messages/errors.py` is gone with the copies it held**
+  ([btclib#1583](https://github.com/btclib-org/btclib/issues/1583)).
+  BIP61's `reject` was the last message `btclib_node.p2p.messages`
+  defined on its own; the package's docstring said btclib carried no
+  codec for it, a sentence the btclib landing made false, and it is
+  corrected rather than left standing.
+- **`callbacks.reject` no longer assumes every code is named.** btclib's
+  `Reject.code` is a `RejectCode` where a member names the value and a
+  plain `int` where none does, BIP61 reserving whole ranges without
+  naming every member of them; this tree's own `Reject` used to refuse
+  such a code outright, and the handler read `.code.name`
+  unconditionally, which raises `AttributeError` on the bare `int` half
+  of that range. The handler now logs the member's name where there is
+  one and the bare number otherwise.
+- **`exceptions.InvalidRejectPayloadError` is gone.** It was raised only
+  by the deleted module's own `Reject.parse`; btclib's `Reject.parse`
+  raises `BTClibValueError`/`BTClibTypeError` directly, the family
+  `p2p.main.handle_p2p` already sorts a peer's fault by, so nothing in
+  this tree raises the class any more.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

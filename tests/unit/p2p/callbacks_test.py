@@ -63,6 +63,7 @@ from btclib.p2p.limits import (
     PROTOCOL_VERSION,
 )
 from btclib.p2p.negotiation import FeeFilter, GetAddr, SendHeaders, WtxidRelay
+from btclib.p2p.reject import Reject, RejectCode
 from btclib.script.witness import Witness
 
 import btclib_node.p2p.callbacks as cb
@@ -105,7 +106,6 @@ from btclib_node.p2p.callbacks import (
 )
 from btclib_node.p2p.callbacks import block as block_callback
 from btclib_node.p2p.connection import Connection
-from btclib_node.p2p.messages.errors import Reject, RejectCode
 from tests import (
     generate_random_chain,
     generate_random_header_chain,
@@ -1166,17 +1166,25 @@ def test_a_reject_names_the_transaction_it_is_about() -> None:
     assert not peer.stopped
 
 
-def test_a_reject_survives_the_wire() -> None:
-    """A `Reject` framed onto the wire and parsed back is the same object.
+def test_a_reject_names_a_reserved_code_by_number() -> None:
+    """A code BIP61 reserves without naming logs as the bare number.
 
-    The hash is what a reject is about, and a symmetric byte-order bug
-    would not notice it coming back reversed -- `bytes(range(32))` has
-    no repeated byte to hide one.
+    `Reject.code` is a `RejectCode` where a member names the value and
+    a plain `int` where none does (`btclib.p2p.reject`'s own module
+    docstring): 0x44 falls in the 0x40-0x4f "Server policy rule" range
+    BIP61 reserves beside `nonstandard`, `dust`, `insufficientfee` and
+    `checkpoint`, and no member of `RejectCode` answers to it.
     """
-    # the hash is what a reject is about, and a symmetric one would not
-    # notice it coming back reversed
-    message = Reject("tx", RejectCode.insufficientfee, "no", bytes(range(32)))
-    assert Reject.parse(message.serialize()) == message
+    logged: list[str] = []
+    node = a_handshake_node()
+    node.logger.warning = logged.append
+    peer = a_peer()
+    txid = bytes(range(32))
+    message = Reject("tx", 0x44, "reserved code", txid)
+    reject(node, message.serialize(), peer)
+    (line,) = logged
+    assert line == f"Reject received: 68, reserved code, {txid.hex()}"
+    assert not peer.stopped
 
 
 def a_transaction() -> Tx:

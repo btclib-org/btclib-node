@@ -124,9 +124,10 @@ intersphinx_mapping = {
 #   resolved, and the class's own `__module__` is asyncio's private
 #   implementation module, not the public one docs.python.org publishes
 #   an inventory entry under
-# - a name this tree documents nowhere. messages/errors.py's BinaryData
-#   is btclib's own alias.py type alias, undocumented there, so
-#   `:members:` renders no page for a signature naming it to link to
+# - a name this tree documents nowhere. block_db/__init__.py's own
+#   Coin.parse carries BinaryData, btclib's own alias.py type alias,
+#   undocumented there, so `:members:` renders no page for a signature
+#   naming it to link to
 nitpick_ignore = [
     ("py:class", "Tx"),
     ("py:class", "TxOut"),

@@ -36,7 +36,6 @@ __all__ = [
     "IncompleteRequestHeadError",
     "InvalidBlockInputError",
     "InvalidChainTypeError",
-    "InvalidRejectPayloadError",
     "MalformedRequestHeadError",
     "MissingPrevoutError",
     "NodeShutdownTimeoutError",
@@ -347,28 +346,6 @@ class WrongNetworkMagicError(BTClibValueError):
 
     def __init__(self, magic: bytes) -> None:
         super().__init__(f"message for another network: {magic.hex()}")
-
-
-class InvalidRejectPayloadError(BTClibValueError):
-    """A peer's `reject` payload is not the message BIP61 describes.
-
-    Raised only by `Reject.parse` (`p2p/messages/errors.py`), over
-    octets a peer chose: a field the payload is too short to hold, a
-    `message` or a `reason` no utf-8 decodes, a code outside the set
-    BIP61 names, or a trailing hash that is neither absent nor the
-    32 octets of one.
-
-    `BTClibValueError` and not a plain `ValueError`, for
-    `WrongNetworkMagicError`'s own reason above: `handle_p2p`
-    (`p2p/main.py`) discourages the peer on
-    `isinstance(e, BTClibException)` and reads anything else as this
-    node's own code failing on content that was fine, so a refusal of
-    a peer's octets outside that family is logged against the wrong
-    party.
-    """
-
-    def __init__(self, detail: str) -> None:
-        super().__init__(f"invalid reject payload: {detail}")
 
 
 class IncompleteRequestHeadError(BTClibRuntimeError):

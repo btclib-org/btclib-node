@@ -70,6 +70,7 @@ from btclib.p2p.limits import (
     PROTOCOL_VERSION,
 )
 from btclib.p2p.negotiation import FeeFilter, GetAddr, SendHeaders, WtxidRelay
+from btclib.p2p.reject import Reject, RejectCode
 
 from btclib_node.chainstate.block_index import BlockStatus
 from btclib_node.chainstate.filter_index import NO_PREVIOUS_FILTER_HEADER
@@ -78,7 +79,6 @@ from btclib_node.exceptions import ChainstateInconsistencyError, MissingPrevoutE
 from btclib_node.main import verify_mempool_acceptance
 from btclib_node.p2p.address import ip_and_port
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
-from btclib_node.p2p.messages.errors import Reject
 
 if TYPE_CHECKING:
     from btclib_node import Node
@@ -1411,11 +1411,20 @@ def not_found(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 def reject(node: Node, msg: bytes, conn: Connection) -> None:
-    """Log a peer's `reject` message."""
+    """Log a peer's `reject` message.
+
+    `reject.code` is a `RejectCode` where BIP61 names the value and a
+    plain `int` where it does not -- `btclib.p2p.reject`'s own module
+    docstring is why -- so the code logged is the member's name where
+    there is one and the bare number otherwise, rather than a `.name`
+    that only the named half of the range has.
+    """
     reject = Reject.parse(msg)
-    err_msg = (
-        f"Reject received: {reject.code.name}, {reject.reason}, {reject.data.hex()}"
-    )
+    if isinstance(reject.code, RejectCode):
+        code: str | int = reject.code.name
+    else:
+        code = reject.code
+    err_msg = f"Reject received: {code}, {reject.reason}, {reject.data.hex()}"
     node.logger.warning(err_msg)
 
 
