@@ -3925,6 +3925,33 @@ dereferences it, and `refs/tags/v1^{}` does the same from a checkout.
   than with its script's own failure, which either order would raise as
   a `BTClibValueError`.
 
+### A mempool tx failure costs the peer nothing, and a resend is not reverified
+
+- **`p2p.callbacks.tx` catches every `BTClibValueError`
+  `verify_mempool_acceptance` can raise, not only `NonStandardTxError`.**
+  Core discourages no peer for a transaction failure of any kind --
+  "Tx failures never trigger disconnections/bans ... either due to
+  non-consensus relay policies ... or due to new consensus rules
+  introduced in soft forks" (`src/validation.cpp:2112-2117`, at
+  bitcoin/bitcoin@4519933391) -- and there is no `MaybePunishNodeForTx`,
+  where `MaybePunishNodeForBlock` exists and is called. (closes #843)
+- **`Mempool.mark_rejected` records a refused wtxid, cleared on the next
+  connected block, so a resubmission is dropped before
+  `interpreter.check_transaction` pays for its own two-flag-set
+  verification a second time.** Core's own mitigation is
+  `m_recent_rejects` plus `AlreadyHaveTx`, reset the same way on
+  `ActiveTipChange`; `MissingPrevoutError` is exempt from this tree's
+  cache, matching Core's identical `TX_MISSING_INPUTS` exemption, since a
+  missing parent can arrive on its own with no block having to connect
+  first. (closes #845)
+- **Keyed on wtxid alone, the cache does not catch a resubmission whose
+  witness was mutated**: a different trailing push draws a different
+  wtxid and is verified again in full. Core's own filter carries the
+  identical gap for the identical reason -- only its narrower
+  `TX_INPUTS_NOT_STANDARD` case also records a txid, for a failure
+  proven independent of the witness, and nothing in this tree's own
+  single flag comparison tells that case apart from one that is not.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

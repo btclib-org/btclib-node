@@ -1299,6 +1299,116 @@ def test_a_transaction_only_relay_policy_refuses_costs_the_peer_nothing(
     assert node.download_manager.received_txs == []
 
 
+def test_a_transaction_failing_a_consensus_check_costs_the_peer_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bare `BTClibValueError` out of verification drops the transaction.
+
+    Unlike `NonStandardTxError` above, this is the consensus half: Core
+    does not discourage a peer for *any* transaction failure -- "Tx
+    failures never trigger disconnections/bans ... either due to
+    non-consensus relay policies ... or due to new consensus rules
+    introduced in soft forks" (`src/validation.cpp:2112-2117`, at
+    bitcoin/bitcoin@4519933391) -- and there is no `MaybePunishNodeForTx`
+    at all, where `MaybePunishNodeForBlock` exists and is called.
+    `test_a_consensus_invalid_transaction_costs_the_peer_nothing`
+    (`p2p/main_test.py`) is the same claim through `handle_p2p`'s own
+    dispatch rather than by calling `tx` directly.
+    btclib-org/btclib-node#843
+    """
+
+    def consensus_invalid(node: Any, transaction: Any) -> NoReturn:
+        err_msg = "bad-txns-nonfinal"
+        raise BTClibValueError(err_msg)
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", consensus_invalid)
+    transaction = a_transaction()
+    node = a_data_node()
+    tx(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
+    assert not node.mempool.contains_tx(transaction)
+    assert node.download_manager.received_txs == []
+
+
+def test_a_refused_transaction_is_not_reverified_on_resubmission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second copy of a refused wtxid is dropped before verification reruns.
+
+    `interpreter.check_transaction` pays for two full engine runs on the
+    failing path (`_consensus_accepts`'s own second `verify_transaction`
+    call), so a peer resending a candidate this node has already refused
+    is what `Mempool.mark_rejected` bounds. btclib-org/btclib-node#845
+    """
+    calls: list[bytes] = []
+
+    def consensus_invalid(node: Any, transaction: Any) -> NoReturn:
+        calls.append(transaction.hash)
+        err_msg = "bad-txns-nonfinal"
+        raise BTClibValueError(err_msg)
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", consensus_invalid)
+    transaction = a_transaction()
+    node = a_data_node()
+    payload = TxMsg(transaction, include_witness=True).serialize()
+    tx(node, payload, a_peer(id=3))
+    tx(node, payload, a_peer(id=4))
+    assert calls == [transaction.hash]
+    assert not node.mempool.contains_tx(transaction)
+
+
+def test_a_transaction_missing_its_parent_is_reverified_on_resubmission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`MissingPrevoutError` is not recorded, so a resend tries again.
+
+    Unlike a genuine refusal: the missing parent can arrive on its own,
+    with no block having to connect first, so nothing tells
+    `Mempool`'s reject cache when a `MissingPrevoutError` might stop
+    holding -- Core's identical exemption is `TX_MISSING_INPUTS`, never
+    added to `m_recent_rejects` either.
+    """
+    calls: list[bytes] = []
+
+    def missing(node: Any, transaction: Any) -> NoReturn:
+        calls.append(transaction.hash)
+        raise MissingPrevoutError
+
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", missing)
+    transaction = a_transaction()
+    node = a_data_node()
+    payload = TxMsg(transaction, include_witness=True).serialize()
+    tx(node, payload, a_peer(id=3))
+    tx(node, payload, a_peer(id=4))
+    assert calls == [transaction.hash, transaction.hash]
+
+
+def test_a_transaction_already_held_skips_reverification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wtxid already in the mempool is dropped before verification runs.
+
+    `test_a_transaction_already_held_is_not_reported_twice` below already
+    covers the outcome; this is the same case for the cost, which
+    `contains_tx`'s own pre-verification check in `tx` is what spares.
+    """
+    # a single-line lambda rather than a `def`: this is asserted never to
+    # run, and a `def` whose body sits on its own line is a statement
+    # coverage counts separately from the assignment that defines it, so
+    # a call that never happens would leave that line permanently unmet
+    # by the 100% floor rather than proving the point the test makes
+    calls: list[bytes] = []
+    monkeypatch.setattr(
+        cb,
+        "verify_mempool_acceptance",
+        lambda node, transaction: calls.append(transaction.hash),
+    )
+    transaction = a_transaction()
+    node = a_data_node()
+    node.mempool.add_tx(transaction)
+    tx(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
+    assert calls == []
+
+
 def test_a_corrupted_stored_record_propagates_out_of_tx(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

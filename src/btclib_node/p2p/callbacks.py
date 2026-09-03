@@ -78,7 +78,6 @@ from btclib_node.constants import MIN_BLOCKS_TO_KEEP, NodeStatus, P2pConnStatus
 from btclib_node.exceptions import (
     ChainstateInconsistencyError,
     MissingPrevoutError,
-    NonStandardTxError,
 )
 from btclib_node.main import verify_mempool_acceptance
 from btclib_node.p2p.address import ip_and_port
@@ -517,9 +516,10 @@ def feefilter(node: Node, msg: bytes, conn: Connection) -> None:
 def tx(node: Node, msg: bytes, conn: Connection) -> None:
     """Validate an unsolicited transaction and queue it for announcement.
 
-    A no-op before this node's own chain is synced, if the transaction
-    breaks a relay rule alone, or if the mempool already holds it, or if
-    `add_tx` itself declines to keep it.
+    A no-op before this node's own chain is synced, if the mempool
+    already holds this wtxid or has recently refused it, if the
+    transaction fails a relay or a consensus check, or if `add_tx`
+    itself declines to keep it.
     """
     # Core's own reason for the same early return, before it even
     # parses the payload: "we don't have enough information to validate
@@ -531,33 +531,59 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
     if node.status < NodeStatus.BlockSynced:
         return
     tx = TxMsg.parse(msg).tx
+    # Both checks answer for a candidate this node has already judged,
+    # without paying `verify_mempool_acceptance` a second time to learn
+    # that again: `contains_tx` for one this mempool kept,
+    # `was_recently_rejected` for one it refused. `Mempool` is reached
+    # from this thread alone (its own module docstring), so nothing
+    # between this check and the `except` below can change either
+    # answer out from under it.
+    if node.mempool.contains_tx(tx) or node.mempool.was_recently_rejected(tx.hash):
+        return
     try:
         fee = verify_mempool_acceptance(node, tx)
     except MissingPrevoutError:
-        # We don't have the parents in the mempool
+        # We don't have the parents in the mempool. Not recorded in
+        # `Mempool`'s own reject cache below: a missing parent can
+        # arrive on its own, with no block having to connect first, so
+        # nothing here would tell this cache when to forget it -- Core's
+        # identical exemption is `TX_MISSING_INPUTS`, which
+        # `AlreadyHaveTx` (`src/node/txdownloadman_impl.cpp`, at
+        # bitcoin/bitcoin@4519933391) never adds to `m_recent_rejects`
+        # either.
         return
-    except NonStandardTxError:
-        # A transaction the consensus rules take and this node's own
-        # relay policy does not: the transaction goes and the peer
-        # stays, which is what Core asks above the flag set
-        # `interpreter.STANDARD_FLAGS` copies -- "we do not
-        # ban/disconnect nodes that forward txs violating the additional
-        # (non-mandatory) rules here, to improve forwards and backwards
-        # compatibility" (`src/policy/policy.h:112-117`,
-        # at bitcoin/bitcoin@9be056a8a7). Caught here rather than left
-        # to `p2p.main.handle_p2p`, whose own `isinstance(e,
-        # BTClibException)` answers yes to this class.
+    except BTClibValueError:
+        # Every other refusal `verify_mempool_acceptance` can make --
+        # a relay-policy-only one (`NonStandardTxError`, itself a
+        # `BTClibValueError`) exactly as much as a genuine consensus one
+        # (non-final, a coinbase spent too soon, a bad sequence lock, or
+        # the underlying script failure `interpreter.check_transaction`
+        # re-raises once `_consensus_accepts` has also refused it). Core
+        # punishes neither: "Tx failures never trigger
+        # disconnections/bans ... either due to non-consensus relay
+        # policies ... or due to new consensus rules introduced in soft
+        # forks" (`src/validation.cpp:2112-2117`, at
+        # bitcoin/bitcoin@4519933391), and `PeerManagerImpl::ProcessInvalidTx`
+        # (`src/net_processing.cpp`, same commit) calls nothing punitive
+        # for a transaction failure -- there is no `MaybePunishNodeForTx`,
+        # where `MaybePunishNodeForBlock` exists and is called. Caught
+        # here rather than left to `p2p.main.handle_p2p`, whose own
+        # `isinstance(e, BTClibException)` answers yes to every one of
+        # these. btclib-org/btclib-node#843
+        #
+        # Recorded in `Mempool`'s own reject cache, whose docstring
+        # argues the resubmission cost this answers and the gap it
+        # leaves open. btclib-org/btclib-node#845
+        node.mempool.mark_rejected(tx.hash)
         return
-    # Queuing this for announcement is gated on `add_tx` actually having
-    # added it, and not merely on the pre-call `contains_tx`: `add_tx`
-    # is a silent no-op both for a txid already held and for one
+    # `add_tx`'s own return value is the gate: a silent no-op for one
     # `Mempool._evict_to_limit` (btclib-org/btclib-node#294) takes right
     # back out for being the worst transaction held once its own add put
     # the mempool past `bytesize_limit` -- and a transaction this node
     # declined to keep is not one to tell every other peer about, a peer
     # that then asks for it getting `notfound` for its trouble.
     # btclib-org/btclib-node#277
-    if not node.mempool.contains_tx(tx) and node.mempool.add_tx(tx, fee):
+    if node.mempool.add_tx(tx, fee):
         node.download_manager.received_txs.append((conn.id, tx.hash))
 
 

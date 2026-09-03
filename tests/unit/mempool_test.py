@@ -7,6 +7,7 @@
 import secrets
 import time
 from fractions import Fraction
+from typing import TYPE_CHECKING
 
 from btclib.fee import FeeRate, fee_from_vsize
 from btclib.script import script
@@ -16,9 +17,13 @@ from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
+from btclib_node import mempool as mempool_module
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from tests import generate_random_transaction
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def a_witness_transaction() -> Tx:
@@ -602,6 +607,67 @@ def test_note_block_connected_restarts_the_decay_clock() -> None:
     mempool.note_block_connected()
     assert mempool._block_since_last_rolling_fee_bump is True
     assert mempool._last_rolling_fee_update >= before
+
+
+def test_a_fresh_mempool_has_rejected_nothing() -> None:
+    """`was_recently_rejected` answers False for a wtxid never marked."""
+    mempool = Mempool(Logger(debug=True))
+    assert not mempool.was_recently_rejected(secrets.token_bytes(32))
+
+
+def test_mark_rejected_is_read_back_by_was_recently_rejected() -> None:
+    """A marked wtxid reads back as recently rejected."""
+    mempool = Mempool(Logger(debug=True))
+    wtxid = secrets.token_bytes(32)
+    mempool.mark_rejected(wtxid)
+    assert mempool.was_recently_rejected(wtxid)
+
+
+def test_note_block_connected_clears_the_reject_cache() -> None:
+    """A connected block forgets every refusal recorded before it.
+
+    Mirrors Core's own `ActiveTipChange`, which resets `m_recent_rejects`
+    for the same reason: a refusal that turned on the chain tip --
+    finality, a sequence lock, coinbase maturity -- can stop holding
+    once the tip moves.
+    """
+    mempool = Mempool(Logger(debug=True))
+    wtxid = secrets.token_bytes(32)
+    mempool.mark_rejected(wtxid)
+    mempool.note_block_connected()
+    assert not mempool.was_recently_rejected(wtxid)
+
+
+def test_marking_an_already_rejected_wtxid_is_a_no_op() -> None:
+    """Re-marking a wtxid already held does not double its own eviction entry.
+
+    Otherwise a peer resubmitting the identical refused candidate over
+    and over would push a fresh entry onto `_recent_rejects_order` per
+    resubmission while `_recent_rejects` itself still counts the wtxid
+    once, and the capacity bound below would evict long before its own
+    count says it should.
+    """
+    mempool = Mempool(Logger(debug=True))
+    wtxid = secrets.token_bytes(32)
+    mempool.mark_rejected(wtxid)
+    mempool.mark_rejected(wtxid)
+    assert len(mempool._recent_rejects_order) == 1
+
+
+def test_mark_rejected_evicts_the_oldest_past_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Past capacity, the earliest-marked wtxid is forgotten first."""
+    monkeypatch.setattr(mempool_module, "_RECENT_REJECTS_CAPACITY", 2)
+    mempool = Mempool(Logger(debug=True))
+    first, second, third = (secrets.token_bytes(32) for _ in range(3))
+    mempool.mark_rejected(first)
+    mempool.mark_rejected(second)
+    assert mempool.was_recently_rejected(first)
+    mempool.mark_rejected(third)
+    assert not mempool.was_recently_rejected(first)
+    assert mempool.was_recently_rejected(second)
+    assert mempool.was_recently_rejected(third)
 
 
 def test_get_min_fee_rate_is_zero_before_anything_is_ever_evicted() -> None:
