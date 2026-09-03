@@ -23,9 +23,9 @@ from btclib.block import (
 )
 from btclib.exceptions import BTClibValueError
 from btclib.p2p.addrv2 import BIP155Network
+from btclib.tx.limits import COINBASE_MATURITY
 
 from btclib_node.chains import RegTest
-from btclib_node.constants import COINBASE_MATURITY
 from tests import (
     WaitTimeoutError,
     brute_force_nonce,

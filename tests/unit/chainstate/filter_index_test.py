@@ -18,11 +18,11 @@ import pytest
 from btclib.block import Block
 from btclib.block.block_filter import BasicBlockFilter, filter_header
 from btclib.script import script
+from btclib.tx.limits import COINBASE_MATURITY
 
 import btclib_node.chainstate.filter_index as filter_index_module
 from btclib_node import Node
 from btclib_node.chains import RegTest, TestNet
-from btclib_node.constants import COINBASE_MATURITY
 from btclib_node.exceptions import ChainstateInconsistencyError
 from btclib_node.main import update_chain
 from tests import (

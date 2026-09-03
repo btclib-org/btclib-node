@@ -35,13 +35,13 @@ from btclib.block.mining import candidate_block_header, mine
 from btclib.block.proof_of_work import REGTEST_POW_LIMIT_BITS
 from btclib.exceptions import BTClibValueError
 from btclib.script import script
+from btclib.tx.limits import COINBASE_MATURITY
 from btclib.tx.out_point import OutPoint
 from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
 from btclib_node.chains import RegTest
-from btclib_node.constants import COINBASE_MATURITY
 from btclib_node.p2p.address import peer_address
 
 if TYPE_CHECKING:
@@ -299,9 +299,9 @@ def generate_random_chain(
     Every block up to `COINBASE_MATURITY` carries its own coinbase and
     nothing else: nothing this chain has made is old enough yet for a
     second transaction to spend, `COINBASE_MATURITY` a bare constant
-    Bitcoin Core does not relax for regtest either
-    (`constants.COINBASE_MATURITY`'s own docstring), so there is no
-    shorter, honestly-spendable chain to build instead. From
+    Bitcoin Core does not relax for regtest either (`btclib.tx.limits`'s
+    own docstring), so there is no shorter, honestly-spendable chain to
+    build instead. From
     `COINBASE_MATURITY + 1` on, every block carries a second transaction
     spending the oldest output this chain has made spendable -- `chain[0]`'s
     own coinbase, the first time, and that spend's own output every block

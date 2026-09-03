@@ -14,9 +14,10 @@ from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import BitcoinCoreRpcClient
 from btclib.fetch.bitcoin_core import BitcoinCoreFetcher
+from btclib.tx.limits import COINBASE_MATURITY
 
 from btclib_node.chains import RegTest
-from btclib_node.constants import COINBASE_MATURITY, NodeStatus
+from btclib_node.constants import NodeStatus
 from tests import (
     generate_random_chain,
     generate_random_transaction,

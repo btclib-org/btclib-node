@@ -3439,6 +3439,38 @@ they were written in.
   to match* already gives that document elsewhere in the file (closes
   #813).
 
+### `interpreter.py`'s five contextual transaction rules are `btclib.tx.tx_context`'s
+
+- **`is_final_tx`, `check_final_transactions`, `check_sequence_locks`,
+  `check_coinbase_maturity` and `check_coinbase_value` are gone, and
+  `constants.COINBASE_MATURITY` with them.** `main._validate_block` and
+  `main.verify_mempool_acceptance` now call
+  `btclib.tx.tx_context.is_final`, `assert_sequence_locks`,
+  `assert_coinbase_maturity` and `assert_coinbase_value` directly, and
+  `COINBASE_MATURITY` is `btclib.tx.limits`'s (issue #801,
+  [btclib#1580](https://github.com/btclib-org/btclib/issues/1580)).
+  `assert_sequence_locks` takes no `enforce_bip68` flag the way
+  `check_sequence_locks` did -- `btclib.tx.tx_context`'s own module
+  docstring is why -- so `_validate_block` calls it at all only where
+  `bip113_active` already holds, once per transaction, rather than
+  passing the flag through unconditionally.
+- **A coinbase paying more than subsidy plus fees is now refused as
+  `bad-cb-amount: X instead of Y`, Core's own phrase, in place of
+  `coinbase pays too much: X instead of Y`.** `assert_coinbase_value`
+  is btclib's to word, not this tree's.
+- **`block_db.Coin` is a subclass of `btclib.tx.coin.Coin`, carrying
+  only `parse` and `serialize`.** btclib's own `Coin` declares no
+  on-disk shape on purpose -- its docstring and
+  [btclib#1123](https://github.com/btclib-org/btclib/issues/1123) --
+  so the varint-packed wire format this store already used is what the
+  subclass adds, unchanged byte for byte; `BlockLocation` and
+  `FileMetadata`, the two other value types `block_db/__init__.py`
+  already carries a `parse`/`serialize` pair for, are the same shape.
+  A module of free functions over the plain `btclib.tx.coin.Coin` was
+  the alternative, and would have reached every call site the three
+  chainstate indexes already make against `Coin.parse`/`coin.serialize`
+  -- files this row leaves alone.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

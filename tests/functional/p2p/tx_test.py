@@ -7,11 +7,13 @@
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from btclib.tx.limits import COINBASE_MATURITY
+
 import btclib_node.download as download_module
 from btclib_node import Node
 from btclib_node.chains import RegTest
 from btclib_node.config import Config
-from btclib_node.constants import COINBASE_MATURITY, NodeStatus, P2pConnStatus
+from btclib_node.constants import NodeStatus, P2pConnStatus
 from tests import (
     generate_random_chain,
     generate_random_transaction,

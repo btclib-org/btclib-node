@@ -17,9 +17,16 @@ from typing import TYPE_CHECKING, cast
 
 from btclib.block import header_at_height, median_time_past
 from btclib.block.block_context import BlockContext
+from btclib.consensus import subsidy
 from btclib.exceptions import BTClibValueError
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
 from btclib.script.engine.flags import ScriptFlag
+from btclib.tx.tx_context import (
+    assert_coinbase_maturity,
+    assert_coinbase_value,
+    assert_sequence_locks,
+    is_final,
+)
 
 from btclib_node.block_db import Coin
 from btclib_node.chainstate.block_index import BlockIndex, BlockStatus, block_time
@@ -30,16 +37,7 @@ from btclib_node.exceptions import (
     MissingPrevoutError,
     PrevoutCountMismatchError,
 )
-from btclib_node.interpreter import (
-    check_coinbase_maturity,
-    check_coinbase_value,
-    check_final_transactions,
-    check_sequence_locks,
-    check_transaction,
-    check_transactions,
-    get_flags,
-    is_final_tx,
-)
+from btclib_node.interpreter import check_transaction, check_transactions, get_flags
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -484,20 +482,21 @@ def _check_bip30(node: Node, index: int, block_hash: bytes) -> bool:
 # update_chain's own per-block gate, once a candidate's spends and
 # creations are staged and its own height is known: script and amounts
 # (interpreter.check_transactions), a coinbase paying more than subsidy
-# plus fees (interpreter.check_coinbase_value), a spend of a coinbase not
-# yet COINBASE_MATURITY deep (interpreter.check_coinbase_maturity), the
-# two rules a height and a clock decide on their own
-# (Block.assert_valid_contextual) -- time-too-new, already checked on the
-# header path (chainstate/block_index.py's own header validation), and
-# bad-cb-height, wherever
-# BIP34 binds (Chain.consensus.bip34_height, per network) -- and now
-# every transaction's own finality (interpreter.check_final_transactions,
-# BIP113-aware) and BIP68 relative lock (interpreter.check_sequence_locks).
-# BIP30 runs earlier still, inside utxo_index.add_block, before this is
-# ever called: its own docstring is where that ordering and the two 2010
-# exceptions are argued. A function of its own rather than statements
-# inline: update_chain's own trial loop is already long enough that
-# PLR0915 counts every statement gained here against it.
+# plus fees (btclib.tx.tx_context.assert_coinbase_value), a spend of a
+# coinbase not yet COINBASE_MATURITY deep
+# (btclib.tx.tx_context.assert_coinbase_maturity), the two rules a
+# height and a clock decide on their own (Block.assert_valid_contextual)
+# -- time-too-new, already checked on the header path
+# (chainstate/block_index.py's own header validation), and
+# bad-cb-height, wherever BIP34 binds (Chain.consensus.bip34_height, per
+# network) -- and now every transaction's own finality
+# (btclib.tx.tx_context.is_final, BIP113-aware) and BIP68 relative lock
+# (btclib.tx.tx_context.assert_sequence_locks). BIP30 runs earlier
+# still, inside utxo_index.add_block, before this is ever called: its
+# own docstring is where that ordering and the two 2010 exceptions are
+# argued. A function of its own rather than statements inline:
+# update_chain's own trial loop is already long enough that PLR0915
+# counts every statement gained here against it.
 def _validate_block(
     node: Node, block: Block, transactions: list[tuple[list[Coin], Tx]], index: int
 ) -> None:
@@ -517,30 +516,39 @@ def _validate_block(
     # no BIP9 deployment tracking of its own, so the height get_flags
     # already turns the opcode on at is read here too, rather than a
     # second activation table naming the same height for the same fork.
-    # interpreter.check_sequence_locks' own docstring argues this the
-    # same way.
+    # btclib.tx.tx_context's own module docstring argues this the same
+    # way, for why assert_sequence_locks below takes no enforce_bip68
+    # flag of its own: the caller skips the call entirely rather than
+    # passing one.
     bip113_active = ScriptFlag.CHECKSEQUENCEVERIFY in get_flags(
         node.config, index, block_hash
     )
     lock_time_cutoff = parent_mtp if bip113_active else block_time(block.header)
-    check_final_transactions(block.transactions, index, lock_time_cutoff)
+    for tx in block.transactions:
+        if not is_final(tx, index, lock_time_cutoff):
+            err_msg = "bad-txns-nonfinal"
+            raise BTClibValueError(err_msg)
 
     def ancestor_median_time_past(height: int) -> int:
         header = header_at_height(parent_header, parent_height, height, parent_of)
         return median_time_past(header, height, parent_of)
 
-    check_sequence_locks(
-        transactions,
-        index,
-        enforce_bip68=bip113_active,
-        tip_median_time_past=parent_mtp,
-        ancestor_median_time_past=ancestor_median_time_past,
-    )
+    if bip113_active:
+        for prevouts, tx in transactions:
+            assert_sequence_locks(
+                tx, prevouts, index, parent_mtp, ancestor_median_time_past
+            )
 
     for prevouts, _tx in transactions:
-        check_coinbase_maturity(prevouts, index)
+        assert_coinbase_maturity(prevouts, index)
     check_transactions(transactions, index, node, block_hash)
-    check_coinbase_value(block.transactions[0], transactions, index, node)
+
+    fees = sum(
+        sum(coin.tx_out.value for coin in prevouts) - sum(x.value for x in tx.vout)
+        for prevouts, tx in transactions
+    )
+    block_subsidy = subsidy(index, node.chain.consensus.subsidy_halving_interval)
+    assert_coinbase_value(block.transactions[0], block_subsidy, fees)
 
 
 def _record_rejection(node: Node, failed_hash: bytes, exc: BaseException) -> None:
@@ -798,10 +806,10 @@ def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
     # only the prevouts this reads off the UTXO set, since a mempool
     # ancestor's own output can never be a coinbase's: a coinbase's
     # null prevout resolves through neither branch below and so never
-    # reaches the mempool for check_coinbase_maturity to skip
+    # reaches the mempool for assert_coinbase_maturity to skip
     coins_from_utxo_set: list[Coin] = []
     # every prevout, coinbase or mempool-parented alike, aligned with
-    # tx.vin one for one -- what check_sequence_locks below needs and
+    # tx.vin one for one -- what assert_sequence_locks below needs and
     # coins_from_utxo_set above does not carry, since it drops a
     # mempool-parented input rather than pairing it with a placeholder.
     # A mempool parent's own height is not yet real, so it is stood in
@@ -821,7 +829,7 @@ def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
     # one block past the real next height, invisible everywhere else
     # this reaches (get_flags below) only because every regtest flag
     # activates at height 0 regardless, and wrong by exactly one block
-    # for check_coinbase_maturity, which is what surfaced it
+    # for assert_coinbase_maturity, which is what surfaced it
     # (btclib-org/btclib-node#569)
     spend_height = len(block_index.active_chain)
 
@@ -853,7 +861,7 @@ def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
             else:
                 raise MissingPrevoutError
 
-    check_coinbase_maturity(coins_from_utxo_set, spend_height)
+    assert_coinbase_maturity(coins_from_utxo_set, spend_height)
     tip_hash = block_index.active_chain[-1]
     check_transaction(prev_outputs, tx, spend_height, node, tip_hash)
 
@@ -862,7 +870,7 @@ def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
     parent_of = parent_lookup(node)
     tip_mtp = median_time_past(tip_header, tip_height, parent_of)
 
-    if not is_final_tx(tx, spend_height, tip_mtp):
+    if not is_final(tx, spend_height, tip_mtp):
         err_msg = "bad-txns-nonfinal"
         raise BTClibValueError(err_msg)
 
@@ -870,12 +878,8 @@ def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
         header = header_at_height(tip_header, tip_height, height, parent_of)
         return median_time_past(header, height, parent_of)
 
-    check_sequence_locks(
-        [(prevout_coins, tx)],
-        spend_height,
-        enforce_bip68=True,
-        tip_median_time_past=tip_mtp,
-        ancestor_median_time_past=ancestor_median_time_past,
+    assert_sequence_locks(
+        tx, prevout_coins, spend_height, tip_mtp, ancestor_median_time_past
     )
 
     return sum(x.value for x in prev_outputs) - sum(x.value for x in tx.vout)
