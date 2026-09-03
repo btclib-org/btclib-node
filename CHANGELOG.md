@@ -3432,6 +3432,13 @@ they were written in.
   count, so a file that starts naming an interpreter is added to it or
   the module goes red.
 
+### `CLAUDE.md`'s section citations name the document they belong to
+
+- **A bare `section 9` and a bare `section 4` named no document.** Both
+  now read "of btclib-org/.github's README", the qualifier *Conventions
+  to match* already gives that document elsewhere in the file (closes
+  #813).
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
