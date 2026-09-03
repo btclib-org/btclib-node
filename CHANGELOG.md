@@ -3390,6 +3390,48 @@ they were written in.
   reports this block harmless is a harness handing the block over as a
   file, not a non-interactive harness in general.
 
+### The release asks whether read the docs served the tag
+
+- **`release.yml` gains a `documented` job, and it is not the `docs`
+  job** (closes btclib-org/.github#644): `docs` runs the same build
+  `docs.yml` gates a pull request with, on the runner; `documented`
+  asks whether `https://btclib-node.readthedocs.io/en/<tag>/` answers
+  200. A build green on the runner and a read the docs project that
+  never triggered, or triggered and failed, are indistinguishable from
+  inside a release that only asks the first.
+- **The wait is a script with a test rather than a loop in the
+  workflow.** `.github/scripts/wait_for_readthedocs_build.py` polls on a
+  deadline, so the job's `timeout-minutes` is compared against one
+  number rather than a product, and carries the last answer into the
+  `::error::` that names the builds page. A tag push is the only trigger
+  that reaches it, so `tests/wait_for_readthedocs_build_test.py` --
+  which substitutes the transport and the clock -- is where the retry,
+  the deadline and the annotation are exercised at all.
+- **`needs: version-check`, and nothing needs it.** A tag that check
+  refuses produces one verdict and not two, and a late documentation
+  build is not a reason to withhold a wheel.
+- **The header comment saying this file calls no such job is gone.** It
+  gave as its reason that no automation rule activates a tag on this
+  project; #596 added the rule, and REPOSITORY.md's *Read the Docs*
+  section reads its effect back.
+- **`RELEASING.md`'s audit step names the skip the job adds.** The guard
+  is the push, so a rehearsal finds `documented` `skipped` with no steps
+  -- the signature that step teaches a releaser to read as the defect.
+- **`RELEASING.md` gains a step that reads the job's verdict.** Green is
+  the permanent URL to link wherever the released version is named; red
+  is a build on read the docs' side rather than a moved tag, nothing
+  about the publication depending on it.
+- **`testpaths` names the new test module.** `[tool.coverage.run]`'s
+  `source` takes all of `tests/`, so a module no run collects is a file
+  the floor reports at zero. The comment above that list now names each
+  module sitting beside the directories, `tests/property_test.py`
+  included.
+- **`tests/interpreters_test.py` names `release.yml` among the CI files
+  that name an interpreter**, the wait running through `uv run
+  --no-project --python 3.14`. That list is a named one rather than a
+  count, so a file that starts naming an interpreter is added to it or
+  the module goes red.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)

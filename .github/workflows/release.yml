@@ -28,12 +28,6 @@ name: release
 # exists and is a required check on every pull request, so the ancestry
 # check below -- the tag has to be merged into the default branch -- is
 # what already carries its answer for the tree being released.
-# Nor a job waiting on Read the Docs the way bitcoin-core-rpc's
-# `documented` job does, which polls /en/<tag>/ until that tag's
-# documentation is served: no automation rule activates a tag on this
-# project, so the URL such a job would wait for is a 404 --
-# REPOSITORY.md's "Read the Docs, which is btclib-node.readthedocs.io"
-# reads that back, and #596 is where the rule is tracked.
 on:
   push:
     tags: ["v*"]
@@ -598,3 +592,93 @@ jobs:
             gh release create "$GITHUB_REF_NAME" dist/* "$bundle" \
               --title "$GITHUB_REF_NAME" --generate-notes
           fi
+
+  # the sentinel on the documentation, which nothing else here asks
+  # about:
+  # read the docs activates and builds a new release tag from an
+  # automation rule of its own, and a build that never starts fails
+  # nothing -- a site answering 200 serves the last build that
+  # succeeded, for as long as that takes somebody to notice.
+  # REPOSITORY.md's "Read the Docs, which is btclib-node.readthedocs.io"
+  # records that rule and reads its effect back off the versions
+  # endpoint, the rule itself being on the dashboard's side where no
+  # call in this tree reaches it (issue #596).
+  #
+  # The `docs` job above is not this question. That job builds the
+  # documentation on the runner, which is the gate every pull request
+  # already runs; this one asks whether the published site has the tag.
+  # A build green on the runner and a read the docs project that never
+  # triggered, or triggered and failed, are indistinguishable from
+  # inside a release that only asks the first (btclib-org/.github#644).
+  #
+  # The rendered URL and not the v3 API, which is the reverse of what
+  # `pypi-install.yml`'s own wait does with PyPI's. Read the docs
+  # throttles an unauthenticated caller, and documents network-level
+  # blocks that may affect an automated script calling it from a cloud
+  # provider or a CI environment -- which a GitHub-hosted runner is --
+  # naming a token as the way past both, so asking the API from here
+  # would mean storing a credential for a check that gates nothing.
+  # Sourced, not observed: nothing in this tree has called that API from
+  # a runner.
+  #   https://docs.readthedocs.com/platform/stable/api/v3.html
+  # /en/<tag>/ is served through the same CDN the site is -- `Server:
+  # cloudflare` on this project's own tag -- answers 404 for a version
+  # that is inactive or has no successful build, and is the URL a reader
+  # follows anyway.
+  # Release-only, a rehearsal never being tagged; after version-check, so
+  # a tag it refuses produces one verdict and not two; and nothing needs
+  # it: a late documentation build is not a reason to withhold a wheel,
+  # and the fix for a red run here is a build on their side, not a moved
+  # tag
+  #
+  # The wait itself is `.github/scripts/wait_for_readthedocs_build.py`
+  # rather than a shell loop written out here, which is what gives it a
+  # test: a tag is the only trigger that reaches it, so a loop kept in
+  # this file is first executed on the day a release depends on it. The
+  # script's budget is a deadline and not a count of attempts, and that
+  # deadline is set below this job's timeout-minutes, so the script's
+  # `::error::` runs rather than being killed inside the wait it exists
+  # to report on (btclib-org/btclib#1165).
+  # `tests/wait_for_readthedocs_build_test.py` is what drives the retry,
+  # the deadline and the annotation.
+  #
+  # What the wait still cannot do is tell "still building" from "will
+  # never build": /en/<tag>/ answers 404 for both, and the v3 API that
+  # separates them is ruled out above for a reason that still holds. What
+  # it does instead is carry the last answer read the docs gave rather
+  # than discard it, so the verdict names what the URL last said and
+  # where the reason for it is written, rather than only that the job
+  # waited
+  documented:
+    name: Check read the docs built the tag
+    needs: version-check
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # sparse: what lands is .github/scripts plus the repository root,
+      # cone mode being the default and root files always being in the
+      # cone. This job builds nothing and installs nothing, and the
+      # --no-project below ignores the root's pyproject.toml
+      - name: Check out the wait script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      # caching off, as in version-check above: this job runs on the tag
+      # push that job's own comment gives for downloading fresh rather
+      # than trusting a cache entry a run this one cannot vouch for
+      # wrote. There is little to cache here in any case, the step below
+      # installing nothing
+      - name: Setup uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: false
+      # --no-project, so it runs on the interpreter uv fetches and
+      # installs nothing: the script takes the standard library alone
+      - name: Wait for the tag's documentation to be served
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          uv run --no-project --python 3.14 \
+            .github/scripts/wait_for_readthedocs_build.py btclib-node "$TAG"
