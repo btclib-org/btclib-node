@@ -63,7 +63,7 @@ repos:
       # already says "a seed is wire octets, and a fixer appending to
       # one invalidates it", and a seed that happens to be printable
       # ASCII -- fuzz/corpus/fuzz_rpc_head/'s own HTTP request heads,
-      # unlike fuzz_reject's -- is text by `identify`'s own content
+      # unlike fuzz_framing's -- is text by `identify`'s own content
       # sniffing, not by this repository's own convention, so nothing
       # here stops these three from reading it as prose. Measured
       # directly (`pre-commit run --files` against a committed seed,

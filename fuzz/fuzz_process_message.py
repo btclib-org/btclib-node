@@ -5,12 +5,17 @@
 """An atheris harness fuzzing `p2p.callbacks.py`'s handlers through a node.
 
 Issue #516 split the octets a stranger's own bytes reach into three
-shapes: a pure function of bytes (`fuzz_reject.py`), this tree's own
-hostile-input arithmetic ahead of `btclib`'s codec, pulled into a
+shapes: a pure function of bytes over a codec `btclib` owns, this
+tree's own hostile-input arithmetic ahead of that codec, pulled into a
 function of octets for the same reason (`fuzz_framing.py`,
 `fuzz_rpc_head.py`), and `p2p.callbacks.py`'s own handlers, each of
 which needs a `Node`, a `P2pManager` and a `Connection` rather than a
 bare buffer -- issue #698 is that third shape.
+
+The first shape is fuzzed where the codec lives, which for BIP61's
+`reject` is `btclib` and its own harness over `Reject.parse`. What this
+tree owns of that message is `p2p.callbacks.reject`, one of the
+handlers this harness drives (issue #827).
 
 Core carries two fuzz targets over that same layer, one message
 (`process_message.cpp`) and a sequence of them fed to the same
@@ -54,10 +59,11 @@ Building one costs orders of magnitude more than building a fresh
 built -- opening the two `rocksdict` column families `Chainstate` and
 `BlockDB` own is what dominates the first, measured with
 `time.perf_counter` around each shape in a scratch script rather than
-carried here as a figure that ages. `fuzz.yml`'s own 150-second arm is
-what a difference of that order decides between: this harness takes
-the cheap shape, one `Node`, many `Connection`s, one per call and
-discarded at the end of it.
+carried here as a figure that ages. `fuzz.yml`'s own per-harness arm --
+`-max_total_time` there, which this file does not restate for the same
+reason -- is what a difference of that order decides between: this
+harness takes the cheap shape, one `Node`, many `Connection`s, one per
+call and discarded at the end of it.
 
 What that leaves unreset across calls -- `node.chainstate`,
 `node.mempool`, `node.p2p_manager.peer_db` -- is a starker divergence
@@ -173,7 +179,7 @@ if TYPE_CHECKING:
     from btclib_node.p2p.manager import P2pManager
 
 # tests/fuzz_corpus_test.py reads this with ast.literal_eval rather than
-# by importing this module: the other three harnesses' entry points are
+# by importing this module: the other two harnesses' entry points are
 # each importable from `btclib_node` itself, installed into every
 # worktree's own `.venv`; `dispatch` below lives in `fuzz/` and is not,
 # so `tests/fuzz_corpus_test.py`'s own `_resolve` loads this module by
@@ -375,7 +381,7 @@ def main() -> None:
     """Wire `fuzz_target` to libFuzzer through atheris.
 
     `import atheris` deferred to here rather than sitting at module
-    level with the other three harnesses' own: this module has to stay
+    level with the other two harnesses' own: this module has to stay
     importable without it installed, for `tests/fuzz_corpus_test.py` to
     resolve `dispatch` -- `ENTRY_POINTS`'s own comment above is where
     that is argued.

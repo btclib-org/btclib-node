@@ -32,8 +32,8 @@ on the sentinel's own day.
 
 A seed is accepted where a declared entry point returns rather than
 refusing it, and `_parsed` treats the same family the harness
-suppresses as a refusal -- `fuzz/fuzz_reject.py`'s own docstring argues
-which it is. `_REFUSED`, not `None`, is that refusal's own marker:
+suppresses as a refusal -- each harness's own docstring argues which it
+is. `_REFUSED`, not `None`, is that refusal's own marker:
 `fuzz.fuzz_process_message:dispatch` (issue #698) is a dispatch through
 a node rather than a parse, so `None` is its own ordinary, *accepted*
 return, and reusing it for "refused" would count that harness's every
@@ -41,7 +41,7 @@ accepted seed as refused instead.
 
 `fuzz_process_message.py` is the one harness this module does import,
 because its own `ENTRY_POINTS` -- `dispatch`, module docstring there --
-is not reachable through the installed package the way the other three
+is not reachable through the installed package the way the other two
 harnesses' own are, and needs no atheris to run: `_resolve` below loads
 it from `fuzz/` by path rather than through `importlib.import_module`,
 once, and keeps it, since `dispatch` reuses one `Node` across calls by
@@ -264,14 +264,38 @@ def test_a_callback_level_refusal_of_fuzz_process_message_is_not_accepted() -> N
     assert _parsed(spec, accepted) is None
 
 
+def test_the_reject_seed_still_reaches_the_callback_it_is_named_for() -> None:
+    """`p2p.callbacks.reject` is what this tree owns of BIP61's `reject`.
+
+    `Reject.parse` is `btclib`'s codec, fuzzed by `btclib`'s own harness;
+    the callback around that parse is this tree's, and
+    `fuzz/corpus/fuzz_process_message/reject.bin` is what drives it
+    (issue #827). `test_a_seed_parses_and_reserializes_to_itself` above
+    already holds that seed to acceptance, and what it cannot say is
+    which command the seed selects: the first octet is an index into
+    `_TYPES`, so a command added to or removed from `p2p.callbacks`
+    repoints every seed at a neighbour with every assertion above still
+    green -- the same reason the test above reads `ping`'s index rather
+    than writing it down. The truncation is the other half: a payload
+    cut inside its reason string is refused by the callback's own parse,
+    which is what says the seed reaches that callback rather than
+    stopping at the framing around it.
+    """
+    module = _load_fuzz_module("fuzz.fuzz_process_message")
+    seed = (_CORPUS / "fuzz_process_message" / "reject.bin").read_bytes()
+    assert module._TYPES[seed[0] % len(module._TYPES)] == "reject"
+    assert _parsed("fuzz.fuzz_process_message:dispatch", seed[:8]) is _REFUSED
+
+
 def test_a_malformed_payload_is_refused() -> None:
-    """The control on the two tests above: acceptance can fail.
+    """The control on the tests above: acceptance can fail.
 
     An empty payload is what every entry point declared here refuses --
-    `btclib.var_int.parse` having nothing to read for the three parsers,
-    and `fuzz.fuzz_process_message:dispatch` (issue #698) having no
-    selector byte to pick a message type with -- so this says the tests
-    above measure acceptance rather than reporting it.
+    `frame_message_bytes` wanting a whole message header,
+    `parse_request_head` a header terminator, and
+    `fuzz.fuzz_process_message:dispatch` (issue #698) a selector byte to
+    pick a message type with -- so this says the tests above measure
+    acceptance rather than reporting it.
     """
     specs = [spec for path in _HARNESSES for spec in _entry_points(path)]
     assert specs

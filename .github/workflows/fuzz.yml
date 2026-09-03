@@ -7,12 +7,21 @@ name: fuzz
 # sentinel is keyed on that property, and where the calendar row below
 # comes from; btclib-org/.github#342 is where the ranking of an entry
 # point reached ahead of verification over one reached after it is
-# argued. fuzz/fuzz_reject.py, fuzz/fuzz_framing.py,
-# fuzz/fuzz_rpc_head.py and fuzz/fuzz_process_message.py are what this
-# repository owns of that surface today -- each harness's own docstring
-# is where its own share of it is stated; fuzz_process_message.py's own
-# is where issue #698, the parser reached only behind a `Node`, a
-# `P2pManager` and a `Connection` rather than a bare buffer, is closed.
+# argued. fuzz/fuzz_framing.py, fuzz/fuzz_rpc_head.py and
+# fuzz/fuzz_process_message.py are what this repository owns of that
+# surface today -- each harness's own docstring is where its own share
+# of it is stated; fuzz_process_message.py's own is where issue #698,
+# the parser reached only behind a `Node`, a `P2pManager` and a
+# `Connection` rather than a bare buffer, is closed.
+#
+# BIP61's `reject` payload parser is not among them: `Reject.parse` is
+# btclib's own codec, and btclib's own harness of the same name fuzzes
+# it there under the same suppressed family. What this tree owns of that
+# message is p2p.callbacks.reject, which fuzz_process_message.py reaches
+# with a peer's own octets like every other command
+# p2p.callbacks.callbacks holds -- so the reach argued above keeps a
+# harness here and the codec behind it is fuzzed where it lives
+# (issue #827).
 #
 # Atheris run as an ordinary script, and not ClusterFuzzLite, which is
 # what `btclib` runs and would otherwise be the port. ClusterFuzzLite
@@ -112,11 +121,12 @@ jobs:
       # nothing here carries a corpus between runs, which is the trade
       # the header states.
       #
-      # -max_total_time is the arm: 600 seconds total, the same budget
-      # this job carried when it fuzzed one harness, now split four
-      # ways rather than quadrupled, so this step's own share of the
-      # job's 30-minute ceiling does not grow with the number of
-      # harnesses. -timeout is what a single input may take before it
+      # -max_total_time is the arm, and the budget it divides is the
+      # job's rather than each harness's: the 600 seconds this job
+      # carried when it fuzzed one harness is what the whole loop still
+      # spends, so this step's own share of the job's 30-minute ceiling
+      # neither grows with a harness added nor shrinks with one
+      # retired. -timeout is what a single input may take before it
       # counts as a hang, which is the finding a parser reading a length
       # prefix off the wire is most likely to produce; -artifact_prefix,
       # one per harness, is what puts a crashing input where the upload
@@ -126,11 +136,11 @@ jobs:
       - name: Fuzz
         run: |
           mkdir -p crashes
-          for harness in fuzz_reject fuzz_framing fuzz_rpc_head fuzz_process_message; do
+          for harness in fuzz_framing fuzz_rpc_head fuzz_process_message; do
             mkdir -p "corpus/$harness"
             uv run --locked --no-default-groups --group fuzz \
               python "fuzz/$harness.py" "corpus/$harness" "fuzz/corpus/$harness" \
-              -max_total_time=150 -timeout=25 -artifact_prefix="crashes/$harness-"
+              -max_total_time=200 -timeout=25 -artifact_prefix="crashes/$harness-"
           done
       # the input, and nothing else: a crashing unit is what reproduces
       # the finding locally, and the log above is what says which
