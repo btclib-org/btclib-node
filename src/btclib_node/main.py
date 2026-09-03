@@ -861,7 +861,6 @@ def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
                 raise MissingPrevoutError
 
     assert_coinbase_maturity(coins_from_utxo_set, spend_height)
-    check_transaction(prev_outputs, tx)
 
     tip_hash = block_index.active_chain[-1]
     tip_header = block_index.header_dict[tip_hash].header
@@ -880,5 +879,12 @@ def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
     assert_sequence_locks(
         tx, prevout_coins, spend_height, tip_mtp, ancestor_median_time_past
     )
+
+    # Checked last, after the cheap finality and sequence-lock checks
+    # above: Core defers its own script checks the same way, to spend no
+    # signature verification on a candidate a comparison of two integers
+    # already refuses (`PolicyScriptChecks`, `src/validation.cpp:1378`,
+    # at bitcoin/bitcoin@4519933391).
+    check_transaction(prev_outputs, tx)
 
     return sum(x.value for x in prev_outputs) - sum(x.value for x in tx.vout)

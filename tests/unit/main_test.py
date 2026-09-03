@@ -307,7 +307,13 @@ def test_reject_a_mempool_spend_of_an_immature_coinbase(node: Node) -> None:
 
 
 def locked_spend(
-    prevout_tx: Tx, value: int, lock_time: int, sequence: int, version: int = 1
+    prevout_tx: Tx,
+    value: int,
+    lock_time: int,
+    sequence: int,
+    *,
+    version: int = 1,
+    script_sig: bytes | None = None,
 ) -> Tx:
     """Return a transaction spending `prevout_tx`'s first output."""
     return Tx(
@@ -316,7 +322,9 @@ def locked_spend(
         vin=[
             TxIn(
                 prev_out=OutPoint(prevout_tx.id, 0),
-                script_sig=script.serialize([b"\x11" * 32]),
+                script_sig=script_sig
+                if script_sig is not None
+                else script.serialize([b"\x11" * 32]),
                 sequence=sequence,
             )
         ],
@@ -570,6 +578,31 @@ def test_reject_a_mempool_spend_that_is_not_final(node: Node) -> None:
     )
     with pytest.raises(BTClibValueError, match="bad-txns-nonfinal"):
         verify_mempool_acceptance(node, nonfinal)
+
+
+def test_a_nonfinal_unverifiable_mempool_spend_is_refused_as_nonfinal(
+    node: Node,
+) -> None:
+    """A candidate both non-final and script-invalid is refused as non-final.
+
+    Asserting the verdict alone -- `BTClibValueError` -- passes under
+    either order, a failing script raising it too. Matching on the
+    finality message pins the order instead: refused any other way, the
+    script check ran ahead of the two cheap lock checks (ISS 829).
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+
+    funding = chain[0].transactions[0]
+    nonfinal_and_unverifiable = locked_spend(
+        funding,
+        funding.vout[0].value,
+        lock_time=2_000_000_000,
+        sequence=0,
+        script_sig=script.serialize(["OP_RETURN"]),
+    )
+    with pytest.raises(BTClibValueError, match="bad-txns-nonfinal"):
+        verify_mempool_acceptance(node, nonfinal_and_unverifiable)
 
 
 def test_a_mempool_spend_locked_to_an_already_reached_height_is_accepted(
