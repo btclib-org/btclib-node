@@ -3761,6 +3761,66 @@ they were written in.
   the fence's first line and it writes, so a `: "${version:?}"` heads
   the fence: a guard below the first writing line arrives too late.
 
+### Every dependency is at the newest version this tree resolves to
+
+`uv.lock` re-resolved with `uv lock --upgrade`, and
+`.pre-commit-config.yaml` walked by `pre-commit autoupdate`. Only
+strangers moved and nothing here had to catch up.
+
+`pytest-randomly` is the one major, 4.1.0 to 5.0.0, and it is the entry
+worth reading twice: it is what shuffles every run, so a break in it
+does not look like a break in it. `pytest-order` runs under it as
+`tests/README.md` says it does, and the suite is green -- but one green
+run is one seed, which is weaker evidence for this package than for any
+other, since it is the one that decided the order every other result
+was measured in.
+
+`btclib` moves with the branch `[tool.uv.sources]` names, and that is
+the re-lock this repository absorbs deliberately rather than a stranger
+moving. Two of the changes it carries could have reached this tree and
+neither does. `Fetcher` gained a fourth abstract method,
+`get_block_header`, which is a break for anyone subclassing that ABC --
+nothing here does, the four files naming a fetcher all instantiating
+`BitcoinCoreFetcher`, which btclib implemented on both its own backends.
+And `psbt_signer_contract.optional_protocols` widened from a 2-tuple to
+a 3-tuple, with the new element in the middle, so a caller indexing it
+changed meaning silently -- `psbt_signer` is named nowhere in this
+tree.
+
+`bitcoin-core-rpc` moves in the lock, 2026.8.29 to 2026.9.3, and its
+floor in the `test` group does not. That release carries `RPCErrorCode`,
+which is what issue #801's last row needs and what this tree does not
+call yet; the floor names the oldest release the code here works
+against, and the commit that first reads that enum is the one that
+raises it.
+
+`zizmor` is the one rev held back, at v1.29.0, and `pre-commit
+autoupdate` offered v1.30.0 again: it walks every `repo:` entry and has
+no notion of a pin held on purpose, the reason for one living in a
+comment it does not read. That hold arrives as a red run rather than as
+a rejected line -- 1.30.0's new `self-repository` audit flags every
+`uses: ./...` reference here and its auto-fix rewrites them to
+`uses: $/...`, which actionlint 1.7.12 does not parse. The comment above
+the rev says the bump waits on an actionlint release that understands
+that syntax, and actionlint-py is still at v1.7.12.24.
+
+`uv-pre-commit` reaches 0.12.9 and `[build-system]`'s `uv_build` range
+stays as it is. That range is what the build has to satisfy rather than
+a pin at the hook's rev, and the lock format the `uv-lock` hook writes
+is unchanged.
+
+### `anthropics/claude-code-action` is pinned at what `v1` names now
+
+`claude-review.yml` pinned a sha from before `v1`'s own, in both of its
+jobs. A pin behind a moving tag is a difference nothing chose: the sha
+moves when somebody edits the workflow, so it drifts by however long
+nobody has.
+
+The tag is annotated, which is the part worth writing down. `gh api
+.../git/ref/tags/v1` answers the **tag object's** sha, not the commit's,
+and pinning that is a reference no runner can check out. `git/tags/<sha>`
+dereferences it, and `refs/tags/v1^{}` does the same from a checkout.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
