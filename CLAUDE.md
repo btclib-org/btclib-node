@@ -161,12 +161,24 @@ way the primary checkout below is kept current; the sha it lands on
 afterward is what the comment beside a divergence cites, in place of
 "master, some time today".
 
-It sits at `../bitcoin` from there, not from whichever worktree a
-session is working in — every session works in one, by the rule below —
-so a plain `../bitcoin` typed from a worktree resolves to nothing. The
-primary checkout is always `git worktree list`'s own first entry, from
-any worktree of this repository, so its sibling is reached from
-anywhere with
+The other sha a citation may carry is a released Core's, and where it
+does, the release's own tag name sits beside it: a claim about the
+behaviour of the bitcoind this tree is tested against, rather than
+about Core's tip, is cited at that release's tag commit.
+`.github/workflows/integration-bitcoind.yml` pins which release that
+is, and is where a citation reads it rather than copying the version
+here. The tag name is what tells such a citation from a stale read,
+because ancestry does not: a sha read from an out-of-date `master` is
+an ancestor of `master` all the same, so
+`git merge-base --is-ancestor <sha> master` answering false finds a
+release commit and still cannot say whether its author meant one.
+
+That checkout sits at `../bitcoin` from there, not from whichever
+worktree a session is working in — every session works in one, by the
+rule below — so a plain `../bitcoin` typed from a worktree resolves to
+nothing. The primary checkout is always `git worktree list`'s own first
+entry, from any worktree of this repository, so its sibling is reached
+from anywhere with
 
 ```shell
 git worktree list --porcelain | awk '/^worktree /{print $2; exit}'

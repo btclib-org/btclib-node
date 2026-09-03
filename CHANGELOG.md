@@ -3967,6 +3967,34 @@ dereferences it, and `refs/tags/v1^{}` does the same from a checkout.
   `rpc/errors.py`'s own `RPCErrorCode` import (#801) had already made the
   package a direct dependency (closes #846).
 
+### A Core citation names the tag where its sha is a release's
+
+- **`CLAUDE.md`'s *Following Bitcoin Core* described one case, the sha a
+  fast-forward of `master` lands on, and the tree cites shas that are
+  not on `master`** (closes #850). It now states the second: where the
+  claim is about the behaviour of the bitcoind
+  `.github/workflows/integration-bitcoind.yml` pins rather than about
+  Core's tip, the citation is at that release's tag commit and carries
+  the tag's name beside the sha.
+- **The tag's name carries the choice because ancestry cannot.** A sha
+  read from an out-of-date `master` is an ancestor of `master` all the
+  same, so `git merge-base --is-ancestor <sha> master` answering false
+  establishes that a sha is a release's and never that its author meant
+  one; `9be056a8a7`, cited here and in `src/`, answers false and is the
+  commit `v31.1` tags.
+- **`master` stays the default, and the subject is not what picks
+  between the two.** The `master` shas this tree cites are for
+  consensus and relay behaviour as much as the release ones are --
+  `src/kernel/chainparams.cpp`, `validation.cpp` and
+  `net_processing.cpp` are all cited at `master` -- so a rule reading
+  "consensus and relay behaviour takes the release" would have
+  contradicted the citations already landed rather than sorted them.
+  What picks is whether the claim is about the Core this tree is run
+  against.
+- **The citations at `9be056a8a7` that do not name `v31.1` keep the
+  form they landed in**, per section 9's *Nothing already written is
+  rewritten*; the rule binds what is written next.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
