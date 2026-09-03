@@ -26,15 +26,16 @@ from typing import TYPE_CHECKING, cast, override
 
 from btclib.exceptions import BTClibException, IncompleteMessageError
 from btclib.p2p.address import NetworkAddress, ServiceFlags
+from btclib.p2p.addrv2 import network_address
 from btclib.p2p.handshake import Version
 from btclib.p2p.keepalive import Ping
-from btclib.p2p.limits import MAX_PROTOCOL_MESSAGE_LENGTH
+from btclib.p2p.limits import MAX_PROTOCOL_MESSAGE_LENGTH, PROTOCOL_VERSION
 from btclib.p2p.message import Message
 
 from btclib_node.chains import RegTest
-from btclib_node.constants import P2pConnStatus, ProtocolVersion
+from btclib_node.constants import P2pConnStatus
 from btclib_node.exceptions import WrongNetworkMagicError
-from btclib_node.p2p.address import ip_and_port, network_address
+from btclib_node.p2p.address import ip_and_port
 from btclib_node.p2p.callbacks import (
     MAX_GETDATA_INFLIGHT_BYTES,
     handshake_callbacks,
@@ -923,7 +924,7 @@ class Connection:
         # on every path that reaches here.
         port = cast("int", self.manager.port)
         version = Version(
-            version=ProtocolVersion,
+            version=PROTOCOL_VERSION,
             services=services,
             timestamp=int(time.time()),
             # a `version` message's address carries no timestamp, which

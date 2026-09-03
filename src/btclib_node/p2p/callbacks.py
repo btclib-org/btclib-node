@@ -28,7 +28,14 @@ from typing import TYPE_CHECKING
 from btclib.amount import valid_sats_amount
 from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.p2p.address import Addr, ServiceFlags
-from btclib.p2p.addrv2 import AddrV2, NetworkAddressV2, SendAddrV2
+from btclib.p2p.addrv2 import (
+    AddrV2,
+    NetworkAddressV2,
+    SendAddrV2,
+    addr_entry,
+    can_addrv1,
+    peer_from_addr_entry,
+)
 from btclib.p2p.block_filters import (
     BlockFilterType,
     CFCheckpt,
@@ -60,25 +67,16 @@ from btclib.p2p.limits import (
     MAX_HEADERS_RESULTS,
     MAX_INV_SZ,
     MAX_PROTOCOL_MESSAGE_LENGTH,
+    PROTOCOL_VERSION,
 )
 from btclib.p2p.negotiation import FeeFilter, GetAddr, SendHeaders, WtxidRelay
 
 from btclib_node.chainstate.block_index import BlockStatus
 from btclib_node.chainstate.filter_index import NO_PREVIOUS_FILTER_HEADER
-from btclib_node.constants import (
-    MIN_BLOCKS_TO_KEEP,
-    NodeStatus,
-    P2pConnStatus,
-    ProtocolVersion,
-)
+from btclib_node.constants import MIN_BLOCKS_TO_KEEP, NodeStatus, P2pConnStatus
 from btclib_node.exceptions import ChainstateInconsistencyError, MissingPrevoutError
 from btclib_node.main import verify_mempool_acceptance
-from btclib_node.p2p.address import (
-    addr_entry,
-    can_addrv1,
-    ip_and_port,
-    peer_from_addr_entry,
-)
+from btclib_node.p2p.address import ip_and_port
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 from btclib_node.p2p.messages.errors import Reject
 
@@ -167,7 +165,7 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
         return
 
     # For simplicity we only allow current protocol version
-    if version_msg.version < ProtocolVersion:
+    if version_msg.version < PROTOCOL_VERSION:
         node.p2p_manager.discourage(conn.address)
         conn.stop()
         return
@@ -299,7 +297,7 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     conn.send_ping()
     conn.send(GetAddr())
     block_locators = node.chainstate.block_index.get_block_locator_hashes()
-    conn.send(GetHeaders(ProtocolVersion, block_locators, b"\x00" * 32))
+    conn.send(GetHeaders(PROTOCOL_VERSION, block_locators, b"\x00" * 32))
     sockaddr = conn.client.getpeername()
     # the connection id beside the address, once, is what makes the
     # id-keyed lines everywhere else resolvable back to a peer -- #526's
@@ -635,7 +633,7 @@ def inv(node: Node, msg: bytes, conn: Connection) -> None:
     blocks = [x.hash for x in inv.items if x.type_code == InventoryType.MSG_BLOCK]
     if blocks:
         block_locators = node.chainstate.block_index.get_block_locator_hashes()
-        conn.send(GetHeaders(ProtocolVersion, block_locators, blocks[-1]))
+        conn.send(GetHeaders(PROTOCOL_VERSION, block_locators, blocks[-1]))
 
     wtransactions = [x.hash for x in inv.items if x.type_code == InventoryType.MSG_WTX]
     missing_tx = node.mempool.get_missing(wtransactions, wtxid=True)
@@ -1042,7 +1040,7 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
         # announcement being silently dropped for missing its own
         # ancestors. btclib-org/btclib-node#233
         block_locators = block_index.get_block_locator_hashes()
-        conn.send(GetHeaders(ProtocolVersion, block_locators, b"\x00" * 32))
+        conn.send(GetHeaders(PROTOCOL_VERSION, block_locators, b"\x00" * 32))
     elif len(headers) == MAX_HEADERS_RESULTS:  # the peer may have more to give us
         # [tip] only for a live fork below header_index's own tip: that
         # is the one case get_block_locator_hashes cannot reach on its
@@ -1063,7 +1061,7 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
             block_locators = [tip]
         else:
             block_locators = block_index.get_block_locator_hashes()
-        conn.send(GetHeaders(ProtocolVersion, block_locators, b"\x00" * 32))
+        conn.send(GetHeaders(PROTOCOL_VERSION, block_locators, b"\x00" * 32))
     elif node.status == NodeStatus.SyncingHeaders:
         node.status = NodeStatus.HeaderSynced
 

@@ -7,10 +7,10 @@
 The address itself is btclib's, and `btclib.p2p.addrv2.NetworkAddressV2`
 is the one this node holds a peer in: BIP155's record is the only
 encoding that carries every network a peer can be on, so the narrower
-`addr` entry would lose an onion peer the moment one is gossiped. What
-goes on the wire is that entry all the same wherever the peer has not
-asked for BIP155, and `addr_entry` and `peer_from_addr_entry` are the
-translation.
+`addr` entry would lose an onion peer the moment one is gossiped. The
+translation between the two is btclib's as well --
+`btclib.p2p.addrv2.addr_entry` and `peer_from_addr_entry` -- for what
+goes on the wire wherever the peer has not asked for BIP155.
 
 What is left here is what btclib has no business holding: dialling a
 socket, and the table of addresses to dial. btclib is a codec -- it
@@ -28,8 +28,8 @@ from dataclasses import replace
 from ipaddress import IPv4Address, IPv6Address, ip_address
 from typing import TYPE_CHECKING, cast
 
-from btclib.p2p.address import NetworkAddress, ServiceFlags, TimestampedNetworkAddress
-from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
+from btclib.p2p.address import ServiceFlags
+from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2, is_embedded_ipv6
 
 from btclib_node.db import KeyValueStore
 from btclib_node.exceptions import UnsupportedAddressTypeError
@@ -42,30 +42,17 @@ if TYPE_CHECKING:
 
 __all__ = [
     "PeerDB",
-    "addr_entry",
-    "can_addrv1",
     "can_connect",
     "dial",
     "endpoint_key",
     "ip_and_port",
-    "network_address",
     "peer_address",
-    "peer_from_addr_entry",
 ]
 
-# the two ids whose address field is an IP address, which is the whole
-# of what an addr version 1 entry can carry, and the whole of what
-# `dial` below opens a socket for
+# the two networks this node has a dial for, and the whole of what
+# `dial` below opens a socket for. `can_connect`'s own docstring is
+# where this is told apart from `btclib.p2p.addrv2.can_addrv1`
 _IP_NETWORKS = (BIP155Network.IPV4, BIP155Network.IPV6)
-
-# BIP155: a client SHOULD ignore an IPV6 entry whose sixteen octets fall
-# in a range reserved for embedding another network's address into an
-# IPv6 one -- the IPv4 mapping, `::ffff:0:0/96`, and OnionCat's
-# `fd87:d87e:eb43::/48`, once used to carry a TORv2 address the same way.
-# Core's `netaddress.h` (58a7869f86) is `IPV4_IN_IPV6_PREFIX` and
-# `TORV2_IN_IPV6_PREFIX`; `IPv6Address.ipv4_mapped` is `ipaddress`'s own
-# name for the first, and the second has no name of its own to borrow.
-_ONIONCAT_PREFIX = b"\xfd\x87\xd8\x7e\xeb\x43"
 
 
 def peer_address(
@@ -89,76 +76,16 @@ def peer_address(
     return NetworkAddressV2(timestamp, services, network_id, parsed.packed, port)
 
 
-def can_addrv1(address: NetworkAddressV2) -> bool:
-    """Answer whether an addr version 1 message has room for this peer."""
-    return address.network_id in _IP_NETWORKS
-
-
 def can_connect(address: NetworkAddressV2) -> bool:
-    """Answer whether this node has a dial for the peer's network."""
+    """Answer whether this node has a dial for the peer's network.
+
+    A different question from `btclib.p2p.addrv2.can_addrv1`, which asks
+    whether the address fits an `addr` version 1 entry at all. The two
+    agree on every network this node knows of today and are not the same
+    rule: a dial through a SOCKS proxy would reach a network the version
+    1 wire format still has no room for.
+    """
     return address.network_id in _IP_NETWORKS
-
-
-def _is_embedded_ipv6(address: NetworkAddressV2) -> bool:
-    """Answer whether an `IPV6` record's octets are really another network's.
-
-    The two BIP155 ignore rules `_ONIONCAT_PREFIX` documents, applied
-    together: `PeerDB.add_addresses` is where this is asked, that being
-    the point a record kept becomes an entry gossiped back to the next
-    peer -- `btclib.p2p.addrv2`'s own docstring calls both rules receive
-    policy and leaves them to the caller rather than the parser.
-    """
-    return address.network_id == BIP155Network.IPV6 and (
-        IPv6Address(address.address).ipv4_mapped is not None
-        or address.address.startswith(_ONIONCAT_PREFIX)
-    )
-
-
-def network_address(address: NetworkAddressV2) -> NetworkAddress:
-    """Return the untimestamped form of a BIP155 record, where it has one.
-
-    What a `version` message's two addresses are, and what an `addr`
-    entry is built on. `can_addrv1` is the question a caller asks first;
-    the refusal below is what makes the answer binding rather than
-    advisory, because the length would not catch it: BIP155 gives cjdns
-    and yggdrasil the sixteen octets an IPv6 address has, so `IPv6Address`
-    would take either for an IP address and hand back a peer that is not
-    the one that was gossiped.
-    """
-    if not can_addrv1(address):
-        err_msg = f"not an ip address: network id {int(address.network_id)}"
-        raise ValueError(err_msg)
-    ip = (
-        IPv4Address(address.address)
-        if address.network_id == BIP155Network.IPV4
-        else IPv6Address(address.address)
-    )
-    return NetworkAddress(address.services, ip, address.port)
-
-
-def addr_entry(address: NetworkAddressV2) -> TimestampedNetworkAddress:
-    """Return the addr version 1 entry a BIP155 record is, where it is one."""
-    return TimestampedNetworkAddress(address.timestamp, network_address(address))
-
-
-def peer_from_addr_entry(entry: TimestampedNetworkAddress) -> NetworkAddressV2:
-    """Return the BIP155 record an addr version 1 entry describes.
-
-    An `addr` entry holds every address in sixteen octets, a v4 one
-    mapped into them, where BIP155 gives the two networks different ids
-    and different lengths: `ipv4_mapped` is what tells them apart, and it
-    is the reason this is not a field rename.
-    """
-    ip = entry.address.ip
-    mapped = ip.ipv4_mapped
-    network_id = BIP155Network.IPV4 if mapped else BIP155Network.IPV6
-    return NetworkAddressV2(
-        entry.timestamp,
-        entry.address.services,
-        network_id,
-        mapped.packed if mapped else ip.packed,
-        entry.address.port,
-    )
 
 
 def ip_and_port(ip: str, port: int) -> str:
@@ -549,7 +476,7 @@ class PeerDB:
                 # (#151). Checked before the durable write too, so a
                 # dropped record is dropped everywhere, not merely kept
                 # out of the in-memory set.
-                if _is_embedded_ipv6(address):
+                if is_embedded_ipv6(address):
                     continue
                 known = replace(address, timestamp=0)
                 key = endpoint_key(known)

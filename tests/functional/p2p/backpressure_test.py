@@ -46,6 +46,7 @@ from btclib.p2p.block_filters import BlockFilterType, GetCFilters
 from btclib.p2p.data import BlockPayload as BlockMsg
 from btclib.p2p.handshake import Verack, Version
 from btclib.p2p.inventory import GetData, Inventory, InventoryType
+from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.p2p.message import Message
 from btclib.p2p.negotiation import WtxidRelay
 from btclib.script import script
@@ -57,7 +58,7 @@ from btclib.tx.tx_out import TxOut
 from btclib_node import Node
 from btclib_node.chains import RegTest
 from btclib_node.config import Config
-from btclib_node.constants import NodeStatus, P2pConnStatus, ProtocolVersion
+from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.p2p.callbacks import MAX_CFILTERS_INFLIGHT_BYTES
 from btclib_node.p2p.connection import MAX_QUEUED_SEND_BYTES
 from tests import (
@@ -218,7 +219,7 @@ class DeafPeer:
         services = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
         self.send(
             Version(
-                version=ProtocolVersion,
+                version=PROTOCOL_VERSION,
                 services=services,
                 timestamp=int(time.time()),
                 addr_recv=NetworkAddress(services=services, port=0),
