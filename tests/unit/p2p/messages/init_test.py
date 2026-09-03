@@ -2,12 +2,15 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""The command each payload travels under, and what Connection does.
+"""The dispatch tables' own keys, and what Connection does with a message.
 
-The framing itself is btclib.p2p.message.Message's and is tested there.
-What is this node's is the name every payload serializes under, which
-queue a command lands in, how much of the buffer survives a partial
-message, and what becomes of a peer whose octets do not decode.
+The framing itself is btclib.p2p.message.Message's and is tested there,
+and every payload's own command is btclib.p2p's, this package holding
+none of its own. What is this node's is `callbacks` and
+`handshake_callbacks`, two hand-written tables of string literals,
+checked here against every command a real payload carries; which queue
+a command lands in; how much of the buffer survives a partial message;
+and what becomes of a peer whose octets do not decode.
 """
 
 import asyncio
@@ -36,11 +39,8 @@ if TYPE_CHECKING:
 
 MAGIC = RegTest().magic
 
-# what this package defines: everything else the node speaks is
-# btclib.p2p's, and named there
-_MESSAGE_MODULES = ("errors",)
-
-# where the rest of what the node speaks is defined
+# where every payload the node speaks is defined: this package holds
+# none of its own, `btclib_node.p2p.messages`'s own docstring is why
 _BTCLIB_P2P_MODULES = (
     "btclib.p2p.address",
     "btclib.p2p.addrv2",
@@ -51,52 +51,31 @@ _BTCLIB_P2P_MODULES = (
     "btclib.p2p.inventory",
     "btclib.p2p.keepalive",
     "btclib.p2p.negotiation",
+    "btclib.p2p.reject",
 )
 
-# the spelling the specification gives, which is the authority: a
-# command is what a peer dispatches on, so a name only this tree agrees
-# with is a message nobody answers. Nothing but the value can say a name
-# is right -- a misspelling serializes, parses and round-trips exactly as
-# well as the real thing. BIP61 introduces the message as "reject", and
-# Bitcoin Core's NetMsgType has no entry for it, so the BIP is where the
-# spelling is read rather than Core's header.
-_COMMANDS = {
-    "Reject": "reject",
-}
 
+def known_commands() -> set[str]:
+    """Every command a `btclib.p2p` payload class carries.
 
-def payload_classes() -> dict[str, type[Payload]]:
-    """Every `Payload` subclass this package defines, keyed by name."""
-    found: dict[str, type[Payload]] = {}
-    for name in _MESSAGE_MODULES:
-        module = importlib.import_module(f"btclib_node.p2p.messages.{name}")
-        found.update(
-            {
-                attr: obj
-                for attr, obj in vars(module).items()
-                if inspect.isclass(obj)
-                and issubclass(obj, Payload)
-                and obj is not Payload
-                and getattr(obj, "command", None)
-            }
-        )
-    return found
-
-
-def test_every_payload_travels_under_its_specification_s_name() -> None:
-    """Every payload of this package carries the command its own spec gives.
-
-    `_COMMANDS` is read off BIP61, not off this tree's own choice, and
-    the check is two-way: every payload class has an entry here, and
-    every entry names a class that exists, so an addition on either
-    side that forgets the other is caught rather than silently unpaired.
+    Imported here, by full dotted name, and deliberately not bound at
+    module scope: this file is the test package's `__init__`, so pytest
+    importing a sibling module sets it as an attribute of this package,
+    and a sibling named after a `btclib.p2p` module would shadow a plain
+    `from btclib.p2p import <name>` with the test module.
     """
-    classes = payload_classes()
-    # no payload without an expected name, and no expected name without
-    # a payload: a class added here has to be spelled out above
-    assert set(classes) == set(_COMMANDS)
-    for name, cls in sorted(classes.items()):
-        assert cls.command == _COMMANDS[name], name
+    found: set[str] = set()
+    for dotted in _BTCLIB_P2P_MODULES:
+        module = importlib.import_module(dotted)
+        found |= {
+            obj.command
+            for obj in vars(module).values()
+            if inspect.isclass(obj)
+            and issubclass(obj, Payload)
+            and obj is not Payload
+            and getattr(obj, "command", None)
+        }
+    return found
 
 
 def test_the_dispatch_tables_key_on_real_commands() -> None:
@@ -106,47 +85,11 @@ def test_the_dispatch_tables_key_on_real_commands() -> None:
     derived from a `Payload` class, so a misspelled key is a handler
     that is registered and never called -- exactly how "sendcmpt" went
     unreached on the way out. This checks each key against every
-    command a payload of this package or of `btclib.p2p` actually
-    carries.
+    command a `btclib.p2p` payload actually carries, this package
+    holding none of its own.
     """
-    # The outbound side reads the command off the class; the inbound
-    # side is still two hand-written tables of string literals, so a
-    # misspelling there is an entry no message ever matches -- silent,
-    # exactly as "sendcmpt" was on the way out. Every key has to be a
-    # command some payload actually travels under, this package's or
-    # btclib.p2p's.
-    known = {cls.command for cls in payload_classes().values()}
-    # imported here, by full dotted name, and deliberately not bound at
-    # module scope: this file is the test package's __init__, so pytest
-    # importing a sibling module sets it as an attribute of this package,
-    # and a sibling named after a btclib.p2p module would shadow a plain
-    # `from btclib.p2p import <name>` with the test module.
-    for dotted in _BTCLIB_P2P_MODULES:
-        module = importlib.import_module(dotted)
-        known |= {
-            obj.command
-            for obj in vars(module).values()
-            if inspect.isclass(obj)
-            and issubclass(obj, Payload)
-            and obj is not Payload
-            and getattr(obj, "command", None)
-        }
-    unknown = (set(callbacks) | set(handshake_callbacks)) - known
+    unknown = (set(callbacks) | set(handshake_callbacks)) - known_commands()
     assert not unknown
-
-
-def test_the_command_reaches_the_wire() -> None:
-    """A payload's `command` is what its wire framing actually carries.
-
-    `Payload.command` is a `ClassVar` read by callers, so it only
-    matters if it is also what ends up in the serialized header: this
-    round-trips one of each payload through `Message` and checks the
-    command it comes back with.
-    """
-    # the ClassVar is only worth having if it is what gets serialized
-    for name, cls in sorted(payload_classes().items()):
-        message = Message(MAGIC, cls.command, b"")
-        assert Message.parse(message.serialize()).command == _COMMANDS[name], name
 
 
 def make_connection() -> Connection:

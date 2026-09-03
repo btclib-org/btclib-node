@@ -26,12 +26,11 @@ octets and the parser.
 
 `BTClibException` is the whole of what `parse` refuses an input with,
 and it is the family `handle_p2p` (`p2p/main.py`) discourages a peer
-on: `btclib.var_int.parse`'s own `BTClibValueError` for a length
-prefix no var_int carries, and `InvalidRejectPayloadError` for what
-`p2p/messages/errors.py` decides itself. Suppressing that family alone
-is what makes this harness report: what leaves `fuzz_target` below is
-then either a crash or a refusal `handle_p2p` reads as this node's own
-defect, and each is a finding against `parse`.
+on: `btclib.p2p.reject`'s own `BTClibValueError` and `BTClibTypeError`,
+the family every payload of that package raises. Suppressing that
+family alone is what makes this harness report: what leaves
+`fuzz_target` below is then either a crash or a refusal `handle_p2p`
+reads as this node's own defect, and each is a finding against `parse`.
 
 `fuzz.yml` runs this file as an ordinary script under the interpreter
 `.python-version` pins, and its header is where that is argued against
@@ -45,14 +44,13 @@ import sys
 
 import atheris
 from btclib.exceptions import BTClibException
-
-from btclib_node.p2p.messages.errors import Reject
+from btclib.p2p.reject import Reject
 
 # tests/fuzz_corpus_test.py reads this with ast.literal_eval rather than
 # by importing this module: atheris above is installed only by the
 # `fuzz` dependency group, which nothing but fuzz.yml asks for, so the
 # suite must not execute this file
-ENTRY_POINTS = ("btclib_node.p2p.messages.errors:Reject.parse",)
+ENTRY_POINTS = ("btclib.p2p.reject:Reject.parse",)
 
 
 def fuzz_target(data: bytes) -> None:
