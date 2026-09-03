@@ -305,11 +305,6 @@ Do not use Fable unless explicitly instructed.
 
 ## Non-obvious facts that will otherwise waste a session
 
-- **`btclib` is resolved from its `main` branch**, not from a release:
-  `[tool.uv.sources]` says so and says why, and `uv.lock` pins the
-  commit. So `uv sync` needs `git` and builds a source distribution, and
-  moving onto a newer btclib is a re-lock and a decision rather than a
-  refresh.
 - **A trailing comment on the version line of `.python-version` makes uv
   ignore the whole file.** The reasoning for the pin is therefore in the
   lines above it, which is not where a reader looks first.

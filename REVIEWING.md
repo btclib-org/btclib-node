@@ -486,12 +486,6 @@ because that document, and not this one, is where the rule lives.
   pins 3.14, and no matrix runs anything else, so what reads as a floor
   is also the ceiling of what has been run. Both files carry the
   reasoning beside the number.
-- **Does a re-lock of `btclib` say what it moved onto?**
-  `[tool.uv.sources]` resolves that dependency from its `main` branch
-  rather than from a release, and `uv.lock` pins the commit — so a
-  re-lock changes which unreleased btclib this tree is written against,
-  and that table is where the argument for taking that cost is. A diff
-  dropping the table answers the same argument.
 - **Does a diff over the store or an index keep key order?**
   `src/btclib_node/db.py` states which readers stop at the first key
   that does not carry their prefix, and a prefix that sorts before one

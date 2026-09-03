@@ -24,21 +24,18 @@ requires-python = ">=3.14"
 # when a release is cut, not while the tree is developed. Each floor is
 # the release this tree is developed against; btclib's is also the
 # release whose API this code is written to, anything older wanting
-# `merkle_root_` and taking `check_validity` positionally. What this
-# tree is actually built and tested against is not that release but
-# btclib's `main`: [tool.uv.sources] below says so, and says why.
+# `merkle_root_` and taking `check_validity` positionally.
 dependencies = [
     # The `secp256k1` extra, not an optional-dependencies table of this
     # package's own: btclib-org/btclib-node#361 is where dependency
     # versus extra was decided, and why.
     #
-    # 2026.8.29, the release this tree is developed against. The floor
-    # first left the older API at 2026.8.27, where
-    # `src/btclib_node/download.py`'s unconditional import of
-    # `btclib.p2p.negotiation.FeeFilter` appeared on PyPI — what had left
-    # `test.yml`'s own packaging smoke test unable to do more than read
-    # the wheel's metadata (btclib-org/btclib-node#381).
-    "btclib[secp256k1]>=2026.8.29",
+    # 2026.9.3, the first release carrying every module and name `src/`
+    # imports -- `btclib.muhash`, `btclib.p2p.reject`, `btclib.tx.coin`
+    # and `btclib.tx.tx_context` among the modules -- so a floor below
+    # it is a release the published wheel's own smoke test cannot
+    # import (btclib-org/btclib-node#848).
+    "btclib[secp256k1]>=2026.9.3",
     "rocksdict>=0.3.29",
     # `rpc/errors.py` imports `RPCErrorCode` directly now, so this is a
     # direct runtime dependency rather than the transitive arrival
@@ -330,32 +327,6 @@ dev = [
 # it -- btclib-org/.github's README.md, section 1, argues why; section
 # 15 carries the command that re-derives the ceiling
 required-version = ">=0.12.1"
-
-[tool.uv.sources]
-# btclib's `main`, and not its last release, because the two are
-# developed together: btclib's p2p package was written against this node
-# and cites its defects by file and function, and this node is what
-# exercises that package against a live network. What a node measures
-# itself against is therefore what btclib is now, so that a defect found
-# here is one fixable there in the same week rather than at the next
-# release -- and so that an API this tree is written to is broken by the
-# commit that breaks it and not, months later, by the release carrying
-# it.
-#
-# The cost is that a source distribution of btclib is built on every
-# resolve, that a checkout needs git to install, and -- the one this
-# repository cannot absorb on its own -- that nothing here runs against
-# that branch as it moves: test.yml runs `uv run --locked`, so what the
-# suite exercises is the commit uv.lock pins and not btclib's tip. A
-# break therefore arrives at the re-lock that takes it, and reaches a
-# developer's local run before any job. That pin is what keeps it from
-# arriving unannounced: a checkout is reproducible and a re-lock is what
-# moves it, deliberately, the way any other dependency moves.
-#
-# The floor in [project.dependencies] above stays, and is not made
-# redundant by this: [tool.uv.sources] is uv's and is dropped from the
-# metadata anything else reads, so the floor is what pip resolves.
-btclib = { git = "https://github.com/btclib-org/btclib", branch = "main" }
 
 [build-system]
 # What declares the contents of a distribution here is a set of glob

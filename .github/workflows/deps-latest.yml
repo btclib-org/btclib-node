@@ -7,13 +7,12 @@ name: deps-latest
 # README.md section 10 names this sentinel for.
 #
 # Every dependency of this project is declared as a floor rather than a
-# pin, and the reason is in pyproject.toml: btclib's `main` moves under
-# this tree by design, and the rest of the resolution is meant to move
-# with a `pip install` a user would get today. That premise is exactly
-# what nothing else checks -- every other workflow passes `--locked`, so
-# what CI runs is the resolution someone locked, and a release that has
-# changed an API or dropped an interpreter since then goes unnoticed
-# until somebody re-locks by hand.
+# pin, and the reason is in pyproject.toml: the resolution is meant to
+# move with a `pip install` a user would get today. That premise is
+# exactly what nothing else checks -- every other workflow passes
+# `--locked`, so what CI runs is the resolution someone locked, and a
+# release that has changed an API or dropped an interpreter since then
+# goes unnoticed until somebody re-locks by hand.
 #
 # The obvious alternative, dropping --locked from test.yml and resolving
 # afresh on every run, is what this workflow exists instead of: a pull
@@ -63,8 +62,8 @@ on:
   workflow_dispatch:
 
 # least privilege for the GITHUB_TOKEN: everything running in a job
-# (actions, dependencies, btclib's own source build) can read the token,
-# so it must not be able to write to the repository
+# (actions, dependencies) can read the token, so it must not be able to
+# write to the repository
 permissions:
   contents: read
 
@@ -80,8 +79,7 @@ jobs:
     name: Run the suite, dependencies at latest
     runs-on: ubuntu-latest
     # far above what a run of the suite needs, the resolution the upgrade
-    # below performs (a source build of btclib included) and it: what it
-    # bounds is a hung job
+    # below performs and it: what it bounds is a hung job
     timeout-minutes: 30
     steps:
       # every action is pinned to a commit SHA, the tag in the comment: a
@@ -102,16 +100,14 @@ jobs:
 
       # --upgrade re-resolves every entry to the newest release that
       # satisfies pyproject.toml, which nothing else off a pull request
-      # does -- btclib's own `main` included, since [tool.uv.sources]
-      # points there rather than at a release. It prints one "Updated
-      # <pkg> vA -> vB" line per package it moves, so the log names the
-      # suspects without a diff of uv.lock. The same command under
-      # --dry-run prints "Update" instead, so a reader checking this
-      # quotation the cheap way is told the line is wrong when it is
-      # right; a run that moved nothing says so, and its green means
-      # nothing new. This rewrites uv.lock, harmless on an ephemeral
-      # checkout and worth knowing before running the same command in a
-      # working tree
+      # does. It prints one "Updated <pkg> vA -> vB" line per package it
+      # moves, so the log names the suspects without a diff of uv.lock.
+      # The same command under --dry-run prints "Update" instead, so a
+      # reader checking this quotation the cheap way is told the line is
+      # wrong when it is right; a run that moved nothing says so, and its
+      # green means nothing new. This rewrites uv.lock, harmless on an
+      # ephemeral checkout and worth knowing before running the same
+      # command in a working tree
       - name: Upgrade every dependency to its latest release
         run: uv lock --upgrade
 
