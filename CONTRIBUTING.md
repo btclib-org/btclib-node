@@ -244,7 +244,7 @@ uv run pytest                                    # the suite, coverage included
 git add -A && uv run pre-commit run --all-files  # the lint gate
 uv run pre-commit validate-config .pre-commit-config.yaml
 uv run --locked --no-default-groups --group docs \
-    sphinx-build -W -n --keep-going -b html docs/source docs/build/html
+    sphinx-build -W -n -b html docs/source docs/build/html
 ```
 
 `--all-files` means every file git tracks, so a file that is new and not
