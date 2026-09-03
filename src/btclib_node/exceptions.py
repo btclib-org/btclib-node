@@ -72,7 +72,7 @@ class NonStandardTxError(BTClibValueError):
     it defines the same set -- "we do not ban/disconnect nodes that
     forward txs violating the additional (non-mandatory) rules here, to
     improve forwards and backwards compatibility"
-    (`src/policy/policy.h:112-117`, at bitcoin/bitcoin@9be056a8a7) --
+    (`src/policy/policy.h:112-117`, at bitcoin/bitcoin@4519933391) --
     and `p2p.callbacks.tx` is what honours it, catching this and
     dropping the transaction alone.
 

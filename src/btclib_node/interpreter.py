@@ -46,7 +46,7 @@ __all__ = [
 ]
 
 # Core's own `STANDARD_SCRIPT_VERIFY_FLAGS` (`src/policy/policy.h:118-131`,
-# at bitcoin/bitcoin@9be056a8a7): what a transaction has to satisfy to be
+# at bitcoin/bitcoin@4519933391): what a transaction has to satisfy to be
 # relayed and held, over what it has to satisfy to be mined.
 # `btclib.script.engine.flags.ALL_FLAGS` is the consensus set and is
 # Core's `MANDATORY_SCRIPT_VERIFY_FLAGS` member for member, so the union
@@ -249,13 +249,13 @@ def check_transaction(prevouts: list[TxOut], tx: Tx) -> None:
     would outweigh what it buys here.
 
     `STANDARD_FLAGS` and not `get_flags`, which is Core's
-    `PolicyScriptChecks` (`src/validation.cpp:1139-1160`,
-    at bitcoin/bitcoin@9be056a8a7): a candidate is judged against relay
+    `PolicyScriptChecks` (`src/validation.cpp:1129-1150`,
+    at bitcoin/bitcoin@4519933391): a candidate is judged against relay
     policy, and the consensus set alone admits to this node's mempool a
     transaction Core will not relay. Nothing here reads the chain, so
     this takes neither a height nor a `Node`.
 
-    Core follows that call with `ConsensusScriptChecks` (`:1162-1193`,
+    Core follows that call with `ConsensusScriptChecks` (`:1152-1183`,
     same commit) and this does not. That second call fills the script
     execution cache `ConnectBlock` reads later, which is not a structure
     this tree has -- `check_transactions` above verifies every input of

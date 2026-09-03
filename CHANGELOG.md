@@ -3995,6 +3995,46 @@ dereferences it, and `refs/tags/v1^{}` does the same from a checkout.
   form they landed in**, per section 9's *Nothing already written is
   rewritten*; the rule binds what is written next.
 
+### Core's own source is cited at `master`, the pinned bitcoind at its tag
+
+- **`exceptions.py`, `interpreter.py`, `interpreter_test.py` and
+  `p2p/callbacks_test.py` read Core at `bitcoin/bitcoin@4519933391`,
+  where they read it at `9be056a8a7`** (closes #853). `CLAUDE.md`'s
+  *Following Bitcoin Core* reserves a release's tag commit for a claim
+  about the bitcoind `.github/workflows/integration-bitcoind.yml` pins,
+  and what these describe is Core's relay policy and its mempool
+  acceptance path: production code and unit tests, which start no
+  bitcoind at all.
+- **`PolicyScriptChecks` is `src/validation.cpp:1129-1150` and
+  `ConsensusScriptChecks` `:1152-1183` at that sha**, against
+  `1139-1160` and `1162-1193` at `9be056a8a7`. Over those ranges the
+  two shas differ by the `const ATMPArgs& args` parameter each function
+  drops, which neither citation's prose reads.
+- **The claims themselves hold at `9be056a8a7` as well.** Core's
+  comment on not disconnecting a peer that forwards a
+  non-mandatory-rule violation is `src/policy/policy.h:112-117` at both
+  shas, byte for byte, and `STANDARD_SCRIPT_VERIFY_FLAGS` is `:118-131`
+  at both, with the same members in the same order. Its declaration
+  differs -- `static constexpr` at the release, `inline constexpr` at
+  `master` -- which no citation of the set reads. So what the move
+  corrects is which Core a claim is read against and not a falsehood.
+- **`tests/integration/reorg_test.py` stays at `9be056a8a7`**: it hands
+  blocks to the pinned bitcoind and asserts on what it answers, which
+  is the case the tag commit is reserved for. `COINBASE_MATURITY`,
+  `DEFAULT_MAX_TIP_AGE`, `UpdatedBlockTip`'s early return during
+  initial block download, `bad-cb-length` and `submitblock`'s
+  `"inconclusive"` all read the same at `master`;
+  `include_dummy_extranonce` does not, `master` carrying no such option
+  and appending the `OP_0` at `nHeight <= 16` outright, so the pin is
+  what keeps that sentence true.
+- **`9be056a8a7` is cited in this file and in
+  `tests/integration/reorg_test.py`, the entry above having said this
+  file and `src/`.** That entry keeps what it landed with, per section
+  9's *Nothing already written is rewritten*, and this bullet is what
+  serves the reader instead. The citations there that name no tag keep
+  their form too: `reorg_test.py`'s `_COMMON` comment names `v31.1` and
+  says the module runs against that release.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
