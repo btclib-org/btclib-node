@@ -1276,7 +1276,7 @@ def test_a_transaction_only_relay_policy_refuses_costs_the_peer_nothing(
     copies: "we do not ban/disconnect nodes that forward txs violating
     the additional (non-mandatory) rules here, to improve forwards and
     backwards compatibility" (`src/policy/policy.h:112-117`,
-    at bitcoin/bitcoin@9be056a8a7). The class is a `BTClibValueError`,
+    at bitcoin/bitcoin@4519933391). The class is a `BTClibValueError`,
     so letting it out of `tx` would reach `handle_p2p`'s own
     `isinstance(e, BTClibException)` and discourage the peer --
     `test_a_callback_that_raises_a_btclib_exception_costs_the_peer`

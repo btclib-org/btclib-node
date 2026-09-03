@@ -445,7 +445,7 @@ def test_every_script_flag_is_decided_one_way_or_the_other() -> None:
     """`SIGPUSHONLY` is the one `ScriptFlag` member `STANDARD_FLAGS` omits.
 
     Core's `STANDARD_SCRIPT_VERIFY_FLAGS` omits it too
-    (`src/policy/policy.h:118-131`, at bitcoin/bitcoin@9be056a8a7). What
+    (`src/policy/policy.h:118-131`, at bitcoin/bitcoin@4519933391). What
     this pins is that a member btclib adds later cannot be left out of
     the set in silence: it is either relayed against or named here.
     """
