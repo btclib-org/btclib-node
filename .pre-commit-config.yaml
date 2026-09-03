@@ -449,6 +449,28 @@ repos:
         language: pygrep
         entry: '\b(text|universal_newlines)=True'
         files: \.py$
+  # a bitcoind pin and a release-pinned Core citation are two places
+  # that have to move together, and nothing else here reads either --
+  # `pinned-rev` above checks the shape of a pre-commit rev, not a
+  # version this tree copies into its own prose. Cannot be a pygrep
+  # hook: the question is whether one file's pin agrees with another
+  # file's citation, which a single-file regex cannot compare
+  # (btclib-org/btclib-node#856). Stdlib only, so `system` needs no
+  # environment of its own, the same reason check_vendored_pin.py is
+  # invoked with a bare `python3` rather than through uv
+  - repo: local
+    hooks:
+      - id: core-citation-pin
+        name: a release-pinned Core citation agrees with the bitcoind pin
+        entry: python3 .github/scripts/check_core_citation_pin.py
+        language: system
+        pass_filenames: false
+        # a single line with no literal space in it, the same reason
+        # local-link-prefix above is a block scalar rather than a
+        # quoted one: yamllint reads it as one unbreakable word and its
+        # 100-column rule does not apply
+        files: |-
+          ^(\.github/workflows/integration-bitcoind\.yml|tests/integration/(reorg_test|conftest)\.py|src/btclib_node/rpc/errors\.py|\.github/scripts/check_core_citation_pin\.py)$
   # a local hook running mypy from the project environment: every
   # import the tree makes resolves under it, and there is no unstubbed
   # dependency left to declare an override for -- pyproject.toml's

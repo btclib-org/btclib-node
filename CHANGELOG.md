@@ -4083,6 +4083,31 @@ dereferences it, and `refs/tags/v1^{}` does the same from a checkout.
 - **The paragraph is rewrapped around the longer pattern**, which also
   brings `-H 'Cache-Control: no-cache'` onto one line.
 
+### A pre-commit check fails where the bitcoind pin and a Core citation disagree
+
+- **Nothing tied `integration-bitcoind.yml`'s `version:` pin to
+  `tests/integration/reorg_test.py`'s citations of that release, so a
+  bump left them describing a bitcoind the suite no longer runs**
+  (closes #856). A new local hook, `check_core_citation_pin.py`, now
+  reads the pin and the module's own citations together and fails where
+  either disagrees with the other, or where the module's citations
+  disagree among themselves.
+- **The same failure reaches the other sites that copy the release's
+  full version number for a measurement claim rather than cite Core's
+  source**: `integration-bitcoind.yml`'s own timing comment beside the
+  pin, `tests/integration/conftest.py`'s startup measurement, and
+  `src/btclib_node/rpc/errors.py`'s docstring -- a bump falsifies each
+  of them exactly as it falsifies a citation.
+- **The check reads this tree and nothing else**, so it cannot say a
+  citation is still true of Core's source -- only a human re-reading
+  Core at the new tag can say that. What it forces is that re-read
+  wherever a bump goes on without it; it does not perform one.
+- **A pygrep hook cannot ask whether one file's pin agrees with
+  another's citation**, both being needed at once, so the hook is
+  `language: system`, invoked with a bare `python3` the way
+  `check_vendored_pin.py` already is rather than through `uv`, the
+  script importing nothing beyond the standard library.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
