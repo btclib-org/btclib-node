@@ -539,20 +539,29 @@ A worktree and not `git checkout`, for the reason `CLAUDE.md` gives: the
 primary checkout is the maintainer's, and a rebuild wants a tree of its
 own regardless.
 
+The block chains so that a paste made before `<version>` is filled in
+reaches no command outside that tree: an interactive shell answers the
+placeholder line with a parse error and reads the `cd` below it as a
+fresh command, and a failing `cd` inside the chain takes every line
+under it with it. The rejected alternative makes the `cd` fatal on its
+own — `|| exit`, or a `set -e` above the block — which refuses the same
+paste by ending the shell the reader pasted into, where the chain leaves
+the session standing.
+
 ```shell
-git worktree add --detach /tmp/btclib-node-rebuild v<version>
-cd /tmp/btclib-node-rebuild
-export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
-uv build
+git worktree add --detach /tmp/btclib-node-rebuild v<version> &&
+cd /tmp/btclib-node-rebuild &&
+export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct) &&
+uv build &&
 uv run --no-project --python 3.14 \
-  .github/scripts/normalize_sdist.py dist/
+  .github/scripts/normalize_sdist.py dist/ &&
 uv run --no-project --python 3.14 \
-  .github/scripts/generate_sbom.py dist/ sbom/
-repo=btclib-org/btclib-node
+  .github/scripts/generate_sbom.py dist/ sbom/ &&
+repo=btclib-org/btclib-node &&
 gh attestation verify dist/btclib_node-<version>-py3-none-any.whl \
-  --repo "$repo" --signer-workflow "$repo/.github/workflows/release.yml"
+  --repo "$repo" --signer-workflow "$repo/.github/workflows/release.yml" &&
 gh attestation verify dist/btclib_node-<version>.tar.gz \
-  --repo "$repo" --signer-workflow "$repo/.github/workflows/release.yml"
+  --repo "$repo" --signer-workflow "$repo/.github/workflows/release.yml" &&
 gh attestation verify sbom/btclib_node-<version>.cdx.json \
   --repo "$repo" --signer-workflow "$repo/.github/workflows/release.yml"
 ```

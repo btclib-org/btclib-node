@@ -3363,6 +3363,33 @@ they were written in.
   it**, which is what the comment beside the command in `docs.yml` and
   `.readthedocs.yaml` says, so one broken page does not hide the next.
 
+### `RELEASING.md`'s rebuild block chains from its placeholder line
+
+- **Pasted before `<version>` was filled in, the block reached `uv
+  build` in the reader's own working directory rather than in the
+  rebuild worktree** (issue btclib-org/.github#657). Its first line ends
+  in `v<version>`, which an interactive shell answers with a parse error
+  and discards, reading `cd /tmp/btclib-node-rebuild` as a fresh
+  command; that `cd` then fails, the worktree never having been created,
+  and `uv build`, `normalize_sdist.py` and `generate_sbom.py` ran where
+  the reader stood.
+- **The `cd` sits inside the chain, so no line below it runs unless the
+  `cd` succeeded.** Whatever the reader's directory holds, the build
+  runs in `/tmp/btclib-node-rebuild` or it does not run.
+- **The rejected alternative makes the `cd` fatal on its own** -- `||
+  exit`, or a `set -e` above the block. Either closes this block too,
+  and closes it by ending the shell: a command appended under the block
+  runs after the chained paste and does not run after either of those,
+  so an interactive reader loses the terminal they pasted into. The
+  chain refuses the same paste with the session still standing.
+- **A shell reading the block from a file aborts at the parse error and
+  invokes nothing** -- `zsh` rc 1, `bash` and `sh` rc 2. `zsh` reading
+  the same bytes from stdin does not: `zsh < block` and `cat block |
+  zsh` discard the line and carry on as an interactive shell does, which
+  is the split section 9 of the organization standard states. So what
+  reports this block harmless is a harness handing the block over as a
+  file, not a non-interactive harness in general.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
