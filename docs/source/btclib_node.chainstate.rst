@@ -11,13 +11,6 @@ btclib\_node.chainstate.block\_index module
    :members:
    :show-inheritance:
 
-btclib\_node.chainstate.contextual module
---------------------------------------------
-
-.. automodule:: btclib_node.chainstate.contextual
-   :members:
-   :show-inheritance:
-
 btclib\_node.chainstate.filter\_index module
 -----------------------------------------------
 

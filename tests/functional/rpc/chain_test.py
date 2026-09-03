@@ -171,7 +171,7 @@ def test_blockchain_info_s_initialblockdownload_flips_off_once_caught_up_and_rec
     genesis = RegTest().genesis
     block = build_block(
         genesis.hash,
-        [generate_coinbase(value=RegTest().subsidy(1), height=1)],
+        [generate_coinbase(height=1)],
         0,
         time=datetime.now(UTC),
     )

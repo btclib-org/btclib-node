@@ -142,19 +142,6 @@ class Chain:
         """
         return CONSENSUS_PARAMS[self.name]
 
-    def subsidy(self, height: int) -> int:
-        """Return the block reward at `height`: fifty bitcoin, halved by height.
-
-        Core's `GetBlockSubsidy` (`src/validation.cpp:1844`,
-        at bitcoin/bitcoin@204256c73f): fifty bitcoin, right-shifted once
-        per `subsidy_halving_interval` blocks, forced to zero once that
-        shift is undefined for a native int.
-        """
-        halvings = height // self.consensus.subsidy_halving_interval
-        if halvings >= 64:  # noqa: PLR2004
-            return 0
-        return (50 * 10**8) >> halvings
-
     @property
     def magic(self) -> bytes:
         """The network's four-byte magic, the octets a message starts with."""

@@ -184,7 +184,7 @@ def test_a_header_with_valid_pow_but_the_wrong_required_target_is_refused(
 ) -> None:
     """A header solved at the wrong target is refused by the contextual check.
 
-    assert_valid_pow and assert_valid_in_context share one except clause
+    assert_valid_pow and _assert_valid_in_context share one except clause
     in add_headers; this header trips only the second, mining a target
     harder than regtest's own limit but not the one the chain requires,
     so a test that only ever builds a header failing the first check
@@ -221,7 +221,7 @@ def test_a_header_with_valid_pow_but_no_later_than_the_median_is_refused(
     """A header solved and correctly targeted, but too early, is refused.
 
     Same wiring question as above, tripped by the other branch of
-    assert_valid_in_context: this header carries the required target
+    _assert_valid_in_context: this header carries the required target
     and a solved nonce, and only its timestamp -- the genesis' own, no
     later than the median of itself alone -- is wrong.
     """

@@ -15,18 +15,14 @@ that relay one.
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
+from btclib.block import header_at_height, median_time_past
 from btclib.block.block_context import BlockContext
 from btclib.exceptions import BTClibValueError
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
 from btclib.script.engine.flags import ScriptFlag
 
 from btclib_node.block_db import Coin
-from btclib_node.chainstate.block_index import BlockIndex, BlockStatus
-from btclib_node.chainstate.contextual import (
-    block_time,
-    header_at_height,
-    median_time_past,
-)
+from btclib_node.chainstate.block_index import BlockIndex, BlockStatus, block_time
 from btclib_node.constants import MAX_TIP_AGE, MIN_BLOCKS_TO_KEEP, NodeStatus
 from btclib_node.exceptions import (
     ChainstateInconsistencyError,
@@ -492,7 +488,8 @@ def _check_bip30(node: Node, index: int, block_hash: bytes) -> bool:
 # yet COINBASE_MATURITY deep (interpreter.check_coinbase_maturity), the
 # two rules a height and a clock decide on their own
 # (Block.assert_valid_contextual) -- time-too-new, already checked on the
-# header path (chainstate/contextual.py), and bad-cb-height, wherever
+# header path (chainstate/block_index.py's own header validation), and
+# bad-cb-height, wherever
 # BIP34 binds (Chain.consensus.bip34_height, per network) -- and now
 # every transaction's own finality (interpreter.check_final_transactions,
 # BIP113-aware) and BIP68 relative lock (interpreter.check_sequence_locks).

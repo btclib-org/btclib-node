@@ -30,13 +30,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from bitcoin_core_rpc import BitcoinCoreRpcClient, http_request
-from btclib.block import (
-    Block,
-    BlockHeader,
-    bip34_commitment,
-    merkle_root_and_mutated_from_transactions,
-)
-from btclib.block.mining import mine
+from btclib.block import Block, BlockHeader, build
+from btclib.block.mining import candidate_block_header, mine
 from btclib.block.proof_of_work import REGTEST_POW_LIMIT_BITS
 from btclib.exceptions import BTClibValueError
 from btclib.script import script
@@ -199,38 +194,43 @@ def generate_random_transaction(
     )
 
 
-def generate_coinbase(value: int = 50 * 10**8, height: int | None = None) -> Tx:
+def generate_coinbase(value: int | None = None, height: int | None = None) -> Tx:
     """Return a coinbase transaction paying `value`, the subsidy by default.
 
-    A null-outpoint input marks it as a coinbase; `value` lets a test
-    fund an output with an exact, known amount rather than the subsidy,
-    where what it is checking is the amount rather than the block being
-    otherwise ordinary. `height`, where given, is prefixed onto the
-    script_sig as BIP34's own commitment (`bip34_commitment`) -- what a
-    chain enforcing BIP34 needs to connect the block this funds, which
-    regtest does from height 1 on. Left out, the script_sig commits to
-    no height at all, which is what a test of that rule itself builds.
+    `height`, where given, builds through btclib's own
+    `block.build.build_coinbase`: a null-outpoint input, and the
+    script_sig BIP34 asks a chain enforcing it to find, which regtest
+    does from height 1 on -- what lets `value` left unset pay the real
+    subsidy at that height rather than a flat fifty bitcoin, and what a
+    test funding an output with an exact, known amount overrides
+    instead, where what it is checking is the amount rather than the
+    block being otherwise ordinary. `height` left out builds no BIP34
+    commitment at all, which is what a test of that rule itself needs
+    and `build_coinbase` cannot produce -- its own docstring names the
+    escape this takes, a `Tx` built by hand.
     """
-    script_sig = script.serialize([secrets.token_bytes(32)])
-    if height is not None:
-        script_sig = bip34_commitment(height) + script_sig
-    return Tx(
-        version=1,
-        lock_time=0,
-        vin=[
-            TxIn(
-                prev_out=OutPoint(),
-                script_sig=script_sig,
-                sequence=0xFFFFFFFF,
-            )
-        ],
-        vout=[
-            TxOut(
-                value=value,
-                script_pub_key=script.serialize([secrets.token_bytes(32)]),
-            )
-        ],
+    script_pub_key = script.serialize([secrets.token_bytes(32)])
+    if height is None:
+        return Tx(
+            version=1,
+            lock_time=0,
+            vin=[
+                TxIn(
+                    prev_out=OutPoint(),
+                    script_sig=script.serialize([secrets.token_bytes(32)]),
+                    sequence=0xFFFFFFFF,
+                )
+            ],
+            vout=[TxOut(value if value is not None else 50 * 10**8, script_pub_key)],
+        )
+    coinbase = build.build_coinbase(
+        height,
+        script_pub_key,
+        halving_interval=RegTest().consensus.subsidy_halving_interval,
     )
+    if value is not None:
+        coinbase.vout = [TxOut(value, script_pub_key)]
+    return coinbase
 
 
 def build_block(
@@ -252,15 +252,18 @@ def build_block(
     satisfied by a block dated the ordinary way. `generate_random_chain`'s
     own `tip_time` reaches this same parameter, for the one caller that
     needs its own chain's tip to qualify.
+
+    The header comes from btclib's own `block.mining.candidate_block_header`,
+    over `transactions` -- the same merkle root computation
+    `Block.assert_valid_merkle_root` checks against -- rather than one
+    built by hand a second time.
     """
-    header = BlockHeader(
+    header = candidate_block_header(
+        previous_block_hash,
+        transactions,
+        time if time is not None else GENESIS_TIME + timedelta(seconds=height + 1),
+        REGTEST_POW_LIMIT_BITS,
         version=70015,
-        previous_block_hash=previous_block_hash,
-        merkle_root=merkle_root_and_mutated_from_transactions(transactions)[0],
-        time=time if time is not None else GENESIS_TIME + timedelta(seconds=height + 1),
-        bits=REGTEST_POW_LIMIT_BITS,
-        nonce=1,
-        check_validity=False,
     )
     brute_force_nonce(header)
     # Block.__init__ validates against mainnet's pow limit, which no
@@ -314,9 +317,7 @@ def generate_random_chain(
     for x in range(length):
         previous_block_hash = chain[-1].header.hash if chain else start
         height = x + 1
-        transactions = [
-            generate_coinbase(value=RegTest().subsidy(height), height=height)
-        ]
+        transactions = [generate_coinbase(height=height)]
         if spendable is None and height > COINBASE_MATURITY:
             spendable = chain[0].transactions[0]
         if spendable is not None:
