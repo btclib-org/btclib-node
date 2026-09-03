@@ -154,9 +154,8 @@ one change that makes this section live again.
 
 A rehearsal runs the identical pipeline — the test workflow (which now
 builds and checks the distribution files in its own `dist` job), the
-lint workflow, and the publish step, not the documentation build for the
-reason this file's introduction gives — and publishes the very files
-those checks passed to
+lint workflow, the documentation build, and the publish step — and
+publishes the very files those checks passed to
 [TestPyPI](https://test.pypi.org/project/btclib-node/) instead of PyPI.
 
 1. On GitHub, Actions → release → Run workflow, and pick the branch to
@@ -281,19 +280,23 @@ this release included.
    ```shell
    version=<the version being released>
    git rebase origin/main
-   git show origin/main:CHANGELOG.md > /tmp/expected.md
-   # apply this release's own edits to /tmp/expected.md: retitle
+   scratch=$(mktemp -d)
+   git show origin/main:CHANGELOG.md > "$scratch/expected.md"
+   # apply this release's own edits to $scratch/expected.md: retitle
    # `## Unreleased` to `## v$version`, open the next `## Unreleased`
    # above it, and whatever the intro needs
-   git show HEAD:CHANGELOG.md > /tmp/actual.md
-   cmp /tmp/expected.md /tmp/actual.md      # silent, exit 0
+   git show HEAD:CHANGELOG.md > "$scratch/actual.md"
+   cmp "$scratch/expected.md" "$scratch/actual.md"   # silent, exit 0
    ```
 
-   and the same pair for `RELEASE_NOTES.md`. Identical bytes are a
-   proof the rebase produced what the redo would have; a difference is
-   both the defect and, in `/tmp/expected.md`, the file that should
-   have been there. `v2026.8.27` was rebased when #551 landed in front
-   of the tag, and this is what licensed it.
+   and the same pair, in a `scratch=$(mktemp -d)` of its own, for
+   `RELEASE_NOTES.md`: a fixed name is a name a second run of this
+   same step, or a second person on the same machine, can silently
+   overwrite or read back stale. Identical bytes are a proof the
+   rebase produced what the redo would have; a difference is both the
+   defect and, in `$scratch/expected.md`, the file that should have
+   been there. `v2026.8.27` was rebased when #551 landed in front of
+   the tag, and this is what licensed it.
 
    **Two checks that look like this one and are not.** Both were
    measured against a fused rebase and against a *misordered* one — the
@@ -552,13 +555,16 @@ primary checkout is the maintainer's, and a rebuild wants a tree of its
 own regardless.
 
 The block chains so that a paste made before `<version>` is filled in
-reaches no command outside that tree: an interactive shell answers the
-placeholder line with a parse error and reads the `cd` below it as a
-fresh command, and a failing `cd` inside the chain takes every line
-under it with it. The rejected alternative makes the `cd` fatal on its
-own — `|| exit`, or a `set -e` above the block — which refuses the same
-paste by ending the shell the reader pasted into, where the chain leaves
-the session standing.
+reaches no command outside that tree: an interactive shell, and `zsh`
+reading the block from standard input, answers the placeholder line
+with a parse error and reads the `cd` below it as a fresh command —
+`bash` and `sh` abort the whole feed on that same error regardless of
+channel, and so does `zsh` given the block as a file rather than on
+its own standard input — and a failing `cd` inside the chain takes
+every line under it with it. The rejected alternative makes the `cd`
+fatal on its own — `|| exit`, or a `set -e` above the block — which
+refuses the same paste by ending the shell the reader pasted into,
+where the chain leaves the session standing.
 
 ```shell
 git worktree add --detach /tmp/btclib-node-rebuild v<version> &&

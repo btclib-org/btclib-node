@@ -3471,6 +3471,25 @@ they were written in.
   chainstate indexes already make against `Coin.parse`/`coin.serialize`
   -- files this row leaves alone.
 
+### RELEASING.md's scratch names and prose match what the tree does
+
+- **The rebase-reconstruction check wrote its two comparison files to
+  the fixed names `/tmp/expected.md` and `/tmp/actual.md`**, so a
+  second run of the same step, or a second person on the same machine,
+  silently overwrote or read back the other's file. Each comparison
+  now runs inside its own `mktemp -d` (closes #821).
+- **The *Rehearse on TestPyPI* paragraph said a rehearsal skips the
+  documentation build**, and `release.yml`'s `docs` job carries no
+  `if:` and no `needs:`, so a `workflow_dispatch` run enters it exactly
+  as a tag push does. The paragraph now says a rehearsal runs the
+  identical pipeline, the documentation build included (closes #819).
+- **The rebuild-block paragraph named only an interactive shell as the
+  one that reads the unfilled placeholder line's parse error and then
+  the `cd` below it as a fresh command.** `zsh` reading the same block
+  from standard input does the same, where `bash`, `sh` and `zsh`
+  itself given the block as a file all abort the whole feed on that
+  same error instead (closes #818).
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
