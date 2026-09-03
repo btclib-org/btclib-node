@@ -239,9 +239,14 @@ Removing the worktree is part of finishing, and it stands in a block of
 its own: the block above ends in a placeholder, and a shell that
 discards that line as a parse error reads the next as a fresh command —
 which, in one block, is this line against whatever `$WT` already held.
+Standing alone it is a second fence, so `${WT:?}` is what it writes:
+with no `$WT` set the expansion fails and the removal does not run.
+That is the only case it catches: a `$WT` left over from an earlier
+session or command is set, so it expands, and the removal runs against
+whatever worktree that value names.
 
 ```shell
-git worktree remove --force "$WT"
+git worktree remove --force "${WT:?}"
 ```
 
 **Never `git stash` in a worktree either: `refs/stash` is shared.** A
@@ -424,6 +429,20 @@ Do not use Fable unless explicitly instructed.
   reads the file rather than the controlling process's state — proving
   the revert with `git diff --stat` or a grep for a marker the mutation
   left, rather than trusting that it ran.
+- **`.hypothesis/` is per-worktree and outlives the diff that provoked
+  it.** `.gitignore:50` covers it, `tests/conftest.py`'s `default` and
+  `thorough` profiles name no `database`, and hypothesis's own
+  `DirectoryBasedExampleDatabase` therefore records every failing
+  example a property test finds under `.hypothesis/examples` and
+  replays it on every later run in that same worktree. Measured by
+  forcing `tests/property_test.py` to fail on a value random search
+  rarely reaches on its own and reverting the test: the worktree that
+  had recorded the value fails on it again, deterministically, while
+  a worktree with no such record passes, on the same code and the same
+  default example budget. A red property test that will not reproduce
+  outside the worktree that raised it is not evidence of a flake for
+  that reason alone — removing the worktree rather than reusing it is
+  what a fresh reading needs (btclib-org/btclib-node#835).
 - **A `.venv` reused from another worktree imports that worktree's
   `src/`, not the caller's.** `site-packages/btclib_node.pth` is a plain
   absolute path written at `uv sync` time and does not follow `cwd`.

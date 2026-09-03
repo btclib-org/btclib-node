@@ -3642,6 +3642,17 @@ they were written in.
   it precedes; only a correctly filled paste is protected against a
   leftover target.
 
+### The worktree fence and the property database say what they guard
+
+- **The worktree-removal fence wrote a bare `"$WT"`; it now writes
+  `"${WT:?}"`, catching an unset `$WT` and not a stale one, matching
+  `btclib-org/.github`'s own copy of the same block** (closes #834).
+- **A property test's failing example is recorded per worktree, under
+  `.hypothesis/examples`, and replayed on every later run there but on
+  no other: a red property test that will not reproduce outside the
+  worktree that raised it is not evidence of a flake for that reason
+  alone** (closes #835).
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
