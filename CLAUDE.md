@@ -515,7 +515,8 @@ Do not use Fable unless explicitly instructed.
   `MD022/blanks-around-headings` and `MD032/blanks-around-lists` at the
   line, against the repaired file at exit 0 as the control, and the
   hook's own `--fix` restores it byte for byte. The rule and the autofix
-  are section 9's and section 4's; what is worth adding is that a
+  are section 9 and section 4 of btclib-org/.github's README,
+  respectively; what is worth adding is that a
   detector the tree already runs beats building one, and that this one
   says nothing about the misplacement -- a copy with two entries
   swapped lints clean.
@@ -686,8 +687,9 @@ Do not use Fable unless explicitly instructed.
   headings, and a new entry does not follow that.** A coder deriving the
   convention from the file alone reads every `### heading` there closing
   the issue beside it and would write the next one the same way; section
-  9's `CHANGELOG.md` and `RELEASE_NOTES.md` now says the citation sits
-  in the bullet making the claim, not on the heading above it, precisely
+  9 of btclib-org/.github's README, on `CHANGELOG.md` and
+  `RELEASE_NOTES.md`, now says the citation sits in the bullet making
+  the claim, not on the heading above it, precisely
   because a heading answering for the entry as a whole leaves the
   bullets under it free to name issues of their own with nothing saying
   how the two sets relate — which is what this tree's own
