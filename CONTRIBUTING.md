@@ -239,9 +239,9 @@ project here and it is installed, so the gates run through `uv run` and
 not through the `uvx` a tree with no project needs:
 
 ```shell
-uv sync                                          # the environment
-uv run pytest                                    # the suite, coverage included
-git add -A && uv run pre-commit run --all-files  # the lint gate
+uv sync
+uv run pytest
+git add -A && uv run pre-commit run --all-files
 uv run pre-commit validate-config .pre-commit-config.yaml
 uv run --locked --no-default-groups --group docs \
     sphinx-build -W -n -b html docs/source docs/build/html

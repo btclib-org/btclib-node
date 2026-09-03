@@ -18,10 +18,11 @@ btclib-node -h
 
 `btclib-node -h` lists every flag, spelled the way Bitcoin Core spells
 its own — a single dash, `-datadir` rather than `--datadir`, though the
-double-dash spelling is accepted too. One flag selects the chain:
+double-dash spelling is accepted too. One flag selects the chain,
+mainnet being the default:
 
 ```shell
-btclib-node                # mainnet, the default
+btclib-node
 btclib-node -testnet
 btclib-node -signet
 btclib-node -regtest

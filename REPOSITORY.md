@@ -659,9 +659,12 @@ for f in allow_forking allow_update_branch archived has_discussions \
   printf '%s %s\n' "$f" "$(printf '%s' "$std" | grep -c -- "$f")"
 done
 # each name, then 0
-printf '%s' "$std" | grep -c '\.description'   # 0
-printf '%s' "$std" | grep -c 'default branch'  # not 0
-printf '%s' "$std" | grep -c '\.homepage'      # not 0
+printf '%s' "$std" | grep -c '\.description'
+# 0
+printf '%s' "$std" | grep -c 'default branch'
+# not 0
+printf '%s' "$std" | grep -c '\.homepage'
+# not 0
 ```
 
 `description` is asked with its field spelling, the bare word being

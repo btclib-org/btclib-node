@@ -266,10 +266,13 @@ this release included.
    opens is fused into one section carrying that heading twice, and the
    union driver reports no conflict for a reader to catch.
 
+   The reset takes this release's edits away with it, so what follows is
+   making them again on the new base: retitle, set the version, `uv lock`,
+   and gate again.
+
    ```shell
    git fetch origin
-   git reset --hard origin/main       # then retitle, set the version,
-                                       # uv lock, and gate again
+   git reset --hard origin/main
    ```
 
    **A rebase is allowed where it is checked, and the check is the redo
