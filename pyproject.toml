@@ -564,6 +564,7 @@ package = ["src/btclib_node"]
 # -- a selection, whose floor `tests/conftest.py`'s own
 # `relax_coverage_floor` drops.
 testpaths = [
+    "tests/check_core_citation_pin_test.py",
     "tests/fuzz_corpus_test.py",
     "tests/interpreters_test.py",
     "tests/property_test.py",
@@ -902,6 +903,9 @@ ignore = [
 # `::error::` annotation off this script's stdout, which is where
 # a GitHub Actions annotation has to be written to be one
 ".github/scripts/wait_for_readthedocs_build.py" = ["T20"]
+# and the same for the citation pin check: the pre-commit hook that
+# runs it reads a failing developer's terminal, not a return value
+".github/scripts/check_core_citation_pin.py" = ["T20"]
 # every __init__ in this file is one line, super().__init__(message) or
 # a formatted message built from its own arguments -- what it does is
 # already the whole of what the class's own docstring says, so a
