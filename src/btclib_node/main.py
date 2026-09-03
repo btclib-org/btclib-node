@@ -800,7 +800,8 @@ def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
     gated on any activation height, unlike `main._validate_block`'s own
     block-connect path: a mempool never holds a transaction from before
     a soft fork it has already activated, so Core's own mempool code
-    does not ask either.
+    does not ask either. `interpreter.check_transaction` reads the
+    scripts the same way, against a flag set that consults no height.
     """
     prev_outputs: list[TxOut] = []
     # only the prevouts this reads off the UTXO set, since a mempool
@@ -826,10 +827,8 @@ def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
     # active_chain[i] is the block at real height i (BlockIndex.__init__
     # seeds it with the genesis at index 0), so its own length already
     # is the tip's height plus one -- a further "+ 1" here would answer
-    # one block past the real next height, invisible everywhere else
-    # this reaches (get_flags below) only because every regtest flag
-    # activates at height 0 regardless, and wrong by exactly one block
-    # for assert_coinbase_maturity, which is what surfaced it
+    # one block past the real next height, and be wrong by exactly one
+    # block for assert_coinbase_maturity, which is what surfaced it
     # (btclib-org/btclib-node#569)
     spend_height = len(block_index.active_chain)
 
@@ -862,9 +861,9 @@ def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
                 raise MissingPrevoutError
 
     assert_coinbase_maturity(coins_from_utxo_set, spend_height)
-    tip_hash = block_index.active_chain[-1]
-    check_transaction(prev_outputs, tx, spend_height, node, tip_hash)
+    check_transaction(prev_outputs, tx)
 
+    tip_hash = block_index.active_chain[-1]
     tip_header = block_index.header_dict[tip_hash].header
     tip_height = spend_height - 1
     parent_of = parent_lookup(node)

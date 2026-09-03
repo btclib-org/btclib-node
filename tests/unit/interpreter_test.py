@@ -15,10 +15,14 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
+from btclib.consensus import CONSENSUS_PARAMS
 from btclib.ecc import dsa, ssa
 from btclib.exceptions import BTClibValueError, ScriptError
-from btclib.script import script, sig_hash
+from btclib.hashes import hash160, sha256
+from btclib.script import script, sig_hash, taproot
 from btclib.script.engine import verify_input as btclib_verify_input
+from btclib.script.engine import verify_transaction
+from btclib.script.engine.flags import ALL_FLAGS, NO_FLAGS, ScriptFlag
 from btclib.script.script_pub_key import ScriptPubKey
 from btclib.script.taproot import output_prvkey
 from btclib.script.witness import Witness
@@ -30,7 +34,9 @@ from btclib.tx.tx_out import TxOut
 
 from btclib_node.block_db import Coin
 from btclib_node.chains import RegTest
+from btclib_node.exceptions import NonStandardTxError
 from btclib_node.interpreter import (
+    STANDARD_FLAGS,
     check_transaction,
     check_transactions,
     f,
@@ -241,7 +247,7 @@ def test_the_transaction_checked_is_left_as_it_was(
     # blanking differs between them and between hash types.
     prevouts, tx = build(hash_type)
     before = tx.serialize(include_witness=True)
-    check_transaction(prevouts, tx, 1, make_node(), _A_BLOCK_HASH)
+    check_transaction(prevouts, tx)
     assert tx.serialize(include_witness=True) == before
 
 
@@ -378,3 +384,260 @@ def test_check_transactions_builds_the_precomputed_data_once_per_transaction(
     # transaction by PrecomputedTxData.__init__ -- not once per input,
     # whichever of the 1, 7 or 20 inputs each transaction carries
     assert count() == len(transaction_data) * 3
+
+
+# `verify_mempool_acceptance` checks a candidate against STANDARD_FLAGS
+# and never against `get_flags`, so the reason it may skip Core's own
+# `ConsensusScriptChecks` is that the first set contains the second.
+# Asserted over every network btclib's table names rather than over
+# RegTest alone: the exception rows are mainnet's and testnet3's, and a
+# row whose exception named a standardness flag would break the claim
+# without RegTest noticing.
+_GATED_HEIGHT_FIELDS = ("bip65_height", "bip66_height", "csv_height", "segwit_height")
+
+
+def _every_consensus_set() -> list[ScriptFlag]:
+    """Return every answer `script_flags_at` gives on any network."""
+    sets = []
+    for params in CONSENSUS_PARAMS.values():
+        heights = {0, 1, 2**31}
+        for field in _GATED_HEIGHT_FIELDS:
+            height = getattr(params, field)
+            heights |= {max(height - 1, 0), height, height + 1}
+        hashes: list[bytes | None] = [None]
+        hashes += [h for h, _ in params.script_flag_exceptions]
+        sets += [
+            params.script_flags_at(height, block_hash)
+            for height in heights
+            for block_hash in hashes
+        ]
+    return sets
+
+
+def test_the_standard_set_contains_every_consensus_set() -> None:
+    """No `script_flags_at` answer holds a rule `STANDARD_FLAGS` omits."""
+    consensus_sets = _every_consensus_set()
+    # the control on the comparison below, which would answer the same
+    # for a subset test that cannot fail: SIGPUSHONLY is a member
+    # STANDARD_FLAGS does not carry, so the same expression answers no
+    assert ScriptFlag.SIGPUSHONLY & STANDARD_FLAGS == NO_FLAGS
+    for flags in consensus_sets:
+        assert flags & STANDARD_FLAGS == flags
+
+
+def test_the_full_consensus_set_contains_every_height_gated_one() -> None:
+    """No `script_flags_at` answer holds a rule `ALL_FLAGS` omits.
+
+    What `interpreter._consensus_accepts` rests on: it classifies a
+    refused candidate against `ALL_FLAGS` and never against a height,
+    so a transaction it takes has to be one a block at any height
+    carries, or a peer is discouraged for relaying a transaction some
+    chain would have held.
+    """
+    # the same control the test above uses, and it decides the same
+    # question: a subset test that cannot fail would answer alike
+    assert ScriptFlag.SIGPUSHONLY & ALL_FLAGS == NO_FLAGS
+    for flags in _every_consensus_set():
+        assert flags & ALL_FLAGS == flags
+
+
+def test_every_script_flag_is_decided_one_way_or_the_other() -> None:
+    """`SIGPUSHONLY` is the one `ScriptFlag` member `STANDARD_FLAGS` omits.
+
+    Core's `STANDARD_SCRIPT_VERIFY_FLAGS` omits it too
+    (`src/policy/policy.h:118-131`, at bitcoin/bitcoin@9be056a8a7). What
+    this pins is that a member btclib adds later cannot be left out of
+    the set in silence: it is either relayed against or named here.
+    """
+    omitted = [x for x in ScriptFlag if x & STANDARD_FLAGS == NO_FLAGS]
+    assert omitted == [ScriptFlag.SIGPUSHONLY]
+
+
+def _spend(script_pub_key: bytes, script_sig: bytes = b"") -> tuple[list[TxOut], Tx]:
+    """Return a prevout of that shape and the transaction spending it.
+
+    `_spend_of` above with a script_sig filled in: the spends below turn
+    on the script the prevout carries and on what is offered to it,
+    where the signed spends that helper serves turn on the preimage.
+    """
+    prevouts, tx = _spend_of(script_pub_key)
+    tx.vin[0].script_sig = script_sig
+    return prevouts, tx
+
+
+def _taproot_spend(
+    leaf_version: int, leaf_script: bytes, stack: list[bytes]
+) -> tuple[list[TxOut], Tx]:
+    """Return a p2tr prevout and the script-path spend of its one leaf."""
+    merkle_root = taproot.leaf_hash(leaf_version, leaf_script)
+    output_key, parity = taproot.output_pubkey_from_merkle_root(_PUB[1:33], merkle_root)
+    prevouts, tx = _spend(script.serialize(["OP_1", output_key.hex()]))
+    # BIP341's control block for a tree of one leaf: the parity bit and
+    # the leaf version, the x-only internal key, and an empty path
+    control = bytes([parity + leaf_version]) + _PUB[1:33]
+    tx.vin[0].script_witness = Witness([*stack, leaf_script, control])
+    return prevouts, tx
+
+
+def a_non_canonical_sighash_byte() -> tuple[list[TxOut], Tx]:
+    """Return a p2pkh spend whose sighash byte is not a defined type."""
+    hash_type = 0x05
+    prevouts, tx = _spend(ScriptPubKey.p2pkh(_PUB).script)
+    signature = dsa.sign_(sig_hash.from_tx(prevouts, tx, 0, hash_type), _PRV)
+    tx.vin[0].script_sig = script.serialize(
+        [signature.serialize().hex() + f"{hash_type:02x}", _PUB.hex()]
+    )
+    return prevouts, tx
+
+
+def a_high_s_signature() -> tuple[list[TxOut], Tx]:
+    """Return a p2pkh spend whose signature carries the negated s."""
+    prevouts, tx = _spend(ScriptPubKey.p2pkh(_PUB).script)
+    signature = dsa.sign_(sig_hash.from_tx(prevouts, tx, 0, 1), _PRV)
+    high_s = dsa.Sig(signature.r, signature.ec.n - signature.s)
+    tx.vin[0].script_sig = script.serialize(
+        [high_s.serialize().hex() + "01", _PUB.hex()]
+    )
+    return prevouts, tx
+
+
+def a_non_minimal_push() -> tuple[list[TxOut], Tx]:
+    """Return a spend whose script_sig pushes one octet through OP_PUSHDATA1."""
+    # 4c 01 01: OP_PUSHDATA1, one byte of data, the byte 0x01 -- where
+    # OP_1 is the push MINIMALDATA asks for
+    return _spend(script.serialize(["OP_DROP", "OP_1"]), script_sig=b"\x4c\x01\x01")
+
+
+def an_upgradable_nop() -> tuple[list[TxOut], Tx]:
+    """Return a spend of a script_pub_key executing a reserved NOP."""
+    return _spend(script.serialize(["OP_NOP1", "OP_1"]))
+
+
+def a_leftover_stack_element() -> tuple[list[TxOut], Tx]:
+    """Return a spend leaving the script_sig's own push under its result."""
+    return _spend(script.serialize(["OP_1"]), script_sig=script.serialize(["OP_1"]))
+
+
+def a_non_minimal_if_condition() -> tuple[list[TxOut], Tx]:
+    """Return a p2wsh spend whose OP_IF condition is neither empty nor `01`."""
+    witness_script = script.serialize(["OP_IF", "OP_1", "OP_ELSE", "OP_1", "OP_ENDIF"])
+    prevouts, tx = _spend(script.serialize(["OP_0", sha256(witness_script).hex()]))
+    tx.vin[0].script_witness = Witness([b"\x02", witness_script])
+    return prevouts, tx
+
+
+def a_failed_check_with_a_signature_on_it() -> tuple[list[TxOut], Tx]:
+    """Return a spend whose OP_CHECKSIG fails on a non-empty signature."""
+    prevouts, tx = _spend(script.serialize([_PUB.hex(), "OP_CHECKSIG", "OP_NOT"]))
+    # well-formed and over another message entirely, so the check fails
+    # rather than the encoding rules refusing it first
+    signature = dsa.sign_(b"\x33" * 32, _PRV)
+    tx.vin[0].script_sig = script.serialize([signature.serialize().hex() + "01"])
+    return prevouts, tx
+
+
+def an_uncompressed_key_in_a_witness_script() -> tuple[list[TxOut], Tx]:
+    """Return a p2wpkh spend whose public key is the uncompressed form."""
+    uncompressed = pub_keyinfo_from_prv_key(_PRV, compressed=False)[0]
+    prevouts, tx = _spend(
+        script.serialize(["OP_0", hash160(uncompressed).hex()]),
+    )
+    signature = dsa.sign_(sig_hash.from_tx(prevouts, tx, 0, 1), _PRV)
+    tx.vin[0].script_witness = Witness([signature.serialize() + b"\x01", uncompressed])
+    return prevouts, tx
+
+
+def a_signature_check_in_the_script_sig() -> tuple[list[TxOut], Tx]:
+    """Return a spend whose script_sig carries an OP_CHECKSIG of its own."""
+    return _spend(
+        script.serialize(["OP_NOT"]),
+        script_sig=script.serialize(["OP_0", "OP_0", "OP_CHECKSIG"]),
+    )
+
+
+def an_upgradable_witness_program() -> tuple[list[TxOut], Tx]:
+    """Return a spend of a witness program whose version no BIP defines."""
+    prevouts, tx = _spend(script.serialize(["OP_2", (b"\x44" * 32).hex()]))
+    tx.vin[0].script_witness = Witness([b"\x01"])
+    return prevouts, tx
+
+
+def an_upgradable_taproot_leaf_version() -> tuple[list[TxOut], Tx]:
+    """Return a taproot script path whose leaf version is not 0xc0."""
+    return _taproot_spend(0xC2, script.serialize(["OP_1"]), [])
+
+
+def an_op_success_op_code() -> tuple[list[TxOut], Tx]:
+    """Return a tapscript spend holding an op code BIP342 reserved."""
+    # 0x50 is OP_SUCCESS80, and a tapscript holding one succeeds whole
+    return _taproot_spend(0xC0, b"\x50", [])
+
+
+def an_upgradable_taproot_public_key_type() -> tuple[list[TxOut], Tx]:
+    """Return a tapscript spend checking a key length BIP342 left open."""
+    leaf_script = script.serialize([(b"\x33" * 33).hex(), "OP_CHECKSIG"])
+    # not empty, so the check leaves a true on the stack rather than a false
+    return _taproot_spend(0xC0, leaf_script, [b"\x01" * 64])
+
+
+# One spend per rule `STANDARD_FLAGS` adds to the consensus set, each
+# breaking that rule and no other: a block carrying it connects, and
+# `check_transaction` refuses to hold it.
+_NON_STANDARD = (
+    ("STRICTENC", a_non_canonical_sighash_byte),
+    ("LOW_S", a_high_s_signature),
+    ("MINIMALDATA", a_non_minimal_push),
+    ("DISCOURAGE_UPGRADABLE_NOPS", an_upgradable_nop),
+    ("CLEANSTACK", a_leftover_stack_element),
+    ("MINIMALIF", a_non_minimal_if_condition),
+    ("NULLFAIL", a_failed_check_with_a_signature_on_it),
+    ("WITNESS_PUBKEYTYPE", an_uncompressed_key_in_a_witness_script),
+    ("CONST_SCRIPTCODE", a_signature_check_in_the_script_sig),
+    (
+        "DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM",
+        an_upgradable_witness_program,
+    ),
+    ("DISCOURAGE_UPGRADABLE_TAPROOT_VERSION", an_upgradable_taproot_leaf_version),
+    ("DISCOURAGE_OP_SUCCESS", an_op_success_op_code),
+    ("DISCOURAGE_UPGRADABLE_PUBKEYTYPE", an_upgradable_taproot_public_key_type),
+)
+
+
+@pytest.mark.parametrize(
+    "build", [build for _, build in _NON_STANDARD], ids=[n for n, _ in _NON_STANDARD]
+)
+def test_a_spend_a_block_would_carry_is_refused_from_the_mempool(
+    build: Callable[[], tuple[list[TxOut], Tx]],
+) -> None:
+    """Each standardness rule refuses a spend the consensus rules accept."""
+    prevouts, tx = build()
+    # the control, and what makes the refusal below a standardness one:
+    # the flags a block connecting at this height is checked with take
+    # the very same transaction
+    verify_transaction(prevouts, tx, get_flags(cast("Config", make_node().config), 1))
+    # NonStandardTxError and not the bare BTClibValueError the engine
+    # raises: `p2p.callbacks.tx` catches this class alone, and a refusal
+    # arriving as anything else discourages the peer that relayed the
+    # transaction
+    with pytest.raises(NonStandardTxError):
+        check_transaction(prevouts, tx)
+
+
+def test_a_spend_no_block_could_carry_is_refused_as_itself() -> None:
+    """A consensus refusal reaches the caller as the engine raised it.
+
+    `OP_0` alone leaves a false on the stack, which no flag set forgives,
+    so the classification `check_transaction` makes has to answer the
+    other way: `NonStandardTxError` here would tell `p2p.callbacks.tx`
+    to keep a peer that relayed a transaction no chain will ever hold.
+    """
+    prevouts, tx = _spend(script.serialize(["OP_0"]))
+    # the control, mirroring the one above: these are the flags a block
+    # connecting at this height is checked with, and they refuse it too
+    with pytest.raises(BTClibValueError):
+        verify_transaction(
+            prevouts, tx, get_flags(cast("Config", make_node().config), 1)
+        )
+    with pytest.raises(BTClibValueError) as refusal:
+        check_transaction(prevouts, tx)
+    assert not isinstance(refusal.value, NonStandardTxError)

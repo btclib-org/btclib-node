@@ -75,7 +75,11 @@ from btclib.p2p.reject import Reject, RejectCode
 from btclib_node.chainstate.block_index import BlockStatus
 from btclib_node.chainstate.filter_index import NO_PREVIOUS_FILTER_HEADER
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, NodeStatus, P2pConnStatus
-from btclib_node.exceptions import ChainstateInconsistencyError, MissingPrevoutError
+from btclib_node.exceptions import (
+    ChainstateInconsistencyError,
+    MissingPrevoutError,
+    NonStandardTxError,
+)
 from btclib_node.main import verify_mempool_acceptance
 from btclib_node.p2p.address import ip_and_port
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
@@ -513,8 +517,9 @@ def feefilter(node: Node, msg: bytes, conn: Connection) -> None:
 def tx(node: Node, msg: bytes, conn: Connection) -> None:
     """Validate an unsolicited transaction and queue it for announcement.
 
-    A no-op before this node's own chain is synced, or if the mempool
-    already holds it, or if `add_tx` itself declines to keep it.
+    A no-op before this node's own chain is synced, if the transaction
+    breaks a relay rule alone, or if the mempool already holds it, or if
+    `add_tx` itself declines to keep it.
     """
     # Core's own reason for the same early return, before it even
     # parses the payload: "we don't have enough information to validate
@@ -530,6 +535,18 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
         fee = verify_mempool_acceptance(node, tx)
     except MissingPrevoutError:
         # We don't have the parents in the mempool
+        return
+    except NonStandardTxError:
+        # A transaction the consensus rules take and this node's own
+        # relay policy does not: the transaction goes and the peer
+        # stays, which is what Core asks above the flag set
+        # `interpreter.STANDARD_FLAGS` copies -- "we do not
+        # ban/disconnect nodes that forward txs violating the additional
+        # (non-mandatory) rules here, to improve forwards and backwards
+        # compatibility" (`src/policy/policy.h:112-117`,
+        # at bitcoin/bitcoin@9be056a8a7). Caught here rather than left
+        # to `p2p.main.handle_p2p`, whose own `isinstance(e,
+        # BTClibException)` answers yes to this class.
         return
     # Queuing this for announcement is gated on `add_tx` actually having
     # added it, and not merely on the pre-call `contains_tx`: `add_tx`
