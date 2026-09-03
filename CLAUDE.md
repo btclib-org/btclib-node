@@ -622,15 +622,16 @@ Do not use Fable unless explicitly instructed.
   literal rather than a walk needs no such guard, and that is the
   condition holding rather than an exception to it.
 
-  The null case above is one instance. The badge render is
-  another: `curl -s '<workflow>/badge.svg?branch=main' | grep '<title>'`
-  answered `test - failing` nine minutes after a green run and
-  `test - passing` at the same moment with `-H 'Cache-Control:
-  no-cache'` and a cache-busting parameter, so a `failing` from the bare
-  form is indistinguishable from a stale copy and only a `passing` is
-  evidence -- and a control on an already-green workflow cannot catch
-  it, cached and fresh agreeing there. The third is the `-n auto`
-  mutation that never reaches a worker, already in the list above.
+  The null case above is one instance. The badge render is another:
+  `curl -s '<workflow>/badge.svg?branch=main' | grep -oE
+  '<title>[^<]*</title>'` answered `test - failing` nine minutes after a
+  green run and `test - passing` at the same moment with
+  `-H 'Cache-Control: no-cache'` and a cache-busting parameter, so a
+  `failing` from the bare form is indistinguishable from a stale copy
+  and only a `passing` is evidence -- and a control on an already-green
+  workflow cannot catch it, cached and fresh agreeing there. The third
+  is the `-n auto` mutation that never reaches a worker, already in the
+  list above.
 
   **A structural diff against the base is the cheaper check, and
   "nothing removed" is not enough there either.** Run
