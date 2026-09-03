@@ -188,7 +188,7 @@ Where the checkout has to be current rather than merely readable, a
 fast-forward of a clean `main` brings it up:
 
 ```shell
-git fetch origin && git merge --ff-only origin/main   # clean main only
+git fetch origin && git merge --ff-only origin/main
 ```
 
 That writes no commit, switches no branch and runs no hook, so it is on
@@ -215,11 +215,15 @@ this way also sorts every worktree of one issue together. `role` covers
 the narrower case of a coder and its reviewer holding a worktree at
 once, which the ordinary sequence avoids by each removing its own.
 
+An issue in `btclib-org/.github`'s tracker, worked in `btclib` by a
+coder, names its worktree `wt-github-255-btclib-coder`. The `uv sync`
+gives the worktree a `.venv` of its own rather than a shared one, and
+the editing, the gates and the commits all happen there before the push.
+
 ```shell
-WT=<scratchpad>/wt-<tracker>-<issue>-<repo>-<role>  # wt-github-255-btclib-coder
+WT=<scratchpad>/wt-<tracker>-<issue>-<repo>-<role>
 git worktree add "$WT" origin/main -b <branch>
-cd "$WT" && uv sync                   # its own .venv, not a shared one
-# edit, gate and commit here, then
+cd "$WT" && uv sync
 git push origin HEAD:refs/heads/<branch>
 ```
 
@@ -252,11 +256,12 @@ object store the moment it exists, so `git cat-file -t`, `git show
 it exactly as they would after a push -- the right content, a good
 signature, nothing stale and nothing erroring. Hand that sha to a
 reviewer and it confirms every one of those, having read something the
-forge does not have. The ref is the only read that answers:
+forge does not have. The ref is the only read that answers, and what it
+answers with is compared against the sha you sent:
 
 ```shell
 git -C "$WT" fetch origin
-git -C "$WT" rev-parse "origin/<branch>"  # against the sha you sent
+git -C "$WT" rev-parse "origin/<branch>"
 ```
 
 Twice in one campaign a branch was reported pushed while `origin/` still

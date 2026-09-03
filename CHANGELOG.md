@@ -3554,6 +3554,38 @@ they were written in.
   `p2p.main.handle_p2p` already sorts a peer's fault by, so nothing in
   this tree raises the class any more.
 
+### A `shell` fence explains itself above the fence
+
+- **`git reset --hard origin/main` reaches git as a hard reset with
+  paths under an interactive `zsh`** (issue #828). The comment after it
+  becomes arguments, git answers `fatal: Cannot do hard reset with
+  paths.` with status 128, and the `git fetch origin` above it
+  succeeded -- so the next instruction, which that same comment
+  carried, is followed against a tree that was never reset.
+  `RELEASING.md` carries it as prose above the fence instead. Section
+  9's *A trailing `#` comment ends a chained line* is where the
+  mechanism is written down: `zsh` leaves `INTERACTIVE_COMMENTS` unset,
+  so an interactive one takes `#` as an ordinary word and what follows
+  it as arguments.
+- **`CLAUDE.md`'s worktree block sets `WT` in the shell.** With the
+  example name after it the assignment is a prefix to that comment's
+  first word rather than an assignment, so `git worktree add` on the
+  next line is given an empty path; the example sits in the prose above
+  the fence.
+- **`CLAUDE.md`'s fast-forward and its `rev-parse` of the pushed ref,
+  `CONTRIBUTING.md`'s gate block and the chain flags in
+  `docs/source/running_a_node.md` lose their trailing comments too.**
+  Each handed its command the comment's words, and what each said is in
+  the prose around its own fence.
+- **`REPOSITORY.md`'s controls state their expected answer on a line of
+  their own**, the form the rest of that file already uses, rather than
+  after a `grep` that reads `#` and the answer itself as filenames and
+  exits 2.
+- **The `cmp` in `RELEASING.md`'s rebase check keeps its comment**, the
+  block around it being rewritten under btclib-org/.github#745; the
+  landed entry carrying one stays as section 9's *Nothing already
+  written is rewritten* leaves it.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
