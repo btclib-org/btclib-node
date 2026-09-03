@@ -3586,6 +3586,46 @@ they were written in.
   landed entry carrying one stays as section 9's *Nothing already
   written is rewritten* leaves it.
 
+### The documentation build reads the inventories as published
+
+- **`docs/source/conf.py` sets `intersphinx_cache_limit = 0`, so every
+  build fetches `python`'s and `btclib`'s inventories rather than reading
+  back the copy sphinx keeps beside the doctrees** (closes #826). The
+  copy is under `docs/build`, which `.gitignore` covers, so neither a
+  diff nor `git status` says which of the two a build resolved against:
+  the documented command answered exit 0 at `c6674ee` in a worktree
+  building for the first time, and exit 1 at the same commit in that
+  worktree with a copy from an earlier session in place and a source
+  file's timestamp moved, on `btclib.tx.coin.Coin` and
+  `btclib.consensus.ConsensusParams`, names btclib has published since
+  that copy was taken. The timestamp is what makes sphinx re-read the
+  page carrying the reference: a build that re-reads nothing resolves
+  nothing and answers green whatever its copy holds, which is why the red
+  comes and goes.
+- **`-E` does not reach it**: it discards the environment and reads the
+  copy back, so the build fails there too -- on a third name,
+  `btclib.muhash.MuHash3072`, that re-reading every page reaches.
+- **A copy resolving a name btclib no longer publishes is the worse
+  direction**, and the reason the setting is in `conf.py` rather than in
+  the command `CONTRIBUTING.md` documents: `docs.yml` and
+  `.readthedocs.yaml` run their own builds, and a reference that passes
+  off a copy locally fails on their fresh checkouts. A scratch project
+  referencing a name only a doctored copy carried built green against
+  that copy and red against the published inventory.
+- **What it costs is a fetch of each inventory on every build**, which is
+  what those two workflows already do, and a build with no route to the
+  two hosts now fails under `-W` where one reading the copy passed --
+  measured both ways, with the proxy pointed at a closed port.
+- **Not `-d`, putting the doctrees outside the tree**: that relocates the
+  copy rather than expiring it, and reaches only the documented command,
+  leaving the two workflows resolving against whatever their own doctree
+  directory holds. **Not a vendored inventory**, which fixes the
+  reference set at the commit that added it, so the build stops asking
+  whether btclib still publishes the name. **Not a rewrite of the
+  docstring reference `block_db` makes**, which answers for one name and
+  leaves every other btclib name a signature carries reading the same
+  copy.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
