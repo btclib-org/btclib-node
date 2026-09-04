@@ -259,7 +259,7 @@ secp256k1 = [
 
 [[package]]
 name = "btclib-node"
-version = "2026.9"
+version = "2026.9.4"
 source = { editable = "." }
 dependencies = [
     { name = "bitcoin-core-rpc" },
