@@ -25,9 +25,18 @@ rather than a digit.
 ## Unreleased
 
 The `2026.9` cycle is open and nothing has been cut from it. This
-section fills in one landed change at a time — what a user of
-`v2026.8.27` would have to act on to move to it — and `RELEASING.md`'s
-*Release to PyPI* is what retitles it to the version on release day.
+section fills in one landed change at a time — what a user of the
+release below would have to act on to move past it — and
+`RELEASING.md`'s *Release to PyPI* is what retitles it to the version
+on release day.
+
+## v2026.9.4
+
+**The second release, and the first that is an upgrade from
+something.** Everything below is measured against `v2026.8.27`:
+what changed since, and what it costs to move past it.
+`CHANGELOG.md`'s own `v2026.9.4` section is the record of everything
+that went into it.
 
 ### Breaking changes
 

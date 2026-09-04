@@ -30,6 +30,8 @@ they were written in.
 
 ## Unreleased
 
+## v2026.9.4
+
 ### btclib resolves from the released package, not from git `main`
 
 - **`[tool.uv.sources]`'s pin of btclib to its `main` branch is gone**:
