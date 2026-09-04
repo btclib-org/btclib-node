@@ -62,6 +62,18 @@ they were written in.
   `gh api repos/btclib-org/btclib-node --jq .fork`, which answers `false`
   here as it does in every repository of the organization.
 
+### `[tool.uv] required-version` moves with the ceiling `dependabot-core` bundles
+
+- **The floor rises from `>=0.12.1` to `>=0.12.7`**, the uv
+  `dependabot/dependabot-core`'s `uv/Dockerfile` currently ships in its
+  `ghcr.io/astral-sh/uv` image tag. Section 1 of the organization
+  standard sets the floor at that ceiling: left below it, a uv older
+  than the one that updater runs `uv lock` with is still free to rewrite
+  this tree's lock, which is the failure the key guards against; raised
+  above it, that same updater would refuse to re-lock rather than
+  upgrading itself. Matching the ceiling is what avoids both
+  (issue btclib-org/.github#448).
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`

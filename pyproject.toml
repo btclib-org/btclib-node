@@ -326,7 +326,7 @@ dev = [
 # the oldest uv that may read uv.lock, at the ceiling rather than below
 # it -- btclib-org/.github's README.md, section 1, argues why; section
 # 15 carries the command that re-derives the ceiling
-required-version = ">=0.12.1"
+required-version = ">=0.12.7"
 
 [build-system]
 # What declares the contents of a distribution here is a set of glob
