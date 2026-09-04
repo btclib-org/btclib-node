@@ -177,6 +177,22 @@ that went into it.
   `<n>` MiB on disk, `getblockchaininfo`'s own `automatic_pruning` and
   `prune_target_size` answering for it.
 
+- **A mempool candidate is now also checked against Core's own relay
+  policy, not only consensus** (issue #810). `v2026.8.27` held a
+  transaction to `getblockchaininfo`'s activation-gated consensus rules
+  alone; a script only a standardness rule refuses -- `CLEANSTACK`
+  among them -- now gets the transaction dropped rather than accepted,
+  matching what a real Bitcoin Core peer would refuse to relay or mine
+  in the first place. `sendrawtransaction` answers `VERIFY_REJECTED` /
+  `"Invalid signatures or script"` for one, `testmempoolaccept` reports
+  it not allowed, and the peer that relayed it over p2p is kept rather
+  than discouraged -- Core's own policy is not to penalise a peer for
+  forwarding a transaction only the non-mandatory rules refuse. Nothing
+  to migrate: a transaction built to consensus rules alone and relying
+  on this node's mempool to hold it despite failing standardness has to
+  be built to a standard script instead, the same script a real network
+  would have refused it over regardless.
+
 ### Windows
 
 - **`pip install btclib-node` now claims Windows** (issue #430): its
