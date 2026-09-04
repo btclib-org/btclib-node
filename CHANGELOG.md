@@ -30,6 +30,25 @@ they were written in.
 
 ## Unreleased
 
+### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
+
+- **`_FUNDED` gains `OP_2DROP OP_1`, the same suffix `tests.anyone_can_spend`
+  carries** (closes #865). `Chainstate::MaybeUpdateMempoolForReorg`
+  (`src/validation.cpp:303-340`, at bitcoin/bitcoin@4519933391) runs a
+  resurrected transaction through `AcceptToMemoryPool` in full --
+  `bypass_limits=true` skips only the fee-rate and mempool-size limits,
+  not standardness -- and drops it silently where that refuses it, so a
+  node that now runs `interpreter.STANDARD_FLAGS` on one, as #847 added,
+  and drops one that fails it, matches Core rather than diverging from
+  it. The bug this closes was in the test's own fixture: `_FUNDED`'s bare
+  data push left two elements on the stack once `_SPENDS_IT` spent it,
+  which CLEANSTACK refuses, so `confirmed` could not re-enter the mempool
+  after the reorg and `test_a_node_follows_a_reorg_a_real_bitcoind_announces`
+  timed out waiting for it on every `integration-bitcoind` run since #847
+  landed. `tests/unit/main_test.py`'s own `spend` keeps the old, bare-push
+  shape: its transactions are only ever connected in a block, where
+  consensus and not `STANDARD_FLAGS` applies.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`

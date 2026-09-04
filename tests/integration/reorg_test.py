@@ -82,12 +82,20 @@ _COMMON = 100
 _SUBSIDY = 50 * 10**8
 _FEE = 10**8
 
-# An output anything spends and the input that spends it: a bare data
+# An output anything spends and the input that spends it. A bare data
 # push leaves a non-zero stack top, which is all consensus asks of a
 # scriptPubKey that is neither P2SH nor a witness program -- so no key
-# is generated and nothing is signed. `tests/unit/main_test.py`'s own
-# `spend` builds its transactions the same way.
-_FUNDED = script.serialize([b"\x22" * 32])
+# is generated and nothing is signed -- but `confirmed` also has to
+# survive `interpreter.STANDARD_FLAGS` once the reorg tries to put it
+# back in the mempool, which a bare push does not: CLEANSTACK refuses
+# the two pushes a plain spend leaves on the stack. `OP_2DROP` clears
+# both and `OP_1` leaves the single true element CLEANSTACK asks for,
+# the same suffix `tests.anyone_can_spend` carries for the same reason
+# (btclib-org/btclib-node#847). `tests/unit/main_test.py`'s own `spend`
+# builds its transactions the plain way still: they are only ever
+# connected in a block, where consensus and not `STANDARD_FLAGS`
+# applies, and never handed to `verify_mempool_acceptance`.
+_FUNDED = script.serialize([b"\x22" * 32, "OP_2DROP", "OP_1"])
 _SPENDS_IT = script.serialize([b"\x11" * 32])
 
 # What dates the headers, and it is not the regtest genesis
