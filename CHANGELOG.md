@@ -4119,6 +4119,27 @@ dereferences it, and `refs/tags/v1^{}` does the same from a checkout.
   and `git diff --numstat` against the pre-rebase base is what still
   discriminates once that blob is gone (closes #859).
 
+### REVIEWING.md and RELEASING.md take section 9's placeholder rules literally
+
+- **REVIEWING.md's two placeholders — `gh issue list --search` and `gh
+  issue create --title`/`--body` — go bare** (issue
+  btclib-org/.github#772): quoted, `gh issue create` takes both flags as
+  literal text and files an issue titled with the placeholder itself,
+  rather than failing at the shell before it reaches the tool.
+- **RELEASING.md's `--subject <title>` loses its quoting and moves
+  after `--body-file <path>`, which moves the position rule's guard onto
+  the more expensive placeholder** (issue btclib-org/.github#775):
+  `--body-file <path>` already ended the command bare, and `<title>` was
+  the one left quoted and mid-command. A paste that filled in every
+  other placeholder and left this one used to reach `gh` with the
+  literal string `<title>` as the release commit's subject, where it now
+  fails at the shell instead.
+- **A trailing `#` comment inside a `shell` fence of a landed
+  `CHANGELOG.md` entry is not swept** (issue btclib-org/.github#771):
+  this file is append-only under `merge=union`, and a landed entry is
+  the record of what was said when it landed, not a line this branch
+  rewrites.
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
