@@ -49,6 +49,19 @@ they were written in.
   shape: its transactions are only ever connected in a block, where
   consensus and not `STANDARD_FLAGS` applies.
 
+### `claude-review.yml`'s fork example is a fork (issue btclib-org/.github#456)
+
+- **The header comment's example was `btclib-org/bbt, itself a fork`**, and
+  `bbt` is not a fork, nor is any repository the organization owns: the
+  sentence illustrated `.fork`'s divergence from `full_name` with a
+  repository that no longer instances the case. The replacement is `bbt`'s
+  own wording, landed there first as btclib-org/bbt#8
+  (btclib-org/bbt@6ccfd3a, closing btclib-org/bbt#3): it argues the same
+  point from a repository that is itself a fork rather than from this
+  tree's own, and reads back
+  `gh api repos/btclib-org/btclib-node --jq .fork`, which answers `false`
+  here as it does in every repository of the organization.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
