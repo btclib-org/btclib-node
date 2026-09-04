@@ -12,21 +12,21 @@ guess. This paragraph used to date that boundary to a `v0.1.0` tag,
 deleted on 2026-08-23 (#553, btclib-org/.github#105); the boundary is
 where this file was written rather than where anything was tagged.
 
-This record carries two shapes of citation, and both are deliberate.
-Many entries carry the issue number on the `###` heading; the convention
-since has been the bullet, beside the claim the citation answers, which
-is where section 9 of the organization standard puts it
-(btclib-org/.github#547). A heading without a number is not an entry
-that left its issue out.
+This record carries two shapes of citation. The bullet, beside the claim
+it answers, is where section 9 of the organization standard puts the
+citation (btclib-org/.github#547); a heading citation is not a claim
+that its entry predates that rule. A heading without a number is not an
+entry that left its issue out.
 
 The number reached a heading rather than having been chosen for it:
-section 11 of that standard requires the landing subject to carry
-`(closes #N)`, so a heading written from that subject arrives with the
-citation already in it, the pull request number a squash appends being
-the part taken off. Section 9's *One fact in one place* is why it does
-not stay there once the bullet has it, and that section's *Nothing
-already written is rewritten* is why the earlier entries keep the shape
-they were written in.
+section 11 of that standard requires the landing subject to cite the
+issue it answers -- `(closes #N)` where it closes it, `(issue #N)` where
+it only advances it -- so a heading written from that subject arrives
+with the citation already in it, the pull request number a squash
+appends being the part taken off. Section 9's *One fact in one place* is
+why it does not stay there once the bullet has it, and that section's
+*Nothing already written is rewritten* is why an entry already landed
+keeps whichever shape it was written in.
 
 ## Unreleased
 
@@ -73,6 +73,23 @@ they were written in.
   above it, that same updater would refuse to re-lock rather than
   upgrading itself. Matching the ceiling is what avoids both
   (issue btclib-org/.github#448).
+
+### CHANGELOG.md's preamble says what is true of its own citations
+
+- **The preamble no longer dates the heading citation or calls every
+  instance of it deliberate**: `CHANGELOG.md`'s own `claude-review.yml`
+  fork entry carries its citation on the heading after the bullet
+  convention already applied, which the old wording could not account
+  for. It now says a heading citation is not a claim about when its
+  entry was written, and that the bullet is where a citation belongs
+  (closes #871).
+- **It no longer reads section 11 as requiring `(closes #N)` of every
+  landing subject**: that section asks the subject to cite the issue it
+  answers, `(issue #N)` where the change advances one without closing
+  it, and headings here already carry that token. The mechanism the
+  paragraph describes is untouched -- a heading written from the landing
+  subject arrives with whichever citation the subject carried
+  (closes #874).
 
 ## v2026.9.4
 
