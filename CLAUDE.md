@@ -587,6 +587,24 @@ Do not use Fable unless explicitly instructed.
   catch, which is how two branches reached review with the markdown gate
   red.
 
+  **The same insufficiency has a mirror image, on a check built the
+  other way round, and it cannot fail by construction.** Deleting a
+  candidate block from the fused tip and asking whether the base
+  returns takes its size from the artefact it is testing wherever a
+  session no longer has the pre-rebase blob: `len(tip) - len(base)` at
+  the two commits on hand, rather than the block the branch actually
+  added. A damaged file then supplies the very size that makes itself
+  look intact, and does so more than once: on this repository's own
+  `456c22a0`, deleting that self-derived count of bytes reproduces
+  `bd8b4c0d` exactly, at four distinct positions, where deleting the
+  block's true size finds none. What breaks the circularity is keeping
+  the pre-rebase blob past the rebase, so the size is pinned to it
+  rather than read back off the file under test; where the blob is not
+  kept, `git diff --numstat` against the same pre-rebase base still
+  discriminates without needing a block size at all -- the branch's own
+  insertion count over `bd8b4c0d` is 25 on the repaired `348df0e0` and
+  23 on the damaged `456c22a0` (btclib-org/btclib-node#859).
+
   **A no-seam case has to be shown to be a case at all**, or the whole
   comparison reports a match for the emptiest reason there is.
   `origin/iss-586-finish` and `origin/iss-586-utxo-cache-across-blocks`

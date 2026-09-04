@@ -4108,6 +4108,17 @@ dereferences it, and `refs/tags/v1^{}` does the same from a checkout.
   `check_vendored_pin.py` already is rather than through `uv`, the
   script importing nothing beyond the standard library.
 
+### CLAUDE.md's block-deletion check names where the block's size comes from
+
+- **Deleting a computed-size block from the fused tip and asking
+  whether the base returns is decisive only where the size is pinned
+  to the branch's pre-rebase blob, not derived from `len(tip) -
+  len(base)` at the two commits a session has once the rebase is
+  done** -- the shortfall from an eaten seam blank does not fail the
+  check, reproducing the base at several positions instead of none,
+  and `git diff --numstat` against the pre-rebase base is what still
+  discriminates once that blob is gone (closes #859).
+
 ## v2026.8.27
 
 ### A functional test waits for the status it is about (closes #525)
