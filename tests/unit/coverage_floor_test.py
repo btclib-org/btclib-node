@@ -158,14 +158,20 @@ def test_a_symlinked_rootdir_still_reads_as_the_whole_suite(tmp_path: Path) -> N
 
     `rootpath` is built with `os.path.abspath`, which leaves a symlink in
     the path alone; the paths given on the command line are resolved, which
-    follows one. Before `wanted` was resolved on the same terms, a rootdir
-    reached through a symlink made the two sides incomparable, and a run
-    naming the whole suite read as a subset of itself.
+    follows one. `wanted` is resolved on the same terms, which is what holds
+    the two sides comparable: without it a run naming the whole suite reads
+    as a subset of itself.
+
+    A machine that will not create a symlink skips the case rather than
+    failing it: on Windows an account can lack the privilege it takes.
     """
     real = tmp_path / "real"
     (real / "tests").mkdir(parents=True)
     link = tmp_path / "link"
-    link.symlink_to(real)
+    try:
+        link.symlink_to(real, target_is_directory=True)
+    except OSError as refused:  # pragma: no cover -- no privilege on Windows
+        pytest.skip(f"this platform will not create a symlink: {refused}")
     config, options = a_config(
         file_or_dir=[str(link / "tests")], rootpath=link, testpaths=["tests"]
     )

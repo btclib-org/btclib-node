@@ -698,7 +698,9 @@ show_missing = true
 skip_empty = true
 precision = 2
 # The tree is there, so this is what holds it: every statement and
-# every branch of `btclib_node` and of `tests` is reached by the suite.
+# every branch of `btclib_node` and of `tests` that the report measures
+# is reached by the suite. A `pragma: no cover` is what takes a line out
+# of that set, and it does not go in without its reason beside it.
 # A line that cannot be reached is not covered by lowering this, it is
 # covered by deleting the line or by writing the test that reaches it.
 fail_under = 100

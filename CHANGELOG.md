@@ -120,6 +120,28 @@ keeps whichever shape it was written in.
   at zero, and what the script prints is the wait's own report -- an
   `::error::` being an annotation only where it is written to stdout.
 
+### The symlink case skips a machine that will not create one
+
+- **`coverage_floor_test.py` creates the link inside a `try`, and an
+  `OSError` becomes a `pytest.skip`**
+  (issue btclib-org/.github#812): what it defends is a contributor's own
+  Windows, where an account can lack the privilege creating one takes,
+  rather than a runner. `bitcoin-core-rpc` carries the same shape, so a
+  tree porting the case finds one answer and not two.
+- **The handler carries a `pragma: no cover`, and
+  `[tool.coverage.report]`'s comment says what one does**: it takes a
+  line out of what the report measures, which is not the floor coming
+  down.
+- **The link is made with `target_is_directory`**, the spelling
+  `bitcoin-core-rpc` uses at the same call. On Windows the flag decides
+  the link's type only where the target is absent, and this target is a
+  directory that exists, so what it buys here is the two trees spelling
+  one call one way.
+- **The docstring says why the case exists in the present tense**
+  (closes btclib-org/.github#813): both sides are resolved, which is
+  what holds them comparable, where the sentence it replaces dated that
+  to a commit it did not name.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
