@@ -700,7 +700,12 @@ precision = 2
 # The tree is there, so this is what holds it: every statement and
 # every branch of `btclib_node` and of `tests` that the report measures
 # is reached by the suite. A `pragma: no cover` is what takes a line out
-# of that set, and it does not go in without its reason beside it.
+# of that set, and it does not go in without its reason after it on the
+# same line: `git grep 'pragma: no cover$'` is what finds a site giving
+# none, and a reason on the line above is out of its reach -- a site
+# with no reason anywhere then reads exactly like one carrying a
+# paragraph. A reason too long for the line goes above it as well, the
+# inline half naming the case.
 # A line that cannot be reached is not covered by lowering this, it is
 # covered by deleting the line or by writing the test that reaches it.
 fail_under = 100

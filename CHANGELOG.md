@@ -195,6 +195,23 @@ keeps whichever shape it was written in.
   unchanged**: none of them is a workflow-status badge, and section 2's
   rule reaches no other link.
 
+### A `pragma: no cover` gives its reason on the same line
+
+- **The `_send` and `boom` stubs in `connection_test.py` carry
+  `-- never reached` after the pragma** (closes #878): each keeps the
+  fuller reason above the line -- what fails to serialize before `_send`
+  runs, and what the guard in `_close` is there for -- which is the pair
+  `coverage_floor_test.py`'s symlink case already writes, its docstring
+  carrying that half. Dropping the comment above for the inline reason
+  alone is the rejected alternative; what it costs is the reason
+  particular to the site, which `-- never reached` does not carry.
+- **`[tool.coverage.report]`'s comment asks for the same line, and says
+  what that buys**: `git grep 'pragma: no cover$'` reads one line, so it
+  is what finds a site giving no reason at all. Counting a reason on the
+  line above is the rejected alternative; what it costs is that grep,
+  since a site with nothing near it then reads exactly like a site with a
+  paragraph above it, and only a person can tell them apart.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
