@@ -540,11 +540,11 @@ package = ["src/btclib_node"]
 # `tests/interpreters_test.py` reads pyproject.toml, .python-version and
 # the CI files against one another, `tests/property_test.py` draws
 # unconstrained octets against the entry points those harnesses declare,
-# and `tests/wait_for_readthedocs_build_test.py` loads a script under
-# .github/scripts/ by path -- so each mirrors no module of the package
-# and drives no node. Naming one is what collects it -- and
-# [tool.coverage.run]'s `source` takes all of tests/, so a module no run
-# collects is a file the floor reports at zero.
+# and the rest load a script under .github/scripts/ by path -- so each
+# mirrors no module of the package and drives no node. Naming one is
+# what collects it -- and [tool.coverage.run]'s `source` takes all of
+# tests/, so a module no run collects is a file the floor reports at
+# zero.
 #
 # `tests/integration/` is named too. It needs a bitcoind a bare run
 # has not got, so what a contributor without one gets is a skip naming
@@ -568,6 +568,7 @@ testpaths = [
     "tests/fuzz_corpus_test.py",
     "tests/interpreters_test.py",
     "tests/property_test.py",
+    "tests/wait_for_pypi_release_test.py",
     "tests/wait_for_readthedocs_build_test.py",
     "tests/unit",
     "tests/functional",
@@ -903,6 +904,11 @@ ignore = [
 # `::error::` annotation off this script's stdout, which is where
 # a GitHub Actions annotation has to be written to be one
 ".github/scripts/wait_for_readthedocs_build.py" = ["T20"]
+# and the same for the index wait, one service over: what it prints is
+# the `wait-for-index` job's own report -- one line per question the
+# index has not answered yet, the answer when it comes, or the
+# `::error::` naming the version that never arrived
+".github/scripts/wait_for_pypi_release.py" = ["T20"]
 # and the same for the citation pin check: the pre-commit hook that
 # runs it reads a failing developer's terminal, not a return value
 ".github/scripts/check_core_citation_pin.py" = ["T20"]

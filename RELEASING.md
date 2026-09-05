@@ -514,11 +514,11 @@ this release included.
    command above checks the signature rather than merely its presence.
    The simple API is itself served through a CDN, so one request
    straight after a publish can still answer stale for a few minutes —
-   `pypi-install.yml`'s own wait step is written against exactly that
-   lag, a `curl` GET confirming a version and `uv` failing to resolve
-   it one second later (#546, #548); a retry is what an absence needs
-   before it is trusted, the way that step retries rather than asking
-   once.
+   `pypi-install.yml`'s own `wait-for-index` job is written against
+   exactly that lag, a `curl` GET confirming a version and `uv` failing
+   to resolve it one second later (#546, #548); a retry is what an
+   absence needs before it is trusted, the way that job retries rather
+   than asking once.
 
 1. Read the bill of materials attached to the release,
    `btclib_node-<version>.cdx.json`: a CycloneDX 1.6 document naming the
