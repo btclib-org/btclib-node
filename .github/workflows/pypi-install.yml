@@ -73,18 +73,36 @@ on:
         type: string
         default: ""
   workflow_dispatch:
-  # so a change to this file is checked by the thing it configures, the
-  # same way os-macos.yml is. closed is deliberately absent, unlike that
-  # one: the concurrency block below cancels
+  # so a change to this file or to the script it runs is checked by the
+  # thing it configures, the same way os-macos.yml is. closed is deliberately
+  # absent, unlike that one: the concurrency block below cancels
   # nothing, this workflow's own runs each being a sample worth keeping
   # rather than one superseding another, so a closed event here would
   # supersede no run whichever group it landed in -- it would only add
   # one, installing from the index for a pull request nobody is on any
   # more
+  #
+  # The wait's own logic is .github/scripts/wait_for_pypi_release.py
+  # rather than a loop in a run: block, and naming that script beside
+  # this file is what vendored-vectors.yml does with the same shape
+  # (btclib-org/.github#814). What such a run asks of the script, the tag
+  # being empty on a pull request, is the plumbing
+  # tests/wait_for_pypi_release_test.py cannot reach: the argv the step
+  # below passes, a sparse checkout that has to hold the path it names,
+  # and the standard library alone under --no-project, where the test
+  # loads the script into a venv carrying this project's dependencies.
+  # The rejected alternative leaves the script out, so that a diff
+  # touching no workflow spends no matrix; what it costs is a script-only
+  # pull request landing without this workflow having run the changed
+  # script, the first run nobody asks for being the weekly schedule or
+  # the next release. What naming it spends is runner time and not a
+  # merge: REPOSITORY.md's required checks on main do not name this
+  # workflow
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
     paths:
       - .github/workflows/pypi-install.yml
+      - .github/scripts/wait_for_pypi_release.py
 
 # least privilege for the GITHUB_TOKEN: everything running in a job
 # (actions, dependencies) can read the token, so it must not be able to

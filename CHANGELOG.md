@@ -162,6 +162,24 @@ keeps whichever shape it was written in.
   `uv sync`, and why a worktree wants one of its own is already under
   *Non-obvious facts that will otherwise waste a session*.
 
+### `pypi-install.yml`'s `paths:` names the script the wait runs
+
+- **The `pull_request` filter names
+  `.github/scripts/wait_for_pypi_release.py` beside this workflow**
+  (closes btclib-org/.github#814): the wait is a script rather than a
+  loop in a `run:` block, so a pull request editing only the script
+  reaches the job that runs it, which is the answer
+  `vendored-vectors.yml` gives to the same shape.
+- **The trigger's comment carries the reason and the rejected
+  alternative**: the tag is empty on a pull request, so what such a run
+  checks is the plumbing `tests/wait_for_pypi_release_test.py` cannot
+  reach -- the argv, the sparse checkout that has to hold the path, and
+  the standard library alone under `--no-project`. Leaving the script out
+  spends no matrix on a diff touching no workflow, at the price of the
+  wait first running against a changed script after the landing;
+  `REPOSITORY.md`'s required checks on main do not name this workflow, so
+  what naming it spends is runner time.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
