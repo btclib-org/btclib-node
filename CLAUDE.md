@@ -228,14 +228,13 @@ the narrower case of a coder and its reviewer holding a worktree at
 once, which the ordinary sequence avoids by each removing its own.
 
 An issue in `btclib-org/.github`'s tracker, worked in `btclib` by a
-coder, names its worktree `wt-github-255-btclib-coder`. The `uv sync`
-gives the worktree a `.venv` of its own rather than a shared one, and
-the editing, the gates and the commits all happen there before the push.
+coder, names its worktree `wt-github-255-btclib-coder`, and the editing,
+the gates and the commits all happen there before the push.
 
 ```shell
 WT=<scratchpad>/wt-<tracker>-<issue>-<repo>-<role>
 git worktree add "$WT" origin/main -b <branch>
-cd "$WT" && uv sync
+cd "$WT"
 git push origin HEAD:refs/heads/<branch>
 ```
 
@@ -246,6 +245,28 @@ README](https://github.com/btclib-org/.github/blob/main/README.md). With
 the placeholder ahead of `"$WT"` the `>` closing it takes that path as
 its target, and a path with no directory at it is a file the paste
 creates.
+
+The gates run against a `.venv` the worktree owns rather than a shared
+one, and `CONTRIBUTING.md`'s *The environment and the gates* opens with
+the `uv sync` that writes it; what a reused one imports instead is under
+*Non-obvious facts that will otherwise waste a session* below. That sync
+is bare rather than `--locked`, so where the lock has fallen behind
+`pyproject.toml` it writes `uv.lock` as well as `.venv` -- `uv sync
+--help` describes `--frozen` as the flag that syncs without updating the
+lock. Section 9 of that README, *A line that writes goes in a fence of
+its own*, is why it sits outside the block above: it writes in the
+directory the shell is standing in, and with `WT` unset `cd "$WT"` is
+`cd ""`, which `/bin/zsh` 5.9 and the `bash` 3.2.57 macOS ships as
+`/bin/bash` and `/bin/sh` answer 0 where `bash` 5.3.15 refuses it. The
+directory left over is then the primary checkout above, where
+`.gitignore` covers the `.venv` and only a rewritten `uv.lock` shows in
+`git status`. An `&&` after the `cd` is not the alternative it reads
+as, and neither is the block's own parse: unfilled it is a syntax error
+to each of those shells reading it as a script, and the same lines
+filled in parse cleanly, so what stops it is the placeholders' shape.
+Not any one of them: `<scratchpad>` filled alone, or `<tracker>`, or
+`<branch>`, leaves the same error at the same line, line 1 still ending
+on the `>` of `<role>`. An interactive paste is unmeasured here.
 
 Removing the worktree is part of finishing, and it stands in a block of
 its own: the block above ends in a placeholder, and a shell that
