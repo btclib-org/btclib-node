@@ -91,6 +91,35 @@ keeps whichever shape it was written in.
   subject arrives with whichever citation the subject carried
   (closes #874).
 
+### The index wait is a job running a script, and the script has a test
+
+- **`.github/scripts/wait_for_pypi_release.py` is the wait, and
+  `tests/wait_for_pypi_release_test.py` is what drives it**
+  (closes btclib-org/.github#641): the loop it replaces sat in a `run:`
+  block, where `actionlint` hands the shell to `shellcheck` and neither
+  reads the budget against the job header. The script counts against a
+  deadline rather than attempts, so `timeout-minutes` is compared with
+  one number instead of a product, and the test substitutes the
+  transport and the clock -- which is where the retry, the deadline and
+  the `::error::` are exercised at all, `release.yml`'s call being the
+  only trigger that supplies a version and no trigger being able to
+  arrange for the index to be late. Section 10 of the organization
+  standard is what asks for that shape.
+- **The wait is a `wait-for-index` job that `install-published`
+  `needs:`**, so the index is asked once rather than once per cell of
+  the matrix and no cell starts until the answer is in. That job's
+  sparse checkout reaches `.github/scripts` and the repository root
+  cone mode adds with it, and it installs nothing, so the job that
+  installs from the index still has no source tree on its runner.
+- **`RELEASING.md`'s paragraph on the simple API's CDN lag names the
+  job**, the wait it points at no longer being a step of the matrix
+  job.
+- **`testpaths` names the new test module, and ruff's `T20` per-file
+  ignores name the script**: `[tool.coverage.run]`'s `source` takes all
+  of `tests/`, so a module no run collects is a file the floor reports
+  at zero, and what the script prints is the wait's own report -- an
+  `::error::` being an annotation only where it is written to stdout.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
