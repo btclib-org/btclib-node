@@ -180,6 +180,21 @@ keeps whichever shape it was written in.
   `REPOSITORY.md`'s required checks on main do not name this workflow, so
   what naming it spends is runner time.
 
+### Every workflow-status badge link carries the branch query
+
+- **The link half of each workflow-status badge ends
+  `?query=branch%3Amain`** (issue btclib-org/.github#762), which is the
+  spelling a runs page filters on: section 2 of the organization standard
+  asks for it because the page ignores the image's `?branch=main` and
+  renders as the unfiltered one, so the click-through lists the runs the
+  image answers for.
+- **The image half keeps `?branch=main`**, the spelling the badge
+  endpoint takes, so the two halves of a line carry one filter in the two
+  spellings their endpoints read.
+- **The pre-commit.ci, Read the Docs and Scorecard badges are
+  unchanged**: none of them is a workflow-status badge, and section 2's
+  rule reaches no other link.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
