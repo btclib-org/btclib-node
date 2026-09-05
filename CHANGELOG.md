@@ -142,6 +142,26 @@ keeps whichever shape it was written in.
   what holds them comparable, where the sentence it replaces dated that
   to a commit it did not name.
 
+### `CLAUDE.md`'s worktree fence leaves the `uv sync` to the gate block
+
+- **`cd "$WT"` is the whole of that line** (issue
+  btclib-org/.github#739): section 9 of the repository standard gives a
+  line that writes a fence of its own, and a bare `uv sync` writes
+  `uv.lock` as well as `.venv` where the lock has fallen behind
+  `pyproject.toml`. Chained to the `cd`, it writes both in the directory
+  the shell is standing in — with `WT` unset, `cd ""` leaves `/bin/zsh`
+  5.9 and the `bash` 3.2.57 macOS ships where they were, `bash` 5.3.15
+  refusing it — and for a reader of `CLAUDE.md` that is the primary
+  checkout.
+- **What stops a paste of the fence unfilled is the placeholders'
+  parse**, not a guard: read as a script with `-n` it is a syntax error
+  to each of those shells, where the same lines with values filled in
+  parse cleanly. An interactive paste is unmeasured.
+- **The paragraph below the fence says where the `.venv` comes from**:
+  `CONTRIBUTING.md`'s *The environment and the gates* opens with that
+  `uv sync`, and why a worktree wants one of its own is already under
+  *Non-obvious facts that will otherwise waste a session*.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
