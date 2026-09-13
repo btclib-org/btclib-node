@@ -84,13 +84,19 @@ permissions:
 # cancel superseded runs. Named literally rather than through
 # github.workflow, as everywhere else here: in a called workflow that
 # expression is the caller's name.
-# head_ref falls back to ref rather than being used bare: it is set only
-# for pull_request events, to the pull request's own head branch, so a
-# push run (ref refs/heads/main) still gets its own group, and a
-# pull_request run -- closed and merged ones included -- never collides
-# with a push's group the way a bare ref would
+# the key is the pull request's own number, not the head branch's name:
+# head_ref carries no fork namespace, so two forks each pushing a
+# branch of the same name compute one group and cancel each other's
+# runs, which the pull request number does not repeat across. It falls
+# back to ref rather than standing bare because it is set only for
+# pull_request events, so a push run (ref refs/heads/main) still gets
+# its own group, and a pull_request run -- closed and merged ones
+# included -- never collides with a push's group the way a bare ref
+# would
 concurrency:
-  group: integration-bitcoind-${{ github.head_ref || github.ref }}
+  group: >-
+    integration-bitcoind-${{ github.event.pull_request.number ||
+    github.ref }}
   cancel-in-progress: true
 
 jobs:
