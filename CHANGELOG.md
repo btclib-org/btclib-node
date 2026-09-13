@@ -1447,6 +1447,12 @@ keeps whichever shape it was written in.
   lists. The editor paragraph btclib-org/.github#966 corrects in the
   siblings that carry it is absent from this tree's `CONTRIBUTING.md`.
 
+### A changelog entry is its title and at most three lines
+
+- **`REVIEWING.md`, `CONTRIBUTING.md` and `check_changelog.py` follow
+  `btclib-org/.github`** (issue btclib-org/.github#1075): what is filed
+  is one test, and an entry's body past three lines is refused.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
