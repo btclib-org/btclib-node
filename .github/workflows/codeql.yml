@@ -81,78 +81,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # the matrix, the pins and the analysis itself are btclib-org/.github's,
+  # called at @main so a fix there reaches this tree in one landing
+  # (section 10 of its README.md); what stays here is the trigger, the
+  # schedule, the concurrency group and the aggregate job below.
+  # Permissions do not inherit through a call, so the write the analysis
+  # needs is declared on this job rather than assumed from the read-only
+  # default above
   analyze:
-    # the language is in the name because it is what a failure is about:
-    # one job per language, so a red check says which analysis broke
-    # rather than a matrix cell to open. It also lets the two run at once
-    name: Analyze ${{ matrix.language }} with CodeQL
-    # the same draft and closed condition every job of test.yml carries:
-    # a draft is not asking to be reviewed, and a closed pull request's
-    # run exists only to cancel the one its group is holding
-    if: ${{ !github.event.pull_request.draft && github.event.action != 'closed' }}
-    runs-on: ubuntu-latest
+    uses: btclib-org/.github/.github/workflows/reusable-codeql.yml@main
     permissions:
-      # where the alerts are uploaded; the one write in this workflow
       security-events: write
       contents: read
-      # what the actions analysis reads: the workflow files are its
-      # source, and analyze queries the run's own metadata
       actions: read
-    strategy:
-      # so one language's failure does not hide the other's result
-      fail-fast: false
-      matrix:
-        # the two CodeQL supports here. The tree is Python, workflows,
-        # markdown and toml, and there is no third language to add
-        language: [actions, python]
-    # far above what this tree's analysis takes, the way the suite is
-    # bounded in test.yml: what the limit buys is that a hung job
-    # releases the runner instead of holding it for six hours.
-    # `gh run list --workflow=codeql.yml --limit 1` is what re-measures it
-    timeout-minutes: 30
-    steps:
-      # every action pinned to a commit SHA with the tag in the comment:
-      # a tag, let alone a branch, is a name its owner can move, and
-      # these run in the one job here that can write security events
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          # see the checkout of the coverage job in test.yml
-          persist-credentials: false
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
-        with:
-          languages: ${{ matrix.language }}
-          # neither language is compiled, so the database is built from
-          # the sources and there is nothing for an autobuild step to do.
-          # Nothing is installed first either, which does cost something
-          # here and is still the right trade: this package has
-          # dependencies, so a call into btclib is a call CodeQL cannot
-          # follow into, and what it still follows is every path through
-          # this tree's own code -- for the price of not resolving and
-          # installing the whole dependency set twice a week
-          build-mode: none
-          # `queries` is left unset on purpose, which is the default
-          # query suite: the init action has no query-suite input, and
-          # its `queries` input adds to the default rather than
-          # replacing it. Said out loud because "no input" is otherwise
-          # indistinguishable from "nobody decided"
-      - name: Analyze
-        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
-        with:
-          # what keeps the two languages' results apart within one
-          # commit's analysis: without a distinct category the second
-          # upload replaces the first rather than adding to it
-          category: /language:${{ matrix.language }}
 
   # one context a branch rule can name, in place of job names that move:
-  # the matrix above produces one per language, a set that changes the
-  # day CodeQL gains a language worth adding here, and this job depends
-  # on the matrix rather than on those names. A required status check
-  # reports on the run a pull request has, so this name is requirable
-  # only because the pull_request trigger above exists; whether main's
-  # rule asks for it is REPOSITORY.md's *Required checks on main*, which
-  # reads the endpoint rather than this file
+  # the called workflow's own matrix produces one row per language, a set
+  # that changes the day CodeQL gains a language worth adding there, and
+  # this job depends on the calling job above rather than on those names.
+  # A required status check reports on the run a pull request has, so
+  # this name is requirable only because the pull_request trigger above
+  # exists; whether main's rule asks for it is REPOSITORY.md's *Required
+  # checks on main*, which reads the endpoint rather than this file
   codeql-passed:
     # the name and not the id is what a ruleset matches, and it carries
     # the workflow on purpose: a check is keyed by name alone, so two
@@ -162,8 +112,8 @@ jobs:
     # ordering, and nothing else: nothing in this tree calls this
     # workflow (btclib-org/.github#982), so the step below reads the
     # run's own job listing rather than `needs.*.result`, and `needs`
-    # here only sequences this job after the matrix -- a language added
-    # there is covered without touching this
+    # here only sequences this job after the call above -- a language the
+    # called workflow's own matrix adds is covered without touching this
     needs: [analyze]
     # not success(): a job whose dependencies failed is skipped, and a
     # skipped check reports "skipped", which a ruleset counts as
@@ -171,8 +121,8 @@ jobs:
     # -- the concurrency group superseding it with a newer push -- would
     # reach this job and fail it, turning a cancellation the newer run
     # already speaks for into a red check with no defect behind it. The
-    # draft and closed halves are the analysis job's own condition, so a
-    # draft skips uniformly rather than tripping this
+    # draft and closed halves are the called workflow's own analyze job
+    # condition, so a draft skips uniformly rather than tripping this
     if: >-
       ${{ !cancelled()
       && !github.event.pull_request.draft
@@ -194,19 +144,27 @@ jobs:
       # test.yml's aggregate, `needs` reaching nothing outside its own
       # workflow
       #
+      # under the call above, the listing carries the called workflow's
+      # rows under a name this job's own prefixes -- reusable-codeql.yml's
+      # own header has the reason -- and the filter below reads `.jobs[]`
+      # whole and judges each row on its conclusion column alone, so the
+      # rename changes what a row is called and nothing the filter or the
+      # count below reads
+      #
       # the allowlist below names "success" and "skipped", both names,
-      # whatever the jobs of this workflow can report today. `analyze`
-      # carries no condition narrower than this job's own draft/closed
-      # one above and no job here is conditional on what a pull request
-      # touched, so no legitimate "skipped" row is reachable -- which is
-      # a condition rather than a property, and a job added later
-      # re-opens it. Letting the allowlist follow the jobs is the
-      # alternative section 10 of the organization standard rejects: the
-      # narrowing is sound the day it is written, and what it costs is
-      # an expiry nothing watches. What reports an allowlist that has
-      # stopped matching the run is this job going red on the first run
-      # that legitimately skips, with no defect under it and nothing in
-      # the tree pointing here (btclib-org/.github#990)
+      # whatever the jobs of this workflow can report today. The called
+      # workflow's own analyze job carries no condition narrower than
+      # this job's own draft/closed one above and no job here is
+      # conditional on what a pull request touched, so no legitimate
+      # "skipped" row is reachable -- which is a condition rather than a
+      # property, and a job added later re-opens it. Letting the
+      # allowlist follow the jobs is the alternative section 10 of the
+      # organization standard rejects: the narrowing is sound the day it
+      # is written, and what it costs is an expiry nothing watches. What
+      # reports an allowlist that has stopped matching the run is this
+      # job going red on the first run that legitimately skips, with no
+      # defect under it and nothing in the tree pointing here
+      # (btclib-org/.github#990)
       - name: Fail unless every other job of this run succeeded
         env:
           GH_TOKEN: ${{ github.token }}

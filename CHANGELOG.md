@@ -1476,6 +1476,12 @@ keeps whichever shape it was written in.
   btclib-org/.github#523), and `gh attestation verify` over the rebuilt
   sdist fails the run where no attestation of the release carries its digest.
 
+### `codeql.yml` calls the organization's reusable workflow
+
+- **The analysis job lives in `btclib-org/.github`** (issue
+  btclib-org/.github#35): this file keeps the trigger, the schedule and
+  the aggregate job, and declares the permissions the called job needs.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
