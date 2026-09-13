@@ -1470,6 +1470,12 @@ keeps whichever shape it was written in.
 - **`REPOSITORY.md` records both as `false`** (issue
   btclib-org/.github#550), the settings having been turned off.
 
+### `sdist-rebuild.yml` verifies the latest release's sdist weekly
+
+- **The tag is rebuilt as `RELEASING.md` rebuilds it** (issue
+  btclib-org/.github#523), and `gh attestation verify` over the rebuilt
+  sdist fails the run where no attestation of the release carries its digest.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`

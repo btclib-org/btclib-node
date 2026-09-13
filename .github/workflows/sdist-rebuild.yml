@@ -1,0 +1,95 @@
+---
+name: sdist-rebuild
+
+# the sentinel on what the attestation vouches for: the latest release's
+# tag, rebuilt the way RELEASING.md's *Rebuild a release from its tag*
+# rebuilds it, and `gh attestation verify` over the rebuilt sdist, which
+# passes only where its digest is one the release signed.
+#
+# What moves between a release and this run is the runner image, uv, and
+# the build backend within the range the tag's pyproject.toml allows; that
+# interval is what a weekly run covers and a check inside release.yml
+# does not.
+#
+# The sdist alone: section 10 of btclib-org/.github's README.md makes
+# the row the sdist's. A red run is an issue against this tree. It gates
+# nothing and no branch rule names it
+
+on:
+  schedule:
+    # section 10 of btclib-org/.github's README.md is the calendar, and
+    # this line is not the place to restate it. Only the default branch
+    # schedules workflows, so on any other branch this is reachable
+    # through the two triggers below
+    - cron: "20 3 * * 0"
+  workflow_dispatch:
+  # so a change to this file is checked by the thing it configures, the
+  # trigger links.yml carries for itself. What the job runs besides this
+  # file is the tag's own, so nothing else a pull request touches changes
+  # the answer
+  pull_request:
+    # the type list every workflow here carries, for the reasons the same
+    # list carries in test.yml
+    types: [opened, reopened, synchronize, ready_for_review, closed]
+    paths:
+      - .github/workflows/sdist-rebuild.yml
+
+# least privilege for the GITHUB_TOKEN, elevated per job below
+permissions:
+  contents: read
+
+# grouped by the pull request's number where there is one, for the
+# reason test.yml gives beside its own group
+concurrency:
+  group: sdist-rebuild-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rebuild:
+    name: Rebuild the latest release's sdist and verify its attestation
+    if: >-
+      ${{ !github.event.pull_request.draft
+      && github.event.action != 'closed' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      # the release GitHub marks latest, not the newest tag: a tag whose
+      # release never published has no attestation to verify against
+      - name: Find the latest release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh release view --repo "$GITHUB_REPOSITORY" \
+            --json tagName --jq .tagName)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Checkout the release's tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+          persist-credentials: false
+      # no cache: the backend is fetched as a rebuild by hand fetches it
+      - name: Setup uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: false
+      # the steps of test.yml's dist job, which built what release.yml
+      # attested
+      - name: Pin the build timestamp to the commit
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "$GITHUB_ENV"
+      - name: Build the distribution files
+        run: uv build
+      - name: Make the sdist's determinism this tree's
+        run: |
+          uv run --no-project --python 3.14 \
+            .github/scripts/normalize_sdist.py dist/
+          sha256sum dist/*.tar.gz
+      - name: Verify the rebuilt sdist against the release's attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh attestation verify dist/*.tar.gz --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml"

@@ -50,6 +50,7 @@ along with the command that reads the index back. -->
 [![os-macos workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/os-macos.yml/badge.svg?branch=main)](https://github.com/btclib-org/btclib-node/actions/workflows/os-macos.yml?query=branch%3Amain)
 [![os-ubuntu workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/os-ubuntu.yml/badge.svg?branch=main)](https://github.com/btclib-org/btclib-node/actions/workflows/os-ubuntu.yml?query=branch%3Amain)
 [![links workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/links.yml/badge.svg?branch=main)](https://github.com/btclib-org/btclib-node/actions/workflows/links.yml?query=branch%3Amain)
+[![sdist-rebuild workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/sdist-rebuild.yml/badge.svg?branch=main)](https://github.com/btclib-org/btclib-node/actions/workflows/sdist-rebuild.yml?query=branch%3Amain)
 [![codeql workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/btclib-org/btclib-node/actions/workflows/codeql.yml?query=branch%3Amain)
 
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/btclib-org/btclib-node/badge)](https://scorecard.dev/viewer/?uri=github.com/btclib-org/btclib-node)
