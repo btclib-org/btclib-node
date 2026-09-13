@@ -351,7 +351,8 @@ the lint gate and the packaging checks against the result,
 specifiers down to their oldest allowed release instead, its own header
 saying which declared floor that leaves out and why, `pypi-install.yml`
 installs `btclib-node` from the index rather than from a checkout and
-runs it past import, and
+runs it past import, `sdist-rebuild.yml` rebuilds the latest release's
+sdist from its tag and verifies it against the release's attestation, and
 `mutation.yml` is its own section below. `fuzz.yml` runs the atheris harnesses
 under `fuzz/` against octets nobody chose, and its own header says which
 parser this tree owns of what a peer reaches and why the harness is a script

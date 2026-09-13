@@ -378,6 +378,10 @@ _NAMES_ONE = (
     # altogether, so the interpreter that step runs on is the one its
     # own command line names (btclib-org/.github#644)
     ".github/workflows/release.yml",
+    # sdist-rebuild.yml runs the tag's sdist normalizer through
+    # `uv run --no-project`, as test.yml's dist job does, so it names the
+    # interpreter that step runs on
+    ".github/workflows/sdist-rebuild.yml",
     ".github/workflows/test.yml",
 )
 
