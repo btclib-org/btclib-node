@@ -463,6 +463,7 @@ source-exclude = [
     # the whole rendered site. Anchored, nothing else here being called
     # build.
     "/docs/build",
+    ".hypothesis",
     ".mypy_cache",
     ".pytest_cache",
     ".ruff_cache",

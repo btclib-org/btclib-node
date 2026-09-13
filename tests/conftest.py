@@ -7,12 +7,20 @@
 The hooks keep the coverage floor from firing on a run that could not
 have crossed it; the fixtures start and stop real `Node` instances,
 on their own ports, for the functional and unit tests that need one.
+
+Beside the floor is a guard on its reaching the run at all. coverage
+looks for its configuration in the directory the process started in, so
+a run started from `tests/` finds no `fail_under`, no `source` and no
+`branch = true`. Section 8 of the organization standard leaves a tree to
+point such a run at its configuration or to make it say it is ungated,
+and this file is the second of the two: such a run is refused
+(btclib-org/.github#443).
 """
 
 import os
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import pytest
 from hypothesis import settings
@@ -141,8 +149,115 @@ def relax_coverage_floor(config: pytest.Config) -> bool:
     return True
 
 
+class CoverageConfiguration(Protocol):
+    """What this file reads of coverage's own configuration object.
+
+    `config_file` is the file coverage took its settings from, and
+    `None` where it took them from none: coverage sets it as it reads
+    one, so the attribute is the run's own answer to whether the
+    configuration reached it, rather than an inference from a value
+    that reached it.
+    """
+
+    config_file: str | None
+
+
+def coverage_configuration(config: pytest.Config) -> CoverageConfiguration | None:
+    """Return the configuration coverage is measuring with, or `None`.
+
+    `None` is the two ways there is nothing to ask about: `--no-cov`,
+    where pytest-cov registers its plugin and returns from `__init__`
+    with the controller left unbuilt, and a run whose plugin was never
+    registered, where `getplugin` hands back `None` -- the same
+    `getattr` default answers for both.
+    """
+    plugin = config.pluginmanager.getplugin("_cov")
+    controller = getattr(plugin, "cov_controller", None)
+    if controller is None:
+        return None
+    # annotated because the plugin manager hands back `Any`, and a
+    # return of that is what mypy's strict mode refuses here
+    measuring: CoverageConfiguration = controller.cov.config
+    return measuring
+
+
+def configuration_went_unread(
+    cov_config: CoverageConfiguration | None,
+    inipath: Path | None,
+    asked: float | None,
+    *,
+    asked_for_help: bool,
+    collect_only: bool,
+) -> bool:
+    """Whether a run held to the floor cannot see one.
+
+    A guard and not a sentence in `CONTRIBUTING.md`. What it catches is
+    a plausible spelling switching the floor off, and a reader told to
+    start from the root is not the run that does not: the sentence
+    leaves the same failure, with somebody having been told about it.
+
+    What it compares is not the threshold. `pyproject.toml` is the one
+    place the number lives, and a `== 100` here would be the second, so
+    what decides is whether coverage read a file at all against whether
+    pytest read one -- the asymmetry the defect leaves behind, pytest
+    walking up from where it was invoked to find its configuration and
+    coverage looking only where the process started.
+
+    The arguments are read off a `pytest.Config` by the caller rather
+    than taken as one, for the reason `asks_for_everything` above gives.
+    """
+    if cov_config is None:
+        return False
+    if asked is not None:
+        # section 8 of the organization standard has the hook never
+        # overruling an explicit `--cov-fail-under`, and a caller who
+        # named the floor has not had one taken away in silence
+        return False
+    if asked_for_help or collect_only:
+        # neither run is held to a floor to begin with: `--help`
+        # exits before a session, and `collectonly` is the one
+        # invocation shape pytest-cov itself exempts, its
+        # `pytest_runtestloop` returning on `cov_fail_under is None or
+        # self.options.collectonly` whatever its report prints. The
+        # pair is an enumeration rather than every run pytest-cov
+        # leaves ungated -- `--markers` and `--fixtures` exit before
+        # that loop as well, and are refused knowingly. Widening it is
+        # the rejected alternative, and `--setup-plan` is what says so:
+        # pytest-cov gates one, so a run of it started from `tests/` is
+        # held to a floor it cannot see and is refused rather than
+        # exempted
+        return False
+    # `inipath` is what the message has to name, so a run pytest read no
+    # configuration for is one this cannot tell anybody anything about
+    return cov_config.config_file is None and inipath is not None
+
+
 def pytest_configure(config: pytest.Config) -> None:
-    """Relax the coverage floor for a run `relax_coverage_floor` clears."""
+    """Refuse a run that cannot see its floor; relax one that cannot clear it.
+
+    A run coverage's configuration never reached is refused rather than
+    gated, `pytest.UsageError` being what pytest prints without a
+    traceback and exits `4` for -- an exit of its own, so the code says
+    the run measured nothing rather than that something in the tree
+    failed.
+    """
+    if configuration_went_unread(
+        coverage_configuration(config),
+        config.inipath,
+        config.option.cov_fail_under,
+        asked_for_help=config.option.help,
+        collect_only=config.option.collectonly,
+    ):
+        refusal = (
+            "coverage read no configuration, so this run is held to no floor"
+            " and measures a different set of files: coverage looks only in"
+            f" the directory the run started in, {Path.cwd()}, and pytest"
+            f" read {config.inipath}. Run from {config.rootpath};"
+            " --cov-config restores the floor and not the file set, a"
+            " relative omit pattern being resolved against the directory"
+            " the run started in."
+        )
+        raise pytest.UsageError(refusal)
     relax_coverage_floor(config)
 
 

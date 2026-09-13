@@ -245,6 +245,10 @@ git add -A && uv run pre-commit run --all-files
 uv run pre-commit validate-config .pre-commit-config.yaml
 uv run --locked --no-default-groups --group docs \
     sphinx-build -W -n -b html docs/source docs/build/html
+if grep -rn 'href="#\./' docs/build/html --include='*.html'; then
+  echo "::error::the links above resolve to no page (unresolved relative path)"
+  exit 1
+fi
 ```
 
 `--all-files` means every file git tracks, so a file that is new and not
@@ -257,7 +261,7 @@ docstring docutils cannot parse fails it with every hook green -- a name
 ending in an underscore is a reference to a link target, which is what
 the double backticks around a literal like ``NODE_`` are for.
 
-**Not `--only-group docs` in place of the last command's own
+**Not `--only-group docs` in place of the documentation build's own
 `--no-default-groups --group docs`.** The two read like the same request
 and are not: `--only-group` excludes the project along with every other
 group, so autodoc's own import of `btclib_node` raises
@@ -269,7 +273,17 @@ command's outcome tracks the `.venv`'s own history rather than the tree
 it is meant to check. `docs.yml` runs the form above for the same
 reason, next to the same warning.
 
-The last command is worth running before pushing a change to the hook
+The `grep` after the build is that gate's second step. What myst renders
+for a target it cannot resolve is an anchor on the page it is already on
+-- an id nothing defines -- and the build fails on it only through the
+`myst.xref_missing` warning `docs/source/conf.py` suppresses nowhere,
+having resolved every link the included root files carry ahead of myst's
+own resolver; the grep asks the same question of the HTML, where a
+suppression cannot hide the answer. One spelling answers for every local
+destination, `.pre-commit-config.yaml`'s `local-link-prefix` hook holding
+each of them to the `./` prefix.
+
+`validate-config` is worth running before pushing a change to the hook
 config: it catches what a wrong `types_or` tag or a malformed entry would
 otherwise turn into a red lint job.
 

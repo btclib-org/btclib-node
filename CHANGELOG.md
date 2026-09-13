@@ -1101,6 +1101,352 @@ keeps whichever shape it was written in.
   what the first of them says about `test.yml`'s own allowlist is
   untouched.
 
+### `REVIEWING.md` and `.gitattributes` are the standard's, byte for byte
+
+- **`REVIEWING.md` above `## This repository in particular` matches
+  `btclib-org/.github`'s copy at `1058ef3`** (issue
+  btclib-org/.github#353). A finding about the wording of prose no user
+  reads is named at the foot of the review instead of filed, and what is
+  filed stays a defect a test or a hook can measure, a decision the
+  standard has to take, or a functional defect. The paragraph proposing a
+  fix as a `suggestion` gives the signature as the reason it is the right
+  shape: the commit GitHub writes carries its web-flow key, and `main`
+  requires a valid signature rather than one particular signer.
+  *Re-review* reads the old sha off the previous round's verdict, an
+  amend and a rebase each leaving it off the branch. Everything under the
+  heading is this tree's and no byte of it moves.
+- **`.gitattributes` matches that copy whole, neither copy carrying the
+  marker heading** (issue btclib-org/.github#1026). It carries what the
+  union driver costs at the seam where two sides' added lines abut — the
+  blank line between them, which leaves a block opening with a heading
+  sitting against the line above it while `git rebase` exits 0 and
+  nothing conflicts — and names section 4's `check-changelog` as what
+  reports it, put ahead of the markdownlint autofix that would otherwise
+  repair the seam before anything named it. The paragraph after it
+  rejects not setting the driver at all.
+
+### The gate block reproduces every run step of the docs job
+
+- **The block carries the `grep` over the built pages that `docs.yml`
+  runs after the `sphinx-build` call** (issue btclib-org/.github#973).
+  What myst renders for a target it cannot resolve is an anchor on the
+  page it is already on, and the build fails on it only through the
+  `myst.xref_missing` warning `docs/source/conf.py` suppresses nowhere;
+  the grep asks the same question of the artefact, where a suppression
+  cannot hide the answer.
+- **The paragraphs under the block name the command they are about, not
+  its position in it.** An ordinal reference goes false when the block
+  gains a command, and the one about `validate-config` still called it
+  the last with the documentation build appended below.
+
+### The closure reader takes `needs:` in each of its three shapes
+
+- **`tests/interpreters_test.py`'s `_NEEDS` reads a block list under the
+  key beside the flow list and the bare scalar on it** (issue
+  btclib-org/.github#1031). GitHub takes all three and they name the same
+  jobs, so a reader of two of them answers a closure short of whatever
+  sits behind an edge written in the third, and
+  `test_free_threading_is_classified_exactly_when_the_gate_runs_it` then
+  measures a gate it has not read. Only the aggregate's own `needs:`
+  going unread is loud, the closure collapsing to the aggregate and the
+  `no job ... names an interpreter` assertion firing on it; every other
+  position is silent. `test.yml` writes no block list today, which is a
+  condition and not a property.
+- **The run of items takes a whitespace-only line, the tolerance `_STEP`
+  already carries for the same residue.** `_UNCOMMENTED` takes one
+  whitespace character with the `#` it strips, so a comment among the
+  items arrives one space short of their indent, and a blank line
+  between two items changes nothing a yaml reader sees; a run of
+  adjacent lines ends at either and drops every item under it.
+- **The issue's other half is `btclib-org/bitcoin-core-rpc`'s own copy**,
+  which is not this tree's, so the issue stays open on this landing.
+
+### The symlink case's pragma takes the case, not the handler alone
+
+- **The `# pragma: no cover` sits on the case's `def`** (issue
+  btclib-org/.github#1042): an exclusion on a line that introduces a
+  block takes the whole block, so it reaches the assertion after the
+  skip as well. On the `except` it reaches the handler and the
+  `pytest.skip` alone, which are the two lines that do not run wherever
+  the link is made, and a platform refusing `os.symlink` then meets the
+  skip and a coverage floor it cannot reach in the same run -- the exit
+  code the floor's and the failure naming a percentage rather than a
+  symlink. Measured with a plugin making `Path.symlink_to` raise
+  `OSError`: with the pragma on the `except` the documented run exits 1
+  with the assertion after the skip named missing, and with it on the
+  `def` the same run meets the floor and the case reports `SKIPPED`.
+- **The comment above the line says why coverage can ask nothing of the
+  case, and what the exclusion costs**: the body is reachable only
+  where the platform makes a symbolic link, so a floor over a `source`
+  naming `tests` asks about the runner rather than about the suite, and
+  dead code inside the case stops being flagged in exchange. The inline
+  half names the case rather than the handler, which is the line
+  `[tool.coverage.report]`'s comment asks for.
+- **The docstring's own sentence -- a machine that will not create a
+  symlink skips the case rather than failing it -- is what the move
+  makes true.** *The symlink case skips a machine that will not create
+  one* above has the handler carrying the pragma, and *A pragma's
+  inline half names its own line's case* has that handler's half
+  reading `-- no privilege on Windows`; this entry replaces both rather
+  than rewriting either.
+- **`btclib`, `bitcoin-core-rpc` and `btclib-benchmarks` carry the same
+  shape**, so the issue stays open on this landing and the citation
+  above is `issue` for that reason.
+
+### The `needs:` reader is the spelling the organization's copies share
+
+- **`_NEEDS` and `_ITEM` are `bitcoin-core-rpc@b2b9d114`'s, byte for
+  byte** (issue btclib-org/.github#1038). The run of items takes an
+  item's own trailing comment as well as a comment line and a blank
+  one, and the inline half stops at a `#` rather than reading the rest
+  of the key's own line. Each of those is one thing to a yaml reader,
+  and a run of adjacent item lines ends at it and drops every item
+  below.
+- **A trailing comment on an item is the shape the tolerance landed for
+  btclib-org/.github#1031 does not reach.** *The closure reader takes
+  `needs:` in each of its three shapes* above has the run of items
+  taking a whitespace-only line, the tolerance `_STEP` carries for the
+  same residue; what stands now takes the comment itself beside the
+  whitespace `_UNCOMMENTED` leaves where one was written, and is the
+  family's alternative rather than `_STEP`'s.
+- **`test_needed_reads_no_step_of_a_job_as_a_job_it_waits_on` asserts
+  that a step-shaped line where an item goes names no job**, with the
+  widened run monkeypatched in as the control. A `- name: Setup uv`
+  written at the items' indent differs from an item in what follows the
+  dash and in nothing else, where a job's own `steps:` key sits at the
+  shallower indent and ends the run under either reading, so the
+  misplaced line is the text the two disagree about.
+- **`test_needed_takes_no_token_of_a_comment_on_the_needs_line` asserts
+  the closure's contents rather than that the walk raised nothing**:
+  `_needed` reads a key no job answers to as the empty block, so words
+  of a comment taken for job keys are absorbed here in silence. The
+  reader that takes them is the control.
+- **The comment above the pattern names what the read still drops**: a
+  flow list wrapped across lines keeps what sat on the key's own line
+  and nothing else, and a flow list exploded under the key or a block
+  list at any other indent keep none of it.
+- **`btclib` and `btclib-secp256k1` carry the narrow reader, and
+  `bitcoin-core-rpc` carries the pattern without that last paragraph**,
+  so the issue stays open on this landing and the citation above is
+  `issue` for that reason.
+
+### The command-line `..` case kills a resolve that only makes paths absolute
+
+- **`tests/unit/coverage_floor_test.py` gains
+  `test_a_parent_directory_segment_names_the_whole_suite_too`** (issue
+  btclib-org/.github#1049), the name `bitcoin-core-rpc` and
+  `btclib-benchmarks` already carry for it. It asks the predicate the
+  two commands their copies ask -- `pytest tests/../tests` from the
+  rootdir, and `pytest ../tests` from inside `tests/` -- re-expressed
+  against this tree's signature, which takes `file_or_dir`, `testpaths`
+  and `rootpath` and no invocation directory: a relative positional is
+  read against the working directory, `Path.resolve()` being what joins
+  it onto one, so the second command is a `monkeypatch.chdir` into the
+  fictitious rootdir's own `tests/`. `rootpath` stays that rootdir
+  there, measured rather than assumed: `pytest ../tests` run from
+  `tests/` reports the repository root as its `rootdir` and
+  `pyproject.toml` as its `configfile`, which is the pair a bare run
+  from the root reports.
+- **`Path.resolve()` does three things -- makes a path absolute,
+  normalizes a `..` segment, follows a link -- and this file pinned only
+  the first and the third.** Measured by loading `tests/conftest.py` out
+  of the object store under a standalone interpreter, as written and
+  under tampers of the comprehension -- `Path(path)`,
+  `Path(path).absolute()` and `Path(os.path.abspath(path))`, each
+  asserted before use: every relative spelling in `WHOLE_SUITE` reads as
+  a selection under `Path(path)` and as the whole suite under the other
+  two, which is the first alone, and no member of `WHOLE_SUITE` carries
+  a `..`. The symlinked spelling the file already held fails under both
+  `.absolute()` and `abspath`, so what it pins is the third and not the
+  second: a tamper performing the whole of the normalizing is one it
+  still kills. This case is what pins the second, dying to `.absolute()`
+  and surviving `abspath`. With `.absolute()` written into the tree and
+  `Path.symlink_to` made to refuse, the module is green without this
+  case and fails on this case alone with it.
+- **`Path(os.path.abspath(path))` is not what this case reaches**: it
+  normalizes the segment too, and
+  `test_a_symlinked_rootdir_still_reads_as_the_whole_suite` is what
+  tells that rewrite from the call -- the case that skips wherever the
+  platform will not make a link.
+- **The symlink case's docstring names this case as what holds `given`
+  where the link cannot be made**, in place of `WHOLE_SUITE`'s relative
+  spellings, which hold that call against being dropped and not against
+  being weakened. *`asks_for_everything` takes the paths rather than a
+  `pytest.Config`* above says the same of those spellings; this entry
+  replaces that sentence rather than rewriting it.
+- **`btclib` has no case of that name either, and this branch touches
+  no other tree**, so the issue stays open on this landing and the
+  citation above is `issue` for that reason.
+
+### `source-exclude` names the `.hypothesis` a run from inside `tests/` leaves
+
+- **`[tool.uv.build-backend]`'s `source-exclude` gains `.hypothesis`**
+  (issue btclib-org/.github#1058). Hypothesis writes its example database
+  to `.hypothesis` under the working directory --
+  `hypothesis/configuration.py` takes `Path.cwd()` for it -- so `pytest`
+  invoked from inside `tests/` leaves one there, and `source-include`'s
+  `"tests/**"` then packs it into the sdist. `.gitignore` covers
+  `.hypothesis/` unanchored, which keeps git quiet about the directory
+  and says nothing to the backend, `.gitignore` being a file it does not
+  read. Measured as the list's own comment records for every line it
+  holds: with `tests/.hypothesis/examples/probe` planted,
+  `uv run pre-commit run check-sdist --all-files` exits 1 on
+  `SDist does not match git` naming that path under `SDist only`, and
+  exits 0 with the line in place.
+
+### Every `needs:` shape earns its own closure, and both consequences are named
+
+- **`test_needed_reads_needs_in_each_of_its_three_shapes` reads its
+  shapes against a flat job dict, so every case asserts the closure its
+  own text earns** (issue btclib-org/.github#1053). A scalar `needs:`
+  names one job and reaches one job, so that row asserts the aggregate
+  and that job, where a list of either shape reaches both. A dict in
+  which `changes` waited on `coverage` buys one expectation for every
+  case with a second route to `coverage`, and an item dropped below a
+  residue is reached by that route anyway.
+- **One chained dict stands below the flat rows, and it is the only
+  assertion in the module that `_needed` walks at all.** Flattening
+  buys the comparability above at the cost of every closure being one
+  hop deep, and `test.yml`'s own `test-passed` writes
+  `needs: [changes, coverage, windows, dist]`, naming all four
+  directly, so `_gating()` never needs a second hop either. A
+  `_needed` reading a job's direct `needs:` and stopping therefore
+  answered every flat row: measured by replacing the walk with a
+  single lookup, under which every assertion above the chained case
+  passes and the chained case is the one that fails. The chain
+  asserts its own closure and nothing about a shape, so it costs the
+  flat rows none of their comparability.
+- **Each shape written under the key is a named case of a dict asserted
+  in a loop, the stripped form of a comment spelled out beside the
+  comment itself**, so a failure says which shape. `_UNCOMMENTED` over
+  the written form is asserted to be the stripped one, which is what
+  keeps the two forms the two `_jobs` hands the reader.
+- **Measured by rebinding `_NEEDS` in a standalone interpreter to
+  mutants of the pattern as written**: an item alternative with no
+  trailing-comment tolerance and one with no `[ \t]*` are each killed by
+  *a comment on an item*, a whole-line alternative with no comment
+  tolerance by *a comment among the items*, and no whole-line
+  alternative at all by *a comment among the items*, *that comment
+  stripped* and *a blank line between two items*. `flow` and `scalar`
+  kill none of them and are not meant to: they are the contrast the
+  degenerate-reader control turns on.
+- **The comment above `_NEEDS` names both of the things a reader blind
+  to the block shape does** (issue btclib-org/.github#1057), drawn from
+  the docstring `bitcoin-core-rpc` gives its own copy of this test.
+  Where the jobs the narrowing keeps still name an interpreter, the
+  biconditional passes on a gate it has not read; where the narrowing
+  leaves the aggregate alone, the aggregate's own job names no
+  interpreter and the `no job ... names an interpreter` assertion ahead
+  of that biconditional fires instead. Measured against `test.yml` with
+  `_NEEDS` rebound to a reader of the key's own line: with the
+  aggregate's own `needs:` rewritten under the key the closure is
+  `test-passed` alone and that assertion fires, and with a job reached
+  only under the key naming `3.14t`,
+  `test_free_threading_is_classified_exactly_when_the_gate_runs_it`
+  passes on a closure the reader as written fails it on.
+- **The paragraph on what the run must not take ends in a full stop**
+  (issue btclib-org/.github#1057).
+- **`_NEEDS` and `_ITEM` are untouched**, and are still
+  `bitcoin-core-rpc@ca9db975`'s and `btclib-secp256k1@1e01aa6d`'s byte
+  for byte. The comment above them is not one artefact:
+  `bitcoin-core-rpc` words its second paragraph differently and carries
+  no fourth one, so the repair above breaks no identity that holds.
+- **`btclib-secp256k1` owes the shape and `bitcoin-core-rpc` owes the
+  comment**, so both issues stay open on this landing and the citations
+  above are `issue` for that reason.
+
+### A run coverage's configuration never reached is refused
+
+- **`tests/conftest.py` let a run coverage read no configuration for
+  pass as the gate** (issue btclib-org/.github#443): coverage looks for
+  its configuration in the directory the process started in, so
+  `env -C tests uv run pytest` finds no `fail_under`, no `source` and no
+  `branch = true`, while pytest walks up and reads `pyproject.toml` all
+  the same. That asymmetry is what the hook keys on, rather than the
+  floor's own value, which `pyproject.toml` is the one place for; what
+  it raises is `pytest.UsageError`, which pytest prints without a
+  traceback and exits 4 for, so the exit code says the run measured
+  nothing rather than that something in the tree failed.
+- **The message names the root as the remedy, and `--cov-config` as one
+  that restores the floor and not the file set.** coverage keeps an
+  `omit` pattern that does not open with a wildcard and adds beside it
+  the form it makes absolute against the directory the run started in
+  (`prep_patterns` in `coverage/files.py`), so `tests/integration/*`
+  from `tests/` names an integration directory under `tests/tests` and
+  matches nothing. `tests/integration/` is measured rather than omitted
+  there, and the tests it holds skip themselves without
+  `BTCLIB_NODE_INTEGRATION`, so a run from `tests/` naming
+  `--cov-config` is held to the floor over exactly the files that
+  entry's own comment in `pyproject.toml` says it keeps out. `source` is
+  not what carries this tree: `btclib_node` is an import name from
+  either directory, this tree being src-layout, and `tests` reaches the
+  same files from either as well.
+- **Section 8 of the organization standard leaves a tree to point such a
+  run at its configuration or to make it say it is ungated, and this is
+  the second of the two.** A sentence in `CONTRIBUTING.md` telling a
+  reader to start from the root is the rejected alternative, on the
+  defect being that a plausible spelling switches the floor off in
+  silence: what the sentence buys is a silent failure somebody had been
+  told about.
+- **Left alone are `--no-cov`, `--help`, `--collect-only` and an
+  explicit `--cov-fail-under`, none of them a run held to a floor it
+  cannot see.** `collectonly` is the one invocation shape pytest-cov
+  itself exempts, its `pytest_runtestloop` returning on
+  `cov_fail_under is None or self.options.collectonly`, so the pair the
+  hook reads is an enumeration rather than every run pytest-cov leaves
+  ungated: `--markers` and `--fixtures` from `tests/` exit before that
+  loop as well and are refused knowingly. `--setup-plan` is what says
+  widening is the wrong direction, since pytest-cov does gate one -- a
+  run of it from `tests/` is held to a floor it cannot see, and is
+  refused. No workflow sets a `working-directory`, so CI meets the guard
+  from the root: `integration-bitcoind.yml`'s `pytest tests/integration`
+  is a selection `relax_coverage_floor` already drops the floor for, and
+  `os-macos.yml`, `os-ubuntu.yml` and
+  `.github/mutation/interpreter.toml`'s `test-command` name `--no-cov`.
+- **`bitcoin-core-rpc` and `btclib-benchmarks` are owed the same
+  guard**, btclib-org/.github#443 having taken that decision for the
+  family, and `btclib` landed it at `da3e0d15`, `btclib-secp256k1` at
+  `bd71d7c8`. What lands with the last of them is
+  the sentence recording which limb of section 8 the family took, which
+  is why this cites the issue rather than closing it.
+
+### `.pre-commit-config.yaml` says a local run enforces the gate, not a commit
+
+- **The header comment's noun is a local run of `.pre-commit-config.yaml`**
+  (issue btclib-org/.github#966). `lint.yml` runs that file, and nothing
+  installs it as a git hook: `CONTRIBUTING.md`'s *The environment and the
+  gates* refuses the install, `pre-commit install` writing into the common
+  git directory every worktree of this repository shares. A commit here
+  therefore enforces nothing, and equating what CI enforces to what a
+  commit enforces was a claim about a gate this tree does not have. Naming
+  the command in its place is the rejected alternative: this tree documents
+  `uv run pre-commit run --all-files` where `btclib-org/.github`, which has
+  no project to install, documents `uvx pre-commit run --all-files`, so one
+  spelling in text shared between the trees is false somewhere. *A local
+  run* is the noun `btclib-org/btclib-benchmarks@c2c0b2a2` had already
+  substituted for the same reason.
+- **`.pre-commit-config.yaml`'s `SKIP=` recipe keeps the line that is a
+  `pre-commit run` and loses the lines that are a `git commit`.** `SKIP=mypy
+  git commit -m "foo"` and the `--no-verify`/`-n` pair skip hooks that are
+  not installed, so the file a session reads while it is committing was
+  teaching a workflow the same tree's `CONTRIBUTING.md` refuses. A reader
+  who installed the hook anyway is the rejected alternative: that reader is
+  acting against this tree's own instruction, and pre-commit's own
+  documentation is where an interface this tree does not use belongs.
+- **`.vscode/extensions.json` says *on a local run* wherever it said *at
+  commit time*** -- in its header and in the `redhat.vscode-yaml`,
+  `github.vscode-github-actions` and `prettier` entries -- **and what writes
+  a second formatter's output back is a local run and not the commit hook.**
+- **No `EXPECTED_DRIFT` entry is owed for either file.** Section 14 of the
+  organization standard gives `.pre-commit-config.yaml` no bullet and does
+  not name `.vscode/extensions.json` at all, and `tests/verbatim_test.py`
+  there compares the paths a bullet names. The comments edited here sit
+  above `.pre-commit-config.yaml`'s `ci:` block, which is the only part of
+  that file section 14's *Verbatim in part* paragraph reaches, and that
+  paragraph's own sentence is that the same test compares none of what it
+  lists. The editor paragraph btclib-org/.github#966 corrects in the
+  siblings that carry it is absent from this tree's `CONTRIBUTING.md`.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
