@@ -248,8 +248,8 @@ gh api repos/btclib-org/btclib-node \
   --jq '{issues: .has_issues, visibility: .visibility,
          default_branch: .default_branch,
          wiki: .has_wiki, projects: .has_projects}'
-# {"default_branch":"main","issues":true,"projects":true,
-#  "visibility":"public","wiki":true}
+# {"default_branch":"main","issues":true,"projects":false,
+#  "visibility":"public","wiki":false}
 ```
 
 `has_issues` is what `CONTRIBUTING.md`'s *The issue tracker* rests on: an
@@ -264,8 +264,6 @@ the answer above is what puts that flip one command from being seen.
 turns the wiki and the projects board off on every tree: an unused wiki
 is a second place a reader can land looking for what the tracker already
 records, and the projects board is a per-user view of the same issues.
-The call above still answers `true` for both; neither has been turned
-off here yet.
 
 ```shell
 gh api repos/btclib-org/btclib-node --jq '.topics | join(", ")'
