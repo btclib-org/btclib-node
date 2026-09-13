@@ -1459,6 +1459,12 @@ keeps whichever shape it was written in.
   btclib-org/.github#35): this file keeps the trigger, the schedule and
   the files it checks.
 
+### The `needs:` shape test reads hyphenated job keys
+
+- **A block list of `- test-passed` and `- free-threaded` is asserted beside
+  its rows** (issue btclib-org/.github#1063): `\w+` in place of `\S+` for the
+  item token fails it.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
