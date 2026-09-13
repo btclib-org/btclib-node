@@ -1410,6 +1410,43 @@ keeps whichever shape it was written in.
   the sentence recording which limb of section 8 the family took, which
   is why this cites the issue rather than closing it.
 
+### `.pre-commit-config.yaml` says a local run enforces the gate, not a commit
+
+- **The header comment's noun is a local run of `.pre-commit-config.yaml`**
+  (issue btclib-org/.github#966). `lint.yml` runs that file, and nothing
+  installs it as a git hook: `CONTRIBUTING.md`'s *The environment and the
+  gates* refuses the install, `pre-commit install` writing into the common
+  git directory every worktree of this repository shares. A commit here
+  therefore enforces nothing, and equating what CI enforces to what a
+  commit enforces was a claim about a gate this tree does not have. Naming
+  the command in its place is the rejected alternative: this tree documents
+  `uv run pre-commit run --all-files` where `btclib-org/.github`, which has
+  no project to install, documents `uvx pre-commit run --all-files`, so one
+  spelling in text shared between the trees is false somewhere. *A local
+  run* is the noun `btclib-org/btclib-benchmarks@c2c0b2a2` had already
+  substituted for the same reason.
+- **`.pre-commit-config.yaml`'s `SKIP=` recipe keeps the line that is a
+  `pre-commit run` and loses the lines that are a `git commit`.** `SKIP=mypy
+  git commit -m "foo"` and the `--no-verify`/`-n` pair skip hooks that are
+  not installed, so the file a session reads while it is committing was
+  teaching a workflow the same tree's `CONTRIBUTING.md` refuses. A reader
+  who installed the hook anyway is the rejected alternative: that reader is
+  acting against this tree's own instruction, and pre-commit's own
+  documentation is where an interface this tree does not use belongs.
+- **`.vscode/extensions.json` says *on a local run* wherever it said *at
+  commit time*** -- in its header and in the `redhat.vscode-yaml`,
+  `github.vscode-github-actions` and `prettier` entries -- **and what writes
+  a second formatter's output back is a local run and not the commit hook.**
+- **No `EXPECTED_DRIFT` entry is owed for either file.** Section 14 of the
+  organization standard gives `.pre-commit-config.yaml` no bullet and does
+  not name `.vscode/extensions.json` at all, and `tests/verbatim_test.py`
+  there compares the paths a bullet names. The comments edited here sit
+  above `.pre-commit-config.yaml`'s `ci:` block, which is the only part of
+  that file section 14's *Verbatim in part* paragraph reaches, and that
+  paragraph's own sentence is that the same test compares none of what it
+  lists. The editor paragraph btclib-org/.github#966 corrects in the
+  siblings that carry it is absent from this tree's `CONTRIBUTING.md`.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
