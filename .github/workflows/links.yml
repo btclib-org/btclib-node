@@ -60,78 +60,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # the job itself is btclib-org/.github's, called at @main so a fix there
+  # reaches this tree in one landing (section 10 of its README.md); what
+  # stays here is the trigger, the schedule and which files are this
+  # tree's documentation
   links:
-    name: Check the documentation links
-    # a draft pull request is work its author is not asking anyone to
-    # read yet, and spends no runner here either. A closed one spends
-    # none: the trigger above takes that event only so the landing
-    # supersedes a run this ref's group is still holding
-    if: ${{ !github.event.pull_request.draft && github.event.action != 'closed' }}
-    runs-on: ubuntu-latest
-    # a few dozen requests with retries behind them; a job past this is
-    # hung on one host rather than working through the rest
-    timeout-minutes: 15
-    steps:
-      # every action pinned to a commit SHA with the tag in the comment:
-      # a tag, let alone a branch, is a name its owner can move
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          # see the checkout of the coverage job in test.yml
-          persist-credentials: false
-      - name: Check the links
-        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
-        with:
-          # the prose, and not the code: a comment in this node cites a
-          # BIP or Bitcoin Core's own source, and a citation is a
-          # reference rather than a link a reader clicks. What is checked
-          # is what somebody is invited to follow -- the markdown at the
-          # root, and the markdown kept under tests/, which says where
-          # each vendored vector came from and is therefore the file
-          # whose links rot with an upstream reorganization.
-          # --no-progress because the log is not a terminal; the retries
-          # and the timeout are what keep a slow or throttling host from
-          # being reported as a dead one. --timeout 45 against lychee's
-          # default of 20 buys exactly that difference, the retries above
-          # otherwise making it three timeouts rather than one. A URL
-          # that times out run after run belongs in a .lycheeignore with
-          # the measurement beside it, not here.
-          # --accept is lychee's own default range with 429 added to it,
-          # rather than a list of codes: `lychee --help` gives that
-          # default as 100..=103,200..=299, and the flag replaces the
-          # range rather than adding to it, so a "200,206,429" would
-          # narrow it -- a 201 or a 204 becoming a dead link -- to add a
-          # 206 the default already covers. 429 is the one code worth
-          # adding, a rate limit being an answer from a host that is
-          # alive.
-          # No --cache: a run starts from a fresh workspace, so the cache
-          # file one run writes is read by the next only if a step
-          # restores it, and none does; within one run lychee asks each
-          # URL once whatever the flag says.
-          # --include-fragments, or a heading renamed in the tree a
-          # link here points into breaks that link with nothing red
-          # anywhere: the forge serves the page and drops a fragment it
-          # cannot resolve, so the run that notices is the linking
-          # tree's. The check reads the page already fetched for the
-          # link, so it adds no request. What can override it is the
-          # token below: on a failed github.com/<owner>/<repo> link
-          # lychee falls back to the repositories API, so a missing
-          # fragment on that shape -- the one CONTRIBUTING.md and
-          # REPOSITORY.md cite the standard by, and the only shape an
-          # anchor into another tree takes here -- is read, found
-          # missing, and then answered OK because the repository exists.
-          # btclib-org/.github#630 is where that is weighed.
-          args: >-
-            --no-progress
-            --max-retries 3
-            --retry-wait-time 10
-            --timeout 45
-            --accept 100..=103,200..=299,429
-            --include-fragments
-            "*.md" "tests/**/*.md"
-          # fail the job rather than only summarizing: a green run that
-          # found dead links is the state this workflow exists to end
-          fail: true
-        env:
-          # for github.com links only, per the permissions comment above
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    uses: btclib-org/.github/.github/workflows/reusable-links.yml@main
+    with:
+      targets: '"*.md" "tests/**/*.md"'

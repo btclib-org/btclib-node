@@ -1453,6 +1453,12 @@ keeps whichever shape it was written in.
   `btclib-org/.github`** (issue btclib-org/.github#1075): what is filed
   is one test, and an entry's body past three lines is refused.
 
+### `links.yml` calls the organization's reusable workflow
+
+- **The lychee job lives in `btclib-org/.github`** (issue
+  btclib-org/.github#35): this file keeps the trigger, the schedule and
+  the files it checks.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
