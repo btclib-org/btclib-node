@@ -1482,6 +1482,12 @@ keeps whichever shape it was written in.
   btclib-org/.github#35): this file keeps the trigger, the schedule and
   the aggregate job, and declares the permissions the called job needs.
 
+### `integration-bitcoind.yml` keys concurrency on the PR number
+
+- **`github.head_ref` repeats across forks, so two same-named branches
+  cancelled each other's run** (issue btclib-org/btclib#2101): the key
+  is now the pull request's own number, which forks cannot share.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
