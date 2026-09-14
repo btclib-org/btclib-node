@@ -6,15 +6,11 @@ name: docs
 # -- so invalid reStructuredText in a docstring fails after the merge on
 # a service whose failure is not a check on the pull request.
 #
-# No hook can take this over: markdownlint does not read .rst, and
-# ruff's pydocstyle rules check the form of a docstring rather than
-# whether its body is valid rst.
-#
-# A workflow of its own rather than a job in lint.yml: a failed docs
-# build and a failed hook are two different verdicts about two
-# different things, and one badge and one line in the checks list each
-# is what says so. It also installs a different dependency group and
-# needs no pre-commit cache, so the two share nothing but the checkout
+# The build itself, the checkout and the unresolved-link check are
+# btclib-org/.github's: reusable-docs.yml, called at @main so a fix there
+# reaches this tree in one landing (section 10 of its README.md). What
+# stays here is the trigger and the concurrency group
+# (btclib-org/.github#35)
 
 on:
   push:
@@ -59,7 +55,8 @@ on:
 
 # least privilege for the GITHUB_TOKEN: everything running in a job
 # (actions, dependencies) can read the token, so it must not be able to
-# write to the repository
+# write to the repository. The called job needs no elevation of its own,
+# reusable-docs.yml's own header naming the same contents: read
 permissions:
   contents: read
 
@@ -78,74 +75,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # the checkout, the uv setup, the build and the unresolved-link check
+  # are btclib-org/.github's; the draft and closed declines are the
+  # called workflow's own, reading github.event.pull_request.draft and
+  # github.event.action off this caller's trigger. This tree has no git
+  # submodule for the checkout to initialize and no script of its own to
+  # run against the built pages, so both inputs are left at their
+  # defaults
   docs:
-    # the name is the required check on main once REPOSITORY.md's
-    # required-checks table names it
-    name: Build the documentation
-    # a draft pull request is work in progress: every push to one would
-    # build the documentation of a tree its author is not asking anyone
-    # to read yet. A run on the merge result still happens the moment
-    # the pull request is marked ready, which is why ready_for_review is
-    # a trigger type above.
-    # A closed pull request spends none either -- the trigger above
-    # takes the closed event only to supersede a run this ref's group is
-    # still holding
-    if: ${{ !github.event.pull_request.draft && github.event.action != 'closed' }}
-    runs-on: ubuntu-latest
-    # about ten seconds of sphinx over this tree's own package; a job
-    # that takes minutes is hung
-    timeout-minutes: 20
-    steps:
-      # every action is pinned to a commit SHA, the tag in the comment: a
-      # tag, let alone a branch, is a name its owner can move, and these
-      # run in a job that can read the workflow token
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          # see the checkout of the coverage job in test.yml
-          persist-credentials: false
-      - name: Setup uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          enable-cache: true
-      # the same command .readthedocs.yaml runs and CONTRIBUTING.md
-      # documents, so what CI checks is what gets published.
-      # Not --only-group docs: autodoc imports the module it documents,
-      # so the project has to be installed -- with sphinx alone the
-      # build renders an empty module heading and says nothing about it.
-      # -W makes a failed import a failed build, and reports every
-      # warning a run raises before failing at the end of it, so one
-      # broken page does not hide the next. -n turns an unresolved
-      # cross-reference into a warning for -W to catch -- conf.py's own
-      # intersphinx_mapping and nitpick_ignore are what -n is checked
-      # against
-      - name: Build the docs
-        run: >
-          uv run --locked --no-default-groups --group docs
-          sphinx-build -W -n -b html docs/source docs/build/html
-      # the one defect the build above cannot report on itself: a link
-      # myst cannot resolve is rendered as an anchor on the page it is
-      # already on -- an id nothing has -- so -W passes over a dead
-      # link. conf.py resolves every link the included root files carry
-      # and suppresses no myst warning, which makes the build fail on
-      # the one myst still cannot place; this step is the same claim
-      # made about the artifact rather than about the configuration, and
-      # it is what would catch a suppression added back.
-      #
-      # One grep, because there is one spelling to look for. myst's
-      # fallback renders the destination verbatim, so what this can
-      # match is decided upstream of here, in how the link was written.
-      # Every destination the included root files carry therefore
-      # renders href="#./<destination>" when it breaks, anchor,
-      # extension and nested path alike (issue btclib-org/.github#20).
-      #
-      # Not lychee: links.yml reads the sources, where "./CONTRIBUTING.md"
-      # is a correct path, and pointing it at docs/build/html would mean
-      # building the documentation inside a workflow that gates nothing
-      # and re-requesting every external url these pages carry.
-      - name: Check the built pages for unresolved links
-        run: |
-          if grep -rn 'href="#\./' docs/build/html --include='*.html'; then
-            echo "::error::the links above resolve to no page (unresolved relative path)"
-            exit 1
-          fi
+    uses: btclib-org/.github/.github/workflows/reusable-docs.yml@main
