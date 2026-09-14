@@ -30,10 +30,10 @@ Set through classic branch protection; no ruleset on `main` carries a
 gh api repos/btclib-org/btclib-node/branches/main/protection \
   --jq '.required_status_checks
         | {strict, checks: [.checks[] | {app_id, context}]}'
-# {"checks":[{"app_id":15368,"context":"Lint and type-check"},
-#   {"app_id":15368,"context":"test: every job passed"},
+# {"checks":[{"app_id":15368,"context":"test: every job passed"},
 #   {"app_id":15368,"context":"Regtest against Bitcoin Core"},
-#   {"app_id":15368,"context":"docs / Build the documentation"}],
+#   {"app_id":15368,"context":"docs / Build the documentation"},
+#   {"app_id":15368,"context":"lint / Lint and type-check"}],
 #   "strict":true}
 gh api repos/btclib-org/btclib-node/rulesets --jq '.[].id' \
   | xargs -I{} gh api repos/btclib-org/btclib-node/rulesets/{} \
@@ -46,10 +46,10 @@ workflow that answers for it:
 
 | Check | Produced by |
 | --- | --- |
-| `lint / Lint and type-check` | `lint.yml`, calling `reusable-lint.yml` |
 | `test: every job passed` | `test.yml`'s aggregate job |
 | `Regtest against Bitcoin Core` | `integration-bitcoind.yml`'s `regtest` job |
 | `docs / Build the documentation` | `docs.yml`, calling `reusable-docs.yml` |
+| `lint / Lint and type-check` | `lint.yml`, calling `reusable-lint.yml` |
 
 `integration-bitcoind.yml` has one job, so that job is the context; an
 aggregate over a single cell would be a job whose whole purpose is to
@@ -92,10 +92,10 @@ gh api -X PATCH \
   repos/btclib-org/btclib-node/branches/main/protection/required_status_checks \
   --input - <<'JSON'
 {"strict": true,
- "checks": [{"context": "lint / Lint and type-check", "app_id": 15368},
-            {"context": "test: every job passed", "app_id": 15368},
+ "checks": [{"context": "test: every job passed", "app_id": 15368},
             {"context": "Regtest against Bitcoin Core", "app_id": 15368},
-            {"context": "docs / Build the documentation", "app_id": 15368}]}
+            {"context": "docs / Build the documentation", "app_id": 15368},
+            {"context": "lint / Lint and type-check", "app_id": 15368}]}
 JSON
 ```
 

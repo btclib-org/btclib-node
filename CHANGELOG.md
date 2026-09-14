@@ -1506,6 +1506,12 @@ keeps whichever shape it was written in.
   live in `btclib-org/.github`** (issue btclib-org/.github#35): `main`'s
   required check renames to `lint / Lint and type-check`.
 
+### `REPOSITORY.md` puts the lint rename's check at the rule's tail
+
+- **The required-checks table, the transcript and the `PATCH` example now
+  put `lint / Lint and type-check` last** (issue btclib-org/.github#35);
+  the preceding entry's last, `docs / Build the documentation`, is not.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
