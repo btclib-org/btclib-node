@@ -1494,6 +1494,12 @@ keeps whichever shape it was written in.
   `btclib-org/.github`** (issue btclib-org/.github#35): `main`'s required
   check renames to `docs / Build the documentation`.
 
+### `REPOSITORY.md` reads the required checks back in the rule's order
+
+- **The transcript, the table and the `PATCH` body now put
+  `docs / Build the documentation` last** (issue btclib-org/.github#35),
+  a fresh read of the endpoint rather than the old name hand-edited.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
