@@ -1518,6 +1518,12 @@ keeps whichever shape it was written in.
   distribution installed**: `.readthedocs.yaml`'s own sync installs it
   anyway, so the version should not depend on either install form.
 
+### The kernel-accept race test asks the loop, not the platform (issue #917)
+
+- **`test_accept_loop_discards_the_kernel_accepted_socket_on_the_documented_race`
+  now skips off any loop that is not a `BaseSelectorEventLoop`**, narrowing
+  #904's "deterministically": a proactor resolves the same future earlier.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
