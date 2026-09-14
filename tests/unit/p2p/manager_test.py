@@ -2141,8 +2141,51 @@ def test_accept_loop_discards_the_kernel_accepted_socket_on_the_documented_race(
     already-done future either, so it sets `Task._must_cancel` instead,
     which is what turns the wakeup already queued into a thrown
     `CancelledError` rather than a delivered result.
+
+    That ordering is the **selector** loop's own: `BaseProactorEventLoop
+    ._process_events` (`asyncio/proactor_events.py`, read on this tree's
+    own `3.14`) is a no-op, `pass`, because a proactor loop resolves an
+    overlapped operation's future earlier, inside `IocpProactor.select`
+    itself (`asyncio/windows_events.py`) -- which schedules the task's
+    wakeup through the same future-completion path *before* `_run_once`
+    reads `self._ready` into `ntodo`, so that wakeup is one of the
+    `ntodo` handles `_run_once` runs, not one left over for the next
+    call. One `loop._run_once()` there does not leave the gap this
+    docstring describes: it steps the accepting task all the way back
+    into its next `sock_accept`, so `task.cancel()` below cancels that
+    instead of discarding an already-resolved result -- a fresh,
+    unaccepted connection, not a repeat of the discard #904 answers.
+    `asyncio.new_event_loop()` (`P2pManager.__init__`) returns exactly
+    such a proactor loop under Windows' own default policy, which is
+    where this test crashed a worker instead of asserting
+    (btclib-org/btclib-node#917): the two steps `race_once` expects in
+    one `_run_once()` call happen in zero there, `task.cancel()` landing
+    on live overlapped state this hand-driven sequencing was never
+    written to reach. What that native crash's own cause is has not
+    been measured beyond that -- this skips the sequencing rather than
+    tracking it down. `_accept_loop` itself is not implicated: its
+    `sock_accept` retry on `BlockingIOError`/`InterruptedError` is
+    already documented, in its own docstring, to cover both loop
+    families.
+
+    So the property below is asked of the loop actually in use, not of
+    `sys.platform`: a platform is a proxy for which `_process_events`
+    underlies `_run_once`, and asking the loop directly stays correct
+    the day a policy or an interpreter changes it.
     """
     manager = a_manager()
+
+    # No cell this suite's own coverage floor runs on ever takes this
+    # branch: the gated job is `ubuntu-latest`, whose `asyncio.new_event_loop()`
+    # is always a selector loop, so the skip below is exercised only on
+    # the Windows job, which does not gate the floor.
+    if not isinstance(  # pragma: no cover -- only a proactor loop takes this
+        manager.loop, asyncio.selector_events.BaseSelectorEventLoop
+    ):
+        pytest.skip(
+            "race_once() hand-drives a selector loop's own _run_once "
+            "ordering (see this test's docstring); this loop is not one"
+        )
 
     def race_once() -> None:
         loop = manager.loop
