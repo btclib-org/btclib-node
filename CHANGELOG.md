@@ -1512,6 +1512,12 @@ keeps whichever shape it was written in.
   put `lint / Lint and type-check` last** (issue btclib-org/.github#35);
   the preceding entry's last, `docs / Build the documentation`, is not.
 
+### `conf.py`'s version-reading reason survives either install form (issue btclib-org/.github#1098)
+
+- **The comment no longer claims `importlib.metadata` needs the
+  distribution installed**: `.readthedocs.yaml`'s own sync installs it
+  anyway, so the version should not depend on either install form.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
