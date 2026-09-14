@@ -32,8 +32,8 @@ gh api repos/btclib-org/btclib-node/branches/main/protection \
         | {strict, checks: [.checks[] | {app_id, context}]}'
 # {"checks":[{"app_id":15368,"context":"Lint and type-check"},
 #   {"app_id":15368,"context":"test: every job passed"},
-#   {"app_id":15368,"context":"Build the documentation"},
-#   {"app_id":15368,"context":"Regtest against Bitcoin Core"}],
+#   {"app_id":15368,"context":"Regtest against Bitcoin Core"},
+#   {"app_id":15368,"context":"docs / Build the documentation"}],
 #   "strict":true}
 gh api repos/btclib-org/btclib-node/rulesets --jq '.[].id' \
   | xargs -I{} gh api repos/btclib-org/btclib-node/rulesets/{} \
@@ -48,8 +48,8 @@ workflow that answers for it:
 | --- | --- |
 | `Lint and type-check` | `lint.yml`'s only job |
 | `test: every job passed` | `test.yml`'s aggregate job |
-| `docs / Build the documentation` | `docs.yml`, calling `reusable-docs.yml` |
 | `Regtest against Bitcoin Core` | `integration-bitcoind.yml`'s `regtest` job |
+| `docs / Build the documentation` | `docs.yml`, calling `reusable-docs.yml` |
 
 `lint.yml` and `integration-bitcoind.yml` each have one job, so that job
 is the context; an aggregate over a single cell would be a job whose
@@ -91,8 +91,8 @@ gh api -X PATCH \
 {"strict": true,
  "checks": [{"context": "Lint and type-check", "app_id": 15368},
             {"context": "test: every job passed", "app_id": 15368},
-            {"context": "docs / Build the documentation", "app_id": 15368},
-            {"context": "Regtest against Bitcoin Core", "app_id": 15368}]}
+            {"context": "Regtest against Bitcoin Core", "app_id": 15368},
+            {"context": "docs / Build the documentation", "app_id": 15368}]}
 JSON
 ```
 
