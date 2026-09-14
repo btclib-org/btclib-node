@@ -46,26 +46,29 @@ workflow that answers for it:
 
 | Check | Produced by |
 | --- | --- |
-| `Lint and type-check` | `lint.yml`'s only job |
+| `lint / Lint and type-check` | `lint.yml`, calling `reusable-lint.yml` |
 | `test: every job passed` | `test.yml`'s aggregate job |
 | `Regtest against Bitcoin Core` | `integration-bitcoind.yml`'s `regtest` job |
 | `docs / Build the documentation` | `docs.yml`, calling `reusable-docs.yml` |
 
-`lint.yml` and `integration-bitcoind.yml` each have one job, so that job
-is the context; an aggregate over a single cell would be a job whose
-whole purpose is to repeat another's answer. `test.yml` has more than
-one and is therefore named through its aggregate, so that a job added to
-that workflow is gated on by being added rather than by somebody editing
-a rule stored outside the tree. Every one of these jobs carries the
-reasoning in its own header.
+`integration-bitcoind.yml` has one job, so that job is the context; an
+aggregate over a single cell would be a job whose whole purpose is to
+repeat another's answer. `test.yml` has more than one and is therefore
+named through its aggregate, so that a job added to that workflow is
+gated on by being added rather than by somebody editing a rule stored
+outside the tree. Every one of these jobs carries the reasoning in its
+own header.
 
 `docs.yml`'s own job contributes no name of its own, which is a third
-shape beside those two: its whole body is a call to
-`btclib-org/.github`'s `reusable-docs.yml`, so the context joins the
-calling job's id to the called job's own name. `docs.yml`'s `docs` job
-calls `reusable-docs.yml`, whose own job is still named
+shape beside those two, `lint.yml` now sharing it: its whole body is a
+call to `btclib-org/.github`'s `reusable-docs.yml`, so the context joins
+the calling job's id to the called job's own name. `docs.yml`'s `docs`
+job calls `reusable-docs.yml`, whose own job is still named
 `Build the documentation`, so together they produce
-`docs / Build the documentation` (issue btclib-org/.github#35).
+`docs / Build the documentation`; `lint.yml`'s `lint` job calls
+`reusable-lint.yml` the same way, whose own job is still named
+`Lint and type-check`, producing `lint / Lint and type-check`
+(issue btclib-org/.github#35).
 
 The context is the job's `name:`, not the workflow's, and the `checks`
 array above holds it as a literal string that nothing in the tree can
@@ -89,7 +92,7 @@ gh api -X PATCH \
   repos/btclib-org/btclib-node/branches/main/protection/required_status_checks \
   --input - <<'JSON'
 {"strict": true,
- "checks": [{"context": "Lint and type-check", "app_id": 15368},
+ "checks": [{"context": "lint / Lint and type-check", "app_id": 15368},
             {"context": "test: every job passed", "app_id": 15368},
             {"context": "Regtest against Bitcoin Core", "app_id": 15368},
             {"context": "docs / Build the documentation", "app_id": 15368}]}

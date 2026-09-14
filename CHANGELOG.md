@@ -1500,6 +1500,12 @@ keeps whichever shape it was written in.
   `docs / Build the documentation` last** (issue btclib-org/.github#35),
   a fresh read of the endpoint rather than the old name hand-edited.
 
+### `lint.yml` calls the organization's reusable workflow
+
+- **The checkout, the uv setup, the hook cache and the pre-commit run
+  live in `btclib-org/.github`** (issue btclib-org/.github#35): `main`'s
+  required check renames to `lint / Lint and type-check`.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
