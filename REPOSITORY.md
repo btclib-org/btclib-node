@@ -48,16 +48,24 @@ workflow that answers for it:
 | --- | --- |
 | `Lint and type-check` | `lint.yml`'s only job |
 | `test: every job passed` | `test.yml`'s aggregate job |
-| `Build the documentation` | `docs.yml`'s only job |
+| `docs / Build the documentation` | `docs.yml`, calling `reusable-docs.yml` |
 | `Regtest against Bitcoin Core` | `integration-bitcoind.yml`'s `regtest` job |
 
-`lint.yml`, `docs.yml` and `integration-bitcoind.yml` each have one job,
-so that job is the context; an aggregate over a single cell would be a
-job whose whole purpose is to repeat another's answer. `test.yml` has
-more than one and is therefore named through its aggregate, so that a
-job added to that workflow is gated on by being added rather than by
-somebody editing a rule stored outside the tree. Every one of these jobs
-carries the reasoning in its own header.
+`lint.yml` and `integration-bitcoind.yml` each have one job, so that job
+is the context; an aggregate over a single cell would be a job whose
+whole purpose is to repeat another's answer. `test.yml` has more than
+one and is therefore named through its aggregate, so that a job added to
+that workflow is gated on by being added rather than by somebody editing
+a rule stored outside the tree. Every one of these jobs carries the
+reasoning in its own header.
+
+`docs.yml`'s own job contributes no name of its own, which is a third
+shape beside those two: its whole body is a call to
+`btclib-org/.github`'s `reusable-docs.yml`, so the context joins the
+calling job's id to the called job's own name. `docs.yml`'s `docs` job
+calls `reusable-docs.yml`, whose own job is still named
+`Build the documentation`, so together they produce
+`docs / Build the documentation` (issue btclib-org/.github#35).
 
 The context is the job's `name:`, not the workflow's, and the `checks`
 array above holds it as a literal string that nothing in the tree can
@@ -67,7 +75,7 @@ produces, and a merge would wait on it forever.** That is a change to
 make here first, in the same order this section's own opening argues —
 the setting, then the record of it.
 
-`docs.yml`'s "Build the documentation" runs on every pull request
+`docs.yml`'s "docs / Build the documentation" runs on every pull request
 already, the way `lint.yml` and `test.yml` do (*What gates a merge, and
 what only reports* in `CONTRIBUTING.md`), and `release.yml` calls it too
 (btclib-org/btclib-node#264); its presence in the `checks` array above
@@ -83,7 +91,7 @@ gh api -X PATCH \
 {"strict": true,
  "checks": [{"context": "Lint and type-check", "app_id": 15368},
             {"context": "test: every job passed", "app_id": 15368},
-            {"context": "Build the documentation", "app_id": 15368},
+            {"context": "docs / Build the documentation", "app_id": 15368},
             {"context": "Regtest against Bitcoin Core", "app_id": 15368}]}
 JSON
 ```

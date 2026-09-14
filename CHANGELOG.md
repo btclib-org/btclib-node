@@ -1488,6 +1488,12 @@ keeps whichever shape it was written in.
   cancelled each other's run** (issue btclib-org/btclib#2101): the key
   is now the pull request's own number, which forks cannot share.
 
+### `docs.yml` calls the organization's reusable workflow
+
+- **The checkout, the build and the link check live in
+  `btclib-org/.github`** (issue btclib-org/.github#35): `main`'s required
+  check renames to `docs / Build the documentation`.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
