@@ -1794,14 +1794,27 @@ def test_stop_closes_the_listening_socket_even_if_the_accept_task_does_not(
     `server` is replaced with a coroutine that never wraps its socket in
     a `with` at all: the same thing from the socket's point of view, and
     it does not have to win a race against the loop's first pass to be
-    it.
+    it -- the assertion below holds whether the loop ever steps this
+    task or not.
+
+    `entered` is waited on before `stop()` is called purely to pin
+    coverage of the line below it: which side of that race actually
+    happens is otherwise up to `run`'s own thread reaching
+    `run_forever()` before or after this thread's own `stop()` schedules
+    `loop.stop`, and #917 found the gate at a 100% floor going red
+    whenever the scheduler happened to land on the side that skips it.
+    Forcing the loop to have taken this task's first step before `stop`
+    is ever called does not touch what the assertion below depends on:
+    it was already true regardless of that step, by the paragraph above.
     """
     port = get_random_port()
     manager = a_manager(port=port)
+    entered: list[bool] = []
 
     async def server_without_a_with(
         loop: asyncio.AbstractEventLoop, server_socket: socket.socket
     ) -> None:
+        entered.append(True)
         await asyncio.sleep(60)
 
     monkeypatch.setattr(manager, "server", server_without_a_with)
@@ -1810,6 +1823,7 @@ def test_stop_closes_the_listening_socket_even_if_the_accept_task_does_not(
         wait_until_listening(manager)
         sockets = list(manager._server_sockets)
         assert sockets
+        wait_until(lambda: entered)
     finally:
         manager.stop()
         manager.join(timeout=10)

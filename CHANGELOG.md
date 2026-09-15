@@ -1524,6 +1524,12 @@ keeps whichever shape it was written in.
   now skips off any loop that is not a `BaseSelectorEventLoop`**, narrowing
   #904's "deterministically": a proactor resolves the same future earlier.
 
+### The `with`-less replacement server no longer races the floor (issue #917)
+
+- **`test_stop_closes_the_listening_socket_even_if_the_accept_task_does_not`
+  now waits for its replacement coroutine's first step before `stop()`**,
+  pinning coverage of the line after it against the scheduler.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
