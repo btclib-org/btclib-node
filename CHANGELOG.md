@@ -1530,6 +1530,12 @@ keeps whichever shape it was written in.
   now waits for its replacement coroutine's first step before `stop()`**,
   pinning coverage of the line after it against the scheduler.
 
+### `local-link-prefix` widens to permit "../" (issue btclib-org/.github#1095)
+
+- **The lookahead widens from `(?!\./` to `(?!\.\.?/`**: "../" reaches
+  myst's fallback the same way "./" does, and whether it leaves the
+  repository is `links.yml`'s question, never this hook's.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
