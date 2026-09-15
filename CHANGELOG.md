@@ -1548,6 +1548,12 @@ keeps whichever shape it was written in.
   own line since `.github`'s `e987bfa5`; the prose beside it now names
   both prefixes `local-link-prefix` permits, not `./` alone.
 
+### `release.yml`'s three leaf jobs call the organization's reusable workflows
+
+- **`version-check`, `public-api` and `documented` move to
+  `btclib-org/.github`** (issue btclib-org/.github#35): `public-api`
+  drops `--exclude 'v0.1.0'`, no tag ever having matched it.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
