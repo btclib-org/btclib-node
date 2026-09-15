@@ -373,11 +373,12 @@ _NAMES_ONE = (
     # project's `requires-python`, so it names the one uv resolves
     # (btclib-org/btclib-node#502)
     ".github/workflows/pypi-install.yml",
-    # release.yml's `documented` job runs the read the docs wait through
-    # `uv run --no-project`, which avoids discovering this project
-    # altogether, so the interpreter that step runs on is the one its
-    # own command line names (btclib-org/.github#644)
-    ".github/workflows/release.yml",
+    # release.yml's `documented` job used to run the read the docs wait
+    # through `uv run --no-project`, naming the interpreter on its own
+    # command line (btclib-org/.github#644); that wait is
+    # btclib-org/.github's reusable-documented.yml now, called at @main,
+    # and the interpreter it names lives in that file rather than in
+    # this one (btclib-org/.github#35)
     # sdist-rebuild.yml runs the tag's sdist normalizer through
     # `uv run --no-project`, as test.yml's dist job does, so it names the
     # interpreter that step runs on
