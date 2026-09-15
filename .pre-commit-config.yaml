@@ -269,15 +269,23 @@ repos:
   # it. The pattern itself is the organization's own
   # (btclib-org/.github#20).
   #
-  # "../" is the row with nothing downstream behind it at all, which is
-  # why it is refused here rather than allowed as an ordinary relative
-  # path: conf.py's transform declines a target that normalizes above
-  # the repository root -- nothing above the root is a document this
-  # build can answer for -- so that shape reaches myst's fallback by
-  # design rather than by a gap in the transform, and renders
-  # href="#../page.md", which the grep in docs.yml does not match and
-  # should not be widened to. This hook is the only place it can be
-  # caught.
+  # "../" is permitted here too, the same as "./": what this hook
+  # checks is that a destination is explicitly relative, because that
+  # is what keeps it recognisable to myst's fallback, and "../" is as
+  # explicit as "./" is. conf.py's transform still declines a "../"
+  # target that normalizes above the repository root -- nothing above
+  # the root is a document this build can answer for -- so that shape
+  # still reaches the fallback by design and still renders
+  # href="#../page.md", the same way a declined "./" target renders
+  # href="#./page.md". reusable-docs.yml's own grep, which docs.yml
+  # calls, keys on both today (btclib-org/.github#1095), so refusing
+  # "../" here would buy nothing that check does not already catch.
+  # Whether a "../" leaves the repository -- the thing a narrower
+  # spelling here might look like it was guarding against -- was never
+  # this hook's question: it checks a prefix, not a destination, and
+  # cannot see past the line it is written on. links.yml's lychee is
+  # what resolves a local destination and reports one that is missing
+  # or climbs out of the root.
   #
   # pygrep, and the same hook in every repository of this organization
   # (btclib-org/.github#20): there is no shared hook repository to put
@@ -305,7 +313,7 @@ repos:
   - repo: local
     hooks:
       - id: local-link-prefix
-        name: a local markdown link destination begins with ./
+        name: a local markdown link destination begins with ./ or ../
         language: pygrep
         # one line, and no literal space in it -- "\x20" is the space the
         # reference branch allows -- so yamllint reads the value as a
@@ -314,7 +322,7 @@ repos:
         # folded scalar was rejected: folding joins lines with a space,
         # which would land inside the regex
         entry: |-
-          (?<![`!\[])(?:!?\[(?:[^]]|\]\([^)]*\))*\]\(|^\x20{0,3}\[[^]]+\]:\s*)(?!\./|#|[A-Za-z][A-Za-z0-9+.-]*:)[^)\s]
+          (?<![`!\[])(?:!?\[(?:[^]]|\]\([^)]*\))*\]\(|^\x20{0,3}\[[^]]+\]:\s*)(?!\.\.?/|#|[A-Za-z][A-Za-z0-9+.-]*:)[^)\s]
         types: [markdown]
       # a line that ends inside a word, at that word's own hyphen.
       # Section 4 of the organization standard is the rule: what such a
