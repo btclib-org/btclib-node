@@ -244,7 +244,7 @@ git add -A && uv run pre-commit run --all-files
 uv run pre-commit validate-config .pre-commit-config.yaml
 uv run --locked --no-default-groups --group docs \
     sphinx-build -W -n -b html docs/source docs/build/html
-if grep -rn 'href="#\./' docs/build/html --include='*.html'; then
+if grep -rn 'href="#\.\.\?/' docs/build/html --include='*.html'; then
   echo "::error::the links above resolve to no page (unresolved relative path)"
   exit 1
 fi
@@ -278,9 +278,9 @@ for a target it cannot resolve is an anchor on the page it is already on
 `myst.xref_missing` warning `docs/source/conf.py` suppresses nowhere,
 having resolved every link the included root files carry ahead of myst's
 own resolver; the grep asks the same question of the HTML, where a
-suppression cannot hide the answer. One spelling answers for every local
+suppression cannot hide the answer. Two spellings answer for every local
 destination, `.pre-commit-config.yaml`'s `local-link-prefix` hook holding
-each of them to the `./` prefix.
+each of them to the `./` or `../` prefix.
 
 `validate-config` is worth running before pushing a change to the hook
 config: it catches what a wrong `types_or` tag or a malformed entry would

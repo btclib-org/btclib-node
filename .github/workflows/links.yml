@@ -67,4 +67,4 @@ jobs:
   links:
     uses: btclib-org/.github/.github/workflows/reusable-links.yml@main
     with:
-      targets: '"*.md" "tests/**/*.md"'
+      targets: '"**/*.md" ".github/**/*.md" ".claude/**/*.md"'

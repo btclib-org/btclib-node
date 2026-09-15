@@ -1536,6 +1536,18 @@ keeps whichever shape it was written in.
   myst's fallback the same way "./" does, and whether it leaves the
   repository is `links.yml`'s question, never this hook's.
 
+### `links.yml`'s `targets` reach every tracked markdown file (issue btclib-org/.github#1104)
+
+- **`targets:` becomes `"**/*.md" ".github/**/*.md" ".claude/**/*.md"`**:
+  the old `"*.md" "tests/**/*.md"` missed several tracked files,
+  `docs/source/*.md` among them.
+
+### `CONTRIBUTING.md`'s docs-gate grep matches the widened pattern (issue btclib-org/.github#1105)
+
+- **`href="#\./` becomes `href="#\.\.\?/`**, matching `reusable-docs.yml`'s
+  own line since `.github`'s `e987bfa5`; the prose beside it now names
+  both prefixes `local-link-prefix` permits, not `./` alone.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
