@@ -1607,6 +1607,12 @@ keeps whichever shape it was written in.
   tree has** (issue btclib-org/.github#1137): the discipline is now
   stated in the script's own words.
 
+### zizmor rises to v1.30.1 and each site declines the audit inline
+
+- **`zizmor` rises to `v1.30.1`, each `uses: ./...` site declining
+  `self-repository` inline** (closes #967): the `$/` rewrite still
+  waits on `rhysd/actionlint#711` and `rhysd/actionlint#732`.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
