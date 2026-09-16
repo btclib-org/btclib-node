@@ -1566,6 +1566,12 @@ keeps whichever shape it was written in.
   `reusable-os-suite.yml` will carry, beside `_NAMED`'s own flow
   sequence** (issue btclib-org/.github#1119): no such caller exists yet.
 
+### `os-ubuntu.yml` and `os-macos.yml` become reusable-workflow callers
+
+- **Both become calls to `reusable-os-suite.yml`** (issue
+  btclib-org/.github#35): the job's `timeout-minutes` rises from 30 to the
+  called workflow's 40, one number for every caller.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`

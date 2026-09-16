@@ -86,18 +86,16 @@ _VERSION = r"[\w.+-]+"
 _NAMED = re.compile(rf'python-version: ("[^"\n]*"|\[[^]\n]*\])|--python ({_VERSION})')
 _QUOTED = re.compile(rf'"({_VERSION})"')
 # the shape a caller of `os-macos.yml` and `os-ubuntu.yml`'s own
-# reusable-os-suite.yml will carry, once one of them becomes a caller
-# (btclib-org/.github#35). No such caller exists yet -- this is derived,
-# not read off a landed file: reusable-deps-oldest.yml's own five
-# callers already establish the quoting for one interpreter,
-# `python-version: "3.10"`, and a `workflow_call` input can only be a
-# string, so the list a caller will pass arrives JSON-encoded inside
-# one -- `python-versions: '["3.14", "3.14t"]'` -- rather than in
-# `_NAMED`'s own unquoted flow sequence, `python-version: [...]`. Read
-# beside `_NAMED` rather than instead of it: `os-macos.yml` and
-# `os-ubuntu.yml` still name their interpreter the old way until that
-# merge lands, and a pattern that read only the caller shape would turn
-# the suite red today (btclib-org/.github#1119)
+# reusable-os-suite.yml carries (btclib-org/.github#35):
+# reusable-deps-oldest.yml's own five callers already established the
+# quoting for one interpreter, `python-version: "3.10"`, and a
+# `workflow_call` input can only be a string, so the list a caller
+# passes arrives JSON-encoded inside one -- `python-versions:
+# '["3.14", "3.14t"]'` -- rather than in `_NAMED`'s own unquoted flow
+# sequence, `python-version: [...]`. Read beside `_NAMED` rather than
+# instead of it: every other file `_NAMES_ONE` lists still names its
+# interpreter the old way, and a pattern that read only the caller
+# shape would turn the suite red on them (btclib-org/.github#1119)
 _NAMED_CALLER = re.compile(r"python-versions: '(?P<block>\[[^\]\n]*\])'")
 
 # the merge gate, and inside it the jobs a landing waits on. Section 3
@@ -405,10 +403,10 @@ def _named(text: str) -> set[str]:
     """Return every interpreter version one CI file names literally.
 
     `_NAMED`'s own two arms, and `_NAMED_CALLER`'s: the JSON-encoded list
-    a caller of `reusable-os-suite.yml` will carry, once one exists
-    (btclib-org/.github#1119). `_QUOTED` extracts the versions there too
-    -- a JSON array of quoted strings is, textually, the same shape as
-    the flow sequence `_NAMED`'s own bracket arm already reads.
+    a caller of `reusable-os-suite.yml` carries (btclib-org/.github#35).
+    `_QUOTED` extracts the versions there too -- a JSON array of quoted
+    strings is, textually, the same shape as the flow sequence `_NAMED`'s
+    own bracket arm already reads.
     """
     found: set[str] = set()
     for match in _NAMED.finditer(text):
@@ -941,11 +939,10 @@ def test_runs_the_suite_survives_a_comment_written_inside_the_step() -> None:
 
 
 def test_a_callers_with_reads_the_same_interpreters_as_a_flow_sequence() -> None:
-    """The shape a caller of `reusable-os-suite.yml` will carry.
+    """The shape a caller of `reusable-os-suite.yml` carries.
 
-    No such caller exists yet: `os-macos.yml` and `os-ubuntu.yml` still
-    name their interpreter through `_NAMED`'s own two arms
-    (btclib-org/.github#1119). This constructs the shape
+    `os-macos.yml` and `os-ubuntu.yml` are such callers
+    (btclib-org/.github#35). This constructs the shape
     `reusable-deps-oldest.yml`'s own five callers already establish for
     one interpreter -- `python-version: "3.10"` -- widened the only way
     a `workflow_call` input can carry a list, JSON-encoded inside a

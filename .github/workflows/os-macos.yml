@@ -91,59 +91,20 @@ concurrency:
 
 jobs:
   suite-macos:
-    name: Run the suite on ${{ matrix.os }}
     # a draft pull request is work its author is not asking anyone to
     # read yet, and spends no runner here either. A closed one spends
     # none: the trigger above takes that event only so the landing
     # supersedes a run this ref's group is still holding
     if: ${{ !github.event.pull_request.draft && github.event.action != 'closed' }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      # each cell answers for its own architecture, and a red one says
-      # nothing about the other, so the first failure does not take the
-      # answer to the second with it
-      fail-fast: false
-      matrix:
-        # `macos-latest` is the arm64 image and what a developer on this
-        # platform has; `macos-26-intel` is the x86_64 one. The start
-        # method is the platform's and either cell answers it, so what
-        # the second one buys is the wheel its own architecture selects,
-        # the store's among them, which the header above is the argument
-        # for. Two images is the shape btclib-org/.github#85 gives a
-        # platform sentinel
-        os:
-          - macos-26-intel
-          - macos-latest
-    # the same bound test.yml sets on the same suite: what it bounds is
-    # a runner wedged before or between the tests, not the work
-    timeout-minutes: 30
-    steps:
-      # every action is pinned to a commit SHA, the tag in the comment: a
-      # tag, let alone a branch, is a name its owner can move, and these
-      # run in a job that can read the workflow token
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          # for the reason test.yml's checkout gives: nothing here
-          # performs an authenticated git operation, so the token has no
-          # reason to stay in .git/config where a later step can read it
-          persist-credentials: false
-      - name: Setup uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          # the cache holds what uv.lock resolves, which is wheels and
-          # no build: what this job spends its time on is the suite
-          enable-cache: true
-          # what .python-version pins, written out for the reason
-          # test.yml writes it out: the coverage floor is a claim about
-          # one interpreter, and this job is held to the same one
-          python-version: "3.14"
-      # --no-cov, against the --cov pyproject.toml's addopts carries:
-      # the floor is a claim about one interpreter on one image, which
-      # test.yml's coverage job is where it is measured and gated, and
-      # what this asks is whether the platform changes the answer. A
-      # cell holding the floor would report the platform's own finding
-      # under the name of the coverage number
-      - name: Run the suite
-        run: >
-          uv run --locked --no-default-groups --group test pytest --no-cov
+    # the checkout, the interpreter setup and the suite run over each
+    # cell are btclib-org/.github's: reusable-os-suite.yml, called at
+    # @main so a fix there reaches this tree in one landing (section 10
+    # of its README.md). What stays here is the trigger, the
+    # concurrency group and this job's own id, and the two lists below,
+    # which are this tree's own claim about the images and the
+    # interpreter it sweeps rather than a value the called workflow
+    # could default (btclib-org/.github#35)
+    uses: btclib-org/.github/.github/workflows/reusable-os-suite.yml@main
+    with:
+      runners: '["macos-26-intel", "macos-latest"]'
+      python-versions: '["3.14"]'
