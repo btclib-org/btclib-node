@@ -1572,6 +1572,11 @@ keeps whichever shape it was written in.
   btclib-org/.github#35): the job's `timeout-minutes` rises from 30 to the
   called workflow's 40, one number for every caller.
 
+### `links.yml`'s `targets` reach every tracked `.rst` file too (issue btclib-org/.github#1117)
+
+- **`targets:` gains `"docs/**/*.rst"`**, reaching the tracked `.rst`
+  files nothing covered before.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
