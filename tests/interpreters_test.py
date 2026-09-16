@@ -85,6 +85,20 @@ _FREE_THREADING_CLASSIFIER = "Programming Language :: Python :: Free Threading"
 _VERSION = r"[\w.+-]+"
 _NAMED = re.compile(rf'python-version: ("[^"\n]*"|\[[^]\n]*\])|--python ({_VERSION})')
 _QUOTED = re.compile(rf'"({_VERSION})"')
+# the shape a caller of `os-macos.yml` and `os-ubuntu.yml`'s own
+# reusable-os-suite.yml will carry, once one of them becomes a caller
+# (btclib-org/.github#35). No such caller exists yet -- this is derived,
+# not read off a landed file: reusable-deps-oldest.yml's own five
+# callers already establish the quoting for one interpreter,
+# `python-version: "3.10"`, and a `workflow_call` input can only be a
+# string, so the list a caller will pass arrives JSON-encoded inside
+# one -- `python-versions: '["3.14", "3.14t"]'` -- rather than in
+# `_NAMED`'s own unquoted flow sequence, `python-version: [...]`. Read
+# beside `_NAMED` rather than instead of it: `os-macos.yml` and
+# `os-ubuntu.yml` still name their interpreter the old way until that
+# merge lands, and a pattern that read only the caller shape would turn
+# the suite red today (btclib-org/.github#1119)
+_NAMED_CALLER = re.compile(r"python-versions: '(?P<block>\[[^\]\n]*\])'")
 
 # the merge gate, and inside it the jobs a landing waits on. Section 3
 # of the organization standard declares a free-threading classifier
@@ -388,11 +402,20 @@ _NAMES_ONE = (
 
 
 def _named(text: str) -> set[str]:
-    """Return every interpreter version one CI file names literally."""
+    """Return every interpreter version one CI file names literally.
+
+    `_NAMED`'s own two arms, and `_NAMED_CALLER`'s: the JSON-encoded list
+    a caller of `reusable-os-suite.yml` will carry, once one exists
+    (btclib-org/.github#1119). `_QUOTED` extracts the versions there too
+    -- a JSON array of quoted strings is, textually, the same shape as
+    the flow sequence `_NAMED`'s own bracket arm already reads.
+    """
     found: set[str] = set()
     for match in _NAMED.finditer(text):
         value, bare = match.groups()
         found.update(_QUOTED.findall(value) if value else [bare])
+    for match in _NAMED_CALLER.finditer(text):
+        found.update(_QUOTED.findall(match["block"]))
     return found
 
 
@@ -915,3 +938,37 @@ def test_runs_the_suite_survives_a_comment_written_inside_the_step() -> None:
     # above is what rules that out, by failing there
     ungated = gated.replace("        if:", "        env:")
     assert _runs_the_suite(_UNCOMMENTED.sub("", ungated))
+
+
+def test_a_callers_with_reads_the_same_interpreters_as_a_flow_sequence() -> None:
+    """The shape a caller of `reusable-os-suite.yml` will carry.
+
+    No such caller exists yet: `os-macos.yml` and `os-ubuntu.yml` still
+    name their interpreter through `_NAMED`'s own two arms
+    (btclib-org/.github#1119). This constructs the shape
+    `reusable-deps-oldest.yml`'s own five callers already establish for
+    one interpreter -- `python-version: "3.10"` -- widened the only way
+    a `workflow_call` input can carry a list, JSON-encoded inside a
+    quoted string, and checks that `_named` reads it the same as the
+    flow sequence `_NAMED`'s bracket arm already reads.
+    """
+    flow = '        python-version: ["3.14", "3.14t"]\n'
+    caller = '    with:\n      python-versions: \'["3.14", "3.14t"]\'\n'
+    listed = {"3.14", "3.14t"}
+    assert _named(flow) == listed
+    assert _named(caller) == listed
+
+
+def test_a_bare_with_and_a_matrix_expression_name_no_interpreter() -> None:
+    """Neither an unrelated `with:` nor an expression is an interpreter list.
+
+    The negative control the positive above needs: a pattern widened
+    until it matches anything passes that one regardless. `with:` naming
+    something other than the interpreters, and `python-versions:` naming
+    an expression rather than a JSON string, are the two ways a caller's
+    block can hold neither without the key itself being absent.
+    """
+    unrelated = "    with:\n      submodules: true\n"
+    expression = "    with:\n      python-versions: ${{ matrix.python }}\n"
+    assert _named(unrelated) == set()
+    assert _named(expression) == set()

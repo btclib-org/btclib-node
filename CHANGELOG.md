@@ -1560,6 +1560,12 @@ keeps whichever shape it was written in.
   `reusable-deps-oldest.yml`** (issue btclib-org/.github#35): its
   unconditional `--no-cov` discharges issue #958 by construction.
 
+### `interpreters_test.py` names a caller's `with:` beside the flow sequence
+
+- **`_NAMED_CALLER` names the JSON-encoded interpreter list a caller of
+  `reusable-os-suite.yml` will carry, beside `_NAMED`'s own flow
+  sequence** (issue btclib-org/.github#1119): no such caller exists yet.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
