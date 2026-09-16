@@ -1554,6 +1554,12 @@ keeps whichever shape it was written in.
   `btclib-org/.github`** (issue btclib-org/.github#35): `public-api`
   drops `--exclude 'v0.1.0'`, no tag ever having matched it.
 
+### `deps-oldest.yml` calls `btclib-org/.github`'s reusable workflow
+
+- **The floor sentinel's own job becomes a call to
+  `reusable-deps-oldest.yml`** (issue btclib-org/.github#35): its
+  unconditional `--no-cov` discharges issue #958 by construction.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
