@@ -1601,6 +1601,12 @@ keeps whichever shape it was written in.
   the script reads the open section off disk, and the rebase that eats
   the seam stages nothing.
 
+### `check_changelog.py` states the rebase discipline it does not run
+
+- **The docstring names the comparison instead of citing a section no
+  tree has** (issue btclib-org/.github#1137): the discipline is now
+  stated in the script's own words.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
