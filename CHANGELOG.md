@@ -1577,6 +1577,12 @@ keeps whichever shape it was written in.
 - **`targets:` gains `"docs/**/*.rst"`**, reaching the tracked `.rst`
   files nothing covered before.
 
+### The `os-*` callers exist, which the `interpreters_test.py` entry predates
+
+- **`os-ubuntu.yml` and `os-macos.yml` now call `reusable-os-suite.yml`**
+  (issue btclib-org/.github#35). This bears on *`interpreters_test.py`
+  names a caller's `with:` beside the flow sequence* above.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
