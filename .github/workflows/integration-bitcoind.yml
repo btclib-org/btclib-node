@@ -134,7 +134,7 @@ jobs:
       # identical release and digest for their own copies of this job
       - name: Install bitcoind
         id: bitcoind
-        uses: ./.github/actions/install-bitcoind
+        uses: ./.github/actions/install-bitcoind # zizmor: ignore[self-repository]
         with:
           version: "31.1"
           sha256: b80d9c3e04da78fb6f0569685673418cf686fadba9042d926d13fb87ff503f9e

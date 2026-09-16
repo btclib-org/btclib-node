@@ -111,7 +111,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-    uses: ./.github/workflows/test.yml
+    uses: ./.github/workflows/test.yml # zizmor: ignore[self-repository]
     with:
       # what keeps this run out of the branch concurrency groups: see the
       # group in test.yml
@@ -130,7 +130,7 @@ jobs:
   # version-check: this is the cheap one, and it runs in parallel with it
   lint:
     name: Run the lint workflow
-    uses: ./.github/workflows/lint.yml
+    uses: ./.github/workflows/lint.yml # zizmor: ignore[self-repository]
     with:
       concurrency-suffix: "-release"
 
@@ -140,7 +140,7 @@ jobs:
   # not: it is the cheap one, and runs in parallel with it
   docs:
     name: Run the docs workflow
-    uses: ./.github/workflows/docs.yml
+    uses: ./.github/workflows/docs.yml # zizmor: ignore[self-repository]
     with:
       concurrency-suffix: "-release"
 
@@ -237,7 +237,7 @@ jobs:
     # fix to publish-pypi itself. Guarded against here from this job's
     # first day rather than after it recurs
     if: always() && needs.publish-pypi.result == 'success'
-    uses: ./.github/workflows/pypi-install.yml
+    uses: ./.github/workflows/pypi-install.yml # zizmor: ignore[self-repository]
     with:
       version: ${{ github.ref_name }}
 
