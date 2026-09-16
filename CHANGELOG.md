@@ -1595,6 +1595,12 @@ keeps whichever shape it was written in.
   btclib-org/.github#35): the event handling and the decision move to the
   callee, `prose-pattern` carrying this tree's own pattern unchanged.
 
+### `check-changelog` runs on every invocation of the gate
+
+- **`always_run: true`, and no `files:`** (issue btclib-org/.github#1138):
+  the script reads the open section off disk, and the rebase that eats
+  the seam stages nothing.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
