@@ -202,72 +202,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # the cheapest job here and the one that decides whether the expensive
-  # one runs: a pull request that edits only prose changes nothing the
-  # suite reads, and would otherwise spend the whole suite proving it.
-  # It runs on every trigger and answers `true` on all
-  # but one -- skipping itself on the pull_request path would leave the
-  # coverage job reading an empty output, which is not 'true', and the
-  # workflow would then skip on main as well
+  # a pull request that edits only prose changes nothing the suite
+  # reads, and would otherwise spend the whole suite proving it. The
+  # coverage job below depends on this job's own `code` answering
+  # `true` outside a pull request, or the suite would skip on main too
   changes:
     name: Decide whether the suite has anything to check
-    if: ${{ !github.event.pull_request.draft && github.event.action != 'closed' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    # the file list of a pull request, which contents: read does not
-    # carry. A job's permissions replace the workflow's rather than
-    # adding to them, so contents: read is named again here instead of
-    # being inherited: without it this job holds contents: none, which
-    # costs nothing today and would cost the first checkout added
+    uses: btclib-org/.github/.github/workflows/reusable-changes.yml@main
+    # REPOSITORY.md's *Token permissions* section has why this job
+    # names a permissions: block of its own -- the callee's own job
+    # needs pull-requests: read to list a pull request's files, which
+    # contents: read does not carry
     permissions:
       contents: read
       pull-requests: read
-    outputs:
-      code: ${{ steps.decide.outputs.code }}
-    steps:
-      - name: Ask which files the pull request touches
-        id: decide
-        env:
-          GH_TOKEN: ${{ github.token }}
-          EVENT: ${{ github.event_name }}
-          REPO: ${{ github.repository }}
-          NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          # a push to main, a release call and a dispatch run everything:
-          # only a pull request has a base to be a diff against. A
-          # release call's own event_name is release.yml's triggering
-          # event -- push (a tag) or workflow_dispatch (a rehearsal) --
-          # a called workflow reading github.event_name from the run
-          # that invoked it rather than getting one of its own
-          if [ "$EVENT" != pull_request ]; then
-            echo "code=true" >> "$GITHUB_OUTPUT"
-            echo "$EVENT is not a pull request: the suite runs"
-            exit 0
-          fi
-          gh api "repos/$REPO/pulls/$NUMBER/files" --paginate \
-            --jq '.[].filename' > files.txt
-          echo "files changed:"
-          cat files.txt
-          # the prose at the root, matched by the shape of its name
-          # rather than by a list of the files that have it today: every
-          # markdown file this tree keeps at the root is upper case, and
-          # a list would have to be edited by whoever adds the next one.
-          # Anything under a directory is not matched at all, which is
-          # the cheap direction to be wrong in -- tests/_data/README.md
-          # documents vendored data the suite reads, and .github's own
-          # markdown is templates rather than prose the suite ignores by
-          # construction. The detect-secrets baseline is a lint hook's
-          # input and nothing else's.
-          # An empty list is not a prose change, it is a question this
-          # could not answer, so the count is checked before the pattern
-          prose='^[A-Z][A-Z_]*\.md$|^\.secrets\..*baseline$'
-          if [ ! -s files.txt ] || grep -qvE "$prose" files.txt; then
-            echo "code=true" >> "$GITHUB_OUTPUT"
-            echo "something the suite reads changed: the suite runs"
-          else
-            echo "code=false" >> "$GITHUB_OUTPUT"
-            echo "prose only: the suite has nothing to check"
-          fi
+    with:
+      # the prose at the root, matched by the shape of its name rather
+      # than by a list of the files that have it today: every markdown
+      # file this tree keeps at the root is upper case, and a list
+      # would have to be edited by whoever adds the next one. Anything
+      # under a directory is not matched at all, which is the cheap
+      # direction to be wrong in -- tests/_data/README.md documents
+      # vendored data the suite reads, and .github's own markdown is
+      # templates rather than prose the suite ignores by construction.
+      # The detect-secrets baseline is a lint hook's input and nothing
+      # else's.
+      prose-pattern: '^[A-Z][A-Z_]*\.md$|^\.secrets\..*baseline$'
 
   coverage:
     name: Measure coverage, gated at 100%

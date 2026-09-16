@@ -344,11 +344,9 @@ code-scanning alerts, and `analysis` takes `id-token: write` besides,
 for the transparency-log entry its published score rests on.
 
 An elevation to a read leaves that command nothing to find, and a job's
-own block is where those are read: `test.yml`'s `changes` takes
-`pull-requests: read` to ask which files a pull request touches, which
-`contents: read` does not carry. `codeql.yml`'s `codeql-passed` takes
+own block is where those are read: `codeql.yml`'s `codeql-passed` takes
 `actions: read` to ask the run's own job listing back, which
-`contents: read` does not carry either.
+`contents: read` does not carry.
 
 `release.yml`'s `test` job names a `permissions:` block for a different
 reason: not that the job needs more itself, but that
@@ -357,7 +355,9 @@ every job of the called workflow. A scope a job over there declares and
 the caller leaves off is not quietly dropped: the run is refused before
 any job of it starts, `release.yml`'s own jobs included
 (btclib-org/btclib-secp256k1#281). `pull-requests: read` is in the
-caller's list for that reason — `test.yml`'s `changes` job declares it.
+caller's list for that reason, and `test.yml`'s own `changes` job names
+a block for the same reason now: `reusable-changes.yml`'s `changes` job
+is what declares it, where `test.yml`'s local job of that name used to.
 
 The cap bounds what the called workflow declares rather than standing in
 for it: a job over there with no block of its own is granted `test.yml`'s

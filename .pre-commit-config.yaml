@@ -436,11 +436,11 @@ repos:
         # actionlint delegates the body of a run: step to shellcheck, and
         # of a "shell: python" step to pyflakes, if it finds them on the
         # PATH: without them it validates the yaml around a shell script
-        # and not the script -- and the changes job in test.yml is a
-        # shell script. Declared here rather than left to the machine, so
-        # that a commit checks what CI checks: the runner image carries
-        # shellcheck, so leaving it to chance would mean CI checking
-        # more.
+        # and not the script -- and claude-review.yml's own steps are
+        # shell scripts. Declared here rather than left to the machine,
+        # so that a commit checks what CI checks: the runner image
+        # carries shellcheck, so leaving it to chance would mean CI
+        # checking more.
         # Pinned, unlike the revs above, because nothing bumps an
         # additional dependency: pre-commit.ci moves rev, and dependabot
         # has no pre-commit ecosystem. That is the point rather than the

@@ -1589,6 +1589,12 @@ keeps whichever shape it was written in.
   headings, and `REVIEWING.md` a question asking whether the branch's
   own entry is last** (issue btclib-org/.github#1097): no gate reads it.
 
+### `test.yml`'s `changes` job calls the organization's reusable workflow
+
+- **The `changes` job becomes a call to `reusable-changes.yml`** (issue
+  btclib-org/.github#35): the event handling and the decision move to the
+  callee, `prose-pattern` carrying this tree's own pattern unchanged.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
