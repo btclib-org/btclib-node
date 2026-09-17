@@ -1625,6 +1625,12 @@ keeps whichever shape it was written in.
   `reusable-deps-latest.yml`, `dist-latest` staying beside it** (issue
   btclib-org/.github#35): `--no-cov` drops the coverage this sentinel measured.
 
+### `scorecard.yml` calls `btclib-org/.github`'s reusable workflow
+
+- **The `analysis` job becomes a call to `reusable-scorecard.yml`,
+  permissions carried by the calling job** (issue btclib-org/.github#35):
+  the `codeql-action/upload-sarif` pin moves to the callee, at `v4.38.0`.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
