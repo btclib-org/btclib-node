@@ -396,10 +396,12 @@ _NAMES_ONE = (
     # btclib-org/.github's reusable-documented.yml now, called at @main,
     # and the interpreter it names lives in that file rather than in
     # this one (btclib-org/.github#35)
-    # sdist-rebuild.yml runs the tag's sdist normalizer through
-    # `uv run --no-project`, as test.yml's dist job does, so it names the
-    # interpreter that step runs on
-    ".github/workflows/sdist-rebuild.yml",
+    # sdist-rebuild.yml's `rebuild` job used to run the tag's sdist
+    # normalizer through `uv run --no-project --python 3.14` on its own
+    # command line, as test.yml's dist job does; the job is now a call to
+    # btclib-org/.github's reusable-sdist-rebuild.yml at @main, and the
+    # interpreter that step runs on lives in that file rather than in
+    # this one (btclib-org/.github#35)
     ".github/workflows/test.yml",
 )
 

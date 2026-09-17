@@ -6,10 +6,18 @@ name: sdist-rebuild
 # rebuilds it, and `gh attestation verify` over the rebuilt sdist, which
 # passes only where its digest is one the release signed.
 #
-# What moves between a release and this run is the runner image, uv, and
-# the build backend within the range the tag's pyproject.toml allows; that
-# interval is what a weekly run covers and a check inside release.yml
-# does not.
+# The release lookup, the checkout, the build, the normalizer and the
+# verify are btclib-org/.github's reusable-sdist-rebuild.yml, called at
+# @main so a fix there reaches this tree in one landing
+# (btclib-org/.github#35). What stays here is the trigger, the workflow-
+# level permissions, the concurrency group and the calling job's `if:`
+# and `permissions:`, which the callee does not carry and says so in its
+# own header. No input is named below: this tree's own build was a bare
+# `uv build`, which the callee's default (`sdist-builder: uv`, running
+# `uv build --sdist`) replaces -- the wheel that bare `uv build` also
+# wrote was read by nothing in this file and this tree stops building
+# it here. `submodules` and `python-version` are likewise left at the
+# callee's own `""` defaults, this tree's checkout having named neither.
 #
 # The sdist alone: section 10 of btclib-org/.github's README.md makes
 # the row the sdist's. A red run is an issue against this tree. It gates
@@ -46,50 +54,15 @@ concurrency:
 
 jobs:
   rebuild:
-    name: Rebuild the latest release's sdist and verify its attestation
     if: >-
       ${{ !github.event.pull_request.draft
       && github.event.action != 'closed' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    uses: btclib-org/.github/.github/workflows/reusable-sdist-rebuild.yml@main
+    # a called workflow's own permissions: block can only downgrade, not
+    # restore, what this calling job grants -- README.md section 11's
+    # "the bound refuses rather than trims", measured in
+    # btclib-org/.github#912 -- so every scope the callee's job asks for
+    # is named here too, or the run fails before any job starts
     permissions:
       contents: read
       attestations: read
-    steps:
-      # the release GitHub marks latest, not the newest tag: a tag whose
-      # release never published has no attestation to verify against
-      - name: Find the latest release
-        id: release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          tag=$(gh release view --repo "$GITHUB_REPOSITORY" \
-            --json tagName --jq .tagName)
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-      - name: Checkout the release's tag
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ steps.release.outputs.tag }}
-          persist-credentials: false
-      # no cache: the backend is fetched as a rebuild by hand fetches it
-      - name: Setup uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          enable-cache: false
-      # the steps of test.yml's dist job, which built what release.yml
-      # attested
-      - name: Pin the build timestamp to the commit
-        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "$GITHUB_ENV"
-      - name: Build the distribution files
-        run: uv build
-      - name: Make the sdist's determinism this tree's
-        run: |
-          uv run --no-project --python 3.14 \
-            .github/scripts/normalize_sdist.py dist/
-          sha256sum dist/*.tar.gz
-      - name: Verify the rebuilt sdist against the release's attestation
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh attestation verify dist/*.tar.gz --repo "$GITHUB_REPOSITORY" \
-            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml"

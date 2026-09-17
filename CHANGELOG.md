@@ -1631,6 +1631,12 @@ keeps whichever shape it was written in.
   permissions carried by the calling job** (issue btclib-org/.github#35):
   the `codeql-action/upload-sarif` pin moves to the callee, at `v4.38.0`.
 
+### `sdist-rebuild.yml` calls `btclib-org/.github`'s reusable workflow
+
+- **The `rebuild` job becomes a call to `reusable-sdist-rebuild.yml`,
+  stopping the wheel this tree's bare `uv build` also wrote** (issue
+  btclib-org/.github#35): nothing here read that wheel.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
