@@ -1685,6 +1685,12 @@ keeps whichever shape it was written in.
   that can write anything goes from both files** (closes
   btclib-org/.github#1180): each already shares its tree with a writer.
 
+### `release.yml`'s `attest` and `github-release` jobs become calls
+
+- **`attest` and `github-release` call `btclib-org/.github`'s reusable
+  workflows** (issue btclib-org/.github#35): the attested and uploaded
+  set of files is unchanged.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`

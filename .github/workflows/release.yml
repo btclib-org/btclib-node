@@ -249,120 +249,60 @@ jobs:
   # rebuilt.
   # After a publish and not after the build, so that a run reaching here
   # is a run the environment approval already let through
+  #
+  # The downloads, the statement and the bundle are btclib-org/.github's:
+  # reusable-attest.yml, called at @main so a fix there reaches this tree
+  # in one landing (section 10 of its README.md). What stays here is the
+  # `needs:`, the `if:` and the calling job's own `permissions:`, which
+  # the callee does not carry and says so in its own header
+  # (btclib-org/.github#35)
   attest:
-    name: Attest the distribution files
     needs: [publish-pypi, publish-testpypi]
     # always(), the other publish job being skipped rather than run, and
     # a skipped job is one `needs` treats as failed
     if: >-
       always() && (needs.publish-pypi.result == 'success' ||
       needs.publish-testpypi.result == 'success')
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # a called workflow's own permissions: block can only downgrade, not
+    # restore, what this calling job grants -- README.md section 11's
+    # "the bound refuses rather than trims", measured in
+    # btclib-org/.github#912 -- so every scope the callee's job asks for
+    # is named here too, plus `contents: read`, which the callee declares
+    # only at its own workflow level and this job's block would
+    # otherwise drop
     permissions:
-      # OIDC for the short-lived Sigstore signing certificate, and the
-      # write that persists the attestation against the repository
+      contents: read
       id-token: write
       attestations: write
-    steps:
-      - name: Download the distribution files
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: dist
-          path: dist/
-      - name: Download the bill of materials
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: sbom
-          path: dist/
-      # actions/attest and not the attest-build-provenance wrapper around
-      # it: as of v4 the wrapper is a composite that does nothing but
-      # call this, and its own README sends new callers here.
-      # One attestation, all three files: the statement carries every
-      # subject the glob matched, so verifying the wheel, the sdist or
-      # the bill of materials against the bundle below works
-      - name: Attest the distribution files
-        id: attest
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
-        with:
-          subject-path: dist/*
-      - name: Collect the attestation bundle
-        env:
-          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
-        run: cp "$BUNDLE_PATH" attestation.jsonl
-      - name: Upload the attestation bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: attestation
-          path: attestation.jsonl
+    uses: btclib-org/.github/.github/workflows/reusable-attest.yml@main
+    with:
+      dist-artifact: dist
 
   # only after PyPI has accepted the files: a GitHub release announces
   # what users can already install. See bitcoin-core-rpc's RELEASING.md
   # for the failure modes always() and the two .result checks below are
   # written against -- publish-testpypi being skipped on a tag push is
   # what would otherwise skip this job through attest as well
+  #
+  # The checkout, the downloads and the release creation are
+  # btclib-org/.github's: reusable-github-release.yml, called at @main
+  # so a fix there reaches this tree in one landing (section 10 of its
+  # README.md). What stays here is the `needs:`, the `if:` and the
+  # calling job's own `permissions:`, which the callee does not carry
+  # and says so in its own header (btclib-org/.github#35)
   github-release:
-    name: Attach the files to the GitHub release
     needs: [publish-pypi, attest]
     if: >-
       always() && needs.publish-pypi.result == 'success' &&
       needs.attest.result == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
     permissions:
       # the one job that writes to the repository through its token, and
       # what it writes is a release; the attestation the job above
       # signed went to the attestations API under a permission of its own
       contents: write
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Download the distribution files
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: dist
-          path: dist/
-      - name: Download the bill of materials
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: sbom
-          path: dist/
-      # into a directory of its own, so that the dist/* glob below stays
-      # the distribution files and nothing else
-      - name: Download the attestation bundle
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: attestation
-          path: attestation/
-      - name: Create the GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        # the release notes are the tag's own section of
-        # RELEASE_NOTES.md; if the section is missing the release still
-        # happens, with notes generated from the merged pull requests
-        # instead. The fallback is the safety net for a tag pushed past
-        # a red version-check, not the check itself
-        run: |
-          awk -v tag="$GITHUB_REF_NAME" '
-            $0 ~ "^## " tag "( |$)" {found=1; next}
-            /^## / && found {exit}
-            found {print}
-          ' RELEASE_NOTES.md > "$RUNNER_TEMP/notes.md"
-          # named for the tag only here, where the ref is one: nothing
-          # inside the bundle says which release it belongs to, the way
-          # the distribution files' own names do
-          bundle="$GITHUB_REF_NAME.attestation.jsonl"
-          cp attestation/attestation.jsonl "$bundle"
-          if [ -s "$RUNNER_TEMP/notes.md" ]; then
-            gh release create "$GITHUB_REF_NAME" dist/* "$bundle" \
-              --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md"
-          else
-            echo "::warning::RELEASE_NOTES.md has no $GITHUB_REF_NAME section"
-            gh release create "$GITHUB_REF_NAME" dist/* "$bundle" \
-              --title "$GITHUB_REF_NAME" --generate-notes
-          fi
+    uses: btclib-org/.github/.github/workflows/reusable-github-release.yml@main
+    with:
+      dist-artifact: dist
 
   # the sentinel on the documentation, which nothing else here asks
   # about:
