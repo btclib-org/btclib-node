@@ -1637,6 +1637,12 @@ keeps whichever shape it was written in.
   stopping the wheel this tree's bare `uv build` also wrote** (issue
   btclib-org/.github#35): nothing here read that wheel.
 
+### `pypi-install.yml`'s `wait-for-index` job becomes a call
+
+- **The `wait-for-index` job becomes a call to
+  `reusable-wait-for-index.yml`, `package: btclib-node` and the
+  forwarded `version` its only inputs** (issue btclib-org/.github#35).
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
