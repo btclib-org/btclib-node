@@ -1679,6 +1679,12 @@ keeps whichever shape it was written in.
   origin/main -- .github/mutation/curve_group.toml` answers nothing at
   btclib-org/btclib@085a1a37, where the same command for `profile` does.
 
+### `links.yml` and `vendored-vectors.yml` drop a false uniqueness clause
+
+- **The clause claiming the write would make it the only workflow here
+  that can write anything goes from both files** (closes
+  btclib-org/.github#1180): each already shares its tree with a writer.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`

@@ -14,8 +14,7 @@ name: vendored-vectors
 # this tree's one entry does not call for, and issues: write beside it,
 # which no other scheduled workflow here carries. links.yml's own
 # comment says why: an automatic issue is the usual next step a failed
-# run's own notification already covers, and it would make this the only
-# workflow here that can write anything. bootstrap-dns.yml, checking a
+# run's own notification already covers. bootstrap-dns.yml, checking a
 # different kind of drift on the same weekly cadence, is this file's own
 # shape instead: contents: read, and a red run in the Actions tab.
 
