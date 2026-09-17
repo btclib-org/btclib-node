@@ -1655,6 +1655,12 @@ keeps whichever shape it was written in.
   had reported 100% on the one cell this job sweeps, so the callee's new
   input restores what `db37555b` dropped rather than leaving it unmet.
 
+### `claude-review.yml` calls `btclib-org/.github`'s reusable workflow
+
+- **The `review` and `mention` jobs become one call to
+  `reusable-claude-review.yml`, which carries the action pin** (issue
+  btclib-org/.github#35): its verdict check reports no stale verdict.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`

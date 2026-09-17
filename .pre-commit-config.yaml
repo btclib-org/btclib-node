@@ -441,8 +441,8 @@ repos:
         # actionlint delegates the body of a run: step to shellcheck, and
         # of a "shell: python" step to pyflakes, if it finds them on the
         # PATH: without them it validates the yaml around a shell script
-        # and not the script -- and claude-review.yml's own steps are
-        # shell scripts. Declared here rather than left to the machine,
+        # and not the script -- and test.yml's own steps are shell
+        # scripts. Declared here rather than left to the machine,
         # so that a commit checks what CI checks: the runner image
         # carries shellcheck, so leaving it to chance would mean CI
         # checking more.

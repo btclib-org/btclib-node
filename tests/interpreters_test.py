@@ -224,7 +224,7 @@ _UNCOMMENTED = re.compile(r"(?:^|\s)#.*$", re.MULTILINE)
 # step would end there, hiding every line below it in the same step --
 # an `if:` this read is about among them -- and no test would go red,
 # the shape being one this tree's own workflows already write
-# (`bootstrap-dns.yml`, `claude-review.yml`). `_JOB` above needs
+# (`bootstrap-dns.yml`, `release.yml`). `_JOB` above needs
 # nothing of the sort: its `^ {3,}` runs a space below the indent it
 # reads, and that slack is what absorbs the same residue.
 _STEP = re.compile(r"^      - .*\n(?:^ {8,}.*\n|^ *\n)*", re.MULTILINE)

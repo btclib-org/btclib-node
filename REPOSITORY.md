@@ -337,8 +337,9 @@ one token in this repository that writes to it, and `id-token: write` on
 `publish-pypi` and `publish-testpypi` for the OIDC token each index
 trusts, with `attestations: write` beside it on `attest`.
 `claude-review.yml` takes `pull-requests: write` to post a comment and
-`id-token: write` for the token its action mints at startup, on `review`
-and on `mention` alike. `codeql.yml`'s `analyze` and `scorecard.yml`'s
+`id-token: write` for the token the action mints at startup, on the
+`claude` job that calls `btclib-org/.github`'s
+`reusable-claude-review.yml`. `codeql.yml`'s `analyze` and `scorecard.yml`'s
 `analysis` take `security-events: write` to file a SARIF as
 code-scanning alerts, and `analysis` takes `id-token: write` besides,
 for the transparency-log entry its published score rests on.
@@ -777,9 +778,9 @@ than a credential it lacks, and it is why the Dependabot store is here
 rather than among the facilities above: an empty store there is where the
 standard's decision shows, not a facility nobody reached for.
 
-**A switch this repository does not set.** `claude-review.yml` guards
-its jobs with `vars.CLAUDE_REVIEW_ENABLED`, and neither variable store
-holds it:
+**A switch this repository does not set.** The jobs `claude-review.yml`
+calls are guarded by `vars.CLAUDE_REVIEW_ENABLED`, and neither variable
+store holds it:
 
 ```shell
 gh api repos/btclib-org/btclib-node/actions/variables --jq '.total_count'
