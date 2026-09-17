@@ -1643,6 +1643,12 @@ keeps whichever shape it was written in.
   `reusable-wait-for-index.yml`, `package: btclib-node` and the
   forwarded `version` its only inputs** (issue btclib-org/.github#35).
 
+### `interpreter_test.py` stops importing `btclib.to_pub_key`
+
+- **The two names move to `btclib.curves.point_from_pub_key` and
+  `key.PrvKeyData(...).pub.sec`, with `btclib`'s floor at `2026.9.13`**
+  (closes #972): latent, not live -- `2026.9.3` still exported both.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`

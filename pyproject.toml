@@ -34,8 +34,12 @@ dependencies = [
     # imports -- `btclib.muhash`, `btclib.p2p.reject`, `btclib.tx.coin`
     # and `btclib.tx.tx_context` among the modules -- so a floor below
     # it is a release the published wheel's own smoke test cannot
-    # import (btclib-org/btclib-node#848).
-    "btclib[secp256k1]>=2026.9.3",
+    # import (btclib-org/btclib-node#848). Raised to 2026.9.13:
+    # `tests/unit/interpreter_test.py` imports `point_from_pub_key` from
+    # `btclib.curves`, which is where that release first exports it --
+    # 2026.9.3 defines it only in the `to_pub_key` module `btclib`
+    # deletes on its own `main` (btclib-org/btclib-node#972).
+    "btclib[secp256k1]>=2026.9.13",
     "rocksdict>=0.3.29",
     # `rpc/errors.py` imports `RPCErrorCode` directly now, so this is a
     # direct runtime dependency rather than the transitive arrival
