@@ -16,9 +16,11 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from btclib.consensus import CONSENSUS_PARAMS
+from btclib.curves import point_from_pub_key
 from btclib.ecc import dsa, ssa
 from btclib.exceptions import BTClibValueError, ScriptError
 from btclib.hashes import hash160, sha256
+from btclib.key import PrvKeyData
 from btclib.script import script, sig_hash, taproot
 from btclib.script.engine import verify_input as btclib_verify_input
 from btclib.script.engine import verify_transaction
@@ -26,7 +28,6 @@ from btclib.script.engine.flags import ALL_FLAGS, NO_FLAGS, ScriptFlag
 from btclib.script.script_pub_key import ScriptPubKey
 from btclib.script.taproot import output_prvkey
 from btclib.script.witness import Witness
-from btclib.to_pub_key import point_from_pub_key, pub_keyinfo_from_prv_key
 from btclib.tx.out_point import OutPoint
 from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
@@ -153,7 +154,7 @@ def test_a_transaction_that_prints_money_is_refused() -> None:
 
 
 _PRV = 0x1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF
-_PUB = pub_keyinfo_from_prv_key(_PRV)[0]
+_PUB = PrvKeyData(_PRV).pub.sec
 
 # ALL, NONE, SINGLE and each of them with ANYONECANPAY: the branches the
 # legacy preimage blanks the transaction differently for, and the ones
@@ -538,7 +539,7 @@ def a_failed_check_with_a_signature_on_it() -> tuple[list[TxOut], Tx]:
 
 def an_uncompressed_key_in_a_witness_script() -> tuple[list[TxOut], Tx]:
     """Return a p2wpkh spend whose public key is the uncompressed form."""
-    uncompressed = pub_keyinfo_from_prv_key(_PRV, compressed=False)[0]
+    uncompressed = PrvKeyData(_PRV, compressed=False).pub.sec
     prevouts, tx = _spend(
         script.serialize(["OP_0", hash160(uncompressed).hex()]),
     )
