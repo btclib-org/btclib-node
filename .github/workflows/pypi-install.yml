@@ -124,9 +124,15 @@ jobs:
   # else's upload, so neither a release nor a rehearsal can arrange for
   # it to be late -- so it is a script with a test rather than a loop in
   # a run: block, which is what section 10 of btclib-org/.github's
-  # README.md asks of a wait (btclib-org/.github#641). The budget is the
-  # script's own default deadline; timeout-minutes here is well above it,
-  # and bounds the job rather than the wait.
+  # README.md asks of a wait (btclib-org/.github#641). The checkout, the
+  # uv setup and the wait itself are btclib-org/.github's
+  # reusable-wait-for-index.yml, called at @main so a fix there reaches
+  # this tree in one landing (btclib-org/.github#35). What stays here is
+  # the trigger, the workflow-level permissions, the concurrency group
+  # and this job's own `if:`, which the callee does not carry and says
+  # so in its own header. `package` is `wait_for_pypi_release.py`'s own
+  # argument, `btclib-node`, read off this file rather than off the
+  # repository's name, unchanged by the move.
   #
   # Nothing here is conditioned on the version: the input is empty
   # wherever no release is calling, and an empty tag is nothing to wait
@@ -134,36 +140,16 @@ jobs:
   # this, and a job a release is the first to run is a job whose defect
   # ships with that release -- which has already happened to this wait,
   # in more than one repository of this organization. The draft
-  # condition is the matrix job's own, for the reason given there
+  # condition is the matrix job's own, for the reason given there.
+  # `version` below is forwarded rather than originated: drop it and the
+  # wait silently becomes a no-op on exactly the run that needs it, a
+  # release
   wait-for-index:
-    name: Wait for the index to serve the released version
     if: ${{ !github.event.pull_request.draft }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      # sparse: what lands is .github/scripts plus the repository root,
-      # cone mode being the default and root files always being in the
-      # cone, so there is no src/btclib_node for an import to resolve
-      # to. This job builds nothing and installs nothing, and the
-      # --no-project below ignores the root's pyproject.toml
-      - name: Check out the wait script
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          sparse-checkout: .github/scripts
-      - name: Setup uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-      # --no-project, so it runs on the interpreter uv fetches and
-      # installs nothing: the script takes the standard library alone,
-      # which is what lets it run before anything of this project exists
-      # on the runner
-      - name: Wait for the index to serve the released version
-        shell: bash
-        env:
-          TAG: ${{ inputs.version }}
-        run: |
-          uv run --no-project --python 3.14 \
-            .github/scripts/wait_for_pypi_release.py btclib-node "$TAG"
+    uses: btclib-org/.github/.github/workflows/reusable-wait-for-index.yml@main
+    with:
+      package: btclib-node
+      version: ${{ inputs.version }}
 
   install-published:
     name: >-
