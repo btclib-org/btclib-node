@@ -36,6 +36,18 @@ name: deps-latest
 # and python-versions inputs below are each a one-cell list rather than a
 # matrix narrowed to one.
 #
+# measure-coverage: true, because this job's own upgrade step is the one
+# place in the tree where the fail_under ratchet meets a coverage.py
+# nobody has pinned it against yet, and this tree had established the
+# floor across the whole of its sweep -- the one cell above. Before
+# db37555b converted this job onto the callee and lost the check
+# unrecorded, five consecutive runs of the bare `pytest` this job used to
+# run (2026-08-26 through 2026-09-16) each reported `Required test
+# coverage of 100.0% reached. Total coverage: 100.00%` on that cell
+# (issue #975). No fetch-tags beside it: nothing in tests/ compares a
+# released section against its own git tag, so the callee's header
+# naming the two as coupled does not apply here.
+#
 # Nothing here gates anything, by construction: a separate workflow, with
 # no aggregate job, named by no branch protection rule. This job is
 # expected to go red for reasons no pull request introduced, and a red
@@ -78,6 +90,7 @@ jobs:
     with:
       runners: '["ubuntu-latest"]'
       python-versions: '["3.14"]'
+      measure-coverage: true
 
   # the check group, and the only run of it against an upgraded lock.
   # These steps are --locked too, keeping the convention the callee's own

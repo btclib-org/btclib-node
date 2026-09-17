@@ -1649,6 +1649,12 @@ keeps whichever shape it was written in.
   `key.PrvKeyData(...).pub.sec`, with `btclib`'s floor at `2026.9.13`**
   (closes #972): latent, not live -- `2026.9.3` still exported both.
 
+### `deps-latest.yml` restores the coverage ratchet it dropped, on a boolean
+
+- **`measure-coverage: true`** (closes #975): five runs before `--no-cov`
+  had reported 100% on the one cell this job sweeps, so the callee's new
+  input restores what `db37555b` dropped rather than leaving it unmet.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
