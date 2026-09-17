@@ -1661,6 +1661,12 @@ keeps whichever shape it was written in.
   `reusable-claude-review.yml`, which carries the action pin** (issue
   btclib-org/.github#35): its verdict check reports no stale verdict.
 
+### `docs.yml` and `lint.yml` name the callee that holds the draft condition
+
+- **"the draft condition below" becomes "in reusable-docs.yml" and "in
+  reusable-lint.yml"** (issue btclib-org/.github#1177): neither caller's
+  own job carries a draft condition, the called workflow's `if:` being it.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`

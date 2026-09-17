@@ -26,9 +26,9 @@ on:
     branches: [main]
   pull_request:
     # ready_for_review, so a pull request marked ready gets the run the
-    # draft condition below withheld while it was a draft: the default
-    # types do not include it. closed joins them so that a run still
-    # held in this pull request's own concurrency group is superseded
+    # draft condition in reusable-lint.yml withheld while it was a draft:
+    # the default types do not include it. closed joins them so that a run
+    # still held in this pull request's own concurrency group is superseded
     # rather than left to finish on a branch nobody will look at again
     types: [opened, reopened, synchronize, ready_for_review, closed]
   # allows release.yml to reuse this gate, so a tag push cannot publish
