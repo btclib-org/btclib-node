@@ -1691,6 +1691,12 @@ keeps whichever shape it was written in.
   workflows** (issue btclib-org/.github#35): the attested and uploaded
   set of files is unchanged.
 
+### `wait_for_pypi_release.py` carries the body the four trees can share
+
+- **The docstring keeps what any copy said and says nowhere else, and
+  the `except` becomes two clauses, which is the one form all four
+  trees' formatters leave alone** (issue btclib-org/.github#1160).
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
