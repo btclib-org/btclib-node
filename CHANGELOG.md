@@ -1667,6 +1667,18 @@ keeps whichever shape it was written in.
   reusable-lint.yml"** (issue btclib-org/.github#1177): neither caller's
   own job carries a draft condition, the called workflow's `if:` being it.
 
+### `interpreter.toml` states no mutant totals, and names what survives
+
+- **The counts go and the judgement stays** (issue
+  btclib-org/.github#1158): they restated what a weekly `mutation.yml`
+  run prints, and named a survivor set run 35167687979 contradicts.
+
+### `interpreter.toml` drops a claim about `btclib`'s `curve_group.toml`
+
+- **That profile calls itself no first profile**: `git grep -i first
+  origin/main -- .github/mutation/curve_group.toml` answers nothing at
+  btclib-org/btclib@085a1a37, where the same command for `profile` does.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
