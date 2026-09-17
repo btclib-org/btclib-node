@@ -1619,6 +1619,12 @@ keeps whichever shape it was written in.
   `mutation_counts.py`, the counter every caller owns** (issue
   btclib-org/.github#35): a session with no verdict now fails the job.
 
+### `deps-latest.yml` calls `btclib-org/.github`'s reusable workflow
+
+- **The `lint-latest` and `suite-latest` jobs become one call to
+  `reusable-deps-latest.yml`, `dist-latest` staying beside it** (issue
+  btclib-org/.github#35): `--no-cov` drops the coverage this sentinel measured.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
