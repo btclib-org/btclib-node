@@ -980,6 +980,15 @@ ignore = [
 # it reads a failing developer's terminal, not a return value, and what
 # it prints is the line and the reason, which is the whole of its report
 ".github/scripts/check_changelog.py" = ["T20"]
+# and the same for the mutation counter: mutation.yml's "Write the
+# reports" step reads its verdict off stdout, one line per session, not
+# from a return value. PLR2004 is this file's own `sys.argv` length
+# check against a bare 2: this tree scopes that rule to tests/** above
+# rather than ignoring it tree-wide, so a script run outside a test
+# needs its own entry -- named here rather than adapted into the script
+# itself, which section 14 tracks byte-for-byte across every tree that
+# owes it (btclib-org/.github#1152)
+".github/scripts/mutation_counts.py" = ["T20", "PLR2004"]
 # every __init__ in this file is one line, super().__init__(message) or
 # a formatted message built from its own arguments -- what it does is
 # already the whole of what the class's own docstring says, so a

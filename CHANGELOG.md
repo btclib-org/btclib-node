@@ -1613,6 +1613,12 @@ keeps whichever shape it was written in.
   `self-repository` inline** (closes #967): the `$/` rewrite still
   waits on `rhysd/actionlint#711` and `rhysd/actionlint#732`.
 
+### `mutation.yml` calls `btclib-org/.github`'s reusable workflow
+
+- **The mutation job becomes a call to `reusable-mutation.yml`, and gains
+  `mutation_counts.py`, the counter every caller owns** (issue
+  btclib-org/.github#35): a session with no verdict now fails the job.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`

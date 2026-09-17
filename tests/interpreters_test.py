@@ -377,7 +377,12 @@ _NAMES_ONE = (
     ".github/workflows/deps-latest.yml",
     ".github/workflows/deps-oldest.yml",
     ".github/workflows/fuzz.yml",
-    ".github/workflows/mutation.yml",
+    # mutation.yml's Setup uv step used to pin the interpreter on its own
+    # line, the number a mutant's kill was measured against; the job is
+    # now a call to btclib-org/.github's reusable-mutation.yml at @main,
+    # whose own Setup uv step names none, `uv run --locked` there
+    # resolving what this tree's .python-version names instead
+    # (btclib-org/.github#35)
     ".github/workflows/os-macos.yml",
     ".github/workflows/os-ubuntu.yml",
     # pypi-install.yml installs the published package from the index and
