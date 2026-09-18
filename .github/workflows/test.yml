@@ -257,7 +257,7 @@ jobs:
           # on the gate, which runs on every pull request
           persist-credentials: false
       - name: Setup uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           # the cache holds what uv.lock resolves, which is wheels and
           # no build: what this job spends its time on is the suite
@@ -301,7 +301,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Setup uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           # the cache holds what uv.lock resolves: btclib_secp256k1 and
           # cffi both publish a wheel for this interpreter on this
@@ -341,7 +341,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Setup uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: true
           python-version: "3.14t"
@@ -428,7 +428,7 @@ jobs:
       # caching off only when release.yml calls this workflow: see
       # disable-dist-cache's own description above
       - name: Setup uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           enable-cache: ${{ !inputs.disable-dist-cache }}
       # what the sdist normalizer and the bill-of-materials generator
