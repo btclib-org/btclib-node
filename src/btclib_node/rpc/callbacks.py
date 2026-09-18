@@ -741,7 +741,7 @@ def get_tx_out_set_info(
     `get_mempool_info`'s own `mempoolminfee` already is; `muhash` itself
     is the raw digest bytes reversed before this returns, matching
     `uint256::GetHex()`'s own convention rather than this class's
-    `digest()` (`chainstate/muhash.py`'s own comment beside
+    `digest` (`chainstate/muhash.py`'s own comment beside
     `is_bip30_unspendable` is where that reversal is confirmed against
     the well-known genesis hash rather than assumed).
 
@@ -799,7 +799,7 @@ def get_tx_out_set_info(
         "bogosize": coin_stats.bogo_size,
     }
     if hash_type == "muhash":
-        result["muhash"] = coin_stats.digest()[::-1]
+        result["muhash"] = coin_stats.digest[::-1]
     result["total_amount"] = _btc_amount(coin_stats.total_amount)
     return result
 

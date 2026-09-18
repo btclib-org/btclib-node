@@ -535,7 +535,7 @@ def test_tx_out_set_info_answers_core_s_own_field_names() -> None:
     """`gettxoutsetinfo` answers height, bestblock, txouts, bogosize, amount.
 
     `hash_type: "muhash"` also carries `muhash`, the digest reversed to
-    match `uint256::GetHex()` rather than `CoinStats.digest()`'s own
+    match `uint256::GetHex()` rather than `CoinStats.digest`'s own
     byte order.
     """
     coin_stats = CoinStats()
@@ -549,7 +549,7 @@ def test_tx_out_set_info_answers_core_s_own_field_names() -> None:
     assert result["txouts"] == 1
     assert result["bogosize"] == coin_stats.bogo_size
     assert result["total_amount"].text == "50.00000000"
-    assert result["muhash"] == coin_stats.digest()[::-1]
+    assert result["muhash"] == coin_stats.digest[::-1]
 
 
 def test_tx_out_set_info_hash_type_none_omits_the_muhash_field() -> None:
