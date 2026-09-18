@@ -1697,6 +1697,12 @@ keeps whichever shape it was written in.
   the `except` becomes two clauses, which is the one form all four
   trees' formatters leave alone** (issue btclib-org/.github#1160).
 
+### `codeql.yml` documents its grants where the auditor reads them
+
+- **The three grants `zizmor --persona=auditor` flags take a trailing
+  comment, the leading prose kept** (issue btclib-org/.github#1164): the
+  auditor reads a permission's own line, not the one above it.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`

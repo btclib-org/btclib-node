@@ -91,9 +91,9 @@ jobs:
   analyze:
     uses: btclib-org/.github/.github/workflows/reusable-codeql.yml@main
     permissions:
-      security-events: write
+      security-events: write # the SARIF upload, and nothing else needs it
       contents: read
-      actions: read
+      actions: read # run metadata, which only a private repository gates
 
   # one context a branch rule can name, in place of job names that move:
   # the called workflow's own matrix produces one row per language, a set
@@ -134,8 +134,11 @@ jobs:
       # what asking the API for this run's own jobs takes, the same read
       # test.yml's aggregate would hold for the same question if it ever
       # needed it. REPOSITORY.md's "Token permissions" is where the
-      # elevation is read back
-      actions: read
+      # elevation is read back. The trailing comment repeats it in one
+      # line for the reason btclib's codeql.yml gives on its own block:
+      # zizmor's undocumented-permissions audit reads the permission's
+      # own line (btclib-org/.github#1164)
+      actions: read # the run's job listing, which contents: read misses
     steps:
       # `needs.analyze.result` cannot tell a matrix cell that died in
       # *Set up job* from one that ran and passed (btclib-org/btclib#1001);
