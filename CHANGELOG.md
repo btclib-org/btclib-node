@@ -1709,6 +1709,12 @@ keeps whichever shape it was written in.
   assertions around them measure with `time.monotonic()` instead of
   `time.time()`** (closes #966): a wall-clock step can no longer skew either.
 
+### `chainstate/muhash.py` imports `CoinStats` from btclib
+
+- **`CoinStats`, `tx_out_ser`, `bogo_size` and `is_unspendable` are
+  btclib's own now** (closes #869, btclib-org/btclib#1623):
+  `insert`/`.remove` return `None`, and `digest` is a property.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
