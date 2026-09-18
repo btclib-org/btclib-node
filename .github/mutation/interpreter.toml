@@ -22,12 +22,13 @@ module-path = "src/btclib_node/interpreter.py"
 # `^`, the terms of that chain being disjoint bits, which leaves the
 # two operators the same function on it. Neither is a test to write,
 # a mutant computing what the original computes having nothing to
-# assert against. The one that is a gap rather than an equivalence is
-# `check_transactions`' `len(x[0]) != len(x[1].vin)` as `<`, every
-# test that reaches it passing fewer prevouts than inputs and none
-# passing more; that line as `is not` is an equivalence again,
-# small-int identity answering there as `!=` does on every length the
-# suite tries.
+# assert against. `check_transactions`' `len(x[0]) != len(x[1].vin)`
+# as `is not` is an equivalence too, small-int identity answering
+# there as `!=` does on every length the suite tries. As `<` it was
+# the gap that run found: every test reaching the line passed fewer
+# prevouts than inputs, and none passed more, until
+# `test_a_prevout_count_that_exceeds_the_inputs_is_also_refused` gave
+# it one (btclib-org/btclib-node#986). That mutant is caught now.
 test-command = """python -m pytest -x -q -n0 --no-cov \
   tests/unit/interpreter_test.py"""
 

@@ -146,6 +146,17 @@ def test_a_prevout_count_that_does_not_match_the_inputs_is_refused() -> None:
         check_transactions([([], spend(b""))], 1, make_node(), _A_BLOCK_HASH)
 
 
+def test_a_prevout_count_that_exceeds_the_inputs_is_also_refused() -> None:
+    """Fewer inputs than prevouts raises `PrevoutCountMismatchError` too."""
+    # one input, two prevouts for it: `!=` catches this direction where
+    # `<` would not, since a mutant comparing only for a shortfall lets
+    # a surplus prevout list through to verify_amounts and the pool
+    with pytest.raises(ValueError, match="prevout count does not match input count"):
+        check_transactions(
+            [(coins([prevout(), prevout()]), spend(b""))], 1, make_node(), _A_BLOCK_HASH
+        )
+
+
 def test_a_transaction_that_prints_money_is_refused() -> None:
     """An output worth more than its prevout raises before script checks run."""
     tx = spend(script.serialize([b"\x11" * 32]), value=51 * 10**8)
