@@ -1703,6 +1703,12 @@ keeps whichever shape it was written in.
   comment, the leading prose kept** (issue btclib-org/.github#1164): the
   auditor reads a permission's own line, not the one above it.
 
+### `wait_until` and `wait_until_listening` use the monotonic clock
+
+- **Both loops, the message they raise and `helpers_test.py`'s own
+  assertions around them measure with `time.monotonic()` instead of
+  `time.time()`** (closes #966): a wall-clock step can no longer skew either.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
