@@ -1721,6 +1721,12 @@ keeps whichever shape it was written in.
   reads `.python-version`'s own pin too** (closes #991): the pin still
   holds `3.14`, so `_gating()`'s own answer is unchanged today.
 
+### `wait_for_readthedocs_build.py` takes the body the four trees converge on
+
+- **The usage example passes `"$SLUG"`, `USER_AGENT` becomes a template
+  `unserved` formats with the project, and the docstring points at the
+  release wait beside it** (issue btclib-org/.github#1186).
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
