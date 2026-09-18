@@ -379,10 +379,13 @@ def wait_until(func: Callable[[], object], timeout: float = 60) -> None:
     # that starvation and names its cause: the node still makes
     # progress, just slowly, so what a short deadline reports is the
     # test's patience. Sixty is headroom over the worst tail seen here,
-    # not a measured bound on ubuntu-latest, where the suite has failed
-    # at twenty and nobody has recorded by how much it missed. What
-    # bounds a genuine hang is `timeout` in pyproject.toml, which still
-    # names the test it killed.
+    # measured on `time.monotonic()` below rather than the wall clock --
+    # a wall clock is settable, so an NTP step during the wait would
+    # shorten or lengthen the headroom out from under the loop that
+    # measures it. Sixty is not a measured bound on ubuntu-latest, where
+    # the suite has failed at twenty and nobody has recorded by how much
+    # it missed. What bounds a genuine hang is `timeout` in
+    # pyproject.toml, which still names the test it killed.
     #
     # A lambda closing over a `for` loop's own variable is safe to pass
     # here despite B023's late-binding warning: this function returns
@@ -390,17 +393,18 @@ def wait_until(func: Callable[[], object], timeout: float = 60) -> None:
     # next iteration and rebinds the name, so the closure is read and
     # discarded within the same iteration it was built in -- there is no
     # later call for the rebinding to have changed anything under.
-    start = time.time()
-    while time.time() - start < timeout:
+    start = time.monotonic()
+    while time.monotonic() - start < timeout:
         if func():
             return
         time.sleep(0.025)
+    elapsed = time.monotonic() - start
     # where the condition is written, because a caller passes a lambda
     # and a test often has several
     code = func.__code__
     err_msg = (
         f"{code.co_filename}:{code.co_firstlineno} "
-        f"did not hold within {timeout} seconds"
+        f"did not hold within {timeout} seconds (waited {elapsed:.2f}s)"
     )
     raise WaitTimeoutError(err_msg)
 
@@ -416,18 +420,19 @@ def wait_until_listening(manager: _ListensOnAPort, timeout: float = 20) -> None:
     test then spends its whole timeout waiting for a connection that was
     lost at the start, which is what #46 sees.
     """
-    start = time.time()
-    while time.time() - start < timeout:
+    start = time.monotonic()
+    while time.monotonic() - start < timeout:
         if manager.listening.is_set():
             return
         time.sleep(0.025)
+    elapsed = time.monotonic() - start
     # named here rather than left to `wait_until`, whose message is the
     # line its lambda was written on -- a lambda written in this helper
     # is the same line for every caller, and a test that waits on
     # several managers would be told nothing about which. The manager
     # and its port are what tell them apart.
     err_msg = f"{type(manager).__name__} on port {manager.port} was not "
-    err_msg += f"listening within {timeout} seconds"
+    err_msg += f"listening within {timeout} seconds (waited {elapsed:.2f}s)"
     raise WaitTimeoutError(err_msg)
 
 

@@ -56,32 +56,32 @@ def test_the_port_offered_is_one_that_can_be_bound() -> None:
 def test_a_condition_that_holds_is_not_waited_for() -> None:
     """`wait_until` returns immediately once `func` is already truthy."""
     timeout = 10
-    start = time.time()
+    start = time.monotonic()
     wait_until(lambda: True, timeout=timeout)
-    assert time.time() - start < timeout
+    assert time.monotonic() - start < timeout
 
 
 def test_a_condition_that_never_holds_is_given_up_on() -> None:
     """`wait_until` polls repeatedly and raises, naming its own caller."""
     calls: list[bool] = []
     timeout = 0.2
-    start = time.time()
+    start = time.monotonic()
     with pytest.raises(
         WaitTimeoutError, match=f"helpers_test.py:.* within {timeout} seconds"
     ):
         wait_until(lambda: calls.append(True), timeout=timeout)
     # asked repeatedly, and for as long as it said it would
     assert len(calls) > 1
-    assert time.time() - start >= timeout
+    assert time.monotonic() - start >= timeout
 
 
 def test_a_manager_that_is_listening_is_not_waited_for() -> None:
     """`wait_until_listening` returns immediately once `listening` is set."""
     listening = SimpleNamespace(listening=threading.Event(), port=18444)
     listening.listening.set()
-    start = time.time()
+    start = time.monotonic()
     wait_until_listening(listening, timeout=10)
-    assert time.time() - start < 10
+    assert time.monotonic() - start < 10
 
 
 def test_a_manager_that_never_binds_is_given_up_on() -> None:
