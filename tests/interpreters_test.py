@@ -164,13 +164,19 @@ _NAME = re.compile(r'^    name: "?(?P<name>[^"\n]*)"?', re.MULTILINE)
 # where this file's own header argues at length about `3.14t` and a
 # comment is not a job that runs it.
 #
-# What this read does not answer shows in `dist`. A setup step naming
-# no interpreter takes the one `.python-version` pins, so that job's
-# own interpreter is nowhere in this workflow -- `_PIN` above is where
-# the pin is read, and a free-threaded pin reaches it as `3.14t`. And a
-# version a job names counts whatever that job does with it: `dist`'s
-# own `--python` runs the sdist normalizer and the bill-of-materials
-# writer under `--no-project`, which import nothing of this package.
+# `dist`'s own Setup uv step names no interpreter, so what a job merely
+# names would miss it entirely: `uv build`, the `--only-group check`
+# steps and the smoke test that imports `Node` all take whatever
+# `.python-version` pins, and a free-threaded pin would reach that
+# smoke test -- project code, unlike the other two -- with nothing here
+# to say so. `_implicit`, below `_unconditioned`, is what does not miss
+# it: read beside `_named` in `_found`, it adds `.python-version`'s own
+# pin, `_PIN` further down, wherever a job's Setup uv step is silent on
+# one (issue #991). `dist`'s remaining two steps are unaffected either
+# way: the sdist normalizer and the bill-of-materials writer each carry
+# their own `--python 3.14`, a version `_named` already reads off their
+# command line rather than off `.python-version`, and neither imports
+# this package.
 #
 # A step carrying an `if:` of its own is a narrower thing than either,
 # because the job can conclude without it having run. Two shapes reach
@@ -281,6 +287,22 @@ def _unconditioned(block: str) -> str:
     return block
 
 
+def _implicit(block: str) -> set[str]:
+    """Return `.python-version`'s pin where the job's Setup uv step names none.
+
+    A Setup uv step naming no `python-version:` -- `dist`'s own shape --
+    takes whatever `.python-version` pins for every step of the job that
+    does not override that with a `--python` of its own, and `_named`
+    reads none of those: there is no token in this workflow for it to
+    find. Called on `_unconditioned` text, so a Setup uv step itself
+    conditioned out is never read as the job's own (issue #991).
+    """
+    setup = [step for step in _STEP.findall(block) if "Setup uv" in step]
+    if setup and not any("python-version" in step for step in setup):
+        return {_PIN}
+    return set()
+
+
 def _reached(block: str) -> Iterator[Path]:
     """Yield each local action a step of this job calls.
 
@@ -314,7 +336,7 @@ def _needed(jobs: dict[str, str], key: str) -> set[str]:
 
 
 def _found(jobs: dict[str, str], closure: set[str]) -> set[str]:
-    """Return every interpreter the jobs of `closure` name.
+    """Return every interpreter the jobs of `closure` name, the pin included.
 
     A job's own text is read only where `_runs_the_suite` finds nothing
     to doubt in it (issue #750), and a local composite action only
@@ -334,6 +356,11 @@ def _found(jobs: dict[str, str], closure: set[str]) -> set[str]:
     from `_gating` below so that a test can call this on job text of
     its own, the real gate taking neither branch on any job it waits on
     today.
+
+    `_implicit` is held to the same coarse instrument: a job whose Setup
+    uv step may not have run is not one whose implicit interpreter this
+    trusts either, so it is added beside `_named` under the same `if
+    runs` rather than unconditionally (issue #991).
     """
     found: set[str] = set()
     for key in closure:
@@ -345,6 +372,7 @@ def _found(jobs: dict[str, str], closure: set[str]) -> set[str]:
         block = _unconditioned(block)
         if runs:
             found.update(_named(block))
+            found.update(_implicit(block))
         for action in _reached(block):
             text = _UNCOMMENTED.sub("", action.read_text(encoding="utf-8"))
             found.update(_named(text))
@@ -737,6 +765,37 @@ def test_needed_takes_no_token_of_a_comment_on_the_needs_line(
     assert closure(annotated) == {"aggregate", "changes", "#", "the", "gate"}
 
 
+def test_found_reads_the_pin_where_setup_uv_names_no_interpreter() -> None:
+    """`dist`'s own shape: a Setup uv step naming no `python-version:`.
+
+    Read off the job block alone, its interpreter is nowhere in
+    `test.yml`, so a free-threaded pin would reach the gate through it
+    with nothing here to say so unless `.python-version`'s own pin
+    stands in (issue #991). The pinned job beside it is `coverage`'s own
+    shape, which names an interpreter explicitly and gets nothing added.
+    """
+    unpinned = (
+        "      - name: Setup uv\n"
+        "        uses: astral-sh/setup-uv@x\n"
+        "        with:\n"
+        "          enable-cache: true\n"
+        "      - name: Build the distribution files\n"
+        "        run: uv build\n"
+    )
+    pinned = unpinned.replace(
+        "          enable-cache: true\n",
+        '          enable-cache: true\n          python-version: "3.12"\n',
+    )
+    assert _found({"dist": unpinned}, {"dist"}) == {_PIN}
+    assert _found({"dist": pinned}, {"dist"}) == {"3.12"}
+    # the control: a job naming no Setup uv step at all -- no gate job
+    # here is shaped that way, `changes` being a call to a reusable
+    # workflow with no `steps:` of its own -- gets nothing added either,
+    # `_implicit` having no step to read as silent on a version
+    no_setup_uv = "      - name: A step\n        run: true\n"
+    assert _found({"other": no_setup_uv}, {"other"}) == set()
+
+
 def test_found_discounts_a_job_whose_only_pytest_step_may_not_run() -> None:
     """A job shaped like `free-threaded` names nothing `_found` trusts.
 
@@ -768,6 +827,30 @@ def test_found_discounts_a_job_whose_only_pytest_step_may_not_run() -> None:
     assert _found(jobs, {"maybe-skipped"}) == set()
     assert _found(jobs, {"ordinary"}) == {"3.14"}
     assert _found(jobs, {"maybe-skipped", "ordinary"}) == {"3.14"}
+
+
+def test_found_discounts_an_implicit_pin_the_same_way() -> None:
+    """A job whose only pytest step may not run trusts no implicit pin either.
+
+    `_implicit` is gated on the same `_runs_the_suite` flag as `_named`
+    (issue #991), and this is that job's own case for it -- the case
+    above is `_named`'s.
+    """
+    maybe_skipped = (
+        "      - name: Setup uv\n"
+        "        uses: astral-sh/setup-uv@x\n"
+        "        with:\n"
+        "          enable-cache: true\n"
+        "      - name: Run the suite\n"
+        "        if: steps.sync.outcome == 'success'\n"
+        "        run: >\n"
+        "          uv run --locked --no-default-groups --group test pytest\n"
+    )
+    assert _found({"maybe-skipped": maybe_skipped}, {"maybe-skipped"}) == set()
+    # the control: `_implicit` alone, called directly rather than through
+    # `_found`, does add the pin -- without it the assertion above could
+    # not tell a gate with teeth from `_implicit` finding nothing at all
+    assert _implicit(maybe_skipped) == {_PIN}
 
 
 def test_found_follows_a_local_action_regardless(
