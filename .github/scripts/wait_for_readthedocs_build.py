@@ -31,14 +31,14 @@ No trigger reaches the verdict this exists for. The job runs on a tag
 push alone, so a rehearsal has no tag to ask about and a dispatch
 pointing the wait at a branch would spend the whole deadline on a URL
 that answers 404 by construction -- which is why this takes no empty tag
-as nothing to wait for, the way `pypi-install.yml`'s own wait on the
-index does. `tests/wait_for_readthedocs_build_test.py` is therefore the
-only thing that drives the retry, the deadline and the error path: it
-substitutes the transport and the clock, and advances the clock past the
-deadline itself.
+as nothing to wait for, the way the release wait beside it does.
+`tests/wait_for_readthedocs_build_test.py` is therefore the only thing
+that drives the retry, the deadline and the error path: it substitutes
+the transport and the clock, and advances the clock past the deadline
+itself.
 
     uv run --no-project --python 3.14 \
-        .github/scripts/wait_for_readthedocs_build.py btclib-node "$TAG"
+        .github/scripts/wait_for_readthedocs_build.py "$SLUG" "$TAG"
 """
 
 from __future__ import annotations
@@ -56,11 +56,12 @@ SITE = "https://{project}.readthedocs.io/en/{tag}/"
 BUILDS = "https://app.readthedocs.org/projects/{project}/builds/"
 
 # the Cloudflare zone in front of read the docs bans the interpreter's own
-# default (`Python-urllib/3.14`) outright -- 403 against this project's
-# own v2026.8.27, which the same request carrying the agent below is
-# served 200 for -- so a request sent without one never reaches the
-# "build not finished yet" question this exists to ask
-USER_AGENT = "btclib-node-readthedocs-wait/1.0"
+# default (`Python-urllib/3.14`) outright -- a 403 on a tag this project
+# does serve, which the same request carrying the agent below is served
+# 200 for -- so a request sent without one never reaches the "build not
+# finished yet" question this exists to ask; `curl`'s default is not
+# banned, which is why the loop this replaces never needed one
+USER_AGENT = "{project}-readthedocs-wait/1.0"
 
 # what a build has to arrive within, in seconds, and the one number the
 # job's `timeout-minutes` is compared against
@@ -73,9 +74,9 @@ DEFAULT_INTERVAL = 30.0
 DEFAULT_REQUEST_TIMEOUT = 10.0
 
 
-def unserved(url: str, timeout: float) -> str | None:
+def unserved(url: str, timeout: float, user_agent: str) -> str | None:
     """Return what stood in the way, or `None` where the page is served."""
-    headers = {"User-Agent": USER_AGENT}
+    headers = {"User-Agent": user_agent}
     request = Request(url, method="GET", headers=headers)  # noqa: S310
     try:
         with urlopen(request, timeout=timeout) as answer:  # noqa: S310
@@ -102,11 +103,12 @@ def wait(
 ) -> int:
     """Poll the site for one tag, and say what the deadline decided."""
     url = SITE.format(project=project, tag=tag)
+    user_agent = USER_AGENT.format(project=project)
     started = time.monotonic()
     deadline = started + timeout
     last_seen = "no request has been made yet"
     while (left := deadline - time.monotonic()) > 0:
-        seen = unserved(url, min(request_timeout, left))
+        seen = unserved(url, min(request_timeout, left), user_agent)
         if seen is None:
             waited = time.monotonic() - started
             print(f"{url} is served after {waited:.0f} s")
