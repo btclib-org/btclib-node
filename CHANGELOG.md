@@ -1715,6 +1715,12 @@ keeps whichever shape it was written in.
   btclib's own now** (closes #869, btclib-org/btclib#1623):
   `insert`/`.remove` return `None`, and `digest` is a property.
 
+### `interpreters_test.py` reads `.python-version` where `dist` names no interpreter
+
+- **A gating job whose Setup uv step names no `python-version:` now
+  reads `.python-version`'s own pin too** (closes #991): the pin still
+  holds `3.14`, so `_gating()`'s own answer is unchanged today.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
