@@ -462,9 +462,9 @@ repos:
   # pins, the permissions block, persist-credentials: false -- is a
   # comment until this hook reads it. actionlint reports nothing on this
   # tree today, which is the state it is here to keep; zizmor reports
-  # nothing too, but only because the six self-repository findings below
-  # are declined rather than absent -- the ignore comments are what keep
-  # it green, not an audit that found nothing to flag
+  # nothing too, but only because the findings below are declined rather
+  # than absent -- the ignore comments are what keep it green, not an
+  # audit that found nothing to flag
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
     # v1.30.1's self-repository audit flags every reusable-workflow and
     # composite-action reference below that reads `uses: ./...`, and its own
@@ -478,16 +478,28 @@ repos:
     rev: v1.30.1
     hooks:
       - id: zizmor
-        # offline is what it does by default, said out loud: it warns
-        # about the implicit choice on every run, and the choice is the
-        # right one. Two audits can query GitHub for the actions a
-        # workflow pins -- impostor-commit and known-vulnerable-actions
-        # -- which would make the hook want a token and report
-        # differently on a machine that has none.
+        # --offline says out loud what already happens. zizmor reads a
+        # token from GH_TOKEN, GITHUB_TOKEN or ZIZMOR_GITHUB_TOKEN, and
+        # with none set it runs offline of its own accord and warns that
+        # it is doing so -- which is the state here and in CI alike,
+        # reusable-lint.yml, which lint.yml calls, putting none of the
+        # three in the hook's environment. What the flag
+        # buys is that the two audits which would query GitHub for the
+        # actions a workflow pins -- impostor-commit and
+        # known-vulnerable-actions -- stay unrun whether or not a token
+        # ever appears in the environment, so the hook reports the same
+        # findings everywhere rather than more on a machine that happens
+        # to be authenticated. --help calls it a restriction, and it is
+        # one; it is just not a restriction on today's behaviour.
+        # --persona=auditor widens the ruleset past the default
+        # `regular` persona, accepting a false positive in exchange for
+        # catching more; the ignore comments in the workflows below are
+        # what that widening costs here.
         # --no-progress is repeated rather than added: args replaces what
         # the hook declares, and that flag is the whole of what it
-        # declares, so passing --offline alone would drop it
-        args: [--offline, --no-progress]
+        # declares, so passing --offline and --persona=auditor alone
+        # would drop it
+        args: [--offline, --no-progress, --persona=auditor]
   # the width of a toml comment, which nothing else here measures:
   # taplo formats values and leaves comments alone by design. Section 3
   # of the organization standard names this hook as what holds

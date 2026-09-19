@@ -215,7 +215,7 @@ jobs:
     # contents: read does not carry
     permissions:
       contents: read
-      pull-requests: read
+      pull-requests: read # the callee's job needs it to list a pull request's files
     with:
       # the prose at the root, matched by the shape of its name rather
       # than by a list of the files that have it today: every markdown
@@ -607,6 +607,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # `join(needs.*.result, ',')` interpolates a closed set: each
+      # element is one of `success`, `failure`, `cancelled`, `skipped`
+      # or absent, all written by GitHub, so no fork-controlled string
+      # -- a branch name, a title, a body -- reaches this shell
+      #
       # the loop reads the whole needs context rather than naming each
       # job, so a job added to needs above is covered without touching
       # this. "skipped" is not a failure on its own: the coverage job
@@ -634,7 +639,7 @@ jobs:
       # `$results` make an empty first field, an empty last one, an
       # empty one between two others and an empty join a single pattern
       - name: Fail unless every job above succeeded or was legitimately skipped
-        run: |
+        run: | # zizmor: ignore[template-injection]
           results='${{ join(needs.*.result, ',') }}'
           echo "results: $results"
           case ",$results," in
