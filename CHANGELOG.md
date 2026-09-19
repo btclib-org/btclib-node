@@ -1727,6 +1727,12 @@ keeps whichever shape it was written in.
   `unserved` formats with the project, and the docstring points at the
   release wait beside it** (issue btclib-org/.github#1186).
 
+### `zizmor`'s hook takes the auditor persona, and clears `template-injection`
+
+- **Every `undocumented-permissions` grant is commented, `test.yml`'s
+  `template-injection` is declined, and the hook takes `--persona=auditor`**
+  (issue btclib-org/.github#1164, issue btclib-org/.github#1198).
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`

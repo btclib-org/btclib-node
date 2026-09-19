@@ -65,4 +65,4 @@ jobs:
     # is named here too, or the run fails before any job starts
     permissions:
       contents: read
-      attestations: read
+      attestations: read # what `gh attestation verify` reads to check the rebuilt sdist's digest

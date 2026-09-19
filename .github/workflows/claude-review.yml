@@ -107,10 +107,8 @@ jobs:
     uses: btclib-org/.github/.github/workflows/reusable-claude-review.yml@main
     permissions:
       contents: read
-      # what posting the review, or the answer to a mention, takes
-      pull-requests: write
-      # the OIDC token the action mints during its own startup
-      id-token: write
+      pull-requests: write # posting the review, and the reply to a mention
+      id-token: write # the OIDC token the action mints at its own startup
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
     with:
