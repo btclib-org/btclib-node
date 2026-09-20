@@ -1750,6 +1750,12 @@ keeps whichever shape it was written in.
   from `btclib`'s `fuzz.yml`** (issue btclib-org/.github#1196):
   ClusterFuzzLite's builder image pins 3.11.13 against this tree's `>=3.14`.
 
+### `check_changelog.py` becomes `.github`'s own copy, gaining a fifth check
+
+- **The script takes `.github`'s copy above the `## This repository in
+  particular` heading, and sets its own `_GRANDFATHERED_ENTRIES` below
+  it** (issue btclib-org/.github#1215).
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
