@@ -41,6 +41,16 @@ name: fuzz
 # rather than a file under fuzz/corpus/: tests/fuzz_corpus_test.py holds
 # every seed there to being a valid serialization, which is the opposite
 # of what an input a hardened parser now refuses can be.
+#
+# None of this converges into `btclib`'s own `fuzz.yml`, close enough in
+# length to read as one file ported into two repositories: two fuzzing
+# engines end to end, and the Python floor above is why, not a
+# preference between them. No workflow input turns one into the other.
+# What the two files share is not a job: `contents: read`, the same
+# concurrency group, the same downstream contract stated above, and the
+# same trigger shape stated below -- no `pull_request`, `schedule` and
+# `workflow_dispatch` alone. btclib-org/.github#1196 is where the two
+# were measured against each other and kept apart.
 
 on:
   schedule:
