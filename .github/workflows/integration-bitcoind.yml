@@ -32,14 +32,23 @@ name: integration-bitcoind
 # runner slow enough to miss bitcoind's own startup; that is a re-run,
 # and it is the price of the question.
 #
-# Which workflow a required check comes from lives outside this
-# repository, in main's protection, and names it as a literal string --
-# this job's own `name:` below, not this file's. That change has been
-# made: `Regtest against Bitcoin Core` is a required check on main, and
-# REPOSITORY.md records it along with the PATCH that set it. Renaming
-# the job therefore leaves a required check nothing produces, and a
-# merge waiting on it forever; the rule outside the tree is the thing to
-# change first.
+# The checkout, the node install, the test run and the report upload
+# move into btclib-org/.github's reusable-integration-bitcoind.yml,
+# called at @main so a fix there reaches this tree in one landing
+# (section 10 of its README.md). `btclib` calls the same file. What
+# stays here is the trigger, the schedule minute, the concurrency group,
+# and this tree's own pinned release, digest and environment-variable
+# names. `exclude-classname` is left unset: that input excludes
+# HWI-classified testcases before judging skips, for `btclib`'s own
+# `tests/integration`, which mixes them in; this tree's has none.
+#
+# A reusable workflow changes the check context a required check reports
+# under -- GitHub composes it from the calling job's own id and the
+# called job's `name:`, joined by " / " -- so the required check on main
+# that named this job's own `name:` receives no run once this call
+# lands. The called workflow's own header has why; updating the setting
+# and REPOSITORY.md's record of it is this repository's own to do,
+# outside this pull request and before it is relied on.
 #
 # A schedule too, like every other unattended question here, and it is
 # not about the tree: the job below asks the same node the same question
@@ -101,28 +110,15 @@ concurrency:
 
 jobs:
   regtest:
-    name: Regtest against Bitcoin Core
-    # a draft pull request is work in progress and spends no runner
-    # here either, the same condition test.yml and lint.yml carry; a
-    # closed pull request spends none either -- the trigger above takes
-    # the closed event only to supersede a run this ref's group is
-    # still holding
-    if: ${{ !github.event.pull_request.draft && github.event.action != 'closed' }}
-    runs-on: ubuntu-latest
-    # the whole flow is seconds, the download of bitcoind included; this
-    # bounds the download and the failure cases rather than the work
-    timeout-minutes: 20
-    steps:
-      # every action is pinned to a commit SHA, the tag in the comment: a
-      # tag, let alone a branch, is a name its owner can move
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Setup uv
-        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
-        with:
-          enable-cache: true
+    uses: btclib-org/.github/.github/workflows/reusable-integration-bitcoind.yml@main
+    # permissions do not inherit through a call: the called workflow's
+    # own job asks for contents: read alone, which the workflow-level
+    # block above already grants, and this is what caps it rather than
+    # trims it -- granting less than the callee asks is a startup
+    # failure, not a quieter run
+    permissions:
+      contents: read
+    with:
       # the release under test, and the sha256 of its linux tarball as
       # four independent guix builders attested it in
       # bitcoin-core/guix.sigs. Pinned rather than resolved to "latest":
@@ -132,53 +128,11 @@ jobs:
       # it is a commit, with the new sha read from the same place --
       # `btclib-org/btclib` and `btclib-org/bitcoin-core-rpc` pin the
       # identical release and digest for their own copies of this job
-      - name: Install bitcoind
-        id: bitcoind
-        uses: ./.github/actions/install-bitcoind # zizmor: ignore[self-repository]
-        with:
-          version: "31.1"
-          sha256: b80d9c3e04da78fb6f0569685673418cf686fadba9042d926d13fb87ff503f9e
-      # BTCLIB_NODE_INTEGRATION and BTCLIB_NODE_BITCOIND are
-      # tests/integration/conftest.py's own two switches; the junit
-      # report is for the step below, the run itself being read from the
-      # log
-      - name: Run the integration tests
-        env:
-          BTCLIB_NODE_INTEGRATION: "1"
-          BTCLIB_NODE_BITCOIND: ${{ steps.bitcoind.outputs.path }}
-        run: |
-          uv run --locked --no-default-groups --group test \
-            pytest tests/integration --junitxml=integration.xml
-      # a skip is not a failure, and that is exactly why this step
-      # exists: pytest exits 0 for a module that skipped itself, so a job
-      # whose fixture stopped finding the node would stay green while
-      # asking Core nothing -- the failure mode of an unattended run that
-      # looks like good news, section 7 of the organization standard's
-      # own reason for asking for this step
-      - name: Fail if the integration tests did not run
-        run: |
-          uv run --locked --no-default-groups --group test python - <<'PY'
-          import sys
-          import xml.etree.ElementTree as ET
-
-          cases = list(ET.parse("integration.xml").getroot().iter("testcase"))
-          skipped = [one for one in cases if one.find("skipped") is not None]
-          for one in skipped:
-              reason = one.find("skipped").get("message", "")
-              print(f"::error::{one.get('name')} skipped: {reason}")
-          if not cases or skipped:
-              print("::error::the integration tests skipped rather than ran")
-              sys.exit(1)
-          print("every integration test ran against the node")
-          PY
-      # always(), because a failure is what somebody opens this job for,
-      # and the report is what says whether bitcoind refused the sync or
-      # the test never reached it
-      - name: Upload the report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: integration-report
-          path: integration.xml
-          if-no-files-found: error
-          retention-days: 90
+      bitcoind-version: "31.1"
+      bitcoind-sha256: b80d9c3e04da78fb6f0569685673418cf686fadba9042d926d13fb87ff503f9e
+      # tests/integration/conftest.py's own two switches
+      integration-env-var: BTCLIB_NODE_INTEGRATION
+      bitcoind-path-env-var: BTCLIB_NODE_BITCOIND
+      # exclude-classname left at its default, the empty string: this
+      # tree's tests/integration carries no HWI-classified cases, so
+      # nothing here is excluded before the called workflow judges skips

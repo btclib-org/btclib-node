@@ -1733,6 +1733,12 @@ keeps whichever shape it was written in.
   `template-injection` is declined, and the hook takes `--persona=auditor`**
   (issue btclib-org/.github#1164, issue btclib-org/.github#1198).
 
+### `integration-bitcoind.yml` calls `btclib-org/.github`'s reusable workflow
+
+- **The regtest job becomes a call to `btclib-org/.github`'s
+  `reusable-integration-bitcoind.yml`** (issue btclib-org/.github#1196):
+  `exclude-classname` is left unset, this tree filtering no testcases.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
