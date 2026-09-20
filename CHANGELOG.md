@@ -1739,6 +1739,11 @@ keeps whichever shape it was written in.
   `reusable-integration-bitcoind.yml`** (issue btclib-org/.github#1196):
   `exclude-classname` is left unset, this tree filtering no testcases.
 
+### `dependabot.yml`'s `uv` group is named `dev-tooling`
+
+- **The group key is `dev-tooling`, matching `btclib-org/.github`'s
+  README.md section 11** (issue btclib-org/.github#1156).
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`

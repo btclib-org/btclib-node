@@ -63,7 +63,7 @@ updates:
       interval: weekly
       day: thursday
     groups:
-      dependencies:
+      dev-tooling:
         patterns: ["*"]
     cooldown:
       default-days: 7
