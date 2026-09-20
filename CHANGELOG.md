@@ -1756,6 +1756,12 @@ keeps whichever shape it was written in.
   particular` heading, and sets its own `_GRANDFATHERED_ENTRIES` below
   it** (issue btclib-org/.github#1215).
 
+### The `check-changelog` hook's comment names no count
+
+- **The comment above `check-changelog` pointed at `check_changelog.py`'s
+  docstring for "the three checks"; the script has grown past that count,
+  dropped rather than corrected** (issue btclib-org/.github#1225).
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
