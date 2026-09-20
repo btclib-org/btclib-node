@@ -1744,6 +1744,12 @@ keeps whichever shape it was written in.
 - **The group key is `dev-tooling`, matching `btclib-org/.github`'s
   README.md section 11** (issue btclib-org/.github#1156).
 
+### `fuzz.yml`'s header says why it does not call `btclib`'s
+
+- **The header states the Python-version constraint that keeps it apart
+  from `btclib`'s `fuzz.yml`** (issue btclib-org/.github#1196):
+  ClusterFuzzLite's builder image pins 3.11.13 against this tree's `>=3.14`.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
