@@ -235,7 +235,7 @@ repos:
         pass_filenames: false
         always_run: true
   - repo: https://github.com/DavidAnson/markdownlint-cli2
-    rev: v0.23.2
+    rev: v0.23.3
     hooks:
       - id: markdownlint-cli2
         name: markdownlint-cli2 (in place fixes)
@@ -375,7 +375,7 @@ repos:
   # not read: yaml and the jsonc that carries a comment. Before
   # yamllint below, so the linter judges the formatted file
   - repo: https://github.com/rbubley/mirrors-prettier
-    rev: v3.9.6
+    rev: v3.9.8
     hooks:
       - id: prettier
         name: prettier (yaml and jsonc, in place fixes)
@@ -522,7 +522,7 @@ repos:
   # checked only staged files unless given --enforce-all, so under
   # "pre-commit run --all-files" it checked nothing
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.6
+    rev: v0.16.8
     hooks:
       - id: ruff-check
         name: ruff check (in place fixes)
@@ -653,7 +653,7 @@ repos:
   # the choice between its candidate answers is still open, this being a
   # hook every tree of it runs rather than anything of this one's.
   - repo: https://github.com/regebro/pyroma
-    rev: "5.0.1"
+    rev: "5.1b1"
     hooks:
       - id: pyroma
         # pyroma reads the metadata through `build` too, asking first for
