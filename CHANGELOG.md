@@ -1780,6 +1780,12 @@ keeps whichever shape it was written in.
   dispatch table**, reusing the store and manager calls the existing handlers
   already make (closes #1006).
 
+### `block_filters_test.py`'s `client` no longer builds a real worker pool
+
+- **The module's `peers` fixture seeds `client` with the chain `server`
+  already holds** (closes #1008): `download_manager` finds no block
+  left to request, so the pool a sync would build never happens.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
