@@ -37,6 +37,50 @@ name: os-macos
 # is a much smaller question asked of the index rather than of this
 # tree.
 #
+# `macos-26-intel` carried that argument onto a Darwin x86-64 wheel
+# (`161d63e4`, PR #787) and is gone (btclib-org/btclib-node#1016). It
+# never produced a green run: every scheduled run since it was added
+# has failed, and the last green run of this workflow is the last one
+# that predates the cell -- so the wheel it was meant to verify was
+# never once verified. It also ran the suite 3.5x slower than
+# `macos-latest` on the one commit both cells completed on --
+# `636.00s` against `180.43s`, run `35208517796` -- killing
+# `utxo_index_test.py::test_rev_patch` and `test_long_init` on the 300s
+# bound, both at `300.0s` there against `93.57s` and `41.36s` on
+# `macos-latest`. Its true tails were never measured, so no bound was
+# ever calibrated against it: the two dispatches aimed at measuring
+# them (`35617217298`, `35619713825`) both ended `cancelled` with zero
+# steps, GitHub's own annotation reading "The job was not acquired by
+# Runner of type hosted even after multiple attempts". That pair is a
+# same-day capacity blip and not a property of the image, which is
+# worth saying because the opposite is the easy thing to conclude from
+# it: 7 of the 9 runs since the cell entered the matrix did acquire a
+# host, three of them earlier that same day, and `pypi-install.yml`'s
+# own `macos-26-intel` cell ran green on 2026-09-16. The cell is
+# removed for the three reasons above and not for that one.
+# A permanently red scheduled workflow cannot
+# report anything: this file's whole value is telling somebody that
+# macOS broke, and a standing failure makes a new one indistinguishable
+# from the old one.
+#
+# The smaller question the cell was added for -- does the published
+# wheel install and open the store on macOS -- is still asked, by
+# `pypi-install.yml`'s own macOS cells, `macos-26-intel` included, and
+# is answered green there (`35082626879`). So what this removal gives
+# up is narrower than x86-64 coverage: it is this suite's own paths
+# against that wheel, not whether the wheel installs at all.
+#
+# Bringing the cell back wants a run that actually acquires a host,
+# bounds set with headroom over the tails that run measures, and a
+# green run once those bounds are in place. None of the three exists
+# yet.
+#
+# This does not answer btclib-org/btclib-node#1020:
+# `test_connection_to_ourselves` waited 600.03s on `macos-latest` --
+# the cell that stays -- and under 6.50s on the same commit twenty
+# minutes later. That is bimodal, a race rather than slowness, and no
+# bound and no cell change reaches it.
+#
 # What this runs is the gate's own job on another image: the same
 # interpreter, the same lock, without the coverage floor -- test.yml's
 # own `ubuntu-latest` cell is where that is measured and gated, on the
@@ -44,8 +88,7 @@ name: os-macos
 # enough for it. `--no-cov` here is this job's own argument rather
 # than a second copy of that one: section 8 names it beside
 # `COVERAGE_FILE` as an argument a job may carry on its own account.
-# What varies here is the platform, and between the two cells below the
-# architecture.
+# What varies here is the platform.
 #
 # It gates no commit and no merge. A macOS regression sits on main for at
 # most a week, and that is the trade btclib-org/.github#85 makes for
@@ -109,5 +152,5 @@ jobs:
     # could default (btclib-org/.github#35)
     uses: btclib-org/.github/.github/workflows/reusable-os-suite.yml@main
     with:
-      runners: '["macos-26-intel", "macos-latest"]'
+      runners: '["macos-latest"]'
       python-versions: '["3.14"]'
