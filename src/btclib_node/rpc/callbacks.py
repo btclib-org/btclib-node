@@ -12,7 +12,6 @@ every entry here: this table is served over a listener that
 authenticates nothing.
 """
 
-from importlib.metadata import version as _installed_version
 from typing import TYPE_CHECKING, Any, cast
 
 from bitcoin_core_rpc import RPCErrorCode, chain_from_network
@@ -24,7 +23,7 @@ from btclib.tx import Tx
 
 from btclib_node.chainstate.block_index import block_time
 from btclib_node.config import split_host_port
-from btclib_node.constants import MIN_BLOCKS_TO_KEEP, P2pConnStatus
+from btclib_node.constants import MIN_BLOCKS_TO_KEEP, USER_AGENT, P2pConnStatus
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.main import (
     parent_lookup,
@@ -66,13 +65,6 @@ __all__ = [
     "submit_block",
     "test_mempool_accept",
 ]
-
-# This node's own user agent, byte for byte what `p2p.connection`'s
-# `_USER_AGENT` sends in every `version` message -- computed
-# independently here rather than imported, because that name is private
-# to `p2p.connection` and this module reaches into no other module's
-# underscore-prefixed names. `get_network_info` below is the one reader.
-_SUBVERSION = f"/btclib:{_installed_version('btclib-node')}/"
 
 
 def get_best_block_hash(node: Node, conn: RpcConnection, _: list[Any]) -> bytes:
@@ -824,12 +816,14 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     `subversion` is what `test_framework.py`'s own `connect_nodes`
     (`:568-594`, same sha) reads off each side before wiring them
     together -- `get_peer_info` above answers the matching `subver` a
-    peer sees on the wire. `protocolversion` is `PROTOCOL_VERSION`
-    (`btclib.p2p.limits`), the same constant every `version` this node
-    sends and every `getheaders` it builds already carries.
+    peer sees on the wire, both reading `constants.USER_AGENT`
+    (btclib-org/btclib-node#1009) rather than each computing their own.
+    `protocolversion` is `PROTOCOL_VERSION` (`btclib.p2p.limits`), the
+    same constant every `version` this node sends and every
+    `getheaders` it builds already carries.
     """
     return {
-        "subversion": _SUBVERSION,
+        "subversion": USER_AGENT,
         "protocolversion": PROTOCOL_VERSION,
     }
 
@@ -858,19 +852,33 @@ def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
 
     The module-level comment above argues the three commands; this
     function is Core's own argument parsing and its two literal error
-    messages (`rpc/net.cpp:365-377`, same sha). The empty-`node`
-    refusal is master's own fix rather than this tree's own pinned
-    `bitcoind`'s: v31.1, `integration-bitcoind.yml`'s own pin, answers
-    an empty `node` with a silent, do-nothing success instead --
-    measured directly against that release, `90ce21e21d` ("rpc: reject
-    empty node argument in addnode") landing on master after v31.1 was
-    cut. Matching master here rather than the release is a choice and
-    not an oversight -- master's own message names why: "Such a node
-    would never resolve, but would be retried indefinitely" -- and
-    #1010 is where that choice is left for a fresh reading rather
-    than settled by this docstring alone. `v2transport` is read and
-    type-checked, matching Core's own optional third argument, and
-    otherwise unused: BIP324 is not a transport this node speaks yet.
+    messages (`rpc/net.cpp:365-377`, at bitcoin/bitcoin@bb529657). The
+    empty-`node` refusal is master's own fix
+    (`rpc: reject empty node argument in addnode`,
+    at bitcoin/bitcoin@90ce21e21d) rather than this tree's own pinned
+    `bitcoind`'s: at bitcoin/bitcoin@9be056a8a7 -- v31.1, the release
+    `integration-bitcoind.yml` pins, answers an empty `node` with a
+    silent, do-nothing success instead, measured directly against a
+    real v31.1.0 (issue #1010). `90ce21e21d` post-dates v31.1's own tag
+    commit and is confirmed on `bb529657`'s own ancestry via
+    `git merge-base --is-ancestor`.
+
+    Matching master here rather than the release this tree tests
+    against is a decision, not an oversight: `CLAUDE.md`'s own
+    *Following Bitcoin Core* names matching Core's behaviour as the
+    default, and reserves a release-pinned citation for a claim about
+    the behaviour of the bitcoind this tree is tested against rather
+    than for what this node implements. Master's own code comment names
+    why the fix exists -- "Such a node would never resolve, but would
+    be retried indefinitely" -- and nothing under `tests/integration/`
+    drives `addnode ""`, so this tree's own integration suite, run
+    against v31.1, never exercises the one call shape the two
+    disagree on. Matching the release instead would mean knowingly
+    carrying a defect Core itself already fixed, only to undo that the
+    moment the pin advances past it -- issue #1010 is closed on this
+    reasoning. `v2transport` is read and type-checked, matching Core's
+    own optional third argument, and otherwise unused: BIP324 is not a
+    transport this node speaks yet.
     """
     if len(params) < 2:  # noqa: PLR2004
         raise RpcError(

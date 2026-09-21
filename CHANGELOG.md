@@ -1792,6 +1792,12 @@ keeps whichever shape it was written in.
   the four cache names** (issue btclib-org/.github#1070):
   `tests/sdist_dotted_names_test.py` gates the tracked side.
 
+### `p2p.connection` and `rpc.callbacks` read one `constants.USER_AGENT`
+
+- **One `constants.USER_AGENT` backs `_USER_AGENT` and `subversion`
+  alike** (closes #1009).
+- **`addnode`'s empty-address refusal stays master's** (closes #1010).
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`

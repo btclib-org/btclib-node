@@ -20,7 +20,6 @@ import contextlib
 import secrets
 import threading
 import time
-from importlib.metadata import version
 from io import BytesIO
 from typing import TYPE_CHECKING, cast, override
 
@@ -33,7 +32,7 @@ from btclib.p2p.limits import MAX_PROTOCOL_MESSAGE_LENGTH, PROTOCOL_VERSION
 from btclib.p2p.message import Message
 
 from btclib_node.chains import RegTest
-from btclib_node.constants import P2pConnStatus
+from btclib_node.constants import USER_AGENT, P2pConnStatus
 from btclib_node.exceptions import WrongNetworkMagicError
 from btclib_node.p2p.address import ip_and_port
 from btclib_node.p2p.callbacks import (
@@ -278,26 +277,11 @@ _LENGTH_SIZE = 4
 # (`src/clientversion.cpp:65-70`, at bitcoin/bitcoin@204256c73f) and sends
 # as `/Satoshi:29.0.0/` -- the one thing this node says about itself to
 # every peer it meets, and what a crawler reporting the composition of
-# the network parses.
-#
-# The version is read from the installed distribution rather than
-# written here. `RELEASING.md`'s *Which version string is which*
-# already tracks four spellings of one version, and a fifth that only a
-# peer ever sees is the one nothing in this tree would catch drifting:
-# no gate reads the wire. So this follows the cycle honestly -- a
-# checkout of `main` announces the month it is open on, and what pip
-# installs announces its release day.
-#
-# The name is the project's own, lowercase, and not the distribution's
-# `btclib-node`: it is the organization's name on the network, where
-# btclib is the library this node is a node over.
-#
-# A tree that was never installed has no metadata to read, and this
-# raises there rather than falling back on a placeholder: a user agent
-# is a claim, and one that says `unknown` where the version belongs is
-# worse than a node that says why it will not start.
-# btclib-org/btclib-node#580
-_USER_AGENT = f"/btclib:{version('btclib-node')}/".encode()
+# the network parses. `constants.USER_AGENT` is where this string is
+# computed and argued, once, for this module's wire bytes and
+# `rpc.callbacks`'s own `getnetworkinfo` answer alike
+# (btclib-org/btclib-node#1009).
+_USER_AGENT = USER_AGENT.encode()
 
 
 def frame_message(stream: BytesIO, magic: bytes) -> Message:
