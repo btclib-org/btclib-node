@@ -39,6 +39,7 @@ from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import (
     MIN_BLOCKS_TO_KEEP,
     MIN_PRUNE_TARGET_MIB,
+    USER_AGENT,
     P2pConnStatus,
 )
 from btclib_node.exceptions import MissingPrevoutError, StoreCorruptionError
@@ -2285,7 +2286,7 @@ def test_get_network_info_answers_this_node_s_own_subversion_and_protocol() -> N
     constant rather than as decoration.
     """
     result = get_network_info(a_node(), _CONN, [])
-    assert result == {"subversion": cb._SUBVERSION, "protocolversion": PROTOCOL_VERSION}
+    assert result == {"subversion": USER_AGENT, "protocolversion": PROTOCOL_VERSION}
 
 
 def test_addnode_onetry_dials_the_given_address_once() -> None:

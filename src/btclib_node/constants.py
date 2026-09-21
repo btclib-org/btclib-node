@@ -14,11 +14,13 @@ than a node's knob (btclib-org/btclib#1580), and `PROTOCOL_VERSION` is
 
 import enum
 from datetime import timedelta
+from importlib.metadata import version
 
 __all__ = [
     "MAX_TIP_AGE",
     "MIN_BLOCKS_TO_KEEP",
     "MIN_PRUNE_TARGET_MIB",
+    "USER_AGENT",
     "NodeStatus",
     "P2pConnStatus",
 ]
@@ -52,6 +54,35 @@ MIN_BLOCKS_TO_KEEP = 288
 # exactly 1 is manual pruning instead of a MiB target at all, the same
 # special case `cli.py`'s own `-prune` parsing carries.
 MIN_PRUNE_TARGET_MIB = 550
+
+# BIP14's `/Name:Version/`, the shape Core builds in FormatSubVersion
+# (`src/clientversion.cpp:65-70`, at bitcoin/bitcoin@204256c73f) and sends
+# as `/Satoshi:29.0.0/` -- the one thing this node says about itself to
+# every peer it meets, and what a crawler reporting the composition of
+# the network parses. `p2p.connection`'s own `_USER_AGENT` (the wire
+# bytes of a `version` message) and `rpc.callbacks.get_network_info`'s
+# `subversion` answer both read this one string rather than each
+# computing it, so the two can never drift the way they once did
+# (btclib-org/btclib-node#1009).
+#
+# The version is read from the installed distribution rather than
+# written here. `RELEASING.md`'s *Which version string is which*
+# already tracks four spellings of one version, and a fifth that only a
+# peer ever sees is the one nothing in this tree would catch drifting:
+# no gate reads the wire. So this follows the cycle honestly -- a
+# checkout of `main` announces the month it is open on, and what pip
+# installs announces its release day.
+#
+# The name is the project's own, lowercase, and not the distribution's
+# `btclib-node`: it is the organization's name on the network, where
+# btclib is the library this node is a node over.
+#
+# A tree that was never installed has no metadata to read, and this
+# raises there rather than falling back on a placeholder: a user agent
+# is a claim, and one that says `unknown` where the version belongs is
+# worse than a node that says why it will not start.
+# btclib-org/btclib-node#580
+USER_AGENT = f"/btclib:{version('btclib-node')}/"
 
 
 # The service bits are `btclib.p2p.address.ServiceFlags`, not a table
