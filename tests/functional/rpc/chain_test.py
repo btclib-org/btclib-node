@@ -4,12 +4,12 @@
 
 """The chain-reading RPC methods, over a real node: hashes, headers, count.
 
-`getbestblockhash`, `getblockhash`, `getblockcount`, `getblockheader`
-and `getblockchaininfo`, each driven against a node that has actually
-validated and connected the chain it is asked about -- except for
-`getblockchaininfo`'s own `headers` member, which the header-sync test
-below drives against a node given headers and no blocks at all, that
-gap being the member's whole reason for existing.
+`getbestblockhash`, `getblockhash`, `getblockcount`, `getblockheader`,
+`getblockchaininfo`, `getblock` and `submitblock`, each driven against
+a node that has actually validated and connected the chain it is asked
+about -- except for `getblockchaininfo`'s own `headers` member, which
+the header-sync test below drives against a node given headers and no
+blocks at all, that gap being the member's whole reason for existing.
 """
 
 from datetime import UTC, datetime
@@ -303,3 +303,64 @@ def test_block_header_of_a_block_the_node_has_not_validated(tmp_path: Path) -> N
     assert "nextblockhash" not in middle
 
     node.stop()
+
+
+def test_get_block_answers_the_hex_a_peer_is_sent_on_the_wire(rpc_node: Node) -> None:
+    """getblock, live, verbosity 0, answers the block's own serialized bytes."""
+    node = rpc_node
+
+    wait_until_listening(node.rpc_manager)
+
+    chain = generate_random_chain(3, RegTest().genesis.hash)
+    block_index = node.chainstate.block_index
+    block_index.add_headers([block.header for block in chain])
+    node.status = NodeStatus.HeaderSynced
+    for block in chain:
+        node.block_db.add_block(block)
+        block_index.set_downloaded(block.header.hash)
+    wait_until(lambda: len(block_index.active_chain) == 3 + 1)
+
+    _, body = rpc_client(node).call_raw(
+        "getblock", [chain[1].header.hash.hex(), 0], jsonrpc="1.0", request_timeout=2
+    )
+
+    assert body["result"] == chain[1].serialize(check_validity=False).hex()
+
+
+def test_submit_block_extends_the_node_s_own_active_chain(rpc_node: Node) -> None:
+    """submitblock, live, is what tf2's own client-side mining hands over.
+
+    tf2 mines a block itself and hands it to this node through
+    `submitblock` rather than asking the node to mine it (issue
+    btclib-org/btclib-node#1006's own *What this does not decide*): this
+    is that hand-over, end to end, through a real socket and this
+    node's own background loop rather than a direct call.
+    """
+    node = rpc_node
+
+    wait_until_listening(node.rpc_manager)
+
+    chain = generate_random_chain(1, RegTest().genesis.hash)
+    node.status = NodeStatus.HeaderSynced
+    new_block = build_block(
+        chain[0].header.hash, [generate_coinbase(height=2)], height=1
+    )
+
+    _, body = rpc_client(node).call_raw(
+        "submitblock",
+        [chain[0].serialize(check_validity=False).hex()],
+        jsonrpc="1.0",
+        request_timeout=2,
+    )
+    assert body["result"] is None
+
+    _, body = rpc_client(node).call_raw(
+        "submitblock",
+        [new_block.serialize(check_validity=False).hex()],
+        jsonrpc="1.0",
+        request_timeout=2,
+    )
+    assert body["result"] is None
+
+    wait_until(lambda: len(node.chainstate.block_index.active_chain) == 2 + 1)
+    assert node.chainstate.block_index.active_chain[-1] == new_block.header.hash

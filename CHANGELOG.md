@@ -1774,6 +1774,12 @@ keeps whichever shape it was written in.
   started it** (closes #1002): `_pytest.threadexception` still
   attributes the failure to whichever test is running when it drains it.
 
+### `rpc/callbacks.py` gains `getblock`, `submitblock`, `addnode` and `getnetworkinfo`
+
+- **`getblock`, `submitblock`, `addnode` and `getnetworkinfo` join the
+  dispatch table**, reusing the store and manager calls the existing handlers
+  already make (closes #1006).
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
