@@ -5,8 +5,9 @@
 """Suite-wide pytest hooks and node fixtures used across the tests.
 
 The hooks keep the coverage floor from firing on a run that could not
-have crossed it; the fixtures start and stop real `Node` instances,
-on their own ports, for the functional and unit tests that need one.
+have crossed it, and name which test started a thread that later raises
+off it; the fixtures start and stop real `Node` instances, on their own
+ports, for the functional and unit tests that need one.
 
 Beside the floor is a guard on its reaching the run at all. coverage
 looks for its configuration in the directory the process started in, so
@@ -15,9 +16,29 @@ a run started from `tests/` finds no `fail_under`, no `source` and no
 point such a run at its configuration or to make it say it is ungated,
 and this file is the second of the two: such a run is refused
 (btclib-org/.github#443).
+
+A thread that outlives the test that started it is the other guard here.
+`_pytest.threadexception` drains `threading.excepthook` at the boundary
+of each test's own setup, call and teardown, so an exception raised on a
+thread nobody joined lands on whichever test is at one of those
+boundaries when the drain runs -- not on the test that started the
+thread. `thread_exception_origin_note` and the hook installed below by
+`pytest_configure` do not stop that from happening; they say, in the
+report pytest already prints, which test actually started the thread,
+so a reader is not sent to look for a defect in the one the exception
+merely surfaced against (btclib-org/btclib-node#1002).
 """
 
 import os
+import threading
+import weakref
+
+# not under TYPE_CHECKING (TC003's own suggestion): pluggy inspects a
+# hookimpl's signature with annotations forced to evaluate, ahead of
+# ever running it, and `pytest_runtest_protocol` below is one -- a name
+# only `TYPE_CHECKING` had put in scope raised `NameError` there, at
+# collection, before any test ran.
+from collections.abc import Iterator  # noqa: TC003
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -31,7 +52,127 @@ from btclib_node.constants import NodeStatus
 from tests import get_random_port
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable
+
+
+# Which test's own execution a thread was started during. Keyed on the
+# thread itself, weakly: a thread this suite joins and drops is not kept
+# alive by this dict having once recorded it. Read by
+# `thread_exception_origin_note` below, written by
+# `_record_thread_origin`.
+_THREAD_ORIGIN: weakref.WeakKeyDictionary[threading.Thread, str] = (
+    weakref.WeakKeyDictionary()
+)
+
+# The nodeid of whichever test is inside its own setup, call or teardown
+# right now -- a one-element list rather than a bare module global so
+# `_record_thread_origin` closes over the box and sees every later
+# write, not the value the box held when it was defined. The sentinel
+# names a thread started before any test's own protocol began (an
+# import, collection) as what it is, rather than as some particular
+# test's.
+_CURRENT_TEST_NODEID: list[str] = ["<no test running yet>"]
+
+_real_thread_start = threading.Thread.start
+
+
+def _record_thread_origin(
+    self: threading.Thread, *args: object, **kwargs: object
+) -> None:
+    """Start `self` as `threading.Thread.start` always has, and note the caller.
+
+    Patched onto the class itself rather than called at each of this
+    suite's own thread-building call sites: `Node` and `P2pManager` are
+    both `threading.Thread` subclasses, `warm_worker_pool` builds a
+    `threading.Thread` of its own, and a handful of unit tests build a
+    bare one directly (`tests/unit/db_test.py` among them) -- every one
+    of those reaches `start` and none of them would otherwise reach a
+    single recording point.
+    """
+    _THREAD_ORIGIN[self] = _CURRENT_TEST_NODEID[0]
+    _real_thread_start(self, *args, **kwargs)
+
+
+threading.Thread.start = _record_thread_origin  # type: ignore[method-assign]
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item: pytest.Item) -> Iterator[None]:
+    """Point `_CURRENT_TEST_NODEID` at `item.nodeid` before anything else runs.
+
+    Not an autouse fixture, which this carried until a review round of
+    btclib-org/btclib-node#1002 found the gap: a fixture's own scope
+    decides when pytest builds it relative to the other fixtures the
+    same test needs, and a module-, class- or session-scoped fixture a
+    test depends on is always built ahead of a function-scoped one,
+    autouse or not -- so a thread a higher-scoped fixture starts, on the
+    first test of its own scope, starts before that function-scoped
+    fixture has run at all, and got recorded against whichever earlier,
+    unrelated test's own copy of it had run last. Measured directly
+    against a module fixture starting a thread on the first test of a
+    second module: the origin came back naming the previous module's
+    last test.
+
+    A hookwrapper on `pytest_runtest_protocol` does not have this gap:
+    its own code ahead of `yield` runs before every non-wrapper
+    implementation of the same hook, which is where `_pytest.runner`
+    does the actual fixture setup of every scope, not only the
+    function-scoped one -- so this box is current before the first
+    fixture this test needs, of any scope, is even built.
+    """
+    _CURRENT_TEST_NODEID[0] = item.nodeid
+    yield
+
+
+def thread_exception_origin_note(args: threading.ExceptHookArgs) -> str | None:
+    """Return the note owed on `args`, or `None` where none is.
+
+    `None` covers three cases: `args.thread` is `None`, which
+    `threading.excepthook` documents for a thread it could not
+    determine; the thread is not in `_THREAD_ORIGIN` at all, having
+    started before `_record_thread_origin` was patched in or through
+    something other than `threading.Thread.start`; and the thread's
+    recorded origin is the test running right now, in which case
+    whatever pytest already attributes this to is correct and a note
+    would say nothing new.
+    """
+    if args.thread is None:
+        return None
+    origin = _THREAD_ORIGIN.get(args.thread)
+    if origin is None or origin == _CURRENT_TEST_NODEID[0]:
+        return None
+    return (
+        f"this thread was started during {origin}, not during the test "
+        "pytest reports this against -- that test is only the one in "
+        "progress when the exception surfaced "
+        "(btclib-org/btclib-node#1002)"
+    )
+
+
+def install_thread_exception_origin_hook() -> None:
+    """Wrap `threading.excepthook` so a leaked thread's own note says who.
+
+    Reads whatever `threading.excepthook` already is at the moment this
+    runs and wraps it rather than replacing it: `pytest_configure`
+    below installs this with `trylast=True`, so
+    `_pytest.threadexception`'s own `pytest_configure` -- unmarked, and
+    so run first -- has already replaced the default hook with the one
+    that queues an exception for `PytestUnhandledThreadExceptionWarning`
+    to be raised from later. `add_note` (PEP 678) lands the note in
+    `args.exc_value` itself, which is what that later warning's own
+    `traceback.format_exception` call formats -- so the note reaches the
+    same report pytest already prints, rather than a second one nothing
+    reads.
+    """
+    prev_hook = threading.excepthook
+
+    def hook(args: threading.ExceptHookArgs) -> None:
+        note = thread_exception_origin_note(args)
+        if note is not None and args.exc_value is not None:
+            args.exc_value.add_note(note)
+        prev_hook(args)
+
+    threading.excepthook = hook
 
 
 # The property layer's profiles, registered once here rather than
@@ -232,6 +373,7 @@ def configuration_went_unread(
     return cov_config.config_file is None and inipath is not None
 
 
+@pytest.hookimpl(trylast=True)
 def pytest_configure(config: pytest.Config) -> None:
     """Refuse a run that cannot see its floor; relax one that cannot clear it.
 
@@ -240,6 +382,11 @@ def pytest_configure(config: pytest.Config) -> None:
     traceback and exits `4` for -- an exit of its own, so the code says
     the run measured nothing rather than that something in the tree
     failed.
+
+    `trylast=True` is for `install_thread_exception_origin_hook` below,
+    not for the floor logic above: it needs `_pytest.threadexception`'s
+    own `pytest_configure` -- unmarked, so ordinarily first -- to have
+    already run and installed the hook this one wraps.
     """
     if configuration_went_unread(
         coverage_configuration(config),
@@ -259,6 +406,7 @@ def pytest_configure(config: pytest.Config) -> None:
         )
         raise pytest.UsageError(refusal)
     relax_coverage_floor(config)
+    install_thread_exception_origin_hook()
 
 
 @contextmanager

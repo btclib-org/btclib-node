@@ -1768,6 +1768,12 @@ keeps whichever shape it was written in.
   `dependabot-core`'s `uv/Dockerfile` pins; below it, the floor admitted an
   older `uv` than the lock is written with (issue btclib-org/.github#1229).
 
+### A leaked thread's exception names the test that actually started it
+
+- **`tests/conftest.py` notes, on a thread's own exception, which test
+  started it** (closes #1002): `_pytest.threadexception` still
+  attributes the failure to whichever test is running when it drains it.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
