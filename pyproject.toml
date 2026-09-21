@@ -432,25 +432,7 @@ source-include = [
 ]
 # Exclusions win over the inclusions above, and are unanchored unless a
 # pattern starts with "/": a bare name matches at any depth, and everything
-# below a match goes with it. Each line here was measured by planting the
-# file and building, and each shipped without it. __pycache__, *.pyc and
-# *.pyo are the backend's own default excludes, which is why a stray one
-# under tests/ needs no line where a cache does.
-#
-# A cache is what the tools of this gate write. At the root none of them
-# is reached by an include pattern above and no line would be needed; the
-# case these answer is the nested one, `tests/**` and `scripts/**` taking
-# whatever sits under those directories. For mypy that is not
-# hypothetical: .vscode/extensions.json recommends
-# ms-python.mypy-type-checker, and that extension writes a cache per
-# directory it type-checks rather than one at the root. The rest are
-# written where their tool is invoked, which is a directory a developer
-# chooses.
-#
-# `*.egg-info` is the line this gate needs for itself: the check-sdist
-# hook's --inject-junk drops one under tests/ for the length of the run,
-# and without this it is reported as a member of the sdist that git has
-# not got.
+# below a match goes with it.
 #
 # check-sdist reads this list for the uv backend, so a tracked file a
 # pattern here takes out is not reported as one the sdist is missing, and
@@ -467,10 +449,70 @@ source-exclude = [
     # the whole rendered site. Anchored, nothing else here being called
     # build.
     "/docs/build",
-    ".hypothesis",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
+    # a cache a tool writes beside what it has just read, taken out by a
+    # property such caches share -- a dot-prefixed basename, at any depth
+    # under a tree the archive carries whole -- rather than by the name of
+    # the tool that wrote it. A name is one somebody has already thought
+    # of, and the gate over the list, check-sdist, compares the archive
+    # against the tree it was built from, so it refuses only a cache that
+    # is on disk while it runs; the lint workflow runs the hooks over a
+    # checkout and no step of it runs the suite (btclib-org/.github#1070).
+    #
+    # Four anchors, not tests/ alone: docs/**, scripts/** and tests/**
+    # above are each carried whole by source-include, and src/btclib_node/
+    # is carried whole too, being the module under `module-root`, so a
+    # cache lands under any of the four the moment its tool is pointed
+    # there. For mypy that is not hypothetical: .vscode/extensions.json
+    # recommends ms-python.mypy-type-checker, and that extension writes a
+    # cache per directory it type-checks rather than one at the root. The
+    # rest are written where their tool is invoked, which is a directory a
+    # developer chooses.
+    #
+    # The anchors are what leave the root's own dotted files in the
+    # archive: unanchored, ".*" takes .python-version and
+    # .secrets.baseline with it, an exclusion dropping what an include
+    # above asks for.
+    #
+    # No root entry for .coverage or .coverage.* either, though pytest
+    # --cov (addopts) writes both there: source-include above is an
+    # allowlist and neither matches a pattern in it, so the archive never
+    # carries one regardless of what this list says -- unlike
+    # .python-version and .secrets.baseline, named there and reachable by
+    # an unanchored ".*" if this list carried one. Measured: a planted
+    # root .coverage is absent from the sdist built next, with
+    # .python-version and .secrets.baseline still in it, so a root entry
+    # here would refuse a path the archive was never going to carry.
+    # coverage.xml is the same story from the other side and is not
+    # measured the same way: this tree's addopts carries no
+    # --cov-report=xml and no [tool.coverage.xml] section names one, so
+    # nothing here produces the file to plant; had it been produced, its
+    # name carries no leading dot and the shape below would not have
+    # reached it, root or anchored, the way *.egg-info further down does
+    # not.
+    #
+    # These four lines were measured by planting and building: a planted
+    # tests/.hypothesis/, scripts/.mypy_cache/, docs/source/.pytest_cache/
+    # and src/btclib_node/.ruff_cache/ are each absent from the sdist
+    # built next, and each is carried by the sdist the same tree builds
+    # with these lines taken out.
+    #
+    # What a property costs is the other direction, and it is as silent:
+    # a dotted file one of these trees means to carry goes at a release
+    # rather than in a gate. tests/sdist_dotted_names_test.py is that
+    # direction's gate, and it asks git rather than the disk, so it
+    # answers where check-sdist cannot.
+    #
+    # __pycache__, *.pyc and *.pyo are the backend's own default excludes,
+    # and are not repeated here
+    "/docs/**/.*",
+    "/scripts/**/.*",
+    "/src/btclib_node/**/.*",
+    "/tests/**/.*",
+    # a leftover of the same kind whose name carries no leading dot, so
+    # the shape above does not reach it: the check-sdist hook's
+    # --inject-junk drops one under tests/ for the length of the run, and
+    # without this it is reported as a member of the sdist that git has
+    # not got.
     "*.egg-info",
 ]
 
@@ -547,11 +589,12 @@ package = ["src/btclib_node"]
 # `tests/interpreters_test.py` reads pyproject.toml, .python-version and
 # the CI files against one another, `tests/property_test.py` draws
 # unconstrained octets against the entry points those harnesses declare,
-# and the rest load a script under .github/scripts/ by path -- so each
-# mirrors no module of the package and drives no node. Naming one is
-# what collects it -- and [tool.coverage.run]'s `source` takes all of
-# tests/, so a module no run collects is a file the floor reports at
-# zero.
+# `tests/sdist_dotted_names_test.py` reads source-exclude below against
+# `git ls-files`, and the rest load a script under .github/scripts/ by
+# path -- so each mirrors no module of the package and drives no node.
+# Naming one is what collects it -- and [tool.coverage.run]'s `source`
+# takes all of tests/, so a module no run collects is a file the floor
+# reports at zero.
 #
 # `tests/integration/` is named too. It needs a bitcoind a bare run
 # has not got, so what a contributor without one gets is a skip naming
@@ -576,6 +619,7 @@ testpaths = [
     "tests/interpreters_test.py",
     "tests/pragma_test.py",
     "tests/property_test.py",
+    "tests/sdist_dotted_names_test.py",
     "tests/wait_for_pypi_release_test.py",
     "tests/wait_for_readthedocs_build_test.py",
     "tests/unit",

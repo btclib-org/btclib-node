@@ -1786,6 +1786,12 @@ keeps whichever shape it was written in.
   already holds** (closes #1008): `download_manager` finds no block
   left to request, so the pool a sync would build never happens.
 
+### `source-exclude` takes a cache out by shape, not by the tool's name
+
+- **A dot-prefixed shape, anchored on the four shipped trees, replaces
+  the four cache names** (issue btclib-org/.github#1070):
+  `tests/sdist_dotted_names_test.py` gates the tracked side.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
