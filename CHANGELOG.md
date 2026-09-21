@@ -1798,6 +1798,12 @@ keeps whichever shape it was written in.
   alike** (closes #1009).
 - **`addnode`'s empty-address refusal stays master's** (closes #1010).
 
+### `check_core_citation_pin.py` reads every file `git` tracks, not a named few
+
+- **`check_core_citation_pin.py` now reads every file `git` tracks
+  instead of a hardcoded tuple that left `rpc/callbacks.py`'s own
+  citation unwatched** (closes #1014).
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`

@@ -563,7 +563,16 @@ repos:
   # file's citation, which a single-file regex cannot compare
   # (btclib-org/btclib-node#856). Stdlib only, so `system` needs no
   # environment of its own, the same reason check_vendored_pin.py is
-  # invoked with a bare `python3` rather than through uv
+  # invoked with a bare `python3` rather than through uv.
+  #
+  # `always_run: true`, and no `files:`: the script itself reads every
+  # file `git` tracks (btclib-org/btclib-node#1014), so a `files:` list
+  # naming only the sites known today would leave a citation added to a
+  # new file uncaught on the commit that adds it -- the same enumeration
+  # trap the script's own docstring argues against, one layer up. A pin
+  # bump always touches the workflow file this hook would have to name
+  # regardless, so the list bought nothing even before the script
+  # scanned the tree; the same reasoning is check-changelog's above.
   - repo: local
     hooks:
       - id: core-citation-pin
@@ -571,12 +580,7 @@ repos:
         entry: python3 .github/scripts/check_core_citation_pin.py
         language: system
         pass_filenames: false
-        # a single line with no literal space in it, the same reason
-        # local-link-prefix above is a block scalar rather than a
-        # quoted one: yamllint reads it as one unbreakable word and its
-        # 100-column rule does not apply
-        files: |-
-          ^(\.github/workflows/integration-bitcoind\.yml|tests/integration/(reorg_test|conftest)\.py|src/btclib_node/rpc/errors\.py|\.github/scripts/check_core_citation_pin\.py)$
+        always_run: true
   # a local hook running mypy from the project environment: every
   # import the tree makes resolves under it, and there is no unstubbed
   # dependency left to declare an override for -- pyproject.toml's
