@@ -442,10 +442,27 @@ class P2pManager(threading.Thread):
         self.discouraged.add(endpoint_key(address))
 
     async def async_connect(self, address: NetworkAddressV2) -> None:
-        """Dial `address` and, if it comes up, register the connection."""
+        """Dial `address` and, if it comes up, register the connection.
+
+        Logged rather than silent where `dial` (p2p/address.py) comes
+        back with nothing: unlike `_maybe_dial_more_peers` below, whose
+        next pass draws another address, and `_maybe_redial_specified`
+        beside it, which comes back to the same named peer on its own
+        backoff, `connect` is only ever called once per address --
+        `Node.run`'s own one-shot startup dial, or a caller reaching for
+        one specific peer -- so a dial lost here has nothing behind it
+        to try again, and used to vanish with nothing in `debug.log`
+        naming it (issue #1020).
+        """
         client = await dial(address)
         if client:
             self.create_connection(client, address, inbound=False)
+        else:
+            endpoint = network_address(address)
+            self.logger.info(
+                "Dial to %s did not come up",
+                ip_and_port(str(endpoint.ip), endpoint.port),
+            )
 
     def connect(self, address: NetworkAddressV2) -> None:
         """Schedule `async_connect(address)` onto this manager's own loop."""
