@@ -635,3 +635,37 @@ repos:
         # entry:, which args: does not touch
         args: [--inject-junk, --installer=pip]
         additional_dependencies: ["uv_build>=0.12.0,<0.13"]
+  # section 4 of btclib-org/.github gives pyroma and check-sdist the same
+  # subject -- both build the project through the backend [build-system]
+  # admits -- so the metadata pyroma rates is caught on the commit that
+  # changes it rather than only at the next `dist` build
+  # (btclib-org/btclib-node#1019).
+  #
+  # 5.0.1 is regebro/pyroma's newest *stable* tag, and 5.1b1 and 5.1b2
+  # sit above it. `pre-commit autoupdate` has no notion of a prerelease
+  # and proposes the newest tag whatever it is, while `pinned-rev` above
+  # refuses one -- "a prerelease is not a release", in its own words --
+  # so the bot's pull request cannot go green while a beta is newest,
+  # and every unrelated rev bump sharing that commit is held with it.
+  # Holding this rev is a judgement about a beta rather than an
+  # oversight, and whoever meets that stuck autoupdate has the reason
+  # here; btclib-org/.github#1199 is where the conflict is tracked and
+  # the choice between its candidate answers is still open, this being a
+  # hook every tree of it runs rather than anything of this one's.
+  - repo: https://github.com/regebro/pyroma
+    rev: "5.0.1"
+    hooks:
+      - id: pyroma
+        # pyroma reads the metadata through `build` too, asking first for
+        # a non-isolated build and falling back to an isolated one -- a
+        # virtual environment pre-commit.ci cannot create -- only where
+        # the environment does not already satisfy [build-system]
+        # requires. uv_build is not on pyroma's own dependencies, so
+        # without this line the fallback is what runs, and pre-commit.ci
+        # goes red where a local run, with uv_build already in its
+        # environment from installing this project, stays green. The
+        # specifier is [build-system]'s own range and not a pin, as
+        # check-sdist's copy above is: what the build has to satisfy is
+        # a declaration, and the isolated build this replaces would have
+        # resolved the same range itself.
+        additional_dependencies: ["uv_build>=0.12.0,<0.13"]
