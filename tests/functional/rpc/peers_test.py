@@ -2,7 +2,7 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""getconnectioncount and getpeerinfo, over two real nodes dialled together.
+"""getconnectioncount, getpeerinfo, addnode and getnetworkinfo, two nodes.
 
 Each test connects two live nodes over p2p and asks one of them, over
 its own RPC socket, what its p2p side reports about the other.
@@ -164,6 +164,113 @@ def test_get_peer_info(tmp_path: Path) -> None:
         "NETWORK_LIMITED",
     ]
     assert body["result"][0]["inbound"]
+
+    node1.stop()
+    node2.stop()
+
+
+def test_addnode_onetry_dials_and_connects_the_other_node(tmp_path: Path) -> None:
+    """`addnode "host:port" "onetry"`, live, is `connect_nodes`'s own dial.
+
+    `test_framework.py`'s own `connect_nodes` (`:568-594`, at
+    bitcoin/bitcoin@bb529657) calls exactly this shape -- an IP:port
+    literal, the string `"onetry"` -- to wire two nodes together, and
+    this is that call driven over a real RPC socket rather than through
+    `P2pManager.connect` directly the way `test_get_connection_count`
+    and `test_get_peer_info` above do.
+    """
+    node1 = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path / "node1",
+            p2p_port=get_random_port(),
+            rpc_port=get_random_port(),
+        )
+    )
+    node2 = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path / "node2",
+            p2p_port=get_random_port(),
+            rpc_port=get_random_port(),
+        )
+    )
+    node1.start()
+    node2.start()
+
+    wait_until_listening(node1.rpc_manager)
+    wait_until_listening(node2.rpc_manager)
+    wait_until_listening(node1.p2p_manager)
+    wait_until_listening(node2.p2p_manager)
+
+    _, body = rpc_client(node2).call_raw(
+        "addnode",
+        [f"127.0.0.1:{node1.p2p_port}", "onetry"],
+        jsonrpc="1.0",
+        request_timeout=2,
+    )
+    assert body["result"] is None
+
+    wait_until(lambda: len(node1.p2p_manager.connections))
+    wait_until(
+        lambda: node1.p2p_manager.connections[0].status == P2pConnStatus.Connected
+    )
+    wait_until(lambda: len(node2.p2p_manager.connections))
+    wait_until(
+        lambda: node2.p2p_manager.connections[0].status == P2pConnStatus.Connected
+    )
+
+    node1.stop()
+    node2.stop()
+
+
+def test_get_network_info_s_subversion_matches_what_a_peer_sees(
+    tmp_path: Path,
+) -> None:
+    """`getnetworkinfo`'s own `subversion` is what a peer's `subver` names.
+
+    `connect_nodes` matches the two, off each node's own RPC socket, to
+    tell its own connection apart from any other in a peer's list --
+    this is that match, checked directly.
+    """
+    node1 = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path / "node1",
+            p2p_port=get_random_port(),
+            rpc_port=get_random_port(),
+        )
+    )
+    node2 = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path / "node2",
+            p2p_port=get_random_port(),
+            rpc_port=get_random_port(),
+        )
+    )
+    node1.start()
+    node2.start()
+
+    wait_until_listening(node1.rpc_manager)
+    wait_until_listening(node2.rpc_manager)
+    wait_until_listening(node1.p2p_manager)
+    wait_until_listening(node2.p2p_manager)
+
+    node2.p2p_manager.connect(local_addr(node1.p2p_port))
+    wait_until(lambda: len(node1.p2p_manager.connections))
+    wait_until(
+        lambda: node1.p2p_manager.connections[0].status == P2pConnStatus.Connected
+    )
+
+    _, network_info = rpc_client(node2).call_raw(
+        "getnetworkinfo", jsonrpc="1.0", request_timeout=2
+    )
+    _, peer_info = rpc_client(node1).call_raw(
+        "getpeerinfo", jsonrpc="1.0", request_timeout=2
+    )
+
+    assert peer_info["result"][0]["subver"] == network_info["result"]["subversion"]
 
     node1.stop()
     node2.stop()

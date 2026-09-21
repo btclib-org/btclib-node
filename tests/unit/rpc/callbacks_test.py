@@ -18,9 +18,11 @@ from typing import TYPE_CHECKING, Any, NoReturn, cast, override
 
 import pytest
 from bitcoin_core_rpc import RPCErrorCode
+from btclib.block import Block, BlockHeader
 from btclib.exceptions import BTClibValueError
 from btclib.fee import FeeRate
 from btclib.p2p.address import NetworkAddress, ServiceFlags
+from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.script import script
 from btclib.script.witness import Witness
 from btclib.tx.out_point import OutPoint
@@ -43,13 +45,16 @@ from btclib_node.exceptions import MissingPrevoutError, StoreCorruptionError
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from btclib_node.rpc.callbacks import (
+    add_node,
     get_best_block_hash,
+    get_block,
     get_block_count,
     get_block_hash,
     get_block_header,
     get_blockchain_info,
     get_connection_count,
     get_mempool_info,
+    get_network_info,
     get_peer_info,
     get_raw_mempool,
     get_raw_transaction,
@@ -59,6 +64,7 @@ from btclib_node.rpc.callbacks import (
     send_raw_transaction,
     service_names,
     stop,
+    submit_block,
 )
 
 # aliased: pytest collects a module-level `test*` as a test, and this
@@ -66,13 +72,11 @@ from btclib_node.rpc.callbacks import (
 from btclib_node.rpc.callbacks import test_mempool_accept as mempool_accept
 from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import RpcError
-from tests import generate_random_chain, generate_random_header_chain
+from tests import generate_coinbase, generate_random_chain, generate_random_header_chain
 from tests.unit.main_test import connect
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-    from btclib.block import BlockHeader
 
     from btclib_node import Node
     from btclib_node.rpc.connection import RpcConnection
@@ -138,6 +142,7 @@ def a_peer(
     peer: str = "1.2.3.4",
     bind: str = "5.6.7.8",
     local: str = "9.10.11.12",
+    user_agent: bytes = b"/btclib:test/",
 ) -> Any:
     """Build a `P2pManager.connections` entry `get_peer_info` can read.
 
@@ -151,6 +156,7 @@ def a_peer(
             services=ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS,
             addr_recv=NetworkAddress(0, local, 8333),
             version=70015,
+            user_agent=user_agent,
         ),
         address=SimpleNamespace(network_id=SimpleNamespace(name="IPV4")),
         last_send=1,
@@ -213,6 +219,19 @@ def test_the_peer_table_names_a_connected_peer() -> None:
     assert info["addrlocal"] == "9.10.11.12:8333"
     assert info["servicesnames"] == ["NETWORK", "WITNESS"]
     assert info["inbound"] is True
+
+
+def test_a_peer_s_subver_is_its_own_announced_user_agent() -> None:
+    """`getpeerinfo`'s `subver` is the wire bytes the peer's `version` carried.
+
+    `connect_nodes` (`test_framework.py:568-594`, at
+    bitcoin/bitcoin@bb529657) matches this against the local node's own
+    `getnetworkinfo`-reported `subversion` to find itself in a peer's
+    own list.
+    """
+    node = a_node({7: a_peer(user_agent=b"/btclib:2026.9/")})
+    (info,) = get_peer_info(node, _CONN, [])
+    assert info["subver"] == "/btclib:2026.9/"
 
 
 def test_a_v6_peer_is_named_with_the_brackets_core_writes() -> None:
@@ -2255,3 +2274,479 @@ def test_a_corrupted_stored_record_is_not_answered_as_the_tx_s_own_refusal(
         send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
     assert not mempool.contains_tx(tx)
     assert broadcast == []
+
+
+def test_get_network_info_answers_this_node_s_own_subversion_and_protocol() -> None:
+    """`getnetworkinfo` answers `subversion`/`protocolversion`, nothing else.
+
+    `connect_nodes`'s own read is `subversion` alone
+    (`test_framework.py:568-594`, at bitcoin/bitcoin@bb529657);
+    `protocolversion` is included beside it as a real, cheaply-answered
+    constant rather than as decoration.
+    """
+    result = get_network_info(a_node(), _CONN, [])
+    assert result == {"subversion": cb._SUBVERSION, "protocolversion": PROTOCOL_VERSION}
+
+
+def test_addnode_onetry_dials_the_given_address_once() -> None:
+    """`addnode "host:port" "onetry"` schedules exactly one dial."""
+    dialed: list[Any] = []
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chain=SimpleNamespace(port=18444),
+            p2p_manager=SimpleNamespace(connect=dialed.append),
+        ),
+    )
+    add_node(node, _CONN, ["127.0.0.1:9999", "onetry"])
+    assert len(dialed) == 1
+    assert dialed[0].network_id.name == "IPV4"
+    assert dialed[0].port == 9999
+
+
+def test_addnode_falls_back_to_the_chain_s_own_default_port() -> None:
+    """A `node` naming no port dials this chain's own default one."""
+    dialed: list[Any] = []
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chain=SimpleNamespace(port=18444),
+            p2p_manager=SimpleNamespace(connect=dialed.append),
+        ),
+    )
+    add_node(node, _CONN, ["127.0.0.1", "onetry"])
+    assert dialed[0].port == 18444
+
+
+def test_addnode_add_also_dials_once_rather_than_persisting() -> None:
+    """`addnode ... "add"` is accepted, and dialled the same as `onetry`.
+
+    This node keeps no added-node list distinct from `Config.addnode`'s
+    own startup tuple, so `add` does not persist across a later dial the
+    way Core's own `CConnman::AddNode` does -- the module-level comment
+    beside `_ADDNODE_COMMANDS` argues why dialling once and not raising
+    is the more faithful of the two shortfalls available.
+    """
+    dialed: list[Any] = []
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chain=SimpleNamespace(port=18444),
+            p2p_manager=SimpleNamespace(connect=dialed.append),
+        ),
+    )
+    add_node(node, _CONN, ["127.0.0.1:9999", "add"])
+    assert len(dialed) == 1
+
+
+def test_addnode_remove_answers_not_added_every_time() -> None:
+    """`addnode ... "remove"` is Core's own `RPC_CLIENT_NODE_NOT_ADDED`.
+
+    There is nothing this node ever added by RPC for it to find.
+    """
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chain=SimpleNamespace(port=18444),
+            p2p_manager=SimpleNamespace(connect=lambda _address: None),
+        ),
+    )
+    with pytest.raises(RpcError) as raised:
+        add_node(node, _CONN, ["127.0.0.1:9999", "remove"])
+    assert raised.value.code == RPCErrorCode.CLIENT_NODE_NOT_ADDED
+    assert raised.value.message == (
+        "Error: Node could not be removed. It has not been added previously."
+    )
+
+
+def test_addnode_refuses_an_empty_node_address() -> None:
+    """Core's own exact text for a blank `node` argument."""
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chain=SimpleNamespace(port=18444),
+            p2p_manager=SimpleNamespace(connect=lambda _address: None),
+        ),
+    )
+    with pytest.raises(RpcError) as raised:
+        add_node(node, _CONN, ["   ", "onetry"])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == "Error: Node address cannot be empty"
+
+
+def test_addnode_refuses_an_unknown_command() -> None:
+    """A `command` outside `add`/`remove`/`onetry` is refused with the usage."""
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chain=SimpleNamespace(port=18444),
+            p2p_manager=SimpleNamespace(connect=lambda _address: None),
+        ),
+    )
+    with pytest.raises(RpcError) as raised:
+        add_node(node, _CONN, ["127.0.0.1:9999", "bogus"])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == 'addnode "node" "command" ( v2transport )'
+
+
+def test_addnode_with_no_arguments_is_answered_with_the_usage() -> None:
+    """Fewer than the two required arguments is refused with the usage."""
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chain=SimpleNamespace(port=18444),
+            p2p_manager=SimpleNamespace(connect=lambda _address: None),
+        ),
+    )
+    with pytest.raises(RpcError) as raised:
+        add_node(node, _CONN, [])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == 'addnode "node" "command" ( v2transport )'
+
+
+def test_addnode_refuses_a_hostname() -> None:
+    """A hostname, rather than a literal IP, is refused: no DNS resolve here.
+
+    The same refusal `Config.addnode`'s own `_resolve_peers` already
+    gives `-addnode`'s spec, and for the identical reason.
+    """
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chain=SimpleNamespace(port=18444),
+            p2p_manager=SimpleNamespace(connect=lambda _address: None),
+        ),
+    )
+    with pytest.raises(RpcError) as raised:
+        add_node(node, _CONN, ["example.com:9999", "onetry"])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+
+
+def test_addnode_type_checks_node_and_command() -> None:
+    """`node` and `command` of the wrong JSON type are named, not coerced."""
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chain=SimpleNamespace(port=18444),
+            p2p_manager=SimpleNamespace(connect=lambda _address: None),
+        ),
+    )
+    with pytest.raises(RpcError) as raised:
+        add_node(node, _CONN, [1, "onetry"])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    with pytest.raises(RpcError) as raised2:
+        add_node(node, _CONN, ["127.0.0.1", 1])
+    assert raised2.value.code == RPCErrorCode.TYPE_ERROR
+
+
+def test_get_block_answers_the_hex_serialization_of_a_stored_block(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """`getblock` verbosity 0 answers the block's own bytes, hex-encoded."""
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain)
+
+    answer = get_block(node, _CONN, [chain[0].header.hash.hex(), 0])
+
+    assert answer == chain[0].serialize(check_validity=False).hex()
+
+
+def test_get_block_false_answers_the_same_hex_zero_does(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """`ParseVerbosity`'s own `allow_bool=true`: `false` is `0`."""
+    node = regtest_node()
+    chain = generate_random_chain(1, node.chain.genesis.hash)
+    connect(node, chain)
+
+    zero = get_block(node, _CONN, [chain[0].header.hash.hex(), 0])
+    false = get_block(node, _CONN, [chain[0].header.hash.hex(), False])
+
+    assert zero == false == chain[0].serialize(check_validity=False).hex()
+
+
+def test_get_block_refuses_a_hash_this_node_has_never_indexed(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """An unknown blockhash is Core's own `Block not found`."""
+    node = regtest_node()
+    with pytest.raises(RpcError) as raised:
+        get_block(node, _CONN, [(b"\x11" * 32).hex(), 0])
+    assert raised.value.code == RPCErrorCode.INVALID_ADDRESS_OR_KEY
+    assert raised.value.message == "Block not found"
+
+
+def test_get_block_refuses_every_verbosity_but_zero(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Verbosity 1 (Core's own default), `true`, and 2 all refuse."""
+    node = regtest_node()
+    chain = generate_random_chain(1, node.chain.genesis.hash)
+    connect(node, chain)
+    block_hash_hex = chain[0].header.hash.hex()
+
+    for params in (
+        [block_hash_hex],
+        [block_hash_hex, True],
+        [block_hash_hex, 1],
+        [block_hash_hex, 2],
+    ):
+        with pytest.raises(RpcError) as raised:
+            get_block(node, _CONN, params)
+        assert raised.value.code == RPCErrorCode.MISC_ERROR
+
+
+def test_get_block_refuses_a_block_this_node_has_pruned(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A pruned block answers Core's own pruned-data message."""
+    node = regtest_node(pruned=True, prune_target_mib=None)
+    chain = generate_random_chain(
+        node.chain.prune_after_height + 5, node.chain.genesis.hash
+    )
+    block_index = connect(node, chain)
+    prune_blockchain(node, _CONN, [3])
+
+    with pytest.raises(RpcError) as raised:
+        get_block(node, _CONN, [block_index.active_chain[1].hex(), 0])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == "Block not available (pruned data)"
+
+
+def test_get_block_with_no_arguments_is_answered_with_the_usage(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """`getblock` with no arguments at all is refused with its own usage."""
+    node = regtest_node()
+    with pytest.raises(RpcError) as raised:
+        get_block(node, _CONN, [])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == 'getblock "blockhash" ( verbosity )'
+
+
+def test_get_block_refuses_a_blockhash_of_the_wrong_json_type(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A `blockhash` that is not a string is named, not coerced."""
+    node = regtest_node()
+    with pytest.raises(RpcError) as raised:
+        get_block(node, _CONN, [12345, 0])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+
+
+def test_get_block_refuses_a_blockhash_that_is_not_hexadecimal(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A non-hex `blockhash` is Core's own `ParseHashV` text."""
+    node = regtest_node()
+    with pytest.raises(RpcError) as raised:
+        get_block(node, _CONN, ["not hex", 0])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert (
+        raised.value.message == "blockhash must be hexadecimal string (not 'not hex')"
+    )
+
+
+def test_get_block_refuses_a_header_only_block_as_not_fully_downloaded(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A block this node has only ever indexed the header of is not pruned.
+
+    `_find_transaction`'s own identical distinction, exercised here for
+    the branch `test_get_block_refuses_a_block_this_node_has_pruned`
+    above does not reach: an ordinary, unpruned node whose peer has
+    sent a header but never the block body.
+    """
+    node = regtest_node()
+    header = generate_random_header_chain(1, node.chain.genesis.hash)[0]
+    node.chainstate.block_index.add_headers([header])
+
+    with pytest.raises(RpcError) as raised:
+        get_block(node, _CONN, [header.hash.hex(), 0])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == "Block not available (not fully downloaded)"
+
+
+def a_block_claiming_an_easier_target_than_the_chain_allows(block: Block) -> Block:
+    """Rebuild `block` with `bits` set past regtest's own proof-of-work limit.
+
+    The identical construction `tests/unit/p2p/callbacks_test.py`'s own
+    helper of the same name uses, for the identical reason: regtest's
+    limit is `7fffff00...`, and `800000...` is the next target up that
+    still fits the field, so `assert_valid` refuses it deterministically
+    rather than by chance of a nonce.
+    """
+    header = BlockHeader(
+        version=block.header.version,
+        previous_block_hash=block.header.previous_block_hash,
+        merkle_root=block.header.merkle_root,
+        time=block.header.time,
+        bits=b"\x21\x00\x80\x00",
+        nonce=block.header.nonce,
+        check_validity=False,
+    )
+    return Block(header, block.transactions, check_validity=False)
+
+
+def test_submit_block_accepts_a_new_block_extending_the_tip(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A valid new block answers `None`, Core's own shape for acceptance."""
+    node = regtest_node()
+    chain = generate_random_chain(4, node.chain.genesis.hash)
+    connect(node, chain[:3])
+    new_block = chain[3]
+
+    result = submit_block(
+        node, _CONN, [new_block.serialize(check_validity=False).hex()]
+    )
+
+    assert result is None
+    block_info = node.chainstate.block_index.get_block_info(new_block.header.hash)
+    assert block_info.downloaded
+    stored = node.block_db.get_block(new_block.header.hash)
+    assert stored is not None
+    assert stored.serialize(check_validity=False) == new_block.serialize(
+        check_validity=False
+    )
+
+
+def test_submit_block_answers_duplicate_for_a_block_already_downloaded(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A block this node already holds answers Core's own `"duplicate"`."""
+    node = regtest_node()
+    chain = generate_random_chain(1, node.chain.genesis.hash)
+    connect(node, chain)
+
+    result = submit_block(node, _CONN, [chain[0].serialize(check_validity=False).hex()])
+
+    assert result == "duplicate"
+
+
+def test_submit_block_answers_prev_blk_not_found_for_an_orphan(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A block whose parent this node has never indexed names Core's reason.
+
+    `validation.cpp:4225`'s own `"prev-blk-not-found"`
+    (at bitcoin/bitcoin@bb529657), the one reject reason this tree
+    reproduces literally -- `submit_block`'s own docstring is where that
+    is argued against the rest of Core's own vocabulary.
+    """
+    node = regtest_node()
+    orphan = generate_random_chain(1, b"\x22" * 32)[0]
+
+    result = submit_block(node, _CONN, [orphan.serialize(check_validity=False).hex()])
+
+    assert result == "prev-blk-not-found"
+
+
+def test_submit_block_answers_decode_failed_for_unparsable_hex(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """Core's own exact text for a `hexdata` that does not decode at all."""
+    node = regtest_node()
+    with pytest.raises(RpcError) as raised:
+        submit_block(node, _CONN, ["not hex"])
+    assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+    assert raised.value.message == "Block decode failed"
+
+
+def test_submit_block_with_no_arguments_is_answered_with_the_usage(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """`submitblock` with no arguments at all is refused with its own usage."""
+    node = regtest_node()
+    with pytest.raises(RpcError) as raised:
+        submit_block(node, _CONN, [])
+    assert raised.value.code == RPCErrorCode.MISC_ERROR
+    assert raised.value.message == 'submitblock "hexdata" ( "dummy" )'
+
+
+def test_submit_block_refuses_a_hexdata_of_the_wrong_json_type(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A `hexdata` that is not a string is named, not coerced."""
+    node = regtest_node()
+    with pytest.raises(RpcError) as raised:
+        submit_block(node, _CONN, [12345])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+
+
+def test_submit_block_completes_a_block_whose_header_alone_was_already_known(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A block this node knows only the header of is stored, not `"duplicate"`.
+
+    `"duplicate"` is for a body already downloaded; a header sync ahead
+    of block download, matching `p2p.callbacks.block`'s own identical
+    case, is not that.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(1, node.chain.genesis.hash)
+    node.chainstate.block_index.add_headers([chain[0].header])
+
+    result = submit_block(node, _CONN, [chain[0].serialize(check_validity=False).hex()])
+
+    assert result is None
+    assert node.chainstate.block_index.get_block_info(chain[0].header.hash).downloaded
+    stored = node.block_db.get_block(chain[0].header.hash)
+    assert stored is not None
+
+
+def test_submit_block_answers_a_reason_for_a_header_that_never_gets_indexed(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A header failing its own range/PoW check is answered, not thrown.
+
+    `block_index.add_headers` raises for exactly this, the same
+    `BTClibValueError` `p2p.callbacks.block` lets propagate on the wire
+    path -- caught here instead, since `submitblock` has no peer to
+    punish for it, only a reason to answer. Never indexed at all: a
+    `get_block_info` on this hash still raises `KeyError` afterwards.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(1, node.chain.genesis.hash)
+    broken = a_block_claiming_an_easier_target_than_the_chain_allows(chain[0])
+
+    result = submit_block(node, _CONN, [broken.serialize(check_validity=False).hex()])
+
+    assert isinstance(result, str)
+    assert result not in (None, "duplicate", "prev-blk-not-found")
+    assert broken.header.hash not in node.chainstate.block_index.header_dict
+    assert node.block_db.get_block(broken.header.hash) is None
+
+
+def test_submit_block_invalidates_a_block_whose_body_mismatches_its_header(
+    regtest_node: Callable[..., Node],
+) -> None:
+    """A block whose merkle root the transactions do not match is invalidated.
+
+    The header alone is unimpeachable -- valid proof of work, a known
+    parent -- so `add_headers` indexes it; only `block.assert_valid`'s
+    own `assert_valid_merkle_root` (below `assert_valid_structure`) can
+    catch what is wrong with this one, and does, matching
+    `p2p.callbacks.block`'s identical `invalidate`-then-answer shape
+    except for answering rather than raising.
+    """
+    node = regtest_node()
+    chain = generate_random_chain(1, node.chain.genesis.hash)
+    # a differently-valued coinbase: structurally valid on its own, and
+    # not the one the header's own merkle root actually commits to
+    mismatched = Block(
+        chain[0].header,
+        [generate_coinbase(value=999, height=1)],
+        check_validity=False,
+    )
+
+    result = submit_block(
+        node, _CONN, [mismatched.serialize(check_validity=False).hex()]
+    )
+
+    assert isinstance(result, str)
+    assert result not in (None, "duplicate", "prev-blk-not-found")
+    block_info = node.chainstate.block_index.get_block_info(mismatched.header.hash)
+    assert not block_info.downloaded
+    assert node.block_db.get_block(mismatched.header.hash) is None

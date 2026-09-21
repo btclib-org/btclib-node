@@ -12,15 +12,18 @@ every entry here: this table is served over a listener that
 authenticates nothing.
 """
 
+from importlib.metadata import version as _installed_version
 from typing import TYPE_CHECKING, Any, cast
 
 from bitcoin_core_rpc import RPCErrorCode, chain_from_network
-from btclib.block import median_time_past
+from btclib.block import Block, median_time_past
 from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.p2p.address import ServiceFlags
+from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.tx import Tx
 
 from btclib_node.chainstate.block_index import block_time
+from btclib_node.config import split_host_port
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, P2pConnStatus
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.main import (
@@ -28,7 +31,7 @@ from btclib_node.main import (
     prune_up_to_height,
     verify_mempool_acceptance,
 )
-from btclib_node.p2p.address import ip_and_port
+from btclib_node.p2p.address import ip_and_port, peer_address
 from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import RpcError, bool_param, type_error
 
@@ -40,14 +43,17 @@ if TYPE_CHECKING:
     from btclib_node.rpc.connection import RpcConnection
 
 __all__ = [
+    "add_node",
     "callbacks",
     "get_best_block_hash",
+    "get_block",
     "get_block_count",
     "get_block_hash",
     "get_block_header",
     "get_blockchain_info",
     "get_connection_count",
     "get_mempool_info",
+    "get_network_info",
     "get_peer_info",
     "get_raw_mempool",
     "get_raw_transaction",
@@ -57,8 +63,16 @@ __all__ = [
     "send_raw_transaction",
     "service_names",
     "stop",
+    "submit_block",
     "test_mempool_accept",
 ]
+
+# This node's own user agent, byte for byte what `p2p.connection`'s
+# `_USER_AGENT` sends in every `version` message -- computed
+# independently here rather than imported, because that name is private
+# to `p2p.connection` and this module reaches into no other module's
+# underscore-prefixed names. `get_network_info` below is the one reader.
+_SUBVERSION = f"/btclib:{_installed_version('btclib-node')}/"
 
 
 def get_best_block_hash(node: Node, conn: RpcConnection, _: list[Any]) -> bytes:
@@ -440,7 +454,7 @@ def get_block_header(
         block_info = block_index.get_block_info(block_hash)
     except KeyError as error:
         # a hash nothing indexed is a question about a block, not a
-        # fault of this node: src/rpc/blockchain.cpp:665
+        # fault of this node: src/rpc/blockchain.cpp:695
         raise RpcError(
             RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Block not found"
         ) from error
@@ -527,6 +541,142 @@ def get_block_header(
         out["nextblockhash"] = active_chain[height + 1]
 
     return out
+
+
+def get_block(node: Node, conn: RpcConnection, params: list[Any]) -> str:
+    """Answer `getblock` at verbosity 0: the block's own wire bytes, hex.
+
+    Core's own `getblock` (`rpc/blockchain.cpp:835-920`, at
+    bitcoin/bitcoin@bb529657) answers verbosity 1, 2 and 3 with a JSON
+    object too -- `blockToJSON`'s own field-by-field accounting, one
+    `TxVerbosity` deeper each time. `get_block_header` above is where
+    that same accounting already lives for a header alone; tf2's own
+    first family reads only the hex form (`btclib-org/btclib-node#1006`),
+    so that is the one verbosity served here. Verbosity 1 default
+    included: `ParseVerbosity` (`rpc/util.cpp:89-102`, same sha) answers
+    a missing argument with 1, and this refuses that default rather than
+    silently answering hex for it.
+    """
+    if not params:
+        raise RpcError(RPCErrorCode.MISC_ERROR, 'getblock "blockhash" ( verbosity )')
+    if not isinstance(params[0], str):
+        raise type_error(1, "blockhash", params[0], "string")
+    try:
+        block_hash = bytes.fromhex(params[0])
+    except ValueError as error:
+        # `ParseHashV(request.params[0], "blockhash")` (`rpc/blockchain.cpp`,
+        # line 882, same sha) -- `getblock`'s own label, not
+        # `get_block_header`'s "hash" (line 679, same sha), the two RPCs
+        # naming the same positional argument differently.
+        raise RpcError(
+            RPCErrorCode.INVALID_PARAMETER,
+            f"blockhash must be hexadecimal string (not '{params[0]}')",
+        ) from error
+
+    # `ParseVerbosity` (`rpc/util.cpp:89-102`) answers a missing or
+    # `null` argument with `default_verbosity`, 1 here -- read the same
+    # way, so that omitting the argument is refused below exactly as
+    # asking for verbosity 1 explicitly would be, rather than silently
+    # answered with hex. `false`/`0` alone pass; `true` or any other
+    # verbosity is refused too.
+    has_verbosity = len(params) > 1 and params[1] is not None
+    verbosity = params[1] if has_verbosity else 1
+    if verbosity not in (0, False):
+        raise RpcError(
+            RPCErrorCode.MISC_ERROR,
+            "getblock: only verbosity 0 (hex-encoded data) is served here",
+        )
+
+    block_index = node.chainstate.block_index
+    try:
+        block_info = block_index.get_block_info(block_hash)
+    except KeyError as error:
+        # `getblock`'s own throw, `rpc/blockchain.cpp:895`, same sha
+        raise RpcError(
+            RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Block not found"
+        ) from error
+
+    block = node.block_db.get_block(block_hash)
+    if block is None:
+        # `CheckBlockDataAvailability`'s own two messages
+        # (`rpc/blockchain.cpp`, same sha), matching `_find_transaction`
+        # below for the identical distinction
+        if block_info.index <= node.block_db.pruned_up_to:
+            raise RpcError(RPCErrorCode.MISC_ERROR, "Block not available (pruned data)")
+        raise RpcError(
+            RPCErrorCode.MISC_ERROR, "Block not available (not fully downloaded)"
+        )
+    return block.serialize(check_validity=False).hex()
+
+
+def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | None:
+    """Answer `submitblock`, Core's own two arguments, the second ignored.
+
+    Core's own `submitblock` (`rpc/mining.cpp:1089-1136`, at
+    bitcoin/bitcoin@bb529657) decodes, indexes the header if it is new,
+    and hands the block to `ProcessNewBlock`: `None` for one accepted,
+    `"duplicate"` for one already held, and a reject reason for one
+    refused -- `BlockValidationResult::BLOCK_MISSING_PREV`'s own
+    `"prev-blk-not-found"` (`validation.cpp:4225`, same sha) is the one
+    reason this tree reproduces literally, being the one this node's own
+    `block_index.add_headers` answers the identical way `p2p.callbacks
+    .block` already reads it (missing rather than invalid). A
+    structurally invalid block is answered with btclib's own exception
+    message instead of one of Core's: `BlockValidationResult` names
+    dozens of distinct single-word reasons across `validation.cpp`, and
+    this tree does not reproduce that vocabulary.
+
+    Stores through the same `block_index`/`block_db` calls
+    `p2p.callbacks.block` makes for a block delivered over the wire,
+    minus that callback's own `Connection`-specific bookkeeping
+    (`download_queue`, `last_block_timestamp`, `pending_eviction`),
+    none of which applies to a block submitted out of band. Connecting
+    the block to the active chain, on either path, is `main.
+    update_chain`'s own job, run once every pass of `Node`'s loop
+    rather than inline here -- the same pass this callback's own return
+    runs in, `Node.run`'s `_step_chain` following `_drain_message_queues`
+    unconditionally.
+    """
+    if not params:
+        raise RpcError(RPCErrorCode.MISC_ERROR, 'submitblock "hexdata" ( "dummy" )')
+    if not isinstance(params[0], str):
+        raise type_error(1, "hexdata", params[0], "string")
+    try:
+        block = Block.parse(params[0], check_validity=False)
+    except BTClibException as error:
+        # src/rpc/mining.cpp:1111-1113, same text
+        raise RpcError(
+            RPCErrorCode.DESERIALIZATION_ERROR, "Block decode failed"
+        ) from error
+
+    block_hash = block.header.hash
+    block_index = node.chainstate.block_index
+
+    if block_hash in block_index.header_dict:
+        if block_index.get_block_info(block_hash).downloaded:
+            return "duplicate"
+    else:
+        try:
+            if block_index.add_headers([block.header]) is None:
+                return "prev-blk-not-found"
+        except BTClibException as error:
+            # the header itself fails a range/proof-of-work check
+            # `_validate_header_batch` makes before anything is indexed
+            # -- caught here rather than left to propagate the way
+            # `p2p.callbacks.block` lets it, because that callback's own
+            # caller punishes the peer for it and `submitblock` has no
+            # peer to punish, only a reason to answer
+            return str(error)
+
+    try:
+        block.assert_valid(node.chain.pow_limit_bits)
+    except BTClibException as error:
+        block_index.invalidate(block_hash)
+        return str(error)
+
+    node.block_db.add_block(block)
+    block_index.set_downloaded(block_hash)
+    return None
 
 
 def service_names(services: int) -> list[str]:
@@ -625,6 +775,20 @@ def get_peer_info(
             conn_dict["last_block"] = p2p_conn.last_block_timestamp
             conn_dict["pingtime"] = p2p_conn.latency
             conn_dict["version"] = version_message.version
+            # `connect_nodes` (`test_framework.py:568-594`, at
+            # bitcoin/bitcoin@bb529657) matches this against the peer's
+            # own `getnetworkinfo`-reported `subversion` to find its own
+            # connection in the other side's peer list. Core sanitizes
+            # the wire bytes through `SanitizeString` before calling this
+            # `cleanSubVer`; this node's own user agent is always plain
+            # ASCII by construction (`p2p.connection`'s `_USER_AGENT`),
+            # so a plain decode already answers what a peer actually
+            # announced, unfiltered rather than dropped through a
+            # character-class Core built for an arbitrary peer's own
+            # claim.
+            conn_dict["subver"] = version_message.user_agent.decode(
+                "ascii", errors="replace"
+            )
             conn_dict["services"] = f"{services:016x}"
             conn_dict["servicesnames"] = service_names(services)
             conn_dict["inbound"] = p2p_conn.inbound
@@ -643,6 +807,108 @@ def get_connection_count(node: Node, conn: RpcConnection, _: list[Any]) -> int:
     """
     manager = node.p2p_manager
     return len(manager.connections) + len(manager.pending_connections)
+
+
+def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str, Any]:
+    """Answer `getnetworkinfo` with the two fields `connect_nodes` reads.
+
+    Core's own `getnetworkinfo` (`rpc/net.cpp:674-800`, at
+    bitcoin/bitcoin@bb529657) answers two dozen fields, most either this
+    node's own configuration it carries no counterpart to -- `-onlynet`,
+    `-proxy`, `-asmap` -- or relay-loop state this node does not keep
+    (`inv_buckets`, `tx_send_rate`). Serving a placeholder for any of
+    those would be the same decoration `get_mempool_info`'s own
+    docstring already argues against, so they are left out rather than
+    answered with a made-up number.
+
+    `subversion` is what `test_framework.py`'s own `connect_nodes`
+    (`:568-594`, same sha) reads off each side before wiring them
+    together -- `get_peer_info` above answers the matching `subver` a
+    peer sees on the wire. `protocolversion` is `PROTOCOL_VERSION`
+    (`btclib.p2p.limits`), the same constant every `version` this node
+    sends and every `getheaders` it builds already carries.
+    """
+    return {
+        "subversion": _SUBVERSION,
+        "protocolversion": PROTOCOL_VERSION,
+    }
+
+
+# Core's own three `addnode` commands (`rpc/net.cpp:341-415`, at
+# bitcoin/bitcoin@bb529657); `add`/`remove` mutate `CConnman`'s own
+# persistent added-node list, which this node has no counterpart to --
+# `Config.addnode`, its own equivalent of `-addnode`, is a tuple
+# resolved once at startup (`config.py`'s `_resolve_peers`) and dialled
+# through `P2pManager`'s own redial set, never grown or shrunk at
+# runtime. `connect_nodes`, the one caller this node's own tf2 census
+# names for this method (`test_framework.py:568-594`, same sha), only
+# ever calls `onetry`, which is the one command below with a real
+# effect: it schedules the identical one-shot dial `onetry` gets in
+# Core (`OpenNetworkConnection`, `conn_type=MANUAL`, no persistence, no
+# dedup). `add` is accepted and scheduled the same way rather than
+# raising, since refusing an otherwise-valid command would be less
+# faithful to Core than dialling once and not persisting; `remove`
+# answers Core's own `RPC_CLIENT_NODE_NOT_ADDED` every time, there being
+# no added-node list here for it to find an entry in.
+_ADDNODE_COMMANDS = ("add", "remove", "onetry")
+
+
+def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
+    """Answer `addnode`, `onetry` for real and the other two commands honestly.
+
+    The module-level comment above argues the three commands; this
+    function is Core's own argument parsing and its two literal error
+    messages (`rpc/net.cpp:365-377`, same sha). The empty-`node`
+    refusal is master's own fix rather than this tree's own pinned
+    `bitcoind`'s: v31.1, `integration-bitcoind.yml`'s own pin, answers
+    an empty `node` with a silent, do-nothing success instead --
+    measured directly against that release, `90ce21e21d` ("rpc: reject
+    empty node argument in addnode") landing on master after v31.1 was
+    cut. Matching master here rather than the release is a choice and
+    not an oversight -- master's own message names why: "Such a node
+    would never resolve, but would be retried indefinitely" -- and
+    #1010 is where that choice is left for a fresh reading rather
+    than settled by this docstring alone. `v2transport` is read and
+    type-checked, matching Core's own optional third argument, and
+    otherwise unused: BIP324 is not a transport this node speaks yet.
+    """
+    if len(params) < 2:  # noqa: PLR2004
+        raise RpcError(
+            RPCErrorCode.MISC_ERROR, 'addnode "node" "command" ( v2transport )'
+        )
+    if not isinstance(params[0], str):
+        raise type_error(1, "node", params[0], "string")
+    if not isinstance(params[1], str):
+        raise type_error(2, "command", params[1], "string")
+    node_arg, command = params[0], params[1]
+    if command not in _ADDNODE_COMMANDS:
+        raise RpcError(
+            RPCErrorCode.MISC_ERROR, 'addnode "node" "command" ( v2transport )'
+        )
+    bool_param(params, 2, name="v2transport", default=False)
+
+    if not node_arg.strip():
+        raise RpcError(
+            RPCErrorCode.INVALID_PARAMETER, "Error: Node address cannot be empty"
+        )
+
+    if command == "remove":
+        raise RpcError(
+            RPCErrorCode.CLIENT_NODE_NOT_ADDED,
+            "Error: Node could not be removed. It has not been added previously.",
+        )
+
+    try:
+        host, port = split_host_port(node_arg, node.chain.port)
+        address = peer_address(host, port)
+    except ValueError as error:
+        # a hostname, or a malformed port: `_resolve_peers` (config.py)
+        # refuses `-addnode`'s own spec the identical way and for the
+        # identical reason -- this node's synchronous RPC path resolves
+        # no DNS
+        raise RpcError(RPCErrorCode.INVALID_PARAMETER, str(error)) from error
+
+    node.p2p_manager.connect(address)
 
 
 def _btc_amount(sats: int) -> RawJSON:
@@ -1214,8 +1480,12 @@ callbacks = {
     "pruneblockchain": prune_blockchain,
     "getblockhash": get_block_hash,
     "getblockheader": get_block_header,
+    "getblock": get_block,
+    "submitblock": submit_block,
     "getpeerinfo": get_peer_info,
     "getconnectioncount": get_connection_count,
+    "getnetworkinfo": get_network_info,
+    "addnode": add_node,
     "getmempoolinfo": get_mempool_info,
     "getrawmempool": get_raw_mempool,
     "getrawtransaction": get_raw_transaction,
