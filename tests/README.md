@@ -14,8 +14,9 @@ taken whole rather than one file of it -- `unit/all_test.py`'s `__all__`
 convention, `unit/docs_test.py`'s documentation convention -- or the
 suite's own machinery: `tests/__init__.py`, `conftest.py`, or the pytest
 configuration it runs under, which is what `unit/helpers_test.py`,
-`unit/coverage_floor_test.py` and `unit/harness_test.py` each read, and a
-declaration this file keeps about the suite itself, which
+`unit/coverage_floor_test.py`, `unit/harness_test.py` and
+`unit/thread_exception_origin_test.py` each read, and a declaration this
+file keeps about the suite itself, which
 `unit/conventions_test.py` reads (a module named without a leading
 `tests/` anywhere in this file is resolved against `tests/`, `unit/`
 marking one under `tests/unit/`). `tests/functional/` and
