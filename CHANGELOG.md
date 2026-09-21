@@ -1816,6 +1816,12 @@ keeps whichever shape it was written in.
   alone** (closes #1016): it never produced a green run, and a workflow
   that is always red cannot report that macOS broke.
 
+### The lint gate runs `pyroma` beside `check-sdist`
+
+- **`.pre-commit-config.yaml` gains a `pyroma` hook, section 4 of
+  btclib-org/.github's own packaging subject** (closes #1019): a
+  `pyproject.toml` metadata defect is now caught on the commit.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
