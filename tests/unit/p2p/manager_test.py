@@ -429,16 +429,28 @@ def test_promoting_a_connection_discards_its_own_pending_nonce(
 def test_a_peer_that_cannot_be_dialled_is_not_kept(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A `dial` that comes back with nothing leaves no connection behind."""
+    """A `dial` that comes back with nothing leaves no connection behind.
+
+    Asserted on the message and not only on the branch running: the
+    whole point of this line is that a one-shot `connect` used to lose
+    its dial with nothing in `debug.log` naming it (issue #1020), so a
+    test that exercises it without reading it would keep passing if it
+    ever went silent again. `caplog` cannot see this logger -- `#587`,
+    and `Node.logger` never reaching `logging.getLogger` -- so this
+    reads it the way `create_connection`'s own log line is read above.
+    """
+    logged, info = log_recorder()
 
     async def never_connects(address: NetworkAddressV2) -> None:
         return None
 
     monkeypatch.setattr(manager_module, "dial", never_connects)
     manager = a_manager()
+    monkeypatch.setattr(manager.logger, "info", info)
     asyncio.run(manager.async_connect(peer_address("1.2.3.4", 18444)))
     assert not manager.connections
     assert not manager.pending_connections
+    assert logged == ["Dial to 1.2.3.4:18444 did not come up"]
 
 
 def test_a_connection_that_has_closed_is_let_go_of(a_manager: AManagerFactory) -> None:

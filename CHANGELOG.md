@@ -1822,6 +1822,12 @@ keeps whichever shape it was written in.
   btclib-org/.github's own packaging subject** (closes #1019): a
   `pyproject.toml` metadata defect is now caught on the commit.
 
+### `test_connection_to_ourselves` no longer polls a length that peaks and falls
+
+- **A dial is never lost, and the bind/listen window is already shut;
+  what hung was a poll racing a peak `pending_connections` reaches and
+  drains within one burst** (closes #1020), read as a monotone record now.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
