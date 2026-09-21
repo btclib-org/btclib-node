@@ -1804,6 +1804,12 @@ keeps whichever shape it was written in.
   instead of a hardcoded tuple that left `rpc/callbacks.py`'s own
   citation unwatched** (closes #1014).
 
+### A workflow with no push trigger keeps a merged run instead of cancelling it
+
+- **`bootstrap-dns.yml`, `links.yml`, `os-macos.yml`, `os-ubuntu.yml`,
+  `sdist-rebuild.yml` and `vendored-vectors.yml` swap `cancel-in-progress: true`
+  for section 10's conditional** (issue btclib-org/.github#1226).
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`

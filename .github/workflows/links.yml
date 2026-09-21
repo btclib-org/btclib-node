@@ -56,7 +56,7 @@ permissions:
 # either of those, and a closed pull request cannot land in their group
 concurrency:
   group: links-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !(github.event.action == 'closed' && github.event.pull_request.merged) }}
 
 jobs:
   # the job itself is btclib-org/.github's, called at @main so a fix there

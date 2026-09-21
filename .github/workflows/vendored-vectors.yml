@@ -49,15 +49,18 @@ permissions:
 # either of those, and a closed pull request cannot land in their group
 concurrency:
   group: vendored-vectors-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !(github.event.action == 'closed' && github.event.pull_request.merged) }}
 
 jobs:
   vendored-vectors:
     name: Check the vendored pin against upstream
     # a draft pull request is work its author is not asking anyone to
     # read yet, and spends no runner here either. A closed one spends
-    # none: the trigger above takes that event only so the landing
-    # supersedes a run this ref's group is still holding
+    # none either: the trigger above takes that event only so the
+    # concurrency group above can tell the two closes apart -- a bare
+    # close still supersedes a run this ref's group is holding, while
+    # a landing queues behind it instead, since nothing else here runs
+    # on the commit a merge creates before the next schedule
     if: ${{ !github.event.pull_request.draft && github.event.action != 'closed' }}
     runs-on: ubuntu-latest
     # a handful of gh api calls against two repositories; a job past

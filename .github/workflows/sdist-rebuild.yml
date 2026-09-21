@@ -50,7 +50,7 @@ permissions:
 # reason test.yml gives beside its own group
 concurrency:
   group: sdist-rebuild-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !(github.event.action == 'closed' && github.event.pull_request.merged) }}
 
 jobs:
   rebuild:
