@@ -1828,6 +1828,12 @@ keeps whichever shape it was written in.
   what hung was a poll racing a peak `pending_connections` reaches and
   drains within one burst** (closes #1020), read as a monotone record now.
 
+### `REPOSITORY.md` marks four readings a changing world, not a decision
+
+- **The commit signature, the plan name, the Dependabot alert counts
+  and the published tags and releases now carry section 11's `a fact
+  about a changing world`** (issue btclib-org/.github#1017).
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`

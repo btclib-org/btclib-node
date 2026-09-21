@@ -215,6 +215,12 @@ the merge, signed with its own web-flow key rather than the maintainer's,
 which satisfies the rule: it asks for a valid signature and not for a
 particular signer.
 
+The call above answers for whichever commit sits at the tip today, so it
+is a fact about a changing world rather than a setting: the next merge
+changes what it answers, with nothing here having decided differently,
+and section 11's readback is not asked of it for that reason. Read at
+2026-09-21T22:23:08Z.
+
 What no rule covers is a commit before it is pushed:
 `git log -1 --format='%G? %GS'`, an `N` being a defect to fix rather than
 to explain.
@@ -408,6 +414,19 @@ rather than this file's.
 ```shell
 gh api repos/btclib-org/btclib-node/private-vulnerability-reporting
 # {"enabled":true}
+```
+
+**Private vulnerability reporting is on**, so *Report a vulnerability* on
+this repository's Security tab opens an advisory only the maintainers
+see. `SECURITY.md` states the call above rather than the answer, the
+route being a setting and not a file — true of every repository whether
+or not it keeps a policy of its own, this one now doing so as a tier-1
+repository. `.github/ISSUE_TEMPLATE/config.yml`'s Security vulnerability
+entry links straight to that advisory form.
+
+### The Dependabot alert counts are a changing world, not a decision
+
+```shell
 gh api repos/btclib-org/btclib-node/dependabot/alerts --jq 'length'
 # 27
 gh api repos/btclib-org/btclib-node/dependabot/alerts \
@@ -428,13 +447,14 @@ gh api repos/btclib-org/btclib-node/dependabot/alerts \
 # medium pytest 9.0.3
 ```
 
-**Private vulnerability reporting is on**, so *Report a vulnerability* on
-this repository's Security tab opens an advisory only the maintainers
-see. `SECURITY.md` states the call above rather than the answer, the
-route being a setting and not a file — true of every repository whether
-or not it keeps a policy of its own, this one now doing so as a tier-1
-repository. `.github/ISSUE_TEMPLATE/config.yml`'s Security vulnerability
-entry links straight to that advisory form.
+Each of these is a fact about a changing world rather than a setting
+this repository decides: an alert opens against whatever advisory
+Dependabot next publishes against a locked dependency, and most close on
+a maintainer's own judgement call to dismiss one rather than on the lock
+moving past it, the `dismissed` figure above outnumbering `fixed`. A
+change in either count is news, the way section 11 draws the line
+between the two kinds, not a drift from an answer this file fixes. Read
+at 2026-09-21T22:23:08Z.
 
 The alert list is not only the open alerts: Dependabot's own default
 listing carries every state. By manifest it is 26 `poetry.lock` and 1
@@ -472,6 +492,10 @@ re-derives it:
 gh api orgs/btclib-org --jq '{plan: .plan.name}'
 # {"plan":"free"}
 ```
+
+The plan is a fact about a changing world rather than a setting this
+repository decides, an upgrade being the organization's own choice and
+not a drift this file's readback catches. Read at 2026-09-21T22:23:08Z.
 
 [GitHub's own table](https://docs.github.com/en/actions/reference/limits)
 turns that answer into a number, twenty concurrent jobs on the free
@@ -550,6 +574,8 @@ dispatched from a branch on purpose. `RELEASING.md`'s *One-time setup*
 is where the rest of the argument is, self-review included -- allowed
 on both, the maintainer who pushes the tag being the reviewer.
 
+### What has already been published is a changing world, not a decision
+
 **What the pair has published**, read back rather than recalled — which
 is this file's own contract, and is what the bullet removed from *What
 is not configured, and why* stopped doing: it recorded a `v0.1.0` tag
@@ -559,13 +585,21 @@ this line was written, on the decision closing btclib-org/.github#105
 
 ```shell
 gh api repos/btclib-org/btclib-node/tags --jq '.[].name'
+# v2026.9.4
 # v2026.8.27
 gh api repos/btclib-org/btclib-node/releases \
   --jq '.[] | "\(.tag_name) by \(.author.login), \(.assets|length) assets"'
+# v2026.9.4 by github-actions[bot], 4 assets
 # v2026.8.27 by github-actions[bot], 4 assets
 curl -s -o /dev/null -w '%{http_code}\n' https://pypi.org/pypi/btclib-node/json
 # 200
 ```
+
+Each tag and release is a fact about a changing world rather than a
+setting this repository decides: the maintainer chooses when to cut one,
+but which tags exist is not an answer this file's readback holds the
+repository to -- the next one pushed is news rather than drift, the way
+section 11 draws the line. Read at 2026-09-21T22:23:08Z.
 
 The four assets are the wheel, the sdist, the CycloneDX bill of
 materials and the attestation bundle; `RELEASING.md` has what each is
@@ -604,9 +638,10 @@ curl -s https://app.readthedocs.org/api/v3/projects/btclib-node/versions/ \
 for v in json.load(sys.stdin)["results"]:
     if v["type"] == "tag":
         print(v["slug"], v["active"], v["built"])'
+# v2026.9.4 True True
 # v2026.8.27 True True
 # stable True True
-for v in latest stable v2026.8.27; do
+for v in latest stable v2026.8.27 v2026.9.4; do
   printf '%s ' "$v"
   curl -s -o /dev/null -w '%{http_code}\n' \
     "https://btclib-node.readthedocs.io/en/$v/"
@@ -614,6 +649,7 @@ done
 # latest 200
 # stable 200
 # v2026.8.27 200
+# v2026.9.4 200
 ```
 
 - **`latest` follows the default branch, which is `main`**, and
@@ -662,8 +698,10 @@ done
   is why `v2026.8.27` -- tagged before the rule was added -- needed the
   maintainer's own second action to activate by hand rather than
   following from the rule. What the versions call above reads back is
-  that effect rather than the rule itself: `v2026.8.27` now reports
-  `True True` beside `stable`.
+  that effect rather than the rule itself: `v2026.8.27` reports
+  `True True` beside `stable`, and `v2026.9.4` -- the newer tag -- now
+  answers the same pair too, read again at 2026-09-21T22:52:12Z after
+  the earlier reading here had gone stale by one tag.
 - **The repository's `.homepage` names this same site**, read back from
   the endpoint rather than from `pyproject.toml`'s own copy of it
   (issue btclib-org/.github#533):
