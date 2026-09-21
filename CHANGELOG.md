@@ -1810,6 +1810,12 @@ keeps whichever shape it was written in.
   `sdist-rebuild.yml` and `vendored-vectors.yml` swap `cancel-in-progress: true`
   for section 10's conditional** (issue btclib-org/.github#1226).
 
+### `os-macos.yml` drops `macos-26-intel`
+
+- **The Intel cell leaves `os-macos.yml`'s matrix, leaving `macos-latest`
+  alone** (closes #1016): it never produced a green run, and a workflow
+  that is always red cannot report that macOS broke.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
