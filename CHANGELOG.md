@@ -1762,6 +1762,12 @@ keeps whichever shape it was written in.
   docstring for "the three checks"; the script has grown past that count,
   dropped rather than corrected** (issue btclib-org/.github#1225).
 
+### `[tool.uv] required-version` and `uv-pre-commit`'s `rev:` reach `0.12.17`
+
+- **The floor and `uv-pre-commit`'s `rev:` both reach `0.12.17`**, the ceiling
+  `dependabot-core`'s `uv/Dockerfile` pins; below it, the floor admitted an
+  older `uv` than the lock is written with (issue btclib-org/.github#1229).
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
