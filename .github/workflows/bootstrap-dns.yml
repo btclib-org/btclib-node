@@ -51,7 +51,7 @@ permissions:
 # links.yml's own group
 concurrency:
   group: bootstrap-dns-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !(github.event.action == 'closed' && github.event.pull_request.merged) }}
 
 jobs:
   bootstrap-dns:
