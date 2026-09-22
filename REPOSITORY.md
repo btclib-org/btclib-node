@@ -31,14 +31,14 @@ gh api repos/btclib-org/btclib-node/branches/main/protection \
   --jq '.required_status_checks
         | {strict, checks: [.checks[] | {app_id, context}]}'
 # {"checks":[{"app_id":15368,"context":"test: every job passed"},
-#   {"app_id":15368,"context":"Regtest against Bitcoin Core"},
 #   {"app_id":15368,"context":"docs / Build the documentation"},
-#   {"app_id":15368,"context":"lint / Lint and type-check"}],
+#   {"app_id":15368,"context":"lint / Lint and type-check"},
+#   {"app_id":15368,"context":"regtest / Regtest against Bitcoin Core"}],
 #   "strict":true}
 gh api repos/btclib-org/btclib-node/rulesets --jq '.[].id' \
   | xargs -I{} gh api repos/btclib-org/btclib-node/rulesets/{} \
     --jq '.rules[] | select(.type=="required_status_checks")'
-# (nothing)
+#
 ```
 
 A red run on any of them blocks the merge. Each is produced by the
@@ -47,36 +47,37 @@ workflow that answers for it:
 | Check | Produced by |
 | --- | --- |
 | `test: every job passed` | `test.yml`'s aggregate job |
-| `Regtest against Bitcoin Core` | `integration-bitcoind.yml`'s `regtest` job |
 | `docs / Build the documentation` | `docs.yml`, calling `reusable-docs.yml` |
 | `lint / Lint and type-check` | `lint.yml`, calling `reusable-lint.yml` |
+| `regtest / Regtest against Bitcoin Core` | `integration-bitcoind.yml` |
 
-`integration-bitcoind.yml` has one job, so that job is the context; an
-aggregate over a single cell would be a job whose whole purpose is to
-repeat another's answer. `test.yml` has more than one and is therefore
-named through its aggregate, so that a job added to that workflow is
-gated on by being added rather than by somebody editing a rule stored
-outside the tree. Every one of these jobs carries the reasoning in its
-own header.
+`test.yml` has more than one job, so it is named through its aggregate,
+`test: every job passed`, so that a job added to that workflow is gated
+on by being added rather than by somebody editing a rule stored outside
+the tree. Every one of these jobs carries the reasoning in its own
+header.
 
-`docs.yml`'s own job contributes no name of its own, which is a third
-shape beside those two, `lint.yml` now sharing it: its whole body is a
-call to `btclib-org/.github`'s `reusable-docs.yml`, so the context joins
-the calling job's id to the called job's own name. `docs.yml`'s `docs`
-job calls `reusable-docs.yml`, whose own job is still named
+The other three contribute no name of their own instead: each of
+`docs.yml`, `lint.yml` and `integration-bitcoind.yml` is a whole body
+that calls a reusable workflow of `btclib-org/.github`'s, so the context
+joins the calling job's id to the called job's own name. `docs.yml`'s
+`docs` job calls `reusable-docs.yml`, whose own job is still named
 `Build the documentation`, so together they produce
 `docs / Build the documentation`; `lint.yml`'s `lint` job calls
 `reusable-lint.yml` the same way, whose own job is still named
 `Lint and type-check`, producing `lint / Lint and type-check`
-(issue btclib-org/.github#35).
+(issue btclib-org/.github#35); `integration-bitcoind.yml`'s `regtest`
+job calls `reusable-integration-bitcoind.yml` the same way, whose own
+job is still named `Regtest against Bitcoin Core`, producing
+`regtest / Regtest against Bitcoin Core` (issue btclib-org/.github#1196).
 
 The context is the job's `name:`, not the workflow's, and the `checks`
 array above holds it as a literal string that nothing in the tree can
 keep in step, bound to the Actions app (`15368`) that produces it:
-**renaming the `regtest` job would leave a required check nothing
-produces, and a merge would wait on it forever.** That is a change to
-make here first, in the same order this section's own opening argues —
-the setting, then the record of it.
+**renaming a called job, or the job here that calls it, leaves a
+required check nothing produces, and a merge would wait on it
+forever.** That is a change to make here first, in the same order this
+section's own opening argues — the setting, then the record of it.
 
 `docs.yml`'s "docs / Build the documentation" runs on every pull request
 already, the way `lint.yml` and `test.yml` do (*What gates a merge, and
@@ -93,9 +94,9 @@ gh api -X PATCH \
   --input - <<'JSON'
 {"strict": true,
  "checks": [{"context": "test: every job passed", "app_id": 15368},
-            {"context": "Regtest against Bitcoin Core", "app_id": 15368},
             {"context": "docs / Build the documentation", "app_id": 15368},
-            {"context": "lint / Lint and type-check", "app_id": 15368}]}
+            {"context": "lint / Lint and type-check", "app_id": 15368},
+            {"context": "regtest / Regtest against Bitcoin Core", "app_id": 15368}]}
 JSON
 ```
 
@@ -194,10 +195,13 @@ gh api repos/btclib-org/btclib-node/rulesets --jq '.[].id' \
   | xargs -I{} gh api repos/btclib-org/btclib-node/rulesets/{} \
     --jq '.rules[] | select(.type=="pull_request") | .parameters'
 # {"allowed_merge_methods":["squash"],
-#  "dismiss_stale_reviews_on_push":true,"require_code_owner_review":false,
+#  "dismiss_stale_reviews_on_push":true,
+#  "dismissal_restriction":{"allowed_actors":[],"enabled":false},
+#  "require_code_owner_review":false,
 #  "require_extra_approval_for_unattributed_changes":true,
-#  "require_last_push_approval":false,"required_approving_review_count":1,
-#  "required_review_thread_resolution":true}
+#  "require_last_push_approval":false,
+#  "required_approving_review_count":1,
+#  "required_review_thread_resolution":true,"required_reviewers":[]}
 ```
 
 ## Signed commits
@@ -803,12 +807,14 @@ has nothing of its own to read back:
 ```shell
 gh api orgs/btclib-org/actions/secrets \
   --jq '.secrets[] | "\(.name) \(.visibility)"'
+# CLAUDE_CODE_OAUTH_TOKEN all
 gh api orgs/btclib-org/dependabot/secrets \
   --jq '.secrets[] | "\(.name) \(.visibility)"'
-# CLAUDE_CODE_OAUTH_TOKEN all, from each
+# CLAUDE_CODE_OAUTH_TOKEN all
 gh api repos/btclib-org/btclib-node/actions/secrets --jq '.total_count'
+# 0
 gh api repos/btclib-org/btclib-node/dependabot/secrets --jq '.total_count'
-# 0, from each
+# 0
 ```
 
 The pair is what says the repository's own zeros are inheritance rather
@@ -824,7 +830,7 @@ store holds it:
 gh api repos/btclib-org/btclib-node/actions/variables --jq '.total_count'
 # 0
 gh api orgs/btclib-org/actions/variables --jq '.variables[].name'
-# (nothing)
+#
 gh api orgs/btclib-org/actions/variables --jq '.total_count'
 # 0
 ```
