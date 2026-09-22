@@ -1840,6 +1840,12 @@ keeps whichever shape it was written in.
   identically, and owe opposite work** (closes #1027): the seam bullet
   now says to run its identity check unconditionally.
 
+### `pyroma` moves out of `autoupdate`'s reach, into a local hook
+
+- **`.pre-commit-config.yaml`'s `pyroma` hook is `repo: local`, bound now
+  by `check`'s `pyroma>=5.0.1`, which also gains `[build-system]`'s own
+  `uv_build>=0.12.0,<0.13`** (issue btclib-org/.github#1199).
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
