@@ -1834,6 +1834,12 @@ keeps whichever shape it was written in.
   and the published tags and releases now carry section 11's `a fact
   about a changing world`** (issue btclib-org/.github#1017).
 
+### `CLAUDE.md` says a completed rebase reads like no rebase at all
+
+- **A completed rebase and no rebase at all answer those three reads
+  identically, and owe opposite work** (closes #1027): the seam bullet
+  now says to run its identity check unconditionally.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`

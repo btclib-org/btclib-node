@@ -726,6 +726,37 @@ Do not use Fable unless explicitly instructed.
   in one session -- `btclib-org/.github@b1aeb3a` and `6279da8` each
   touching only `.pre-commit-config.yaml`.
 
+  **That command takes an *old* base, and a completed rebase is what
+  makes the old base unrecoverable from the branch in front of you.**
+  Ask for it after the fact and the natural substitute is
+  `git merge-base HEAD origin/main`, which by then *is* `origin/main`:
+  the diff is between a commit and itself, empty, and reads as the
+  licence above. The same trap reaches the whole family --
+  `merge-base HEAD origin/main` equal to `origin/main`,
+  `git rev-list --count HEAD..origin/main` at `0`, that `--stat`
+  empty. Those three agree in two opposite worlds. They are what a
+  branch looks like when `origin/main` never moved and no rebase was
+  ever needed, and equally what one looks like *after* a rebase, a
+  rebase being precisely the operation that makes them agree. The
+  post-state keeps no trace of the transition that produced it, and
+  the two worlds owe opposite work: in the first the driver never ran
+  and nothing can have been eaten, in the second it ran and the
+  rebuild is owed. Measured at btclib-org/btclib-node#1020, where
+  those three numbers -- each of them correct -- were read as *no
+  rebase occurred* and written into a pull request body, against a
+  branch that had been rebased across #1019's entry, had had its blank
+  line eaten, and had been repaired by `check-changelog` already.
+
+  So rebase history is not inferred from the current relationship to
+  `origin/main`: `git reflog show <branch>` holds it, and whoever held
+  the branch knows it. Better, do not ask. The identity above -- one
+  `insert` opcode, `B.count(X) == 1`, `B.replace(X, "", 1) == A`, with
+  its controls -- returns the same verdict whether or not a rebase
+  happened, which is the reason to run it unconditionally rather than
+  first deciding whether it is owed. A check whose cost is a second
+  and whose precondition is a fact you can get wrong should not have a
+  precondition.
+
   **It is emphatically not the *no-seam case has to be shown to be a
   case* guard above, and reading it as one is worse than not running
   it.** That bullet is about the *arriving* side going empty, which
