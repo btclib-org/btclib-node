@@ -1846,6 +1846,30 @@ keeps whichever shape it was written in.
   by `check`'s `pyroma>=5.0.1`, which also gains `[build-system]`'s own
   `uv_build>=0.12.0,<0.13`** (issue btclib-org/.github#1199).
 
+### `REPOSITORY.md`'s required check for `regtest` names its own context
+
+- **`integration-bitcoind.yml`'s `regtest` job now calls
+  `reusable-integration-bitcoind.yml`, joining the required check to
+  `regtest / Regtest against Bitcoin Core`** (issue btclib-org/.github#1196).
+
+### `REPOSITORY.md`'s two shared secret-store comments become one per command
+
+- **The organization's two secret listings, and this repository's own
+  secret-store totals, each carry their own comment now, not one
+  comment shared between two commands** (issue btclib-org/.github#1262).
+
+### `REPOSITORY.md`'s `(nothing)` becomes the bare `#` already read as empty
+
+- **The organization's empty variable-name listing and the empty
+  `required_status_checks` ruleset rule each record an empty comment
+  now, not the word `(nothing)`** (issue btclib-org/.github#1263).
+
+### `REPOSITORY.md`'s `pull_request` ruleset reading records two keys GitHub added
+
+- **`dismissal_restriction` and `required_reviewers` are recorded now,
+  alongside the reading's other fields, matching what the endpoint
+  returns today** (issue btclib-org/.github#1017).
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
