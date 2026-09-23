@@ -1876,6 +1876,12 @@ keeps whichever shape it was written in.
   `.github/scripts/` are gone; `check-changelog` is now
   `btclib-org/.github`'s own hook** (issue btclib-org/.github#1293).
 
+### `test_a_pruned_server_serves_a_block_it_still_holds` waits for header sync
+
+- **The test now waits for `NodeStatus.HeaderSynced`** (closes #1029):
+  unsynced, its own hand-built `GetData` could race the client's own
+  `GetHeaders`, and a block answered first drops the connection.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
