@@ -1882,6 +1882,12 @@ keeps whichever shape it was written in.
   unsynced, its own hand-built `GetData` could race the client's own
   `GetHeaders`, and a block answered first drops the connection.
 
+### `notice-rgx` admits one leading shebang line ahead of the notice
+
+- **`pyproject.toml`'s `notice-rgx` gains `^(#![^\n]*\n)?` ahead of
+  `COPYRIGHT` transcribed** (issue btclib-org/.github#1294): section 5's
+  own spelling, for a script run by path that opens with its shebang.
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
