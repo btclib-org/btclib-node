@@ -176,8 +176,20 @@ def test_a_pruned_server_advertises_node_network_limited_only(
 def test_a_pruned_server_serves_a_block_it_still_holds(
     pruned_server_and_client: tuple[Node, Node],
 ) -> None:
-    """The tip itself, well inside the retained depth, is served whole."""
+    """The tip itself, well inside the retained depth, is served whole.
+
+    Waits for the client's own header sync first, the same guard
+    `test_a_client_never_asks_the_pruned_server_for_a_block_past_its_depth`
+    below already applies: `callbacks.verack`'s own `GetHeaders`, sent
+    after the connection already reads `Connected`, races this test's own
+    hand-built `GetData` for a block deep past genesis. Where the block
+    arrives first its parent is not yet indexed, `callbacks.block` raises
+    and `main.handle_p2p`'s `except` drops the connection -- after the
+    block was received, so what fails is the `Connected` assertion below
+    (btclib-org/btclib-node#1029).
+    """
     server, client = pruned_server_and_client
+    wait_until(lambda: client.status >= NodeStatus.HeaderSynced)
     tip_hash = server.chainstate.block_index.active_chain[-1]
     connection = client.p2p_manager.connections[0]
     connection.send(GetData([Inventory(InventoryType.MSG_BLOCK, tip_hash)]))
