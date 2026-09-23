@@ -627,8 +627,6 @@ testpaths = [
     "tests/pragma_test.py",
     "tests/property_test.py",
     "tests/sdist_dotted_names_test.py",
-    "tests/wait_for_pypi_release_test.py",
-    "tests/wait_for_readthedocs_build_test.py",
     "tests/unit",
     "tests/functional",
     "tests/integration",
@@ -1018,32 +1016,9 @@ ignore = [
 # value, so `check_vendored_pin.py`'s prints are its report and not
 # debug residue either.
 ".github/scripts/check_vendored_pin.py" = ["T20"]
-# and the same for the read the docs wait: `release.yml`'s
-# `documented` job reads the retry, the deadline and the
-# `::error::` annotation off this script's stdout, which is where
-# a GitHub Actions annotation has to be written to be one
-".github/scripts/wait_for_readthedocs_build.py" = ["T20"]
-# and the same for the index wait, one service over: what it prints is
-# the `wait-for-index` job's own report -- one line per question the
-# index has not answered yet, the answer when it comes, or the
-# `::error::` naming the version that never arrived
-".github/scripts/wait_for_pypi_release.py" = ["T20"]
 # and the same for the citation pin check: the pre-commit hook that
 # runs it reads a failing developer's terminal, not a return value
 ".github/scripts/check_core_citation_pin.py" = ["T20"]
-# and the same for the changelog check: the pre-commit hook that runs
-# it reads a failing developer's terminal, not a return value, and what
-# it prints is the line and the reason, which is the whole of its report
-".github/scripts/check_changelog.py" = ["T20"]
-# and the same for the mutation counter: mutation.yml's "Write the
-# reports" step reads its verdict off stdout, one line per session, not
-# from a return value. PLR2004 is this file's own `sys.argv` length
-# check against a bare 2: this tree scopes that rule to tests/** above
-# rather than ignoring it tree-wide, so a script run outside a test
-# needs its own entry -- named here rather than adapted into the script
-# itself, which section 14 tracks byte-for-byte across every tree that
-# owes it (btclib-org/.github#1152)
-".github/scripts/mutation_counts.py" = ["T20", "PLR2004"]
 # every __init__ in this file is one line, super().__init__(message) or
 # a formatted message built from its own arguments -- what it does is
 # already the whole of what the class's own docstring says, so a

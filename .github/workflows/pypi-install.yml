@@ -82,27 +82,13 @@ on:
   # one, installing from the index for a pull request nobody is on any
   # more
   #
-  # The wait's own logic is .github/scripts/wait_for_pypi_release.py
-  # rather than a loop in a run: block, and naming that script beside
-  # this file is what vendored-vectors.yml does with the same shape
-  # (btclib-org/.github#814). What such a run asks of the script, the tag
-  # being empty on a pull request, is the plumbing
-  # tests/wait_for_pypi_release_test.py cannot reach: the argv the step
-  # below passes, a sparse checkout that has to hold the path it names,
-  # and the standard library alone under --no-project, where the test
-  # loads the script into a venv carrying this project's dependencies.
-  # The rejected alternative leaves the script out, so that a diff
-  # touching no workflow spends no matrix; what it costs is a script-only
-  # pull request landing without this workflow having run the changed
-  # script, the first run nobody asks for being the weekly schedule or
-  # the next release. What naming it spends is runner time and not a
-  # merge: REPOSITORY.md's required checks on main do not name this
-  # workflow
+  # The wait's own logic is btclib-org/.github's wait_for_pypi_release.py,
+  # which reusable-wait-for-index.yml below checks out at @main rather
+  # than a copy this tree holds.
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
     paths:
       - .github/workflows/pypi-install.yml
-      - .github/scripts/wait_for_pypi_release.py
 
 # least privilege for the GITHUB_TOKEN: everything running in a job
 # (actions, dependencies) can read the token, so it must not be able to
@@ -130,9 +116,9 @@ jobs:
   # this tree in one landing (btclib-org/.github#35). What stays here is
   # the trigger, the workflow-level permissions, the concurrency group
   # and this job's own `if:`, which the callee does not carry and says
-  # so in its own header. `package` is `wait_for_pypi_release.py`'s own
-  # argument, `btclib-node`, read off this file rather than off the
-  # repository's name, unchanged by the move.
+  # so in its own header. `package` is btclib-org/.github's
+  # `wait_for_pypi_release.py`'s own argument, `btclib-node`, read off
+  # this file rather than off the repository's name.
   #
   # Nothing here is conditioned on the version: the input is empty
   # wherever no release is calling, and an empty tag is nothing to wait

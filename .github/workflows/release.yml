@@ -339,7 +339,7 @@ jobs:
   # and the fix for a red run here is a build on their side, not a moved
   # tag
   #
-  # The wait itself is `.github/scripts/wait_for_readthedocs_build.py`
+  # The wait itself is btclib-org/.github's wait_for_readthedocs_build.py
   # rather than a shell loop written out here, which is what gives it a
   # test: a tag is the only trigger that reaches it, so a loop kept in
   # this file is first executed on the day a release depends on it. The
@@ -347,8 +347,6 @@ jobs:
   # deadline is set below the reusable workflow's own timeout-minutes, so
   # the script's `::error::` runs rather than being killed inside the
   # wait it exists to report on (btclib-org/btclib#1165).
-  # `tests/wait_for_readthedocs_build_test.py` is what drives the retry,
-  # the deadline and the annotation.
   #
   # What the wait still cannot do is tell "still building" from "will
   # never build": /en/<tag>/ answers 404 for both, and the v3 API that
@@ -360,10 +358,10 @@ jobs:
   #
   # The sparse checkout and the wait itself are btclib-org/.github's:
   # reusable-documented.yml, called at @main so a fix there reaches this
-  # tree in one landing (section 10 of its README.md). It checks out this
-  # calling repository's own tree by default, so
-  # `.github/scripts/wait_for_readthedocs_build.py` and its test stay
-  # here, unmoved. What stays here besides is the `needs:` edge onto
+  # tree in one landing (section 10 of its README.md). It checks
+  # `btclib-org/.github` out at `main` for the checkout and the wait
+  # alike, so `wait_for_readthedocs_build.py` is read from there and not
+  # from this tree. What stays here is the `needs:` edge onto
   # version-check and the `if: github.event_name == 'push'` guard, which
   # the called workflow's own header says is the caller's
   # (btclib-org/.github#35)
