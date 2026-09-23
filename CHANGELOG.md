@@ -1870,6 +1870,12 @@ keeps whichever shape it was written in.
   alongside the reading's other fields, matching what the endpoint
   returns today** (issue btclib-org/.github#1017).
 
+### The shared scripts move to `btclib-org/.github`, and this tree's copies go
+
+- **The scripts this tree shared with the organization under
+  `.github/scripts/` are gone; `check-changelog` is now
+  `btclib-org/.github`'s own hook** (issue btclib-org/.github#1293).
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`
