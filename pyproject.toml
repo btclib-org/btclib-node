@@ -1043,9 +1043,12 @@ convention = "pep257"
 # COPYRIGHT is the one place the notice text is written down; this is all
 # three of its lines as one regex rather than only the holder line, so a
 # file keeping the first and dropping the license lines below it does not
-# pass. Anchored with ^: unanchored, CPY001 is a search over the first
-# 4096 bytes and not a check that the notice opens the file.
-notice-rgx = "^# Copyright \\(c\\) The btclib developers\\n# Distributed under the MIT software license, see the accompanying\\n# LICENSE file or https://opensource\\.org/license/mit for the full text\\."
+# pass. Anchored with ^ and preceded by one optional #! line -- section
+# 5's own spelling of the transcription, for a script run by path that
+# opens with its own shebang -- so the notice opens the file or
+# immediately follows that one #! line, and CPY001 refuses it starting
+# anywhere else: unanchored, it is a search over the first 4096 bytes.
+notice-rgx = "^(#![^\\n]*\\n)?# Copyright \\(c\\) The btclib developers\\n# Distributed under the MIT software license, see the accompanying\\n# LICENSE file or https://opensource\\.org/license/mit for the full text\\."
 
 [tool.codespell]
 # "clear" alone, where codespell's default is "clear,rare": measured
