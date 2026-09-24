@@ -48,6 +48,11 @@ keeps whichever shape it was written in.
   section 2 of the organization standard owing it to each tree section
   10's `scorecard` entry names (issue btclib-org/.github#350).
 
+### `sdist-rebuild.yml` stops passing `attest-signer`
+
+The called workflow verifies against `reusable-attest.yml` alone, so the
+input decides nothing (issue btclib-org/.github#1315).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
