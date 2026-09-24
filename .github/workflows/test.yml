@@ -598,15 +598,28 @@ jobs:
     # !cancelled() lets this job be skipped there instead, which
     # satisfies the check as any other skip does, while a single needed
     # job cancelled on its own still fails below.
-    # The draft and closed conditions are the ones every job above
-    # carries, so that a draft skips uniformly rather than tripping this
+    # The draft flag is not part of this condition: a skipped required
+    # check reads as passing, and this job's own check run does not exist
+    # until every job above has settled, so declining it here while draft
+    # would leave the draft's skip as the only check of this name on the
+    # sha until a later run's own aggregate exists. The closed condition
+    # stays, carried by every job above too, for a closed pull request
+    # having nothing left to become ready (btclib-org/.github#1327)
     if: >-
       ${{ !cancelled()
-      && !github.event.pull_request.draft
       && github.event.action != 'closed' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # a skipped required check reads as passing, so the draft flag
+      # moves from the job's own `if:` above into this first step: the
+      # job still runs while draft, and reports a failure instead of a
+      # skip (btclib-org/.github#1327)
+      - name: Fail while this pull request is a draft
+        if: github.event.pull_request.draft
+        run: |
+          echo "::error::this pull request is a draft"
+          exit 1
       # `join(needs.*.result, ',')` interpolates a closed set: each
       # element is one of `success`, `failure`, `cancelled`, `skipped`
       # or absent, all written by GitHub, so no fork-controlled string
