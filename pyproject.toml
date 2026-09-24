@@ -131,7 +131,7 @@ keywords = [
 # `OS Independent` is a claim about every platform; the three
 # classifiers below are a claim about where the suite is run, which is
 # `ubuntu-latest` and `windows-latest` before every merge and
-# `ubuntu-24.04-arm`, `macos-26-intel` and `macos-latest` weekly.
+# `ubuntu-24.04-arm` and `macos-latest` weekly.
 classifiers = [
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3",
@@ -698,10 +698,11 @@ xfail_strict = true
 # that waits seven times at wait_until's own default could in
 # principle ask for more than this, and the run would then be killed by
 # this limit rather than by the deadline that was actually missed --
-# which loses the condition the test was waiting on. Nothing observed
-# comes near it: the longest single wait measured anywhere is 12.60s,
-# and the run that failed on a four-core runner reported at 20.24s.
-# Issue #46 is where that starvation is tracked.
+# which loses the condition the test was waiting on. The longest single
+# wait is ::test_download's, which runs past wait_until's own default on
+# `macos-latest` and so passes a bound of its own, set with that test's
+# setup in view to stay under this one (btclib-org/btclib-node#1037).
+# Issue #46 is where a node's starvation under `-n auto` is tracked.
 timeout = 300
 # `["error"]`, once the fixtures in tests/conftest.py closed what
 # tests/unit/main_test.py's regtest_node and its kind (issue #111,

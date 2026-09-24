@@ -641,11 +641,16 @@ WEDGE_LIMIT = 30
 @contextmanager
 def a_wedged_node(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Node]:
     """Start a node whose loop will not come back, and let go anyway."""
-    wedged = threading.Event()
+    # which nodes reached the wedge, and not merely that one did: the
+    # patch below is module-wide, so a node another test in this worker
+    # left running reaches it too, and a flag it set would send `stop`
+    # to this node before its own loop ever got there
+    # (btclib-org/btclib-node#1037)
+    wedged: list[Node] = []
     released = threading.Event()
 
-    def never_returns(node: Node) -> None:
-        wedged.set()
+    def never_returns(caller: Node) -> None:
+        wedged.append(caller)
         released.wait(timeout=WEDGE_LIMIT)
 
     monkeypatch.setattr(btclib_node, "update_chain", never_returns)
@@ -657,7 +662,7 @@ def a_wedged_node(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[N
     # that can fail
     try:
         node.start()
-        assert wedged.wait(timeout=10)
+        wait_until(lambda: node in wedged, timeout=10)
         yield node
     finally:
         released.set()

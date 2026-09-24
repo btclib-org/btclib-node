@@ -53,6 +53,12 @@ keeps whichever shape it was written in.
 The called workflow verifies against `reusable-attest.yml` alone, so the
 input decides nothing (issue btclib-org/.github#1315).
 
+### `test_download`, `test_wrong_ping` and `a_wedged_node` stop flaking
+
+- **`test_download` waits up to 180s and stops its nodes if it fails,
+  `test_wrong_ping` waits out `verack`'s own ping, and `a_wedged_node`
+  waits for its own node, not any node, to wedge** (closes #1037).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
