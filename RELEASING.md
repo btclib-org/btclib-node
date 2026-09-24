@@ -604,11 +604,11 @@ this release included.
    gh attestation verify "$wheel" --repo "$repo" \
      --signer-workflow "$signer" &&
    gh attestation verify "$wheel" --repo "$repo" \
-     --bundle "v${version:?}.attestation.jsonl"
+     --signer-workflow "$signer" --bundle "v${version:?}.attestation.jsonl"
    ```
 
    the first asks the attestations API for the signed statement, the
-   second reads it from the asset and asks nothing, and the chain runs
+   second reads it from the asset rather than asking the API, and the chain runs
    the second only where the first passed. One attestation covers the
    wheel, the sdist and the bill of materials, so all three verify
    against the same bundle.
