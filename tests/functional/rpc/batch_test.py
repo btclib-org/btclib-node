@@ -120,18 +120,19 @@ def test_stop_anywhere_in_a_batch_answers_every_member_then_stops(
         )
     )
     node.start()
-    wait_until_listening(node.rpc_manager)
-    client = rpc_client(node)
+    try:
+        wait_until_listening(node.rpc_manager)
+        client = rpc_client(node)
 
-    results = client.call_batch(
-        [("ping", None), ("stop", None), ("getbestblockhash", None)]
-    )
+        results = client.call_batch(
+            [("ping", None), ("stop", None), ("getbestblockhash", None)]
+        )
 
-    assert results[0] is None
-    assert results[1] == "Btclib node stopping"
-    assert results[2]
-
-    node.stop()
+        assert results[0] is None
+        assert results[1] == "Btclib node stopping"
+        assert results[2]
+    finally:
+        node.stop()
     assert not node.is_alive()
 
 

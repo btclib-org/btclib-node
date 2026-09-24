@@ -30,6 +30,7 @@ connects.
 import secrets
 import socket
 import time
+from contextlib import contextmanager
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
@@ -176,8 +177,9 @@ def blocks_of(count: int, payload_bytes: int) -> list[Block]:
     return chain
 
 
-def a_served_node(tmp_path: Path, chain: list[Block]) -> Node:
-    """Return a started node holding `chain` in its block store."""
+@contextmanager
+def a_served_node(tmp_path: Path, chain: list[Block]) -> Iterator[Node]:
+    """Give a started node holding `chain` in its store, stopped on exit."""
     node = Node(
         config=Config(
             chain="regtest",
@@ -188,10 +190,13 @@ def a_served_node(tmp_path: Path, chain: list[Block]) -> Node:
         )
     )
     node.start()
-    wait_until_listening(node.p2p_manager)
-    for block in chain:
-        node.block_db.add_block(block)
-    return node
+    try:
+        wait_until_listening(node.p2p_manager)
+        for block in chain:
+            node.block_db.add_block(block)
+        yield node
+    finally:
+        node.stop()
 
 
 class DeafPeer:
@@ -245,15 +250,14 @@ class DeafPeer:
 def deaf_peer(tmp_path: Path) -> Iterator[tuple[Node, DeafPeer, list[Block]]]:
     """Give a node holding a served chain, and a peer of it that never reads."""
     chain = blocks_of(_BLOCKS_ASKED_FOR, _SERVED_BLOCK_BYTES)
-    node = a_served_node(tmp_path, chain)
-    peer = DeafPeer(node)
-    try:
-        peer.shake_hands()
-        wait_until(lambda: len(node.p2p_manager.connections) == 1)
-        yield node, peer, chain
-    finally:
-        peer.close()
-        node.stop()
+    with a_served_node(tmp_path, chain) as node:
+        peer = DeafPeer(node)
+        try:
+            peer.shake_hands()
+            wait_until(lambda: len(node.p2p_manager.connections) == 1)
+            yield node, peer, chain
+        finally:
+            peer.close()
 
 
 def the_connection(node: Node) -> Connection:

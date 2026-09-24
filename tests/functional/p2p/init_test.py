@@ -40,10 +40,10 @@ def test_init(tmp_path: Path) -> None:
         )
     )
     node.start()
-
-    wait_until_listening(node.p2p_manager)
-
-    node.stop()
+    try:
+        wait_until_listening(node.p2p_manager)
+    finally:
+        node.stop()
 
     # a test that ends with its node still running ends with something
     # still logging, and this is the node the p2p manager runs under

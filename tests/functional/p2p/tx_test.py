@@ -73,66 +73,65 @@ def test_send_tx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     )
     node1.start()
     node2.start()
-
-    wait_until_listening(node1.p2p_manager)
-    wait_until_listening(node2.p2p_manager)
-
-    # COINBASE_MATURITY long -- exactly that and no more, so nothing in
-    # the chain itself spends chain[0]'s coinbase first, leaving it for
-    # this test's own tx below, which is old enough to spend it the
-    # moment this chain's tip connects (btclib-org/btclib-node#569).
-    # tip_time keeps only the tip recent, every earlier block still
-    # dated the ordinary way -- this test's own maturity arithmetic
-    # above reads real height and BIP34, neither of which tip_time
-    # touches (btclib-org/btclib-node#661)
-    chain = generate_random_chain(
-        COINBASE_MATURITY, RegTest().genesis.hash, tip_time=datetime.now(UTC)
-    )
-    for node in (node1, node2):
-        block_index = node.chainstate.block_index
-        node.chainstate.block_index.add_headers([block.header for block in chain])
-        node.status = NodeStatus.HeaderSynced
-        for block in chain:
-            node.block_db.add_block(block)
-            block_index.set_downloaded(block.header.hash)
-        # both lambdas below are safe despite B023: wait_until resolves
-        # each one before the loop rebinds block_index/node, see
-        # wait_until's own comment
-        wait_until(lambda: len(block_index.active_chain) == len(chain) + 1)  # noqa: B023
-        # and not merely the chain being connected: callbacks.tx drops
-        # a transaction that arrives before this node is block synced,
-        # whatever its own version told the peer. btclib-org/btclib-node#129
-        wait_until(lambda: node.status == NodeStatus.BlockSynced)  # noqa: B023
-        # _send_due_feefilters gates outgoing relay on this same flag
-        # (btclib-org/btclib-node#661); update_ibd_status only re-checks
-        # it at update_chain's own settle points, which the wait above
-        # already forces past
-        wait_until(lambda: node.is_initial_block_download is False)  # noqa: B023
-
-    node2.p2p_manager.connect(local_addr(node1.p2p_port))
-    # each side's own `connections` only holds a peer past its own
-    # `verack`, and the two handshakes complete independently, so each
-    # is waited for on its own rather than assuming one implies the other
-    wait_until(lambda: len(node1.p2p_manager.connections))
-    connection = node1.p2p_manager.connections[0]
-    wait_until(lambda: connection.status == P2pConnStatus.Connected)
-    wait_until(lambda: len(node2.p2p_manager.connections))
-    connection = node2.p2p_manager.connections[0]
-    wait_until(lambda: connection.status == P2pConnStatus.Connected)
-
-    tx = generate_random_transaction(chain[0].transactions[0].id)
-
-    assert node1.mempool.size == 0
-
-    # `send_raw_transaction`'s own order (rpc/callbacks.py): the mempool
-    # holds it before it is announced, since `broadcast_raw_transaction`
-    # goes through the same `inv`/`getdata` round trip a relayed
-    # transaction does (#141) and `getdata` serves a `tx` from the
-    # mempool, not from what this call was handed.
-    node2.mempool.add_tx(tx, 1000)
-    node2.p2p_manager.broadcast_raw_transaction(tx, 1000)
-
     try:
+        wait_until_listening(node1.p2p_manager)
+        wait_until_listening(node2.p2p_manager)
+
+        # COINBASE_MATURITY long -- exactly that and no more, so nothing in
+        # the chain itself spends chain[0]'s coinbase first, leaving it for
+        # this test's own tx below, which is old enough to spend it the
+        # moment this chain's tip connects (btclib-org/btclib-node#569).
+        # tip_time keeps only the tip recent, every earlier block still
+        # dated the ordinary way -- this test's own maturity arithmetic
+        # above reads real height and BIP34, neither of which tip_time
+        # touches (btclib-org/btclib-node#661)
+        chain = generate_random_chain(
+            COINBASE_MATURITY, RegTest().genesis.hash, tip_time=datetime.now(UTC)
+        )
+        for node in (node1, node2):
+            block_index = node.chainstate.block_index
+            node.chainstate.block_index.add_headers([block.header for block in chain])
+            node.status = NodeStatus.HeaderSynced
+            for block in chain:
+                node.block_db.add_block(block)
+                block_index.set_downloaded(block.header.hash)
+            # both lambdas below are safe despite B023: wait_until resolves
+            # each one before the loop rebinds block_index/node, see
+            # wait_until's own comment
+            wait_until(lambda: len(block_index.active_chain) == len(chain) + 1)  # noqa: B023
+            # and not merely the chain being connected: callbacks.tx drops
+            # a transaction that arrives before this node is block synced,
+            # whatever its own version told the peer. btclib-org/btclib-node#129
+            wait_until(lambda: node.status == NodeStatus.BlockSynced)  # noqa: B023
+            # _send_due_feefilters gates outgoing relay on this same flag
+            # (btclib-org/btclib-node#661); update_ibd_status only re-checks
+            # it at update_chain's own settle points, which the wait above
+            # already forces past
+            wait_until(lambda: node.is_initial_block_download is False)  # noqa: B023
+
+        node2.p2p_manager.connect(local_addr(node1.p2p_port))
+        # each side's own `connections` only holds a peer past its own
+        # `verack`, and the two handshakes complete independently, so each
+        # is waited for on its own rather than assuming one implies the other
+        wait_until(lambda: len(node1.p2p_manager.connections))
+        connection = node1.p2p_manager.connections[0]
+        wait_until(lambda: connection.status == P2pConnStatus.Connected)
+        wait_until(lambda: len(node2.p2p_manager.connections))
+        connection = node2.p2p_manager.connections[0]
+        wait_until(lambda: connection.status == P2pConnStatus.Connected)
+
+        tx = generate_random_transaction(chain[0].transactions[0].id)
+
+        assert node1.mempool.size == 0
+
+        # `send_raw_transaction`'s own order (rpc/callbacks.py): the mempool
+        # holds it before it is announced, since `broadcast_raw_transaction`
+        # goes through the same `inv`/`getdata` round trip a relayed
+        # transaction does (#141) and `getdata` serves a `tx` from the
+        # mempool, not from what this call was handed.
+        node2.mempool.add_tx(tx, 1000)
+        node2.p2p_manager.broadcast_raw_transaction(tx, 1000)
+
         wait_until(lambda: node1.mempool.size)
     finally:
         node1.stop()

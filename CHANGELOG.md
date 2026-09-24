@@ -59,6 +59,12 @@ input decides nothing (issue btclib-org/.github#1315).
   `test_wrong_ping` waits out `verack`'s own ping, and `a_wedged_node`
   waits for its own node, not any node, to wedge** (closes #1037).
 
+### A functional test that fails in a wait stops its own nodes
+
+- **Every node a functional test or its fixture starts is stopped in a
+  `finally` or on leaving a context manager**, so a test failing in a wait
+  leaves none running in its xdist worker for a later test (closes #1048).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

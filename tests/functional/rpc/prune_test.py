@@ -45,42 +45,37 @@ def test_pruneblockchain_deletes_up_to_the_given_height(tmp_path: Path) -> None:
         )
     )
     node.start()
-    wait_until_listening(node.rpc_manager)
+    try:
+        wait_until_listening(node.rpc_manager)
 
-    regtest = RegTest()
-    chain = generate_random_chain(regtest.prune_after_height + 5, regtest.genesis.hash)
-    block_index = node.chainstate.block_index
-    block_index.add_headers([block.header for block in chain])
-    node.status = NodeStatus.HeaderSynced
-    for block in chain:
-        node.block_db.add_block(block)
-        block_index.set_downloaded(block.header.hash)
-    wait_until(lambda: len(block_index.active_chain) == len(chain) + 1)
-    assert node.block_db.pruned_up_to == -1
-
-    _, body = rpc_client(node).call_raw(
-        "pruneblockchain", [3], jsonrpc="1.0", request_timeout=2
-    )
-
-    assert body["result"] == 3
-    assert node.block_db.pruned_up_to == 3
-    assert node.block_db.get_block(block_index.active_chain[3]) is None
-    assert node.block_db.get_block(block_index.active_chain[4]) is not None
-
-    node.stop()
-
-
-def test_pruneblockchain_refuses_a_node_not_in_prune_mode(tmp_path: Path) -> None:
-    """Core's own refusal message, over the wire."""
-    node = Node(
-        config=Config(
-            chain="regtest",
-            data_dir=tmp_path,
-            allow_p2p=False,
-            rpc_port=get_random_port(),
+        regtest = RegTest()
+        chain = generate_random_chain(
+            regtest.prune_after_height + 5, regtest.genesis.hash
         )
-    )
-    node.start()
+        block_index = node.chainstate.block_index
+        block_index.add_headers([block.header for block in chain])
+        node.status = NodeStatus.HeaderSynced
+        for block in chain:
+            node.block_db.add_block(block)
+            block_index.set_downloaded(block.header.hash)
+        wait_until(lambda: len(block_index.active_chain) == len(chain) + 1)
+        assert node.block_db.pruned_up_to == -1
+
+        _, body = rpc_client(node).call_raw(
+            "pruneblockchain", [3], jsonrpc="1.0", request_timeout=2
+        )
+
+        assert body["result"] == 3
+        assert node.block_db.pruned_up_to == 3
+        assert node.block_db.get_block(block_index.active_chain[3]) is None
+        assert node.block_db.get_block(block_index.active_chain[4]) is not None
+    finally:
+        node.stop()
+
+
+def test_pruneblockchain_refuses_a_node_not_in_prune_mode(rpc_node: Node) -> None:
+    """Core's own refusal message, over the wire."""
+    node = rpc_node
     wait_until_listening(node.rpc_manager)
 
     _, body = rpc_client(node).call_raw(
@@ -92,5 +87,3 @@ def test_pruneblockchain_refuses_a_node_not_in_prune_mode(tmp_path: Path) -> Non
     assert body["error"]["message"] == (
         "Cannot prune blocks because node is not in prune mode."
     )
-
-    node.stop()

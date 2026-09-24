@@ -18,29 +18,25 @@ from typing import TYPE_CHECKING, Any
 from bitcoin_core_rpc import BitcoinCoreRpcClient
 from btclib.fetch.bitcoin_core import BitcoinCoreFetcher
 
-from btclib_node import Node
 from btclib_node.chains import RegTest
-from btclib_node.config import Config
 from btclib_node.constants import NodeStatus
 from tests import (
     build_block,
     generate_coinbase,
     generate_random_chain,
     generate_random_header_chain,
-    get_random_port,
     rpc_client,
     wait_until,
     wait_until_listening,
 )
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from btclib_node import Node
 
 
 def test_best_block_hash(rpc_node: Node) -> None:
     """getbestblockhash, live, answers the connected chain's own tip."""
     node = rpc_node
-
     wait_until_listening(node.rpc_manager)
 
     chain = generate_random_chain(100, RegTest().genesis.hash)
@@ -65,7 +61,6 @@ def test_best_block_hash(rpc_node: Node) -> None:
 def test_block_hash(rpc_node: Node) -> None:
     """getblockhash, over a real socket, answers the hash at a given height."""
     node = rpc_node
-
     wait_until_listening(node.rpc_manager)
 
     chain = generate_random_chain(100, RegTest().genesis.hash)
@@ -89,7 +84,6 @@ def test_block_hash(rpc_node: Node) -> None:
 def test_block_count(rpc_node: Node) -> None:
     """getblockcount, live, answers the connected chain's own height."""
     node = rpc_node
-
     wait_until_listening(node.rpc_manager)
 
     chain = generate_random_chain(10, RegTest().genesis.hash)
@@ -233,7 +227,6 @@ def get_block_header(node: Node, block_hash: str) -> Any:
 def test_block_header_on_the_chain_the_node_validated(rpc_node: Node) -> None:
     """getblockheader, live, names a validated block's own neighbours."""
     node = rpc_node
-
     wait_until_listening(node.rpc_manager)
 
     chain = generate_random_chain(100, RegTest().genesis.hash)
@@ -263,23 +256,14 @@ def test_block_header_on_the_chain_the_node_validated(rpc_node: Node) -> None:
     assert middle["nextblockhash"] == chain[50].header.hash.hex()
 
 
-def test_block_header_of_a_block_the_node_has_not_validated(tmp_path: Path) -> None:
+def test_block_header_of_a_block_the_node_has_not_validated(rpc_node: Node) -> None:
     """`getblockheader` answers -1 confirmations for a header not yet validated.
 
     A node that has taken headers and downloaded nothing has an active
     chain that is the genesis alone, so every one of these is off it and
     none of them is confirmed by anything.
     """
-    node = Node(
-        config=Config(
-            chain="regtest",
-            data_dir=tmp_path,
-            allow_p2p=False,
-            rpc_port=get_random_port(),
-        )
-    )
-    node.start()
-
+    node = rpc_node
     wait_until_listening(node.rpc_manager)
 
     chain = generate_random_header_chain(2000, RegTest().genesis.hash)
@@ -302,13 +286,10 @@ def test_block_header_of_a_block_the_node_has_not_validated(tmp_path: Path) -> N
     assert middle["previousblockhash"] == chain[-1002].hash.hex()
     assert "nextblockhash" not in middle
 
-    node.stop()
-
 
 def test_get_block_answers_the_hex_a_peer_is_sent_on_the_wire(rpc_node: Node) -> None:
     """getblock, live, verbosity 0, answers the block's own serialized bytes."""
     node = rpc_node
-
     wait_until_listening(node.rpc_manager)
 
     chain = generate_random_chain(3, RegTest().genesis.hash)
@@ -337,7 +318,6 @@ def test_submit_block_extends_the_node_s_own_active_chain(rpc_node: Node) -> Non
     node's own background loop rather than a direct call.
     """
     node = rpc_node
-
     wait_until_listening(node.rpc_manager)
 
     chain = generate_random_chain(1, RegTest().genesis.hash)
