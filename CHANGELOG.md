@@ -34,7 +34,7 @@ keeps whichever shape it was written in.
 
 - **`RELEASING.md`, `SECURITY.md` and `sdist-rebuild.yml` name the
   called workflow as the signer**, the path of `release.yml` kept for
-  v2026.9.4 and earlier, which it signed (issue btclib-org/.github#1311).
+  v2026.9.4 and earlier, which it signed (closes btclib-org/.github#1311).
 
 ## v2026.9.24
 
