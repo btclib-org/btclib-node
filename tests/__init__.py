@@ -368,7 +368,9 @@ def wait_until(func: Callable[[], object], timeout: float = 60) -> None:
     # wait returns immediately; what moves under load is the tail, and
     # the longest single wait is always `test_download`'s wait for the
     # active chain to reach the downloaded length -- 7.64s on an idle
-    # ten-core machine and 12.60s at twenty times its core count. The
+    # ten-core machine and 12.60s at twenty times its core count, and
+    # past this default on `macos-latest`, which is why that wait passes
+    # a bound of its own (btclib-org/btclib-node#1037). The
     # wait above it in that test is `wait_until_listening`, which is a
     # loop of its own with a deadline of its own and is not bounded by
     # anything here.

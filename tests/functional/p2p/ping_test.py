@@ -120,6 +120,15 @@ def test_wrong_ping(tmp_path: Path) -> None:
     node1_conn_id = node1.p2p_manager.connections[0].id
     node2_conn_id = node2.p2p_manager.connections[0].id
 
+    # the ping `verack` sends answered first, as `test_correct_ping` above
+    # waits for too: `connections` holds a peer before `verack` has sent
+    # it, so that ping can go out after the one below and overwrite the
+    # nonce set by hand, and its `pong`, pushed to the front of the queue
+    # (`Connection.parse_messages`), then matches and clears the pending
+    # ping ahead of the wrong one, which is ignored instead of dropping
+    # the peer (btclib-org/btclib-node#1037)
+    node1_conn = node1.p2p_manager.connections[0]
+    wait_until(lambda: node1_conn.ping_nonce == 0)
     node1.p2p_manager.connections[0].ping_sent = time.time()
     node1.p2p_manager.connections[0].ping_nonce = 1
     node1.p2p_manager.send(Ping(2), 0)

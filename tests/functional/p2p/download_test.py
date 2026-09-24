@@ -11,6 +11,7 @@ across many connections actually land a complete, synced chain.
 
 import shutil
 import time
+from contextlib import ExitStack
 from typing import TYPE_CHECKING
 
 import pytest
@@ -30,6 +31,19 @@ from tests import (
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+# The wait for `main_node`'s active chain lasts as long as fetching and
+# connecting every block of the chain takes, so it scales with the runner
+# rather than returning at once the way almost every other wait does, and
+# on `macos-latest` it runs past `wait_until`'s own default often enough to
+# fail there intermittently (btclib-org/btclib-node#1037). The bound is
+# twice that runner's tail for this wait, measured from os-macos.yml's
+# `--durations` line for this test: a call of 107.68s at most over the
+# dispatches of that issue's branch (run 36036118807), less the setup and
+# teardown a run that failed at 60.02s puts near 19s (78.73s, run
+# 35985522631) -- a wait near 90s. The rest of the test still fits under
+# `timeout` in pyproject.toml.
+DOWNLOAD_TIMEOUT = 180
 
 
 @pytest.mark.order(1)
@@ -87,62 +101,71 @@ def test_download(tmp_path: Path) -> None:
     # `bootstrap_node` has to stay a live peer for the rest of it,
     # which a stopped cache node never needs to be.
     bootstrap_node.chainstate.flush()
-    bootstrap_node.start()
-    wait_until_listening(bootstrap_node.p2p_manager)
+    # Every node started here is stopped whichever way the test ends: one
+    # left running outlives the test in its xdist worker and goes on
+    # calling `btclib_node.update_chain`, which a later test in that worker
+    # can have patched for a node of its own (btclib-org/btclib-node#1037).
+    # `ExitStack` runs every callback even where an earlier one raises, and
+    # re-raises afterwards, so one node that will not stop
+    # (`NodeShutdownTimeoutError`) does not leave the others running.
+    # `stop` itself joins the thread it stopped.
+    with ExitStack() as stack:
+        bootstrap_node.start()
+        stack.callback(bootstrap_node.stop)
+        wait_until_listening(bootstrap_node.p2p_manager)
 
-    download_nodes = [bootstrap_node]
-    for i in range(1, 10):
-        # Not `LOCK`: `bootstrap_node` is running and holds it open, and
-        # RocksDB re-creates it fresh on every `Rdict` open regardless of
-        # what -- if anything -- was there before, so a copy carries no
-        # state a fresh open would not already write itself. Copying it
-        # anyway is what raised `shutil.Error: [WinError 32]` on
-        # `windows-latest`, Windows refusing to copy a file another
-        # handle still holds where POSIX does not (closes #683).
-        shutil.copytree(
-            tmp_path / "node0",
-            tmp_path / f"node{i}",
-            ignore=shutil.ignore_patterns("LOCK"),
-        )
-        node = Node(
+        download_nodes = [bootstrap_node]
+        for i in range(1, 10):
+            # Not `LOCK`: `bootstrap_node` is running and holds it open, and
+            # RocksDB re-creates it fresh on every `Rdict` open regardless of
+            # what -- if anything -- was there before, so a copy carries no
+            # state a fresh open would not already write itself. Copying it
+            # anyway is what raised `shutil.Error: [WinError 32]` on
+            # `windows-latest`, Windows refusing to copy a file another
+            # handle still holds where POSIX does not (closes #683).
+            shutil.copytree(
+                tmp_path / "node0",
+                tmp_path / f"node{i}",
+                ignore=shutil.ignore_patterns("LOCK"),
+            )
+            node = Node(
+                config=Config(
+                    chain="regtest",
+                    data_dir=tmp_path / f"node{i}",
+                    p2p_port=get_random_port(),
+                    allow_rpc=False,
+                )
+            )
+            # Each copy is asserted whole on its own, before it ever talks
+            # to a peer: `main_node`'s own final assertion below is
+            # satisfiable through `bootstrap_node` alone, so it cannot
+            # answer whether the other nine copies carry the chain they are
+            # meant to (closes #710).
+            assert len(node.chainstate.block_index.active_chain) == length + 1
+            node.start()
+            stack.callback(node.stop)
+            wait_until_listening(node.p2p_manager)
+            download_nodes.append(node)
+
+        main_node = Node(
             config=Config(
                 chain="regtest",
-                data_dir=tmp_path / f"node{i}",
+                data_dir=tmp_path / "main",
                 p2p_port=get_random_port(),
                 allow_rpc=False,
             )
         )
-        # Each copy is asserted whole on its own, before it ever talks
-        # to a peer: `main_node`'s own final assertion below is
-        # satisfiable through `bootstrap_node` alone, so it cannot
-        # answer whether the other nine copies carry the chain they are
-        # meant to (closes #710).
-        assert len(node.chainstate.block_index.active_chain) == length + 1
-        node.start()
-        wait_until_listening(node.p2p_manager)
-        download_nodes.append(node)
+        main_node.start()
+        stack.callback(main_node.stop)
+        wait_until_listening(main_node.p2p_manager)
 
-    main_node = Node(
-        config=Config(
-            chain="regtest",
-            data_dir=tmp_path / "main",
-            p2p_port=get_random_port(),
-            allow_rpc=False,
+        for node in download_nodes:
+            main_node.p2p_manager.connect(local_addr(node.p2p_port))
+            time.sleep(0.25)
+
+        block_index = main_node.chainstate.block_index
+        wait_until(
+            lambda: len(block_index.active_chain) == length + 1,
+            timeout=DOWNLOAD_TIMEOUT,
         )
-    )
-    main_node.start()
-    wait_until_listening(main_node.p2p_manager)
-
-    for node in download_nodes:
-        main_node.p2p_manager.connect(local_addr(node.p2p_port))
-        time.sleep(0.25)
-
-    block_index = main_node.chainstate.block_index
-    wait_until(lambda: len(block_index.active_chain) == length + 1)
-    wait_until(lambda: main_node.status == NodeStatus.BlockSynced)
-
-    main_node.stop()
-    main_node.join()
-    for node in download_nodes:
-        node.stop()
-        node.join()
+        wait_until(lambda: main_node.status == NodeStatus.BlockSynced)
