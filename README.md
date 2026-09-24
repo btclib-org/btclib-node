@@ -54,6 +54,7 @@ along with the command that reads the index back. -->
 [![codeql workflow status](https://github.com/btclib-org/btclib-node/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/btclib-org/btclib-node/actions/workflows/codeql.yml?query=branch%3Amain)
 
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/btclib-org/btclib-node/badge)](https://scorecard.dev/viewer/?uri=github.com/btclib-org/btclib-node)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/14816/badge)](https://www.bestpractices.dev/projects/14816)
 
 btclib-node is a full node bitcoin implementation written in Python and
 based on btclib.
