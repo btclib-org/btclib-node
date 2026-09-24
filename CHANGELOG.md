@@ -65,6 +65,12 @@ input decides nothing (issue btclib-org/.github#1315).
   `finally` or on leaving a context manager**, so a test failing in a wait
   leaves none running in its xdist worker for a later test (closes #1048).
 
+### `.python-version` stays at 3.14 and names `rocksdict` as the reason
+
+- **The pin waits for `rocksdict` to publish a wheel 3.15 installs or an
+  sdist**, the organization standard's section 1 holding an application's
+  pin to its dependencies (issue btclib-org/.github#1324).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

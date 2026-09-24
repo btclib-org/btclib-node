@@ -1,5 +1,8 @@
-# The newest interpreter every dependency supports, and the version
-# requires-python names. Not 3.14t, and not for the reason this comment
+# The newest interpreter every dependency installs on, and the version
+# requires-python names. Not 3.15, though its release candidate counts:
+# `rocksdict` publishes no wheel a 3.15 interpreter installs and no
+# sdist, so the lock does not install there, and the pin rises once it
+# publishes either. Not 3.14t, and not for the reason this comment
 # used to give: plyvel's Cython source would not compile against the
 # free-threaded build, and plyvel is gone. This tree's runtime closure
 # does carry a compiled extension now: btclib depends on the
