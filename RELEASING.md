@@ -600,17 +600,27 @@ this release included.
    gh release download "v${version:?}" --repo btclib-org/btclib-node &&
    wheel=btclib_node-${version:?}-py3-none-any.whl &&
    repo=btclib-org/btclib-node &&
+   signer=btclib-org/.github/.github/workflows/reusable-attest.yml &&
    gh attestation verify "$wheel" --repo "$repo" \
-     --signer-workflow "$repo/.github/workflows/release.yml" &&
+     --signer-workflow "$signer" &&
    gh attestation verify "$wheel" --repo "$repo" \
-     --bundle "v${version:?}.attestation.jsonl"
+     --signer-workflow "$signer" --bundle "v${version:?}.attestation.jsonl"
    ```
 
    the first asks the attestations API for the signed statement, the
-   second reads it from the asset and asks nothing, and the chain runs
+   second reads it from the asset rather than asking the API, and the chain runs
    the second only where the first passed. One attestation covers the
    wheel, the sdist and the bill of materials, so all three verify
    against the same bundle.
+
+   `signer` is the workflow that signed the tag's attestation, which is
+   `reusable-attest.yml` from v2026.9.24 on, and for those tags
+   `--signer-workflow` is required: without it the command refuses the
+   release. A tag through v2026.9.4 was signed by `release.yml` itself,
+   and for one of those `signer` is
+   `"$repo/.github/workflows/release.yml"`, the flag there only
+   narrowing what passes. Each path verifies only the releases its own
+   workflow signed.
 
 1. Open the next cycle: set a generic next version without the day
    (e.g. after `2026.8`, use `2026.9`) in `pyproject.toml`, through a
@@ -677,13 +687,22 @@ uv run --no-project --python 3.14 \
 uv run --no-project --python 3.14 \
   .github/scripts/generate_sbom.py dist/ sbom/ &&
 repo=btclib-org/btclib-node &&
+signer=btclib-org/.github/.github/workflows/reusable-attest.yml &&
 gh attestation verify "dist/btclib_node-${version:?}-py3-none-any.whl" \
-  --repo "$repo" --signer-workflow "$repo/.github/workflows/release.yml" &&
+  --repo "$repo" --signer-workflow "$signer" &&
 gh attestation verify "dist/btclib_node-${version:?}.tar.gz" \
-  --repo "$repo" --signer-workflow "$repo/.github/workflows/release.yml" &&
+  --repo "$repo" --signer-workflow "$signer" &&
 gh attestation verify "sbom/btclib_node-${version:?}.cdx.json" \
-  --repo "$repo" --signer-workflow "$repo/.github/workflows/release.yml"
+  --repo "$repo" --signer-workflow "$signer"
 ```
+
+`signer` is the workflow that signed the tag's attestation, which is
+`reusable-attest.yml` from v2026.9.24 on, and for those tags
+`--signer-workflow` is required: without it the command refuses the
+release. A tag through v2026.9.4 was signed by `release.yml` itself, and
+for one of those `signer` is `"$repo/.github/workflows/release.yml"`,
+the flag there only narrowing what passes. Each path verifies only the
+releases its own workflow signed.
 
 Two things bound that guarantee, and both are worth knowing before
 reading a mismatch as tampering:
