@@ -39,8 +39,7 @@ yourself.
 
 ## Supported versions
 
-No version has been released yet — `RELEASING.md` has why. Once one has,
-only the latest release is supported; a fix is published as a new
+Only the latest release is supported: a fix is published as a new
 release, and nothing is backported.
 
 Wheels and sdist are published to PyPI with PEP 740 attestations, through
