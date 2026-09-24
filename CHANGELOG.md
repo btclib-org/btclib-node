@@ -30,6 +30,8 @@ keeps whichever shape it was written in.
 
 ## Unreleased
 
+## v2026.10.24
+
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
 
 - **`_FUNDED` gains `OP_2DROP OP_1`, the same suffix `tests.anyone_can_spend`
