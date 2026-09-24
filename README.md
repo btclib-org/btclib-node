@@ -85,9 +85,16 @@ at a peer of your own, reading its progress, the RPC methods it
 answers, what it validates and what it does not, and what a mainnet
 sync has actually been measured to cost.
 
+## Architecture
+
+[ARCHITECTURE.md](./ARCHITECTURE.md) is the design: the loop `Node`
+runs, the protocol and the RPC surface around it, and the store
+underneath. [ASSURANCE_CASE.md](./ASSURANCE_CASE.md) is why the
+security section below holds.
+
 ## Security
 
-The JSON-RPC listener binds every interface and authenticates nothing —
+The JSON-RPC listener authenticates nothing —
 [SECURITY.md](./SECURITY.md) carries that and the rest of what is known
 and recorded rather than a vulnerability to report again, and how to
 report one that is not already there.

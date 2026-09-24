@@ -441,7 +441,7 @@ def wait_until_listening(manager: _ListensOnAPort, timeout: float = 20) -> None:
 def rpc_client(node: Node, timeout: float = 5) -> BitcoinCoreRpcClient:
     """Return a client pointed at `node`'s own RPC port.
 
-    This node checks no credential of its own (issue #27), so `user`
+    This node checks no credential of its own (issue #1055), so `user`
     and `password` are placeholders the constructor requires one of,
     not anything the node reads.
     """

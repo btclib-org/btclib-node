@@ -137,7 +137,7 @@ def test_get_raw_transaction_is_what_btclib_s_fetcher_gets(rpc_node: Node) -> No
 
     # no cookie file on disk here, so credentials rather than
     # `cookie_path` -- this node checks neither, having no
-    # authentication of its own (#27's own finding)
+    # authentication of its own (#1055's own finding)
     client = BitcoinCoreRpcClient(
         f"http://127.0.0.1:{node.rpc_port}",
         user="pytest",

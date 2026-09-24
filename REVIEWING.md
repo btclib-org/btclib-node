@@ -488,6 +488,12 @@ because that document, and not this one, is where the rule lives.
   `src/btclib_node/db.py` states which readers stop at the first key
   that does not carry their prefix, and a prefix that sorts before one
   of those truncates a read with nothing raised.
+- **A change under `p2p/` or `rpc/`: does it keep which thread reaches a
+  piece of state right?** ARCHITECTURE.md's *The protocol and the RPC
+  surface* is the argument for which state needs a lock, and a callback
+  moved across `run_coroutine_threadsafe` without re-reading it is a
+  change that can drop the lock a state it now reaches needs, or carry
+  one a state it no longer reaches never needed.
 - **Does a new test that builds a node stay bounded?** `timeout` in
   `pyproject.toml` is what turns a node that stops answering into a named
   failure carrying a stack of every thread it left running, instead of a

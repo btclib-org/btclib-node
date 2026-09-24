@@ -71,6 +71,12 @@ input decides nothing (issue btclib-org/.github#1315).
   sdist**, the organization standard's section 1 holding an application's
   pin to its dependencies (issue btclib-org/.github#1324).
 
+### `ARCHITECTURE.md` and `ASSURANCE_CASE.md` join the root
+
+- **The loop, the threads and the store move there from `CLAUDE.md`**,
+  which points at it; the assurance case argues the threat model and the
+  trust boundaries behind SECURITY.md (issue btclib-org/.github#1321).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

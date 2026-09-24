@@ -408,7 +408,7 @@ uv run --locked --no-default-groups --group test --group mutation \
 The session writes each mutation into `src/btclib_node/interpreter.py`
 and restores it afterwards, so nothing else may read the file while it
 runs. `interpreter.py` is the one scope so far — the consensus entry
-point CLAUDE.md's architecture section names as what validates — and a
+point ARCHITECTURE.md's *Validation* names as what validates — and a
 second scope is a second `.toml` beside it, the way
 `btclib-org/btclib`'s own `.github/mutation/` holds one per profile.
 

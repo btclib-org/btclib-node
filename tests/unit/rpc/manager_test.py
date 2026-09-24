@@ -171,8 +171,7 @@ def test_a_body_that_is_not_json_answers_parse_error_and_forgets_the_client(
 
     JSON-RPC 2.0 section 5.1's own `PARSE_ERROR`, where this used to
     close the socket with no answer at all -- the first thing anything
-    scanning the unauthenticated, all-interfaces port would find
-    (issue #63, issue #27).
+    scanning the unauthenticated port would find (issue #63, issue #1055).
     """
     port = get_random_port()
     manager = a_manager(port)
