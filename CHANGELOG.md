@@ -42,6 +42,12 @@ keeps whichever shape it was written in.
   the placeholder's month** (closes #1038); **it and `CONTRIBUTING.md`
   list no tag, and a published tag is never deleted** (closes #1043).
 
+### The OpenSSF Best Practices badge
+
+- **`README.md`'s badge row ends with the OpenSSF Best Practices badge**,
+  section 2 of the organization standard owing it to each tree section
+  10's `scorecard` entry names (issue btclib-org/.github#350).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
