@@ -123,52 +123,52 @@ def peers(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Peers]:
         for name in ("server", "client")
     ]
     server, client = nodes
-    for node in nodes:
-        node.start()
-        wait_until_listening(node.p2p_manager)
-
-    chain = generate_random_chain(CHAIN_LENGTH, RegTest().genesis.hash)
-    # `client` is seeded with the same chain as `server`, downloaded and
-    # all, rather than left to sync it over the wire: nothing below
-    # tests what `client` does while catching up, only what `server`
-    # answers a peer that asks it for filters, and a `client` that has
-    # to fetch `chain` for real reaches
-    # `download_manager.block_download`'s first real `GetData` and
-    # calls `node.warm_worker_pool()` (`src/btclib_node/download.py`),
-    # which builds a real `multiprocessing.Pool` this module-scoped
-    # fixture then keeps alive, and eventually tears down, for no
-    # reason connected to what any test here asks of it
-    # (btclib-org/btclib-node#1008). Handing `client` the chain already
-    # downloaded, exactly as done for `server` below, is what
-    # `download.py`'s own `_refresh_block_window` reads as nothing left
-    # to request, matching the header-only peer this same module
-    # already carries a citation for never building the pool either
-    # (btclib-org/btclib-node#262) -- the connection itself, the
-    # version handshake and every message a test sends or reads stay a
-    # real exchange over a real socket, only the block content each
-    # side starts from is prepared rather than fetched.
-    for node in nodes:
-        node_block_index = node.chainstate.block_index
-        node_block_index.add_headers([block.header for block in chain])
-        node.status = NodeStatus.HeaderSynced
-        for block in chain:
-            node.block_db.add_block(block)
-            node_block_index.set_downloaded(block.header.hash)
-        # safe despite B023: wait_until resolves this lambda before the
-        # loop rebinds node_block_index, see wait_until's own comment
-        wait_until(lambda: len(node_block_index.active_chain) == CHAIN_LENGTH + 1)  # noqa: B023
-
-    client.p2p_manager.messages = RecordingDeque()
-    client.p2p_manager.connect(local_addr(server.p2p_port))
-    wait_until(lambda: len(client.p2p_manager.connections))
-    wait_until(lambda: len(server.p2p_manager.connections))
-    for node in nodes:
-        connection = node.p2p_manager.connections[0]
-        # safe despite B023: wait_until resolves this lambda before the
-        # loop rebinds connection, see wait_until's own comment
-        wait_until(lambda: connection.status == P2pConnStatus.Connected)  # noqa: B023
-
     try:
+        for node in nodes:
+            node.start()
+            wait_until_listening(node.p2p_manager)
+
+        chain = generate_random_chain(CHAIN_LENGTH, RegTest().genesis.hash)
+        # `client` is seeded with the same chain as `server`, downloaded and
+        # all, rather than left to sync it over the wire: nothing below
+        # tests what `client` does while catching up, only what `server`
+        # answers a peer that asks it for filters, and a `client` that has
+        # to fetch `chain` for real reaches
+        # `download_manager.block_download`'s first real `GetData` and
+        # calls `node.warm_worker_pool()` (`src/btclib_node/download.py`),
+        # which builds a real `multiprocessing.Pool` this module-scoped
+        # fixture then keeps alive, and eventually tears down, for no
+        # reason connected to what any test here asks of it
+        # (btclib-org/btclib-node#1008). Handing `client` the chain already
+        # downloaded, exactly as done for `server` below, is what
+        # `download.py`'s own `_refresh_block_window` reads as nothing left
+        # to request, matching the header-only peer this same module
+        # already carries a citation for never building the pool either
+        # (btclib-org/btclib-node#262) -- the connection itself, the
+        # version handshake and every message a test sends or reads stay a
+        # real exchange over a real socket, only the block content each
+        # side starts from is prepared rather than fetched.
+        for node in nodes:
+            node_block_index = node.chainstate.block_index
+            node_block_index.add_headers([block.header for block in chain])
+            node.status = NodeStatus.HeaderSynced
+            for block in chain:
+                node.block_db.add_block(block)
+                node_block_index.set_downloaded(block.header.hash)
+            # safe despite B023: wait_until resolves this lambda before the
+            # loop rebinds node_block_index, see wait_until's own comment
+            wait_until(lambda: len(node_block_index.active_chain) == CHAIN_LENGTH + 1)  # noqa: B023
+
+        client.p2p_manager.messages = RecordingDeque()
+        client.p2p_manager.connect(local_addr(server.p2p_port))
+        wait_until(lambda: len(client.p2p_manager.connections))
+        wait_until(lambda: len(server.p2p_manager.connections))
+        for node in nodes:
+            connection = node.p2p_manager.connections[0]
+            # safe despite B023: wait_until resolves this lambda before the
+            # loop rebinds connection, see wait_until's own comment
+            wait_until(lambda: connection.status == P2pConnStatus.Connected)  # noqa: B023
+
         yield server, client, chain
     finally:
         for node in nodes:

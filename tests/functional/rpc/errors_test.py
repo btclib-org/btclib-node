@@ -24,26 +24,15 @@ from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import FetchError
 
-from btclib_node import Node
-from btclib_node.config import Config
-from tests import get_random_port, post, rpc_client, wait_until_listening
+from tests import post, rpc_client, wait_until_listening
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from btclib_node import Node
 
 
-def test_no_method(tmp_path: Path) -> None:
+def test_no_method(rpc_node: Node) -> None:
     """A request with no method is answered Invalid request, live."""
-    node = Node(
-        config=Config(
-            chain="regtest",
-            data_dir=tmp_path,
-            allow_p2p=False,
-            rpc_port=get_random_port(),
-        )
-    )
-    node.start()
-
+    node = rpc_node
     wait_until_listening(node.rpc_manager)
 
     # `call_raw` always sets its own `method`, so a request missing the
@@ -53,21 +42,10 @@ def test_no_method(tmp_path: Path) -> None:
 
     assert response["error"]["message"] == "Invalid request"
 
-    node.stop()
 
-
-def test_no_id(tmp_path: Path) -> None:
+def test_no_id(rpc_node: Node) -> None:
     """A request with no id is answered Invalid request, live."""
-    node = Node(
-        config=Config(
-            chain="regtest",
-            data_dir=tmp_path,
-            allow_p2p=False,
-            rpc_port=get_random_port(),
-        )
-    )
-    node.start()
-
+    node = rpc_node
     wait_until_listening(node.rpc_manager)
 
     # `call_raw` always sets its own `id`, so a request missing the key
@@ -76,21 +54,10 @@ def test_no_id(tmp_path: Path) -> None:
 
     assert response["error"]["message"] == "Invalid request"
 
-    node.stop()
 
-
-def test_invalid_method(tmp_path: Path) -> None:
+def test_invalid_method(rpc_node: Node) -> None:
     """A request naming an unknown method is answered Method not found, live."""
-    node = Node(
-        config=Config(
-            chain="regtest",
-            data_dir=tmp_path,
-            allow_p2p=False,
-            rpc_port=get_random_port(),
-        )
-    )
-    node.start()
-
+    node = rpc_node
     wait_until_listening(node.rpc_manager)
 
     _, body = rpc_client(node).call_raw(
@@ -98,8 +65,6 @@ def test_invalid_method(tmp_path: Path) -> None:
     )
 
     assert body["error"]["message"] == "Method not found"
-
-    node.stop()
 
 
 def test_an_empty_batch_answers_an_empty_array(rpc_node: Node) -> None:

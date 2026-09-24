@@ -104,54 +104,56 @@ def test_a_run_through_the_console_script_stays_one_process(tmp_path: Path) -> N
         update_chain(bootstrap)
     assert bootstrap.status == NodeStatus.BlockSynced
     bootstrap.start()
-    wait_until_listening(bootstrap.p2p_manager)
-
-    data_dir = tmp_path / "main"
-    # `build_config`'s own `_check_datadir` (btclib-org/btclib-node#693)
-    # refuses a missing explicit `-datadir` the way Core's own
-    # `CheckDataDirOption` does, so this subprocess needs its directory
-    # ready before it starts -- the same `.mkdir()`
-    # `tests/integration/conftest.py`'s `bitcoind` fixture already does
-    # for its own `-datadir`.
-    data_dir.mkdir()
-    rpc_port = get_random_port()
-    process = subprocess.Popen(  # noqa: S603
-        [
-            str(_CONSOLE_SCRIPT),
-            "-regtest",
-            f"-datadir={data_dir}",
-            f"-port={get_random_port()}",
-            f"-rpcport={rpc_port}",
-            f"-connect=127.0.0.1:{bootstrap.p2p_port}",
-        ],
-    )
-    client = BitcoinCoreRpcClient(
-        f"http://127.0.0.1:{rpc_port}",
-        user="pytest",
-        password="pytest",  # noqa: S106
-        timeout=5,
-    )
-
-    def rpc_ready() -> bool:
-        try:
-            client.call("getblockcount")
-        except FetchError:
-            return False
-        return True
-
     try:
-        wait_until(rpc_ready)
-        wait_until(lambda: client.call("getblockcount") == len(chain))
-        client.call("stop")
-        process.wait(timeout=30)
+        wait_until_listening(bootstrap.p2p_manager)
+
+        data_dir = tmp_path / "main"
+        # `build_config`'s own `_check_datadir` (btclib-org/btclib-node#693)
+        # refuses a missing explicit `-datadir` the way Core's own
+        # `CheckDataDirOption` does, so this subprocess needs its directory
+        # ready before it starts -- the same `.mkdir()`
+        # `tests/integration/conftest.py`'s `bitcoind` fixture already does
+        # for its own `-datadir`.
+        data_dir.mkdir()
+        rpc_port = get_random_port()
+        process = subprocess.Popen(  # noqa: S603
+            [
+                str(_CONSOLE_SCRIPT),
+                "-regtest",
+                f"-datadir={data_dir}",
+                f"-port={get_random_port()}",
+                f"-rpcport={rpc_port}",
+                f"-connect=127.0.0.1:{bootstrap.p2p_port}",
+            ],
+        )
+        client = BitcoinCoreRpcClient(
+            f"http://127.0.0.1:{rpc_port}",
+            user="pytest",
+            password="pytest",  # noqa: S106
+            timeout=5,
+        )
+
+        def rpc_ready() -> bool:
+            try:
+                client.call("getblockcount")
+            except FetchError:
+                return False
+            return True
+
+        try:
+            wait_until(rpc_ready)
+            wait_until(lambda: client.call("getblockcount") == len(chain))
+            client.call("stop")
+            process.wait(timeout=30)
+        finally:
+            # a no-op on the process this try already waited for: `Popen`'s
+            # own `send_signal` only signals a process whose `returncode`
+            # is still `None`, so this is what actually stops one left
+            # running by a failure above it, on this test's own machine,
+            # rather than a second signal reaching the one already stopped
+            process.terminate()
+            process.wait(timeout=30)
     finally:
-        # a no-op on the process this try already waited for: `Popen`'s
-        # own `send_signal` only signals a process whose `returncode`
-        # is still `None`, so this is what actually stops one left
-        # running by a failure above it, on this test's own machine,
-        # rather than a second signal reaching the one already stopped
-        process.terminate()
-        process.wait(timeout=30)
         bootstrap.stop()
         bootstrap.join()
 

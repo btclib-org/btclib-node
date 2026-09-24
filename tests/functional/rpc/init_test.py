@@ -40,14 +40,14 @@ def test_init(tmp_path: Path) -> None:
         )
     )
     node.start()
+    try:
+        wait_until_listening(node.rpc_manager)
 
-    wait_until_listening(node.rpc_manager)
+        _, body = rpc_client(node).call_raw("stop", jsonrpc="1.0", request_timeout=2)
 
-    _, body = rpc_client(node).call_raw("stop", jsonrpc="1.0", request_timeout=2)
-
-    assert body["result"] == "Btclib node stopping"
-
-    node.stop()
+        assert body["result"] == "Btclib node stopping"
+    finally:
+        node.stop()
 
     # the node was already asked to stop from inside its own loop,
     # which is the one caller that cannot wait for it; asking again

@@ -129,28 +129,28 @@ def pruned_server_and_client(
     # tests see traceable to the one `GetData` each of them sends by
     # hand.
     monkeypatch.setattr(client.download_manager, "step", lambda: None)
-    server.start()
-    client.start()
-    wait_until_listening(server.p2p_manager)
-    wait_until_listening(client.p2p_manager)
-
-    chain = generate_random_chain(_CHAIN_LENGTH, RegTest().genesis.hash)
-    block_index = server.chainstate.block_index
-    block_index.add_headers([block.header for block in chain])
-    server.status = NodeStatus.HeaderSynced
-    for block in chain:
-        server.block_db.add_block(block)
-        block_index.set_downloaded(block.header.hash)
-    wait_until(lambda: len(block_index.active_chain) == _CHAIN_LENGTH + 1)
-    wait_until(lambda: server.block_db.pruned_up_to >= 0)
-
-    client.p2p_manager.messages = _RecordingDeque()
-    client.p2p_manager.connect(local_addr(server.p2p_port))
-    wait_until(lambda: len(client.p2p_manager.connections))
-    connection = client.p2p_manager.connections[0]
-    wait_until(lambda: connection.status == P2pConnStatus.Connected)
-
     try:
+        server.start()
+        client.start()
+        wait_until_listening(server.p2p_manager)
+        wait_until_listening(client.p2p_manager)
+
+        chain = generate_random_chain(_CHAIN_LENGTH, RegTest().genesis.hash)
+        block_index = server.chainstate.block_index
+        block_index.add_headers([block.header for block in chain])
+        server.status = NodeStatus.HeaderSynced
+        for block in chain:
+            server.block_db.add_block(block)
+            block_index.set_downloaded(block.header.hash)
+        wait_until(lambda: len(block_index.active_chain) == _CHAIN_LENGTH + 1)
+        wait_until(lambda: server.block_db.pruned_up_to >= 0)
+
+        client.p2p_manager.messages = _RecordingDeque()
+        client.p2p_manager.connect(local_addr(server.p2p_port))
+        wait_until(lambda: len(client.p2p_manager.connections))
+        connection = client.p2p_manager.connections[0]
+        wait_until(lambda: connection.status == P2pConnStatus.Connected)
+
         yield server, client
     finally:
         server.stop()

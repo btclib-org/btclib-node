@@ -22,6 +22,7 @@ from tests import (
     wait_until,
     wait_until_listening,
 )
+from tests.conftest import node_context
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -92,41 +93,23 @@ def test_simple_connection(tmp_path: Path) -> None:
     processed -- so both are waited for on their own rather than one
     being assumed once the other is seen.
     """
-    node1 = Node(
-        config=Config(
-            chain="regtest",
-            data_dir=tmp_path / "node1",
-            p2p_port=get_random_port(),
-            allow_rpc=False,
-        )
-    )
-    node2 = Node(
-        config=Config(
-            chain="regtest",
-            data_dir=tmp_path / "node2",
-            p2p_port=get_random_port(),
-            allow_rpc=False,
-        )
-    )
-    node1.start()
-    node2.start()
+    with (
+        node_context(tmp_path / "node1", allow_rpc=False) as node1,
+        node_context(tmp_path / "node2", allow_rpc=False) as node2,
+    ):
+        wait_until_listening(node1.p2p_manager)
+        wait_until_listening(node2.p2p_manager)
 
-    wait_until_listening(node1.p2p_manager)
-    wait_until_listening(node2.p2p_manager)
-
-    node2.p2p_manager.connect(local_addr(node1.p2p_port))
-    # each side's own `connections` only holds a peer past its own
-    # `verack`, and the two handshakes complete independently, so each
-    # is waited for on its own rather than assuming one implies the other
-    wait_until(lambda: len(node1.p2p_manager.connections))
-    connection = node1.p2p_manager.connections[0]
-    wait_until(lambda: connection.status == P2pConnStatus.Connected)
-    wait_until(lambda: len(node2.p2p_manager.connections))
-    connection = node2.p2p_manager.connections[0]
-    wait_until(lambda: connection.status == P2pConnStatus.Connected)
-
-    node1.stop()
-    node2.stop()
+        node2.p2p_manager.connect(local_addr(node1.p2p_port))
+        # each side's own `connections` only holds a peer past its own
+        # `verack`, and the two handshakes complete independently, so each
+        # is waited for on its own rather than assuming one implies the other
+        wait_until(lambda: len(node1.p2p_manager.connections))
+        connection = node1.p2p_manager.connections[0]
+        wait_until(lambda: connection.status == P2pConnStatus.Connected)
+        wait_until(lambda: len(node2.p2p_manager.connections))
+        connection = node2.p2p_manager.connections[0]
+        wait_until(lambda: connection.status == P2pConnStatus.Connected)
 
 
 def test_a_connecting_node_carries_its_own_real_tip_height(tmp_path: Path) -> None:
@@ -162,30 +145,22 @@ def test_a_connecting_node_carries_its_own_real_tip_height(tmp_path: Path) -> No
     assert node1.best_height == chain_length
     node1.chainstate.flush()
     node1.start()
-    wait_until_listening(node1.p2p_manager)
+    try:
+        wait_until_listening(node1.p2p_manager)
 
-    node2 = Node(
-        config=Config(
-            chain="regtest",
-            data_dir=tmp_path / "node2",
-            p2p_port=get_random_port(),
-            allow_rpc=False,
-        )
-    )
-    node2.start()
-    wait_until_listening(node2.p2p_manager)
+        with node_context(tmp_path / "node2", allow_rpc=False) as node2:
+            wait_until_listening(node2.p2p_manager)
 
-    node2.p2p_manager.connect(local_addr(node1.p2p_port))
-    wait_until(lambda: len(node2.p2p_manager.connections))
-    connection = node2.p2p_manager.connections[0]
-    wait_until(lambda: connection.status == P2pConnStatus.Connected)
+            node2.p2p_manager.connect(local_addr(node1.p2p_port))
+            wait_until(lambda: len(node2.p2p_manager.connections))
+            connection = node2.p2p_manager.connections[0]
+            wait_until(lambda: connection.status == P2pConnStatus.Connected)
 
-    version = connection.version_message
-    assert version is not None
-    assert version.start_height == chain_length
-
-    node1.stop()
-    node2.stop()
+            version = connection.version_message
+            assert version is not None
+            assert version.start_height == chain_length
+    finally:
+        node1.stop()
 
 
 def test_connection_to_ourselves(tmp_path: Path) -> None:
@@ -216,46 +191,48 @@ def test_connection_to_ourselves(tmp_path: Path) -> None:
     recording = _RecordingPendingConnections()
     node.p2p_manager.pending_connections = recording
     node.start()
+    try:
+        wait_until_listening(node.p2p_manager)
 
-    wait_until_listening(node.p2p_manager)
+        node.p2p_manager.connect(local_addr(node.p2p_port))
 
-    node.p2p_manager.connect(local_addr(node.p2p_port))
-
-    _wait_or_describe(
-        lambda: len(recording.created) >= 2,
-        lambda: f"created {len(recording.created)} of 2, inbound={recording.created}",
-    )
-    # a connection to itself is stopped inside `version`, before its own
-    # `verack` could ever promote it: it never reaches `connections`, so
-    # `pending_connections` draining to empty -- and staying there -- is
-    # what proves the drop actually happened. Safe to poll for, unlike
-    # the peak above, and not because no dialling runs: with no
-    # `connect=` in this `Config`, `use_addrman_outgoing` is true and
-    # `_maybe_dial_more_peers` is passing every 100 ms for the whole
-    # life of the test. It simply never finds an address to draw.
-    # That loop returns on `peer_db.is_empty`, which reads `addresses`
-    # -- every endpoint heard about -- and not `active_addresses`, the
-    # separate table `callbacks.verack` fills through
-    # `add_active_address`, so whether this handshake reaches `verack`
-    # decides nothing here. `addresses` gains entries from three places
-    # and this test drives none of them: `init_from_db` loads a datadir
-    # that `tmp_path` has just created empty, `callbacks.addr` and
-    # `callbacks.addrv2` need a peer to gossip and the one connection
-    # attempted is the self-connect refused above, and
-    # `get_addr_from_dns` iterates `RegTest.addresses`, which is empty
-    # (`chains.py`). `discourage` on the self-connect is a second
-    # filter, never reached in this test because `is_empty` returns
-    # first. A test that later gains a `connect=`, an `addnode`, a
-    # gossiping peer or a seeded chain is standing on all of that and
-    # has to re-establish it for itself.
-    _wait_or_describe(
-        lambda: not len(node.p2p_manager.pending_connections),
-        lambda: (
-            f"pending_connections still holds "
-            f"{len(node.p2p_manager.pending_connections)}, inbound="
-            f"{sorted(c.inbound for c in node.p2p_manager.pending_connections.values())}"
-        ),
-    )
-    assert not node.p2p_manager.connections
-
-    node.stop()
+        _wait_or_describe(
+            lambda: len(recording.created) >= 2,
+            lambda: (
+                f"created {len(recording.created)} of 2, inbound={recording.created}"
+            ),
+        )
+        # a connection to itself is stopped inside `version`, before its own
+        # `verack` could ever promote it: it never reaches `connections`, so
+        # `pending_connections` draining to empty -- and staying there -- is
+        # what proves the drop actually happened. Safe to poll for, unlike
+        # the peak above, and not because no dialling runs: with no
+        # `connect=` in this `Config`, `use_addrman_outgoing` is true and
+        # `_maybe_dial_more_peers` is passing every 100 ms for the whole
+        # life of the test. It simply never finds an address to draw.
+        # That loop returns on `peer_db.is_empty`, which reads `addresses`
+        # -- every endpoint heard about -- and not `active_addresses`, the
+        # separate table `callbacks.verack` fills through
+        # `add_active_address`, so whether this handshake reaches `verack`
+        # decides nothing here. `addresses` gains entries from three places
+        # and this test drives none of them: `init_from_db` loads a datadir
+        # that `tmp_path` has just created empty, `callbacks.addr` and
+        # `callbacks.addrv2` need a peer to gossip and the one connection
+        # attempted is the self-connect refused above, and
+        # `get_addr_from_dns` iterates `RegTest.addresses`, which is empty
+        # (`chains.py`). `discourage` on the self-connect is a second
+        # filter, never reached in this test because `is_empty` returns
+        # first. A test that later gains a `connect=`, an `addnode`, a
+        # gossiping peer or a seeded chain is standing on all of that and
+        # has to re-establish it for itself.
+        _wait_or_describe(
+            lambda: not len(node.p2p_manager.pending_connections),
+            lambda: (
+                f"pending_connections still holds "
+                f"{len(node.p2p_manager.pending_connections)}, inbound="
+                f"{sorted(c.inbound for c in node.p2p_manager.pending_connections.values())}"
+            ),
+        )
+        assert not node.p2p_manager.connections
+    finally:
+        node.stop()
