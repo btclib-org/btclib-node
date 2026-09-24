@@ -37,6 +37,10 @@ what changed since, and what it costs to move past it.
 `CHANGELOG.md`'s own `v2026.9.24` section is the record of everything
 that went into it.
 
+The rpc surface also grew — `getblock`, `submitblock`, `addnode` and
+`getnetworkinfo` join the dispatch table (closes #1006) — which is
+additive and costs nothing to move past.
+
 ### Breaking changes
 
 - **`CoinStats.insert` and `.remove` no longer report whether the coin
@@ -48,13 +52,11 @@ that went into it.
   (`True` unless the coin was unspendable), and `stats.digest()` raises
   `TypeError` where `v2026.9.4` had `digest` as a method -- `stats.digest`,
   with no parentheses, is the replacement. The constructor, `serialize`
-  and `deserialize` keep `v2026.9.4`'s own shape, and `tx_out_ser` and
-  `is_unspendable` are unchanged re-exports of the functions this module
-  used to define itself.
-
-The rpc surface also grew — `getblock`, `submitblock`, `addnode` and
-`getnetworkinfo` join the dispatch table (closes #1006) — which is
-additive and costs nothing to move past.
+  and `deserialize` keep `v2026.9.4`'s own shape. `tx_out_ser` and
+  `is_unspendable` are re-exports of btclib's functions of the same
+  name: `tx_out_ser` returns what it did for a well-formed coin and
+  outpoint, and raises `BTClibValueError` or `BTClibTypeError` where
+  `v2026.9.4` serialized a malformed one.
 
 ## v2026.9.4
 
