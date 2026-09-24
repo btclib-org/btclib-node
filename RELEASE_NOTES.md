@@ -32,11 +32,29 @@ on release day.
 
 ## v2026.9.24
 
-Nothing to act on: no breaking change landed since `v2026.9.4`. The rpc
-surface grew — `getblock`, `submitblock`, `addnode` and
-`getnetworkinfo` join the dispatch table (closes #1006) — and nothing
-already there moved. `CHANGELOG.md`'s own `v2026.9.24` section has the
-rest.
+**The third release.** Everything below is measured against `v2026.9.4`:
+what changed since, and what it costs to move past it.
+`CHANGELOG.md`'s own `v2026.9.24` section is the record of everything
+that went into it.
+
+### Breaking changes
+
+- **`CoinStats.insert` and `.remove` no longer report whether the coin
+  was unspendable, and `digest` is a property, not a method** (closes
+  #869, btclib-org/btclib#1623).
+  `btclib_node.chainstate.muhash.CoinStats` now inherits both from
+  `btclib.coinstats.CoinStats` rather than defining them itself:
+  `insert`/`.remove` return `None` where `v2026.9.4` returned `bool`
+  (`True` unless the coin was unspendable), and `stats.digest()` raises
+  `TypeError` where `v2026.9.4` had `digest` as a method -- `stats.digest`,
+  with no parentheses, is the replacement. The constructor, `serialize`
+  and `deserialize` keep `v2026.9.4`'s own shape, and `tx_out_ser` and
+  `is_unspendable` are unchanged re-exports of the functions this module
+  used to define itself.
+
+The rpc surface also grew — `getblock`, `submitblock`, `addnode` and
+`getnetworkinfo` join the dispatch table (closes #1006) — which is
+additive and costs nothing to move past.
 
 ## v2026.9.4
 
