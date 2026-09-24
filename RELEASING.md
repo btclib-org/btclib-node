@@ -16,17 +16,16 @@ both indices are configured to trust the workflow itself
 The same workflow, started by hand instead of by a tag, is a full
 rehearsal against TestPyPI. A rehearsal is never tagged.
 
-**`v2026.8.27` was the first release, and it is the only tag this
-repository has.** `project.version` is `2026.9`: the scheme below, on
-the shape it takes between releases — a cycle open on a month, with no
-day for a release to be confused with. It replaced `0.1.0`, the
-placeholder from before this repository carried a release path at all
+Between releases `project.version` is the scheme below on the shape it
+takes then — a cycle open on a month, with no day for a release to be
+confused with. The scheme replaced `0.1.0`, the placeholder from before
+this repository carried a release path at all
 ([ISS btclib-org/btclib-node#504][iss-504]). This file is what replaced
 `CONTRIBUTING.md`'s former *A version, and no release* section,
-[ISS btclib-org/btclib-node#286][iss-286] carrying that decision. A
-release built with this file adds the day to the month already declared,
-in the same pull request that retitles `CHANGELOG.md` and
-`RELEASE_NOTES.md`.
+[ISS btclib-org/btclib-node#286][iss-286] carrying that decision.
+**A release's version is the date it is cut, `YYYY.M.D`, and not the
+placeholder's month with a day added**: the release sets it in the same
+pull request that retitles `CHANGELOG.md` and `RELEASE_NOTES.md`.
 
 This file no longer argues from a `v0.1.0` tag. **It was deleted, with
 its release, on 2026-08-23**, on the maintainer's decision closing
@@ -105,10 +104,11 @@ Telling these apart is most of what can go wrong when cutting a release.
   cycle, never two at once: `YYYY.M`, month only, between releases — the
   placeholder "Open the next cycle" sets, so a checkout of `main` reports
   itself as work in progress rather than as a release it is not;
-  `YYYY.M.D`, with the day added on release day — calendar versioning —
-  which is what gets published; and `YYYY.M.D.N`, a fourth number added
-  only if `YYYY.M.D` shipped broken and cannot be reuploaded (see "If
-  something goes wrong"). All three are typed by hand. Three components
+  `YYYY.M.D`, the date of release day — calendar versioning — which is
+  what gets published, its month that date's own and not necessarily the
+  placeholder's; and `YYYY.M.D.N`, a fourth number added only if
+  `YYYY.M.D` shipped broken and cannot be reuploaded (see "If something
+  goes wrong"). All three are typed by hand. Three components
   is always the release day; four is always a patch on it. The day is
   never dropped in favor of a fourth digit standing in for it, which is
   what would make the two indistinguishable — and `version-check`
@@ -294,11 +294,21 @@ this release included.
    section whose heading is the tag's own.
 
 1. Set the version in `pyproject.toml`, which is the one place it is
-   declared, and re-lock so `uv.lock` agrees:
+   declared, to the date the release is cut, `YYYY.M.D`, and re-lock so
+   `uv.lock` agrees:
 
    ```shell
    uv lock
    ```
+
+   The date replaces the placeholder rather than extending it. *Open the
+   next cycle* below sets the month after the release's, so a second
+   release in the same month, built by appending the day to the
+   placeholder, names a day of the next month — a date in the future,
+   which sorts above every release that next month cuts before that day.
+   `version-check` compares the tag with the declared version and reads
+   the shape, never the calendar, so nothing downstream refuses it, and
+   a version an index has accepted cannot be unpublished.
 
    **If `main` moves while the gates run, the default is to throw the
    branch away and redo these edits on top of it, and never to merge

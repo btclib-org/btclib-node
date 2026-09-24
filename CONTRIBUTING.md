@@ -459,32 +459,31 @@ had landed one day before that issue was filed. `RELEASING.md` and
 `RELEASE_NOTES.md` are the two files section 2 gives a tier-1 repository
 that #171 had removed, back under this section's own heading.
 
-It has published once. `v2026.8.27` is on PyPI, the `pypi` and
-`testpypi` pair of `RELEASING.md`'s *One-time setup* is what uploaded
-it — `REPOSITORY.md`'s *The two publishing environments* reads that pair
-back — and `project.version` is `2026.9`, the shape `RELEASING.md`'s
-calendar scheme takes between releases: the month a cycle is open on,
-with no day, which is what `version-check` refuses on a tag.
+It publishes to PyPI. The `pypi` and `testpypi` pair of
+`RELEASING.md`'s *One-time setup* is what uploads —
+`REPOSITORY.md`'s *The two publishing environments* reads that pair
+back — and between releases `project.version` is the shape
+`RELEASING.md`'s calendar scheme takes then: the month a cycle is open
+on, with no day, which is what `version-check` refuses on a tag. Which
+versions are published, and which tags there are, is read from the
+index and the repository rather than from this file:
 
 ```shell
-curl -s -o /dev/null -w '%{http_code}\n' https://pypi.org/pypi/btclib-node/json
-# 200
+curl -s https://pypi.org/pypi/btclib-node/json |
+  python3 -c 'import json,sys; print(sorted(json.load(sys.stdin)["releases"]))'
 gh api repos/btclib-org/btclib-node/tags --jq '.[].name'
-# v2026.8.27
 ```
 
-**`v2026.8.27` is the one tag.** What this section used to say — that
-the one tag was a lightweight `v0.1.0` from 2023, with a release page
-and no artifact on it — was true until 2026-08-23, when that tag and
-its release were deleted on the maintainer's decision closing
-btclib-org/.github#105: a ref with no object of its own has nothing on
-it to sign, and a repository that published nothing had no release the
-tag was the record of. This section went on describing it for four days
-afterwards (btclib-org/btclib-node#553), which is what a deletion
-decided in another repository's issue costs when nobody carries it into
-the files that mention it. `CHANGELOG.md` starts where the record
-starts rather than where a tag does, for the reason its own
-introduction gives.
+A lightweight `v0.1.0` from 2023, with a release page and no artifact
+on it, was deleted with its release on 2026-08-23, on the maintainer's
+decision closing btclib-org/.github#105: a ref with no object of its
+own has nothing on it to sign, and a repository that published nothing
+had no release the tag was the record of. This section went on
+describing it for four days afterwards (btclib-org/btclib-node#553),
+which is what a deletion decided in another repository's issue costs
+when nobody carries it into the files that mention it. `CHANGELOG.md`
+starts where the record starts rather than where a tag does, for the
+reason its own introduction gives.
 
 Cutting a tag is signed and not by convention: the `tag-integrity`
 ruleset requires a signature on `refs/tags/v*` and has no bypass actor,
@@ -492,13 +491,14 @@ so a tag made without `-s` is refused at the push rather than noticed
 afterwards. `REPOSITORY.md` carries the call that reads that rule back,
 and that rule is the whole of what `tag-integrity` holds —
 `required_signatures`, and neither `non_fast_forward` nor `deletion` —
-so a tag here can still be deleted and cut again *while nothing has
-been published from it*: an index refuses a version that has been
-uploaded once, whatever a tag does. **`v2026.8.27` is past that line
-and `v2026.9.*` is not yet at it**, which is the distinction to hold
-on to: deleting the tag of a published version leaves the version on
-PyPI and takes away the only thing that says which commit it was built
-from.
+so nothing refuses a tag's deletion, and what follows is kept by hand.
+**The tag of a published version is never deleted or cut again**: the
+version stays on PyPI whatever a tag does, an index refusing a version
+that has been uploaded once, and deleting its tag takes away the only
+thing that says which commit it was built from. A tag nothing has been
+published from can be deleted and cut again, and whether anything has
+is read from the index — `RELEASING.md`'s *If something goes wrong*
+has the call that licenses the deletion.
 
 `RELEASING.md` is the whole of the procedure, from the one-time
 publisher registration through the tag command itself — naming the
