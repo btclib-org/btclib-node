@@ -24,18 +24,18 @@ rather than a digit.
 
 ## Unreleased
 
-The `2026.11` cycle is open and nothing has been cut from it. This
+The `2026.10` cycle is open and nothing has been cut from it. This
 section fills in one landed change at a time — what a user of the
 release below would have to act on to move past it — and
 `RELEASING.md`'s *Release to PyPI* is what retitles it to the version
 on release day.
 
-## v2026.10.24
+## v2026.9.24
 
 Nothing to act on: no breaking change landed since `v2026.9.4`. The rpc
 surface grew — `getblock`, `submitblock`, `addnode` and
 `getnetworkinfo` join the dispatch table (closes #1006) — and nothing
-already there moved. `CHANGELOG.md`'s own `v2026.10.24` section has the
+already there moved. `CHANGELOG.md`'s own `v2026.9.24` section has the
 rest.
 
 ## v2026.9.4

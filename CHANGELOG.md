@@ -30,7 +30,7 @@ keeps whichever shape it was written in.
 
 ## Unreleased
 
-## v2026.10.24
+## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
 
