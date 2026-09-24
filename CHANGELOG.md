@@ -1888,6 +1888,12 @@ keeps whichever shape it was written in.
   `COPYRIGHT` transcribed** (issue btclib-org/.github#1294): section 5's
   own spelling, for a script run by path that opens with its shebang.
 
+### flake8-todos goes into `ignore`, `FIX` alone refusing a marker
+
+- **`[tool.ruff.lint] ignore` gains the flake8-todos rules,
+  `invalid-todo-tag` through `missing-space-after-todo-colon`**
+  (issue btclib-org/.github#1304).
+
 ## v2026.9.4
 
 ### btclib resolves from the released package, not from git `main`

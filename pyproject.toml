@@ -889,6 +889,18 @@ ignore = [
     # following code on its line -- with this rule ignored, nothing here
     # measures one at any width.
     "line-too-long",
+    # flake8-todos (section 5 of the organization standard): FIX
+    # already refuses a TODO, FIXME, XXX or HACK comment outright, and
+    # TD, which disciplines the format of the first three, disagrees
+    # with it where the two meet -- TD001 steers a refused FIXME toward
+    # TODO, which FIX002 refuses just as hard.
+    "invalid-todo-tag",
+    "missing-todo-author",
+    "missing-todo-link",
+    "missing-todo-colon",
+    "missing-todo-description",
+    "invalid-todo-capitalization",
+    "missing-space-after-todo-colon",
 ]
 
 [tool.ruff.lint.per-file-ignores]
