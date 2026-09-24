@@ -36,6 +36,12 @@ keeps whichever shape it was written in.
   called workflow as the signer**, the path of `release.yml` kept for
   v2026.9.4 and earlier, which it signed (closes btclib-org/.github#1311).
 
+### A release's version is the date it is cut
+
+- **`RELEASING.md` dates a release `YYYY.M.D` of the day it is cut, not
+  the placeholder's month** (closes #1038); **it and `CONTRIBUTING.md`
+  list no tag, and a published tag is never deleted** (closes #1043).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

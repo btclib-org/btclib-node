@@ -4,8 +4,9 @@ name = "btclib-node"
 # confused with, so a checkout of `main` reports itself as work rather
 # than as a version somebody could go and install.
 # `RELEASING.md`'s *Which version string is which* has the three shapes
-# one cycle takes and what each means; the day is added by hand, in the
-# release's own pull request, on the day it is cut.
+# one cycle takes and what each means. The release's own pull request
+# replaces it by hand with the date the release is cut, YYYY.M.D, whose
+# month need not be this one.
 version = "2026.10"
 description = "Bitcoin node in python"
 authors = [{ name = "The btclib developers", email = "devs@btclib.org" }]
