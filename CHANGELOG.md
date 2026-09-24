@@ -77,6 +77,12 @@ input decides nothing (issue btclib-org/.github#1315).
   which points at it; the assurance case argues the threat model and the
   trust boundaries behind SECURITY.md (issue btclib-org/.github#1321).
 
+### `codeql-passed` and `test-passed` no longer skip while draft
+
+A skipped required check reads as passing, so both aggregates now fail
+a first step on `github.event.pull_request.draft` instead of skipping
+on it (issue btclib-org/.github#1327).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

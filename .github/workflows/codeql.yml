@@ -121,11 +121,15 @@ jobs:
     # -- the concurrency group superseding it with a newer push -- would
     # reach this job and fail it, turning a cancellation the newer run
     # already speaks for into a red check with no defect behind it. The
-    # draft and closed halves are the called workflow's own analyze job
-    # condition, so a draft skips uniformly rather than tripping this
+    # draft flag is not part of this condition: a skipped required check
+    # reads as passing, and this job's own check run does not exist
+    # until analyze has settled, so declining it here while draft would
+    # leave the draft's skip as the only check of this name on the sha
+    # until a later run's own aggregate exists. The closed condition
+    # stays: a closed pull request has nothing left to become ready
+    # (btclib-org/.github#1327)
     if: >-
       ${{ !cancelled()
-      && !github.event.pull_request.draft
       && github.event.action != 'closed' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -156,10 +160,12 @@ jobs:
       #
       # the allowlist below names "success" and "skipped", both names,
       # whatever the jobs of this workflow can report today. The called
-      # workflow's own analyze job carries no condition narrower than
-      # this job's own draft/closed one above and no job here is
-      # conditional on what a pull request touched, so no legitimate
-      # "skipped" row is reachable -- which is a condition rather than a
+      # workflow's own analyze job still declines while draft, and the
+      # step below fails outright on the same flag before this listing
+      # ever runs, so a draft's "skipped" analyze row never reaches the
+      # allowlist. No job here is conditional on what a pull request
+      # touched otherwise, so no other legitimate "skipped" row is
+      # reachable -- which is a condition rather than a
       # property, and a job added later re-opens it. Letting the
       # allowlist follow the jobs is the alternative section 10 of the
       # organization standard rejects: the narrowing is sound the day it
@@ -168,6 +174,15 @@ jobs:
       # job going red on the first run that legitimately skips, with no
       # defect under it and nothing in the tree pointing here
       # (btclib-org/.github#990)
+      # a skipped required check reads as passing, so the draft flag
+      # moves from the job's own `if:` above into this first step: the
+      # job still runs while draft, and reports a failure instead of a
+      # skip (btclib-org/.github#1327)
+      - name: Fail while this pull request is a draft
+        if: github.event.pull_request.draft
+        run: |
+          echo "::error::this pull request is a draft"
+          exit 1
       - name: Fail unless every other job of this run succeeded
         env:
           GH_TOKEN: ${{ github.token }}
