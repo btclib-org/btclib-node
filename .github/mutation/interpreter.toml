@@ -1,6 +1,6 @@
 # The consensus entry point, mutated: src/btclib_node/interpreter.py is
-# where a block's transactions are checked, and CLAUDE.md's own
-# architecture section names it as what validates. Nothing bigger is in
+# where a block's transactions are checked, and ARCHITECTURE.md's own
+# *Validation* section names it as what validates. Nothing bigger is in
 # scope yet -- this is a first profile, and a second is a toml beside
 # this one, not a rewrite of it.
 

@@ -5,13 +5,13 @@
 """An atheris harness fuzzing this node's own RPC request-head framing.
 
 `RpcConnection.run` reads the header section of an HTTP request off an
-unauthenticated socket bound to every interface (`rpc/connection.py`'s
-own module docstring, issue #27), splits the request line from the
-header fields, decides a `Content-Length` and a keep-alive default from
-them -- hostile-input arithmetic of this tree's own, ahead of the
-`json.loads` that decodes a request's body, which is stdlib's own
-business and not this node's. `rpc.connection.parse_request_head` is
-that arithmetic pulled into a function of octets alone, scoped the way
+unauthenticated socket (`rpc/connection.py`'s own module docstring,
+issue #1055), splits the request line from the header fields, decides a
+`Content-Length` and a keep-alive default from them -- hostile-input
+arithmetic of this tree's own, ahead of the `json.loads` that decodes a
+request's body, which is stdlib's own business and not this node's.
+`rpc.connection.parse_request_head` is that arithmetic pulled into a
+function of octets alone, scoped the way
 Core's own `http_request.cpp` fuzz target is scoped
 (at bitcoin/bitcoin@ca7162cde5): a raw `http_buffer` fed to
 `HTTPRequest::LoadControlData`/`LoadHeaders`/`LoadBody`, control-line

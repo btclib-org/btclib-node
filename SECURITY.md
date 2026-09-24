@@ -76,18 +76,28 @@ the sdist and the bill of materials.
 
 ## Limitations, not vulnerabilities
 
+The [assurance case](./ASSURANCE_CASE.md) is the threat model these are
+written against, and the argument for what this file does promise.
+
 Known, recorded, and each an open issue rather than something to report
 again.
 
-- **The JSON-RPC listener binds every interface** — `0.0.0.0`, with no
-  configuration option to bind loopback instead — **and authenticates
-  nothing.** The method table it serves carries `stop` and
-  `sendrawtransaction`, so anybody who can reach the port can stop the
-  node and make it announce a transaction. Run it where nothing else can
-  reach that port. btclib-org/btclib-node#27.
-- **What a peer may ask for is not bounded by what asking costs it.** A
-  short request can commit this node to a long reply, and nothing limits
-  what one peer may have in flight. btclib-org/btclib-node#101.
+- **The JSON-RPC listener authenticates nothing.** `Config.rpc_host`
+  binds loopback by default and `-rpcbind` is what widens it, matching
+  Core's own `rpcbind`/`rpcallowip` default (btclib-org/btclib-node#27);
+  nothing behind that bind checks who is asking. The method table it
+  serves carries `stop` and `sendrawtransaction`, so anybody who can
+  reach the port can stop the node and make it announce a transaction.
+  Run it where nothing else can reach that port, and do not widen the
+  bind without one. btclib-org/btclib-node#1055.
+- **What one connection may cost this node is bounded; how many
+  connections may be open at once is not.** `p2p/connection.py` caps
+  what one peer's queue may hold and paces `getdata` and `getcfilters`
+  against that cap, checked before every item rather than once a whole
+  answer is built (btclib-org/btclib-node#101). Nothing bounds the
+  number of simultaneous inbound connections themselves, so the sockets
+  and the fixed per-connection memory each one holds are still unbounded
+  in aggregate. btclib-org/btclib-node#1054.
 - **`Development Status :: 3 - Alpha` is the claim `pyproject.toml`
   makes**, and it is the right one to read the two above against: this
   node has downloaded and validated the chain, which is not the same as

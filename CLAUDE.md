@@ -15,60 +15,12 @@ pull request will be answered against.
 
 ## Architecture
 
-A bitcoin full node whose consensus and network code is Python, over
-[btclib](https://github.com/btclib-org/btclib), which is where the
-objects on the wire and their serialization come from. What is here is
-the loop that drives them, and its state.
-
-`Node` in `src/btclib_node/__init__.py` is a thread running one loop: it
-drains the handshake queue, then a share of the RPC queue and a share of
-the peer-to-peer queue, then steps the download manager and extends the
-chain. A message that raises is logged and the loop continues; a failure
-under `update_chain` leaves it, because the databases below have to be
-closed on the way out.
-
-- `src/btclib_node/p2p/` is the protocol — the connections, the peer
-  manager, the address book and the message handlers the loop calls.
-- `src/btclib_node/rpc/` is the JSON-RPC surface, on the same shape of
-  manager and handler.
-- `src/btclib_node/chainstate/` is the block index, the UTXO set and the
-  compact filter index; `src/btclib_node/block_db/` is the blocks and
-  their undo data. **Genesis sits at index 0 of the active chain**, so
-  `active_chain[i]` has height `i` and `len(active_chain)` is the
-  height a block extending the chain would connect at -- which is what
-  a mempool check wants, a transaction there being judged as if it were
-  in the next block, and is Core's own `GetSpendHeight`
-  (`m_chain.Height() + 1`). `verify_mempool_acceptance` carried
-  `len(active_chain) + 1` until btclib-org/btclib-node#569, harmless
-  only because every regtest activation height is 0 and the number had
-  never had to be right.
-- `src/btclib_node/db.py` is the ordered key-value store all of those
-  are kept in. Its docstring is where the implementation is argued, and
-  **key order is load-bearing**: a reader that stops at the first key
-  without its prefix is truncated by a prefix that sorts before it.
-- `src/btclib_node/interpreter.py` validates, and `Node.worker_pool` is
-  what it validates a fork across.
-
-`P2pManager` and `RpcManager` are each a thread of their own, running an
-asyncio loop, and a coroutine enters that loop only through
-`run_coroutine_threadsafe`. Their plain methods are another matter:
-`verack` calls `promote_connection` directly, from `Node`'s thread. So
-what decides whether a piece of state needs a lock is which thread
-reaches it, never which callback names it — `handle_p2p`,
-`handle_p2p_handshake` and `handle_rpc` above run on `Node`'s own loop,
-and so does `update_chain` beside them. `Mempool` is reached from that
-one thread and no other, its `add_tx` and `remove_tx` being called from
-the p2p callbacks, the rpc callbacks and `update_chain`: its own
-"handled in same thread" comment needs no lock to back it, and a `cast`
-standing on the same invariant needs no runtime check either. `PeerDB`,
-the address book above, is not so lucky: `add_active_address` arrives
-from the `verack` callback on `Node`'s thread, `get_active_addresses`
-from `manage_connections` on `P2pManager`'s, and `add_addresses` from
-both — gossip on one thread, a DNS answer on the other. It carries two
-locks for that reason, one per table, taken separately and never nested.
-
-`tests/unit/` mirrors that layout and `tests/functional/` builds a node
-and speaks to it over a socket.
+[ARCHITECTURE.md](./ARCHITECTURE.md) is the design: the loop `Node`
+runs, the protocol and the RPC surface around it, the store, and which
+thread each piece of state belongs to. Read it before touching
+`src/btclib_node/p2p/` or `src/btclib_node/rpc/`, where what decides
+whether a piece of state needs a lock is which thread reaches it, never
+which callback names it.
 
 ## Following Bitcoin Core
 

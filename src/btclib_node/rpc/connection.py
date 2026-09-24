@@ -5,9 +5,10 @@
 """`RpcConnection`, one accepted HTTP socket carrying one or more requests.
 
 Parses the header section off the wire, bounded by `MAX_HEADER_BYTES`
-and `MAX_BODY_BYTES` since the listener this serves is bound to every
-interface, and decodes the JSON-RPC batch `rpc.manager.RpcManager.messages`
-queues for `rpc.main.handle_rpc`. `RawJSON` is a JSON number written
+and `MAX_BODY_BYTES` since the listener this serves authenticates
+nothing, whichever interface `Config.rpc_host` binds it to, and decodes
+the JSON-RPC batch `rpc.manager.RpcManager.messages` queues for
+`rpc.main.handle_rpc`. `RawJSON` is a JSON number written
 back out exactly as given, the way Core's own `UniValue` writes one
 built from a string rather than from a `float`.
 
@@ -53,8 +54,8 @@ __all__ = [
 
 HEADER_TERMINATOR = b"\r\n\r\n"
 # Bounds on the read below, which is fed by whoever connects: the RPC
-# socket is bound to every interface (see rpc.manager.RpcManager.server),
-# so an unterminated header section or an overstated Content-Length must
+# socket authenticates nothing (see rpc.manager.RpcManager.server), so
+# an unterminated header section or an overstated Content-Length must
 # not grow the buffer without limit. Both are generous next to a real
 # JSON-RPC request -- headers run to a few hundred bytes, and the largest
 # body this node is sent is a raw transaction.
@@ -540,8 +541,8 @@ class RpcConnection:
         # What this catch buys instead is the only place `self.client`
         # gets closed for a failure in this method: there is no outer
         # `finally` here, so narrowing this would leak the socket this
-        # unauthenticated, all-interfaces port (#27) opened, on top of
-        # losing the exception itself to that same unread Future.
+        # unauthenticated port opened, on top of losing the exception
+        # itself to that same unread Future.
         # `self.manager.connections.pop` below covers every other way
         # this method fails: `ConnectionError` (an unterminated header, a
         # peer that goes away mid-request), `MalformedRequestHeadError`
