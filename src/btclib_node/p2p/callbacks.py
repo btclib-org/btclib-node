@@ -649,19 +649,20 @@ def feefilter(node: Node, msg: bytes, conn: Connection) -> None:
 def tx(node: Node, msg: bytes, conn: Connection) -> None:
     """Validate an unsolicited transaction and queue it for announcement.
 
-    A no-op before this node's own chain is synced, if the mempool
+    A no-op in initial block download, if the mempool
     already holds this wtxid or has recently refused it, if the
     transaction fails a relay or a consensus check, or if `add_tx`
     itself declines to keep it.
     """
-    # Core's own reason for the same early return, before it even
-    # parses the payload: "we don't have enough information to validate
-    # it yet" (net_processing.cpp, MSG_TX) -- the utxo set is still
-    # catching up, so a prevout this rejects for lacking may only be
-    # missing because sync has not reached it. An unsolicited
-    # transaction this early is not a protocol violation there either,
-    # so this drops it rather than the peer. btclib-org/btclib-node#129
-    if node.status < NodeStatus.BlockSynced:
+    # Core's own early return in IBD, before it even parses the payload:
+    # "we don't have enough information to validate it yet"
+    # (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    # tag) -- the utxo set is still catching up, so a prevout this
+    # rejects for lacking may only be missing because sync has not
+    # reached it. An unsolicited transaction this early is not a
+    # protocol violation there either, so this drops it rather than the
+    # peer. btclib-org/btclib-node#129
+    if node.is_initial_block_download:
         return
     tx = TxMsg.parse(msg).tx
     # Both checks answer for a candidate this node has already judged,
@@ -817,8 +818,8 @@ def inv(node: Node, msg: bytes, conn: Connection) -> None:
     new block, so that header sync takes on one more peer for each block
     found. Either way `maybe_send_getheaders` drops the request while one
     to this peer is in flight, and a peer not yet syncing has its turn
-    spent all the same, as in Core. Transactions are queued only once this
-    node's own chain is synced.
+    spent all the same, as in Core. Transactions are queued only out of
+    initial block download, where Core calls `AddTxAnnouncement`.
     """
     inv = Inv.parse(msg)
 
@@ -845,7 +846,7 @@ def inv(node: Node, msg: bytes, conn: Connection) -> None:
                 manager.inv_triggered_getheaders.add(conn.id)
                 manager.last_block_inv_triggering_headers_sync = unknown[-1]
 
-    if node.status < NodeStatus.BlockSynced:
+    if node.is_initial_block_download:
         return
     # Core keeps only the items matching the peer's `wtxidrelay`: wtxids
     # from a peer that sent it, txids from one that did not. `inv_txs`

@@ -1615,13 +1615,16 @@ def a_data_node(
     block_index: Any = None,
     block_db: Any = None,
     status: NodeStatus = NodeStatus.BlockSynced,
+    is_initial_block_download: bool = False,
 ) -> Any:
     """Build a node whose mempool, chain and download manager are real enough.
 
-    `BlockSynced` by default, since a transaction callback only accepts once the
-    chain is caught up; `status` moves that to test the gate.
+    Out of initial block download by default, since a transaction callback
+    only accepts there; `is_initial_block_download` moves that to test the
+    gate.
     """
     node = a_handshake_node(status=status)
+    node.is_initial_block_download = is_initial_block_download
     node.mempool = mempool if mempool is not None else Mempool(Logger(debug=True))
     node.chain = RegTest()
     node.block_db = block_db
@@ -1851,10 +1854,10 @@ def test_a_corrupted_stored_record_propagates_out_of_tx(
     assert node.download_manager.received_txs == []
 
 
-def test_a_transaction_received_before_the_node_is_synced_is_dropped(
+def test_a_transaction_received_in_initial_block_download_is_dropped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A transaction arriving before `BlockSynced` is dropped, not the peer.
+    """A transaction arriving in IBD is dropped, not the peer.
 
     #129: a peer's version now always asks for relay, so a
     transaction sent while this node is still syncing is possible --
@@ -1873,7 +1876,7 @@ def test_a_transaction_received_before_the_node_is_synced_is_dropped(
     # coincidental rejection
     monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
     transaction = a_transaction()
-    node = a_data_node(status=NodeStatus.HeaderSynced)
+    node = a_data_node(is_initial_block_download=True)
     tx(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
     assert not node.mempool.contains_tx(transaction)
     assert node.download_manager.received_txs == []
@@ -2174,9 +2177,29 @@ def an_inv_index() -> Any:
     )
 
 
-def test_a_transaction_announced_before_the_blocks_are_synced_is_ignored() -> None:
-    """A `wtx` `inv` before `BlockSynced` is not queued: IBD asks for none."""
-    node = a_data_node(status=NodeStatus.HeaderSynced)
+def test_a_transaction_is_taken_in_out_of_ibd_below_block_synced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1157: Core gates a `tx` and a tx `inv` on IBD, not on a sync stage.
+
+    A node out of IBD whose status never reached `BlockSynced` -- fed its
+    blocks by `submitblock`, say -- keeps the transaction and queues the
+    announcement.
+    """
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
+    transaction, announced = a_transaction(), a_transaction()
+    node = a_data_node(status=NodeStatus.SyncingHeaders)
+    peer = a_peer(id=3, wtxidrelay_received=True)
+    tx(node, TxMsg(transaction, include_witness=True).serialize(), peer)
+    assert node.mempool.contains_tx(transaction)
+    items = [Inventory(InventoryType.MSG_WTX, announced.hash)]
+    inv(node, Inv(items).serialize(), peer)
+    assert node.download_manager.inv_txs == [(3, announced.hash)]
+
+
+def test_a_transaction_announced_in_initial_block_download_is_ignored() -> None:
+    """A `wtx` `inv` in IBD is not queued, as Core adds no announcement."""
+    node = a_data_node(is_initial_block_download=True)
     peer = a_peer(id=4, wtxidrelay_received=True)
     items = [Inventory(InventoryType.MSG_WTX, a_transaction().hash)]
     inv(node, Inv(items).serialize(), peer)

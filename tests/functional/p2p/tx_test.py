@@ -32,9 +32,8 @@ if TYPE_CHECKING:
 def test_send_tx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """`broadcast_raw_transaction` gets the tx into a real peer's mempool.
 
-    Both nodes are brought to `BlockSynced` first, since `callbacks.tx`
-    drops a transaction arriving before that regardless of what the
-    sender's own version claimed. Both are also brought past IBD:
+    Both nodes are brought past IBD first: `callbacks.tx` drops a
+    transaction arriving during it, as Core does, and
     `DownloadManager._send_due_feefilters` gates outgoing relay on
     `node.is_initial_block_download`, and a peer holding the top
     feefilter bucket this node would otherwise still be sending refuses
@@ -100,12 +99,10 @@ def test_send_tx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
             # wait_until's own comment
             wait_until(lambda: len(block_index.active_chain) == len(chain) + 1)  # noqa: B023
             # and not merely the chain being connected: callbacks.tx drops
-            # a transaction that arrives before this node is block synced,
-            # whatever its own version told the peer. btclib-org/btclib-node#129
-            wait_until(lambda: node.status == NodeStatus.BlockSynced)  # noqa: B023
-            # _send_due_feefilters gates outgoing relay on this flag
+            # a transaction that arrives during IBD, and _send_due_feefilters
+            # gates outgoing relay on the same flag
             # (btclib-org/btclib-node#661), a write of its own on the
-            # node's thread, apart from the status the wait above reads
+            # node's thread
             wait_until(lambda: node.is_initial_block_download is False)  # noqa: B023
 
         node2.p2p_manager.connect(local_addr(node1.p2p_port))
