@@ -403,21 +403,21 @@ class RejectedMessageError(BTClibValueError):
 
 
 class IncompleteRequestHeadError(BTClibRuntimeError):
-    """`parse_request_head` was handed octets with no header terminator yet.
+    """`parse_request_head` was handed octets holding no whole header section.
 
     `IncompleteMessageError`'s own reason applies here unchanged: a
     connection reading its header section a chunk at a time is the
     ordinary case, not a hostile one, so this is `BTClibRuntimeError`
     and not `BTClibValueError` -- more octets can still answer it, where
     the errors below cannot. `RpcConnection.run` never triggers this
-    itself, since it only calls `parse_request_head` once `_recv_until`
-    has already confirmed the terminator is present; it exists for
-    `parse_request_head`'s other caller, `fuzz/fuzz_rpc_head.py`, which
-    hands it whatever octets the fuzzer drew.
+    itself, since it reads more of the section instead of calling
+    `parse_request_head`; it exists for `parse_request_head`'s caller,
+    `fuzz/fuzz_rpc_head.py`, which hands it whatever octets the fuzzer
+    drew.
     """
 
     def __init__(self) -> None:
-        super().__init__("no header terminator yet")
+        super().__init__("no whole header section yet")
 
 
 class MalformedRequestHeadError(BTClibValueError):
@@ -435,13 +435,14 @@ class MalformedRequestHeadError(BTClibValueError):
 
 
 class OversizedRequestBodyError(BTClibValueError):
-    """A request's `Content-Length` is one libevent answers 413.
+    """A request's body is one libevent answers 413.
 
-    Past `rpc.connection.MAX_BODY_BYTES`, the body limit Core sets on
-    its HTTP server. A class of its own rather than a
-    `MalformedRequestHeadError`, since the status it is answered with is
-    another.
+    A `Content-Length` past `rpc.connection.MAX_BODY_BYTES`, the body
+    limit Core sets on its HTTP server, and a chunked body libevent
+    cannot read, which it answers the same way. A class of its own
+    rather than a `MalformedRequestHeadError`, since the status it is
+    answered with is another.
     """
 
-    def __init__(self, length: str) -> None:
-        super().__init__(f"request body too large: Content-Length {length}")
+    def __init__(self, detail: str) -> None:
+        super().__init__(f"request body refused: {detail}")

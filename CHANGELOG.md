@@ -372,6 +372,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   (closes #1164), so a `_deliver` blocked on a peer that stopped reading
   ends at `stop` rather than staying pending until shutdown.
 
+### The JSON-RPC listener reads fields and chunked bodies as libevent does
+
+- **A header section is read as libevent reads it, bounded by Core's 8192
+  and not by a count of fields, and a chunked body is decoded** (closes
+  #1126), as in `bitcoind`.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

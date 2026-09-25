@@ -292,7 +292,7 @@ def test_a_malformed_payload_is_refused() -> None:
 
     An empty payload is what every entry point declared here refuses --
     `frame_message_bytes` wanting a whole message header,
-    `parse_request_head` a header terminator, and
+    `parse_request_head` a whole header section, and
     `fuzz.fuzz_process_message:dispatch` (issue #698) a selector byte to
     pick a message type with -- so this says the tests above measure
     acceptance rather than reporting it.

@@ -26,7 +26,11 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 
 import btclib_node.rpc.connection as connection_module
-from btclib_node.exceptions import MalformedRequestHeadError, OversizedRequestBodyError
+from btclib_node.exceptions import (
+    IncompleteRequestHeadError,
+    MalformedRequestHeadError,
+    OversizedRequestBodyError,
+)
 from btclib_node.log import Logger
 from btclib_node.rpc.auth import FAILED_ATTEMPT_DELAY, RpcAuth, RpcAuthEntry
 from btclib_node.rpc.connection import (
@@ -35,6 +39,7 @@ from btclib_node.rpc.connection import (
     REQUEST_TIMEOUT,
     JSONEncoder,
     RawJSON,
+    RequestHead,
     RpcConnection,
     parse_request_head,
 )
@@ -42,6 +47,8 @@ from btclib_node.rpc.jsonrpc import NO_CONTENT, OK, HttpReply, decode
 from tests import RPCAUTH, RPCAUTH_LINE
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from btclib_node.rpc.manager import RpcManager
 
 BODY = b'{"jsonrpc":"2.0","id":"x","method":"getbestblockhash"}'
@@ -70,7 +77,7 @@ def request(
 
     `version` names the request line's own trailing token -- `HTTP/1.1`
     by default, which is every existing caller's own request; a caller
-    of `_wants_keep_alive`'s HTTP/1.0 half passes `b"HTTP/1.0"` instead.
+    asking for another, `b"HTTP/1.0"` say, passes it instead.
     `auth` is the `Authorization` line, `RPCAUTH`'s user's unless a
     caller passes another, or `b""` for none. `method` and `target` are
     the request line's first two tokens.
@@ -274,7 +281,7 @@ def test_a_client_that_goes_away_mid_request_is_refused() -> None:
     """A peer that closes mid-request is refused rather than waited on forever.
 
     The header section never terminates and the peer closes: the read
-    returns nothing, which is the other way out of `_recv_until`.
+    returns nothing, which is the other way out of `_recv`.
     """
     _, messages, closed = drive([b"POST / HTTP/1.1\r\nHost: x\r\n"], hang_up=True)
     assert not messages
@@ -532,7 +539,7 @@ def test_keep_alive_follows_core_s_own_default_per_version(
 ) -> None:
     """A version before 1.1 defaults to closing, and 1.1 on to keep-alive.
 
-    libevent's `evhttp_send_done`, as `_wants_keep_alive` cites it; each
+    libevent's `evhttp_send_done`, as `RpcConnection._frame` cites it; each
     row is what `bitcoind` v31.1.0 does. A second request, sent here
     regardless of what the first asked for, is answered only where
     `expect_keep_alive` says this connection is still being read from.
@@ -1119,19 +1126,6 @@ def test_a_request_line_libevent_refuses_is_400_and_closes(line: bytes) -> None:
         assert not warnings
 
 
-def test_a_header_section_http_client_refuses_is_400_and_closes() -> None:
-    """More fields than `http.client` reads is a 400 too (issue #1126).
-
-    libevent bounds the section by size and not by count, so this is
-    where the two refuse different requests.
-    """
-    fields = b"X: y\r\n" * 101 + b"Content-Length: %d\r\n" % len(BODY)
-    reply, _, closed, messages, _ = refused(request(fields))
-    assert reply == closing(b"400 Bad Request")
-    assert closed
-    assert not messages
-
-
 def test_a_malformed_request_on_a_kept_alive_connection_closes_it() -> None:
     """A 400 closes the connection even where the request before it kept it."""
 
@@ -1297,6 +1291,8 @@ def conversation(data: bytes) -> tuple[bytes, bool]:
     in `THEN_CLOSE`, whose answer is what says it was kept: the
     connection is left nothing unread where it closes, so a TCP
     `socketpair`, which Windows emulates one with, closes it cleanly.
+    `data` is written as `run` reads it, so that more of it than a
+    socket buffer holds is not waited on before `run` starts.
     """
 
     async def main() -> tuple[bytes, bool]:
@@ -1306,10 +1302,11 @@ def conversation(data: bytes) -> tuple[bytes, bool]:
         loop = asyncio.get_running_loop()
         manager = fake_manager(connections={0: None})
         conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
-        await loop.sock_sendall(theirs, data)
+        sender = asyncio.ensure_future(loop.sock_sendall(theirs, data))
         await conn.run()
         if manager.messages:
             await conn.async_send(HttpReply(OK, ANSWER))
+        await sender
         reply = b""
         async with asyncio.timeout(5):
             while chunk := await loop.sock_recv(theirs, 4096):
@@ -1479,25 +1476,47 @@ def test_a_content_length_past_strtoll_is_refused_as_libevent_refuses_it(
 
 # A run of zeros two digit quantifiers could split between them, which
 # backtracks in quadratic time where what follows it fails: 60000 of them
-# took seconds that way, and take about a millisecond read by one
+# took seconds that way, and take about a millisecond read by one. Past
+# what `MAX_HEADER_BYTES` lets a header section hold, so each parser is
+# driven directly; a chunk-size line is bounded by `MAX_BODY_BYTES` alone.
 LONG_ZEROS = b"0" * 60000
 
 
 @pytest.mark.parametrize(
-    ("data", "outcome"),
+    ("read", "expected"),
     [
-        (b"POST http://h:" + LONG_ZEROS + b"x/ HTTP/1.1\r\n\r\n", "refused"),
-        (b"POST http://h:" + LONG_ZEROS + b"80/ HTTP/1.1\r\n\r\n", "proxy"),
-        (b"CONNECT h:" + LONG_ZEROS + b"x HTTP/1.1\r\n\r\n", "refused"),
         (
-            b"POST / HTTP/1.1\r\nContent-Length: " + LONG_ZEROS + b"x\r\n\r\n",
-            "refused",
+            lambda: connection_module._is_proxy_request(
+                b"POST", b"http://h:" + LONG_ZEROS + b"x/"
+            ),
+            MalformedRequestHeadError,
         ),
-        (b"POST / HTTP/1.1\r\nContent-Length: " + LONG_ZEROS + b"\r\n\r\n", "0"),
         (
-            b"POST / HTTP/1.1\r\nContent-Length: -" + LONG_ZEROS + b"3\r\n\r\n",
-            "refused",
+            lambda: connection_module._is_proxy_request(
+                b"POST", b"http://h:" + LONG_ZEROS + b"80/"
+            ),
+            True,
         ),
+        (
+            lambda: connection_module._is_proxy_request(
+                b"CONNECT", b"h:" + LONG_ZEROS + b"x"
+            ),
+            MalformedRequestHeadError,
+        ),
+        (
+            lambda: connection_module._content_length(" " + "0" * 60000 + "x"),
+            MalformedRequestHeadError,
+        ),
+        (lambda: connection_module._content_length("0" * 60000), 0),
+        (
+            lambda: connection_module._content_length("-" + "0" * 60000 + "3"),
+            MalformedRequestHeadError,
+        ),
+        (
+            lambda: connection_module._chunk_size(LONG_ZEROS + b"x"),
+            OversizedRequestBodyError,
+        ),
+        (lambda: connection_module._chunk_size(b" " + LONG_ZEROS + b"21"), 0x21),
     ],
     ids=[
         "port-then-x",
@@ -1506,10 +1525,14 @@ LONG_ZEROS = b"0" * 60000
         "length-then-x",
         "length-0",
         "length-negative",
+        "chunk-size-then-x",
+        "chunk-size-21",
     ],
 )
-def test_a_long_run_of_zeros_is_read_in_linear_time(data: bytes, outcome: str) -> None:
-    """A port or a length of leading zeros is read, or refused, at once.
+def test_a_long_run_of_zeros_is_read_in_linear_time(
+    read: Callable[[], object], expected: object
+) -> None:
+    """A port, a length or a chunk size of leading zeros is read at once.
 
     The head is read before any credential, on the listener's one loop,
     so a parse that takes seconds is a stall any client can cause. The
@@ -1517,13 +1540,11 @@ def test_a_long_run_of_zeros_is_read_in_linear_time(data: bytes, outcome: str) -
     measure a linear one.
     """
     start = time.perf_counter()
-    if outcome == "refused":
-        with pytest.raises(MalformedRequestHeadError):
-            parse_request_head(data)
+    if isinstance(expected, type):
+        with pytest.raises(expected):
+            read()
     else:
-        head = parse_request_head(data)
-        assert head.proxy == (outcome == "proxy")
-        assert head.length == (int(outcome) if outcome.isdigit() else 0)
+        assert read() == expected
     assert time.perf_counter() - start < 2
 
 
@@ -1772,7 +1793,10 @@ def test_a_refused_connect_line_is_consumed_to_its_own_line_end(
     """What `run` trims is the line and its own ending, as libevent reads it."""
     with pytest.raises(MalformedRequestHeadError):
         parse_request_head(b"CONNECT h:99999 HTTP/1.1" + terminator)
-    head = connection_module._read_head(b"CONNECT h:99999 HTTP/1.1" + terminator)
+    head = connection_module._HeadReader(
+        bytearray(b"CONNECT h:99999 HTTP/1.1" + terminator)
+    ).read()
+    assert head is not None
     assert (
         head.serialize()
         == b"CONNECT h:99999 HTTP/1.1" + terminator.partition(b"\n")[0] + b"\n"
@@ -1858,3 +1882,510 @@ def test_the_answer_to_stop_closes_a_kept_alive_connection() -> None:
         b"HTTP/1.1 200 OK", b"Connection: close", b"Content-Length: {length}"
     )
     assert ours.fileno() == -1
+
+
+# issue #1126: the header section as libevent's `evhttp_parse_headers_`
+# reads it, and a chunked body as `evhttp_handle_chunked_read` does
+
+
+def head_with(fields: bytes) -> RequestHead:
+    """Parse a `POST /` head of `fields`, which end at the section's end."""
+    return parse_request_head(b"POST / HTTP/1.1\r\n" + fields + b"\r\n")
+
+
+@pytest.mark.parametrize(
+    ("fields", "name", "value"),
+    [
+        (b"Connection:\tclose\r\n", b"Connection", "\tclose"),
+        (b"Connection:  \tclose\r\n", b"Connection", "\tclose"),
+        (b"Connection: close \t\r\n", b"Connection", "close"),
+        (b"Connection:\r\n close\r\n", b"Connection", " close"),
+        (b"Connection: keep\r\n\t-alive \r\n", b"Connection", "keep -alive"),
+        (b"Connection: close\0junk\r\n", b"Connection", "close"),
+        (b"Connection\t: close\r\n", b"Connection", None),
+        (b"connection: close\r\nConnection: keep-alive\r\n", b"Connection", "close"),
+        (b"X: a\r b\r\n", b"x", "a\r b"),
+        (b"X: a\r\r b\r\n", b"x", "a\r\r b"),
+        (b": x\r\n", b"", "x"),
+        (b"X Y: z\r\n", b"X Y", "z"),
+    ],
+    ids=[
+        "leading-tab-kept",
+        "leading-spaces-dropped",
+        "trailing-blanks-dropped",
+        "continuation",
+        "continuation-trimmed",
+        "nul-ends-value",
+        "tab-before-colon",
+        "first-of-two",
+        "cr-then-space",
+        "crs-then-space",
+        "empty-key",
+        "space-in-key",
+    ],
+)
+def test_a_field_is_read_as_libevent_reads_it(
+    fields: bytes, name: bytes, value: str | None
+) -> None:
+    """A field's key runs to its first colon, and only spaces lead a value.
+
+    What `bitcoind` v31.1.0 reads: a value keeps a leading tab, so
+    `Connection:<TAB>close` is not `close`; a line starting with a blank
+    continues the field before it; a field is a C string, ending at a
+    NUL; and a name is looked up by its first field.
+    """
+    assert head_with(fields).field(name) == value
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        b"garbage\r\n",
+        b"X\r: y\r\n",
+        b"X: a\rb\r\n",
+        b"X: a\r\r\n",
+        b" x\r\n",
+        b"Connection\0: keep-alive\r\n",
+    ],
+    ids=[
+        "no-colon",
+        "cr-in-key",
+        "bare-cr-in-value",
+        "cr-ending-value",
+        "continuation-first",
+        "nul-in-key",
+    ],
+)
+def test_a_field_libevent_refuses_is_400_and_closes(fields: bytes) -> None:
+    """What `evhttp_parse_headers_` refuses is refused, as `bitcoind` does."""
+    with pytest.raises(MalformedRequestHeadError):
+        head_with(fields)
+    # refused on the last octet sent, so that nothing is left unread
+    reply, closed = conversation(b"POST / HTTP/1.1\r\n" + fields)
+    assert reply == closing(b"400 Bad Request")
+    assert closed
+
+
+def test_a_line_starting_with_a_nul_ends_the_section() -> None:
+    """A NUL-led line is an empty C string to libevent: the section's end."""
+    data = b"POST / HTTP/1.1\r\nContent-Length: 2\r\n\0junk\r\n{}"
+    head = parse_request_head(data)
+    assert head.length == 2
+    assert head.consumed == len(data) - 2
+
+
+def test_more_fields_than_http_client_reads_are_read() -> None:
+    """A section is bounded by its size, as libevent bounds it, not by count."""
+    fields = b"X: y\r\n" * 101 + b"Content-Length: %d\r\n" % len(BODY)
+    _, messages, _ = drive([request(fields)])
+    assert messages == [(json.loads(BODY), 0)]
+
+
+def sized(total: int, eol: bytes = b"\r\n", *, ended: bool = True) -> bytes:
+    """Return a head whose lines hold `total` octets, their endings apart.
+
+    A request line and one field, ended by `eol`, and the section's own
+    end after them where `ended`.
+    """
+    line = b"POST / HTTP/1.1"
+    field = b"X: " + b"a" * (total - len(line) - 3)
+    return line + eol + field + (eol + eol if ended else b"")
+
+
+def test_a_section_s_size_counts_its_lines_not_their_endings() -> None:
+    """`MAX_HEADER_BYTES` of lines are read, whatever ends them.
+
+    `bitcoind` v31.1.0 answers 400 past 8192, the count its libevent
+    keeps in `headers_size`.
+    """
+    assert parse_request_head(sized(MAX_HEADER_BYTES)).error is None
+    assert parse_request_head(sized(MAX_HEADER_BYTES, b"\n")).error is None
+    many = b"POST / HTTP/1.1\r\n" + b"X:\r\n" * ((MAX_HEADER_BYTES - 15) // 2)
+    assert parse_request_head(many + b"\r\n").error is None
+    with pytest.raises(MalformedRequestHeadError, match="MAX_HEADER_BYTES"):
+        parse_request_head(sized(MAX_HEADER_BYTES + 1))
+    with pytest.raises(MalformedRequestHeadError, match="MAX_HEADER_BYTES"):
+        parse_request_head(many + b"X:\r\n\r\n")
+
+
+def test_a_section_past_its_size_is_refused_before_it_ends() -> None:
+    """The line read so far counts, so the 400 needs no end of section.
+
+    `evhttp_parse_headers_` and `evhttp_parse_firstline_` both count
+    what is buffered of a line not yet ended.
+    """
+    with pytest.raises(IncompleteRequestHeadError):
+        parse_request_head(sized(MAX_HEADER_BYTES, ended=False))
+    with pytest.raises(MalformedRequestHeadError, match="MAX_HEADER_BYTES"):
+        parse_request_head(sized(MAX_HEADER_BYTES + 1, ended=False))
+    line = b"POST /" + b"a" * (MAX_HEADER_BYTES - 6)
+    with pytest.raises(IncompleteRequestHeadError):
+        parse_request_head(line)
+    with pytest.raises(MalformedRequestHeadError, match="request line"):
+        parse_request_head(line + b"a")
+    reply, closed = conversation(sized(MAX_HEADER_BYTES + 1, ended=False))
+    assert reply == closing(b"400 Bad Request")
+    assert closed
+
+
+def test_a_request_line_past_the_size_is_refused() -> None:
+    """`evhttp_parse_firstline_` counts the request line on its own too."""
+    line = b"POST /" + b"a" * (MAX_HEADER_BYTES - 15) + b" HTTP/1.0\r\n"
+    assert parse_request_head(line + b"\r\n").target.endswith(b"a")
+    with pytest.raises(MalformedRequestHeadError, match="request line"):
+        parse_request_head(line.replace(b" ", b"a ", 1) + b"\r\n")
+
+
+def test_a_refused_section_is_answered_by_the_fields_read_before_it() -> None:
+    """A `Connection: close` read before the refused line frames the 400.
+
+    `evhttp_make_header_response` moves `Connection: close` after
+    `Content-Length` where the request asked to close, as `bitcoind`
+    v31.1.0 answers `size-8193`.
+    """
+    fields = b"Connection: close\r\nbad\r\n"
+    head = connection_module._HeadReader(
+        bytearray(b"POST / HTTP/1.1\r\n" + fields + b"\r\n")
+    ).read()
+    assert head is not None
+    assert head.error is not None
+    assert head.connection == "close"
+    # refused on the last octet sent, so that nothing is left unread
+    reply, closed = conversation(
+        b"POST / HTTP/1.1\r\nHost: x\r\n" + RPCAUTH_LINE + fields
+    )
+    page = error_page(b"400 Bad Request")
+    assert reply == (
+        b"HTTP/1.1 400 Bad Request\r\nContent-Length: %d\r\n" % len(page)
+        + b"Connection: close\r\n\r\n"
+        + page
+    )
+    assert closed
+
+
+@pytest.mark.parametrize(
+    ("data", "expected", "closes"),
+    [
+        (
+            good(b"HTTP/1.1", b"Connection:\tclose\r\n") + THEN_CLOSE,
+            framed(b"HTTP/1.1 200 OK", b"Content-Length: {length}") + THEN_CLOSE_ANSWER,
+            False,
+        ),
+        (
+            good(b"HTTP/1.0", b"Connection:\tkeep-alive\r\n"),
+            framed(b"HTTP/1.0 200 OK"),
+            True,
+        ),
+    ],
+    ids=["1.1-tab-close-kept", "1.0-tab-keep-alive-closed"],
+)
+def test_a_connection_value_led_by_a_tab_asks_nothing(
+    data: bytes, expected: bytes, *, closes: bool
+) -> None:
+    """`bitcoind` v31.1.0 reads a tab-led value as neither of the two."""
+    reply, closed = conversation(data)
+    assert reply == expected
+    assert closed
+    assert closes != reply.endswith(THEN_CLOSE_ANSWER)
+
+
+def test_a_connect_libevent_cannot_read_a_field_of_reads_the_next_line() -> None:
+    """A refused `CONNECT` field is 400, the line after it the next request.
+
+    What `bitcoind` v31.1.0 answers `connect-bad-field`: the page with
+    no `Content-Length`, then `THEN_CLOSE`'s answer.
+    """
+    reply, closed = conversation(b"CONNECT h:1 HTTP/1.1\r\nbad\r\n" + THEN_CLOSE)
+    assert reply == (
+        b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"
+        + error_page(b"400 Bad Request")
+        + THEN_CLOSE_ANSWER
+    )
+    assert closed
+
+
+CHUNKED_FIELD = b"Transfer-Encoding: chunked\r\n"
+
+
+def chunked(*chunks: bytes, trailer: bytes = b"") -> bytes:
+    """Return `chunks` as a chunked body, then `trailer` and its end."""
+    body = b"".join(b"%x\r\n%s\r\n" % (len(chunk), chunk) for chunk in chunks)
+    return body + b"0\r\n" + trailer + b"\r\n"
+
+
+@pytest.mark.parametrize(
+    ("fields", "method", "is_chunked", "length"),
+    [
+        (CHUNKED_FIELD + b"Content-Length: 5\r\n", b"POST", True, 0),
+        (b"Transfer-Encoding: ChUnKeD\r\n", b"POST", True, 0),
+        (b"Transfer-Encoding:\tchunked\r\nContent-Length: 5\r\n", b"POST", False, 5),
+        (b"Transfer-Encoding: gzip, chunked\r\n", b"POST", False, 0),
+        (CHUNKED_FIELD, b"HEAD", False, 0),
+    ],
+    ids=["over-length", "any-case", "tab-led", "a-list", "head"],
+)
+def test_a_body_is_chunked_where_evhttp_get_body_says(
+    fields: bytes, method: bytes, *, is_chunked: bool, length: int
+) -> None:
+    """`Transfer-Encoding: chunked`, any case, on a method with a body."""
+    head = parse_request_head(method + b" / HTTP/1.1\r\n" + fields + b"\r\n")
+    assert head.chunked == is_chunked
+    assert head.length == length
+
+
+@pytest.mark.parametrize(
+    ("line", "size"),
+    [
+        (b"21", 0x21),
+        (b"21 ;x", 0x21),
+        (b"0x21", 0x21),
+        (b"0X21", 0x21),
+        (b"+21", 0x21),
+        (b"  21", 0x21),
+        (b"\t21", 0x21),
+        (b"-0", 0),
+        (b" ", 0),
+        (b" x", 0),
+        (b"f" * 40, MAX_BODY_BYTES + 1),
+        (b"21;x", None),
+        (b"-1", None),
+        (b"zz", None),
+        (b"0x", None),
+        (b"0xg", None),
+        (b" 0x", None),
+        (b"\t", None),
+    ],
+)
+def test_a_chunk_size_is_read_as_strtoll_reads_it(
+    line: bytes, size: int | None
+) -> None:
+    """Base 16, a sign and a `0x` taken, and nothing after it but a space.
+
+    With no digit `strtoll` stops where it started, which a leading
+    space passes and a leading tab does not.
+    """
+    if size is None:
+        with pytest.raises(OversizedRequestBodyError, match="chunk size"):
+            connection_module._chunk_size(line)
+    else:
+        assert connection_module._chunk_size(line) == size
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        chunked(BODY),
+        chunked(BODY[:10], BODY[10:]),
+        b"%x\r\n%s%x\r\n%s0\r\n\r\n" % (10, BODY[:10], len(BODY) - 10, BODY[10:]),
+        b"\r\n\r\n" + chunked(BODY),
+        b"\0ff\r\n" + chunked(BODY),
+        chunked(BODY, trailer=b"X: y\r\n"),
+    ],
+    ids=["one", "two", "no-line-end", "empty-lines", "nul-led-line", "trailer"],
+)
+def test_a_chunked_body_is_decoded_and_dispatched(body: bytes) -> None:
+    """The chunks' data, joined, is the body, as `bitcoind` v31.1.0 reads it.
+
+    Sent three octets at a time, so each line is read across reads.
+    """
+    data = request(CHUNKED_FIELD, body)
+    _, messages, _ = drive([data[i : i + 3] for i in range(0, len(data), 3)])
+    assert messages == [(json.loads(BODY), 0)]
+
+
+def test_a_trailer_s_fields_are_the_request_s() -> None:
+    """A trailer can carry the credential, and ask to close.
+
+    `evhttp_read_trailer` adds its fields to the request's, where
+    `HTTPReq_JSONRPC` and `evhttp_send_done` look them up.
+    """
+    trailer = RPCAUTH_LINE + b"Connection: close\r\n"
+    reply, closed = conversation(
+        request(CHUNKED_FIELD, chunked(BODY, trailer=trailer), auth=b"")
+    )
+    assert reply == framed(
+        b"HTTP/1.1 200 OK", b"Content-Length: {length}", b"Connection: close"
+    )
+    assert closed
+
+
+def test_a_trailer_continuation_line_continues_the_request_s_last_field() -> None:
+    """`Connection: close` continued by the trailer is `close x`, and kept.
+
+    What `bitcoind` v31.1.0 answers `trailer-continuation-first`: the
+    line is appended to the last field libevent holds, the request's.
+    """
+    fields = CHUNKED_FIELD + b"Connection: close\r\n"
+    reply, closed = conversation(
+        request(fields, chunked(BODY, trailer=b" x\r\n")) + THEN_CLOSE
+    )
+    assert reply == (
+        framed(b"HTTP/1.1 200 OK", b"Content-Length: {length}") + THEN_CLOSE_ANSWER
+    )
+    assert closed
+
+
+def test_a_chunked_request_on_a_kept_alive_connection_leaves_the_next() -> None:
+    """What follows the trailer is the next request."""
+    reply, closed = conversation(request(CHUNKED_FIELD, chunked(BODY)) + THEN_CLOSE)
+    assert reply == (
+        framed(b"HTTP/1.1 200 OK", b"Content-Length: {length}") + THEN_CLOSE_ANSWER
+    )
+    assert closed
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"21;x\r\n",
+        b"zz\r\n",
+        b"-1\r\n",
+        b"41\r\n",
+        b"40\r\n" + b"a" * 0x40 + b"1\r\n",
+        chunked(BODY, trailer=b"bad\r\n")[:-2],
+    ],
+    ids=[
+        "semicolon",
+        "not-hex",
+        "negative",
+        "past-cap",
+        "past-cap-summed",
+        "trailer-no-colon",
+    ],
+)
+def test_a_chunked_body_libevent_cannot_read_is_413_and_closes(
+    body: bytes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`bitcoind` v31.1.0 answers each 413, as soon as it is read.
+
+    The cap is lowered to 0x40, so that a body at it is small to send.
+    """
+    monkeypatch.setattr(connection_module, "MAX_BODY_BYTES", 0x40)
+    reply, closed = conversation(request(CHUNKED_FIELD, body))
+    assert reply == closing(b"413 Request Entity Too Large")
+    assert closed
+
+
+def test_a_size_line_past_the_body_cap_closes_the_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """What bounds what is buffered, where libevent reads on without end."""
+    monkeypatch.setattr(connection_module, "MAX_BODY_BYTES", 0x40)
+    outcome, messages, closed = drive(
+        [request(CHUNKED_FIELD, b"0" * 0x41)], timeout=0.5
+    )
+    assert outcome == "returned"
+    assert not messages
+    assert closed
+
+
+def test_an_empty_line_first_in_the_buffer_is_empty() -> None:
+    r"""A line feed at the buffer's start ends a line of nothing.
+
+    Whatever the buffer ends with: here the body, a lone `\r`.
+    """
+    head = parse_request_head(b"POST / HTTP/1.1\nContent-Length: 1\n\n\r")
+    assert head.length == 1
+    assert head.consumed == len(b"POST / HTTP/1.1\nContent-Length: 1\n\n")
+
+
+def test_a_chunked_body_at_the_cap_is_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`MAX_BODY_BYTES` of data is read whole, as libevent reads it."""
+    monkeypatch.setattr(connection_module, "MAX_BODY_BYTES", 0x40)
+    body = BODY + b" " * (0x40 - len(BODY))
+    _, messages, _ = drive([request(CHUNKED_FIELD, chunked(body))])
+    assert messages == [(json.loads(BODY), 0)]
+
+
+def test_a_size_line_at_the_body_cap_is_waited_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A size line of `MAX_BODY_BYTES` octets not yet ended is still read."""
+    monkeypatch.setattr(connection_module, "MAX_BODY_BYTES", 0x40)
+    outcome, messages, closed = drive(
+        [request(CHUNKED_FIELD, b"0" * 0x40)], timeout=0.5
+    )
+    assert outcome == "waiting"
+    assert not messages
+    assert not closed
+
+
+def test_a_trailer_is_counted_on_from_the_header_section() -> None:
+    """`headers_size` is the request's, so the trailer adds to it.
+
+    What `bitcoind` v31.1.0 answers `trailer-8192` and `trailer-8193`.
+    The second is refused before its line ends, on the last octet sent,
+    so that nothing is left unread.
+    """
+    fields = CHUNKED_FIELD + b"Connection: close\r\n"
+    lines = b"POST / HTTP/1.1\r\nHost: x\r\n" + RPCAUTH_LINE + fields
+    counted = len(lines) - 2 * lines.count(b"\r\n")
+    field = b"X: " + b"a" * (MAX_HEADER_BYTES - counted - 3)
+    reply, closed = conversation(
+        request(fields, chunked(BODY, trailer=field + b"\r\n"))
+    )
+    assert reply.startswith(b"HTTP/1.1 200 OK")
+    assert closed
+    reply, closed = conversation(request(fields, chunked(BODY)[:-2] + field + b"a"))
+    page = error_page(b"413 Request Entity Too Large")
+    assert reply == (
+        b"HTTP/1.1 413 Request Entity Too Large\r\n"
+        + b"Content-Length: %d\r\nConnection: close\r\n\r\n" % len(page)
+        + page
+    )
+    assert closed
+
+
+def test_a_size_line_arriving_in_pieces_is_searched_once() -> None:
+    """A line feed is searched for in each octet once, however it arrives.
+
+    A size line is bounded by `MAX_BODY_BYTES` alone: searched again from
+    its start at every read, the one here would take tens of seconds. The
+    bound is generous: it is there to fail that, not to measure this.
+    """
+    head = parse_request_head(b"POST / HTTP/1.1\r\n" + CHUNKED_FIELD + b"\r\n")
+    buffer = bytearray()
+    reader = connection_module._ChunkedReader(buffer, head)
+    start = time.perf_counter()
+    for _ in range(4 * 1024 * 1024 // 64):
+        buffer += b"0" * 64
+        assert not reader.read()
+    assert time.perf_counter() - start < 2
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        (
+            b"POST http://x/ HTTP/1.1\r\n"
+            + CHUNKED_FIELD
+            + b"\r\n"
+            + chunked(BODY)[:-2]
+            + b"Proxy-Connection: keep-alive\r\nbad\r\n",
+            closing(b"413 Request Entity Too Large"),
+        ),
+        (
+            request(
+                CHUNKED_FIELD, chunked(BODY)[:-2] + b"Connection: close\r\nbad\r\n"
+            ),
+            b"HTTP/1.1 413 Request Entity Too Large\r\n"
+            + b"Content-Length: %d\r\nConnection: close\r\n\r\n"
+            % len(error_page(b"413 Request Entity Too Large"))
+            + error_page(b"413 Request Entity Too Large"),
+        ),
+    ],
+    ids=["proxy-keep-alive", "close"],
+)
+def test_a_refused_trailer_is_answered_by_the_fields_read_before_it(
+    data: bytes, expected: bytes
+) -> None:
+    """The trailer fields read before the refusal frame the 413, as libevent's.
+
+    What `bitcoind` v31.1.0 answers `trailer-proxy-keep-alive-refused`
+    and `trailer-close-refused`: the proxy request keeps the page's own
+    `Connection: close`, and the request asking to close has it moved
+    after `Content-Length`.
+    """
+    reply, closed = conversation(data)
+    assert reply == expected
+    assert closed
