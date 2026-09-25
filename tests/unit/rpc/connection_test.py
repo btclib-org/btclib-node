@@ -12,8 +12,11 @@ ends, a Content-Length no client would send, a body that is not JSON.
 """
 
 import asyncio
+import base64
 import contextlib
 import json
+import os
+import re
 import socket
 import time
 from types import SimpleNamespace
@@ -21,6 +24,8 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
+from btclib_node.log import Logger
+from btclib_node.rpc.auth import FAILED_ATTEMPT_DELAY, RpcAuth, RpcAuthEntry
 from btclib_node.rpc.connection import (
     MAX_BODY_BYTES,
     MAX_HEADER_BYTES,
@@ -29,6 +34,7 @@ from btclib_node.rpc.connection import (
     RawJSON,
     RpcConnection,
 )
+from tests import RPCAUTH, RPCAUTH_LINE
 
 if TYPE_CHECKING:
     from btclib_node.rpc.manager import RpcManager
@@ -36,16 +42,33 @@ if TYPE_CHECKING:
 BODY = b'{"jsonrpc":"2.0","id":"x","method":"getbestblockhash"}'
 
 
+def fake_manager(connections: dict[int, Any]) -> SimpleNamespace:
+    """Stand in for the `RpcManager` a connection reads, accepting `RPCAUTH`."""
+    return SimpleNamespace(
+        auth=RpcAuth((RpcAuthEntry.parse(RPCAUTH),)),
+        logger=Logger(debug=True),
+        messages=[],
+        connections=connections,
+    )
+
+
 def request(
-    headers: bytes = b"", body: bytes = BODY, *, version: bytes = b"HTTP/1.1"
+    headers: bytes = b"",
+    body: bytes = BODY,
+    *,
+    version: bytes = b"HTTP/1.1",
+    auth: bytes = RPCAUTH_LINE,
 ) -> bytes:
     """Build a raw HTTP request line and headers, followed by `body`.
 
     `version` names the request line's own trailing token -- `HTTP/1.1`
     by default, which is every existing caller's own request; a caller
     of `_wants_keep_alive`'s HTTP/1.0 half passes `b"HTTP/1.0"` instead.
+    `auth` is the `Authorization` line, `RPCAUTH`'s user's unless a
+    caller passes another, or `b""` for none.
     """
-    return b"POST / " + version + b"\r\nHost: x\r\n" + headers + b"\r\n" + body
+    head = b"POST / " + version + b"\r\nHost: x\r\n" + auth + headers
+    return head + b"\r\n" + body
 
 
 def with_length(body: bytes = BODY) -> bytes:
@@ -82,7 +105,7 @@ def drive(
         ours.setblocking(False)
         theirs.setblocking(False)
         loop = asyncio.get_running_loop()
-        manager = SimpleNamespace(messages=[], connections={0: None})
+        manager = fake_manager(connections={0: None})
         conn = RpcConnection(
             loop, ours, cast("RpcManager", manager), 0, request_timeout=request_timeout
         )
@@ -236,7 +259,7 @@ def test_a_zero_header_request_leaves_the_next_ones_bytes_intact() -> None:
         ours.setblocking(False)
         theirs.setblocking(False)
         loop = asyncio.get_running_loop()
-        manager = SimpleNamespace(messages=[], connections={0: None})
+        manager = fake_manager(connections={0: None})
         conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
         second = with_length()
         await loop.sock_sendall(theirs, b"POST / HTTP/1.1\r\n\r\n" + second)
@@ -310,7 +333,7 @@ def test_the_response_is_crlf_framed_and_the_socket_closed() -> None:
         conn = RpcConnection(
             loop,
             ours,
-            cast("RpcManager", SimpleNamespace(messages=[], connections={})),
+            cast("RpcManager", fake_manager(connections={})),
             0,
         )
         await conn.async_send([{"result": b"\xff", "id": "x"}])
@@ -338,7 +361,7 @@ def test_a_response_of_several_stays_a_list() -> None:
         conn = RpcConnection(
             loop,
             ours,
-            cast("RpcManager", SimpleNamespace(messages=[], connections={})),
+            cast("RpcManager", fake_manager(connections={})),
             0,
         )
         # What `run` would have set off a real two-member batch: this
@@ -376,7 +399,7 @@ def test_a_response_of_one_stays_a_list_where_the_request_was_a_batch() -> None:
         conn = RpcConnection(
             loop,
             ours,
-            cast("RpcManager", SimpleNamespace(messages=[], connections={})),
+            cast("RpcManager", fake_manager(connections={})),
             0,
         )
         conn.is_batch = True
@@ -405,7 +428,7 @@ def test_a_kept_alive_connection_reads_a_second_request_off_the_same_socket() ->
         ours.setblocking(False)
         theirs.setblocking(False)
         loop = asyncio.get_running_loop()
-        manager = SimpleNamespace(messages=[], connections={})
+        manager = fake_manager(connections={})
         conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
 
         await loop.sock_sendall(theirs, with_length())
@@ -446,7 +469,7 @@ def test_a_connection_asking_for_close_is_closed_after_its_reply() -> None:
         ours.setblocking(False)
         theirs.setblocking(False)
         loop = asyncio.get_running_loop()
-        manager = SimpleNamespace(messages=[], connections={0: None})
+        manager = fake_manager(connections={0: None})
         conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
 
         headers = b"Connection: close\r\nContent-Length: %d\r\n" % len(BODY)
@@ -484,7 +507,7 @@ def test_a_kept_alive_connection_idles_out_once_request_timeout_elapses() -> Non
         ours.setblocking(False)
         theirs.setblocking(False)
         loop = asyncio.get_running_loop()
-        manager = SimpleNamespace(messages=[], connections={})
+        manager = fake_manager(connections={})
         conn = RpcConnection(
             loop, ours, cast("RpcManager", manager), 0, request_timeout=0.2
         )
@@ -543,7 +566,7 @@ def test_keep_alive_follows_core_s_own_default_per_version(
         ours.setblocking(False)
         theirs.setblocking(False)
         loop = asyncio.get_running_loop()
-        manager = SimpleNamespace(messages=[], connections={})
+        manager = fake_manager(connections={})
         conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
 
         headers = connection_header + b"Content-Length: %d\r\n" % len(BODY)
@@ -592,7 +615,7 @@ def test_several_malformed_bodies_over_one_kept_alive_connection_are_each_answer
         ours.setblocking(False)
         theirs.setblocking(False)
         loop = asyncio.get_running_loop()
-        manager = SimpleNamespace(messages=[], connections={})
+        manager = fake_manager(connections={})
         conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
 
         bad = request(b"Content-Length: 3\r\n", b"bad")
@@ -662,7 +685,7 @@ def test_a_raw_json_value_is_written_unquoted_and_verbatim() -> None:
         conn = RpcConnection(
             loop,
             ours,
-            cast("RpcManager", SimpleNamespace(messages=[], connections={})),
+            cast("RpcManager", fake_manager(connections={})),
             0,
         )
         await conn.async_send([{"result": RawJSON("0.00000001"), "id": "x"}])
@@ -692,7 +715,7 @@ def test_a_raw_json_value_does_not_swallow_a_field_containing_its_own_mark() -> 
         conn = RpcConnection(
             loop,
             ours,
-            cast("RpcManager", SimpleNamespace(messages=[], connections={})),
+            cast("RpcManager", fake_manager(connections={})),
             0,
         )
         await conn.async_send(
@@ -722,7 +745,7 @@ def test_a_connection_carries_no_task_handle_for_close_to_cancel() -> None:
         conn = RpcConnection(
             cast("asyncio.AbstractEventLoop", None),
             ours,
-            cast("RpcManager", SimpleNamespace(messages=[], connections={})),
+            cast("RpcManager", fake_manager(connections={})),
             0,
         )
         assert not hasattr(conn, "task")
@@ -747,7 +770,7 @@ def test_repr_names_the_peer_and_says_so_when_there_is_none() -> None:
     conn = RpcConnection(
         cast("asyncio.AbstractEventLoop", None),
         client,
-        cast("RpcManager", SimpleNamespace(messages=[], connections={})),
+        cast("RpcManager", fake_manager(connections={})),
         0,
     )
     host, port = listener.getsockname()
@@ -779,7 +802,7 @@ def test_repr_brackets_an_ipv6_peer(host: str, endpoint: str) -> None:
     conn = RpcConnection(
         cast("asyncio.AbstractEventLoop", None),
         client,
-        cast("RpcManager", SimpleNamespace(messages=[], connections={})),
+        cast("RpcManager", fake_manager(connections={})),
         0,
     )
     assert repr(conn) == f"Connection to {endpoint}"
@@ -791,7 +814,7 @@ def test_close_closes_the_socket() -> None:
     conn = RpcConnection(
         cast("asyncio.AbstractEventLoop", None),
         ours,
-        cast("RpcManager", SimpleNamespace(messages=[], connections={})),
+        cast("RpcManager", fake_manager(connections={})),
         0,
     )
     conn.close()
@@ -861,7 +884,7 @@ def test_send_and_wait_gives_up_rather_than_blocking_forever() -> None:
     ours, theirs = socket.socketpair()
     loop = asyncio.new_event_loop()
     conn = RpcConnection(
-        loop, ours, cast("RpcManager", SimpleNamespace(messages=[], connections={})), 0
+        loop, ours, cast("RpcManager", fake_manager(connections={})), 0
     )
     started = time.monotonic()
     conn.send_and_wait([{"id": "x"}])  # returns, does not raise
@@ -870,3 +893,107 @@ def test_send_and_wait_gives_up_rather_than_blocking_forever() -> None:
     loop.close()
     ours.close()
     theirs.close()
+
+
+def refused(data: bytes) -> tuple[bytes, float, bool, list[Any], list[tuple[Any, ...]]]:
+    """Send `data` to a `RpcConnection.run` expecting a 401, and read it back.
+
+    Returns the reply's header section, the seconds from `run`
+    starting to the reply arriving, whether the connection closed
+    after it, what was queued for `handle_rpc`, and every warning
+    logged.
+    """
+    warnings: list[tuple[Any, ...]] = []
+
+    async def main() -> tuple[bytes, float, bool, list[Any]]:
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        theirs.setblocking(False)
+        loop = asyncio.get_running_loop()
+        manager = fake_manager(connections={0: None})
+        manager.logger = SimpleNamespace(warning=lambda *args: warnings.append(args))
+        conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
+        await loop.sock_sendall(theirs, data)
+        # before `run`, so the delay it schedules is inside what is measured
+        start = time.monotonic()
+        await conn.run()
+        reply = b""
+        async with asyncio.timeout(5):
+            while b"\r\n\r\n" not in reply:
+                reply += await loop.sock_recv(theirs, 4096)
+        elapsed = time.monotonic() - start
+        # the reply is on the wire before `_write` decides what comes
+        # next, so give it the turns it takes to get there
+        for _ in range(50):
+            if ours.fileno() == -1:
+                break
+            await asyncio.sleep(0)
+        closed = ours.fileno() == -1
+        theirs.close()
+        if not closed:
+            ours.close()
+        return reply, elapsed, closed, manager.messages
+
+    reply, elapsed, closed, messages = asyncio.run(main())
+    return reply, elapsed, closed, messages, warnings
+
+
+UNAUTHORIZED = (
+    b"HTTP/1.1 401 Unauthorized\r\n"
+    b'WWW-Authenticate: Basic realm="jsonrpc"\r\n'
+    b"Content-Length: 0\r\n\r\n"
+)
+
+
+def test_a_request_with_no_credential_is_refused_401_at_once() -> None:
+    """No `Authorization`: a 401 naming the scheme, and nothing queued.
+
+    Core answers this one without its brute-force delay, and keeps an
+    HTTP/1.1 connection open for the client to retry on.
+    """
+    reply, elapsed, closed, messages, warnings = refused(
+        request(b"Content-Length: %d\r\n" % len(BODY), auth=b"")
+    )
+    assert reply == UNAUTHORIZED
+    assert elapsed < FAILED_ATTEMPT_DELAY
+    assert not closed
+    assert not messages
+    assert not warnings
+
+
+def test_a_wrong_password_is_refused_401_after_the_delay() -> None:
+    """A credential not accepted: logged, delayed, a 401, and nothing queued."""
+    wrong = b"Authorization: Basic " + base64.b64encode(b"pytest:wrong") + b"\r\n"
+    reply, elapsed, closed, messages, warnings = refused(
+        request(b"Content-Length: %d\r\n" % len(BODY), auth=wrong)
+    )
+    assert reply == UNAUTHORIZED
+    assert elapsed >= FAILED_ATTEMPT_DELAY
+    assert not closed
+    assert not messages
+    ((message, peer),) = warnings
+    assert message == "ThreadRPCServer incorrect password attempt from %s"
+    # a POSIX socketpair is AF_UNIX, whose peer has no `ip:port` to name;
+    # Windows emulates `socket.socketpair` over loopback TCP
+    expected = r"127\.0\.0\.1:\d+" if os.name == "nt" else "an unknown address"
+    assert re.fullmatch(expected, peer)
+
+
+def test_a_refusal_closes_where_the_request_asked() -> None:
+    """`Connection: close` on the request is honoured on a 401 too."""
+    reply, _, closed, _, _ = refused(
+        request(b"Connection: close\r\nContent-Length: %d\r\n" % len(BODY), auth=b"")
+    )
+    assert reply == UNAUTHORIZED.replace(
+        b"Content-Length", b"Connection: close\r\nContent-Length"
+    )
+    assert closed
+
+
+def test_a_body_that_is_not_json_is_not_parsed_without_a_credential() -> None:
+    """A 401 and not `PARSE_ERROR`: the body is never decoded."""
+    body = b"not json"
+    reply, _, _, _, _ = refused(
+        request(b"Content-Length: %d\r\n" % len(body), body, auth=b"")
+    )
+    assert reply == UNAUTHORIZED

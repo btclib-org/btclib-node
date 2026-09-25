@@ -4,10 +4,11 @@
 
 """The JSON-RPC surface this node serves.
 
-Connections, the RPC manager, the errors JSON-RPC 2.0 defines and the
-method handlers `Node`'s loop calls. `manager.RpcManager` is the
-thread; `connection.RpcConnection` is one accepted socket, carrying one
-request or several; `callbacks.callbacks` is the method-name table
+Connections, the RPC manager, the credentials it checks, the errors
+JSON-RPC 2.0 defines and the method handlers `Node`'s loop calls.
+`manager.RpcManager` is the thread; `connection.RpcConnection` is one
+accepted socket, carrying one request or several; `auth.RpcAuth` is
+who may call it; `callbacks.callbacks` is the method-name table
 `main.handle_rpc` dispatches through; `errors.RpcError` is what a
 handler raises to answer with a JSON-RPC error object instead of a
 result.

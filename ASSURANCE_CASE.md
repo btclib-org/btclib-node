@@ -92,18 +92,18 @@ under a GIL interpreter.
 - The chain state on disk, against a bit flipped by the medium under it,
   and against being read from a second process while a `Node` already
   has it open.
-- The user's control over what serves the RPC port and to whom, given
-  the caller-supplied `Config.rpc_host`/`-rpcbind` this node itself has
-  no way to authenticate past.
+- The user's control over what serves the RPC port and to whom: the
+  caller-supplied `Config.rpc_host`/`-rpcbind` decides who can reach
+  it, and the cookie and `-rpcauth` decide who it answers.
 
 **The adversaries.**
 
 - A remote peer, over p2p: a handshake, a block, a transaction, an
   address, a filter request, or any other message this node's protocol
   handlers read.
-- Whoever can reach the RPC port: SECURITY.md states that reach is what
-  stands between them and the method table, there being no
-  authentication behind it.
+- Whoever can reach the RPC port: a request's credential is checked
+  before its body is decoded, and a caller without an accepted one gets
+  a 401 and nothing else.
 - A party tampering with the medium the datadir sits on, or opening the
   same datadir from a second process.
 - A party tampering with a distribution between this tree and the user.
@@ -111,8 +111,9 @@ under a GIL interpreter.
 **What is not defended**, each stated in SECURITY.md's *Limitations, not
 vulnerabilities*:
 
-- the JSON-RPC listener authenticating who is asking, once traffic
-  reaches whichever interface `Config.rpc_host` binds
+- the JSON-RPC listener, against a caller holding an accepted
+  credential, who may call every method, and against whoever can read
+  the plain HTTP it is sent over
 - the inbound p2p slots, against whoever fills them first
 - anything SECURITY.md attributes to btclib rather than to this tree —
   the constant-time properties of the arithmetic btclib's own
@@ -131,10 +132,12 @@ local caller's request crosses in. `RpcConnection` bounds what it will
 read before decoding anything — `MAX_HEADER_BYTES` and `MAX_BODY_BYTES`
 in `rpc/connection.py` — and a body `json.loads` cannot parse answers
 JSON-RPC 2.0's own `PARSE_ERROR` rather than closing the socket with
-nothing said. `rpc/callbacks.py`'s own module docstring states the rest
-of the boundary: the table it serves is reached over a listener that
-authenticates nothing, so every handler in it treats its caller as
-untrusted in every way but the interface it was reachable from.
+nothing said. Before that decoding, `RpcConnection.run` checks the
+request's credential against `rpc/auth.py`'s `RpcAuth` and answers one
+it does not accept with a 401, so no handler sees a request from a
+caller without the cookie or an `-rpcauth` password.
+`rpc/callbacks.py`'s own module docstring states the rest of the
+boundary: every caller that is accepted may call every handler.
 
 **btclib-node and btclib.** Every object on the wire and every
 consensus rule crosses this boundary rather than being reimplemented:

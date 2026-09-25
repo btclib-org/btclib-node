@@ -14,6 +14,8 @@ from btclib_node import cli
 from btclib_node.chains import RegTest
 from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS
 from btclib_node.constants import MIN_PRUNE_TARGET_MIB
+from btclib_node.rpc.auth import RpcAuthEntry
+from tests import RPCAUTH
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -451,6 +453,7 @@ def test_build_config_with_nothing_given_uses_every_default(tmp_path: Path) -> N
     assert config.addnode == ()
     assert config.listen is True
     assert config.max_connections == DEFAULT_MAX_PEER_CONNECTIONS
+    assert config.rpc_auth == ()
 
 
 def test_build_config_maxconnections_from_the_command_line(tmp_path: Path) -> None:
@@ -468,6 +471,31 @@ def test_build_config_maxconnections_from_the_file_on_any_chain(
     )
     config = cli.build_config(["-datadir", str(tmp_path)])
     assert config.max_connections == 7
+
+
+def test_build_config_rpcauth_from_the_command_line_and_the_file(
+    tmp_path: Path,
+) -> None:
+    """Every `-rpcauth` is kept, the command line's first, as for `-connect`.
+
+    Read from the default section off `main`: Core's `-rpcauth` is
+    `ALLOW_ANY` and not network-only.
+    """
+    other = "other:" + RPCAUTH.partition(":")[2]
+    (tmp_path / "bitcoin.conf").write_text(
+        f"regtest=1\nrpcauth={other}\n", encoding="utf-8"
+    )
+    config = cli.build_config(["-datadir", str(tmp_path), f"-rpcauth={RPCAUTH}"])
+    assert config.rpc_auth == (RpcAuthEntry.parse(RPCAUTH), RpcAuthEntry.parse(other))
+
+
+def test_build_config_a_malformed_rpcauth_in_the_file_raises(tmp_path: Path) -> None:
+    """A malformed `rpcauth=` stops the node starting, as it stops Core."""
+    (tmp_path / "bitcoin.conf").write_text(
+        "regtest=1\nrpcauth=pytest:no-dollar-sign\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="Invalid -rpcauth argument"):
+        cli.build_config(["-datadir", str(tmp_path)])
 
 
 def test_build_config_datadir_a_file_raises(tmp_path: Path) -> None:

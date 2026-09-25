@@ -23,6 +23,7 @@ from btclib.fee import FeeRate
 
 from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet
 from btclib_node.exceptions import InvalidChainTypeError, UnknownChainError
+from btclib_node.rpc.auth import RpcAuthEntry
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -173,14 +174,17 @@ class Config:
     p2p_port: int | None
     rpc_port: int | None
     # what RpcManager binds instead of every interface: an RPC server is
-    # this node's control plane, not a peer-to-peer listener, and
-    # rpc/callbacks.py carries no authentication of its own -- so the
-    # interface it is reachable from is the one thing between an
-    # unauthenticated caller and the network. Bitcoin Core's own
-    # `rpcbind`/`rpcallowip` default to localhost for the same reason;
-    # P2pManager.server binds every interface unconditionally, and is
-    # right to, since a peer listener is supposed to accept a stranger.
+    # this node's control plane, not a peer-to-peer listener, so a
+    # caller holding a credential still has to reach it from an
+    # interface this names. Bitcoin Core's own `rpcbind`/`rpcallowip`
+    # default to localhost for the same reason; P2pManager.server binds
+    # every interface unconditionally, and is right to, since a peer
+    # listener is supposed to accept a stranger.
     rpc_host: str
+    # Core's own `-rpcauth`, one entry per value: users the RPC listener
+    # accepts beside the cookie `rpc.auth.RpcAuth.generate_cookie`
+    # writes, which it accepts whatever this holds.
+    rpc_auth: tuple[RpcAuthEntry, ...]
     # `True` is Core's own `IsPruneMode()`: some block and undo data may
     # be deleted, `MIN_BLOCKS_TO_KEEP` (constants.py, 288, Core's own two
     # days) behind the tip never among it -- `block_db.BlockDB.prune_up_to`
@@ -274,6 +278,7 @@ class Config:
         addnode: Sequence[str] = (),
         listen: bool = True,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
+        rpcauth: Sequence[str] = (),
     ) -> None:
         """Resolve `chain` and ports."""
         self.chain = _resolve_chain(chain)
@@ -328,6 +333,9 @@ class Config:
                 self.rpc_port = rpc_port
 
         self.rpc_host = rpc_host
+        # a malformed value is fatal, `RpcAuthEntry.parse`'s own
+        # `ValueError`, as Core refuses to start on one
+        self.rpc_auth = tuple(RpcAuthEntry.parse(value) for value in rpcauth)
 
         self.pruned = pruned
         self.prune_target_mib = prune_target_mib

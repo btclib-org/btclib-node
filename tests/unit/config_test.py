@@ -17,6 +17,8 @@ from btclib_node.config import (
     Config,
     split_host_port,
 )
+from btclib_node.rpc.auth import RpcAuthEntry
+from tests import RPCAUTH
 
 
 def test_chain_selection() -> None:
@@ -100,8 +102,8 @@ def test_min_relay_feerate_is_configurable() -> None:
 
 def test_rpc_host_defaults_to_localhost_not_every_interface() -> None:
     """`rpc_host` defaults to loopback; an explicit host still wins."""
-    # #27: the rpc listener is an unauthenticated control plane, not a
-    # peer-to-peer one, so its default is not the P2P listener's
+    # #27: the rpc listener is a control plane, not a peer-to-peer
+    # one, so its default is not the P2P listener's
     assert Config(chain="regtest").rpc_host == "127.0.0.1"
     assert (
         Config(chain="regtest", rpc_host="0.0.0.0").rpc_host  # noqa: S104
@@ -290,3 +292,17 @@ def test_max_connections_negative_raises() -> None:
     """Core's own `InitError`, not a limit nothing could ever satisfy."""
     with pytest.raises(ValueError, match="greater or equal than zero"):
         Config(chain="regtest", max_connections=-1)
+
+
+def test_rpcauth_is_parsed_into_rpc_auth() -> None:
+    """Each `-rpcauth` value becomes one `RpcAuthEntry`, none by default."""
+    assert Config(chain="regtest").rpc_auth == ()
+    assert Config(chain="regtest", rpcauth=[RPCAUTH]).rpc_auth == (
+        RpcAuthEntry.parse(RPCAUTH),
+    )
+
+
+def test_a_malformed_rpcauth_raises() -> None:
+    """Core refuses to start on one, with this message."""
+    with pytest.raises(ValueError, match=r"^Invalid -rpcauth argument\.$"):
+        Config(chain="regtest", rpcauth=["pytest"])

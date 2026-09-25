@@ -24,9 +24,9 @@ and defaulted the way `SetupServerArgs` (`src/init.cpp`, same sha)
 names and defaults its own -- `-datadir=<dir>`, `-blocksdir=<dir>`,
 `-conf=<file>`, `-chain=`/`-testnet`/`-signet`/`-regtest`, `-port=`,
 `-rpcport=`, `-rpcbind=`, `-prune=`, `-debug`, `-connect=`,
-`-addnode=`, `-listen=`/`-nolisten`, and `-maxconnections=`, whose
-default is instead the pinned release's 125 rather than that sha's 200
--- `config.py`'s comment on `DEFAULT_MAX_PEER_CONNECTIONS` says why. Three
+`-addnode=`, `-listen=`/`-nolisten`, `-rpcauth=`, and `-maxconnections=`,
+whose default is instead the pinned release's 125 rather than that sha's
+200 -- `config.py`'s comment on `DEFAULT_MAX_PEER_CONNECTIONS` says why. Three
 `Config` fields have no flag here: `min_relay_feerate` (Core's own
 `-minrelaytxfee` is BTC/kvB and this field is priced in sat/kvB
 already, `config.py`'s own comment on `DEFAULT_MIN_RELAY_FEERATE`
@@ -108,6 +108,8 @@ stay compatible with. `-connect` and `-addnode` are not scalars: every
 value from every source that applies is dialled, none of them
 replacing another, which is Core's own `GetArgs`/`GetSettingsList`
 shape for a repeatable option (`src/common/settings.cpp:210-246`).
+`-rpcauth` is repeatable the same way, and is not network-only: the
+default section's own values apply on every chain.
 
 Not every option answers to the file the same way once the chain is
 not `main`: `-port`, `-rpcport`, `-rpcbind`, `-connect` and `-addnode`
@@ -229,6 +231,7 @@ _RECOGNIZED_KEYS = frozenset(
         "addnode",
         "listen",
         "maxconnections",
+        "rpcauth",
         "blocksdir",
         "includeconf",
     }
@@ -631,6 +634,19 @@ def _build_parser() -> argparse.ArgumentParser:
             "-connect or -addnode"
         ),
     )
+    parser.add_argument(
+        "-rpcauth",
+        "--rpcauth",
+        metavar="<userpw>",
+        action="append",
+        default=[],
+        help=(
+            "Username and HMAC-SHA-256 hashed password for JSON-RPC connections. "
+            "The field <userpw> comes in the format: <USERNAME>:<SALT>$<HASH>. "
+            "A canonical python script is included in Bitcoin Core's "
+            "share/rpcauth. This option can be specified multiple times"
+        ),
+    )
     return parser
 
 
@@ -748,6 +764,7 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
         addnode=_resolve_list(args.addnode, collected, "addnode"),
         listen=listen,
         max_connections=max_connections,
+        rpcauth=_resolve_list(args.rpcauth, collected, "rpcauth"),
     )
 
 

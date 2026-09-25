@@ -10,7 +10,9 @@ docstring has the keep-alive that decides which -- and queuing what
 each one parses onto `messages` for `Node`'s own thread to read in
 `rpc.main.handle_rpc`. `listening` is set once `run` has actually bound
 the socket, which is what a caller waits on rather than `is_alive()`
-alone -- that flag is true before anything is bound.
+alone -- that flag is true before anything is bound. `auth` is who may
+call it: `run` writes the cookie before binding, so a client that waits
+on `listening` finds the cookie there, and `stop` deletes it.
 """
 
 import asyncio
@@ -21,6 +23,7 @@ from concurrent.futures import CancelledError
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, override
 
+from btclib_node.rpc.auth import RpcAuth
 from btclib_node.rpc.connection import REQUEST_TIMEOUT, RpcConnection
 
 if TYPE_CHECKING:
@@ -60,6 +63,9 @@ class RpcManager(threading.Thread):
         # connection it means to time out, without waiting through
         # REQUEST_TIMEOUT's own real, Core-matching value.
         self.request_timeout = REQUEST_TIMEOUT
+        # `Config.rpc_auth`'s users, and the cookie's once `run` writes
+        # it: what `RpcConnection.run` checks every request against
+        self.auth = RpcAuth(node.config.rpc_auth)
 
         # see P2pManager.listening: `is_alive()` is true before `run`
         # has bound anything, and a client that posts on the strength of
@@ -292,6 +298,14 @@ class RpcManager(threading.Thread):
         loop = self.loop
         asyncio.set_event_loop(loop)
         try:
+            # Core's `InitRPCAuthentication` refuses to start the RPC
+            # server where the cookie cannot be written, and so does this
+            cookie_path = self.auth.generate_cookie(self.node.config.data_dir)
+        except OSError:
+            self.logger.exception("Could not write the RPC authentication cookie")
+            raise
+        self.logger.info("Generated RPC authentication cookie %s", cookie_path)
+        try:
             server_socket = self._bind()
         except OSError:
             self.logger.exception("Could not bind the RPC listener")
@@ -427,4 +441,11 @@ class RpcManager(threading.Thread):
         # so that the flag says what its name says: a socket
         # closed here is not one anything should wait for
         self.listening.clear()
+        # Core's `DeleteAuthCookie`, which logs a failure and goes on
+        try:
+            self.auth.delete_cookie()
+        except OSError:
+            self.logger.warning(
+                "Unable to remove the RPC authentication cookie", exc_info=True
+            )
         self.logger.info("Stopping RPC manager")

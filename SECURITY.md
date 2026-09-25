@@ -82,14 +82,16 @@ written against, and the argument for what this file does promise.
 Known, recorded, and each an open issue rather than something to report
 again.
 
-- **The JSON-RPC listener authenticates nothing.** `Config.rpc_host`
-  binds loopback by default and `-rpcbind` is what widens it, matching
-  Core's own `rpcbind`/`rpcallowip` default (btclib-org/btclib-node#27);
-  nothing behind that bind checks who is asking. The method table it
-  serves carries `stop` and `sendrawtransaction`, so anybody who can
-  reach the port can stop the node and make it announce a transaction.
-  Run it where nothing else can reach that port, and do not widen the
-  bind without one. btclib-org/btclib-node#1055.
+- **Every caller the JSON-RPC listener accepts may call every method,
+  over plain HTTP.** It accepts Core's cookie and `-rpcauth` users
+  (btclib-org/btclib-node#1055) and has no `-rpcwhitelist`, so whoever
+  holds the cookie or an `-rpcauth` password can call `stop` and
+  `sendrawtransaction`. The credential crosses the wire as HTTP Basic,
+  unencrypted, as Core's has since Core dropped `-rpcssl`.
+  `Config.rpc_host` binds loopback by default and `-rpcbind` is what
+  widens it, matching Core's own `rpcbind`/`rpcallowip` default
+  (btclib-org/btclib-node#27): do not widen the bind past a network
+  whose traffic you trust. btclib-org/btclib-node#1070.
 - **Whoever fills the inbound slots first keeps them.** What one peer's
   queue may hold is capped in `p2p/connection.py`, checked before every
   `getdata` and `getcfilters` item rather than once a whole answer is

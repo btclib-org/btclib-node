@@ -4,9 +4,9 @@
 
 """An atheris harness fuzzing this node's own RPC request-head framing.
 
-`RpcConnection.run` reads the header section of an HTTP request off an
-unauthenticated socket (`rpc/connection.py`'s own module docstring,
-issue #1055), splits the request line from the header fields, decides a
+`RpcConnection.run` reads the header section of an HTTP request before
+it checks any credential (`rpc/connection.py`'s own module docstring),
+splits the request line from the header fields, decides a
 `Content-Length` and a keep-alive default from them -- hostile-input
 arithmetic of this tree's own, ahead of the `json.loads` that decodes a
 request's body, which is stdlib's own business and not this node's.
