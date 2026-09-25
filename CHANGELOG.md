@@ -130,6 +130,12 @@ then refused the retry (closes #1061).
   soft-set** (closes #1066); an explicit `-listen` still wins, and this
   node has no `-dnsseed` to set.
 
+### The rebuild of a release builds under the release's own uv
+
+`RELEASING.md`'s *Rebuild a release from its tag* builds under the uv
+the published wheel names and verifies the sdist first: a wheel that
+disagrees stops the chain after it (closes #1063).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
