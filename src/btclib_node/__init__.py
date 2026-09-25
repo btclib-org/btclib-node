@@ -115,6 +115,13 @@ IDLE_SLEEP_SECONDS = 0.005
 # JSON-RPC listener does not come up.
 RPC_INIT_ERROR = "Unable to start HTTP server. See debug log for details."
 
+# Core's own message where `CConnman::Start` cannot bind with `-listen` on
+# (`src/net.cpp:3497-3503`, at bitcoin/bitcoin@9be056a8a7), which ends
+# `AppInitMain` at step 12: what `Node.init_error` holds when the P2P
+# listener does not come up. Core shows the bind's own reason on stderr
+# before it, where this node logs it only (issue #1135).
+P2P_INIT_ERROR = "Failed to listen on any port. Use -listen=0 if you want this."
+
 
 def _default_worker_count() -> int:
     """How many workers `Node.worker_pool` spawns.
@@ -346,8 +353,9 @@ class Node(threading.Thread):
 
         self.status = NodeStatus.Starting
         # Set by `run` where start-up fails, before its own teardown:
-        # Core's `InitError` message, which `cli.main` prints before
-        # exiting nonzero. None for a node that started, or never ran.
+        # the message Core shows as an error for that failure, which
+        # `cli.main` prints before exiting nonzero. None for a node that
+        # started, or never ran.
         self.init_error: str | None = None
         # `main.update_ibd_status`'s own latch, read by
         # `rpc.callbacks.get_blockchain_info`: Core's own
@@ -574,17 +582,16 @@ class Node(threading.Thread):
         # `connman`, and aborts where it cannot (`src/init.cpp:1558-1561`,
         # at bitcoin/bitcoin@9be056a8a7). A node that asked for RPC and
         # has none is not started, and its peer-to-peer side never is.
+        # The P2P listener is waited on too, `connman` failing to bind
+        # with `-listen` on ending `AppInitMain` the same way
+        # (`src/init.cpp:2283-2285`, same sha).
         if self.rpc_port and not self.rpc_manager.start_listener():
             self.init_error = RPC_INIT_ERROR
-            self.logger.error(RPC_INIT_ERROR)
-            self.terminate_flag.set()
+        elif self.p2p_port and not self.p2p_manager.start_listener():
+            self.init_error = P2P_INIT_ERROR
         elif self.p2p_port:
-            self.p2p_manager.start()
-            # `config.connect` and `config.addnode` together, right
-            # after this manager's own loop exists to schedule onto
-            # (`P2pManager.__init__` builds `self.loop` before `start()`
-            # is ever called, so this does not have to wait for
-            # `listening`, which only the two bound sockets set).
+            # `config.connect` and `config.addnode` together, once the
+            # listener is bound, or skipped under `-listen=0`.
             #
             # A one-shot dial, not the standing connection Core keeps:
             # `CConnman::ThreadOpenConnections`'s own `-connect` arm
@@ -600,6 +607,9 @@ class Node(threading.Thread):
             # this leaves open, filed rather than solved in this branch.
             for host, port in (*self.config.connect, *self.config.addnode):
                 self.p2p_manager.connect(peer_address(host, port))
+        if self.init_error is not None:
+            self.logger.error(self.init_error)
+            self.terminate_flag.set()
         while not self.terminate_flag.is_set():
             if self._drain_message_queues():
                 time.sleep(IDLE_SLEEP_SECONDS)

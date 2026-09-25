@@ -879,6 +879,70 @@ def test_a_node_whose_rpc_listener_starts_has_no_init_error(tmp_path: Path) -> N
     assert node.init_error is None
 
 
+def test_a_node_whose_p2p_port_is_taken_stops_and_frees_its_rpc_port(
+    tmp_path: Path,
+) -> None:
+    """Core's `CConnman::Start` failing to bind ends start-up: the node ends.
+
+    The RPC listener, already started by then as Core's HTTP server is,
+    is stopped by `run`'s own teardown, and the databases are closed.
+    """
+    rpc_port = get_random_port()
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
+        taken.bind(("", 0))
+        taken.listen()
+        node = Node(
+            config=Config(
+                chain="regtest",
+                data_dir=tmp_path,
+                p2p_port=taken.getsockname()[1],
+                rpc_port=rpc_port,
+                debug=True,
+            )
+        )
+        try:
+            node.start()
+            wait_until(lambda: not node.is_alive())
+        finally:
+            node.stop()
+    assert node.init_error == btclib_node.P2P_INIT_ERROR
+    assert not node.rpc_manager.is_alive()
+    assert node.chainstate.db.closed
+    log_text = (node.data_dir / "history.log").read_text(encoding="utf-8")
+    assert btclib_node.P2P_INIT_ERROR in log_text
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", rpc_port))
+
+
+def test_a_node_under_listen_0_runs_whatever_holds_its_p2p_port(
+    tmp_path: Path,
+) -> None:
+    """Core's own advice, "Use -listen=0 if you want this", is taken here too.
+
+    With no bind asked for, the port being taken is not a failure.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
+        taken.bind(("", 0))
+        taken.listen()
+        node = Node(
+            config=Config(
+                chain="regtest",
+                data_dir=tmp_path,
+                p2p_port=taken.getsockname()[1],
+                allow_rpc=False,
+                listen=False,
+                debug=True,
+            )
+        )
+        try:
+            node.start()
+            wait_until(node.p2p_manager.loop.is_running)
+            assert node.is_alive()
+        finally:
+            node.stop()
+    assert node.init_error is None
+
+
 def test_every_message_waiting_is_taken_before_the_loop_waits(
     a_networked_node: Node,
 ) -> None:
