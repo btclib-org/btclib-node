@@ -14,6 +14,7 @@ own `promote_connection`, directly.
 """
 
 import asyncio
+import secrets
 import socket
 import threading
 import time
@@ -33,6 +34,13 @@ from btclib_node.p2p.address import (
     peer_address,
 )
 from btclib_node.p2p.connection import Connection
+from btclib_node.p2p.eviction import (
+    EvictionCandidate,
+    is_local,
+    keyed_net_group,
+    net_class,
+    select_node_to_evict,
+)
 
 if TYPE_CHECKING:
     from concurrent.futures import Future
@@ -263,6 +271,11 @@ class P2pManager(threading.Thread):
         # race a lookup for a different one on `Node`'s.
         self.pending_outbound_nonces: set[int] = set()
         self.last_connection_id = -1
+        # The key `keyed_net_group` hashes each peer's netgroup under,
+        # Core's `nSeed0`/`nSeed1` for `RANDOMIZER_ID_NETGROUP`: drawn
+        # once per process, so no peer can predict which netgroups the
+        # eviction's first protection keeps.
+        self._net_group_key = secrets.token_bytes(16)
         # Endpoints `discourage` has been told to stop redialling, by
         # `endpoint_key` -- process lifetime, not `peer_db`'s own tables,
         # so a wrongly discouraged endpoint is recovered by a restart
@@ -375,6 +388,7 @@ class P2pManager(threading.Thread):
             self, client, address, self.last_connection_id, inbound=inbound
         )
         conn.automatic = automatic
+        conn.keyed_net_group = keyed_net_group(self._net_group_key, address)
         self.pending_connections[self.last_connection_id] = conn
         task = asyncio.run_coroutine_threadsafe(conn.run(), self.loop)
         conn.task = task
@@ -835,6 +849,38 @@ class P2pManager(threading.Thread):
             )
         return inbound >= self.max_inbound
 
+    def _attempt_to_evict_connection(self) -> bool:
+        """Disconnect one inbound peer to make room, and say whether one went.
+
+        Core's `CConnman::AttemptToEvictConnection` (`src/net.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a candidate for every
+        connection not already closing, pending ones included, and
+        `select_node_to_evict` keeps the outbound ones out. The peer
+        chosen leaves through `remove_connection`, the same drop
+        `_prune_stale_connections` uses.
+        """
+        with self._connections_lock:
+            conns = {
+                conn.id: conn
+                for conn in (
+                    *self.connections.values(),
+                    *self.pending_connections.values(),
+                )
+                if conn.status < P2pConnStatus.Closed
+            }
+        evict_id = select_node_to_evict(_eviction_candidate(c) for c in conns.values())
+        if evict_id is None:
+            return False
+        endpoint = network_address(conns[evict_id].address)
+        self.logger.debug(
+            "selected inbound connection for eviction, disconnecting peer=%d"
+            " peeraddr=%s",
+            evict_id,
+            ip_and_port(str(endpoint.ip), endpoint.port),
+        )
+        self.remove_connection(evict_id)
+        return True
+
     async def server(
         self, loop: asyncio.AbstractEventLoop, server_socket: socket.socket
     ) -> None:
@@ -888,17 +934,16 @@ class P2pManager(threading.Thread):
             try:
                 while True:
                     sock, sockaddr = await accepted.get()
-                    # Refused before `create_connection` builds anything
-                    # for it. Core tries `AttemptToEvictConnection`
-                    # first and drops the new peer only where that
-                    # finds no candidate (`CreateNodeFromAcceptedSocket`,
-                    # `src/net.cpp`, at bitcoin/bitcoin@9be056a8a7); this
-                    # node has no eviction, so it always drops
-                    # (btclib-org/btclib-node#1064).
-                    if self._inbound_full():
+                    # Past the inbound share, an inbound peer is evicted
+                    # to make room, and only where every candidate is
+                    # protected is the new peer refused, before
+                    # `create_connection` builds anything for it: Core's
+                    # `CreateNodeFromAcceptedSocket` (`src/net.cpp`, at
+                    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+                    if self._inbound_full() and not self._attempt_to_evict_connection():
                         self.logger.debug(
-                            "connection from %s dropped (full)",
-                            ip_and_port(*sockaddr[:2]),
+                            "failed to find an eviction candidate"
+                            " - connection dropped (full)"
                         )
                         sock.close()
                         continue
@@ -1209,3 +1254,43 @@ class P2pManager(threading.Thread):
             *self.pending_connections.copy().values(),
         ):
             conn.stop()
+
+
+def _eviction_candidate(conn: Connection) -> EvictionCandidate:
+    """Build the `NodeEvictionCandidate` Core builds for `conn`, where it can.
+
+    Where a field of Core's has nothing here to be read from, it takes
+    the value that protects nobody and prefers nobody:
+
+    - `fBloomFilter`: this node answers no BIP37 `filterload`.
+    - `prefer_evict`: Core sets it for a peer its ban manager
+      discourages; `P2pManager.discouraged` holds endpoints this node
+      stops dialling, and is not asked about a peer it accepts
+      (btclib-org/btclib-node#1078).
+    - `m_noban`: this node has no `-whitebind`/`-whitelist` permissions.
+    - an onion peer's `m_network`: this node has no Tor listener, so
+      `net_class` answers from the address alone.
+
+    `m_relay_txs` is the peer's `version` relay flag once that message
+    has arrived and false before it, as Core's `m_relays_txs` is. It is
+    read off `version_message` itself rather than `Connection.relay_tx`,
+    which `callbacks.version` writes later, so a selection landing
+    between the two writes reads the flag and not `relay_tx`'s default.
+    """
+    version_message = conn.version_message
+    return EvictionCandidate(
+        id=conn.id,
+        connected=conn.connected_time,
+        min_ping_time=conn.min_ping_time,
+        last_block_time=conn.last_novel_block_time,
+        last_tx_time=conn.last_novel_tx_time,
+        relevant_services=conn.has_all_wanted_services,
+        relay_txs=version_message is not None and version_message.is_relay_requested,
+        bloom_filter=False,
+        keyed_net_group=conn.keyed_net_group,
+        prefer_evict=False,
+        is_local=is_local(conn.address),
+        network=net_class(conn.address),
+        noban=False,
+        inbound=conn.inbound,
+    )

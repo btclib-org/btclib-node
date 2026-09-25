@@ -11,6 +11,7 @@ losing the peer. The functional tests drive two cooperating nodes, which
 is the path where every message is welcome; these are the rest.
 """
 
+import math
 import socket
 import threading
 import time
@@ -430,6 +431,12 @@ def a_peer(**attributes: Any) -> Any:
         ping_sent=0,
         ping_nonce=0,
         latency=0,
+        # what `Connection` starts every fresh connection at, and what
+        # `version`, `pong`, `block` and `tx` write for eviction (ISS 1064)
+        min_ping_time=math.inf,
+        last_novel_block_time=0,
+        last_novel_tx_time=0,
+        has_all_wanted_services=False,
         _ping_lock=threading.Lock(),
         send_ping=lambda: sent.append("ping"),
         client=SimpleNamespace(getpeername=lambda: ("1.2.3.4", 18444)),
@@ -580,6 +587,44 @@ def test_a_node_network_limited_only_dialled_peer_is_kept_once_synced() -> None:
     version(node, a_version(services=limited), peer)
     assert not peer.stopped
     assert not node.p2p_manager.discouraged
+
+
+@pytest.mark.parametrize(
+    ("services", "status", "wanted"),
+    [
+        (
+            ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS,
+            NodeStatus.Starting,
+            True,
+        ),
+        (ServiceFlags.NODE_WITNESS, NodeStatus.BlockSynced, False),
+        (
+            ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS,
+            NodeStatus.HeaderSynced,
+            False,
+        ),
+        (
+            ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS,
+            NodeStatus.BlockSynced,
+            True,
+        ),
+    ],
+)
+def test_an_inbound_peer_records_whether_it_has_every_wanted_service(
+    services: ServiceFlags,
+    status: NodeStatus,
+    wanted: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1064: Core's `m_has_all_wanted_services`, read by eviction.
+
+    Recorded for an inbound peer too, which is never dropped for it: a
+    limited peer counts once this node is synced, as in the check above.
+    """
+    node = a_handshake_node(status=status)
+    peer = a_peer(inbound=True)
+    version(node, a_version(services=services), peer)
+    assert peer.has_all_wanted_services is wanted
+    assert not peer.stopped
 
 
 def test_an_inbound_peer_with_neither_service_is_kept() -> None:
@@ -1002,6 +1047,31 @@ def test_a_pong_answering_our_ping_is_a_latency_measurement() -> None:
     assert peer.ping_nonce == 0
     assert not peer.stopped
     assert not node.p2p_manager.discouraged
+    # the lowest round trip is what eviction reads, and a slower one
+    # later does not raise it (ISS 1064)
+    assert peer.min_ping_time == peer.latency
+    fastest = peer.min_ping_time
+    peer.ping_sent, peer.ping_nonce = time.time() - 5, 99
+    pong(node, Pong(99).serialize(), peer)
+    assert peer.latency > fastest
+    assert peer.min_ping_time == fastest
+
+
+def test_a_pong_arriving_before_its_ping_by_the_clock_records_no_round_trip() -> None:
+    """ISS 1064: a negative round trip finishes the ping and records nothing.
+
+    Core's `ProcessMessage` calls `PongReceived` only for
+    `ping_time.count() >= 0`; a wall clock stepped back between the
+    `ping` and its `pong` is what reaches this here.
+    """
+    node = a_handshake_node()
+    peer = a_peer(ping_sent=time.time() + 60, ping_nonce=1234)
+    pong(node, Pong(1234).serialize(), peer)
+    assert peer.ping_sent == 0
+    assert peer.ping_nonce == 0
+    assert peer.latency == 0
+    assert peer.min_ping_time == math.inf
+    assert not peer.stopped
 
 
 def test_a_pong_with_the_wrong_nonce_is_a_peer_not_speaking_the_protocol() -> None:
@@ -1245,6 +1315,8 @@ def test_a_transaction_that_verifies_is_kept_and_reported(
     tx(node, TxMsg(transaction, include_witness=True).serialize(), peer)
     assert node.mempool.contains_tx(transaction)
     assert node.download_manager.received_txs == [(3, transaction.hash)]
+    # a novel transaction the mempool took: what eviction reads (ISS 1064)
+    assert peer.last_novel_tx_time > 0
 
 
 def test_a_transaction_whose_parents_are_missing_is_not_kept(
@@ -1262,9 +1334,11 @@ def test_a_transaction_whose_parents_are_missing_is_not_kept(
     monkeypatch.setattr(cb, "verify_mempool_acceptance", missing)
     transaction = a_transaction()
     node = a_data_node()
-    tx(node, TxMsg(transaction, include_witness=True).serialize(), a_peer(id=3))
+    peer = a_peer(id=3)
+    tx(node, TxMsg(transaction, include_witness=True).serialize(), peer)
     assert not node.mempool.contains_tx(transaction)
     assert node.download_manager.received_txs == []
+    assert peer.last_novel_tx_time == 0
 
 
 def test_a_transaction_only_relay_policy_refuses_costs_the_peer_nothing(
@@ -1604,6 +1678,8 @@ def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded() -> None:
     assert peer.download_queue == []
     assert peer.last_block_timestamp > 0
     assert peer.pending_eviction is False
+    # novel and stored: what eviction reads (ISS 1064)
+    assert peer.last_novel_block_time > 0
     assert added == [block]
     assert index.marked == [block.header.hash]
     assert index.invalidated == []
@@ -1617,15 +1693,17 @@ def test_a_block_already_stored_is_not_stored_again() -> None:
     node = a_data_node(
         block_index=index, block_db=SimpleNamespace(add_block=added.append)
     )
+    peer = a_peer()
     block_callback(
         node,
         BlockMsg(block, include_witness=True, check_validity=False).serialize(
             check_validity=False
         ),
-        a_peer(),
+        peer,
     )
     assert added == []
     assert index.marked == []
+    assert peer.last_novel_block_time == 0
 
 
 def a_block_claiming_an_easier_target_than_the_chain_allows(block: Block) -> Block:

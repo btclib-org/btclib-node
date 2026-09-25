@@ -142,6 +142,12 @@ disagrees stops the chain after it (closes #1063).
   `bitcoind` answers it (closes #1055); the node writes `.cookie`, mode
   0600 on POSIX, at start, and Core's `-rpcuser` and more are issue #1070.
 
+### A full `P2pManager` evicts an inbound peer before refusing a new one
+
+- **Past the inbound share an inbound peer is evicted by Core's
+  `SelectNodeToEvict`, the new one refused only where all are protected**
+  (closes #1064); a discouraged peer is not evicted first (issue #1078).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
