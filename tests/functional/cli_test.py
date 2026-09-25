@@ -44,6 +44,7 @@ from btclib_node.config import Config
 from btclib_node.constants import NodeStatus
 from btclib_node.main import update_chain
 from tests import (
+    cookie_path,
     generate_random_chain,
     get_random_port,
     wait_until,
@@ -126,10 +127,11 @@ def test_a_run_through_the_console_script_stays_one_process(tmp_path: Path) -> N
                 f"-connect=127.0.0.1:{bootstrap.p2p_port}",
             ],
         )
+        # the cookie is written under the chain's own subdirectory, the
+        # one `Config.data_dir` appends
         client = BitcoinCoreRpcClient(
             f"http://127.0.0.1:{rpc_port}",
-            user="pytest",
-            password="pytest",  # noqa: S106
+            cookie_path=cookie_path(data_dir / "regtest"),
             timeout=5,
         )
 
@@ -160,3 +162,6 @@ def test_a_run_through_the_console_script_stays_one_process(tmp_path: Path) -> N
     log_text = (data_dir / "regtest" / "history.log").read_text(encoding="utf-8")
     assert log_text.count("Start Index initialization") == 1
     assert "Address already in use" not in log_text
+    # the node that wrote the cookie deletes it on the way out, as
+    # `bitcoind` does, so a client finds no stale credential
+    assert not cookie_path(data_dir / "regtest").exists()

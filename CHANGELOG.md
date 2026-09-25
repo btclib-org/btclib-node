@@ -136,6 +136,12 @@ then refused the retry (closes #1061).
 the published wheel names and verifies the sdist first: a wheel that
 disagrees stops the chain after it (closes #1063).
 
+### The JSON-RPC listener answers only its cookie and `-rpcauth` users
+
+- **A request without a credential the node accepts is answered 401**, as
+  `bitcoind` answers it (closes #1055); the node writes `.cookie`, mode
+  0600 on POSIX, at start, and Core's `-rpcuser` and more are issue #1070.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

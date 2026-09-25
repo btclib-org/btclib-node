@@ -11,6 +11,7 @@ go of both -- and until now only a functional test reached any of it.
 """
 
 import asyncio
+import base64
 import json
 import socket
 from concurrent.futures import Future
@@ -24,10 +25,18 @@ from btclib_node.chains import RegTest
 from btclib_node.config import Config
 from btclib_node.log import Logger
 from btclib_node.rpc.manager import RpcManager
-from tests import get_random_port, wait_until, wait_until_listening
+from tests import (
+    RPCAUTH,
+    RPCAUTH_LINE,
+    cookie_path,
+    get_random_port,
+    wait_until,
+    wait_until_listening,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
+    from pathlib import Path
 
     from btclib_node import Node
 
@@ -43,18 +52,24 @@ class AManagerFactory(Protocol):
 
 
 @pytest.fixture
-def a_manager() -> Iterator[AManagerFactory]:
-    """Build managers, and close their event loops however the test ends."""
+def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
+    """Build managers, and close their event loops however the test ends.
+
+    Each accepts `RPCAUTH`'s user and writes its cookie under
+    `tmp_path`, in the chain directory `Node.__init__` would create.
+    """
     made: list[RpcManager] = []
 
     def make(port: int | None, rpc_host: str = "127.0.0.1") -> RpcManager:
+        config = Config(
+            chain="regtest", data_dir=tmp_path, rpc_host=rpc_host, rpcauth=[RPCAUTH]
+        )
+        config.data_dir.mkdir(exist_ok=True)
         manager = RpcManager(
             cast(
                 "Node",
                 SimpleNamespace(
-                    logger=Logger(debug=True),
-                    chain=RegTest(),
-                    config=Config(chain="regtest", rpc_host=rpc_host),
+                    logger=Logger(debug=True), chain=RegTest(), config=config
                 ),
             ),
             port,
@@ -69,10 +84,10 @@ def a_manager() -> Iterator[AManagerFactory]:
 
 
 def as_http(payload: Mapping[str, object]) -> bytes:
-    """Frame `payload` as a JSON-RPC HTTP POST request, headers included."""
+    """Frame `payload` as a JSON-RPC HTTP POST request, `RPCAUTH`'s user's."""
     body = json.dumps(payload).encode()
-    head = b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n" % len(body)
-    return head + body
+    head = b"POST / HTTP/1.1\r\nHost: x\r\n" + RPCAUTH_LINE
+    return head + b"Content-Length: %d\r\n\r\n" % len(body) + body
 
 
 def test_a_manager_says_when_it_is_listening_and_queues_what_arrives(
@@ -170,8 +185,7 @@ def test_a_body_that_is_not_json_answers_parse_error_and_forgets_the_client(
     """A non-JSON body over a real socket answers PARSE_ERROR, socket closed.
 
     JSON-RPC 2.0 section 5.1's own `PARSE_ERROR`, where this used to
-    close the socket with no answer at all -- the first thing anything
-    scanning the unauthenticated port would find (issue #63, issue #1055).
+    close the socket with no answer at all (issue #63).
     """
     port = get_random_port()
     manager = a_manager(port)
@@ -179,7 +193,8 @@ def test_a_body_that_is_not_json_answers_parse_error_and_forgets_the_client(
     try:
         wait_until_listening(manager)
         body = b"not json"
-        head = b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n" % len(body)
+        head = b"POST / HTTP/1.1\r\nHost: x\r\n" + RPCAUTH_LINE
+        head += b"Content-Length: %d\r\n\r\n" % len(body)
         with socket.create_connection(("127.0.0.1", port), timeout=20) as client:
             client.sendall(head + body)
             client.settimeout(20)
@@ -227,7 +242,8 @@ def test_stop_still_closes_a_connection_mid_parse_error_reply(
     try:
         conn = manager.create_connection(loop, ours)
         body = b"not json"
-        head = b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n" % len(body)
+        head = b"POST / HTTP/1.1\r\nHost: x\r\n" + RPCAUTH_LINE
+        head += b"Content-Length: %d\r\n\r\n" % len(body)
         theirs.sendall(head + body)
         run_task = loop.create_task(conn.run())
         # One full batch of whatever is already ready, then stop --
@@ -714,3 +730,102 @@ def test_report_server_failure_does_not_log_a_returned_cancelled_error(
     future.set_exception(asyncio.CancelledError())
     manager._report_server_failure(future)
     assert logged == []
+
+
+def test_the_cookie_is_there_once_listening_and_gone_once_stopped(
+    a_manager: AManagerFactory,
+) -> None:
+    """`run` writes the cookie before `listening`, and `stop` deletes it.
+
+    A request carrying the cookie's own credential is queued, which is
+    what a client that waited on `listening` and then read the cookie
+    does.
+    """
+    port = get_random_port()
+    manager = a_manager(port)
+    path = cookie_path(manager.node.config.data_dir)
+    manager.start()
+    try:
+        wait_until_listening(manager)
+        assert path.exists()
+        cookie = path.read_bytes()
+        body = json.dumps(REQUEST).encode()
+        head = b"POST / HTTP/1.1\r\nHost: x\r\nAuthorization: Basic "
+        head += base64.b64encode(cookie) + b"\r\n"
+        head += b"Content-Length: %d\r\n\r\n" % len(body)
+        with socket.create_connection(("127.0.0.1", port), timeout=20) as client:
+            client.sendall(head + body)
+            wait_until(lambda: manager.messages)
+        assert manager.messages.popleft()[0] == [REQUEST]
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
+    assert not path.exists()
+
+
+def test_a_wrong_password_is_logged_with_the_address_it_came_from(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's own warning, naming the client's `ip:port`, and a 401."""
+    logged: list[tuple[object, ...]] = []
+    port = get_random_port()
+    manager = a_manager(port)
+    monkeypatch.setattr(manager.logger, "warning", lambda *args: logged.append(args))
+    manager.start()
+    try:
+        wait_until_listening(manager)
+        body = json.dumps(REQUEST).encode()
+        head = b"POST / HTTP/1.1\r\nHost: x\r\nAuthorization: Basic "
+        head += base64.b64encode(b"pytest:wrong") + b"\r\n"
+        head += b"Connection: close\r\nContent-Length: %d\r\n\r\n" % len(body)
+        with socket.create_connection(("127.0.0.1", port), timeout=20) as client:
+            client.sendall(head + body)
+            client.settimeout(20)
+            reply = client.recv(4096)
+            local = client.getsockname()
+        assert reply.startswith(b"HTTP/1.1 401 Unauthorized\r\n")
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
+    assert logged == [
+        (
+            "ThreadRPCServer incorrect password attempt from %s",
+            f"{local[0]}:{local[1]}",
+        )
+    ]
+    assert not manager.messages
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_a_manager_that_cannot_write_its_cookie_does_not_listen(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `InitRPCAuthentication` failing stops the RPC server, here too."""
+    logged: list[str] = []
+    manager = a_manager(get_random_port())
+    manager.node.config.data_dir.rmdir()
+    monkeypatch.setattr(manager.logger, "exception", logged.append)
+    manager.start()
+    wait_until(lambda: not manager.is_alive())
+    assert logged == ["Could not write the RPC authentication cookie"]
+    assert not manager.listening.is_set()
+    manager.stop()
+
+
+def test_a_cookie_that_cannot_be_removed_is_logged_and_stop_goes_on(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `DeleteAuthCookie` logs a failure and goes on, and so does `stop`.
+
+    A directory where the cookie was is what `unlink` refuses on every
+    platform.
+    """
+    logged: list[object] = []
+    manager = a_manager(get_random_port())
+    monkeypatch.setattr(manager.logger, "warning", lambda msg, **_: logged.append(msg))
+    blocker = manager.node.config.data_dir / "blocker"
+    blocker.mkdir()
+    manager.auth.cookie_path = blocker
+    manager.stop()
+    assert logged == ["Unable to remove the RPC authentication cookie"]
+    assert blocker.is_dir()

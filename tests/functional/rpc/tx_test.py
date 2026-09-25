@@ -19,6 +19,7 @@ from btclib.tx.limits import COINBASE_MATURITY
 from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus
 from tests import (
+    cookie_path,
     generate_random_chain,
     generate_random_transaction,
     rpc_client,
@@ -135,13 +136,9 @@ def test_get_raw_transaction_is_what_btclib_s_fetcher_gets(rpc_node: Node) -> No
 
     tx = generate_random_transaction(chain[0].transactions[0].id)
 
-    # no cookie file on disk here, so credentials rather than
-    # `cookie_path` -- this node checks neither, having no
-    # authentication of its own (#1055's own finding)
     client = BitcoinCoreRpcClient(
         f"http://127.0.0.1:{node.rpc_port}",
-        user="pytest",
-        password="pytest",  # noqa: S106
+        cookie_path=cookie_path(node.config.data_dir),
     )
     client.call_raw(
         "sendrawtransaction",

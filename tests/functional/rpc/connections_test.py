@@ -30,9 +30,9 @@ def test_connections_do_not_outlive_the_answer_they_carried(rpc_node: Node) -> N
     transport's own choice, not this test's), so each one closes its
     socket once answered -- and used to leave its entry in
     `RpcManager.connections` behind anyway, an unbounded dict keyed on a
-    counter that only grows. The port authenticates nothing
-    (issue #1055), so this was a leak any client could drive, not just
-    an internal bookkeeping detail (issue #64).
+    counter that only grows. An entry is made at accept, before any
+    credential is checked, so this was a leak any client could drive,
+    not just an internal bookkeeping detail (issue #64).
     """
     node = rpc_node
     wait_until_listening(node.rpc_manager)

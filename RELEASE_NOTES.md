@@ -30,6 +30,16 @@ release below would have to act on to move past it — and
 `RELEASING.md`'s *Release to PyPI* is what retitles it to the version
 on release day.
 
+### Breaking changes
+
+- **Every JSON-RPC call has to carry a credential the node accepts**
+  (closes #1055). A client sending none, or a placeholder the node used
+  to ignore, is answered `401 Unauthorized`. Point it at the cookie the
+  node writes at start, `.cookie` in the chain's own data directory
+  (`<datadir>/regtest/.cookie` under `-regtest`), the way a client of
+  `bitcoind` reads its cookie, or start the node with an `-rpcauth`
+  line and give the client that user's password.
+
 ## v2026.9.24
 
 **The third release.** Everything below is measured against `v2026.9.4`:

@@ -19,6 +19,7 @@ functions the tests import directly, in `tests/unit/`,
 `tests/functional/` and `tests/integration/` alike.
 """
 
+import base64
 import json
 import re
 import secrets
@@ -43,6 +44,7 @@ from btclib.tx.tx_out import TxOut
 
 from btclib_node.chains import RegTest
 from btclib_node.p2p.address import peer_address
+from btclib_node.rpc.auth import COOKIE_FILE, password_hmac
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -438,17 +440,39 @@ def wait_until_listening(manager: _ListensOnAPort, timeout: float = 20) -> None:
     raise WaitTimeoutError(err_msg)
 
 
-def rpc_client(node: Node, timeout: float = 5) -> BitcoinCoreRpcClient:
-    """Return a client pointed at `node`'s own RPC port.
+# One `-rpcauth` user, for a test building an `RpcManager` or an
+# `RpcConnection` that no cookie has been written for: the value
+# `Config(rpcauth=...)` takes, and the header line a request carrying
+# that user's password sends.
+RPCAUTH_USER = "pytest"
+# the user's own name, which is all a test asks of a password
+RPCAUTH_PASSWORD = RPCAUTH_USER
+_RPCAUTH_SALT = "00" * 16
+_RPCAUTH_HMAC = password_hmac(_RPCAUTH_SALT.encode(), RPCAUTH_PASSWORD.encode())
+RPCAUTH = f"{RPCAUTH_USER}:{_RPCAUTH_SALT}${_RPCAUTH_HMAC.decode()}"
+RPCAUTH_LINE = (
+    b"Authorization: Basic "
+    + base64.b64encode(f"{RPCAUTH_USER}:{RPCAUTH_PASSWORD}".encode())
+    + b"\r\n"
+)
 
-    This node checks no credential of its own (issue #1055), so `user`
-    and `password` are placeholders the constructor requires one of,
-    not anything the node reads.
-    """
+
+def cookie_path(data_dir: Path) -> Path:
+    """Return the cookie path of the node whose `Config.data_dir` it is."""
+    return data_dir / COOKIE_FILE
+
+
+def authorization(data_dir: Path) -> str:
+    """Return the `Authorization` value the cookie in `data_dir` makes."""
+    cookie = cookie_path(data_dir).read_bytes()
+    return "Basic " + base64.b64encode(cookie).decode()
+
+
+def rpc_client(node: Node, timeout: float = 5) -> BitcoinCoreRpcClient:
+    """Return a client pointed at `node`'s own RPC port, with its cookie."""
     return BitcoinCoreRpcClient(
         f"http://127.0.0.1:{node.rpc_port}",
-        user="pytest",
-        password="pytest",  # noqa: S106
+        cookie_path=cookie_path(node.config.data_dir),
         timeout=timeout,
     )
 
@@ -474,6 +498,7 @@ def post(node: Node, payload: Any, timeout: float = 5) -> str:
     _, body = http_request(
         f"http://127.0.0.1:{node.rpc_port}",
         data=json.dumps(payload).encode(),
+        headers={"Authorization": authorization(node.config.data_dir)},
         timeout=timeout,
     )
     return body.decode()

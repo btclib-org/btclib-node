@@ -103,13 +103,24 @@ nor the per-block count it is checked against exists in this tree yet
 ([#575](https://github.com/btclib-org/btclib-node/issues/575), which
 added the other members above).
 
-The listener authenticates nothing (`SECURITY.md`), so a call needs no
-credential:
+A call carries HTTP Basic credentials, as it does against `bitcoind`.
+At start the node writes `.cookie` in its chain's data directory,
+`<datadir>/<chain>/` with `<chain>` one of `mainnet`, `testnet`,
+`signet` and `regtest`, and deletes it at stop. Its mode is 0600 on
+POSIX; on Windows the data directory's ACL decides who reads it. It
+holds `__cookie__:<password>`, which is what `curl` sends:
 
 ```shell
-curl -s http://127.0.0.1:<rpc port> \
+curl -s --user "$(cat <datadir>/<chain>/.cookie)" \
+  http://127.0.0.1:<rpc port> \
   -d '{"jsonrpc":"2.0","id":"1","method":"getblockchaininfo"}'
 ```
+
+`-rpcauth=<user>:<salt>$<hash>`, repeatable and read from
+`bitcoin.conf` too, adds a user with a password of its own, beside the
+cookie: `share/rpcauth/rpcauth.py` in Bitcoin Core's source generates
+the line. A request without an accepted credential is answered 401,
+after a quarter of a second where it carried a wrong one.
 
 ## RPC methods
 

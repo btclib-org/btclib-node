@@ -151,7 +151,11 @@ intersphinx_cache_limit = 0
 #   `hash_at_height: Callable[[int], bytes]` -- Callable itself is what
 #   each file imports under TYPE_CHECKING, so the whole subscript is
 #   unresolved regardless of BlockHeader already being granted its own
-#   entry above
+#   entry above. The numbering restarts in each signature, and
+#   config.py's own Config.__init__ carries three: `connect`, `addnode`
+#   and `rpcauth` are each a `Sequence[str]`, Sequence being what that
+#   file imports under TYPE_CHECKING, and __annotationlib_name_3__ is
+#   the third
 # - asyncio.AbstractEventLoop, spelled that way everywhere this tree
 #   uses it (p2p/manager.py, rpc/manager.py, rpc/connection.py):
 #   autodoc reads the qualified name back off the class itself once
@@ -173,6 +177,7 @@ nitpick_ignore = [
     ("py:class", "BtclibTx"),
     ("py:class", "__annotationlib_name_1__"),
     ("py:class", "__annotationlib_name_2__"),
+    ("py:class", "__annotationlib_name_3__"),
     ("py:class", "asyncio.events.AbstractEventLoop"),
     ("py:class", "BinaryData"),
     ("py:class", "ScriptFlag"),

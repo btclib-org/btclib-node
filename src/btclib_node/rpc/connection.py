@@ -5,10 +5,11 @@
 """`RpcConnection`, one accepted HTTP socket carrying one or more requests.
 
 Parses the header section off the wire, bounded by `MAX_HEADER_BYTES`
-and `MAX_BODY_BYTES` since the listener this serves authenticates
-nothing, whichever interface `Config.rpc_host` binds it to, and decodes
-the JSON-RPC batch `rpc.manager.RpcManager.messages` queues for
-`rpc.main.handle_rpc`. `RawJSON` is a JSON number written
+and `MAX_BODY_BYTES` since both are read before any credential is
+checked, answers a request whose `Authorization` header
+`rpc.auth.RpcAuth` does not accept with 401, and decodes the JSON-RPC
+batch of one it does accept, which `rpc.manager.RpcManager.messages`
+queues for `rpc.main.handle_rpc`. `RawJSON` is a JSON number written
 back out exactly as given, the way Core's own `UniValue` writes one
 built from a string rather than from a `float`.
 
@@ -33,6 +34,7 @@ from bitcoin_core_rpc import RPCErrorCode
 
 from btclib_node.exceptions import IncompleteRequestHeadError, MalformedRequestHeadError
 from btclib_node.p2p.address import ip_and_port
+from btclib_node.rpc.auth import FAILED_ATTEMPT_DELAY, WWW_AUTHENTICATE
 from btclib_node.rpc.errors import error_msg
 
 if TYPE_CHECKING:
@@ -53,12 +55,14 @@ __all__ = [
 ]
 
 HEADER_TERMINATOR = b"\r\n\r\n"
-# Bounds on the read below, which is fed by whoever connects: the RPC
-# socket authenticates nothing (see rpc.manager.RpcManager.server), so
-# an unterminated header section or an overstated Content-Length must
-# not grow the buffer without limit. Both are generous next to a real
-# JSON-RPC request -- headers run to a few hundred bytes, and the largest
-# body this node is sent is a raw transaction.
+# Bounds on the read below, which is fed by whoever connects: the header
+# section and the body are read whole before `RpcConnection.run` checks
+# a credential, as Core's HTTP server reads a request before
+# `HTTPReq_JSONRPC` sees it, so an unterminated header section or an
+# overstated Content-Length must not grow the buffer without limit.
+# Both are generous next to a real JSON-RPC request -- headers run to a
+# few hundred bytes, and the largest body this node is sent is a raw
+# transaction.
 MAX_HEADER_BYTES = 64 * 1024
 MAX_BODY_BYTES = 32 * 1024 * 1024
 # What bounds how *long* a read may take, where the two above only bound
@@ -206,7 +210,9 @@ class RequestHead:
     round-trip `tests/fuzz_corpus_test.py` already holds
     `p2p.connection.frame_message_bytes` to. `length` and `keep_alive`
     are the two decisions `RpcConnection.run` draws from this section
-    before it knows how many more bytes to read.
+    before it knows how many more bytes to read. `authorization` is the
+    first `Authorization` field's value, `None` where there is none,
+    which `run` checks once the body is read.
 
     `separator` is the exact bytes `head.partition(b"\r\n")` returned
     between `request_line` and `fields` inside `parse_request_head` --
@@ -228,6 +234,7 @@ class RequestHead:
     length: int
     keep_alive: bool
     consumed: int
+    authorization: str | None
 
     def serialize(self) -> bytes:
         """Reproduce the exact octets `parse_request_head` consumed."""
@@ -281,6 +288,7 @@ def parse_request_head(data: bytes) -> RequestHead:
         length=length,
         keep_alive=keep_alive,
         consumed=consumed,
+        authorization=headers.get("Authorization"),
     )
 
 
@@ -357,6 +365,9 @@ class RpcConnection:
         # alive, read the next request in turn, so this is never
         # overwritten while still in flight.
         self._parse_error_reply: asyncio.Task[None] | None = None
+        # A 401's own reply, kept for the reason `_parse_error_reply`
+        # above is
+        self._unauthorized_reply: asyncio.Task[None] | None = None
 
     def close(self) -> None:
         """Close `client`.
@@ -422,6 +433,10 @@ class RpcConnection:
         `client` rather than raising, since nothing reads the `Future`
         this task runs under.
 
+        A request whose `Authorization` header `manager.auth` does not
+        accept is answered 401 by `_send_unauthorized` instead, its body
+        read off the socket and never decoded or queued.
+
         Called again, by `async_send` below, for every request after the
         first one a kept-alive connection carries -- `self.buffer` is
         trimmed to what is left after this request's own body before
@@ -452,6 +467,24 @@ class RpcConnection:
             # and must not be replayed as part of this request's own
             # body on a second call to this method.
             self.buffer = self.buffer[length:]
+            # Core's `HTTPReq_JSONRPC`: no `Authorization` at all is a
+            # 401 at once, one it does not accept a 401 after
+            # `FAILED_ATTEMPT_DELAY`. Scheduled as a task of its own, as
+            # the parse-error reply below is, for the reasons given there.
+            if head.authorization is None:
+                self._unauthorized_reply = self.loop.create_task(
+                    self._send_unauthorized(0)
+                )
+                return
+            if not self.manager.auth.authorized(head.authorization):
+                self.manager.logger.warning(
+                    "ThreadRPCServer incorrect password attempt from %s",
+                    self._peer_address(),
+                )
+                self._unauthorized_reply = self.loop.create_task(
+                    self._send_unauthorized(FAILED_ATTEMPT_DELAY)
+                )
+                return
             try:
                 body = json.loads(body_bytes)
             except ValueError:
@@ -540,9 +573,9 @@ class RpcConnection:
         # connection on it -- asyncio isolates that much on its own.
         # What this catch buys instead is the only place `self.client`
         # gets closed for a failure in this method: there is no outer
-        # `finally` here, so narrowing this would leak the socket this
-        # unauthenticated port opened, on top of losing the exception
-        # itself to that same unread Future.
+        # `finally` here, so narrowing this would leak a socket anybody
+        # reaching the port can open, credential or not, on top of
+        # losing the exception itself to that same unread Future.
         # `self.manager.connections.pop` below covers every other way
         # this method fails: `ConnectionError` (an unterminated header, a
         # peer that goes away mid-request), `MalformedRequestHeadError`
@@ -613,7 +646,34 @@ class RpcConnection:
         http_response += "\r\n"  # Important!
         http_response += output_str
         http_response += "\n"
-        await self.loop.sock_sendall(self.client, http_response.encode())
+        await self._write(http_response.encode())
+
+    async def _send_unauthorized(self, delay: float) -> None:
+        """Answer 401 with Core's `WWW-Authenticate`, `delay` seconds from now.
+
+        Measured against a real `bitcoind` v31.1.0: `HTTP/1.1 401
+        Unauthorized`, `WWW-Authenticate: Basic realm="jsonrpc"`,
+        `Content-Length: 0` and no body, after 0.25 seconds for a wrong
+        credential and at once for none, the connection kept open or
+        closed as the request asked. Core's reply also carries the
+        `Date` and `Content-Type` headers libevent adds, which this does
+        not write.
+        """
+        await asyncio.sleep(delay)
+        http_response = "HTTP/1.1 401 Unauthorized\r\n"
+        http_response += f"WWW-Authenticate: {WWW_AUTHENTICATE}\r\n"
+        if not self.keep_alive:
+            http_response += "Connection: close\r\n"
+        http_response += "Content-Length: 0\r\n\r\n"
+        await self._write(http_response.encode())
+
+    async def _write(self, http_response: bytes) -> None:
+        """Write one reply, then read the next request or close.
+
+        `self.keep_alive` decides which, `async_send`'s own docstring
+        says how.
+        """
+        await self.loop.sock_sendall(self.client, http_response)
         if self.keep_alive:
             # No re-insertion into `manager.connections` here: unlike an
             # earlier version of this method, nothing removed this id on
@@ -657,6 +717,16 @@ class RpcConnection:
         future = asyncio.run_coroutine_threadsafe(self.async_send(response), self.loop)
         with contextlib.suppress(TimeoutError):
             future.result(timeout=2)
+
+    def _peer_address(self) -> str:
+        """Return the client's `ip:port`, for a log line naming who asked."""
+        try:
+            host, port = self.client.getpeername()[:2]
+        # `OSError` for a socket no longer connected, `ValueError` for a
+        # peer name that is not a `(host, port)` pair
+        except OSError, ValueError:
+            return "an unknown address"
+        return ip_and_port(host, port)
 
     @override
     def __repr__(self) -> str:
