@@ -853,20 +853,26 @@ class BlockIndex:
         return candidates[:MAX_DOWNLOAD_WINDOW]
 
     # return a list of block hashes looking at the current best chain
-    def get_block_locator_hashes(self) -> list[bytes]:
+    def get_block_locator_hashes(self, start: bytes | None = None) -> list[bytes]:
         """Return a block locator over `header_index`, its own best known chain.
 
-        Exponentially sparser going back from its own tip, always
-        including its genesis -- the shape Core's own `LocatorEntries`
-        builds, cited in the comment below.
+        Exponentially sparser going back from `start`, a header of
+        `header_index` and its tip where none is given, always including
+        its genesis -- the shape Core's own `LocatorEntries` builds,
+        cited in the comment below.
         """
+        top = (
+            len(self.header_index)
+            if start is None
+            else self.header_index_pos[start] + 1
+        )
         i = 1
         step = 1
         block_locators: list[bytes] = []
         while True:
-            if i > len(self.header_index):
+            if i > top:
                 break
-            block_locators.append(self.header_index[-i])
+            block_locators.append(self.header_index[top - i])
             # Core's own LocatorEntries (src/chain.cpp, aed80c7395):
             # `if (have.size() > 10) step *= 2`, a bare, unnamed 10 there
             # too -- matched rather than named, since naming it here

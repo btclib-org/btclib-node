@@ -1094,9 +1094,16 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     A batch connecting to nothing known asks again from what this node
     already has; a full-sized batch asks for the next one; a shorter
     batch that still connected means the peer has nothing more to give,
-    which is what finishes header sync.
+    which is what finishes header sync. An empty batch is the peer
+    having nothing to give, and asks for nothing more.
     """
     headers = Headers.parse(msg).headers
+    if not headers:
+        # Core's own `ProcessHeadersMessage` returns on the same batch,
+        # "Nothing interesting. Stop asking this peers for more headers."
+        # (net_processing.cpp, at bitcoin/bitcoin@9be056a8a7): asking
+        # again, from this node's own tip, would draw the same empty answer.
+        return
     # add_headers raises on a batch it refuses -- a header failing its
     # own proof of work or context check -- and the raise is left to
     # reach handle_p2p, which drops the connection the same way block's
@@ -1154,15 +1161,17 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
 def getheaders(node: Node, msg: bytes, conn: Connection) -> None:
     """Answer a peer's `getheaders` with what its own locator resolves to.
 
-    Silent where the locator names nothing this node's own `header_index`
-    holds -- there is nothing to answer with, not a refusal.
+    An empty `headers` where that is nothing, as Core's `GETHEADERS`
+    handler answers (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag): a peer waiting on the reply is told there is nothing
+    to give rather than left to time the request out. What a locator
+    resolves to is not yet Core's: btclib-org/btclib-node#1128.
     """
     getheaders = GetHeaders.parse(msg)
     headers = node.chainstate.block_index.get_headers_from_locators(
         getheaders.locator, getheaders.hash_stop
     )
-    if headers:
-        conn.send(Headers(headers))
+    conn.send(Headers(headers))
 
 
 def _height_on_the_active_chain(node: Node, block_hash: bytes) -> int | None:

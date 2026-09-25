@@ -1249,20 +1249,21 @@ _RECENT = 60
 
 
 class HeaderIndex:
-    """A `BlockIndex` stand-in holding one best header, `age` seconds old."""
+    """A `BlockIndex` stand-in whose best header is `age` seconds old."""
 
-    def __init__(self, *, age: float) -> None:
-        """Hold one best header timestamped `age` seconds before now."""
-        self.header_index = [a_hash(7)]
+    def __init__(self, *, age: float, length: int = 2) -> None:
+        """Hold `length` headers ending in `a_hash(7)`, the best one."""
+        self.header_index = [a_hash(i) for i in range(8 - length, 8)]
         self.time = datetime.fromtimestamp(time.time() - age, UTC)
 
     def get_block_info(self, block_hash: bytes) -> Any:
-        """Answer the one header's own time, whatever `block_hash` is."""
+        """Answer the best header's own time, whatever `block_hash` is."""
         return SimpleNamespace(header=SimpleNamespace(time=self.time))
 
-    def get_block_locator_hashes(self) -> list[bytes]:
-        """Return a locator naming the one best header."""
-        return list(self.header_index)
+    def get_block_locator_hashes(self, start: bytes | None = None) -> list[bytes]:
+        """Return every header from `start`, the best one by default, back."""
+        top = self.header_index.index(start) + 1 if start else len(self.header_index)
+        return self.header_index[top - 1 :: -1]
 
 
 def an_outbound(conn_id: int, **kwargs: Any) -> Any:
@@ -1288,12 +1289,23 @@ def test_an_old_best_header_is_asked_of_one_peer_only() -> None:
     assert not asked(second)
     assert list(manager.headers_sync_timeouts) == [1]
     (getheaders,) = only(first, GetHeaders)
-    assert list(getheaders.locator) == [a_hash(7)]
+    # the best header's parent, not the best header: Core's own
+    # `pindexStart->pprev`, so a peer at this node's tip answers with it
+    assert list(getheaders.locator) == [a_hash(6)]
     # a second pass asks nobody again: the one peer already asked holds
     # the turn, and is not asked twice
     manager.sync_headers()
     assert len(only(first, GetHeaders)) == 1
     assert not asked(second)
+
+
+def test_a_best_header_with_no_parent_starts_the_locator_itself() -> None:
+    """With only genesis, the locator starts at genesis, having no parent."""
+    conn = an_outbound(1)
+    manager = make_manager([conn], block_index=HeaderIndex(age=_OLD, length=1))
+    manager.sync_headers()
+    (getheaders,) = only(conn, GetHeaders)
+    assert list(getheaders.locator) == [a_hash(7)]
 
 
 def test_a_recent_best_header_is_asked_of_every_peer() -> None:
