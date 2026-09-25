@@ -341,3 +341,37 @@ def test_submit_block_extends_the_node_s_own_active_chain(rpc_node: Node) -> Non
 
     wait_until(lambda: len(node.chainstate.block_index.active_chain) == 2 + 1)
     assert node.chainstate.block_index.active_chain[-1] == new_block.header.hash
+
+
+def test_submit_block_connects_on_a_node_no_peer_has_sent_a_header(
+    rpc_node: Node,
+) -> None:
+    """A node with no peer connects what `submitblock` hands it.
+
+    Nothing here sets `node.status`, so the node stays `SyncingHeaders`,
+    as tf2's own solo node does (btclib-org/btclib-node#1071). The block
+    is dated against the real clock, so connecting it also takes the
+    node out of IBD, as Core's own `UpdateIBDStatus` does with no peer.
+    """
+    node = rpc_node
+    wait_until_listening(node.rpc_manager)
+
+    block = build_block(
+        RegTest().genesis.hash,
+        [generate_coinbase(height=1)],
+        0,
+        time=datetime.now(UTC),
+    )
+    _, body = rpc_client(node).call_raw(
+        "submitblock",
+        [block.serialize(check_validity=False).hex()],
+        jsonrpc="1.0",
+        request_timeout=2,
+    )
+    assert body["result"] is None
+
+    wait_until(lambda: node.is_initial_block_download is False)
+    _, body = rpc_client(node).call_raw("getblockchaininfo", jsonrpc="1.0")
+    assert body["result"]["blocks"] == 1
+    assert body["result"]["bestblockhash"] == block.header.hash.hex()
+    assert node.status == NodeStatus.SyncingHeaders

@@ -94,11 +94,16 @@ def _announce_added_blocks(node: Node, blocks: list[Block]) -> None:
 def finish_sync(node: Node) -> None:
     """Mark the node `BlockSynced`, once there is no candidate left to try.
 
+    Only from `HeaderSynced`: a fresh node finds no candidate on its
+    first pass, before any peer could have sent it a header, and a node
+    with no peer stays at `SyncingHeaders` whatever `submitblock` hands
+    it -- neither has finished a sync.
+
     A no-op past the first call: nothing here needs undoing if a later
     reorg leaves the chain with a candidate again, `NodeStatus` having
     no state to walk back to from `BlockSynced`.
     """
-    if node.status == NodeStatus.BlockSynced:
+    if node.status != NodeStatus.HeaderSynced:
         return
     node.status = NodeStatus.BlockSynced
 
@@ -420,10 +425,14 @@ def _rollback_trial(node: Node, utxo_mark: int, filter_mark: int) -> None:
 # different things to update_chain's own caller but the same thing to
 # this one -- "nothing to do yet" -- and only the first of them is also
 # "nothing left to ever do until a new header arrives".
+#
+# Not gated on `node.status`: Core's `ProcessNewBlock` hands every block
+# it accepts to `ActivateBestChain` (`src/validation.cpp:4481`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag) whether or not header sync
+# has finished and whether or not any peer is connected, which is what
+# lets `submitblock` on a node with no peer connect its own block
+# (btclib-org/btclib-node#1071).
 def _ready_fork(node: Node) -> tuple[list[bytes], list[bytes]] | None:
-    if node.status < NodeStatus.HeaderSynced:
-        return None
-
     block_index = node.chainstate.block_index
     first_candidate = block_index.get_first_candidate()
     if not first_candidate:

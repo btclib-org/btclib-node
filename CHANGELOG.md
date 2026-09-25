@@ -238,6 +238,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   a time `P2pManager.messages` carries: waiting in that queue counts
   against neither the peer's ping nor its `min_ping_time`.
 
+### A node with no peer connects the blocks `submitblock` hands it
+
+- **`update_chain` connects what it holds before header sync ends, as
+  Core's `ActivateBestChain` does** (closes #1071); `BlockSynced` still
+  follows only `HeaderSynced`, and IBD ends on the tip alone, as in Core.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
