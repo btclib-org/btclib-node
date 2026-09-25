@@ -361,6 +361,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **An address whose network group an outbound peer already holds is not
   dialled** (closes #1098), as `CConnman::ThreadOpenConnections` skips it.
 
+### No unroutable address is recorded as answered, as in Core's addrman
+
+- **`PeerDB.add_active_address` refuses what `add_addresses` refuses, and a
+  stored row either table refuses is deleted on load** (issue #1140).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

@@ -229,6 +229,18 @@ _ANSWERED = b"answered-"
 _MAX_ADDRESSES = 10000
 
 
+def _storable(address: NetworkAddressV2) -> bool:
+    """Whether Core's addrman would hold `address` at all.
+
+    `AddrManImpl::AddSingle` returns early for an address `IsRoutable`
+    refuses (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag), and BIP155's embedded-IPv6 records are ignored before they
+    reach it. `AddrManImpl::Good_` only updates an entry already held,
+    so an address this refuses is never recorded as answered either.
+    """
+    return not is_embedded_ipv6(address) and is_routable(address)
+
+
 def endpoint_key(address: NetworkAddressV2) -> bytes:
     """Return the octets a persisted address is keyed on.
 
@@ -349,17 +361,27 @@ class PeerDB:
         One store keyed by two prefixes (the comment on `_KNOWN` and
         `_ANSWERED` above argues why), so this walks it whole and
         dispatches on the prefix rather than stopping at the first key
-        without one.
+        without one. A row `_storable` refuses is deleted rather than
+        loaded, as Core's addrman holds no such address.
         """
         if self.db is None:
             return
+        refused: list[bytes] = []
         for key, value in self.db:
             if key.startswith(_KNOWN):
-                self.addresses.add(NetworkAddressV2.parse(value, check_validity=False))
+                table = self.addresses.add
             elif key.startswith(_ANSWERED):
-                self.active_addresses.append(
-                    NetworkAddressV2.parse(value, check_validity=False)
-                )
+                table = self.active_addresses.append
+            else:
+                continue
+            address = NetworkAddressV2.parse(value, check_validity=False)
+            if _storable(address):
+                table(address)
+            else:
+                refused.append(key)
+        with self.db.write_batch() as wb:
+            for key in refused:
+                wb.delete(key)
         self._reindex_active()
 
     def _reindex_active(self) -> None:
@@ -476,10 +498,8 @@ class PeerDB:
     def add_addresses(self, addresses: Iterable[NetworkAddressV2]) -> None:
         """Merge `addresses` into `self.addresses`, checked and deduplicated.
 
-        BIP155's embedded-IPv6 records are dropped, and so is an address
-        `is_routable` refuses, as Core's `AddrManImpl::AddSingle` refuses
-        it (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-        tag). Every other address settles onto its own `endpoint_key`
+        An address `_storable` refuses is dropped. Every other address
+        settles onto its own `endpoint_key`
         row, up to `_MAX_ADDRESSES` distinct endpoints, past which a
         genuinely new one is dropped too. Locked with `_addresses_lock`.
         """
@@ -502,7 +522,7 @@ class PeerDB:
                 # (#151). Checked before the durable write too, so a
                 # dropped record is dropped everywhere, not merely kept
                 # out of the in-memory set.
-                if is_embedded_ipv6(address) or not is_routable(address):
+                if not _storable(address):
                     continue
                 known = replace(address, timestamp=0)
                 key = endpoint_key(known)
@@ -547,9 +567,11 @@ class PeerDB:
         """Record `addr` as dialled and answered, just now.
 
         A repeat handshake with an already-held endpoint settles onto
-        its one row rather than growing the table. Locked with
-        `_active_lock`.
+        its one row rather than growing the table, and an address
+        `_storable` refuses is not recorded. Locked with `_active_lock`.
         """
+        if not _storable(addr):
+            return
         # a whole second: the field is four octets on the wire
         answered = replace(addr, timestamp=int(time.time()))
         key = endpoint_key(answered)
