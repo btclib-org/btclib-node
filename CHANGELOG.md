@@ -268,6 +268,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   every connection (closes #1094); no `version` refusal or manual peer is
   discouraged, nor a manual peer refused for the wanted services (closes #1090).
 
+### One `getheaders` in flight per peer, as in Core
+
+- **No `getheaders` goes to a peer while one sent to it in the last two
+  minutes is unanswered** (closes #1132), as in Core's
+  `MaybeSendGetHeaders`.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

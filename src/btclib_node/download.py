@@ -21,13 +21,16 @@ from random import SystemRandom
 from typing import TYPE_CHECKING
 
 from btclib.p2p.address import ServiceFlags
-from btclib.p2p.inventory import GetData, GetHeaders, Inv, Inventory, InventoryType
-from btclib.p2p.limits import MAX_INV_SZ, PROTOCOL_VERSION
+from btclib.p2p.inventory import GetData, Inv, Inventory, InventoryType
+from btclib.p2p.limits import MAX_INV_SZ
 from btclib.p2p.negotiation import FeeFilter
 
 from btclib_node.chainstate.block_index import MAX_DOWNLOAD_WINDOW
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, NodeStatus, P2pConnStatus
-from btclib_node.p2p.callbacks import MAX_GETDATA_INFLIGHT_BYTES
+from btclib_node.p2p.callbacks import (
+    MAX_GETDATA_INFLIGHT_BYTES,
+    maybe_send_getheaders,
+)
 
 if TYPE_CHECKING:
     from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
@@ -374,6 +377,10 @@ class DownloadManager:
         # announced that last did so.
         self.inv_triggered_getheaders: set[int] = set()
         self.last_block_inv_triggering_headers_sync: bytes | None = None
+        # Core's `m_last_getheaders_timestamp`: when
+        # `callbacks.maybe_send_getheaders` last sent each peer a
+        # `getheaders` that no `headers` has answered since.
+        self.last_getheaders_timestamps: dict[int, float] = {}
 
     def step(self) -> None:
         """Run one pass: headers, blocks and txs asked for, feefilters sent."""
@@ -739,6 +746,18 @@ class DownloadManager:
             self._next_inv_to_inbounds[net_class] = due
         return due
 
+    def _forget_peers_gone(self) -> None:
+        """Drop the header-sync state of every peer no longer connected.
+
+        Core's `m_inv_triggered_getheaders_before_sync` and
+        `m_last_getheaders_timestamp` live as long as the peer does.
+        """
+        connections = self.node.p2p_manager.connections
+        self.inv_triggered_getheaders.intersection_update(list(connections))
+        last_getheaders = self.last_getheaders_timestamps
+        for conn_id in last_getheaders.keys() - connections.keys():
+            del last_getheaders[conn_id]
+
     def sync_headers(self) -> None:
         """Ask one peer for headers, or every peer once the best one is recent.
 
@@ -760,6 +779,10 @@ class DownloadManager:
         a peer that disconnects hands its turn on. Core's
         `LoadingBlocks()` gate has nothing to read: this tree does not
         import blocks from disk.
+
+        A peer with a `getheaders` already in flight is not asked and
+        takes no turn, Core setting `fSyncStarted` only where
+        `MaybeSendGetHeaders` sent; it is left for a later pass.
 
         The locator starts at the best header's parent, as Core's does,
         so that a peer already at this node's tip answers with that tip
@@ -784,10 +807,7 @@ class DownloadManager:
         timeouts = self.headers_sync_timeouts
         for conn_id in timeouts.keys() - {conn.id for conn in connections}:
             del timeouts[conn_id]
-        # Core's flag lives as long as the peer does
-        self.inv_triggered_getheaders.intersection_update(
-            list(node.p2p_manager.connections)
-        )
+        self._forget_peers_gone()
         sync_started = len(timeouts)
         for conn in connections:
             if conn.id in timeouts or not _can_serve_blocks(conn):
@@ -800,7 +820,8 @@ class DownloadManager:
             )
             if (sync_started == 0 and from_peer) or recent:
                 locator = block_index.get_block_locator_hashes(start)
-                conn.send(GetHeaders(PROTOCOL_VERSION, locator, b"\x00" * 32))
+                if not maybe_send_getheaders(node, conn, locator):
+                    continue
                 timeouts[conn.id] = (
                     now
                     + _HEADERS_DOWNLOAD_TIMEOUT_BASE

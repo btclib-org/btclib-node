@@ -110,6 +110,7 @@ __all__ = [
     "handshake_callbacks",
     "headers",
     "inv",
+    "maybe_send_getheaders",
     "not_found",
     "ping",
     "pong",
@@ -132,6 +133,30 @@ def _has_all_desirable_services(node: Node, services: int) -> bool:
     ):
         desirable = ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS
     return not desirable & ~services
+
+
+# Core's `HEADERS_RESPONSE_TIME` (`net_processing.cpp`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag), in seconds: how long a
+# `getheaders` a peer has not answered holds off the next one to it.
+_HEADERS_RESPONSE_TIME = 2 * 60
+
+
+def maybe_send_getheaders(node: Node, conn: Connection, locator: list[bytes]) -> bool:
+    """Send `conn` a `getheaders` unless one to it is still in flight.
+
+    Core's `MaybeSendGetHeaders` (`net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), through which every
+    `getheaders` this node sends goes. A request is in flight from when it
+    is sent until `headers` clears it or `_HEADERS_RESPONSE_TIME` passes.
+    Returns whether it was sent.
+    """
+    now = time.time()
+    timestamps = node.download_manager.last_getheaders_timestamps
+    if now - timestamps.get(conn.id, 0.0) > _HEADERS_RESPONSE_TIME:
+        conn.send(GetHeaders(PROTOCOL_VERSION, locator, b"\x00" * 32))
+        timestamps[conn.id] = now
+        return True
+    return False
 
 
 def version(node: Node, msg: bytes, conn: Connection) -> None:
@@ -723,8 +748,10 @@ def inv(node: Node, msg: bytes, conn: Connection) -> None:
     header, whatever the sync state, where `sync_headers` has already asked
     this peer for headers; where it has not, once per peer and once per
     new block, so that header sync takes on one more peer for each block
-    found. Transactions are queued only once this node's own chain is
-    synced.
+    found. Either way `maybe_send_getheaders` drops the request while one
+    to this peer is in flight, and a peer not yet syncing has its turn
+    spent all the same, as in Core. Transactions are queued only once this
+    node's own chain is synced.
     """
     inv = Inv.parse(msg)
 
@@ -743,7 +770,7 @@ def inv(node: Node, msg: bytes, conn: Connection) -> None:
             and unknown[-1] != manager.last_block_inv_triggering_headers_sync
         ):
             block_locators = block_index.get_block_locator_hashes()
-            conn.send(GetHeaders(PROTOCOL_VERSION, block_locators, b"\x00" * 32))
+            maybe_send_getheaders(node, conn, block_locators)
             if not sync_started:
                 manager.inv_triggered_getheaders.add(conn.id)
                 manager.last_block_inv_triggering_headers_sync = unknown[-1]
@@ -1126,6 +1153,10 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     batch that still connected means the peer has nothing more to give,
     which is what finishes header sync. An empty batch is the peer
     having nothing to give, and asks for nothing more.
+
+    An empty batch, or one that connects, answers the `getheaders` in
+    flight to this peer, as Core's `ProcessHeadersMessage` takes it: one
+    connecting to nothing may be an announcement, and answers nothing.
     """
     headers = Headers.parse(msg).headers
     if not headers:
@@ -1133,6 +1164,7 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
         # "Nothing interesting. Stop asking this peers for more headers."
         # (net_processing.cpp, at bitcoin/bitcoin@9be056a8a7): asking
         # again, from this node's own tip, would draw the same empty answer.
+        node.download_manager.last_getheaders_timestamps.pop(conn.id, None)
         return
     # add_headers raises on a batch it refuses -- a header failing its
     # own proof of work or context check -- and the raise is left to
@@ -1143,6 +1175,7 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     block_index = node.chainstate.block_index
     tip = block_index.add_headers(headers)
     if tip is not None:
+        node.download_manager.last_getheaders_timestamps.pop(conn.id, None)
         # This batch connected, so its own tip is a taller header this
         # connection has sent than any before it -- Core's own
         # UpdateBlockAvailability (net_processing.cpp, at
@@ -1162,7 +1195,7 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
         # announcement being silently dropped for missing its own
         # ancestors. btclib-org/btclib-node#233
         block_locators = block_index.get_block_locator_hashes()
-        conn.send(GetHeaders(PROTOCOL_VERSION, block_locators, b"\x00" * 32))
+        maybe_send_getheaders(node, conn, block_locators)
     elif len(headers) == MAX_HEADERS_RESULTS:  # the peer may have more to give us
         # [tip] only for a live fork below header_index's own tip: that
         # is the one case get_block_locator_hashes cannot reach on its
@@ -1183,7 +1216,7 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
             block_locators = [tip]
         else:
             block_locators = block_index.get_block_locator_hashes()
-        conn.send(GetHeaders(PROTOCOL_VERSION, block_locators, b"\x00" * 32))
+        maybe_send_getheaders(node, conn, block_locators)
     elif node.status == NodeStatus.SyncingHeaders:
         node.status = NodeStatus.HeaderSynced
 
