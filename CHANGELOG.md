@@ -356,6 +356,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   (closes #1147), locking the data and blocks directories as `bitcoind` does,
   before its log or any store is opened.
 
+### Outbound peers sit in distinct network groups, as in Core
+
+- **An address whose network group an outbound peer already holds is not
+  dialled** (closes #1098), as `CConnman::ThreadOpenConnections` skips it.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
