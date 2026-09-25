@@ -92,17 +92,7 @@ again.
   widens it, matching Core's own `rpcbind`/`rpcallowip` default
   (btclib-org/btclib-node#27): do not widen the bind past a network
   whose traffic you trust. btclib-org/btclib-node#1070.
-- **A peer this node discouraged can take an inbound slot again.** How
-  many inbound peers are held at once is `Config.max_connections`'s
-  inbound share (btclib-org/btclib-node#1054). A peer arriving once it
-  is taken evicts one already held, by Core's own rules, and is refused
-  only where every one held is protected (btclib-org/btclib-node#1064).
-  Core also refuses a peer it has discouraged once the slots are nearly
-  full, and, among the peers its protections leave, evicts only from
-  the discouraged ones where there are any; this node asks nothing
-  about a peer it accepts, so one it dropped for cause comes back like
-  any other (btclib-org/btclib-node#1078).
 - **`Development Status :: 3 - Alpha` is the claim `pyproject.toml`
-  makes**, and it is the right one to read the two above against: this
+  makes**, and it is the right one to read the limitation above against: this
   node has downloaded and validated the chain, which is not the same as
   having been run against somebody trying to make it do otherwise.

@@ -395,7 +395,7 @@ def pong(node: Node, msg: bytes, conn: Connection) -> None:
             # `Connection.ping_sent` does, to the moment the pong was read
             # off the socket; this measures to the moment `Node`'s loop
             # handles it, the queue carrying no receive time
-            # (btclib-org/btclib-node#1078).
+            # (btclib-org/btclib-node#1092).
             ping_time = time.time() - ping_sent
             if ping_time >= 0:
                 conn.latency = ping_time

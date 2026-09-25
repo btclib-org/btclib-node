@@ -23,13 +23,14 @@ from concurrent.futures import CancelledError
 from contextlib import suppress
 from typing import TYPE_CHECKING, override
 
-from btclib.p2p.addrv2 import network_address
+from btclib.p2p.addrv2 import can_addrv1, network_address
 
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.p2p.address import (
     PeerDB,
     dial,
     endpoint_key,
+    host_key,
     ip_and_port,
     peer_address,
 )
@@ -103,6 +104,18 @@ _REDIAL_MAX_SECONDS = 60.0
 _MAX_OUTBOUND_FULL_RELAY_CONNECTIONS = 8
 _MAX_BLOCK_RELAY_ONLY_CONNECTIONS = 2
 _MAX_FEELER_CONNECTIONS = 1
+
+# How many hosts `P2pManager.discourage` remembers. Core keeps them in
+# `BanMan::m_discouraged`, a `CRollingBloomFilter{50000, 0.000001}`
+# (`src/banman.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). This
+# tree has no rolling bloom filter, so `P2pManager._discouraged` is an
+# insertion-ordered `dict` of at most this many hosts, the one
+# discouraged longest ago forgotten first. Core's filter answers yes
+# for a host it never held, up to one time in a million, and this never
+# does. Core's forgets a host 50,000 to 75,000 insertions later, its
+# generations of 25,000 holding two or three at a time, and this
+# forgets it once 50,000 other hosts have been discouraged since.
+_DISCOURAGED_CAPACITY = 50_000
 
 
 class P2pManager(threading.Thread):
@@ -276,18 +289,17 @@ class P2pManager(threading.Thread):
         # once per process, so no peer can predict which netgroups the
         # eviction's first protection keeps.
         self._net_group_key = secrets.token_bytes(16)
-        # Endpoints `discourage` has been told to stop redialling, by
-        # `endpoint_key` -- process lifetime, not `peer_db`'s own tables,
-        # so a wrongly discouraged endpoint is recovered by a restart
-        # rather than by touching the datadir, matching Core's own
-        # `CRollingBloomFilter` (`banman.h`, at bitcoin/bitcoin@58a7869f86)
-        # over its persisted ban list. Unlocked: `discourage` only ever
-        # adds a key and `manage_connections` only ever asks `in`, never
-        # walks it, so there is nothing here for the two to catch each
-        # other mid-stride the way `PeerDB._addresses_lock`'s own
-        # iteration can -- the same reasoning `PeerDB.is_empty` already
-        # gives for reading its own set unlocked. btclib-org/btclib-node#283
-        self.discouraged: set[bytes] = set()
+        # The hosts `discourage` has recorded, by `host_key`, oldest
+        # first, as values of nothing: `_DISCOURAGED_CAPACITY` is where
+        # this is set against Core's `BanMan::m_discouraged`. Process
+        # lifetime, not `peer_db`'s own tables, as Core's filter is not
+        # written to disk, so a restart forgets them. Locked, as Core's
+        # `m_banned_mutex` guards its filter: `discourage` runs on
+        # `Node`'s thread and on this manager's, and forgetting the
+        # oldest host is a read and a delete that another write must
+        # not land between.
+        self._discouraged: dict[bytes, None] = {}
+        self._discouraged_lock = threading.Lock()
         # 0.0, not `time.time()`: the first pass of `manage_connections`
         # prunes on the spot rather than waiting a full
         # `_ACTIVE_PRUNE_INTERVAL` after this manager was constructed.
@@ -338,6 +350,7 @@ class P2pManager(threading.Thread):
         *,
         inbound: bool,
         automatic: bool = False,
+        prefer_evict: bool = False,
     ) -> None:
         """Build a `Connection` for `client`, hold it pending, and start it.
 
@@ -388,6 +401,7 @@ class P2pManager(threading.Thread):
             self, client, address, self.last_connection_id, inbound=inbound
         )
         conn.automatic = automatic
+        conn.prefer_evict = prefer_evict
         conn.keyed_net_group = keyed_net_group(self._net_group_key, address)
         self.pending_connections[self.last_connection_id] = conn
         task = asyncio.run_coroutine_threadsafe(conn.run(), self.loop)
@@ -487,16 +501,40 @@ class P2pManager(threading.Thread):
             return nonce in self.pending_outbound_nonces
 
     def discourage(self, address: NetworkAddressV2) -> None:
-        """Stop `manage_connections` from redialling this endpoint.
+        """Record the host `address` is on as discouraged, Core's `Discourage`.
 
         The caller is one of the `conn.stop()` sites that stops a
         connection this node dialled or accepted for cause -- an
         incompatible peer or one that broke the protocol, never a
-        connection this node closed on its own account. `address` is
-        `conn.address`, keyed the same way `already_connected` below
-        already compares live connections against a draw.
+        connection this node closed on its own account. A discouraged
+        host is not dialled by `_maybe_dial_more_peers`, is refused by
+        `server` once the inbound slots are nearly full, and is accepted
+        otherwise as the first to evict.
+
+        Keyed by `host_key`, without the port, as Core's
+        `BanMan::Discourage` is (`src/banman.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag). A local address is
+        not recorded: Core's `MaybeDiscourageAndDisconnect`
+        (`src/net_processing.cpp`, same sha) disconnects a local peer
+        without discouraging it, since that would discourage every peer
+        on the same local address. Discouraging a host already held
+        moves it to the newest, as a second insert into Core's filter
+        does.
         """
-        self.discouraged.add(endpoint_key(address))
+        if can_addrv1(address) and is_local(address):
+            return
+        key = host_key(address)
+        with self._discouraged_lock:
+            self._discouraged.pop(key, None)
+            self._discouraged[key] = None
+            if len(self._discouraged) > _DISCOURAGED_CAPACITY:
+                del self._discouraged[next(iter(self._discouraged))]
+
+    def is_discouraged(self, address: NetworkAddressV2) -> bool:
+        """Whether `address`'s host is discouraged, Core's `IsDiscouraged`."""
+        key = host_key(address)
+        with self._discouraged_lock:
+            return key in self._discouraged
 
     async def async_connect(self, address: NetworkAddressV2) -> None:
         """Dial `address` and, if it comes up, register the connection.
@@ -655,15 +693,17 @@ class P2pManager(threading.Thread):
             # and onion addresses through. The draw is what
             # knows, and it answers with nothing: this pass has
             # nothing to do, and the sleep below is what keeps
-            # that from being a spin. `discouraged` is the same
-            # kind of refusal as `already_connected`, against a
+            # that from being a spin. A discouraged host is the
+            # same kind of refusal as `already_connected`, against a
             # peer this node has already dialled or accepted and
-            # dropped for cause rather than one it already holds.
-            # btclib-org/btclib-node#283
+            # dropped for cause rather than one it already holds,
+            # and Core's `OpenNetworkConnection` (`src/net.cpp`, at
+            # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) refuses it
+            # the same way. btclib-org/btclib-node#283
             if (
                 address is not None
                 and endpoint_key(address) not in already_connected
-                and endpoint_key(address) not in self.discouraged
+                and not self.is_discouraged(address)
             ):
                 sock = await dial(address)
                 if sock:
@@ -830,8 +870,8 @@ class P2pManager(threading.Thread):
             sock.settimeout(0.0)
             accepted.put_nowait((sock, sockaddr))
 
-    def _inbound_full(self) -> bool:
-        """Whether every inbound slot `max_inbound` allows is already taken.
+    def _inbound_count(self) -> int:
+        """How many of the inbound slots `max_inbound` allows are taken.
 
         Pending connections count: a peer short of `verack` holds its
         socket and its `Connection` as much as one past it, the same as
@@ -840,14 +880,13 @@ class P2pManager(threading.Thread):
         `_maybe_dial_more_peers`'s own count is.
         """
         with self._connections_lock:
-            inbound = sum(
+            return sum(
                 conn.inbound
                 for conn in (
                     *self.connections.values(),
                     *self.pending_connections.values(),
                 )
             )
-        return inbound >= self.max_inbound
 
     def _attempt_to_evict_connection(self) -> bool:
         """Disconnect one inbound peer to make room, and say whether one went.
@@ -934,26 +973,43 @@ class P2pManager(threading.Thread):
             try:
                 while True:
                     sock, sockaddr = await accepted.get()
-                    # Past the inbound share, an inbound peer is evicted
-                    # to make room, and only where every candidate is
-                    # protected is the new peer refused, before
-                    # `create_connection` builds anything for it: Core's
-                    # `CreateNodeFromAcceptedSocket` (`src/net.cpp`, at
-                    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
-                    if self._inbound_full() and not self._attempt_to_evict_connection():
-                        self.logger.debug(
-                            "failed to find an eviction candidate"
-                            " - connection dropped (full)"
-                        )
-                        sock.close()
-                        continue
                     # two fields for an AF_INET peer, four for an
                     # AF_INET6 one -- the flow info and the scope id
                     # BIP155 has nowhere to carry either,
                     # `get_addr_from_dns`'s own sockaddr comment being
                     # where that is argued
                     address = peer_address(*sockaddr[:2])
-                    self.create_connection(sock, address, inbound=True)
+                    # Core's `CreateNodeFromAcceptedSocket` (`src/net.cpp`,
+                    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), on one
+                    # count of the inbound peers: a discouraged host is
+                    # refused once one more peer would fill the inbound
+                    # share; past that share an inbound peer is evicted
+                    # to make room, and only where every candidate is
+                    # protected is the new peer refused. Either refusal
+                    # comes before `create_connection` builds anything.
+                    inbound = self._inbound_count()
+                    discouraged = self.is_discouraged(address)
+                    if discouraged and inbound + 1 >= self.max_inbound:
+                        endpoint = network_address(address)
+                        self.logger.debug(
+                            "connection from %s dropped (discouraged)",
+                            ip_and_port(str(endpoint.ip), endpoint.port),
+                        )
+                        sock.close()
+                        continue
+                    if (
+                        inbound >= self.max_inbound
+                        and not self._attempt_to_evict_connection()
+                    ):
+                        self.logger.debug(
+                            "failed to find an eviction candidate"
+                            " - connection dropped (full)"
+                        )
+                        sock.close()
+                        continue
+                    self.create_connection(
+                        sock, address, inbound=True, prefer_evict=discouraged
+                    )
             finally:
                 # Already cancelled directly by `stop`'s own sweep
                 # whenever that is how this task ends too -- both are in
@@ -1260,13 +1316,9 @@ def _eviction_candidate(conn: Connection) -> EvictionCandidate:
     """Build the `NodeEvictionCandidate` Core builds for `conn`, where it can.
 
     Where a field of Core's has nothing here to be read from, it takes
-    the value that protects nobody and prefers nobody:
+    the value that protects nobody:
 
     - `fBloomFilter`: this node answers no BIP37 `filterload`.
-    - `prefer_evict`: Core sets it for a peer its ban manager
-      discourages; `P2pManager.discouraged` holds endpoints this node
-      stops dialling, and is not asked about a peer it accepts
-      (btclib-org/btclib-node#1078).
     - `m_noban`: this node has no `-whitebind`/`-whitelist` permissions.
     - an onion peer's `m_network`: this node has no Tor listener, so
       `net_class` answers from the address alone.
@@ -1288,7 +1340,7 @@ def _eviction_candidate(conn: Connection) -> EvictionCandidate:
         relay_txs=version_message is not None and version_message.is_relay_requested,
         bloom_filter=False,
         keyed_net_group=conn.keyed_net_group,
-        prefer_evict=False,
+        prefer_evict=conn.prefer_evict,
         is_local=is_local(conn.address),
         network=net_class(conn.address),
         noban=False,

@@ -370,6 +370,11 @@ class Connection:
         # one (Core's `MANUAL`) are not. `P2pManager.create_connection`
         # sets it.
         self.automatic: bool = False
+        # Core's `CNode::m_prefer_evict`: whether this peer was accepted
+        # from a discouraged host, which `select_node_to_evict` reads.
+        # `P2pManager.server` decides it on accept and
+        # `P2pManager.create_connection` sets it; nothing changes it after.
+        self.prefer_evict: bool = False
 
         # Set by `send_version`, below, to what it drew: `None` until
         # then, and afterwards this connection's own share of
