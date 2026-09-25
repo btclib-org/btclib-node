@@ -840,6 +840,40 @@ def test_build_config_rpcauth_from_the_command_line_and_the_file(
     assert config.rpc_auth == (RpcAuthEntry.parse(RPCAUTH), RpcAuthEntry.parse(other))
 
 
+@pytest.mark.parametrize(
+    ("argv", "conf", "users"),
+    [
+        (["-rpcauth={}", "-norpcauth"], "", []),
+        (["-norpcauth", "-rpcauth={}"], "", ["pytest"]),
+        (["-norpcauth"], "rpcauth={}\n", []),
+        (["-norpcauth", "-rpcauth=other:aa$bb"], "rpcauth={}\n", ["other", "pytest"]),
+    ],
+    ids=[
+        "after a value",
+        "before a value",
+        "over the file",
+        "over the file, a value after it",
+    ],
+)
+def test_build_config_norpcauth_is_get_settings_list(
+    tmp_path: Path, argv: list[str], conf: str, users: list[str]
+) -> None:
+    """`-norpcauth` discards every `-rpcauth` before it, and the file's.
+
+    `gArgs.GetArgs("-rpcauth")` (`src/httprpc.cpp`, at
+    bitcoin/bitcoin@9be056a8a7) is `GetSettingsList`'s: a value after the
+    negation still brings the file's back. `bitcoind` v31.1.0 answers a
+    request with the credential each case leaves out 401, and with one it
+    keeps 200.
+    """
+    (tmp_path / "bitcoin.conf").write_text(
+        "regtest=1\n" + conf.format(RPCAUTH), encoding="utf-8"
+    )
+    argv = [arg.format(RPCAUTH) for arg in argv]
+    config = cli.build_config([f"-datadir={tmp_path}", *argv])
+    assert [entry.user.decode() for entry in config.rpc_auth] == users
+
+
 def test_build_config_a_malformed_rpcauth_in_the_file_raises(tmp_path: Path) -> None:
     """A malformed `rpcauth=` stops the node starting, as it stops Core."""
     (tmp_path / "bitcoin.conf").write_text(
