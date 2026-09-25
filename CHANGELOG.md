@@ -340,6 +340,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   (closes #1127); **a request-target libevent refuses is a 400** (closes
   #1125); **a bare LF ends a line** (closes #1150), as in `bitcoind`.
 
+### A second node over a held data directory is refused as `bitcoind` does
+
+- **`btclib-node` exits 1 with Core's "Cannot obtain a lock on directory"**
+  (closes #1147), locking the data and blocks directories as `bitcoind` does,
+  before its log or any store is opened.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

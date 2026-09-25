@@ -5,7 +5,7 @@
 """`DirectoryLock`: Core's messages, and who it refuses."""
 
 import gc
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -13,11 +13,14 @@ from btclib_node.dirlock import LOCK_FILE, DirectoryLock
 from btclib_node.exceptions import DirectoryLockError
 from tests import held_by_another_process, lock_from_another_process
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
 
 def test_another_process_holding_the_directory_is_refused_with_cores_message(
     tmp_path: Path,
 ) -> None:
-    """`bitcoind` v31.1.0's own words for a second instance, named for this node."""
+    """`bitcoind` v31.1.0's words for a second instance, named for this node."""
     with held_by_another_process(tmp_path):
         with pytest.raises(DirectoryLockError) as excinfo:
             DirectoryLock(tmp_path)

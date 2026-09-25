@@ -670,7 +670,7 @@ def held_by_another_process(directory: Path) -> Iterator[None]:
 
 
 def lock_from_another_process(directory: Path) -> str:
-    """What a second interpreter's lock over `directory` answers.
+    """Return what a second interpreter's lock over `directory` answers.
 
     `locked` where it got it, released again as it exits, and the
     refusal's own message otherwise.

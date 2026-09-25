@@ -232,7 +232,7 @@ class FileMetadata:
 
 
 def blocks_directory(data_dir: Path, blocks_dir: Path | None = None) -> Path:
-    """The directory `BlockDB` keeps its files in: `blocks` under either.
+    """Return the directory `BlockDB` keeps its files in: `blocks` under either.
 
     Core's own `GetBlocksDirPath` (`src/common/args.cpp`, at
     bitcoin/bitcoin@9be056a8a7), `blocks_dir` being `Config`'s own field

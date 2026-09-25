@@ -11,9 +11,12 @@ asserted is its exit status and the whole of what it prints.
 
 import subprocess
 import sys
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from tests.conftest import node_context
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_a_second_node_over_the_same_data_directory_exits_with_cores_refusal(

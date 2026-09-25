@@ -33,7 +33,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 if sys.platform == "win32":  # pragma: no cover -- the ubuntu cells hold the floor
-
     import msvcrt
 
     def _try_lock(fd: int) -> None:
@@ -48,7 +47,7 @@ else:
         fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
-__all__ = ["LOCK_FILE", "DirectoryLock"]
+__all__ = ["LOCK_FILE", "DirectoryLock", "lock_directories"]
 
 # Core's own `lockfile_name`, `LockDirectory`'s second argument
 # (`src/init.cpp`, same sha)
@@ -119,3 +118,23 @@ class DirectoryLock:
     def __del__(self) -> None:
         """Release the lock if nothing did, as `Node.__del__` does its pool."""
         self.release()
+
+
+def lock_directories(*directories: Path) -> tuple[DirectoryLock, ...]:
+    """Lock each of `directories` in turn, Core's own `LockDirectories`.
+
+    Where one is refused, those before it are released before the refusal
+    propagates, rather than left to the collector for a caller that tries
+    again.
+    """
+    locks: list[DirectoryLock] = []
+    try:
+        # a loop and not `extend`: each lock taken is in `locks` before
+        # the next is asked for, which is what the refusal below releases
+        for directory in directories:
+            locks.append(DirectoryLock(directory))  # noqa: PERF401
+    except DirectoryLockError:
+        for lock in locks:
+            lock.release()
+        raise
+    return tuple(locks)

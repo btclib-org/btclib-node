@@ -29,13 +29,9 @@ from btclib_node.block_db import BlockDB, blocks_directory
 from btclib_node.chainstate import Chainstate
 from btclib_node.config import Config
 from btclib_node.constants import NodeStatus
-from btclib_node.dirlock import DirectoryLock
+from btclib_node.dirlock import lock_directories
 from btclib_node.download import DownloadManager
-from btclib_node.exceptions import (
-    DirectoryLockError,
-    NodeShutdownTimeoutError,
-    ReimportedMainProcessError,
-)
+from btclib_node.exceptions import NodeShutdownTimeoutError, ReimportedMainProcessError
 from btclib_node.interpreter import warm
 from btclib_node.log import Logger
 from btclib_node.main import update_chain
@@ -299,15 +295,8 @@ class Node(threading.Thread):
 
         # Core's own `AppInitLockDirectories`: the data directory, then the
         # blocks directory, both before the log or any store is opened
-        # (`src/init.cpp`, same sha). The first is released where the second
-        # is refused rather than left to the collector, for whoever retries.
-        data_dir_lock = DirectoryLock(self.data_dir)
-        try:
-            blocks_dir_lock = DirectoryLock(blocks_dir)
-        except DirectoryLockError:
-            data_dir_lock.release()
-            raise
-        self._directory_locks = (data_dir_lock, blocks_dir_lock)
+        # (`src/init.cpp`, same sha)
+        self._directory_locks = lock_directories(self.data_dir, blocks_dir)
 
         self.terminate_flag = threading.Event()
         log_path = self.data_dir / config.log_path if config.log_path else None
