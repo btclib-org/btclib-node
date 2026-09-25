@@ -244,6 +244,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   Core's `ActivateBestChain` does** (closes #1071); `BlockSynced` still
   follows only `HeaderSynced`, and IBD ends on the tip alone, as in Core.
 
+### `getpeerinfo` lists every connection, with Core's network and fields
+
+- **A peer short of `verack` is listed** (closes #1106), `network` is Core's
+  net class (closes #1103), an invalid `addrlocal` is left out (closes #1104),
+  and most of the fields Core pushes for every peer are answered (issue #1105).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

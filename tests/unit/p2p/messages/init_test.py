@@ -33,7 +33,7 @@ from btclib.p2p.payload import Payload
 from btclib_node.chains import RegTest
 from btclib_node.constants import P2pConnStatus
 from btclib_node.p2p.callbacks import callbacks, handshake_callbacks
-from btclib_node.p2p.connection import Connection
+from btclib_node.p2p.connection import Connection, PeerStats
 
 if TYPE_CHECKING:
     from btclib_node.p2p.manager import P2pManager
@@ -104,7 +104,8 @@ def make_connection() -> Connection:
     package's own tests never queue enough to cross it, so they are
     here only because `parse_messages` always touches them, not because
     a test below exercises the bound itself -- `connection_test.py`'s
-    own tests do that.
+    own tests do that. `stats` is where `parse_messages` counts each
+    message it frames.
     """
     manager = SimpleNamespace(
         node=SimpleNamespace(chain=RegTest()),
@@ -125,6 +126,7 @@ def make_connection() -> Connection:
     conn._recv_lock = threading.Lock()
     conn._recv_resume = asyncio.Event()
     conn._recv_resume.set()
+    conn.stats = PeerStats()
     return conn
 
 

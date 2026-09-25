@@ -13,6 +13,7 @@ the mempool refuses.
 
 import math
 import time
+from collections import Counter
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, cast, override
@@ -46,6 +47,8 @@ from btclib_node.constants import (
 from btclib_node.exceptions import MissingPrevoutError, StoreCorruptionError
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
+from btclib_node.p2p.address import peer_address
+from btclib_node.p2p.connection import PeerStats
 from btclib_node.rpc.callbacks import (
     add_node,
     get_best_block_hash,
@@ -148,22 +151,29 @@ def a_peer(
     latency: float = 0.5,
     min_ping_time: float = 0.25,
     ping_sent: float = 0,
+    relay: bool = True,
+    inbound: bool = True,
+    automatic: bool = False,
+    versioned: bool = True,
 ) -> Any:
     """Build a `P2pManager.connections` entry `get_peer_info` can read.
 
     `peer`, `bind` and `local` each default to a different host, so an
     assertion naming the wrong one of the three cannot pass by accident.
+    `versioned` false is a connection whose `version` has not arrived.
     """
+    version_message = SimpleNamespace(
+        services=ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS,
+        addr_recv=NetworkAddress(0, local, 8333),
+        version=70015,
+        user_agent=user_agent,
+        is_relay_requested=relay,
+    )
     return SimpleNamespace(
         status=status,
         client=FakeSocket(gone=gone, peer=peer, bind=bind),
-        version_message=SimpleNamespace(
-            services=ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS,
-            addr_recv=NetworkAddress(0, local, 8333),
-            version=70015,
-            user_agent=user_agent,
-        ),
-        address=SimpleNamespace(network_id=SimpleNamespace(name="IPV4")),
+        version_message=version_message if versioned else None,
+        address=peer_address(peer, 8333),
         # fractional where the connection keeps them so, and each a
         # different value, so that an answer naming the wrong source or
         # left unrounded cannot pass
@@ -176,7 +186,12 @@ def a_peer(
         latency=latency,
         min_ping_time=min_ping_time,
         ping_sent=ping_sent,
-        inbound=True,
+        inbound=inbound,
+        automatic=automatic,
+        stats=PeerStats(),
+        tx_announce_queue=[],
+        download_queue=[],
+        feefilter=0,
     )
 
 
@@ -186,13 +201,24 @@ def a_node(
     accept: Any = None,
     pending: dict[int, Any] | None = None,
     min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
+    *,
+    heights: dict[bytes, int] | None = None,
 ) -> Any:
     """Build a `Node` double carrying only what these callbacks read.
 
-    A peer table, a mempool, and the configured minimum relay feerate --
+    A peer table, a mempool, the configured minimum relay feerate, and a
+    block index answering the height of each hash in `heights` --
     nothing else these tests' own callbacks look at.
     """
+    known = heights if heights is not None else {}
     return SimpleNamespace(
+        chainstate=SimpleNamespace(
+            block_index=SimpleNamespace(
+                get_block_info=lambda block_hash: SimpleNamespace(
+                    index=known[block_hash]
+                )
+            )
+        ),
         p2p_manager=SimpleNamespace(
             connections=peers if peers is not None else {},
             pending_connections=pending if pending is not None else {},
@@ -255,12 +281,12 @@ def test_a_v6_peer_is_named_with_the_brackets_core_writes() -> None:
     last colon reads one of the two wrong.
     """
     node = a_node(
-        {7: a_peer(peer="2001:db8::1", bind="2001:db8::2", local="2001:db8::3")}
+        {7: a_peer(peer="2001:db8::1", bind="2001:db8::2", local="2a01:4f8::3")}
     )
     (info,) = get_peer_info(node, _CONN, [])
     assert info["addr"] == "[2001:db8::1]:8333"
     assert info["addrbind"] == "[2001:db8::2]:18444"
-    assert info["addrlocal"] == "[2001:db8::3]:8333"
+    assert info["addrlocal"] == "[2a01:4f8::3]:8333"
 
 
 def test_the_services_are_named_the_way_core_names_them() -> None:
@@ -340,14 +366,190 @@ def test_a_ping_sent_after_now_reports_no_wait() -> None:
     assert "pingwait" not in info
 
 
-def test_a_peer_still_handshaking_is_not_in_the_table() -> None:
-    """`getpeerinfo` leaves out a connection short of `verack`.
+def test_a_peer_still_handshaking_is_in_the_table_in_id_order() -> None:
+    """`getpeerinfo` lists a connection short of `verack`, as Core does.
 
-    Such a connection carries no version message yet for the answer's
-    fields to read.
+    Pending and handshake-complete connections are one table, ordered by
+    connection id as Core's `m_nodes` is by when each was opened.
     """
-    node = a_node({7: a_peer(P2pConnStatus.Open)})
-    assert get_peer_info(node, _CONN, []) == []
+    node = a_node(
+        {5: a_peer(), 9: a_peer()},
+        pending={7: a_peer(P2pConnStatus.Open), 3: a_peer(P2pConnStatus.Open)},
+    )
+    assert [info["id"] for info in get_peer_info(node, _CONN, [])] == [3, 5, 7, 9]
+
+
+def test_a_peer_before_its_version_answers_core_s_defaults() -> None:
+    """Before `version`: no `addrlocal`, zero services and version, no relay."""
+    node = a_node(pending={7: a_peer(P2pConnStatus.Open, versioned=False)})
+    (info,) = get_peer_info(node, _CONN, [])
+    assert "addrlocal" not in info
+    assert info["services"] == "0000000000000000"
+    assert info["servicesnames"] == []
+    assert info["version"] == 0
+    assert info["subver"] == ""
+    assert info["relaytxes"] is False
+    assert info["last_inv_sequence"] == 0
+    assert info["timeoffset"] == 0
+    assert info["addr_relay_enabled"] is False
+
+
+@pytest.mark.parametrize(
+    ("peer", "network"),
+    [
+        ("1.2.3.4", "ipv4"),
+        ("127.0.0.1", "not_publicly_routable"),
+        ("10.0.0.1", "not_publicly_routable"),
+        ("::1", "not_publicly_routable"),
+        ("2a01:4f8::1", "ipv6"),
+        # 6to4, which carries an IPv4 address
+        ("2002:102:304::1", "ipv4"),
+        ("fd6b:88c0:8724::1", "internal"),
+    ],
+)
+def test_the_network_is_core_s_net_class(peer: str, network: str) -> None:
+    """`network` is `GetNetClass` of the peer, not the BIP155 id it came by."""
+    (info,) = get_peer_info(a_node({7: a_peer(peer=peer)}), _CONN, [])
+    assert info["network"] == network
+
+
+# addresses a peer names, none of them bound to
+@pytest.mark.parametrize(
+    "local",
+    ["::", "0.0.0.0", "255.255.255.255", "2001:db8::1"],  # noqa: S104
+)
+def test_an_invalid_local_address_leaves_addrlocal_out(local: str) -> None:
+    """Core pushes `addrlocal` only where the peer named a valid address."""
+    (info,) = get_peer_info(a_node({7: a_peer(local=local)}), _CONN, [])
+    assert "addrlocal" not in info
+
+
+def test_a_loopback_local_address_is_kept() -> None:
+    """A loopback address is valid, only not routable, and is answered."""
+    (info,) = get_peer_info(a_node({7: a_peer(local="127.0.0.1")}), _CONN, [])
+    assert info["addrlocal"] == "127.0.0.1:8333"
+
+
+def test_every_key_core_pushes_for_every_peer_is_answered() -> None:
+    """The unconditional keys of Core's `getpeerinfo`, in Core's order.
+
+    Less `synced_headers`, `synced_blocks` and `addr_processed`, which
+    this node keeps nothing to answer with. `addrlocal` and the ping
+    fields follow here where Core pushes them.
+    """
+    peer = a_peer(latency=0, min_ping_time=math.inf)
+    (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
+    assert list(info) == [
+        "id",
+        "addr",
+        "addrbind",
+        "addrlocal",
+        "network",
+        "services",
+        "servicesnames",
+        "relaytxes",
+        "last_inv_sequence",
+        "inv_to_send",
+        "lastsend",
+        "lastrecv",
+        "last_transaction",
+        "last_block",
+        "bytessent",
+        "bytesrecv",
+        "conntime",
+        "timeoffset",
+        "version",
+        "subver",
+        "inbound",
+        "bip152_hb_to",
+        "bip152_hb_from",
+        "presynced_headers",
+        "inflight",
+        "addr_relay_enabled",
+        "addr_rate_limited",
+        "permissions",
+        "minfeefilter",
+        "bytessent_per_msg",
+        "bytesrecv_per_msg",
+        "connection_type",
+        "transport_protocol_type",
+        "session_id",
+    ]
+
+
+def test_the_fields_this_node_keeps_state_for_read_that_state() -> None:
+    """Relay, traffic, clock and block download fields come off the peer."""
+    peer = a_peer()
+    peer.stats = PeerStats(
+        time_offset=-3,
+        last_inv_sequence=42,
+        bytes_sent=100,
+        bytes_recv=200,
+        bytes_sent_per_msg=Counter({"version": 60, "ping": 40}),
+        bytes_recv_per_msg=Counter({"verack": 24, "*other*": 176}),
+    )
+    peer.tx_announce_queue = [b"\x01" * 32, b"\x02" * 32]
+    peer.download_queue = [b"\x0b" * 32, b"\x0a" * 32]
+    peer.feefilter = 1234
+    node = a_node({7: peer}, heights={b"\x0a" * 32: 10, b"\x0b" * 32: 11})
+    (info,) = get_peer_info(node, _CONN, [])
+    assert info["relaytxes"] is True
+    assert info["last_inv_sequence"] == 42
+    assert info["inv_to_send"] == 2
+    assert info["bytessent"] == 100
+    assert info["bytesrecv"] == 200
+    assert info["timeoffset"] == -3
+    # in the order they were asked for
+    assert info["inflight"] == [11, 10]
+    assert info["addr_relay_enabled"] is True
+    assert info["minfeefilter"].text == "0.00001234"
+    # in key order, as Core's `std::map` iterates
+    assert list(info["bytessent_per_msg"].items()) == [("ping", 40), ("version", 60)]
+    assert list(info["bytesrecv_per_msg"].items()) == [("*other*", 176), ("verack", 24)]
+
+
+def test_a_peer_that_asked_for_no_relay_has_no_tx_relay() -> None:
+    """Core's `TxRelay`-backed fields answer 0 and false for such a peer."""
+    peer = a_peer(relay=False)
+    peer.stats = PeerStats(last_inv_sequence=42)
+    peer.tx_announce_queue = [b"\x01" * 32]
+    peer.feefilter = 1234
+    (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
+    assert info["relaytxes"] is False
+    assert info["last_inv_sequence"] == 0
+    assert info["inv_to_send"] == 0
+    assert info["minfeefilter"].text == "0.00000000"
+
+
+@pytest.mark.parametrize(
+    ("inbound", "automatic", "connection_type"),
+    [
+        (True, False, "inbound"),
+        (False, True, "outbound-full-relay"),
+        (False, False, "manual"),
+    ],
+)
+def test_the_connection_type_is_core_s(
+    inbound: bool,  # noqa: FBT001
+    automatic: bool,  # noqa: FBT001
+    connection_type: str,
+) -> None:
+    """Inbound, drawn by this node, or named by an operator."""
+    peer = a_peer(inbound=inbound, automatic=automatic)
+    (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
+    assert info["connection_type"] == connection_type
+
+
+def test_the_fields_this_node_has_no_state_for_answer_core_s_value() -> None:
+    """No compact blocks, presync, permissions, rate limit or BIP324 here."""
+    (info,) = get_peer_info(a_node({7: a_peer()}), _CONN, [])
+    assert info["bip152_hb_to"] is False
+    assert info["bip152_hb_from"] is False
+    assert info["presynced_headers"] == -1
+    assert info["addr_rate_limited"] == 0
+    assert info["permissions"] == []
+    assert info["transport_protocol_type"] == "v1"
+    assert info["session_id"] == ""
 
 
 def test_a_peer_that_goes_away_mid_lookup_is_skipped() -> None:
@@ -364,11 +566,12 @@ def test_a_peer_that_goes_away_mid_lookup_is_skipped() -> None:
 def test_a_connection_removed_mid_loop_does_not_raise() -> None:
     """`getpeerinfo` does not raise when a connection is removed mid-loop.
 
-    `get_peer_info` reads `connections.copy()`, so a connection
-    `remove_connection` pops mid-loop -- it runs on `P2pManager`'s own
-    loop, this on `Node`'s, every pass of `manage_connections` -- does
-    not raise `RuntimeError: dictionary changed size during iteration`
-    out of a live dict's iterator noticing the pop instead. (issue #356)
+    `get_peer_info` loops over a list it built before starting, so a
+    connection `remove_connection` pops mid-loop -- it runs on
+    `P2pManager`'s own loop, this on `Node`'s, every pass of
+    `manage_connections` -- does not raise `RuntimeError: dictionary
+    changed size during iteration` out of a live dict's iterator
+    noticing the pop instead. (issue #356)
     """
     connections: dict[int, Any] = {}
 
@@ -379,8 +582,8 @@ def test_a_connection_removed_mid_loop_does_not_raise() -> None:
         `remove_connection` reaches in: the pop happens as a side
         effect of evaluating peer 7's status, between the iterator's
         own `next()` for peer 7 and its `next()` for peer 8 -- mid-loop
-        on a live dict, and not reachable at all once the fix's
-        `.copy()` hands the loop its own dict to iterate instead.
+        on a live dict, and not reachable at all from a loop over a list
+        built before it started.
         """
 
         @override
@@ -398,9 +601,9 @@ def test_a_connection_removed_mid_loop_does_not_raise() -> None:
     connections[8] = a_peer()
     node = a_node(connections)
     # peer 8 is popped from the live `connections` above, not from the
-    # copy this call iterates -- so the copy still answers for it,
-    # unaffected by a pop reaching the dict it was taken from
-    assert [info["id"] for info in get_peer_info(node, _CONN, [])] == [8]
+    # list this call iterates -- so the list still answers for it,
+    # unaffected by a pop reaching the dict it was built from
+    assert [info["id"] for info in get_peer_info(node, _CONN, [])] == [7, 8]
 
 
 def test_the_connection_count_is_every_connection() -> None:

@@ -34,14 +34,13 @@ from btclib_node.main import (
     verify_mempool_acceptance,
 )
 from btclib_node.p2p.address import ip_and_port, peer_address
+from btclib_node.p2p.eviction import Network, is_valid, net_class
 from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import RpcError, bool_param, type_error
 
 if TYPE_CHECKING:
-    from btclib.p2p.addrv2 import BIP155Network
-    from btclib.p2p.handshake import Version
-
     from btclib_node import Node
+    from btclib_node.p2p.connection import Connection
     from btclib_node.rpc.connection import RpcConnection
 
 __all__ = [
@@ -700,116 +699,191 @@ def service_names(services: int) -> list[str]:
     return names
 
 
+def _network_name(network: Network) -> str:
+    """Core's `GetNetworkName`, which names `NET_UNROUTABLE` apart."""
+    if network is Network.UNROUTABLE:
+        return "not_publicly_routable"
+    return network.name.lower()
+
+
+def _connection_type(p2p_conn: Connection) -> str:
+    """Core's `ConnectionTypeAsString` for the three types this node opens.
+
+    An outbound connection `P2pManager` did not draw itself is a
+    `-connect`, `-addnode` or `addnode` peer, Core's `MANUAL`.
+    """
+    if p2p_conn.inbound:
+        return "inbound"
+    return "outbound-full-relay" if p2p_conn.automatic else "manual"
+
+
+def _peer_entry(
+    node: Node, connection_id: int, p2p_conn: Connection, addr: str, addrbind: str
+) -> dict[str, Any]:
+    """Build one `getpeerinfo` entry, in the order Core pushes its keys.
+
+    A connection whose `version` has not arrived answers what Core's
+    `CNode` and `Peer` hold before theirs: no `addrlocal`, services and
+    version 0, an empty `subver`, and no transaction relay.
+    """
+    version_message = p2p_conn.version_message
+    # Core's `TxRelay` exists only once the peer's `version` asked for
+    # relay, this node offering no `NODE_BLOOM`, and the fields read off
+    # it answer 0 or false where it does not.
+    relays = version_message is not None and version_message.is_relay_requested
+    services = 0 if version_message is None else version_message.services
+
+    entry: dict[str, Any] = {"id": connection_id, "addr": addr, "addrbind": addrbind}
+    # `CopyStats` leaves addrlocal empty unless the address the peer
+    # named for this node `IsValid`, and `getpeerinfo` then leaves the
+    # key out. Core itself sends the unspecified address where the one
+    # it reaches this node at is not routable (`PushNodeVersion`).
+    if version_message is not None and is_valid(version_message.addr_recv.ip):
+        addr_recv = version_message.addr_recv
+        entry["addrlocal"] = ip_and_port(str(addr_recv.ip), addr_recv.port)
+    # `ConnectedThroughNetwork`, which is `GetNetClass` of the peer's
+    # address, this node having no Tor listener to take an onion
+    # inbound on.
+    entry["network"] = _network_name(net_class(p2p_conn.address))
+    entry["services"] = f"{services:016x}"
+    entry["servicesnames"] = service_names(services)
+    entry["relaytxes"] = relays
+    entry["last_inv_sequence"] = p2p_conn.stats.last_inv_sequence if relays else 0
+    entry["inv_to_send"] = len(p2p_conn.tx_announce_queue) if relays else 0
+    # Whole seconds, pushed unconditionally, and the ping fields in
+    # fractional seconds, each only once it holds a value.
+    # `last_block` and `last_transaction` are the last novel block and
+    # transaction, `0` until one arrives. `last_block_timestamp` is not
+    # the field: `callbacks.block` refreshes it for every `block`, novel
+    # or not, for the download stall check.
+    entry["lastsend"] = int(p2p_conn.last_send)
+    entry["lastrecv"] = int(p2p_conn.last_receive)
+    entry["last_transaction"] = p2p_conn.last_novel_tx_time
+    entry["last_block"] = p2p_conn.last_novel_block_time
+    entry["bytessent"] = p2p_conn.stats.bytes_sent
+    entry["bytesrecv"] = p2p_conn.stats.bytes_recv
+    entry["conntime"] = p2p_conn.connected_time
+    entry["timeoffset"] = p2p_conn.stats.time_offset
+    if p2p_conn.latency > 0:
+        entry["pingtime"] = p2p_conn.latency
+    if p2p_conn.min_ping_time < math.inf:
+        entry["minping"] = p2p_conn.min_ping_time
+    # Nonzero exactly while a ping is outstanding, which is what Core's
+    # own test of `m_ping_nonce_sent` asks.
+    ping_sent = p2p_conn.ping_sent
+    if ping_sent:
+        ping_wait = time.time() - ping_sent
+        if ping_wait > 0:
+            entry["pingwait"] = ping_wait
+    entry["version"] = 0 if version_message is None else version_message.version
+    # `connect_nodes` (`test_framework.py:568-594`, at
+    # bitcoin/bitcoin@bb529657) matches this against the peer's own
+    # `getnetworkinfo`-reported `subversion` to find its own connection
+    # in the other side's peer list. Core sanitizes the wire bytes
+    # through `SanitizeString` before calling this `cleanSubVer`; this
+    # node's own user agent is always plain ASCII by construction
+    # (`p2p.connection`'s `_USER_AGENT`), so a plain decode already
+    # answers what a peer actually announced, unfiltered rather than
+    # dropped through a character-class Core built for an arbitrary
+    # peer's own claim.
+    entry["subver"] = (
+        ""
+        if version_message is None
+        else version_message.user_agent.decode("ascii", errors="replace")
+    )
+    entry["inbound"] = p2p_conn.inbound
+    # This node sends `sendcmpct` announcing low bandwidth and reads no
+    # `sendcmpct` a peer sends, so it neither selects nor takes up a
+    # high-bandwidth peer: false both ways, what Core answers where it
+    # sent none and where it ignored a `sendcmpct` of a version it does
+    # not speak.
+    entry["bip152_hb_to"] = False
+    entry["bip152_hb_from"] = False
+    # -1, Core's answer where no low-work headers presync runs, which
+    # this node never runs.
+    entry["presynced_headers"] = -1
+    # `synced_headers`, `synced_blocks` and `addr_processed` are not
+    # answered: this node keeps no per-peer best known header nor last
+    # common block, `best_known_height` being seeded off the peer's own
+    # `version` claim, and counts no addresses processed per peer.
+    block_index = node.chainstate.block_index
+    entry["inflight"] = [
+        block_index.get_block_info(block_hash).index
+        for block_hash in p2p_conn.download_queue
+    ]
+    # Every handshake-complete peer is asked `getaddr` and has its `addr`
+    # stored; this node limits no peer's address rate.
+    entry["addr_relay_enabled"] = p2p_conn.status == P2pConnStatus.Connected
+    entry["addr_rate_limited"] = 0
+    # No `-whitelist`/`-whitebind`: no peer holds a permission.
+    entry["permissions"] = []
+    entry["minfeefilter"] = _btc_amount(p2p_conn.feefilter if relays else 0)
+    # Core's tables are `std::map`s, iterated in key order, and push
+    # only a type with bytes counted.
+    entry["bytessent_per_msg"] = dict(
+        sorted(p2p_conn.stats.bytes_sent_per_msg.copy().items())
+    )
+    entry["bytesrecv_per_msg"] = dict(
+        sorted(p2p_conn.stats.bytes_recv_per_msg.copy().items())
+    )
+    entry["connection_type"] = _connection_type(p2p_conn)
+    # No BIP324: every connection is v1, which has no session id.
+    entry["transport_protocol_type"] = "v1"
+    entry["session_id"] = ""
+    return entry
+
+
 def get_peer_info(
     node: Node, conn: RpcConnection, _: list[Any]
 ) -> list[dict[str, Any]]:
-    """Answer `getpeerinfo`, one entry per handshake-complete peer.
+    """Answer `getpeerinfo`, one entry per connection, in id order.
 
-    A pending connection -- accepted or dialled but short of `verack` --
-    is left out: it carries no `version_message` yet for the fields
-    below to read. Each field matches one `getpeerinfo` answers with its
-    own `CNode::CopyStats` (`src/net.cpp`, at bitcoin/bitcoin@58a7869f86),
-    cited beside where it is built.
+    A connection still short of `verack` is listed too, as Core lists
+    every node `CConnman::GetNodeStats` returns. Each field matches one
+    `getpeerinfo` pushes (`src/rpc/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag), argued in `_peer_entry` beside where it is built.
     """
+    manager = node.p2p_manager
+    # The table is built whole, and sorted into a list, before the loop
+    # starts: this runs on `Node`'s own loop, under `handle_rpc`, while
+    # `P2pManager.remove_connection` and `create_connection` change both
+    # dicts on the manager's own loop, and a loop over a live dict is
+    # `RuntimeError: dictionary changed size during iteration` the moment
+    # one of them does. btclib-org/btclib-node#356
+    #
+    # `promote_connection` runs on this same thread, under
+    # `handle_p2p_handshake`, so no connection moves between the two
+    # dicts while they are read. Only a removal or a new connection can
+    # land between the two reads: a removed peer is answered as it was or
+    # skipped at `getpeername` below, Core's own case of a peer
+    # disconnected between `GetNodeStats` and `GetNodeStateStats`.
+    peers = {**manager.pending_connections, **manager.connections}
     out: list[dict[str, Any]] = []
-    # `.copy()`, not the live dict: this runs on `Node`'s own loop,
-    # under `handle_rpc`, while `P2pManager.remove_connection` pops
-    # from this same dict on the manager's own loop, off
-    # `_prune_stale_connections`, every pass of `manage_connections` --
-    # a pop mid-iteration here is `RuntimeError: dictionary changed
-    # size during iteration`, the same failure mode every other
-    # iteration of `connections` in the tree already snapshots against.
-    # btclib-org/btclib-node#356
-    for connection_id, p2p_conn in node.p2p_manager.connections.copy().items():
-        if p2p_conn.status == P2pConnStatus.Connected:
-            try:
-                addr = p2p_conn.client.getpeername()
-                addrbind = p2p_conn.client.getsockname()
-            # A peer disconnecting mid-lookup is not worth logging a
-            # second time; its own connection state already reports it.
-            # Deliberately blind (BLE001) alongside S112: a disconnect
-            # racing this call can surface as more than one socket
-            # error depending on timing and platform, and every one of
-            # them means the same "skip this peer, ask the next".
-            except Exception:  # noqa: S112, BLE001
-                continue
-
-            # status Connected is only reached after callbacks.verack,
-            # which refuses to advance without a version already parsed;
-            # cast rather than checked, since nothing here can repair a
-            # connection that reached Connected without one
-            version_message = cast("Version", p2p_conn.version_message)
-            services = version_message.services
-            addr_recv = version_message.addr_recv
-
-            conn_dict: dict[str, Any] = {}
-            conn_dict["id"] = connection_id
-            # Core writes addrbind with `CService::ToStringAddrPort`,
-            # and addrlocal from the string `CopyStats` builds with it;
-            # its addr is `m_addr_name`, which is that same string only
-            # where the peer was not dialled by name. Here addr is
-            # `getpeername`'s and never a name, so one formatter serves
-            # them all.
-            conn_dict["addr"] = ip_and_port(addr[0], addr[1])
-            conn_dict["addrbind"] = ip_and_port(addrbind[0], addrbind[1])
-            conn_dict["addrlocal"] = ip_and_port(str(addr_recv.ip), addr_recv.port)
-            # `.name` and not a lookup that tolerates a bare int: a
-            # BIP155 id no member names reaches PeerDB but cannot reach
-            # a Connection, `peer_address` building only the two IP
-            # networks and `dial` refusing every id outside those two
-            # -- it opens an `AF_INET` socket for one and an `AF_INET6`
-            # socket for the other. An
-            # address of a network this node learns to speak has to
-            # come through here, which is where that is noticed. Cast
-            # rather than asserted: a test double stands in for the
-            # enum member here without being one.
-            network_id = cast("BIP155Network", p2p_conn.address.network_id)
-            conn_dict["network"] = network_id.name.lower()
-            # Whole seconds, pushed unconditionally, and the ping fields
-            # in fractional seconds, each only once it holds a value, as
-            # `getpeerinfo` pushes them (`src/rpc/net.cpp`, at
-            # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `last_block` and
-            # `last_transaction` are the last novel block and transaction,
-            # `0` until one arrives. `last_block_timestamp` is not the
-            # field: `callbacks.block` refreshes it for every `block`,
-            # novel or not, for the download stall check.
-            conn_dict["lastsend"] = int(p2p_conn.last_send)
-            conn_dict["lastrecv"] = int(p2p_conn.last_receive)
-            conn_dict["last_transaction"] = p2p_conn.last_novel_tx_time
-            conn_dict["last_block"] = p2p_conn.last_novel_block_time
-            conn_dict["conntime"] = p2p_conn.connected_time
-            if p2p_conn.latency > 0:
-                conn_dict["pingtime"] = p2p_conn.latency
-            if p2p_conn.min_ping_time < math.inf:
-                conn_dict["minping"] = p2p_conn.min_ping_time
-            # Nonzero exactly while a ping is outstanding, which is what
-            # Core's own test of `m_ping_nonce_sent` asks.
-            ping_sent = p2p_conn.ping_sent
-            if ping_sent:
-                ping_wait = time.time() - ping_sent
-                if ping_wait > 0:
-                    conn_dict["pingwait"] = ping_wait
-            conn_dict["version"] = version_message.version
-            # `connect_nodes` (`test_framework.py:568-594`, at
-            # bitcoin/bitcoin@bb529657) matches this against the peer's
-            # own `getnetworkinfo`-reported `subversion` to find its own
-            # connection in the other side's peer list. Core sanitizes
-            # the wire bytes through `SanitizeString` before calling this
-            # `cleanSubVer`; this node's own user agent is always plain
-            # ASCII by construction (`p2p.connection`'s `_USER_AGENT`),
-            # so a plain decode already answers what a peer actually
-            # announced, unfiltered rather than dropped through a
-            # character-class Core built for an arbitrary peer's own
-            # claim.
-            conn_dict["subver"] = version_message.user_agent.decode(
-                "ascii", errors="replace"
-            )
-            conn_dict["services"] = f"{services:016x}"
-            conn_dict["servicesnames"] = service_names(services)
-            conn_dict["inbound"] = p2p_conn.inbound
-
-            out.append(conn_dict)
-
+    for connection_id, p2p_conn in sorted(peers.items()):
+        try:
+            addr = p2p_conn.client.getpeername()
+            addrbind = p2p_conn.client.getsockname()
+        # A peer disconnecting mid-lookup is not worth logging a
+        # second time; its own connection state already reports it.
+        # Deliberately blind (BLE001) alongside S112: a disconnect
+        # racing this call can surface as more than one socket
+        # error depending on timing and platform, and every one of
+        # them means the same "skip this peer, ask the next".
+        except Exception:  # noqa: S112, BLE001
+            continue
+        # Core writes addrbind with `CService::ToStringAddrPort`, and
+        # addrlocal from the string `CopyStats` builds with it; its addr
+        # is `m_addr_name`, which is that same string only where the peer
+        # was not dialled by name. Here addr is `getpeername`'s and never
+        # a name, so one formatter serves them all.
+        entry = _peer_entry(
+            node,
+            connection_id,
+            p2p_conn,
+            ip_and_port(addr[0], addr[1]),
+            ip_and_port(addrbind[0], addrbind[1]),
+        )
+        out.append(entry)
     return out
 
 

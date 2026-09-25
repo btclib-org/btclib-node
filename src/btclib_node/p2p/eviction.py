@@ -37,6 +37,7 @@ __all__ = [
     "EvictionCandidate",
     "Network",
     "is_local",
+    "is_valid",
     "keyed_net_group",
     "net_class",
     "net_group",
@@ -241,10 +242,16 @@ type _IP = IPv4Address | IPv6Address
 
 # `CNetAddr::IsLocal`
 _LOCAL = (IPv4Network("127.0.0.0/8"), IPv4Network("0.0.0.0/8"), IPv6Network("::1/128"))
-# What `CNetAddr::IsValid` and `CNetAddr::IsRoutable` refuse, beside the
-# local addresses above
-_UNROUTABLE = (
+# What `CNetAddr::IsValid` refuses of an IP address, `NET_INTERNAL` aside
+_INVALID = (
+    IPv4Network("0.0.0.0/32"),  # INADDR_ANY
     IPv4Network("255.255.255.255/32"),  # INADDR_NONE
+    IPv6Network("::/128"),  # unspecified
+    IPv6Network("2001:db8::/32"),  # RFC3849
+)
+# What `CNetAddr::IsRoutable` refuses, beside the local and the invalid
+# addresses above
+_UNROUTABLE = (
     IPv4Network("10.0.0.0/8"),  # RFC1918
     IPv4Network("172.16.0.0/12"),  # RFC1918
     IPv4Network("192.168.0.0/16"),  # RFC1918
@@ -254,8 +261,6 @@ _UNROUTABLE = (
     IPv4Network("192.0.2.0/24"),  # RFC5737
     IPv4Network("198.51.100.0/24"),  # RFC5737
     IPv4Network("203.0.113.0/24"),  # RFC5737
-    IPv6Network("::/128"),  # unspecified
-    IPv6Network("2001:db8::/32"),  # RFC3849
     IPv6Network("fe80::/64"),  # RFC4862
     IPv6Network("fc00::/7"),  # RFC4193
     IPv6Network("2001:10::/28"),  # RFC4843
@@ -270,6 +275,9 @@ _HE_NET = IPv6Network("2001:470::/32")
 # `INTERNAL_IN_IPV6_PREFIX`: `SetLegacyIPv6` parses an IPv6 address under
 # it as `NET_INTERNAL`, whatever the peer meant by it
 _INTERNAL = IPv6Network("fd6b:88c0:8724::/48")
+# `TORV2_IN_IPV6_PREFIX`: `SetLegacyIPv6` reads an IPv6 address under it
+# as the unspecified address
+_TORV2 = IPv6Network("fd87:d87e:eb43::/48")
 
 
 def _ip(address: NetworkAddressV2) -> _IP:
@@ -285,7 +293,7 @@ def _ip(address: NetworkAddressV2) -> _IP:
 
 def _is_routable(ip: _IP) -> bool:
     """`CNetAddr::IsRoutable`, `IsValid` included, for IPv4 and IPv6."""
-    return not any(ip in net for net in (*_LOCAL, *_UNROUTABLE))
+    return not any(ip in net for net in (*_LOCAL, *_INVALID, *_UNROUTABLE))
 
 
 def _linked_ipv4(ip: _IP) -> IPv4Address | None:
@@ -304,6 +312,20 @@ def _linked_ipv4(ip: _IP) -> IPv4Address | None:
     if ip in _TEREDO:
         return IPv4Address(bytes(b ^ 0xFF for b in packed[12:]))
     return None
+
+
+def is_valid(ip: IPv6Address) -> bool:
+    """Core's `CNetAddr::IsValid` of the sixteen octets of an `addr` v1 field.
+
+    What `CNetAddr::V1` deserializes, through `SetLegacyIPv6`: a mapped
+    IPv4 address read as IPv4, one under the internal prefix as
+    `NET_INTERNAL`, which is invalid, and one under the Tor v2 prefix as
+    the unspecified address, which is invalid too.
+    """
+    if ip in _INTERNAL or ip in _TORV2:
+        return False
+    legacy = ip.ipv4_mapped or ip
+    return not any(legacy in net for net in _INVALID)
 
 
 def is_local(address: NetworkAddressV2) -> bool:

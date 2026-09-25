@@ -13,6 +13,7 @@ runs each case under one fixed seed; these run under several.
 
 import dataclasses
 import random
+from ipaddress import IPv6Address
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -23,6 +24,7 @@ from btclib_node.p2p.eviction import (
     EvictionCandidate,
     Network,
     is_local,
+    is_valid,
     keyed_net_group,
     net_class,
     net_group,
@@ -524,6 +526,37 @@ def test_net_group(ip: str, cls: Network, group: str, local: bool) -> None:  # n
     assert net_class(address) == cls
     assert net_group(address).hex() == group
     assert is_local(address) is local
+
+
+# (the sixteen octets of an `addr` v1 field, `CNetAddr::IsValid` of them)
+VALID_CASES = [
+    ("::ffff:1.2.3.4", True),
+    # local and private addresses are valid, only not routable
+    ("::ffff:127.0.0.1", True),
+    ("::ffff:10.0.0.1", True),
+    ("::ffff:0.1.2.3", True),
+    ("::1", True),
+    ("2a01:4f8::1", True),
+    ("::ffff:0.0.0.0", False),
+    ("::ffff:255.255.255.255", False),
+    ("::", False),
+    ("2001:db8::1", False),
+    ("fd6b:88c0:8724::1", False),
+    ("fd87:d87e:eb43::1", False),
+    # beside both prefixes, and valid
+    ("fd6b:88c0:8725::1", True),
+    ("fd87:d87e:eb44::1", True),
+]
+
+
+@pytest.mark.parametrize(("ip", "valid"), VALID_CASES)
+def test_is_valid(ip: str, valid: bool) -> None:  # noqa: FBT001
+    """Neither unspecified, broadcast, documentation nor internal is valid.
+
+    What `SetLegacyIPv6` reads under the Tor v2 prefix is the
+    unspecified address, and so not valid either.
+    """
+    assert is_valid(IPv6Address(ip)) is valid
 
 
 def test_the_keyed_net_group_depends_on_the_key_alone() -> None:

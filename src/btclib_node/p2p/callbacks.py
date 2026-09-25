@@ -253,6 +253,9 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     # because an absent flag means true, which is BIP37's default and
     # Core's.
     conn.relay_tx = version_msg.is_relay_requested
+    # where Core's `ProcessMessage` sets `m_time_offset`, once every
+    # refusal above is behind it
+    conn.stats.time_offset = version_msg.timestamp - int(time.time())
 
 
 def verack(node: Node, msg: bytes, conn: Connection) -> None:

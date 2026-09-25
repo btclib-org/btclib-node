@@ -33,6 +33,7 @@ from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.callbacks import MAX_GETDATA_INFLIGHT_BYTES
+from btclib_node.p2p.connection import PeerStats
 from tests import generate_random_transaction
 
 if TYPE_CHECKING:
@@ -81,6 +82,7 @@ def a_conn(
         stop=lambda: None,
         tx_announce_queue=[],
         next_inv_send_time=0.0,
+        stats=PeerStats(),
         tx_requested={},
         status=status,
         feefilter_sent=feefilter_sent,
@@ -367,6 +369,21 @@ def test_a_queue_past_max_inv_sz_is_sent_as_several_invs() -> None:
     assert len(second.items) == 1
     assert hashes_of(second) == [a_hash(MAX_INV_SZ)]
     assert other.tx_announce_queue == []
+
+
+def test_a_trickle_records_the_mempool_s_sequence_announcing_or_not() -> None:
+    """A trickle due records `Mempool.sequence`, one not yet due does not."""
+    due, idle, waiting = a_conn(1), a_conn(2), a_conn(3)
+    manager = make_manager([due, idle, waiting])
+    due.tx_announce_queue = [a_hash(1)]
+    hold(manager, a_hash(1))
+    waiting.next_inv_send_time = time.time() + 3600
+    cast("Any", manager.node).mempool.sequence = 42
+    manager._send_due_announcements()
+    assert due.stats.last_inv_sequence == 42
+    assert idle.stats.last_inv_sequence == 42
+    # 1, what a connection starts at
+    assert waiting.stats.last_inv_sequence == 1
 
 
 def test_a_queue_at_exactly_max_inv_sz_is_sent_as_one_inv() -> None:
