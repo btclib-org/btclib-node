@@ -37,9 +37,10 @@ operator who wants console output can read it from there, and
 `scripts/chains/`'s three deleted files are what used to make that
 choice for a caller who ran them directly instead), and `allow_p2p`/
 `allow_rpc` (both listeners are always requested, matching every
-`Config()` call this module makes; there is no flag equivalent to
-`allow_rpc=False` here because Core has none either -- the RPC server
-not starting is a consequence of a bind failure, not a flag).
+`Config()` call this module makes, as `bitcoind` soft-sets Core's
+`-server` on; Core's `-server=0` has no flag here (issue #1112). An RPC
+listener that cannot start stops the node, `main` below exiting `1`, as
+Core's init aborts).
 
 `-blocksdir=<dir>` names the base `BlockDB` (`block_db/__init__.py`)
 writes its own files under, Core's own "default: <datadir>" applying
@@ -154,8 +155,12 @@ ignored -- Core's own default (`ReadConfigFiles(error,
 /*ignore_invalid_keys=*/true)`, called this way from `bitcoin.cpp`,
 `common/init.cpp` and `bitcoin-cli.cpp` alike, same sha) rather than
 the fatal alternative that flag also allows. An unrecognised key on the
-command line is refused by `argparse` itself, the same way Core refuses
-one there too ("Invalid parameter %s").
+command line is refused by `argparse` itself, which prints
+`btclib-node: error: ...` and exits 2. Core refuses one too, but as an
+`InitError`: "Error: Error parsing command line arguments: Invalid
+parameter %s" and exit 1 (`src/common/args.cpp:236` and
+`src/bitcoind.cpp:118-119`, at bitcoin/bitcoin@9be056a8a7), a divergence
+that is issue #1116.
 """
 
 import argparse
@@ -771,19 +776,24 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
 def main(argv: Sequence[str] | None = None) -> None:
     """Build a `Config` from the command line and `bitcoin.conf`, and run it.
 
-    `Node` is a non-daemon thread (`__init__.py`'s own module
-    docstring): once `node.start()` returns, this function itself has
-    nothing left to do, and the interpreter stays up on that thread
-    alone until a signal `install_signal_handlers` below caught stops
-    it -- the same shape `scripts/chains/`'s three now-deleted files
-    had, moved here.
+    Waits on the node's thread until a signal `install_signal_handlers`
+    below caught, or the `stop` RPC, stops it. A `build_config` refusal,
+    or a node whose start-up failed and ended with `Node.init_error`
+    set, is printed as `Error: <message>` and the exit status is `1`:
+    Core's `InitError` reaches stderr through `noui_ThreadSafeMessageBox`
+    with that caption (`src/noui.cpp:22-46`, at bitcoin/bitcoin@9be056a8a7),
+    and `bitcoind` exits `EXIT_FAILURE`.
     """
     try:
         config = build_config(argv)
     except ValueError as error:
-        sys.stderr.write(f"btclib-node: {error}\n")
+        sys.stderr.write(f"Error: {error}\n")
         raise SystemExit(1) from error
 
     node = Node(config=config)
     install_signal_handlers(node)
     node.start()
+    node.join()
+    if node.init_error is not None:
+        sys.stderr.write(f"Error: {node.init_error}\n")
+        raise SystemExit(1)

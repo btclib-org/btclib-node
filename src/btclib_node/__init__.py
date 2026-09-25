@@ -110,6 +110,11 @@ STOP_TIMEOUT = 30
 # and `wait_until_listening`, so nothing in the suite can resolve it.
 IDLE_SLEEP_SECONDS = 0.005
 
+# Core's own `InitError` where `AppInitServers` fails (`src/init.cpp:1560-1561`,
+# at bitcoin/bitcoin@9be056a8a7): what `Node.init_error` holds when the
+# JSON-RPC listener does not come up.
+RPC_INIT_ERROR = "Unable to start HTTP server. See debug log for details."
+
 
 def _default_worker_count() -> int:
     """How many workers `Node.worker_pool` spawns.
@@ -340,6 +345,10 @@ class Node(threading.Thread):
         self._worker_pool_warmup: threading.Thread | None = None
 
         self.status = NodeStatus.Starting
+        # Set by `run` where start-up fails, before its own teardown:
+        # Core's `InitError` message, which `cli.main` prints before
+        # exiting nonzero. None for a node that started, or never ran.
+        self.init_error: str | None = None
         # `main.update_ibd_status`'s own latch, read by
         # `rpc.callbacks.get_blockchain_info`: Core's own
         # `m_cached_is_ibd{true}` (`src/validation.h:1054`, at
@@ -560,7 +569,16 @@ class Node(threading.Thread):
         # this assignment has run yet, and a write racing it here can
         # put `status` back below `HeaderSynced` for good (#398).
         self.status = NodeStatus.SyncingHeaders
-        if self.p2p_port:
+        # The RPC listener first, and waited on: Core's `AppInitMain`
+        # starts its HTTP server at step 4a, before step 12 starts
+        # `connman`, and aborts where it cannot (`src/init.cpp:1558-1561`,
+        # at bitcoin/bitcoin@9be056a8a7). A node that asked for RPC and
+        # has none is not started, and its peer-to-peer side never is.
+        if self.rpc_port and not self.rpc_manager.start_listener():
+            self.init_error = RPC_INIT_ERROR
+            self.logger.error(RPC_INIT_ERROR)
+            self.terminate_flag.set()
+        elif self.p2p_port:
             self.p2p_manager.start()
             # `config.connect` and `config.addnode` together, right
             # after this manager's own loop exists to schedule onto
@@ -582,8 +600,6 @@ class Node(threading.Thread):
             # this leaves open, filed rather than solved in this branch.
             for host, port in (*self.config.connect, *self.config.addnode):
                 self.p2p_manager.connect(peer_address(host, port))
-        if self.rpc_port:
-            self.rpc_manager.start()
         while not self.terminate_flag.is_set():
             if self._drain_message_queues():
                 time.sleep(IDLE_SLEEP_SECONDS)

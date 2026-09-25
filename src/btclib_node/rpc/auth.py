@@ -126,7 +126,8 @@ class RpcAuth:
 
     `entries` is every `-rpcauth` value `Config.rpc_auth` holds, and the
     cookie's own once `generate_cookie` has run. `RpcManager.run` calls
-    that on the manager's thread before binding its listener, and every
+    that on the manager's thread after binding its listener and before
+    accepting on it, and every
     read of `entries` is a request's, on that same thread, afterwards;
     `RpcManager.stop` calls `delete_cookie` once that thread is joined.
     """

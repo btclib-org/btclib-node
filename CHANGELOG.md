@@ -184,6 +184,12 @@ no longer says Core measures on a steady clock (closes #1081).
 link `GOVERNANCE.md` and `ROADMAP.md`, the organization's own, one copy
 each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
+### A JSON-RPC listener that cannot start stops the node, as Core's does
+
+- **A taken RPC port or an unwritable cookie ends `Node` with Core's
+  `InitError`** (closes #1076); `btclib-node` exits 1 and prints it, like
+  a `build_config` refusal, after Core's `Error:`, not `btclib-node:`.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
