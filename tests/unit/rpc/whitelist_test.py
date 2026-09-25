@@ -193,6 +193,14 @@ CORE_ERRORS = [
         ),
     ),
     (
+        [{"id": 1, "method": {}}],
+        "500 Internal Server Error",
+        (
+            '{"result":null,"error":{"code":-32700,"message":"JSON value of type object '
+            'is not of expected type string"},"id":null}'
+        ),
+    ),
+    (
         [{"id": 1}],
         "500 Internal Server Error",
         (
@@ -266,6 +274,7 @@ CORE_ERROR_IDS = [
     "batch, non-object after an allowed method",
     "batch, non-object before a refused method",
     "batch, method a number",
+    "batch, method an object",
     "batch, no method",
     "method a number",
     "params a number, method refused",

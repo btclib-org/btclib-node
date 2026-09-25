@@ -30,10 +30,10 @@ class RpcError(Exception):
 
 # univalue's own names for the six JSON types, `uvTypeName` in
 # src/univalue/lib/univalue.cpp -- the vocabulary RPC_TYPE_ERROR's
-# message speaks. Keyed by `type()` rather than `isinstance`, so a bool
-# reads as "bool" and not "number": bool is int's own subclass in
-# Python, not a distinct JSON type, and `type()` is exact where
-# `isinstance` would let the subclass through.
+# message speaks. Looked up along `type(value).__mro__`, nearest class
+# first, rather than by `isinstance` in table order, so a bool reads as
+# "bool" and not "number": bool is int's own subclass in Python, and the
+# nearest class is bool itself.
 _JSON_TYPE_NAMES: dict[type, str] = {
     type(None): "null",
     bool: "bool",
@@ -48,14 +48,15 @@ _JSON_TYPE_NAMES: dict[type, str] = {
 def json_type_name(value: object) -> str:
     """Name a decoded JSON value the way Core's RPC_TYPE_ERROR names it.
 
-    `value` is always one of the six JSON types here: `connection.py`
-    decodes every request with the standard library's `json.loads`,
-    which produces no other Python type. Named that narrowly in the
-    docstring rather than in the signature: `_JSON_TYPE_NAMES` is
-    keyed on `type(value)` alone, so nothing this function does needs
-    `value` to be any narrower than `object`.
+    `value` is always a decoded JSON value here: `connection.py`
+    decodes every request with `rpc.jsonrpc.decode`, whose objects are
+    `JsonObject`, a `dict` subclass, and whose other values are the
+    types `json.loads` produces. A subclass is named by its nearest
+    class in the table.
     """
-    return _JSON_TYPE_NAMES[type(value)]
+    return next(
+        _JSON_TYPE_NAMES[cls] for cls in type(value).__mro__ if cls in _JSON_TYPE_NAMES
+    )
 
 
 def type_error(position: int, name: str, value: object, expected: str) -> RpcError:

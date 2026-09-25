@@ -7,8 +7,9 @@
 Each request is written over a raw socket to both, with each side's own
 cookie, and the two answers are held to the same status line, the same
 body and the same close: the request lines and `Content-Length` values
-libevent refuses (btclib-org/btclib-node#1086), and the legacy and 2.0
-envelopes `HTTPReq_JSONRPC` answers with (btclib-org/btclib-node#1109).
+libevent refuses (btclib-org/btclib-node#1086), the legacy and 2.0
+envelopes `HTTPReq_JSONRPC` answers with (btclib-org/btclib-node#1109),
+and an object naming a key twice (btclib-org/btclib-node#1151).
 Each request asks for `Connection: close` or is one libevent closes
 after, so each answer ends at the close.
 """
@@ -71,6 +72,16 @@ _CASES = {
         b"POST / HTTP/1.1",
         b"",
         b'[{"id":7,"method":"getblockcount"},5,{"jsonrpc":"2.0","method":"x"}]',
+    ),
+    "method-twice": (
+        b"POST / HTTP/1.1",
+        b"",
+        b'{"id":1,"method":"getblockcount","method":"nosuch"}',
+    ),
+    "id-key-twice": (
+        b"POST / HTTP/1.1",
+        b"",
+        b'{"id":{"a":1,"a":2},"method":"getblockcount"}',
     ),
 }
 
