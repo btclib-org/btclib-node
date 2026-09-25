@@ -383,6 +383,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A node's thread is joined for `STOP_TIMEOUT`, not ten seconds** (closes
   #1159), the released wedged node's included.
 
+### A `getheaders` is answered off the active chain, as in Core
+
+- **The answer follows the locator's last block on the active chain, or
+  genesis, and an empty locator asks for its stop header alone** (closes
+  #1128).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

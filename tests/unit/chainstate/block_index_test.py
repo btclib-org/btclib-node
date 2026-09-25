@@ -822,52 +822,6 @@ def test_a_locator_from_a_start_header_is_that_header_s_own_tip_locator(
     assert locators[0] == chain[-2].hash
 
 
-def test_block_locators_2(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
-    """A locator naming only the genesis returns the whole chain after it."""
-    chainstate = a_chainstate(None)
-    block_index = chainstate.block_index
-    chain = generate_random_header_chain(2000, RegTest().genesis.hash)
-    block_index.add_headers(chain)
-    headers = block_index.get_headers_from_locators(
-        [RegTest().genesis.hash], b"\x00" * 32
-    )
-    assert chain == headers
-
-
-def test_block_locators_3(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
-    """get_headers_from_locators stops at the requested `stop` hash.
-
-    Asked for what follows the genesis and to stop at the chain's own
-    1000th header, the answer ends there rather than running to the tip.
-    """
-    chainstate = a_chainstate(None)
-    block_index = chainstate.block_index
-    chain = generate_random_header_chain(2000, RegTest().genesis.hash)
-    block_index.add_headers(chain)
-    headers = block_index.get_headers_from_locators(
-        [RegTest().genesis.hash], chain[1000].hash
-    )
-    assert headers[-1] == chain[1000]
-    assert headers == chain[: 1000 + 1]
-
-
-def test_block_locators_4(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
-    """The first known locator resumes the answer, whatever order it is in.
-
-    Of the two locators offered, the chain's own unindexed tip and the
-    genesis, only the genesis is known, and the answer resumes from it
-    regardless of its position in the list.
-    """
-    chainstate = a_chainstate(None)
-    block_index = chainstate.block_index
-    chain = generate_random_header_chain(2000, RegTest().genesis.hash)
-    block_index.add_headers(chain[:1000])
-    headers = block_index.get_headers_from_locators(
-        [chain[-1].hash, RegTest().genesis.hash], b"\x00" * 32
-    )
-    assert headers == chain[:1000]
-
-
 def test_only_the_tip_can_leave_the_active_chain(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
@@ -921,35 +875,6 @@ def test_no_candidate_is_offered_when_none_outweighs_the_chain(
     for header in chain:
         block_index.add_to_active_chain(header.hash)
     assert block_index.get_first_candidate() is None
-    chainstate.close()
-
-
-def test_headers_from_a_locator_stop_where_asked(
-    a_chainstate: Callable[[Path | None], Chainstate],
-) -> None:
-    """get_headers_from_locators resumes from the first known locator.
-
-    Stopping at the fifth header of ten answers only those five; an
-    unknown locator ahead of the genesis in the list is skipped rather
-    than failing the call; and no known locator at all answers nothing.
-    """
-    chainstate = a_chainstate(None)
-    block_index = chainstate.block_index
-    chain = generate_random_header_chain(10, RegTest().genesis.hash)
-    block_index.add_headers(chain)
-
-    # from the genesis, stopping at the fifth
-    got = block_index.get_headers_from_locators([RegTest().genesis.hash], chain[4].hash)
-    assert [h.hash for h in got] == [h.hash for h in chain[:5]]
-
-    # a locator nothing knows is skipped, and the next one answers
-    got = block_index.get_headers_from_locators(
-        [b"\x11" * 32, RegTest().genesis.hash], b"\x00" * 32
-    )
-    assert [h.hash for h in got] == [h.hash for h in chain]
-
-    # no locator at all is no answer
-    assert block_index.get_headers_from_locators([b"\x11" * 32], b"\x00" * 32) == []
     chainstate.close()
 
 
@@ -1015,43 +940,6 @@ def test_a_block_already_held_is_left_out_of_what_is_asked_for(
     block_index.set_downloaded(chain[1].hash)
 
     assert block_index.get_download_candidates() == [chain[0].hash, chain[2].hash]
-    chainstate.close()
-
-
-def test_a_stop_hash_at_or_below_the_locator_is_answered_not_raised(
-    a_chainstate: Callable[[Path | None], Chainstate],
-) -> None:
-    """A known `stop` at or below the resolved locator answers, not raises.
-
-    `stop` sitting at or below the locator's own height is not in the
-    slice `get_headers_from_locators` takes *after* it, and looking for
-    `stop` in `header_index` as a whole -- rather than in that slice --
-    used to raise `ValueError` here: btclib-org/btclib-node#434. A
-    `stop` behind the locator can never be reached going forward, so it
-    does not truncate the answer at all; where the locator is already
-    the chain's own tip, that answer is empty -- Core's own "nothing to
-    send" for the same request.
-    """
-    chainstate = a_chainstate(None)
-    block_index = chainstate.block_index
-    chain = generate_random_header_chain(5, RegTest().genesis.hash)
-    block_index.add_headers(chain)
-
-    # the genesis is the measured case in the issue: known, and below
-    # every locator this chain can offer -- and the locator here is
-    # already the tip, so there is nothing to send either way
-    assert (
-        block_index.get_headers_from_locators([chain[-1].hash], RegTest().genesis.hash)
-        == []
-    )
-    # stop at the locator itself, not only strictly below it
-    assert block_index.get_headers_from_locators([chain[-1].hash], chain[-1].hash) == []
-    # stop below a locator that is not the tip: unreachable going
-    # forward, so it does not raise and does not truncate what follows
-    assert (
-        block_index.get_headers_from_locators([chain[2].hash], chain[0].hash)
-        == chain[3:]
-    )
     chainstate.close()
 
 

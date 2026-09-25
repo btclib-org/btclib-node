@@ -72,7 +72,7 @@ from btclib.p2p.limits import (
 from btclib.p2p.negotiation import FeeFilter, GetAddr, SendHeaders, WtxidRelay
 from btclib.p2p.reject import Reject, RejectCode
 
-from btclib_node.chainstate.block_index import BlockStatus
+from btclib_node.chainstate.block_index import BlockStatus, block_time, calculate_work
 from btclib_node.chainstate.filter_index import NO_PREVIOUS_FILTER_HEADER
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, NodeStatus, P2pConnStatus
 from btclib_node.exceptions import (
@@ -85,9 +85,10 @@ from btclib_node.p2p.block_availability import update_block_availability
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
 
     from btclib_node import Node
+    from btclib_node.chainstate.block_index import BlockIndex
     from btclib_node.p2p.connection import Connection
 
 __all__ = [
@@ -1300,31 +1301,141 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
         node.status = NodeStatus.HeaderSynced
 
 
-def getheaders(node: Node, msg: bytes, conn: Connection) -> None:
-    """Answer a peer's `getheaders` with what its own locator resolves to.
+# Core's `STALE_RELAY_AGE_LIMIT` (`src/net_processing.cpp`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how old, in time and in
+# proof-equivalent time, a block off the active chain may be and still
+# be served.
+_STALE_RELAY_AGE_LIMIT = 30 * 24 * 60 * 60
 
-    An empty `headers` where that is nothing, as Core's `GETHEADERS`
-    handler answers (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag): a peer waiting on the reply is told there is nothing
-    to give rather than left to time the request out. What a locator
-    resolves to is not yet Core's: btclib-org/btclib-node#1128.
+
+def _descends_from_the_tip(
+    block_index: BlockIndex, block_hash: bytes, not_descending: set[bytes]
+) -> bool:
+    """Whether the active tip is an ancestor of `block_hash`, or it.
+
+    Core's `GetAncestor` at the tip's height. Parents are walked down to
+    that height, stopping at a block `header_index` holds, whose
+    ancestor there is read off that list, and at one already in
+    `not_descending`. What a walk that fails passed through is added to
+    `not_descending`, so that the entries of one locator walk a branch
+    once between them.
+    """
+    active_chain = block_index.active_chain
+    tip_height = len(active_chain) - 1
+    header_dict = block_index.header_dict
+    header_index = block_index.header_index
+    walked: list[bytes] = []
+    current = block_hash
+    height = header_dict[current].index
+    while height > tip_height and current not in not_descending:
+        if current in block_index.header_index_pos:
+            # header_index holds `current` above the tip's height, so it
+            # reaches that height too
+            current = header_index[tip_height]
+            break
+        walked.append(current)
+        current = header_dict[current].header.previous_block_hash
+        height -= 1
+    if current == active_chain[-1]:
+        return True
+    not_descending.update(walked)
+    return False
+
+
+def _find_fork_in_global_index(node: Node, locator: Sequence[bytes]) -> bytes:
+    """Return the last block of the active chain the locator names.
+
+    Core's `Chainstate::FindForkInGlobalIndex` (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the first entry known
+    here that is on the active chain, or the active tip where the entry
+    descends from it, and genesis where no entry is either.
+    """
+    block_index = node.chainstate.block_index
+    active_chain = block_index.active_chain
+    not_descending: set[bytes] = set()
+    for block_hash in locator:
+        if _height_on_the_active_chain(node, block_hash) is not None:
+            return block_hash
+        if block_hash in block_index.header_dict and _descends_from_the_tip(
+            block_index, block_hash, not_descending
+        ):
+            return active_chain[-1]
+    return active_chain[0]
+
+
+def _block_request_allowed(node: Node, block_hash: bytes) -> bool:
+    """Whether a peer may be served `block_hash`: Core's `BlockRequestAllowed`.
+
+    A block of the active chain is; one off it is where it passed
+    validation (`BlockStatus.valid`, Core's `BLOCK_VALID_SCRIPTS`) and is
+    less than `_STALE_RELAY_AGE_LIMIT` older than the
+    best header, by its timestamp and by Core's
+    `GetBlockProofEquivalentTime`, the chain work between the two in
+    blocks of the best header's own work, each `pow_target_spacing`
+    long.
+    """
+    if _height_on_the_active_chain(node, block_hash) is not None:
+        return True
+    block_index = node.chainstate.block_index
+    block_info = block_index.get_block_info(block_hash)
+    if block_info.status != BlockStatus.valid:
+        return False
+    best_hash = block_index.header_index[-1]
+    best = block_index.get_block_info(best_hash).header
+    chainwork = block_index.chainwork
+    spacing = node.chain.consensus.pow_target_spacing
+    proof_time = (
+        (chainwork[best_hash] - chainwork[block_hash]) * spacing // calculate_work(best)
+    )
+    return (
+        block_time(best) - block_time(block_info.header) < _STALE_RELAY_AGE_LIMIT
+        and proof_time < _STALE_RELAY_AGE_LIMIT
+    )
+
+
+def getheaders(node: Node, msg: bytes, conn: Connection) -> None:
+    """Answer a peer's `getheaders` off the active chain, as Core does.
+
+    The `GETHEADERS` branch of Core's `ProcessMessage`
+    (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag). An active chain with less work than the minimum chain work is
+    answered with an empty `headers`. An empty locator asks for the
+    `hash_stop` header alone, answered only where it is known and
+    `_block_request_allowed`, and not at all otherwise. Any other
+    locator is answered with the active chain after
+    `_find_fork_in_global_index`'s block, up to `MAX_HEADERS_RESULTS`
+    headers and up to `hash_stop`: empty where that block is the tip.
+    The peer's `best_header_sent` becomes the last header sent, or the
+    tip where none is.
     """
     getheaders = GetHeaders.parse(msg)
     block_index = node.chainstate.block_index
-    headers = block_index.get_headers_from_locators(
-        getheaders.locator, getheaders.hash_stop
+    active_chain = block_index.active_chain
+    tip = active_chain[-1]
+    if block_index.chainwork[tip] < node.chain.consensus.minimum_chain_work:
+        conn.send(Headers([]))
+        return
+    stop = getheaders.hash_stop
+    if not getheaders.locator:
+        if stop not in block_index.header_dict or not _block_request_allowed(
+            node, stop
+        ):
+            return
+        to_send = [stop]
+    else:
+        fork = _find_fork_in_global_index(node, getheaders.locator)
+        start = block_index.get_block_info(fork).index + 1
+        end = start + MAX_HEADERS_RESULTS
+        stop_height = _height_on_the_active_chain(node, stop)
+        if stop_height is not None and start <= stop_height < end:
+            end = stop_height + 1
+        to_send = active_chain[start:end]
+    conn.block_availability.best_header_sent = to_send[-1] if to_send else tip
+    conn.send(
+        Headers(
+            [block_index.get_block_info(block_hash).header for block_hash in to_send]
+        )
     )
-    # Core resets `pindexBestHeaderSent` to the last header sent, or to
-    # its tip where the answer is empty because the peer already has it.
-    # This node answers off `header_index`, so an empty answer to a
-    # locator it knows means the peer has `header_index`'s own tip; one
-    # to a locator it does not know says nothing, where Core's locator
-    # always resolves, to genesis at worst.
-    if headers:
-        conn.block_availability.best_header_sent = headers[-1].hash
-    elif any(h in block_index.header_index_pos for h in getheaders.locator):
-        conn.block_availability.best_header_sent = block_index.header_index[-1]
-    conn.send(Headers(headers))
 
 
 def _height_on_the_active_chain(node: Node, block_hash: bytes) -> int | None:

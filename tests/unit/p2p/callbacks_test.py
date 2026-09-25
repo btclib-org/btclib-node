@@ -17,9 +17,10 @@ import socket
 import threading
 import time
 from dataclasses import replace
+from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, NoReturn, cast
+from typing import TYPE_CHECKING, Any, NoReturn, cast, override
 
 import pytest
 from btclib.amount import sats_from_btc
@@ -62,6 +63,7 @@ from btclib.p2p.limits import (
     MAX_ADDR_TO_SEND,
     MAX_GETCFHEADERS_SIZE,
     MAX_GETCFILTERS_SIZE,
+    MAX_HEADERS_RESULTS,
     PROTOCOL_VERSION,
 )
 from btclib.p2p.negotiation import FeeFilter, GetAddr, SendHeaders, WtxidRelay
@@ -123,13 +125,14 @@ from tests import (
 from tests.conftest import unstarted_node_context
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import Iterable, Iterator, Mapping, Sequence
     from pathlib import Path
 
     from btclib.fee import FeeRate
     from btclib.tx.tx import Tx
 
     from btclib_node.chains import Chain
+    from btclib_node.chainstate.block_index import BlockIndex
     from btclib_node.p2p.manager import P2pManager
 
 # BIP155's table, for the networks these tests build an address of
@@ -3081,52 +3084,265 @@ def test_a_short_batch_when_the_headers_are_already_synced_changes_nothing() -> 
     assert node.status == NodeStatus.BlockSynced
 
 
-def test_this_node_answers_a_getheaders_from_what_it_knows() -> None:
-    """A `getheaders` reaches `get_headers_from_locators` unchanged.
+_NO_STOP = b"\x00" * 32
+_GENESIS = RegTest().genesis.hash
 
-    The peer's question reaches the index as the peer asked it, which a locator
-    and a stop of the same value could not tell apart.
+
+@pytest.fixture
+def an_index(tmp_path: Path) -> Iterator[BlockIndex]:
+    """Return a real regtest block index, holding genesis alone."""
+    with unstarted_node_context(tmp_path) as real:
+        yield real.chainstate.block_index
+
+
+def activated(block_index: BlockIndex, chain: list[BlockHeader]) -> list[bytes]:
+    """Index `chain`, put it on the active chain, and return its hashes."""
+    block_index.add_headers(chain)
+    for header in chain:
+        block_index.add_to_active_chain(header.hash)
+    return [header.hash for header in chain]
+
+
+def answer(
+    block_index: BlockIndex, locator: list[bytes], stop: bytes = _NO_STOP
+) -> tuple[list[bytes] | None, Any]:
+    """Send `getheaders`, returning the hashes answered and the peer.
+
+    `None` where nothing at all is sent back.
     """
-    chain = generate_random_header_chain(2, RegTest().genesis.hash)
-    node = a_data_node()
-    asked: list[tuple[list[bytes], bytes]] = []
-
-    def from_locators(locator: Sequence[bytes], stop: bytes) -> list[BlockHeader]:
-        asked.append((list(locator), stop))
-        return chain
-
-    node.chainstate.block_index = SimpleNamespace(
-        get_headers_from_locators=from_locators
-    )
+    node = a_data_node(block_index=block_index)
     peer = a_peer()
-    locator, stop = [b"\x11" * 32, b"\x22" * 32], b"\x33" * 32
     getheaders(node, GetHeaders(PROTOCOL_VERSION, locator, stop).serialize(), peer)
-    # the peer's question reaches the index as the peer asked it, which
-    # a locator and a stop of the same value could not tell
-    assert asked == [(locator, stop)]
+    if not peer.sent:
+        return None, peer
     (sent,) = peer.sent
     assert isinstance(sent, Headers)
-    assert list(sent.headers) == chain
+    return [header.hash for header in sent.headers], peer
 
 
-def test_a_getheaders_resolving_to_nothing_is_answered_empty() -> None:
-    """A `getheaders` resolving to nothing draws an empty `headers`.
+def test_a_getheaders_is_answered_from_the_active_chain(an_index: BlockIndex) -> None:
+    """After the locator's block, up to the tip, the tip being the last sent.
 
-    Core's own `GETHEADERS` handler sends one where its locator is at its tip.
+    The headers above the active tip are not sent, however well the
+    locator knows them: Core's `GETHEADERS` walks `ActiveChain()`.
     """
-    node = a_data_node()
-    node.chainstate.block_index = SimpleNamespace(
-        get_headers_from_locators=lambda locator, stop: [], header_index_pos={}
+    chain = generate_random_header_chain(5, _GENESIS)
+    active = activated(an_index, chain[:3])
+    an_index.add_headers(chain[3:])
+
+    hashes, peer = answer(an_index, [_GENESIS])
+    assert hashes == active
+    assert peer.block_availability.best_header_sent == active[-1]
+
+    hashes, peer = answer(an_index, [active[0]])
+    assert hashes == active[1:]
+
+
+def test_a_locator_above_the_tip_on_its_chain_resolves_to_the_tip(
+    an_index: BlockIndex,
+) -> None:
+    """A descendant of the tip is answered with nothing, the tip sent."""
+    chain = generate_random_header_chain(5, _GENESIS)
+    active = activated(an_index, chain[:3])
+    an_index.add_headers(chain[3:])
+    hashes, peer = answer(an_index, [chain[-1].hash])
+    assert hashes == []
+    assert peer.block_availability.best_header_sent == active[-1]
+
+
+def test_a_locator_entry_off_the_active_chain_is_passed_over(
+    an_index: BlockIndex,
+) -> None:
+    """Unknown, or on a branch the tip is not on: the next entry answers.
+
+    With no entry left, the answer starts after genesis, as Core's
+    `FindForkInGlobalIndex` falls back to it.
+    """
+    active = activated(an_index, generate_random_header_chain(4, _GENESIS))
+    side = generate_random_header_chain(1, _GENESIS)
+    an_index.add_headers(side)
+    unknown = b"\x11" * 32
+
+    hashes, _ = answer(an_index, [unknown, side[0].hash, active[1]])
+    assert hashes == active[2:]
+    hashes, _ = answer(an_index, [unknown, side[0].hash])
+    assert hashes == active
+
+
+def test_a_locator_entry_is_placed_off_header_index_or_by_its_own_walk(
+    an_index: BlockIndex,
+) -> None:
+    """Above the tip, an entry descends from it or not, whichever list holds it.
+
+    The best header chain here is a branch the active chain is not on;
+    one side branch grows off the active tip and one off genesis.
+    """
+    active = activated(an_index, generate_random_header_chain(3, _GENESIS))
+    best = generate_random_header_chain(10, _GENESIS)
+    an_index.add_headers(best)
+    assert an_index.header_index[1:] == [header.hash for header in best]
+    tip_time = an_index.get_block_info(active[-1]).header.time
+    on_tip = generate_random_header_chain(2, active[-1], tip_time)
+    off_genesis = generate_random_header_chain(5, _GENESIS)
+    an_index.add_headers(on_tip)
+    an_index.add_headers(off_genesis)
+
+    assert answer(an_index, [best[-1].hash])[0] == active
+    assert answer(an_index, [off_genesis[-1].hash])[0] == active
+    hashes, peer = answer(an_index, [on_tip[-1].hash])
+    assert hashes == []
+    assert peer.block_availability.best_header_sent == active[-1]
+
+
+class CountingDict(dict[bytes, Any]):
+    """A `header_dict` that counts its own lookups by key."""
+
+    reads = 0
+
+    @override
+    def __getitem__(self, key: bytes) -> Any:
+        """Count the lookup, then answer it."""
+        self.reads += 1
+        return super().__getitem__(key)
+
+
+def test_a_locator_s_entries_walk_a_side_branch_once_between_them(
+    an_index: BlockIndex,
+) -> None:
+    """Every entry on one branch off the chain costs that branch once.
+
+    Entries repeated, or further down a branch already walked, stop
+    where the walk before them failed.
+    """
+    length = 60
+    activated(an_index, generate_random_header_chain(1, _GENESIS))
+    an_index.add_headers(generate_random_header_chain(length + 1, _GENESIS))
+    side_headers = generate_random_header_chain(length, _GENESIS)
+    an_index.add_headers(side_headers)
+    side = [header.hash for header in side_headers]
+    assert side[-1] not in an_index.header_index_pos
+    an_index.header_dict = CountingDict(an_index.header_dict)
+    locator = [side[-1]] * 50 + side[::-1][:50]
+    hashes, _ = answer(an_index, locator)
+    assert hashes == an_index.active_chain[1:]
+    assert an_index.header_dict.reads <= 5 * length
+
+
+def test_a_locator_entry_on_header_index_is_placed_without_a_walk(
+    an_index: BlockIndex,
+) -> None:
+    """Its ancestor at the tip's height is read off `header_index`."""
+    chain = generate_random_header_chain(60, _GENESIS)
+    active = activated(an_index, chain[:1])
+    an_index.add_headers(chain[1:])
+    an_index.header_dict = CountingDict(an_index.header_dict)
+    hashes, _ = answer(an_index, [chain[-1].hash])
+    assert hashes == []
+    assert an_index.header_dict.reads <= 5
+    assert active == an_index.active_chain[1:]
+
+
+def test_the_answer_ends_at_the_stop_hash_on_the_way(an_index: BlockIndex) -> None:
+    """A stop past the locator ends the answer; one at or below it does not."""
+    active = activated(an_index, generate_random_header_chain(5, _GENESIS))
+
+    hashes, peer = answer(an_index, [_GENESIS], active[2])
+    assert hashes == active[:3]
+    assert peer.block_availability.best_header_sent == active[2]
+
+    hashes, _ = answer(an_index, [active[2]], active[0])
+    assert hashes == active[3:]
+    hashes, peer = answer(an_index, [active[-1]], active[-1])
+    assert hashes == []
+    assert peer.block_availability.best_header_sent == active[-1]
+
+
+def test_the_answer_holds_at_most_max_headers_results(an_index: BlockIndex) -> None:
+    """Core's `max_headers_result`, `MAX_HEADERS_RESULTS` by default."""
+    active = activated(
+        an_index, generate_random_header_chain(MAX_HEADERS_RESULTS + 1, _GENESIS)
     )
+    hashes, peer = answer(an_index, [_GENESIS])
+    assert hashes == active[:MAX_HEADERS_RESULTS]
+    assert peer.block_availability.best_header_sent == active[-2]
+
+
+def test_below_the_minimum_chain_work_the_answer_is_empty(
+    an_index: BlockIndex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An active chain with less than the minimum chain work sends nothing.
+
+    An empty `headers`, and `best_header_sent` left alone.
+    """
+    activated(an_index, generate_random_header_chain(2, _GENESIS))
+    node = a_data_node(block_index=an_index)
+    tip = an_index.active_chain[-1]
+    work = an_index.chainwork[tip] + 1
+    consensus = replace(node.chain.consensus, minimum_chain_work=work)
+    monkeypatch.setattr(node, "chain", SimpleNamespace(consensus=consensus))
     peer = a_peer()
-    getheaders(
-        node,
-        GetHeaders(PROTOCOL_VERSION, [b"\x11" * 32], b"\x00" * 32).serialize(),
-        peer,
-    )
+    message = GetHeaders(PROTOCOL_VERSION, [_GENESIS], _NO_STOP).serialize()
+    getheaders(node, message, peer)
     (sent,) = peer.sent
-    assert isinstance(sent, Headers)
-    assert not sent.headers
+    assert list(sent.headers) == []
+    assert peer.block_availability.best_header_sent is None
+
+
+def test_an_empty_locator_asks_for_the_stop_header_alone(an_index: BlockIndex) -> None:
+    """Answered where it is on the active chain, not at all where unknown.
+
+    Nor where it is a header whose block this node never validated.
+    """
+    active = activated(an_index, generate_random_header_chain(3, _GENESIS))
+    side = generate_random_header_chain(1, _GENESIS)
+    an_index.add_headers(side)
+
+    hashes, peer = answer(an_index, [], active[1])
+    assert hashes == [active[1]]
+    assert peer.block_availability.best_header_sent == active[1]
+
+    assert answer(an_index, [], b"\x11" * 32)[0] is None
+    hashes, peer = answer(an_index, [], side[0].hash)
+    assert hashes is None
+    assert peer.block_availability.best_header_sent is None
+
+
+@pytest.mark.parametrize(("days", "allowed"), [(29, True), (30, False)])
+def test_a_validated_block_off_the_chain_is_served_while_recent(
+    an_index: BlockIndex, days: int, *, allowed: bool
+) -> None:
+    """Less than thirty days older than the best header, by its timestamp.
+
+    Core's `BlockRequestAllowed`, for a block that is not on the active
+    chain but was validated, as one a reorg left behind is.
+    """
+    side = generate_random_header_chain(1, _GENESIS)
+    an_index.add_headers(side)
+    an_index.set_status(side[0].hash, BlockStatus.valid)
+    active = activated(an_index, generate_random_header_chain(1, _GENESIS))
+    later = side[0].time + timedelta(days=days)
+    an_index.add_headers(generate_random_header_chain(2, active[0], later))
+
+    hashes, _ = answer(an_index, [], side[0].hash)
+    assert hashes == ([side[0].hash] if allowed else None)
+
+
+@pytest.mark.parametrize(("blocks", "allowed"), [(4319, True), (4320, False)])
+def test_a_validated_block_off_the_chain_is_served_while_little_work_behind(
+    an_index: BlockIndex, blocks: int, *, allowed: bool
+) -> None:
+    """Less than thirty days of the best header's own work behind it.
+
+    Core's `GetBlockProofEquivalentTime`: here every header carries the
+    same work, so it is the blocks between the two times ten minutes.
+    """
+    side = generate_random_header_chain(1, _GENESIS)
+    an_index.add_headers(side)
+    an_index.set_status(side[0].hash, BlockStatus.valid)
+    an_index.add_headers(generate_random_header_chain(blocks + 1, _GENESIS))
+
+    hashes, _ = answer(an_index, [], side[0].hash)
+    assert hashes == ([side[0].hash] if allowed else None)
 
 
 def test_an_empty_headers_batch_asks_for_nothing_more() -> None:
@@ -3753,27 +3969,3 @@ def test_every_block_announced_is_one_the_peer_has() -> None:
     assert peer.block_availability == BlockAvailability(
         best_known=_HELD, last_unknown=unknown
     )
-
-
-def test_a_getheaders_answered_records_the_best_header_sent(tmp_path: Path) -> None:
-    """The last header sent, or the best one where the peer is already there.
-
-    A locator this node does not know records nothing. Core's `GETHEADERS`
-    handler resets `pindexBestHeaderSent` on every answer
-    (btclib-org/btclib-node#1160).
-    """
-    chain = generate_random_header_chain(3, RegTest().genesis.hash)
-    genesis = RegTest().genesis.hash
-    with unstarted_node_context(tmp_path) as real:
-        real.chainstate.block_index.add_headers(chain)
-        node = a_data_node(block_index=real.chainstate.block_index)
-        for locator, stop, best_header_sent in (
-            ([genesis], b"\x00" * 32, chain[-1].hash),
-            ([genesis], chain[0].hash, chain[0].hash),
-            ([chain[-1].hash], b"\x00" * 32, chain[-1].hash),
-            ([b"\x11" * 32], b"\x00" * 32, None),
-        ):
-            peer = a_peer()
-            message = GetHeaders(PROTOCOL_VERSION, locator, stop).serialize()
-            getheaders(node, message, peer)
-            assert peer.block_availability.best_header_sent == best_header_sent
