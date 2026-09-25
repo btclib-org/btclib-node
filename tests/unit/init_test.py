@@ -17,6 +17,7 @@ import multiprocessing
 import os
 import re
 import signal
+import socket
 import threading
 import time
 from collections import deque
@@ -39,8 +40,9 @@ from btclib_node.interpreter import warm
 from btclib_node.main import update_chain
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
-from tests import generate_random_chain, wait_until
-from tests.conftest import unstarted_node_context
+from btclib_node.rpc.auth import COOKIE_FILE
+from tests import cookie_path, generate_random_chain, get_random_port, wait_until
+from tests.conftest import node_context, unstarted_node_context
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
@@ -85,6 +87,11 @@ class AManager:
     def start(self) -> None:
         """Record that `run`'s own start branch reached this stand-in."""
         self.started = True
+
+    def start_listener(self) -> bool:
+        """Record the start, as `start` does, and answer that it listens."""
+        self.start()
+        return True
 
     def stop(self) -> None:
         """Record that `run`'s own teardown reached this stand-in."""
@@ -796,6 +803,80 @@ def test_run_dials_nothing_extra_without_connect_or_addnode(
     wait_until(lambda: p2p_manager.started)
     node.stop()
     assert p2p_manager.connect_calls == []
+
+
+def test_a_node_whose_rpc_port_is_taken_stops_before_its_p2p_side_starts(
+    tmp_path: Path,
+) -> None:
+    """Core's `InitError` where `AppInitServers` cannot bind: the node ends.
+
+    RPC starts first, as in Core's `AppInitMain`, so the peer-to-peer
+    manager is never started; the bind comes before the cookie, so none
+    is left in the data directory; and `run`'s own teardown still closes
+    the databases.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
+        taken.bind(("127.0.0.1", 0))
+        taken.listen()
+        node = Node(
+            config=Config(
+                chain="regtest",
+                data_dir=tmp_path,
+                p2p_port=get_random_port(),
+                rpc_port=taken.getsockname()[1],
+                debug=True,
+            )
+        )
+        try:
+            node.start()
+            wait_until(lambda: not node.is_alive())
+        finally:
+            node.stop()
+    assert node.init_error == btclib_node.RPC_INIT_ERROR
+    assert node.p2p_manager.ident is None
+    assert not cookie_path(node.data_dir).exists()
+    assert node.chainstate.db.closed
+    log_text = (node.data_dir / "history.log").read_text(encoding="utf-8")
+    assert btclib_node.RPC_INIT_ERROR in log_text
+
+
+def test_a_node_that_cannot_write_its_cookie_stops_and_frees_its_rpc_port(
+    tmp_path: Path,
+) -> None:
+    """Core's `InitRPCAuthentication` failing is an `InitError` here too.
+
+    A directory where the cookie's `.tmp` goes is what `unlink` refuses
+    on every platform. The port the listener had already bound is free
+    again once the node has ended.
+    """
+    port = get_random_port()
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            rpc_port=port,
+            debug=True,
+        )
+    )
+    (node.data_dir / (COOKIE_FILE + ".tmp")).mkdir()
+    try:
+        node.start()
+        wait_until(lambda: not node.is_alive())
+    finally:
+        node.stop()
+    assert node.init_error == btclib_node.RPC_INIT_ERROR
+    assert not cookie_path(node.data_dir).exists()
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", port))
+
+
+def test_a_node_whose_rpc_listener_starts_has_no_init_error(tmp_path: Path) -> None:
+    """`init_error` stays None, and the node runs, once its listener is up."""
+    with node_context(tmp_path, allow_p2p=False) as node:
+        wait_until(node.rpc_manager.listening.is_set)
+        assert node.is_alive()
+    assert node.init_error is None
 
 
 def test_every_message_waiting_is_taken_before_the_loop_waits(

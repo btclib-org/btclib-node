@@ -39,6 +39,13 @@ on release day.
   (`<datadir>/regtest/.cookie` under `-regtest`), the way a client of
   `bitcoind` reads its cookie, or start the node with an `-rpcauth`
   line and give the client that user's password.
+- **A node whose JSON-RPC listener cannot start stops, as `bitcoind`
+  does** (closes #1076). With the RPC port taken or `.cookie` unwritable,
+  `btclib-node` prints `Error: Unable to start HTTP server. See debug log
+  for details.` and exits 1. A caller that starts a `Node` itself finds
+  its thread ended and `Node.init_error` set. Free the port or pick
+  another with `-rpcport`, and make the chain's data directory writable
+  where the cookie could not be written.
 
 ## v2026.9.24
 

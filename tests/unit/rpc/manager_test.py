@@ -263,17 +263,17 @@ def test_stop_still_closes_a_connection_mid_parse_error_reply(
         theirs.close()
 
 
-@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
 def test_a_manager_that_cannot_bind_stops_being_alive(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """#88: see tests/unit/p2p/manager.py's manager of the same name.
 
     `_bind` runs in `run` before `run_forever`, so a taken port's
-    `OSError` comes back out of `run` itself instead of sitting unread
-    in the `concurrent.futures.Future` `run_coroutine_threadsafe` used
-    to hand back -- and out of `run` on the manager's own thread, which
-    nothing there catches, is what this test is asking it to do.
+    `OSError` ends `run` itself instead of sitting unread in the
+    `concurrent.futures.Future` `run_coroutine_threadsafe` used to hand
+    back, and `start_listener` answers that it is not listening. The
+    bind comes before the cookie, as in Core's `AppInitServers`, so the
+    failure leaves no cookie behind.
     """
     logged: list[str] = []
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
@@ -285,10 +285,11 @@ def test_a_manager_that_cannot_bind_stops_being_alive(
         taken.listen()
         manager = a_manager(taken.getsockname()[1])
         monkeypatch.setattr(manager.logger, "exception", logged.append)
-        manager.start()
+        assert not manager.start_listener()
         wait_until(lambda: not manager.is_alive())
-    assert logged
+    assert logged == ["Could not bind the RPC listener"]
     assert not manager.listening.is_set()
+    assert not cookie_path(manager.node.config.data_dir).exists()
 
 
 def test_stop_closes_the_listening_socket_even_when_the_accept_task_never_ran(
@@ -559,7 +560,6 @@ def test_stop_drains_a_task_whose_own_cancellation_needs_a_second_step(
     manager.stop()
 
 
-@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
 def test_stop_does_not_raise_where_start_was_called_but_run_never_reached_run_forever(
     a_manager: AManagerFactory,
 ) -> None:
@@ -568,7 +568,7 @@ def test_stop_does_not_raise_where_start_was_called_but_run_never_reached_run_fo
     `self.ident is not None` -- issue #362's own guard on a grace step
     this method no longer has -- is true from the moment `start()`
     is called, well before `run()` reaches `run_forever()`. Where
-    `run()` raises before that -- a bind failure being the ordinary way
+    `run()` returns before that -- a bind failure being the ordinary way
     -- the `loop.stop` `stop()` schedules at its own top is never
     delivered, and `self.ident is not None` read `True` anyway: the
     grace step that guard used to gate ran against a loop with nothing
@@ -744,9 +744,9 @@ def test_the_cookie_is_there_once_listening_and_gone_once_stopped(
     port = get_random_port()
     manager = a_manager(port)
     path = cookie_path(manager.node.config.data_dir)
-    manager.start()
     try:
-        wait_until_listening(manager)
+        # returns once listening, with nothing left to wait for
+        assert manager.start_listener()
         assert path.exists()
         cookie = path.read_bytes()
         body = json.dumps(REQUEST).encode()
@@ -796,19 +796,25 @@ def test_a_wrong_password_is_logged_with_the_address_it_came_from(
     assert not manager.messages
 
 
-@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
 def test_a_manager_that_cannot_write_its_cookie_does_not_listen(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Core's `InitRPCAuthentication` failing stops the RPC server, here too."""
+    """Core's `InitRPCAuthentication` failing stops the RPC server, here too.
+
+    The socket already bound is closed by `run` itself, before `stop`
+    is ever called, so the port is not held by a manager that failed.
+    """
     logged: list[str] = []
     manager = a_manager(get_random_port())
     manager.node.config.data_dir.rmdir()
     monkeypatch.setattr(manager.logger, "exception", logged.append)
-    manager.start()
+    assert not manager.start_listener()
     wait_until(lambda: not manager.is_alive())
     assert logged == ["Could not write the RPC authentication cookie"]
     assert not manager.listening.is_set()
+    assert manager._server_socket is not None
+    # a closed socket's own fileno is -1; still >= 0 is still open
+    assert manager._server_socket.fileno() == -1
     manager.stop()
 
 

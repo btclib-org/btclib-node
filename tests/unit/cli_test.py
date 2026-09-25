@@ -771,15 +771,20 @@ def test_build_config_connect_zero_dials_nobody() -> None:
 def test_main_builds_a_node_and_starts_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`main` builds a `Node` from the parsed config and starts it, once."""
+    """`main` builds a `Node` from the parsed config, starts it and waits."""
     built: list[Any] = []
 
     class FakeNode:
+        init_error = None
+
         def __init__(self, config: Any) -> None:
             built.append(config)
 
         def start(self) -> None:
             built.append("started")
+
+        def join(self) -> None:
+            built.append("joined")
 
     handlers: list[Any] = []
     monkeypatch.setattr(cli, "Node", FakeNode)
@@ -788,8 +793,35 @@ def test_main_builds_a_node_and_starts_it(
     cli.main(["-datadir", str(tmp_path), "-regtest"])
 
     assert built[0].chain.name == "regtest"
-    assert built[-1] == "started"
+    assert built[1:] == ["started", "joined"]
     assert len(handlers) == 1
+
+
+def test_main_a_node_that_failed_to_start_exits_one_with_its_init_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`Node.init_error` is printed and the exit status is `1`, as Core's."""
+
+    class FakeNode:
+        init_error = "Unable to start HTTP server. See debug log for details."
+
+        def __init__(self, config: Any) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def join(self) -> None:
+            pass
+
+    monkeypatch.setattr(cli, "Node", FakeNode)
+    monkeypatch.setattr(cli, "install_signal_handlers", lambda node: None)
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["-datadir", str(tmp_path), "-regtest"])
+    assert excinfo.value.code == 1
+    assert capsys.readouterr().err == f"Error: {FakeNode.init_error}\n"
 
 
 def test_main_a_bad_argument_exits_one_with_a_message(
@@ -799,7 +831,7 @@ def test_main_a_bad_argument_exits_one_with_a_message(
     with pytest.raises(SystemExit) as excinfo:
         cli.main(["-datadir", str(tmp_path), "-conf", "nope.conf"])
     assert excinfo.value.code == 1
-    assert "btclib-node:" in capsys.readouterr().err
+    assert capsys.readouterr().err.startswith("Error: ")
 
 
 def test_dunder_main_calls_cli_main_under_the_guard(

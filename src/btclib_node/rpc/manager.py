@@ -8,11 +8,15 @@ Runs its own asyncio loop, accepting a `RpcConnection` per accepted
 socket -- one request or several, `connection.RpcConnection`'s own
 docstring has the keep-alive that decides which -- and queuing what
 each one parses onto `messages` for `Node`'s own thread to read in
-`rpc.main.handle_rpc`. `listening` is set once `run` has actually bound
-the socket, which is what a caller waits on rather than `is_alive()`
-alone -- that flag is true before anything is bound. `auth` is who may
-call it: `run` writes the cookie before binding, so a client that waits
-on `listening` finds the cookie there, and `stop` deletes it.
+`rpc.main.handle_rpc`. `listening` is what a caller waits on rather
+than `is_alive()` alone, that flag being true before anything is bound.
+`auth` is who may call it. `run` binds, then writes the cookie, then
+sets `listening`, so a client that waits on `listening` finds the cookie
+there; `stop` deletes it. That is the order of Core's `AppInitServers`
+(`src/init.cpp:748-761`, at bitcoin/bitcoin@9be056a8a7): `InitHTTPServer`
+binds before `StartHTTPRPC` writes the cookie, so a bind that fails
+leaves no cookie behind. `start_listener` is how `Node` learns that
+either step failed, which Core turns into an `InitError`.
 """
 
 import asyncio
@@ -71,6 +75,9 @@ class RpcManager(threading.Thread):
         # has bound anything, and a client that posts on the strength of
         # it is refused
         self.listening = threading.Event()
+        # set by `run` once it has either set `listening` or given up on
+        # it, which is what `start_listener` waits on
+        self._start_attempted = threading.Event()
         # What `run` binds and `stop` closes. `server`'s own
         # `with server_socket:` ordinarily closes this once `stop`'s
         # cancellation reaches that task -- except where `stop` arrives
@@ -117,7 +124,9 @@ class RpcManager(threading.Thread):
         """Bind and listen, synchronously, before anything is scheduled.
 
         See `P2pManager._bind`: the same shape of bug (#88) and the same
-        fix, applied to the RPC listener instead of the P2P one.
+        fix, applied to the RPC listener instead of the P2P one. Unlike
+        that one, this does not set `listening`: `_listen` does, once the
+        cookie is written too.
         """
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
@@ -132,8 +141,41 @@ class RpcManager(threading.Thread):
         except OSError:
             server_socket.close()
             raise
-        self.listening.set()
         return server_socket
+
+    def _listen(self) -> socket.socket:
+        """Bind, write the cookie, and only then set `listening`.
+
+        Raises `OSError` where either step fails, having logged it and
+        closed the socket: Core's "Unable to bind any endpoint for RPC
+        server" and `InitRPCAuthentication`'s refusal of a cookie that
+        cannot be written.
+        """
+        try:
+            self._server_socket = self._bind()
+        except OSError:
+            self.logger.exception("Could not bind the RPC listener")
+            raise
+        try:
+            cookie_path = self.auth.generate_cookie(self.node.config.data_dir)
+        except OSError:
+            self._server_socket.close()
+            self.logger.exception("Could not write the RPC authentication cookie")
+            raise
+        self.logger.info("Generated RPC authentication cookie %s", cookie_path)
+        self.listening.set()
+        return self._server_socket
+
+    def start_listener(self) -> bool:
+        """Start this thread, and answer whether it came up listening.
+
+        Blocks until `run` has bound and written the cookie, or failed
+        to: what `Node.run` turns into Core's `InitError`, where `start`
+        alone would leave the node running without its listener.
+        """
+        self.start()
+        self._start_attempted.wait()
+        return self.listening.is_set()
 
     async def _accept_loop(
         self,
@@ -294,23 +336,18 @@ class RpcManager(threading.Thread):
 
     @override
     def run(self) -> None:
-        self.logger.info("Starting RPC manager")
         loop = self.loop
-        asyncio.set_event_loop(loop)
         try:
-            # Core's `InitRPCAuthentication` refuses to start the RPC
-            # server where the cookie cannot be written, and so does this
-            cookie_path = self.auth.generate_cookie(self.node.config.data_dir)
+            self.logger.info("Starting RPC manager")
+            asyncio.set_event_loop(loop)
+            server_socket = self._listen()
         except OSError:
-            self.logger.exception("Could not write the RPC authentication cookie")
-            raise
-        self.logger.info("Generated RPC authentication cookie %s", cookie_path)
-        try:
-            server_socket = self._bind()
-        except OSError:
-            self.logger.exception("Could not bind the RPC listener")
-            raise
-        self._server_socket = server_socket
+            # logged by `_listen`; `start_listener` reads the failure
+            # off `listening`, so it is not raised into
+            # `threading.excepthook` as well
+            return
+        finally:
+            self._start_attempted.set()
         asyncio.run_coroutine_threadsafe(
             self.server(loop, server_socket), loop
         ).add_done_callback(self._report_server_failure)
@@ -354,7 +391,7 @@ class RpcManager(threading.Thread):
         #   -- `is_alive()` above is `False`, `join` is skipped, and
         #   nothing has ever driven this loop, so the handle is still
         #   sitting in its ready queue, undelivered.
-        # - This thread was started and `run()` raised before ever
+        # - This thread was started and `run()` returned before ever
         #   reaching `run_forever` -- a bind failure being the ordinary
         #   way -- so `self.ident is not None` even though `run_forever`,
         #   again, never ran: the handle is undelivered the same as the
