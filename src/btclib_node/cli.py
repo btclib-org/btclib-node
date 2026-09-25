@@ -166,6 +166,7 @@ from typing import TYPE_CHECKING
 from btclib_node import Node, install_signal_handlers
 from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, Config, split_host_port
 from btclib_node.constants import MIN_PRUNE_TARGET_MIB
+from btclib_node.exceptions import DirectoryLockError
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -1155,7 +1156,8 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     Waits on the node's thread until a signal `install_signal_handlers`
     below caught, or the `stop` RPC, stops it. A `build_config` refusal,
-    or each of `Node.init_errors` where the node's start-up failed, is
+    a `DirectoryLockError` where the node cannot lock its directories, or
+    each of `Node.init_errors` where the node's start-up failed, is
     printed as `Error: <message>` and the exit status is `1`: Core's
     `InitError`, and `CConnman`'s own `MSG_ERROR` for a failed bind,
     reach stderr through `noui_ThreadSafeMessageBox` with that caption
@@ -1168,7 +1170,18 @@ def main(argv: Sequence[str] | None = None) -> None:
         sys.stderr.write(f"Error: {error}\n")
         raise SystemExit(1) from error
 
-    node = Node(config=config)
+    # Core takes the lock ahead of `CheckHostPortOptions` and of the RPC
+    # options `StartHTTPRPC` refuses (`AppInitMain`, `src/init.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7), where every `build_config` refusal
+    # comes first here: over a locked directory, `bitcoind` answers
+    # `-port=0` or a malformed `-rpcauth` with the lock, and this with the
+    # option -- an open defect rather than a decision, which
+    # btclib-org/btclib-node#1191 tracks.
+    try:
+        node = Node(config=config)
+    except DirectoryLockError as error:
+        sys.stderr.write(f"Error: {error}\n")
+        raise SystemExit(1) from error
     install_signal_handlers(node)
     node.start()
     node.join()

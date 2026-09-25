@@ -25,10 +25,11 @@ from math import log2
 from multiprocessing.pool import Pool, ThreadPool
 from typing import TYPE_CHECKING, override
 
-from btclib_node.block_db import BlockDB
+from btclib_node.block_db import BlockDB, blocks_directory
 from btclib_node.chainstate import Chainstate
 from btclib_node.config import Config
 from btclib_node.constants import NodeStatus
+from btclib_node.dirlock import lock_directories
 from btclib_node.download import DownloadManager
 from btclib_node.exceptions import NodeShutdownTimeoutError, ReimportedMainProcessError
 from btclib_node.interpreter import warm
@@ -286,6 +287,16 @@ class Node(threading.Thread):
         self.chain = config.chain
         self.data_dir = config.data_dir
         self.data_dir.mkdir(exist_ok=True, parents=True)
+        # Core's own `GetBlocksDirPath` creates the blocks directory where
+        # `AppInitParameterInteraction` first asks for it, ahead of the locks
+        # (`src/common/args.cpp`, `src/init.cpp`, at bitcoin/bitcoin@9be056a8a7)
+        blocks_dir = blocks_directory(self.data_dir, config.blocks_dir)
+        blocks_dir.mkdir(exist_ok=True, parents=True)
+
+        # Core's own `AppInitLockDirectories`: the data directory, then the
+        # blocks directory, both before the log or any store is opened
+        # (`src/init.cpp`, same sha)
+        self._directory_locks = lock_directories(self.data_dir, blocks_dir)
 
         self.terminate_flag = threading.Event()
         log_path = self.data_dir / config.log_path if config.log_path else None
@@ -649,6 +660,10 @@ class Node(threading.Thread):
 
         self.logger.info("Stopping node")
         self.logger.close()
+        # last, mirroring the acquisition: the log lives in the data
+        # directory, so another process may not take it while it is written
+        for lock in self._directory_locks:
+            lock.release()
 
     def stop(self) -> None:
         """Ask the main loop to stop, and wait up to `STOP_TIMEOUT` for it.

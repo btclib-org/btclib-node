@@ -32,6 +32,7 @@ from btclib.exceptions import BTClibRuntimeError, BTClibValueError
 
 __all__ = [
     "ChainstateInconsistencyError",
+    "DirectoryLockError",
     "IncompatibleStoreError",
     "IncompleteRequestHeadError",
     "InvalidBlockInputError",
@@ -315,6 +316,18 @@ class IncompatibleStoreError(RuntimeError):
     by a version that kept a different shape under one of its keys or
     in a `block_db` flat file -- `db.py`'s own `_SCHEMA_VERSION` is
     where that second case is checked and argued.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class DirectoryLockError(RuntimeError):
+    """A directory `Node` keeps its data in cannot be locked for it.
+
+    Raised by `dirlock.DirectoryLock`, with Core's own message for each
+    of its two refusals, and printed by `cli.main` the way Core's
+    `InitError` is.
     """
 
     def __init__(self, message: str) -> None:

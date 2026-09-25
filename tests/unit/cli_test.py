@@ -15,6 +15,7 @@ from btclib_node import Node, cli
 from btclib_node.chains import Main, RegTest
 from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, Config
 from btclib_node.constants import MIN_PRUNE_TARGET_MIB
+from btclib_node.exceptions import DirectoryLockError
 from btclib_node.rpc.auth import COOKIE_FILE, RpcAuthEntry, password_hmac
 from tests import RPCAUTH, cookie_path, get_random_port, wait_until_listening
 
@@ -1202,6 +1203,27 @@ def test_main_a_node_that_failed_to_start_exits_one_with_its_init_errors(
         "Error: Unable to bind to 0.0.0.0:8333 on this computer."
         " btclib-node is probably already running.\n"
         "Error: Failed to listen on any port. Use -listen=0 if you want this.\n"
+    )
+
+
+def test_main_a_directory_the_node_cannot_lock_exits_one_with_the_refusal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Core's `InitError` caption, and nothing started or waited on."""
+
+    class FakeNode:
+        def __init__(self, config: Any) -> None:
+            err_msg = "Cannot obtain a lock on directory <dir>."
+            raise DirectoryLockError(err_msg)
+
+    monkeypatch.setattr(cli, "Node", FakeNode)
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main([f"-datadir={tmp_path}", "-regtest"])
+    assert excinfo.value.code == 1
+    assert capsys.readouterr().err == (
+        "Error: Cannot obtain a lock on directory <dir>.\n"
     )
 
 

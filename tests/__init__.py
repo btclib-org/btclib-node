@@ -24,9 +24,11 @@ import json
 import re
 import secrets
 import socket
+import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -48,7 +50,7 @@ from btclib_node.p2p.address import peer_address
 from btclib_node.rpc.auth import COOKIE_FILE, password_hmac
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
     from btclib.p2p.addrv2 import NetworkAddressV2
 
@@ -625,3 +627,59 @@ def local_addr(
     """
     assert port is not None
     return peer_address("127.0.0.1", port, timestamp, services)
+
+
+# What `held_by_another_process` and `lock_from_another_process` run: a
+# second interpreter asking for `btclib_node.dirlock.DirectoryLock` over
+# the directory in its argument, printing `locked` or the refusal, and,
+# where it got the lock, holding it until its stdin closes.
+_LOCK_IN_A_CHILD = """
+import sys
+from pathlib import Path
+
+from btclib_node.dirlock import DirectoryLock
+from btclib_node.exceptions import DirectoryLockError
+
+try:
+    lock = DirectoryLock(Path(sys.argv[1]))
+except DirectoryLockError as error:
+    print(error, flush=True)
+else:
+    print("locked", flush=True)
+    sys.stdin.read()
+"""
+
+
+@contextmanager
+def held_by_another_process(directory: Path) -> Iterator[None]:
+    """Hold `directory`'s lock from a second interpreter while the block runs.
+
+    Another process rather than this one, because `DirectoryLock` never
+    refuses the process already holding a path, as Core's own table does
+    not.
+    """
+    with subprocess.Popen(  # noqa: S603
+        [sys.executable, "-c", _LOCK_IN_A_CHILD, str(directory)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        encoding="utf-8",
+    ) as child:
+        assert child.stdout is not None
+        assert child.stdout.readline() == "locked\n"
+        yield
+
+
+def lock_from_another_process(directory: Path) -> str:
+    """Return what a second interpreter's lock over `directory` answers.
+
+    `locked` where it got it, released again as it exits, and the
+    refusal's own message otherwise.
+    """
+    return subprocess.run(  # noqa: S603
+        [sys.executable, "-c", _LOCK_IN_A_CHILD, str(directory)],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        encoding="utf-8",
+        check=True,
+        timeout=60,
+    ).stdout.strip()

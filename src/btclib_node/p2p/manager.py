@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, override
 
 from btclib.p2p.addrv2 import can_addrv1, network_address
 
-from btclib_node.constants import P2pConnStatus
+from btclib_node.constants import CLIENT_NAME, P2pConnStatus
 from btclib_node.p2p.address import (
     PeerDB,
     dial,
@@ -117,12 +117,6 @@ _MAX_FEELER_CONNECTIONS = 1
 # generations of 25,000 holding two or three at a time, and this
 # forgets it once 50,000 other hosts have been discouraged since.
 _DISCOURAGED_CAPACITY = 50_000
-
-# The name `CConnman::BindListenPort` gives for whatever already holds
-# the port, Core's `CLIENT_NAME` (`src/net.cpp:3356`,
-# at bitcoin/bitcoin@9be056a8a7): the program it runs as, here the
-# command `pyproject.toml`'s `[project.scripts]` installs.
-_CLIENT_NAME = "btclib-node"
 
 
 def _network_error_string(error: OSError) -> str:
@@ -881,7 +875,7 @@ class P2pManager(threading.Thread):
                 if error.errno == errno.EADDRINUSE:
                     msg = (
                         f"Unable to bind to {address} on this computer."
-                        f" {_CLIENT_NAME} is probably already running."
+                        f" {CLIENT_NAME} is probably already running."
                     )
                 else:
                     msg = (
