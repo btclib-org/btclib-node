@@ -81,9 +81,8 @@ class FilterIndex:
         self.pending: dict[bytes, tuple[bytes, bytes]] = {}
         self._trial_log: list[bytes] = []
 
-        # no peer serves the genesis block and no `getdata` asks for it,
-        # so its filter is built from the chain's own copy, here, rather
-        # than by the connect path every other block goes through
+        # genesis never goes through the connect path every other block
+        # does, so its filter is built from the chain's own copy, here
         self.genesis_hash = chain.genesis.hash
         if self.get_filter(self.genesis_hash) is None:
             self.add_block(chain.genesis_block, [])

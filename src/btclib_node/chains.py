@@ -82,10 +82,9 @@ def create_genesis(
     # Block.assert_valid compares against are one implementation
     header.merkle_root = merkle_root_and_mutated_from_transactions([tx])[0]
     header.assert_valid()
-    # the block and not the header alone: the coinbase above is the only
-    # copy of the genesis block anywhere in this node -- no peer serves
-    # it and no `getdata` asks for it -- and the block filter of height
-    # zero is built from its output script like every other block's
+    # the block and not the header alone: `Node.__init__` writes it to
+    # `block_db`, and the block filter of height zero is built from its
+    # output script like every other block's
     return Block(header, [tx], check_validity=False)
 
 

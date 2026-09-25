@@ -1977,9 +1977,10 @@ def test_a_pruned_node_stops_once_under_target(
     bitcoin/bitcoin@ca7162cde5) rather than reaching every file the
     retained-depth bound would otherwise allow; matched here by a
     `current_usage` that answers over target for the first three calls
-    and under it from the fourth call on, so pruning reaches height 3
-    and no further, well short of the `MIN_BLOCKS_TO_KEEP` floor this
-    chain's own length would otherwise allow.
+    and under it from the fourth call on, so pruning takes heights 0, 1
+    and 2, genesis being the first, and no further, well short of the
+    `MIN_BLOCKS_TO_KEEP` floor this chain's own length would otherwise
+    allow.
     """
     node = regtest_node(pruned=True, prune_target_mib=1)
     usages = iter([2**40, 2**40, 2**40, 0, 0, 0, 0, 0, 0, 0, 0, 0])
@@ -1987,9 +1988,9 @@ def test_a_pruned_node_stops_once_under_target(
     chain = generate_random_chain(MIN_BLOCKS_TO_KEEP + 5, node.chain.genesis.hash)
     block_index = connect(node, chain)
 
-    assert node.block_db.pruned_up_to == 3
-    assert node.block_db.get_block(block_index.active_chain[3]) is None
-    assert node.block_db.get_block(block_index.active_chain[4]) is not None
+    assert node.block_db.pruned_up_to == 2
+    assert node.block_db.get_block(block_index.active_chain[2]) is None
+    assert node.block_db.get_block(block_index.active_chain[3]) is not None
 
 
 def test_a_pruned_node_still_prunes_when_usage_exactly_equals_the_target(
@@ -2044,10 +2045,8 @@ def test_a_pruned_node_over_target_clears_downloaded_for_every_block_it_deletes(
     entry it prunes -- "any block we prune would have to be downloaded
     again in order to consider its chain" -- matched here by
     `BlockInfo.downloaded`, which `prune_up_to_height` clears for the
-    same range `block_db.prune_up_to` deletes. Genesis (height 0) is the
-    one exception: it is seeded `downloaded=True` and never written to
-    `block_db` in the first place, so it stays `True` regardless of how
-    deep pruning otherwise reaches.
+    same range `block_db.prune_up_to` deletes, genesis (height 0)
+    included.
     """
     node = regtest_node(pruned=True, prune_target_mib=1)
     _always_over_target(node, monkeypatch)
@@ -2056,8 +2055,7 @@ def test_a_pruned_node_over_target_clears_downloaded_for_every_block_it_deletes(
     tip_height = len(block_index.active_chain) - 1
     oldest_kept = tip_height - MIN_BLOCKS_TO_KEEP + 1
 
-    assert block_index.get_block_info(block_index.active_chain[0]).downloaded is True
-    for height in range(1, oldest_kept):
+    for height in range(oldest_kept):
         block_hash = block_index.active_chain[height]
         assert block_index.get_block_info(block_hash).downloaded is False
     for height in range(oldest_kept, tip_height + 1):

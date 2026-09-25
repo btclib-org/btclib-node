@@ -1334,6 +1334,16 @@ def get_raw_transaction(
     shape it always gets, unconditionally, below.
     """
     txid = _parse_txid(params)
+    # Core's own exception, ahead of every other argument
+    # (`src/rpc/rawtransaction.cpp:290-293`, at bitcoin/bitcoin@9be056a8a7,
+    # the v31.1 tag), compared there against the genesis merkle root:
+    # the genesis block's one transaction, whose txid that root is.
+    if txid == node.chain.genesis_block.transactions[0].id:
+        raise RpcError(
+            RPCErrorCode.INVALID_ADDRESS_OR_KEY,
+            "The genesis block coinbase is not considered an ordinary "
+            "transaction and cannot be retrieved",
+        )
     # Core declares this argument NUM with allow_bool=true
     # (src/rpc/rawtransaction.cpp:286); this node answers only the
     # default and the boolean shape every other verbose flag here

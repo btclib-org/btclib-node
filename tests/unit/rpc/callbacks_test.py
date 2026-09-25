@@ -953,6 +953,7 @@ def a_tx_lookup_node(
     return cast(
         "Node",
         SimpleNamespace(
+            chain=RegTest(),
             mempool=mempool,
             chainstate=SimpleNamespace(block_index=block_index),
             # -1: BlockDB's own "nothing pruned yet" (block_db/__init__.py),
@@ -1005,6 +1006,26 @@ def test_a_transaction_neither_mempool_nor_named_block_is_refused() -> None:
         get_raw_transaction(node, _CONN, ["11" * 32])
     assert raised.value.code == RPCErrorCode.INVALID_ADDRESS_OR_KEY
     assert raised.value.message.startswith("No such mempool transaction.")
+
+
+def test_the_genesis_coinbase_is_refused_with_core_s_own_message() -> None:
+    """`getrawtransaction` refuses the genesis coinbase, block named or not.
+
+    The genesis block is in `block_db` (btclib-org/btclib-node#1072), and
+    Core still answers its coinbase with this refusal before reading any
+    other argument.
+    """
+    node = a_tx_lookup_node()
+    genesis = RegTest().genesis_block
+    txid = genesis.transactions[0].id.hex()
+    for params in ([txid], [txid, False, genesis.header.hash.hex()]):
+        with pytest.raises(RpcError) as raised:
+            get_raw_transaction(node, _CONN, params)
+        assert raised.value.code == RPCErrorCode.INVALID_ADDRESS_OR_KEY
+        assert raised.value.message == (
+            "The genesis block coinbase is not considered an ordinary "
+            "transaction and cannot be retrieved"
+        )
 
 
 def test_a_transaction_is_read_out_of_the_block_named() -> None:

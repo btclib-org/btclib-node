@@ -294,6 +294,14 @@ class Node(threading.Thread):
 
         self.chainstate = Chainstate(self.data_dir, self.chain, self.logger)
         self.block_db = BlockDB(self.data_dir, self.logger, config.blocks_dir)
+        # Core's own `Chainstate::LoadGenesisBlock` (`src/validation.cpp:4974`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) writes the genesis
+        # block to disk at start, so `getblock` and a peer's `getdata` are
+        # answered for it as for any other block. Not once pruning has
+        # reached height 0: Core writes it only where its block index does
+        # not know genesis yet, never back over a prune.
+        if self.block_db.pruned_up_to < 0:
+            self.block_db.add_block(self.chain.genesis_block)
         # the two halves of a filter live in different databases -- the
         # block and its reverse patch in one, the index in the other --
         # so catching up is here, where both are built, and before
