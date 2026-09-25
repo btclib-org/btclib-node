@@ -82,6 +82,7 @@ from btclib_node.exceptions import (
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import PeerDB, endpoint_key, host_key, peer_address
+from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.callbacks import (
     MAX_CFILTERS_INFLIGHT_BYTES,
     MAX_GETDATA_INFLIGHT_BYTES,
@@ -473,6 +474,7 @@ def a_peer(**attributes: Any) -> Any:
         # than `None`, matching the real field (`p2p/connection.py`).
         # btclib-org/btclib-node#706
         best_known_height=0,
+        block_availability=BlockAvailability(),
         wtxidrelay_received=False,
         prefer_addressv2=False,
         prefers_headers=False,
@@ -2165,7 +2167,9 @@ _HELD = b"\x33" * 32
 def an_inv_index() -> Any:
     """Build a block index holding the one header `_HELD`, its best."""
     return SimpleNamespace(
-        header_dict={_HELD: None}, get_block_locator_hashes=lambda: [_HELD]
+        header_dict={_HELD: None},
+        chainwork={_HELD: 1},
+        get_block_locator_hashes=lambda: [_HELD],
     )
 
 
@@ -2834,6 +2838,9 @@ class FakeHeaderIndex:
         self.header_index = [header_index_tip]
         self.tip_status = tip_status
         self.given: list[BlockHeader] | None = None
+        # what `update_block_availability` looks a hash up in: empty, so
+        # every hash `headers` records for the peer is kept as unknown
+        self.header_dict: dict[bytes, Any] = {}
 
     def add_headers(self, headers: Iterable[BlockHeader]) -> bytes | None:
         """Record the headers given, then answer `tip` or raise if `refuse`."""
@@ -3109,7 +3116,7 @@ def test_a_getheaders_resolving_to_nothing_is_answered_empty() -> None:
     """
     node = a_data_node()
     node.chainstate.block_index = SimpleNamespace(
-        get_headers_from_locators=lambda locator, stop: []
+        get_headers_from_locators=lambda locator, stop: [], header_index_pos={}
     )
     peer = a_peer()
     getheaders(
@@ -3705,3 +3712,68 @@ def test_a_getcfcheckpt_this_node_cannot_answer_is_not_answered() -> None:
         peer = a_peer()
         get_cfcheckpt(node, GetCFCheckpt(filter_type, stop_hash).serialize(), peer)
         assert not peer.sent, stop_hash.hex()
+
+
+def test_a_headers_batch_is_a_block_the_peer_has(tmp_path: Path) -> None:
+    """A batch that connects makes its last header the peer's best known.
+
+    One that connects to nothing leaves its last header as the unknown
+    block the peer has: Core's `UpdatePeerStateForReceivedHeaders` and
+    `HandleUnconnectingHeaders` (btclib-org/btclib-node#1105).
+    """
+    chain = generate_random_header_chain(3, RegTest().genesis.hash)
+    with unstarted_node_context(tmp_path) as real:
+        node = a_data_node(block_index=real.chainstate.block_index)
+        peer = a_peer()
+        headers(node, Headers(chain[1:]).serialize(), peer)
+        assert peer.block_availability == BlockAvailability(last_unknown=chain[-1].hash)
+        headers(node, Headers(chain[:1]).serialize(), peer)
+        assert peer.block_availability == BlockAvailability(
+            best_known=chain[0].hash, last_unknown=chain[-1].hash
+        )
+        headers(node, Headers(chain[1:]).serialize(), peer)
+        assert peer.block_availability == BlockAvailability(best_known=chain[-1].hash)
+
+
+def test_every_block_announced_is_one_the_peer_has() -> None:
+    """Each block of an `inv` updates what the peer has, a transaction not.
+
+    Core's `INV` handler calls `UpdateBlockAvailability` on every block,
+    known or not (btclib-org/btclib-node#1160).
+    """
+    node = a_data_node(block_index=an_inv_index())
+    peer = a_peer()
+    unknown = b"\x44" * 32
+    items = [
+        Inventory(InventoryType.MSG_BLOCK, _HELD),
+        Inventory(InventoryType.MSG_WTX, b"\x55" * 32),
+        Inventory(InventoryType.MSG_BLOCK, unknown),
+    ]
+    inv(node, Inv(items).serialize(), peer)
+    assert peer.block_availability == BlockAvailability(
+        best_known=_HELD, last_unknown=unknown
+    )
+
+
+def test_a_getheaders_answered_records_the_best_header_sent(tmp_path: Path) -> None:
+    """The last header sent, or the best one where the peer is already there.
+
+    A locator this node does not know records nothing. Core's `GETHEADERS`
+    handler resets `pindexBestHeaderSent` on every answer
+    (btclib-org/btclib-node#1160).
+    """
+    chain = generate_random_header_chain(3, RegTest().genesis.hash)
+    genesis = RegTest().genesis.hash
+    with unstarted_node_context(tmp_path) as real:
+        real.chainstate.block_index.add_headers(chain)
+        node = a_data_node(block_index=real.chainstate.block_index)
+        for locator, stop, best_header_sent in (
+            ([genesis], b"\x00" * 32, chain[-1].hash),
+            ([genesis], chain[0].hash, chain[0].hash),
+            ([chain[-1].hash], b"\x00" * 32, chain[-1].hash),
+            ([b"\x11" * 32], b"\x00" * 32, None),
+        ):
+            peer = a_peer()
+            message = GetHeaders(PROTOCOL_VERSION, locator, stop).serialize()
+            getheaders(node, message, peer)
+            assert peer.block_availability.best_header_sent == best_header_sent

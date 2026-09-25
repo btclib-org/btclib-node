@@ -81,6 +81,7 @@ from btclib_node.exceptions import (
 )
 from btclib_node.main import verify_mempool_acceptance
 from btclib_node.p2p.address import ip_and_port
+from btclib_node.p2p.block_availability import update_block_availability
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 
 if TYPE_CHECKING:
@@ -826,6 +827,9 @@ def inv(node: Node, msg: bytes, conn: Connection) -> None:
     inv = Inv.parse(msg)
 
     block_index = node.chainstate.block_index
+    for item in inv.items:
+        if item.type_code == InventoryType.MSG_BLOCK:
+            update_block_availability(block_index, conn.block_availability, item.hash)
     unknown = [
         x.hash
         for x in inv.items
@@ -1244,15 +1248,20 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     # btclib-org/btclib-node#75
     block_index = node.chainstate.block_index
     tip = block_index.add_headers(headers)
+    # The batch's last header is a block the peer has: Core's
+    # `UpdatePeerStateForReceivedHeaders` where the batch connected, and
+    # `HandleUnconnectingHeaders`, which keeps it as unknown until it is
+    # indexed, where it did not (`net_processing.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+    update_block_availability(
+        block_index, conn.block_availability, headers[-1].hash if tip is None else tip
+    )
     if tip is not None:
         node.download_manager.last_getheaders_timestamps.pop(conn.id, None)
         # This batch connected, so its own tip is a taller header this
-        # connection has sent than any before it -- Core's own
-        # UpdateBlockAvailability (net_processing.cpp, at
-        # bitcoin/bitcoin@ca7162cde5) raises `pindexBestKnownBlock` the
-        # same way off every headers batch a peer sends.
-        # `download.py`'s own citation is where a connection's
-        # `best_known_height` is read back. btclib-org/btclib-node#706
+        # connection has sent than any before it. `download.py`'s own
+        # citation is where a connection's `best_known_height` is read
+        # back. btclib-org/btclib-node#706
         conn.best_known_height = max(
             conn.best_known_height, block_index.get_block_info(tip).index
         )
@@ -1301,9 +1310,20 @@ def getheaders(node: Node, msg: bytes, conn: Connection) -> None:
     resolves to is not yet Core's: btclib-org/btclib-node#1128.
     """
     getheaders = GetHeaders.parse(msg)
-    headers = node.chainstate.block_index.get_headers_from_locators(
+    block_index = node.chainstate.block_index
+    headers = block_index.get_headers_from_locators(
         getheaders.locator, getheaders.hash_stop
     )
+    # Core resets `pindexBestHeaderSent` to the last header sent, or to
+    # its tip where the answer is empty because the peer already has it.
+    # This node answers off `header_index`, so an empty answer to a
+    # locator it knows means the peer has `header_index`'s own tip; one
+    # to a locator it does not know says nothing, where Core's locator
+    # always resolves, to genesis at worst.
+    if headers:
+        conn.block_availability.best_header_sent = headers[-1].hash
+    elif any(h in block_index.header_index_pos for h in getheaders.locator):
+        conn.block_availability.best_header_sent = block_index.header_index[-1]
     conn.send(Headers(headers))
 
 

@@ -349,6 +349,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`btclib-node` exits 1 with Core's "Cannot obtain a lock on directory"**
   (closes #1147), locking the data and blocks directories as `bitcoind` does,
   before its log or any store is opened.
+### What each peer has of the chain is tracked, as in Core's `CNodeState`
+
+- **A block goes only to a peer not known to have it, as headers from the
+  first it lacks or the tip's `inv`** (closes #1160); `getpeerinfo`
+  answers `synced_headers` and `synced_blocks` (closes #1105).
 
 ## v2026.9.24
 

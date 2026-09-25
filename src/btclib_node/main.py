@@ -6,8 +6,9 @@
 
 Builds a fork's contextual detail, validates it block by block through
 `interpreter.check_transactions`, reconciles the mempool across
-whatever it adds and removes, and announces every added block to every
-connected peer once the node is out of initial block download.
+whatever it adds and removes, and announces the added blocks to every
+connected peer that lacks them once the node is out of initial block
+download.
 `verify_mempool_acceptance` is the same validation path
 entered from a single transaction instead, for the RPC and p2p callbacks
 that relay one.
@@ -39,6 +40,10 @@ from btclib_node.exceptions import (
     PrevoutCountMismatchError,
 )
 from btclib_node.interpreter import check_transaction, check_transactions, get_flags
+from btclib_node.p2p.block_availability import (
+    peer_has_header,
+    process_block_availability,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -51,6 +56,7 @@ if TYPE_CHECKING:
     from btclib_node.block_db import RevBlock
     from btclib_node.chainstate.filter_index import FilterIndex
     from btclib_node.chainstate.utxo_index import UtxoIndex
+    from btclib_node.p2p.block_availability import BlockAvailability
 
 __all__ = [
     "parent_lookup",
@@ -78,29 +84,51 @@ _MAX_BLOCKS_TO_ANNOUNCE = 8
 # _after_tip_change calls this, out of initial block download, with
 # every block one of update_chain's own calls just put on the active
 # chain, never an empty list: get_fork_details' own add list always
-# carries at least the candidate's own hash. Every peer this node has a
-# live connection to hears about it, the shape Core's `SendMessages`
-# picks (`src/net_processing.cpp`, "Try sending block announcements via
-# headers", same tag): every header where sendheaders
-# (callbacks.sendheaders) asked for that, and an `inv` of the tip alone
-# otherwise -- this node sending no compact blocks -- or wherever the
-# fork adds more than `_MAX_BLOCKS_TO_ANNOUNCE` blocks. Core's
-# `UpdatedBlockTip` queues at most that many of the newest, and
-# `SendMessages` sends them as headers only where they connect to a
-# header the peer has; nothing here tracks what a given peer has, so a
-# fork that long takes the tip's `inv`, which a peer answers from its
-# own header sync. For the same reason every connection hears about the
-# block, including whichever one it arrived on.
-# btclib-org/btclib-node#202
+# carries at least the candidate's own hash. Core's `UpdatedBlockTip`
+# queues the newest `_MAX_BLOCKS_TO_ANNOUNCE` of them for every peer,
+# and `SendMessages` announces them (`src/net_processing.cpp`, "Try
+# sending block announcements via headers", same tag): to a peer that
+# asked for headers (callbacks.sendheaders), every header from the
+# first one it does not have, where that one's parent is a header it
+# has; to any other peer, or where nothing connects, an `inv` of the
+# tip, unless the peer has it. A peer that announced the blocks to this
+# node therefore hears nothing back. This node sends no compact blocks, which
+# is Core's other way to announce. btclib-org/btclib-node#202,
+# btclib-org/btclib-node#1160
 def _announce_added_blocks(node: Node, blocks: list[Block]) -> None:
-    headers = [block.header for block in blocks]
-    tip_inv = Inv([Inventory(InventoryType.MSG_BLOCK, headers[-1].hash)])
-    as_headers = len(headers) <= _MAX_BLOCKS_TO_ANNOUNCE
+    block_index = node.chainstate.block_index
+    headers = [block.header for block in blocks[-_MAX_BLOCKS_TO_ANNOUNCE:]]
+    tip_hash = headers[-1].hash
     for conn in node.p2p_manager.connections.copy().values():
-        if as_headers and conn.prefers_headers:
-            conn.send(Headers(headers))
-        else:
-            conn.send(tip_inv)
+        state = conn.block_availability
+        process_block_availability(block_index, state)
+        to_send = (
+            _headers_to_announce(block_index, state, headers)
+            if conn.prefers_headers
+            else None
+        )
+        if to_send is None:
+            if not peer_has_header(block_index, state, tip_hash):
+                conn.send(Inv([Inventory(InventoryType.MSG_BLOCK, tip_hash)]))
+        elif to_send:
+            conn.send(Headers(to_send))
+            state.best_header_sent = to_send[-1].hash
+
+
+def _headers_to_announce(
+    block_index: BlockIndex, state: BlockAvailability, headers: list[BlockHeader]
+) -> list[BlockHeader] | None:
+    """Return the headers from the first one the peer lacks, `None` for an inv.
+
+    Empty where the peer has every one of them.
+    """
+    for i, header in enumerate(headers):
+        if peer_has_header(block_index, state, header.hash):
+            continue
+        if peer_has_header(block_index, state, header.previous_block_hash):
+            return headers[i:]
+        return None
+    return []
 
 
 def finish_sync(node: Node) -> None:
