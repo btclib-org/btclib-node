@@ -166,6 +166,12 @@ no longer says Core measures on a steady clock (closes #1081).
   discouraged host once one more peer would fill the inbound share, and
   accepts it as `prefer_evict` otherwise, as Core does** (closes #1078).
 
+### The JSON-RPC listener refuses a method or a path before the credential
+
+- **Before the credential, as in `bitcoind`: 501 for an unknown method, 405
+  for `DELETE`, then 404 off `/` and `/wallet/`, then 405 for a non-`POST`**
+  (closes #1075); a reply to a closed socket is dropped (closes #1079).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

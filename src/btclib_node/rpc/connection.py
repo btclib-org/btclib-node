@@ -6,8 +6,10 @@
 
 Parses the header section off the wire, bounded by `MAX_HEADER_BYTES`
 and `MAX_BODY_BYTES` since both are read before any credential is
-checked, answers a request whose `Authorization` header
-`rpc.auth.RpcAuth` does not accept with 401, and decodes the JSON-RPC
+checked, refuses a method or a path Core's listener refuses before
+Core checks a credential (`_refusal`), answers a request whose
+`Authorization` header `rpc.auth.RpcAuth` does not accept with 401, and
+decodes the JSON-RPC
 batch of one it does accept, which `rpc.manager.RpcManager.messages`
 queues for `rpc.main.handle_rpc`. `RawJSON` is a JSON number written
 back out exactly as given, the way Core's own `UniValue` writes one
@@ -200,6 +202,62 @@ def _wants_keep_alive(request_line: bytes | bytearray, headers: HTTPMessage) -> 
     return keep_alive
 
 
+_NOT_IMPLEMENTED = "501 Not Implemented"
+# libevent's own error page, as a real `bitcoind` v31.1.0 writes it
+_NOT_IMPLEMENTED_BODY = (
+    "<HTML><HEAD>\n<TITLE>501 Not Implemented</TITLE>\n"
+    "</HEAD><BODY>\n<H1>Not Implemented</H1>\n</BODY></HTML>\n"
+)
+# The methods Core's listener lets through to `http_request_cb`: every
+# other one is answered 501 before that callback runs. Core's source has
+# no 501 and never sets evhttp's allowed methods, so the refusal is the
+# libevent Core links, measured against a real `bitcoind` v31.1.0.
+_LIBEVENT_METHODS = frozenset((b"GET", b"POST", b"HEAD", b"PUT", b"DELETE"))
+
+
+def _refusal(request_line: bytes) -> tuple[str, str] | None:
+    """Return the status and body Core refuses `request_line` with, or `None`.
+
+    Core answers these before `HTTPReq_JSONRPC` reads `Authorization`,
+    so a caller without a credential gets them too (`http_request_cb`,
+    `src/httpserver.cpp`, and `HTTPReq_JSONRPC` and `StartHTTPRPC`,
+    `src/httprpc.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+
+    - a method outside `_LIBEVENT_METHODS` is libevent's 501;
+    - `DELETE`, which `HTTPRequest::GetRequestMethod` maps to `UNKNOWN`,
+      is 405 with no body, on any path;
+    - a target other than exactly `/` or one starting `/wallet/` matches
+      no handler `StartHTTPRPC` registers, and is 404 with no body;
+    - `GET`, `HEAD` and `PUT` there are 405, "JSONRPC server handles only
+      POST requests".
+
+    `/wallet/` is registered where `HasWalletSupport()` holds, as it does
+    in the `bitcoind` v31.1.0 release binary, which answers there. The
+    only other handlers are `StartREST`'s, registered only under `-rest`,
+    off by default (`DEFAULT_REST_ENABLE`, `src/init.cpp`); this node has
+    no REST interface, so `/rest/` is 404 here as in Core at its default.
+    The target is compared as the raw request-target, the way Core
+    compares `GetURI()`: a query string or an absolute URI matches
+    neither handler.
+
+    A `HEAD` reply here is framed like a `GET` one, by `Content-Length`;
+    `bitcoind` drops that header from a `HEAD` reply and still writes
+    the body, on a connection it keeps open, so nothing framed would
+    tell a client where that body ends.
+    """
+    method, _, rest = request_line.partition(b" ")
+    target = rest.partition(b" ")[0]
+    if method not in _LIBEVENT_METHODS:
+        return _NOT_IMPLEMENTED, _NOT_IMPLEMENTED_BODY
+    if method == b"DELETE":
+        return "405 Method Not Allowed", ""
+    if target != b"/" and not target.startswith(b"/wallet/"):
+        return "404 Not Found", ""
+    if method != b"POST":
+        return "405 Method Not Allowed", "JSONRPC server handles only POST requests"
+    return None
+
+
 @dataclass(frozen=True)
 class RequestHead:
     r"""One request's own header section and the framing decision from it.
@@ -368,6 +426,8 @@ class RpcConnection:
         # A 401's own reply, kept for the reason `_parse_error_reply`
         # above is
         self._unauthorized_reply: asyncio.Task[None] | None = None
+        # A `_refusal`'s own reply, kept for the same reason
+        self._refusal_reply: asyncio.Task[None] | None = None
 
     def close(self) -> None:
         """Close `client`.
@@ -435,7 +495,9 @@ class RpcConnection:
 
         A request whose `Authorization` header `manager.auth` does not
         accept is answered 401 by `_send_unauthorized` instead, its body
-        read off the socket and never decoded or queued.
+        read off the socket and never decoded or queued. A method or a
+        target `_refusal` refuses is answered by `_send_refusal` before
+        that, whatever the credential.
 
         Called again, by `async_send` below, for every request after the
         first one a kept-alive connection carries -- `self.buffer` is
@@ -467,6 +529,21 @@ class RpcConnection:
             # and must not be replayed as part of this request's own
             # body on a second call to this method.
             self.buffer = self.buffer[length:]
+            # Ahead of the credential check below, as in Core, and once
+            # the body is read, so that a kept-alive connection goes on
+            # to its next request after a 404 or a 405, and a 501 closes
+            # it. `bitcoind` does the same except in two cases: it closes
+            # after a 404 to an absolute-form target, and it keeps
+            # reading after a `CONNECT`'s 501 (issue #1086).
+            refusal = _refusal(head.request_line)
+            if refusal is not None:
+                status, refusal_body = refusal
+                if status == _NOT_IMPLEMENTED:
+                    self.keep_alive = False
+                self._refusal_reply = self.loop.create_task(
+                    self._send_refusal(status, refusal_body)
+                )
+                return
             # Core's `HTTPReq_JSONRPC`: no `Authorization` at all is a
             # 401 at once, one it does not accept a 401 after
             # `FAILED_ATTEMPT_DELAY`. Scheduled as a task of its own, as
@@ -579,7 +656,8 @@ class RpcConnection:
         # `self.manager.connections.pop` below covers every other way
         # this method fails: `ConnectionError` (an unterminated header, a
         # peer that goes away mid-request), `MalformedRequestHeadError`
-        # (an overstated or negative Content-Length, or a `Content-Length`
+        # (a header section `http.client` refuses, an overstated or
+        # negative Content-Length, or a `Content-Length` that
         # `parse_request_head` otherwise refuses) and `TimeoutError`
         # (`REQUEST_TIMEOUT` elapsing) never reach `send()` or
         # `async_send`'s own close branch either,
@@ -667,13 +745,34 @@ class RpcConnection:
         http_response += "Content-Length: 0\r\n\r\n"
         await self._write(http_response.encode())
 
+    async def _send_refusal(self, status: str, body: str) -> None:
+        """Answer `status` with `body`, one of `_refusal`'s own replies.
+
+        The status line and the body are `bitcoind` v31.1.0's; the `Date`
+        and `Content-Type` headers libevent adds are not written, as
+        `_send_unauthorized` does not write them.
+        """
+        http_response = f"HTTP/1.1 {status}\r\n"
+        if not self.keep_alive:
+            http_response += "Connection: close\r\n"
+        http_response += f"Content-Length: {len(body)}\r\n\r\n{body}"
+        await self._write(http_response.encode())
+
     async def _write(self, http_response: bytes) -> None:
         """Write one reply, then read the next request or close.
 
         `self.keep_alive` decides which, `async_send`'s own docstring
         says how.
         """
-        await self.loop.sock_sendall(self.client, http_response)
+        # A reply can run after its socket is gone: the client hung up,
+        # or the socket was closed while this task was still queued.
+        # Suppressed as `p2p.connection.Connection._send` suppresses it,
+        # rather than left on a task nothing awaits, where asyncio
+        # prints it as "Task exception was never retrieved". What
+        # follows cleans up either way: the close branch below, or a
+        # read in `run` that fails and closes (issue #1079).
+        with contextlib.suppress(OSError):
+            await self.loop.sock_sendall(self.client, http_response)
         if self.keep_alive:
             # No re-insertion into `manager.connections` here: unlike an
             # earlier version of this method, nothing removed this id on
