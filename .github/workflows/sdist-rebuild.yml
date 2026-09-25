@@ -19,8 +19,9 @@ name: sdist-rebuild
 # `uv build`, which the callee's default (`sdist-builder: uv`, running
 # `uv build --sdist`) replaces -- the wheel that bare `uv build` also
 # wrote was read by nothing in this file and this tree stops building it
-# here. `submodules` and `python-version` are likewise left at the
-# callee's own `""` defaults, this tree's checkout having named neither.
+# here. `submodules` and `setup-python` are likewise left at the
+# callee's own defaults, `""` and `false`: this tree's checkout named no
+# submodules and its build ran no setup-python step.
 #
 # The sdist alone: section 10 of btclib-org/.github's README.md makes
 # the row the sdist's. A red run is an issue against this tree. It gates
