@@ -178,6 +178,12 @@ no longer says Core measures on a steady clock (closes #1081).
   block's; `pingtime`, `minping` and `pingwait` appear once they hold a
   value** (closes #1084).
 
+### `README.md` and `CONTRIBUTING.md` link `GOVERNANCE.md` and `ROADMAP.md`
+
+`README.md`'s Contributing section and `CONTRIBUTING.md`'s shared prefix
+link `GOVERNANCE.md` and `ROADMAP.md`, the organization's own, one copy
+each in `btclib-org/.github` (issue btclib-org/.github#1359).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

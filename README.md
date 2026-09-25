@@ -109,6 +109,11 @@ pytest` is the suite and its coverage floor, and the lint gate is
 that has to be installed; it fetches the interpreter and every dependency
 group itself.
 
+How the organization decides, and who holds which role, is its
+[GOVERNANCE.md](https://github.com/btclib-org/.github/blob/main/GOVERNANCE.md);
+what it intends to do, and what it deliberately does not, is its
+[ROADMAP.md](https://github.com/btclib-org/.github/blob/main/ROADMAP.md).
+
 [REVIEWING.md](./REVIEWING.md) is what a pull request here is answered
 against.
 
