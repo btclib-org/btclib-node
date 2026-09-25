@@ -6,8 +6,9 @@
 
 `RpcConnection.run` reads the header section of an HTTP request before
 it checks any credential (`rpc/connection.py`'s own module docstring),
-splits the request line from the header fields, decides a
-`Content-Length` and a keep-alive default from them -- hostile-input
+splits the request line from the header fields, parses the request
+line's version and target, and decides a `Content-Length` from them --
+hostile-input
 arithmetic of this tree's own, ahead of the `json.loads` that decodes a
 request's body, which is stdlib's own business and not this node's.
 `rpc.connection.parse_request_head` is that arithmetic pulled into a

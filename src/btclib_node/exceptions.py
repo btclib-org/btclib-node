@@ -430,5 +430,5 @@ class OversizedRequestBodyError(BTClibValueError):
     another.
     """
 
-    def __init__(self, length: int) -> None:
+    def __init__(self, length: str) -> None:
         super().__init__(f"request body too large: Content-Length {length}")

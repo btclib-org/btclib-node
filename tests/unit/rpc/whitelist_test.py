@@ -352,7 +352,7 @@ def test_what_core_refuses_ahead_of_the_whitelist_is_core_s_reply(
     """`JSONErrorReply`'s status line and JSON body, and nothing queued."""
     reply, messages, warnings = exchange(whitelisted(*PYTEST_ONLY), [request_])
     expected = f"HTTP/1.1 {status}\r\nContent-Type: application/json\r\n"
-    expected += f"Connection: close\r\nContent-Length: {len(body) + 1}\r\n\r\n"
+    expected += f"Content-Length: {len(body) + 1}\r\nConnection: close\r\n\r\n"
     assert reply == (expected + body + "\n").encode()
     assert not messages
     assert not warnings
@@ -363,8 +363,8 @@ def test_a_403_is_core_s_bare_status_and_is_logged() -> None:
     reply, messages, warnings = exchange(
         whitelisted(*PYTEST_ONLY), [{"id": 1, "method": "stop"}]
     )
-    expected = b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n"
-    assert reply == expected + b"Content-Length: 0\r\n\r\n"
+    expected = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n"
+    assert reply == expected + b"Connection: close\r\n\r\n"
     assert not messages
     assert warnings == [("RPC User %s not allowed to call method %s", "pytest", "stop")]
 
