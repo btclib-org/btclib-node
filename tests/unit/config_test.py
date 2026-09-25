@@ -4,6 +4,7 @@
 
 """`Config`'s chain resolution, path arithmetic, ports and feerate floor."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -335,7 +336,47 @@ def test_rpccookiefile_resolves_against_the_chain_s_data_dir(tmp_path: Path) -> 
 
 def test_no_rpccookiefile_is_no_cookie() -> None:
     """`-norpccookiefile`, which `None` stands for here."""
-    assert Config(chain="regtest", rpccookiefile=None).rpc_cookie_file is None
+    config = Config(chain="regtest", rpccookiefile=None)
+    assert config.rpc_cookie_file is None
+    assert config.rpc_cookie_tmp is None
+
+
+@pytest.mark.parametrize(
+    ("value", "tmp"),
+    [
+        ("", COOKIE_FILE + ".tmp"),
+        ("sub/", "sub.tmp"),
+        ("..", "...tmp"),
+        (".", "..tmp"),
+        ("a/..", "..tmp"),
+    ],
+)
+def test_the_cookie_s_tmp_is_core_s_get_auth_cookie_file_true(
+    tmp_path: Path, value: str, tmp: str
+) -> None:
+    """`.tmp` appended to the normalised value, then resolved.
+
+    `bitcoind` v31.1.0 writes `-rpccookiefile=.` and `=a/..` to
+    `<chain dir>/..tmp`, inside the chain directory it then cannot
+    rename it over.
+    """
+    config = Config(chain="regtest", data_dir=tmp_path, rpccookiefile=value)
+    assert config.rpc_cookie_tmp == config.data_dir / tmp
+
+
+@pytest.mark.skipif(os.name == "nt", reason="`/` names no drive, so is relative")
+def test_the_tmp_of_an_absolute_rpccookiefile_is_beside_it(tmp_path: Path) -> None:
+    """`/` is `/.tmp`, and the chain directory's own path its sibling.
+
+    As `bitcoind` v31.1.0 names both, in the warning it logs before
+    refusing to start.
+    """
+    config = Config(chain="regtest", data_dir=tmp_path, rpccookiefile="/")
+    assert config.rpc_cookie_file == Path("/")
+    assert config.rpc_cookie_tmp == Path("/.tmp")
+    chain_dir = tmp_path / "regtest"
+    config = Config(chain="regtest", data_dir=tmp_path, rpccookiefile=chain_dir)
+    assert config.rpc_cookie_tmp == tmp_path / "regtest.tmp"
 
 
 def test_rpccookieperms_is_parsed_unless_rpcpassword_is_set() -> None:

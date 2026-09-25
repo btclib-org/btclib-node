@@ -12,6 +12,7 @@ import hmac
 import os
 import re
 import stat
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import pytest
@@ -30,7 +31,6 @@ from tests import RPCAUTH, RPCAUTH_PASSWORD
 
 if TYPE_CHECKING:
     import logging
-    from pathlib import Path
 
 
 def basic(userpass: bytes) -> str:
@@ -212,10 +212,74 @@ def test_the_cookie_is_mode_0600_on_posix(tmp_path: Path) -> None:
 
 
 def test_generate_cookie_raises_where_it_cannot_write(tmp_path: Path) -> None:
-    """A data directory that is not there raises, and leaves no cookie."""
+    """A data directory that is not there raises, and leaves no cookie.
+
+    With the warning `bitcoind` v31.1.0 logs for a `-rpccookiefile`
+    whose directory is missing.
+    """
     auth = RpcAuth()
-    with pytest.raises(FileNotFoundError):
+    tmp = tmp_path / "missing" / (COOKIE_FILE + ".tmp")
+    err_msg = f"^Unable to open cookie authentication file {re.escape(str(tmp))} "
+    with pytest.raises(OSError, match=err_msg + "for writing$") as caught:
         auth.generate_cookie(tmp_path / "missing" / COOKIE_FILE)
+    assert isinstance(caught.value.__cause__, FileNotFoundError)
+    assert auth.cookie_path is None
+    assert auth.entries == []
+
+
+def test_a_path_holding_a_nul_byte_cannot_be_opened(tmp_path: Path) -> None:
+    """An `OSError` like any other, where Python's own is a `ValueError`."""
+    auth = RpcAuth()
+    with pytest.raises(OSError, match=r"^Unable to open cookie") as caught:
+        auth.generate_cookie(tmp_path / "a\0b")
+    assert isinstance(caught.value.__cause__, ValueError)
+    assert auth.cookie_path is None
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or os.geteuid() == 0, reason="`/` writable by the user"
+)
+def test_the_root_directory_cannot_be_a_cookie() -> None:
+    """`/` is written as `/.tmp`, which `bitcoind` v31.1.0 cannot open."""
+    auth = RpcAuth()
+    err_msg = r"^Unable to open cookie authentication file /\.tmp for writing$"
+    with pytest.raises(OSError, match=err_msg):
+        auth.generate_cookie(Path("/"))
+    assert auth.cookie_path is None
+
+
+def test_a_cookie_that_cannot_be_renamed_leaves_its_tmp(tmp_path: Path) -> None:
+    """The chain directory as the cookie: Core's `.tmp` inside it, left there.
+
+    `-rpccookiefile=.` makes `bitcoind` v31.1.0 write `<chain dir>/..tmp`
+    and refuse to rename it over the chain directory, logging both paths.
+    """
+    auth = RpcAuth()
+    tmp = tmp_path / "..tmp"
+    names = f"{re.escape(str(tmp))} to {re.escape(str(tmp_path))}"
+    with pytest.raises(OSError, match=f"^Unable to rename cookie .* {names}$"):
+        auth.generate_cookie(tmp_path, tmp=tmp)
+    assert tmp.is_file()
+    assert not tmp_path.with_name(tmp_path.name + ".tmp").exists()
+    assert auth.cookie_path is None
+    assert auth.entries == []
+
+
+def test_a_cookie_whose_mode_cannot_be_set_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`GenerateAuthCookie`'s third warning, and no cookie accepted."""
+
+    def refuse(self: Path, mode: int) -> None:
+        raise PermissionError(self, mode)
+
+    monkeypatch.setattr(Path, "chmod", refuse)
+    auth = RpcAuth()
+    path = tmp_path / COOKIE_FILE
+    err_msg = "^Unable to set permissions on cookie authentication file "
+    with pytest.raises(OSError, match=err_msg + re.escape(str(path)) + "$"):
+        auth.generate_cookie(path, 0o640)
     assert auth.cookie_path is None
     assert auth.entries == []
 
@@ -386,5 +450,6 @@ def test_from_config_carries_every_setting(tmp_path: Path) -> None:
     assert auth.password_set
     assert auth.rpcauth_set
     assert auth.cookie_file == config.rpc_cookie_file
+    assert auth.cookie_tmp == config.rpc_cookie_tmp
     assert auth.whitelist == {b"alice": frozenset({"getblockcount"})}
     assert auth.whitelist_default

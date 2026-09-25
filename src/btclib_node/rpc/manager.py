@@ -148,7 +148,8 @@ class RpcManager(threading.Thread):
         Raises `OSError` where either step fails, having logged it and
         closed the socket: Core's "Unable to bind any endpoint for RPC
         server" and `InitRPCAuthentication`'s refusal of a cookie that
-        cannot be written.
+        cannot be written, logged as the warning `GenerateAuthCookie`
+        logs.
         """
         try:
             self._server_socket = self._bind()
@@ -157,9 +158,9 @@ class RpcManager(threading.Thread):
             raise
         try:
             self.auth.start(self.logger)
-        except OSError:
+        except OSError as err:
             self._server_socket.close()
-            self.logger.exception("Could not write the RPC authentication cookie")
+            self.logger.warning("%s", err)
             raise
         self.listening.set()
         return self._server_socket
