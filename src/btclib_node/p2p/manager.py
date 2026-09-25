@@ -513,26 +513,19 @@ class P2pManager(threading.Thread):
     def discourage(self, address: NetworkAddressV2) -> None:
         """Record the host `address` is on as discouraged, Core's `Discourage`.
 
-        The caller is one of the `conn.stop()` sites that stops a
-        connection this node dialled or accepted for cause -- an
-        incompatible peer or one that broke the protocol, never a
-        connection this node closed on its own account. A discouraged
-        host is not dialled by `_maybe_dial_more_peers`, is refused by
-        `server` once the inbound slots are nearly full, and is accepted
-        otherwise as the first to evict.
+        `maybe_discourage_and_disconnect` is the caller, and decides
+        which hosts get here. A discouraged host is not dialled by
+        `_maybe_dial_more_peers`, is refused by `server` once the
+        inbound slots are nearly full and accepted otherwise as the
+        first to evict, is left out of a `getaddr` answer, and is not
+        stored from an `addr` or `addrv2`.
 
         Keyed by `host_key`, without the port, as Core's
         `BanMan::Discourage` is (`src/banman.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag). A local address is
-        not recorded: Core's `MaybeDiscourageAndDisconnect`
-        (`src/net_processing.cpp`, same sha) disconnects a local peer
-        without discouraging it, since that would discourage every peer
-        on the same local address. Discouraging a host already held
-        moves it to the newest, as a second insert into Core's filter
-        does.
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Discouraging a host
+        already held moves it to the newest, as a second insert into
+        Core's filter does.
         """
-        if can_addrv1(address) and is_local(address):
-            return
         key = host_key(address)
         with self._discouraged_lock:
             self._discouraged.pop(key, None)
@@ -545,6 +538,42 @@ class P2pManager(threading.Thread):
         key = host_key(address)
         with self._discouraged_lock:
             return key in self._discouraged
+
+    def maybe_discourage_and_disconnect(self, conn: Connection) -> bool:
+        """Drop `conn` for misbehaving, and discourage its host as Core would.
+
+        Core's `MaybeDiscourageAndDisconnect` (`src/net_processing.cpp`,
+        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), answering whether
+        the host was discouraged. A local peer is dropped alone, since
+        discouraging it would discourage every peer on the same local
+        address. Otherwise the host is discouraged and every connection
+        held with it is dropped, whatever its port and its kind, as
+        Core's `DisconnectNode(CSubNet(addr))` does (`src/net.cpp`, same
+        sha).
+
+        A manual peer, one `-connect`, `-addnode` or the `addnode` RPC
+        dialled, is never discouraged. Core does not disconnect it
+        either, and this drops it all the same: every caller stops the
+        connection for a message it could not take, the same stop a
+        failure that discourages nobody gets, and `_maybe_redial_specified`
+        dials a `-connect` or `-addnode` peer again.
+        """
+        address = conn.address
+        if not conn.inbound and not conn.automatic:
+            conn.stop()
+            return False
+        if can_addrv1(address) and is_local(address):
+            conn.stop()
+            return False
+        self.discourage(address)
+        key = host_key(address)
+        with self._connections_lock:
+            held = (*self.connections.values(), *self.pending_connections.values())
+        conn.stop()
+        for other in held:
+            if other is not conn and host_key(other.address) == key:
+                other.stop()
+        return True
 
     async def async_connect(self, address: NetworkAddressV2) -> None:
         """Dial `address` and, if it comes up, register the connection.

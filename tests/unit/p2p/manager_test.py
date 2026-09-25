@@ -393,11 +393,70 @@ def test_a_local_host_is_never_discouraged(
     """ISS 1078: Core's `MaybeDiscourageAndDisconnect` spares a local peer.
 
     Keyed without the port, one local peer discouraged would be every
-    local peer discouraged.
+    local peer discouraged, so only the connection that misbehaved is
+    dropped.
     """
-    manager = a_manager()
-    manager.discourage(peer_address(host, 18444))
+    misbehaving = a_conn(0, address=peer_address(host, 18444), inbound=True)
+    other = a_conn(1, address=peer_address(host, 50000), inbound=True)
+    manager = a_manager([misbehaving, other])
+    assert manager.maybe_discourage_and_disconnect(misbehaving) is False
     assert not manager.is_discouraged(peer_address(host, 18444))
+    assert misbehaving.stopped == [True]
+    assert not other.stopped
+
+
+def test_discouraging_a_host_drops_every_connection_held_with_it(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1094: Core's `DisconnectNode(CSubNet(addr))` drops the whole host.
+
+    Whatever the port, the kind of connection and whether its handshake
+    is done, and no other host's.
+    """
+    misbehaving = a_conn(0, address=peer_address("1.2.3.4", 50000), inbound=True)
+    same_host_inbound = a_conn(1, address=peer_address("1.2.3.4", 50001), inbound=True)
+    same_host_manual = a_conn(2, address=peer_address("::ffff:1.2.3.4", 18444))
+    same_host_pending = a_conn(
+        3,
+        address=peer_address("1.2.3.4", 18445),
+        status=P2pConnStatus.Open,
+        automatic=True,
+    )
+    other_host = a_conn(4, address=peer_address("1.2.3.5", 50000), inbound=True)
+    manager = a_manager([misbehaving, same_host_inbound, same_host_manual, other_host])
+    manager.pending_connections[3] = same_host_pending
+    assert manager.maybe_discourage_and_disconnect(misbehaving) is True
+    assert manager.is_discouraged(peer_address("1.2.3.4", 18444))
+    for conn in (misbehaving, same_host_inbound, same_host_manual, same_host_pending):
+        assert conn.stopped == [True]
+    assert not other_host.stopped
+
+
+def test_an_automatic_peer_misbehaving_is_discouraged(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1090: a peer this node drew and dialled itself is punished."""
+    misbehaving = a_conn(0, automatic=True)
+    manager = a_manager([misbehaving])
+    assert manager.maybe_discourage_and_disconnect(misbehaving) is True
+    assert manager.is_discouraged(misbehaving.address)
+    assert misbehaving.stopped == [True]
+
+
+def test_a_manual_peer_is_never_discouraged(a_manager: AManagerFactory) -> None:
+    """ISS 1090: Core's `MaybeDiscourageAndDisconnect` spares a manual peer.
+
+    "We never disconnect or discourage manual peers for bad behavior":
+    the connection is dropped here all the same, and nothing else held
+    with the host is.
+    """
+    misbehaving = a_conn(0, inbound=False, automatic=False)
+    other = a_conn(1, address=peer_address("1.2.3.4", 50000), inbound=True)
+    manager = a_manager([misbehaving, other])
+    assert manager.maybe_discourage_and_disconnect(misbehaving) is False
+    assert not manager.is_discouraged(misbehaving.address)
+    assert misbehaving.stopped == [True]
+    assert not other.stopped
 
 
 def test_the_host_discouraged_longest_ago_is_forgotten_first(

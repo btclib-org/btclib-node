@@ -80,7 +80,7 @@ from btclib_node.exceptions import (
 )
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
-from btclib_node.p2p.address import PeerDB, endpoint_key, peer_address
+from btclib_node.p2p.address import PeerDB, endpoint_key, host_key, peer_address
 from btclib_node.p2p.callbacks import (
     MAX_CFILTERS_INFLIGHT_BYTES,
     MAX_GETDATA_INFLIGHT_BYTES,
@@ -112,6 +112,7 @@ from btclib_node.p2p.callbacks import (
 from btclib_node.p2p.callbacks import block as block_callback
 from btclib_node.p2p.connection import Connection, PeerStats
 from tests import (
+    discourage_recorder,
     generate_random_chain,
     generate_random_header_chain,
     generate_random_transaction,
@@ -164,9 +165,15 @@ def a_version_address(services: int = 0) -> NetworkAddress:
 
 
 def make_node(
-    addresses: Sequence[NetworkAddressV2], *, prefer_addressv2: bool = False
+    addresses: Sequence[NetworkAddressV2],
+    *,
+    prefer_addressv2: bool = False,
+    discouraged: Sequence[NetworkAddressV2] = (),
 ) -> tuple[Any, Any, list[Any]]:
-    """Build a node with `peer_db` addresses active, and a peer stand-in."""
+    """Build a node with `peer_db` addresses active, and a peer stand-in.
+
+    `is_discouraged` answers for the hosts of `discouraged`.
+    """
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
     for address in addresses:
         peer_db.active_addresses.append(address)
@@ -174,7 +181,13 @@ def make_node(
     conn = SimpleNamespace(
         prefer_addressv2=prefer_addressv2, send=sent.append, answered_getaddr=False
     )
-    node = SimpleNamespace(p2p_manager=SimpleNamespace(peer_db=peer_db))
+    keys = {host_key(address) for address in discouraged}
+    node = SimpleNamespace(
+        p2p_manager=SimpleNamespace(
+            peer_db=peer_db,
+            is_discouraged=lambda address: host_key(address) in keys,
+        )
+    )
     return node, conn, sent
 
 
@@ -351,6 +364,28 @@ def test_the_cached_sample_is_redrawn_once_it_expires(
     assert len(draws) == 2
 
 
+def test_a_discouraged_host_is_left_out_of_a_getaddr_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1089: Core's `GetAddressesUnsafe` leaves a discouraged host out.
+
+    Whatever port it was recorded on, and after the draw: the sample
+    patched to the identity here, what is left out is only the host.
+    """
+    monkeypatch.setattr(cb, "_addresses_to_send", list)
+    now = int(time.time())
+    kept = peer_address("1.2.3.4", 18444, timestamp=now)
+    discouraged = peer_address("1.2.3.5", 18444, timestamp=now)
+    node, conn, sent = make_node(
+        [kept, discouraged],
+        prefer_addressv2=True,
+        discouraged=[replace(discouraged, port=50000)],
+    )
+    getaddr(node, b"", conn)
+    (answer,) = sent
+    assert answer.addresses == (kept,)
+
+
 def a_version(
     *,
     protocol: int = PROTOCOL_VERSION,
@@ -444,6 +479,9 @@ def a_peer(**attributes: Any) -> Any:
         send_ping=lambda: sent.append("ping"),
         client=SimpleNamespace(getpeername=lambda: ("1.2.3.4", 18444)),
         inbound=False,
+        # what `Connection` starts every connection at, and what
+        # `P2pManager.create_connection` sets for a peer it drew itself
+        automatic=False,
         address=peer_address("1.2.3.4", 18444),
         stats=PeerStats(),
     )
@@ -458,9 +496,15 @@ def a_handshake_node(
     peer_db: Any = None,
     promote_connection: Any = None,
     min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
+    discouraged_hosts: Sequence[str] = (),
 ) -> Any:
-    """Build a node double with just what handshake callbacks read or write."""
-    discouraged: list[Any] = []
+    """Build a node double with just what handshake callbacks read or write.
+
+    `is_discouraged` answers for the IPs `discouraged_hosts` names,
+    whatever the port.
+    """
+    discouraged, record = discourage_recorder()
+    discouraged_keys = {host_key(peer_address(host, 0)) for host in discouraged_hosts}
     own_nonces = set(pending_outbound_nonces)
     return SimpleNamespace(
         status=status,
@@ -470,8 +514,9 @@ def a_handshake_node(
             is_self_connect_nonce=own_nonces.__contains__,
             peer_db=peer_db,
             promote_connection=promote_connection or (lambda conn_id: None),
-            discourage=discouraged.append,
+            maybe_discourage_and_disconnect=record,
             discouraged=discouraged,
+            is_discouraged=lambda address: host_key(address) in discouraged_keys,
         ),
         chainstate=SimpleNamespace(
             block_index=SimpleNamespace(get_block_locator_hashes=lambda: [b"\x00" * 32])
@@ -536,34 +581,36 @@ def test_a_second_version_ahead_of_verack_is_ignored_outright() -> None:
 def test_a_version_carrying_our_own_nonce_is_this_node_calling_itself() -> None:
     """A `version` carrying this node's own nonce is a self-connection, dropped.
 
-    #283: an incompatibility, not a protocol violation, and still cause to
-    discourage.
+    ISS 1090: dropped and not discouraged, as Core's "connected to self"
+    is `fDisconnect` alone.
     """
     node = a_handshake_node(pending_outbound_nonces=[7])
     peer = a_peer()
     version(node, a_version(nonce=7), peer)
     assert peer.stopped == [True]
     assert not peer.sent
-    # #283: an incompatibility, not a protocol violation, and still cause
-    assert node.p2p_manager.discouraged == [peer.address]
+    assert not node.p2p_manager.discouraged
 
 
 def test_a_peer_speaking_an_older_protocol_is_let_go() -> None:
-    """A `version` below `PROTOCOL_VERSION` is refused, the peer discouraged."""
+    """A `version` below `PROTOCOL_VERSION` is refused, and not discouraged.
+
+    ISS 1090: Core's obsolete-version refusal is `fDisconnect` alone.
+    """
     node = a_handshake_node()
     peer = a_peer()
     version(node, a_version(protocol=PROTOCOL_VERSION - 1), peer)
     assert peer.stopped == [True]
-    assert node.p2p_manager.discouraged == [peer.address]  # #283
+    assert not node.p2p_manager.discouraged
 
 
 def test_a_peer_without_the_witness_service_is_let_go() -> None:
-    """A peer never advertising `NODE_WITNESS` is refused and discouraged."""
+    """A peer never advertising `NODE_WITNESS` is refused, not discouraged."""
     node = a_handshake_node()
     peer = a_peer()
     version(node, a_version(services=ServiceFlags.NODE_NETWORK), peer)
     assert peer.stopped == [True]
-    assert node.p2p_manager.discouraged == [peer.address]  # #283
+    assert not node.p2p_manager.discouraged  # ISS 1090
 
 
 def test_a_pruned_peer_is_let_go_only_once_the_blocks_are_synced() -> None:
@@ -571,21 +618,21 @@ def test_a_pruned_peer_is_let_go_only_once_the_blocks_are_synced() -> None:
 
     Before `BlockSynced`, a peer that carries `NODE_WITNESS` alone can
     still serve this node headers, so it is kept; once blocks are
-    wanted, the same peer is refused and discouraged for lacking the
-    full-history service this node now needs.
+    wanted, the same peer is refused for lacking the full-history
+    service this node now needs, and not discouraged (ISS 1090).
     """
     pruned = ServiceFlags.NODE_WITNESS
     node = a_handshake_node(status=NodeStatus.HeaderSynced)
-    peer = a_peer()
+    peer = a_peer(automatic=True)
     version(node, a_version(services=pruned), peer)
     assert not peer.stopped
     assert not node.p2p_manager.discouraged
 
     node = a_handshake_node(status=NodeStatus.BlockSynced)
-    peer = a_peer()
+    peer = a_peer(automatic=True)
     version(node, a_version(services=pruned), peer)
     assert peer.stopped == [True]
-    assert node.p2p_manager.discouraged == [peer.address]  # #283
+    assert not node.p2p_manager.discouraged
 
 
 def test_a_node_network_limited_only_dialled_peer_is_kept_once_synced() -> None:
@@ -600,7 +647,7 @@ def test_a_node_network_limited_only_dialled_peer_is_kept_once_synced() -> None:
     """
     limited = ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS
     node = a_handshake_node(status=NodeStatus.BlockSynced)
-    peer = a_peer(inbound=False)
+    peer = a_peer(inbound=False, automatic=True)
     version(node, a_version(services=limited), peer)
     assert not peer.stopped
     assert not node.p2p_manager.discouraged
@@ -661,19 +708,32 @@ def test_an_inbound_peer_with_neither_service_is_kept() -> None:
 
 
 def test_a_dialled_peer_with_neither_service_is_dropped_once_synced() -> None:
-    """A peer this node dialled, offering neither service, is refused.
+    """A peer this node drew and dialled, offering neither service, is refused.
 
-    The pruned-peer test above already covers this with `a_peer()`'s
-    own default `inbound=False`; spelled out explicitly here as the
-    third of the three cases #725's round 1 review asked for, beside
-    the two above.
+    The third of the three cases #725's round 1 review asked for, beside
+    the two above, and not discouraged (ISS 1090).
     """
     pruned = ServiceFlags.NODE_WITNESS
     node = a_handshake_node(status=NodeStatus.BlockSynced)
-    peer = a_peer(inbound=False)
+    peer = a_peer(inbound=False, automatic=True)
     version(node, a_version(services=pruned), peer)
     assert peer.stopped == [True]
-    assert node.p2p_manager.discouraged == [peer.address]
+    assert not node.p2p_manager.discouraged
+
+
+def test_a_manual_peer_with_neither_service_is_kept_once_synced() -> None:
+    """A `-connect` or `-addnode` peer is not refused for the wanted services.
+
+    Core's `ExpectServicesFromConn` is `false` for a `MANUAL` connection,
+    which `automatic=False` on an outbound peer is here. The peer still
+    has `NODE_WITNESS`, which `version` asks of every peer.
+    """
+    pruned = ServiceFlags.NODE_WITNESS
+    node = a_handshake_node(status=NodeStatus.BlockSynced)
+    peer = a_peer(inbound=False, automatic=False)
+    version(node, a_version(services=pruned), peer)
+    assert not peer.stopped
+    assert commands(peer) == ["WtxidRelay", "SendAddrV2", "Verack"]
 
 
 def test_a_version_that_says_it_relays_nothing_is_taken_at_its_word() -> None:
@@ -1139,6 +1199,24 @@ def test_the_addresses_a_peer_sends_are_kept() -> None:
         # translated back into one; and without the timestamp the peer
         # quoted, which is PeerDB.add_addresses' doing
         assert peer_db.addresses == {replace(address, timestamp=0) for address in given}
+
+
+def test_a_discouraged_host_gossiped_is_not_stored() -> None:
+    """ISS 1089: Core's `ADDR`/`ADDRV2` loop skips a discouraged host.
+
+    Through `addr` and `addrv2` alike, whatever port it is gossiped on.
+    """
+    now = int(time.time())
+    kept = peer_address("1.2.3.4", 18444, timestamp=now)
+    discouraged = peer_address("1.2.3.5", 18444, timestamp=now)
+    for callback, message in (
+        (addr, Addr([addr_entry(address) for address in (kept, discouraged)])),
+        (addrv2, AddrV2([kept, discouraged])),
+    ):
+        peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+        node = a_handshake_node(peer_db=peer_db, discouraged_hosts=["1.2.3.5"])
+        callback(node, message.serialize(), a_peer())
+        assert peer_db.addresses == {replace(kept, timestamp=0)}
 
 
 def test_an_octet_past_an_addr_or_addrv2_no_longer_costs_the_peer() -> None:

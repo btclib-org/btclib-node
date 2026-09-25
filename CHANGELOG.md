@@ -262,6 +262,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `getblock` and `getdata` answer it** (closes #1072); pruning clears its
   `downloaded` too, and `getrawtransaction` refuses its coinbase as Core does.
 
+### Discouragement follows Core's `MaybeDiscourageAndDisconnect`
+
+- **A discouraged host is not gossiped or stored** (closes #1089) and loses
+  every connection (closes #1094); no `version` refusal or manual peer is
+  discouraged, nor a manual peer refused for the wanted services (closes #1090).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

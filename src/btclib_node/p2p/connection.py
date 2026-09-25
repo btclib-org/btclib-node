@@ -865,9 +865,13 @@ class Connection:
                     # length, a message for another network. Anything else
                     # caught here is this node's own bug, not the peer's
                     # doing. btclib-org/btclib-node#283
+                    #
+                    # Stopped first, so that this task is not the one
+                    # `maybe_discourage_and_disconnect` cancels.
+                    self.stop(cancel_task=False)
                     if isinstance(e, BTClibException):
-                        self.manager.discourage(self.address)
-                    return self.stop(cancel_task=False)
+                        self.manager.maybe_discourage_and_disconnect(self)
+                    return None
         finally:
             self.stop(cancel_task=False)
 
