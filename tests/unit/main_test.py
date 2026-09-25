@@ -838,6 +838,19 @@ def test_a_candidate_whose_block_has_not_arrived_is_not_connected(
     assert node.status == NodeStatus.HeaderSynced
 
 
+def test_a_node_still_syncing_headers_connects_what_it_holds(node: Node) -> None:
+    """Blocks connect before header sync ends, and the status stays put.
+
+    A node with no peer never finishes header sync, and `submitblock`
+    is how it gets blocks at all (btclib-org/btclib-node#1071).
+    """
+    node.status = NodeStatus.SyncingHeaders
+    chain = generate_random_chain(2, RegTest().genesis.hash)
+    block_index = connect(node, chain)
+    assert block_index.active_chain == [RegTest().genesis.hash, *hashes(chain)]
+    assert node.status == NodeStatus.SyncingHeaders
+
+
 def test_a_hole_behind_a_downloaded_tip_does_not_block_a_complete_branch(
     node: Node,
 ) -> None:
