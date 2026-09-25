@@ -43,6 +43,7 @@ __all__ = [
     "OversizedRequestBodyError",
     "PrevoutCountMismatchError",
     "ReimportedMainProcessError",
+    "RejectedMessageError",
     "StoreClosedError",
     "StoreCorruptionError",
     "UnknownChainError",
@@ -363,16 +364,29 @@ class UnsupportedAddressTypeError(ValueError):
 class WrongNetworkMagicError(BTClibValueError):
     """A message's magic names a chain other than the one this node runs.
 
-    `BTClibValueError` and not a plain `ValueError`: `Connection.run`'s
-    own catch discourages the peer on `isinstance(e, BTClibException)`,
-    the same test it uses for `Message.parse`'s own refusals, and this
-    is the network-magic check that runs right after -- both are the
-    peer's envelope being wrong, and both have to satisfy the same
-    `isinstance` for the same reason.
+    `BTClibValueError` and not a plain `ValueError`: it is the peer's
+    envelope being wrong, as `Message.parse`'s own refusals are, and
+    `fuzz/fuzz_framing.py` tells a refusal from a finding by
+    `isinstance(e, BTClibException)`.
     """
 
     def __init__(self, magic: bytes) -> None:
         super().__init__(f"message for another network: {magic.hex()}")
+
+
+class RejectedMessageError(BTClibValueError):
+    """A whole message was framed and is dropped, its sender kept.
+
+    Core's `reject_message` (`V1Transport::GetReceivedMessage`,
+    `src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a
+    checksum that does not match the payload, or a command
+    `IsMessageTypeValid` refuses. `size` is the message's own octets,
+    header included, which the stream has been moved past.
+    """
+
+    def __init__(self, size: int) -> None:
+        super().__init__(f"message of {size} bytes rejected")
+        self.size = size
 
 
 class IncompleteRequestHeadError(BTClibRuntimeError):

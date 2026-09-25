@@ -444,18 +444,18 @@ def test_an_automatic_peer_misbehaving_is_discouraged(
 
 
 def test_a_manual_peer_is_never_discouraged(a_manager: AManagerFactory) -> None:
-    """ISS 1090: Core's `MaybeDiscourageAndDisconnect` spares a manual peer.
+    """ISS 1139: Core's `MaybeDiscourageAndDisconnect` spares a manual peer.
 
     "We never disconnect or discourage manual peers for bad behavior":
-    the connection is dropped here all the same, and nothing else held
-    with the host is.
+    neither the connection nor anything else held with the host is
+    dropped.
     """
     misbehaving = a_conn(0, inbound=False, automatic=False)
     other = a_conn(1, address=peer_address("1.2.3.4", 50000), inbound=True)
     manager = a_manager([misbehaving, other])
     assert manager.maybe_discourage_and_disconnect(misbehaving) is False
     assert not manager.is_discouraged(misbehaving.address)
-    assert misbehaving.stopped == [True]
+    assert not misbehaving.stopped
     assert not other.stopped
 
 

@@ -235,9 +235,9 @@ class DeafPeer:
                 relay=True,
             )
         )
-        # `wtxidrelay` ahead of `verack`: `callbacks.verack` discourages
-        # and drops a connection whose `wtxidrelay_received` is still
-        # false when the `verack` arrives
+        # `wtxidrelay` ahead of `verack`: `callbacks.verack` drops a
+        # connection whose `wtxidrelay_received` is still false when the
+        # `verack` arrives
         self.send(WtxidRelay())
         self.send(Verack())
 

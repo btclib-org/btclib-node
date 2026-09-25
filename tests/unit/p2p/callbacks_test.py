@@ -1011,28 +1011,25 @@ def test_the_handshake_asks_the_socket_for_the_peer_once() -> None:
     assert lookups == [sockaddr]
 
 
-def test_a_verack_before_the_version_is_let_go() -> None:
-    """A `verack` reaching a peer that never sent its `version` is let go.
+def test_a_verack_before_the_version_is_ignored() -> None:
+    """ISS 1133: a `verack` ahead of `version` is ignored, as in Core.
 
-    Nothing to promote and nothing to record: `verack` before `version`
-    is a peer out of protocol order, dropped and discouraged -- #283.
+    Nothing promoted, and the peer neither dropped nor discouraged.
     """
     promoted: list[int] = []
     node = a_handshake_node(promote_connection=promoted.append)
     peer = a_peer(wtxidrelay_received=True)
     verack(node, b"", peer)
-    assert peer.stopped == [True]
+    assert not peer.stopped
     assert peer.status == P2pConnStatus.Open
     assert promoted == []
-    assert node.p2p_manager.discouraged == [peer.address]  # #283
+    assert not node.p2p_manager.discouraged
 
 
 def test_a_verack_from_a_peer_that_never_asked_for_wtxid_relay_is_let_go() -> None:
-    """A `verack` from a peer that skipped `wtxidrelay` is let go, not promoted.
+    """ISS 1133: a `verack` from a peer that skipped `wtxidrelay` is let go.
 
-    Every peer this node still talks to negotiates wtxid relay first;
-    one that reaches `verack` without it is refused rather than
-    promoted -- #283.
+    Dropped and not promoted, and not discouraged either.
     """
     promoted: list[int] = []
     node = a_handshake_node(promote_connection=promoted.append)
@@ -1040,7 +1037,7 @@ def test_a_verack_from_a_peer_that_never_asked_for_wtxid_relay_is_let_go() -> No
     verack(node, b"", peer)
     assert peer.stopped == [True]
     assert promoted == []
-    assert node.p2p_manager.discouraged == [peer.address]  # #283
+    assert not node.p2p_manager.discouraged
 
 
 def test_the_flags_a_peer_sets_on_this_connection() -> None:
@@ -1153,24 +1150,58 @@ def test_a_pong_arriving_before_its_ping_by_the_clock_records_no_round_trip() ->
     assert not peer.stopped
 
 
-def test_a_pong_with_the_wrong_nonce_is_a_peer_not_speaking_the_protocol() -> None:
-    """A `pong` answering a nonce this node never sent drops and discourages.
+def test_a_pong_with_the_wrong_nonce_leaves_the_ping_outstanding() -> None:
+    """ISS 1133: a mismatched nonce is ignored, the `ping` still outstanding.
 
-    A mismatched nonce cannot be an honest race, since only one `ping`
-    is outstanding at a time -- #283.
+    Core's `PONG` logs "Nonce mismatch" and punishes nobody. The `pong`
+    that does match finishes the `ping` afterwards.
     """
     node = a_handshake_node()
-    peer = a_peer(ping_sent=time.time(), ping_nonce=1234)
+    sent = time.time()
+    peer = a_peer(ping_sent=sent, ping_nonce=1234, time_received=sent + 1)
     pong(node, Pong(4321).serialize(), peer)
-    assert peer.stopped == [True]
-    assert node.p2p_manager.discouraged == [peer.address]  # #283
+    assert not peer.stopped
+    assert not node.p2p_manager.discouraged
+    assert (peer.ping_sent, peer.ping_nonce) == (sent, 1234)
+    pong(node, Pong(1234).serialize(), peer)
+    assert (peer.ping_sent, peer.ping_nonce) == (0, 0)
+    assert peer.latency == 1
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [Pong(0).serialize(), b"\x01" * 7, Pong(0).serialize() + b"\x01"],
+    ids=["a zero nonce", "a short payload", "a zero nonce and a trailing octet"],
+)
+def test_a_pong_with_no_nonce_finishes_the_ping_unrecorded(payload: bytes) -> None:
+    """ISS 1133: a zero nonce, or none at all, finishes the `ping` unmeasured.
+
+    Core's `PONG` cancels the ping for "Nonce zero" and "Short payload",
+    punishing nobody, and reads the nonce off the payload's first eight
+    octets whatever follows them.
+    """
+    node = a_handshake_node()
+    peer = a_peer(ping_sent=100.0, ping_nonce=1234, time_received=100.5)
+    pong(node, payload, peer)
+    assert (peer.ping_sent, peer.ping_nonce) == (0, 0)
+    assert peer.latency == 0
+    assert not peer.stopped
+    assert not node.p2p_manager.discouraged
+
+
+def test_a_pong_reads_its_nonce_off_the_first_eight_octets() -> None:
+    """ISS 1133: octets past the nonce are ignored, as Core's `PONG` does."""
+    node = a_handshake_node()
+    peer = a_peer(ping_sent=100.0, ping_nonce=1234, time_received=100.5)
+    pong(node, Pong(1234).serialize() + b"\x01", peer)
+    assert peer.latency == 0.5
 
 
 def test_a_pong_nobody_pinged_for_is_ignored() -> None:
     """A `pong` with no `ping` outstanding at all is ignored, not discouraged.
 
-    `ping_nonce` starts at zero, so this is the case above with no
-    outstanding round trip to mismatch against.
+    `ping_nonce` starts at zero, so there is no outstanding round trip
+    to mismatch against.
     """
     node = a_handshake_node()
     peer = a_peer()

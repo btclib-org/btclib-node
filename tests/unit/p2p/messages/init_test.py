@@ -32,6 +32,7 @@ from btclib.p2p.payload import Payload
 
 from btclib_node.chains import RegTest
 from btclib_node.constants import P2pConnStatus
+from btclib_node.exceptions import WrongNetworkMagicError
 from btclib_node.p2p.callbacks import callbacks, handshake_callbacks
 from btclib_node.p2p.connection import Connection, PeerStats
 
@@ -273,27 +274,67 @@ def test_a_whole_message_before_a_partial_one_is_still_taken() -> None:
     assert conn.buffer == second[:8]
 
 
-def test_a_bad_checksum_raises_instead_of_spinning() -> None:
-    """A tampered checksum raises rather than retrying the same bytes forever.
+def test_a_bad_checksum_drops_the_message_and_keeps_reading() -> None:
+    """ISS 1130: a tampered checksum drops that message, and the next arrives.
 
-    A regression test: recovering from a bad checksum by searching the
-    buffer for the magic spelled as ASCII never matched the binary magic
-    actually there, and the `while` loop retried the same unparsable
-    message without end. Nothing here reaches that recovery any more --
-    the checksum failure raises immediately, and `Connection.run` is
-    what drops a peer whose message does this.
+    Core's `GetReceivedMessage` rejects the message and `ReceiveMsgBytes`
+    counts it under `*other*` and goes on. The message after it is
+    queued, so the buffer was moved past the rejected one rather than
+    retried or abandoned.
     """
-    # This used to be an infinite loop: the recovery searched the binary
-    # buffer for the magic spelled as ASCII text, never matched, and the
-    # while loop tried the same message again forever. Core drops such a
-    # peer, and Connection.run turns the raise into exactly that.
     conn = make_connection()
     tampered = bytearray(framed(Ping(1)))
     tampered[20] ^= 0xFF  # a checksum byte
-    conn.buffer = tampered
-    with pytest.raises(BTClibValueError):
-        conn.parse_messages()
-    assert not conn.manager.messages
+    conn.buffer = tampered + framed(Ping(2))
+    conn.parse_messages()
+    assert [Ping.parse(item[1]).nonce for item in conn.manager.messages] == [2]
+    assert conn.stats.bytes_recv_per_msg == {
+        "*other*": len(tampered),
+        "ping": len(framed(Ping(2))),
+    }
+    assert not conn.buffer
+
+
+def a_message_with_an_invalid_command(payload: bytes) -> bytes:
+    """Build a message whose command has an octet after its NUL padding."""
+    good = Message(MAGIC, "ping", payload).serialize()
+    return good[:15] + b"x" + good[16:]
+
+
+def test_an_invalid_command_drops_the_message_and_keeps_reading() -> None:
+    """ISS 1130: a command `IsMessageTypeValid` refuses drops that message only.
+
+    btclib refuses the command before it reads the payload; the payload
+    is skipped all the same, as Core's `GetReceivedMessage` rejects the
+    whole message.
+    """
+    conn = make_connection()
+    rejected = a_message_with_an_invalid_command(b"\x00" * 8)
+    conn.buffer = bytearray(framed(Ping(1)) + rejected + framed(Ping(2)))
+    conn.parse_messages()
+    # a `ping` goes to the front of the queue, so the order is not asked
+    assert sorted(Ping.parse(item[1]).nonce for item in conn.manager.messages) == [1, 2]
+    assert conn.stats.bytes_recv_per_msg["*other*"] == len(rejected)
+    assert not conn.buffer
+
+
+def test_an_invalid_command_waits_for_its_payload() -> None:
+    """A refused command whose payload is not all in waits for the rest.
+
+    Core rejects a message once it is whole, so the octets still on their
+    way are not read as the next message's header.
+    """
+    conn = make_connection()
+    rejected = a_message_with_an_invalid_command(b"\x00" * 8)
+    first = framed(Ping(1))
+    conn.buffer = bytearray(first + rejected[:-3])
+    conn.parse_messages()
+    assert len(conn.manager.messages) == 1
+    assert conn.buffer == rejected[:-3]
+    conn.buffer += rejected[-3:]
+    conn.parse_messages()
+    assert conn.stats.bytes_recv_per_msg["*other*"] == len(rejected)
+    assert not conn.buffer
 
 
 def test_a_message_for_another_network_is_refused() -> None:
@@ -306,6 +347,35 @@ def test_a_message_for_another_network_is_refused() -> None:
     conn = make_connection()
     conn.buffer = bytearray(framed(Ping(1), magic=bytes.fromhex("f9beb4d9")))  # mainnet
     with pytest.raises(BTClibValueError):
+        conn.parse_messages()
+    assert not conn.manager.messages
+
+
+def test_another_network_s_magic_is_refused_off_the_header() -> None:
+    """The magic is checked once the header is in, as Core's `readHeader` does.
+
+    A whole `ping` first, then only the header of one for mainnet: the
+    refusal does not wait for a payload, nor for a checksum.
+    """
+    conn = make_connection()
+    mainnet = framed(Ping(2), magic=bytes.fromhex("f9beb4d9"))
+    conn.buffer = bytearray(framed(Ping(1)) + mainnet[:24])
+    with pytest.raises(WrongNetworkMagicError):
+        conn.parse_messages()
+    assert len(conn.manager.messages) == 1
+
+
+def test_another_network_s_magic_first_in_the_buffer_is_refused_off_the_header() -> (
+    None
+):
+    """A wrong magic heading the buffer is refused before its payload arrives.
+
+    Only the header of a mainnet `ping` is in: its declared payload never
+    comes, and `parse_messages` does not wait for it.
+    """
+    conn = make_connection()
+    conn.buffer = bytearray(framed(Ping(2), magic=bytes.fromhex("f9beb4d9"))[:24])
+    with pytest.raises(WrongNetworkMagicError):
         conn.parse_messages()
     assert not conn.manager.messages
 

@@ -403,27 +403,25 @@ def a_message_for_another_network() -> bytes:
     )
 
 
+def a_message_too_long_to_take() -> bytes:
+    """Build a header whose length is past `MAX_PROTOCOL_MESSAGE_LENGTH`."""
+    header = Message(RegTest().magic, "ping", b"").serialize()[:24]
+    length = (MAX_PROTOCOL_MESSAGE_LENGTH + 1).to_bytes(4, "little")
+    return header[:16] + length + header[20:]
+
+
 @pytest.mark.parametrize(
     "octets",
-    [
-        # a checksum that belongs to no payload: refused by the envelope
-        b"\x11\x22\x33\x44" + b"\x00" * 20,
-        a_message_for_another_network(),
-    ],
-    ids=["not a message", "a message for another network"],
+    [a_message_for_another_network(), a_message_too_long_to_take()],
+    ids=["a message for another network", "a length past the bound"],
 )
-def test_a_peer_sending_something_this_node_cannot_read_is_dropped(
+def test_a_header_this_node_cannot_take_drops_the_peer_undiscouraged(
     octets: bytes,
 ) -> None:
-    """A peer whose own envelope this node refuses to parse is discouraged.
+    """ISS 1130: a header Core's `readHeader` refuses drops the peer alone.
 
-    Two ways an envelope can be refused before any payload is looked
-    at -- a checksum matching no payload, and a magic naming another
-    network -- and both are #283's own case for discouraging: the
-    refusal is `Message.parse`'s own reading of what the peer sent,
-    not a bug of this node's. The connection is closed before the manager
-    is handed it, so the manager's own `stop` does not cancel the task
-    still running `run`.
+    Core's `ReceiveMsgBytes` answers another network's magic and an
+    oversized length by disconnecting, and discourages nobody.
     """
     cancelled: list[bool] = []
 
@@ -444,25 +442,47 @@ def test_a_peer_sending_something_this_node_cannot_read_is_dropped(
 
     connection = asyncio.run(drive())
     assert connection.status == P2pConnStatus.Closed
-    # #283: `Message.parse`, or the network-magic check right after it,
-    # refusing this peer's own envelope is cause to discourage it
-    assert discouraged_of(connection) == [connection.address]
+    assert not discouraged_of(connection)
     assert not cancelled
+
+
+def test_a_bad_checksum_keeps_the_peer() -> None:
+    """ISS 1130: a message whose checksum is wrong is dropped, its peer kept.
+
+    The `ping` behind it is read and queued, so the connection went on
+    reading: it ends only on the peer's own hangup, discouraging nobody.
+    """
+    tampered = bytearray(_wire_ping(1))
+    tampered[20] ^= 0xFF  # a checksum byte
+
+    async def drive() -> Connection:
+        loop = asyncio.get_running_loop()
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        connection = a_running_connection(loop, ours)
+        # `shutdown`, not `close`, for the reason
+        # `test_run_counts_every_octet_it_reads` gives: on Windows a closed
+        # peer answers `run`'s own `version` with a reset.
+        theirs.sendall(bytes(tampered) + _wire_ping(2))
+        theirs.shutdown(socket.SHUT_WR)
+        try:
+            await connection.run()
+        finally:
+            theirs.close()
+        return connection
+
+    connection = asyncio.run(drive())
+    queued = cast("Any", connection.manager).messages
+    assert [Ping.parse(item[1]).nonce for item in queued] == [2]
+    assert connection.stats.bytes_recv_per_msg["*other*"] == len(tampered)
+    assert not discouraged_of(connection)
 
 
 def test_a_bug_of_this_node_s_own_in_parsing_drops_the_peer_but_not_discouraged() -> (
     None
 ):
-    """A bug in this node's own parsing drops the peer, but is not its fault.
+    """A bug in this node's own parsing drops the peer, discouraging nobody."""
 
-    #283: not every exception out of `parse_messages` is the peer's fault -- a
-    `RuntimeError` is not one btclib raised over the octets it sent, the same
-    distinction `p2p/main.py`'s own `except` draws.
-    """
-
-    # #283: not every exception out of parse_messages is the peer's
-    # fault -- a RuntimeError is not one btclib raised over the octets
-    # it sent, the same distinction p2p/main.py's own except draws
     async def drive() -> Connection:
         loop = asyncio.get_running_loop()
         ours, theirs = socket.socketpair()

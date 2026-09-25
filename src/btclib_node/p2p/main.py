@@ -8,9 +8,10 @@ The first two pop one message off their own queue -- `P2pManager.messages`
 or `P2pManager.handshake_messages` -- and dispatch it through
 `p2p.callbacks.callbacks` or `p2p.callbacks.handshake_callbacks`
 depending on the connection's own `P2pConnStatus`. An exception raised
-by a callback stops that connection rather than the loop, and goes to
-`P2pManager.maybe_discourage_and_disconnect` where it is a parse failure
-from the peer's own bytes rather than a bug in the handler.
+by a callback ends that connection's message rather than the loop: it
+goes to `P2pManager.maybe_discourage_and_disconnect` where it is a parse
+failure from the peer's own bytes, and stops the connection where it is
+a bug in the handler.
 
 Each also weighs its own queued item's wire size back off the
 connection it came from, `queued_recv_bytes`, resuming that connection's
@@ -46,12 +47,21 @@ if TYPE_CHECKING:
 
 __all__ = ["handle_p2p", "handle_p2p_handshake", "resume_cfilters", "resume_getdata"]
 
+# Core's `ProcessMessage` handles `sendheaders`, `sendcmpct`, `wtxidrelay`,
+# `sendaddrv2` and `sendtxrcncl` after `version` and before `verack`
+# (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+# `sendheaders` is the one of them `callbacks` holds: `wtxidrelay` and
+# `sendaddrv2` are `handshake_callbacks`', and the other two this node
+# does not handle.
+_BEFORE_VERACK = frozenset({"sendheaders"})
+
 
 def _drop(manager: P2pManager, conn: Connection, e: Exception) -> bool:
-    """Stop `conn` over `e`, and answer whether its host was discouraged.
+    """Punish `conn` over `e`, and answer whether its host was discouraged.
 
-    Only a `BTClibException` can discourage it, `handle_p2p`'s own
-    `except` explaining why.
+    A `BTClibException` goes to `maybe_discourage_and_disconnect`, and
+    anything else stops the connection, `handle_p2p`'s own `except`
+    explaining why.
     """
     if isinstance(e, BTClibException):
         return manager.maybe_discourage_and_disconnect(conn)
@@ -62,10 +72,11 @@ def _drop(manager: P2pManager, conn: Connection, e: Exception) -> bool:
 def handle_p2p_handshake(node: Node) -> None:
     """Pop one queued handshake message and dispatch it, or drop the peer.
 
-    A message out of handshake order goes to
-    `P2pManager.maybe_discourage_and_disconnect` rather than being
-    dispatched; a callback that raises stops the connection too, and
-    goes there only where the exception is a `BTClibException`.
+    Once `verack` has promoted the connection, a second `version` or
+    `verack` is ignored and a `wtxidrelay` or `sendaddrv2` drops the
+    peer undiscouraged, as Core's `ProcessMessage` answers each
+    (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag). A callback that raises is `_drop`'s.
 
     Weighs the item's own size back off the connection's
     `queued_recv_bytes` the moment it is popped, the same as `handle_p2p`
@@ -90,12 +101,11 @@ def handle_p2p_handshake(node: Node) -> None:
         try:
             if conn.status == P2pConnStatus.Open:
                 handshake_callbacks[msg_type](node, msg, conn)
-            elif conn.status == P2pConnStatus.Closed:
-                pass
-            else:
-                # a second version/verack/wtxidrelay/sendaddrv2, out of
-                # handshake order: discouraged for it (#283)
-                manager.maybe_discourage_and_disconnect(conn)
+            elif conn.status == P2pConnStatus.Connected and msg_type in (
+                "wtxidrelay",
+                "sendaddrv2",
+            ):
+                conn.stop()
         except Exception as e:
             # discouraged for a parse failure, `handle_p2p`'s own
             # `except` below explaining which exceptions count as one
@@ -126,16 +136,16 @@ def handle_p2p_handshake(node: Node) -> None:
 def handle_p2p(node: Node) -> None:
     """Pop one queued message and dispatch it, once its handshake is done.
 
-    A message ahead of `verack`, or one arriving out of order otherwise,
-    goes to `P2pManager.maybe_discourage_and_disconnect` rather than
-    being dispatched; a callback that raises stops the connection too,
-    and goes there only for a `BTClibException` (the comment below
-    argues why that split matters).
+    A message ahead of `verack` is ignored, as Core's `ProcessMessage`
+    ignores it (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag), except a `sendheaders` after `version`, which Core
+    records there. A callback that raises is `_drop`'s, the comment
+    below arguing its split.
 
     Weighs the item's own size back off the connection's
     `queued_recv_bytes` the moment it is popped, whatever happens to it
-    next -- dispatched, ignored for want of a callback, or dropped along
-    with a connection out of handshake order -- since what
+    next -- dispatched, or ignored for want of a callback or of a
+    completed handshake -- since what
     `MAX_QUEUED_RECV_BYTES` paces is how much of a connection's own
     traffic sits unprocessed, not how that traffic was resolved. A
     connection paused there is resumed, via `call_soon_threadsafe`
@@ -145,10 +155,9 @@ def handle_p2p(node: Node) -> None:
     """
     msg_type, msg, conn_id, size, received = node.p2p_manager.messages.popleft()
     manager = node.p2p_manager
-    # a connection still pending is still found here, so that anything
-    # other than the four handshake commands it sends before `verack`
-    # reaches the same `conn.stop()` a status of `Open` already gets
-    # below, rather than being silently dropped along with the lookup
+    # a connection still pending is still found here, so that what it
+    # sends before `verack` is weighed off its own `queued_recv_bytes`
+    # below before being ignored
     conn = manager.connections.get(conn_id) or manager.pending_connections.get(conn_id)
     if conn is not None:
         # the same backpressure pair as handle_p2p_handshake above, for
@@ -162,14 +171,12 @@ def handle_p2p(node: Node) -> None:
         conn.time_received = received
         try:
             if msg_type in callbacks:
-                if conn.status == P2pConnStatus.Connected:
+                if conn.status == P2pConnStatus.Connected or (
+                    msg_type in _BEFORE_VERACK
+                    and conn.status == P2pConnStatus.Open
+                    and conn.version_message is not None
+                ):
                     callbacks[msg_type](node, msg, conn)
-                elif conn.status == P2pConnStatus.Closed:
-                    pass
-                else:
-                    # a message ahead of `verack`, out of handshake
-                    # order: discouraged for it (#283)
-                    manager.maybe_discourage_and_disconnect(conn)
                 node.logger.debug("Finished p2p\n")
         except Exception as e:
             # A `BTClibException` is btclib refusing this peer's own

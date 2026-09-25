@@ -14,6 +14,7 @@ from collections import deque
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
+import pytest
 from btclib.exceptions import BTClibValueError
 from btclib.p2p.addrv2 import NetworkAddressV2
 from btclib.p2p.data import TxPayload as TxMsg
@@ -35,8 +36,6 @@ from tests import discourage_recorder, generate_random_transaction, log_recorder
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    import pytest
 
     from btclib_node import Node
     from btclib_node.p2p.connection import Connection
@@ -138,18 +137,26 @@ def test_a_handshake_message_on_a_closed_connection_is_dropped() -> None:
     assert not stopped
 
 
-def test_a_handshake_message_on_a_connected_one_drops_the_peer() -> None:
-    """A handshake message arriving after `Connected` gets the peer dropped.
+@pytest.mark.parametrize(
+    ("command", "dropped"),
+    [("version", False), ("verack", False), ("wtxidrelay", True), ("sendaddrv2", True)],
+)
+def test_a_handshake_message_on_a_connected_one_discourages_nobody(
+    command: str,
+    dropped: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1133: a handshake command after `verack` is answered as Core does.
 
-    The handshake is over: a second `version` or `verack` is a peer not
-    speaking the protocol, and discouraged for it -- #283.
+    Core's `ProcessMessage` ignores a second `version` or `verack`, and
+    drops a peer sending `wtxidrelay` or `sendaddrv2` after `verack`
+    without discouraging it.
     """
     node, stopped = make_node(
-        "handshake_messages", ("verack", b"", 0, 1), status=P2pConnStatus.Connected
+        "handshake_messages", (command, b"", 0, 1), status=P2pConnStatus.Connected
     )
     handle_p2p_handshake(node)
-    assert stopped == [True]
-    assert node.p2p_manager.discouraged == [_AN_ADDRESS]
+    assert stopped == ([True] if dropped else [])
+    assert not node.p2p_manager.discouraged
 
 
 def test_a_handshake_callback_that_raises_drops_the_peer(
@@ -345,19 +352,58 @@ def test_a_callback_reads_when_its_message_was_read_off_the_socket(
     assert seen == [123.25]
 
 
-def test_a_message_before_the_handshake_is_over_drops_the_peer() -> None:
-    """An ordinary message arriving on an `Open` connection drops the peer.
+@pytest.mark.parametrize("pending", [False, True])
+def test_a_message_before_the_handshake_is_over_is_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+    pending: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1133: an ordinary message ahead of `verack` is ignored, as in Core.
 
-    Anything but a handshake command before `Connected` is a protocol
-    violation, discouraged for it -- #283, the mirror of the handshake
-    version above.
+    Not dispatched, the peer neither dropped nor discouraged, and its
+    size weighed off the connection's `queued_recv_bytes` whether the
+    connection is found in `connections` or still in
+    `pending_connections`.
     """
+    seen: list[bytes] = []
+    monkeypatch.setitem(callbacks, "ping", lambda node, msg, conn: seen.append(msg))
     node, stopped = make_node(
-        "messages", ("ping", b"", 0, 1, 0.0), status=P2pConnStatus.Open
+        "messages",
+        ("ping", b"", 0, 1_000, 0.0),
+        status=P2pConnStatus.Open,
+        pending=pending,
+        queued_recv_bytes=1_500,
     )
     handle_p2p(node)
-    assert stopped == [True]
-    assert node.p2p_manager.discouraged == [_AN_ADDRESS]  # #283
+    assert not seen
+    assert not stopped
+    assert not node.p2p_manager.discouraged
+    conn = (node.p2p_manager.pending_connections or node.p2p_manager.connections)[0]
+    assert conn.queued_recv_bytes == 500
+
+
+@pytest.mark.parametrize("versioned", [True, False])
+def test_a_sendheaders_ahead_of_verack_is_recorded_once_version_is_in(
+    versioned: bool,  # noqa: FBT001
+) -> None:
+    """A `sendheaders` between `version` and `verack` is recorded, as in Core.
+
+    Core's `ProcessMessage` sets `m_prefers_headers` for a `sendheaders`
+    once `version` is in, before the handshake completes, and ignores one
+    ahead of `version`. Reachable here: `verack` is queued on
+    `handshake_messages` and `sendheaders` on `messages`, and one read can
+    frame both between `Node._drain_message_queues`' two drains, so the
+    `sendheaders` is handled while the connection is still `Open`.
+    """
+    node, stopped = make_node(
+        "messages", ("sendheaders", b"", 0, 1, 0.0), status=P2pConnStatus.Open
+    )
+    conn = node.p2p_manager.connections[0]
+    conn.version_message = object() if versioned else None
+    conn.prefers_headers = False
+    handle_p2p(node)
+    assert conn.prefers_headers is versioned
+    assert not stopped
+    assert not node.p2p_manager.discouraged
 
 
 def test_a_message_on_a_closed_connection_is_dropped() -> None:
@@ -495,20 +541,6 @@ def test_a_message_for_a_connection_that_is_gone_is_dropped() -> None:
     )
     handle_p2p(node)
     assert not stopped
-
-
-def test_a_message_on_a_connection_still_pending_drops_the_peer() -> None:
-    """A non-handshake message on a still-`pending` connection drops the peer.
-
-    Anything but the four handshake commands, arriving before `verack`
-    promotes the connection: a protocol violation whether the sender is
-    found in `connections` or still in `pending_connections`.
-    """
-    node, stopped = make_node(
-        "messages", ("ping", b"", 0, 1, 0.0), status=P2pConnStatus.Open, pending=True
-    )
-    handle_p2p(node)
-    assert stopped == [True]
 
 
 def test_handle_p2p_weighs_the_message_off_the_connections_own_queued_bytes() -> None:
