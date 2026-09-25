@@ -663,9 +663,10 @@ own regardless.
 
 The version is a fence of its own, for the reason the introduction
 gives. The `&&` below carries the `${version:?}` failure down the block,
-and stops the rebuild where `git worktree add`, `uv build` or a
-verification fails; what it is not is the guard on the placeholder line
-above ([ISS btclib-org/.github#745][gh-745]). The
+and stops the rebuild where `git worktree add`, the download, the
+version check, the build or a verification fails; what it is not is
+the guard on the placeholder line above
+([ISS btclib-org/.github#745][gh-745]). The
 rejected alternative makes each step fatal on its own — `|| exit`, or a
 `set -e` above the block — which refuses the same paste by ending the
 shell the reader pasted into, where the chain leaves the session
@@ -680,16 +681,24 @@ git worktree add --detach /tmp/btclib-node-rebuild "v${version:?}" &&
 cd /tmp/btclib-node-rebuild &&
 python=$(grep -Ev '^[[:space:]]*(#|$)' .python-version) &&
 export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct) &&
-uv build &&
+repo=btclib-org/btclib-node &&
+signer=btclib-org/.github/.github/workflows/reusable-attest.yml &&
+wheels=$(mktemp -d) &&
+gh release download "v${version:?}" --repo "$repo" --dir "$wheels" \
+  --pattern '*.whl' &&
+gh attestation verify "$wheels"/*.whl \
+  --repo "$repo" --signer-workflow "$signer" &&
+uv_version=$(unzip -p "$wheels"/*.whl '*.dist-info/WHEEL' |
+  sed -n 's/^Generator: uv //p') &&
+[[ $uv_version =~ ^[0-9]+([.][0-9]+)*$ ]] &&
+uvx "uv@$uv_version" build &&
 uv run --no-project --python "$python" \
   .github/scripts/normalize_sdist.py dist/ &&
 uv run --no-project --python "$python" \
   .github/scripts/generate_sbom.py dist/ sbom/ &&
-repo=btclib-org/btclib-node &&
-signer=btclib-org/.github/.github/workflows/reusable-attest.yml &&
-gh attestation verify "dist/btclib_node-${version:?}-py3-none-any.whl" \
-  --repo "$repo" --signer-workflow "$signer" &&
 gh attestation verify "dist/btclib_node-${version:?}.tar.gz" \
+  --repo "$repo" --signer-workflow "$signer" &&
+gh attestation verify "dist/btclib_node-${version:?}-py3-none-any.whl" \
   --repo "$repo" --signer-workflow "$signer" &&
 gh attestation verify "sbom/btclib_node-${version:?}.cdx.json" \
   --repo "$repo" --signer-workflow "$signer"
@@ -710,6 +719,19 @@ interpreter's `gzip`, so a rebuild under another pin is the published
 bytes only where the two interpreters' zlib compress alike (issue
 btclib-org/.github#1349).
 
+`uv_version` is the uv the release job ran, read off the published
+wheel once its attestation verifies, so that what is read is signed: its
+`.dist-info/WHEEL` names it on the `Generator:` line, where the tag holds
+only `[tool.uv] required-version`, a floor `setup-uv` resolves to the
+newest uv at release time. The `[[ ]]` holds it to digits and dots
+before `uvx` sees it, `uvx` taking a URL or a VCS reference in that
+place and running what it fetches. That line is written by the
+build, so a wheel built under another uv is another digest, and the bill
+of materials follows it, `generate_sbom.py` deriving its serial number
+from both files' digests (issue #1063). The sdist is verified first, it
+being the file the rebuild exists to reproduce: a wheel that still
+disagrees stops the chain after that check rather than ahead of it.
+
 Three things bound that guarantee, and each is worth knowing before
 reading a mismatch as tampering:
 
@@ -719,14 +741,16 @@ reading a mismatch as tampering:
   changes the digest. The worktree the command above adds is a clean
   tree whatever the reader's checkout holds, having only the files the
   tag tracks.
-- **the build backend is bounded, not pinned.** `[build-system] requires`
-  names a range and not a version, and a build takes whichever version in
-  that range the uv running it carries, so a rebuild months later runs a
-  backend the release never saw. The range itself is read there, with the
-  reason for each bound beside it, rather than copied here, a second copy
-  of a number being the one that goes stale. What the ceiling bounds is
-  the *content* of the archive; its member metadata is
-  `normalize_sdist.py`'s answer and not the backend's.
+- **the build backend is the uv's own.** `[build-system] requires`
+  names a range and not a version — the range itself is read there, with
+  the reason for each bound beside it, rather than copied here, a second
+  copy of a number being the one that goes stale — and for
+  the uv the release ran, which the range admits, `uv build` uses the
+  backend built into that uv rather than a `uv_build` resolved from the
+  range. That is why the command above runs the release's uv rather than
+  the reader's, and why it reproduces the wheel only while that uv can
+  still be installed. The sdist's member metadata is `normalize_sdist.py`'s
+  answer and not the backend's.
 - **the rehearsal is a different version, by construction.** A TestPyPI
   dispatch appends `.dev<run*100+attempt>` to the version, so its files
   are not a second build of the release's — no digest is shared with the
