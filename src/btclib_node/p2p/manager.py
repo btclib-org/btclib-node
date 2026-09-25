@@ -14,6 +14,7 @@ own `promote_connection`, directly.
 """
 
 import asyncio
+import errno
 import secrets
 import socket
 import threading
@@ -116,6 +117,31 @@ _MAX_FEELER_CONNECTIONS = 1
 # generations of 25,000 holding two or three at a time, and this
 # forgets it once 50,000 other hosts have been discouraged since.
 _DISCOURAGED_CAPACITY = 50_000
+
+# The name `CConnman::BindListenPort` gives for whatever already holds
+# the port, Core's `CLIENT_NAME` (`src/net.cpp:3356`,
+# at bitcoin/bitcoin@9be056a8a7): the program it runs as, here the
+# command `pyproject.toml`'s `[project.scripts]` installs.
+_CLIENT_NAME = "btclib-node"
+
+
+def _network_error_string(error: OSError) -> str:
+    """Core's `NetworkErrorString` of a failed socket call: text, then number.
+
+    Core's `"%s (%d)"` carries `SysErrorString`'s errno off Windows and
+    `Win32ErrorString`'s Winsock code on it (`src/util/sock.cpp:426-434`,
+    `src/util/syserror.cpp:17-50`, at bitcoin/bitcoin@9be056a8a7). CPython
+    keeps that code as `winerror` on what a socket call raises there
+    (`set_error`, `Modules/socketmodule.c` at CPython v3.14.0) and renumbers
+    a few of them in `errno`, `WSAEACCES` 10013 becoming 13 (`PC/errmap.h`),
+    so `winerror` is the number read where it is set.
+
+    The text is not Core's to the byte on Windows: CPython strips trailing
+    whitespace and periods off `FormatMessageW`'s text before this sees it
+    (`Python/errors.c`), where Core's `Win32ErrorString` prints the buffer
+    `FormatMessageA` fills without stripping it.
+    """
+    return f"{error.strerror} ({getattr(error, 'winerror', None) or error.errno})"
 
 
 class P2pManager(threading.Thread):
@@ -322,6 +348,10 @@ class P2pManager(threading.Thread):
         # told not to bind by `-listen=0`, which is what
         # `start_listener` waits on
         self._start_attempted = threading.Event()
+        # Why the IPv4 bind failed, set by `run` before `_start_attempted`:
+        # what Core's `CConnman::Bind` shows the user ahead of "Failed to
+        # listen on any port", and `Node.run` hands on the same way
+        self.bind_error: str | None = None
 
         self.loop = asyncio.new_event_loop()
         # What `run` binds and `stop` closes -- kept here rather than
@@ -817,8 +847,23 @@ class P2pManager(threading.Thread):
         thread's target -- which returns on it, so the thread ends
         rather than staying `is_alive()` over a listener that never came
         up, and `start_listener` answers that it is not listening.
+
+        The `OSError` raised says which call failed, and why, in the words
+        of Core's `CConnman::BindListenPort` (`src/net.cpp:3307-3373`, at
+        bitcoin/bitcoin@9be056a8a7): the message `run` keeps as
+        `bind_error`.
         """
-        server_socket = socket.socket(family, socket.SOCK_STREAM)
+        # Core's `CService::ToStringAddrPort`, brackets around an IPv6 host
+        address = f"[{host}]" if family == socket.AF_INET6 else host
+        address = f"{address}:{self.port}"
+        try:
+            server_socket = socket.socket(family, socket.SOCK_STREAM)
+        except OSError as error:
+            msg = (
+                "Couldn't open socket for incoming connections (socket returned"
+                f" error {_network_error_string(error)})"
+            )
+            raise OSError(msg) from error
         try:
             server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             if family == socket.AF_INET6:
@@ -830,8 +875,28 @@ class P2pManager(threading.Thread):
                 # would ask for. Core sets the same option on its own
                 # "::" listener for the same reason (net.cpp, 58a7869f86).
                 server_socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
-            server_socket.bind((host, self.port))
-            server_socket.listen()
+            try:
+                server_socket.bind((host, self.port))
+            except OSError as error:
+                if error.errno == errno.EADDRINUSE:
+                    msg = (
+                        f"Unable to bind to {address} on this computer."
+                        f" {_CLIENT_NAME} is probably already running."
+                    )
+                else:
+                    msg = (
+                        f"Unable to bind to {address} on this computer (bind"
+                        f" returned error {_network_error_string(error)})"
+                    )
+                raise OSError(msg) from error
+            try:
+                server_socket.listen()
+            except OSError as error:
+                msg = (
+                    "Listening for incoming connections failed (listen returned"
+                    f" error {_network_error_string(error)})"
+                )
+                raise OSError(msg) from error
             server_socket.settimeout(0.0)
         except OSError:
             # the caller never gets this socket to close: raising it
@@ -1124,12 +1189,13 @@ class P2pManager(threading.Thread):
             asyncio.set_event_loop(loop)
             if self.listen:
                 server_sockets = self._bind()
-        except OSError:
+        except OSError as error:
             # `start_listener` reads the failure off `listening`, so it
             # is not raised into `threading.excepthook` as well; nothing
             # is scheduled, as Core's `CConnman::Start` returns before
             # starting any of its threads
-            self.logger.exception("Could not bind the P2P listener")
+            self.bind_error = str(error)
+            self.logger.exception(self.bind_error)
             return
         finally:
             self._start_attempted.set()

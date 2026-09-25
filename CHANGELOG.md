@@ -316,6 +316,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   (closes #1130); **a `pong` or a message out of order discourages nobody**
   (closes #1133); **a misbehaving manual peer stays connected** (closes #1139).
 
+### A P2P bind failure says why on stderr, as Core's does
+
+- **`btclib-node` prints Core's `BindListenPort` reason, then "Failed to
+  listen on any port", each as `Error: <message>`** (closes #1135); the
+  list `Node.init_errors` replaces `Node.init_error`.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

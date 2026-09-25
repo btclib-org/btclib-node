@@ -1143,7 +1143,7 @@ def test_main_builds_a_node_and_starts_it(
     built: list[Any] = []
 
     class FakeNode:
-        init_error = None
+        init_errors: tuple[str, ...] = ()
 
         def __init__(self, config: Any) -> None:
             built.append(config)
@@ -1165,15 +1165,24 @@ def test_main_builds_a_node_and_starts_it(
     assert len(handlers) == 1
 
 
-def test_main_a_node_that_failed_to_start_exits_one_with_its_init_error(
+def test_main_a_node_that_failed_to_start_exits_one_with_its_init_errors(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """`Node.init_error` is printed and the exit status is `1`, as Core's."""
+    """Each of `Node.init_errors` is a line, in order, and the status is `1`.
+
+    `bitcoind` v31.1.0's two lines for a taken P2P port, named for this node.
+    """
 
     class FakeNode:
-        init_error = "Unable to start HTTP server. See debug log for details."
+        init_errors = (
+            (
+                "Unable to bind to 0.0.0.0:8333 on this computer."
+                " btclib-node is probably already running."
+            ),
+            "Failed to listen on any port. Use -listen=0 if you want this.",
+        )
 
         def __init__(self, config: Any) -> None:
             pass
@@ -1189,7 +1198,11 @@ def test_main_a_node_that_failed_to_start_exits_one_with_its_init_error(
     with pytest.raises(SystemExit) as excinfo:
         cli.main([f"-datadir={tmp_path}", "-regtest"])
     assert excinfo.value.code == 1
-    assert capsys.readouterr().err == f"Error: {FakeNode.init_error}\n"
+    assert capsys.readouterr().err == (
+        "Error: Unable to bind to 0.0.0.0:8333 on this computer."
+        " btclib-node is probably already running.\n"
+        "Error: Failed to listen on any port. Use -listen=0 if you want this.\n"
+    )
 
 
 @pytest.fixture

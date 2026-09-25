@@ -111,15 +111,14 @@ STOP_TIMEOUT = 30
 IDLE_SLEEP_SECONDS = 0.005
 
 # Core's own `InitError` where `AppInitServers` fails (`src/init.cpp:1560-1561`,
-# at bitcoin/bitcoin@9be056a8a7): what `Node.init_error` holds when the
+# at bitcoin/bitcoin@9be056a8a7): what `Node.init_errors` holds when the
 # JSON-RPC listener does not come up.
 RPC_INIT_ERROR = "Unable to start HTTP server. See debug log for details."
 
 # Core's own message where `CConnman::Start` cannot bind with `-listen` on
 # (`src/net.cpp:3497-3503`, at bitcoin/bitcoin@9be056a8a7), which ends
-# `AppInitMain` at step 12: what `Node.init_error` holds when the P2P
-# listener does not come up. Core shows the bind's own reason on stderr
-# before it, where this node logs it only (issue #1135).
+# `AppInitMain` at step 12: the last of `Node.init_errors` when the P2P
+# listener does not come up, the bind's own reason coming first.
 P2P_INIT_ERROR = "Failed to listen on any port. Use -listen=0 if you want this."
 
 
@@ -361,10 +360,10 @@ class Node(threading.Thread):
 
         self.status = NodeStatus.Starting
         # Set by `run` where start-up fails, before its own teardown:
-        # the message Core shows as an error for that failure, which
-        # `cli.main` prints before exiting nonzero. None for a node that
-        # started, or never ran.
-        self.init_error: str | None = None
+        # the messages Core shows as errors for that failure, in Core's
+        # order, which `cli.main` prints before exiting nonzero. Empty
+        # for a node that started, or never ran.
+        self.init_errors: list[str] = []
         # `main.update_ibd_status`'s own latch, read by
         # `rpc.callbacks.get_blockchain_info`: Core's own
         # `m_cached_is_ibd{true}` (`src/validation.h:1054`, at
@@ -575,6 +574,13 @@ class Node(threading.Thread):
             return True
         return False
 
+    def _abort_start(self, init_errors: list[str]) -> None:
+        """End start-up on `init_errors`, logged and kept for `cli.main`."""
+        self.init_errors = init_errors
+        for message in init_errors:
+            self.logger.error(message)
+        self.terminate_flag.set()
+
     @override
     def run(self) -> None:
         self.logger.info("Starting main loop")
@@ -594,9 +600,17 @@ class Node(threading.Thread):
         # with `-listen` on ending `AppInitMain` the same way
         # (`src/init.cpp:2283-2285`, same sha).
         if self.rpc_port and not self.rpc_manager.start_listener():
-            self.init_error = RPC_INIT_ERROR
+            self._abort_start([RPC_INIT_ERROR])
         elif self.p2p_port and not self.p2p_manager.start_listener():
-            self.init_error = P2P_INIT_ERROR
+            # the bind's own reason first, as Core's `CConnman::Bind`
+            # shows it before `CConnman::Start` shows its own
+            # (`src/net.cpp:3444-3447` and `3497-3503`,
+            # at bitcoin/bitcoin@9be056a8a7); None where `run` ended on
+            # something other than an `OSError`
+            bind_error = self.p2p_manager.bind_error
+            self._abort_start(
+                [P2P_INIT_ERROR] if bind_error is None else [bind_error, P2P_INIT_ERROR]
+            )
         elif self.p2p_port:
             # `config.connect` and `config.addnode` together, once the
             # listener is bound, or skipped under `-listen=0`.
@@ -615,9 +629,6 @@ class Node(threading.Thread):
             # this leaves open, filed rather than solved in this branch.
             for host, port in (*self.config.connect, *self.config.addnode):
                 self.p2p_manager.connect(peer_address(host, port))
-        if self.init_error is not None:
-            self.logger.error(self.init_error)
-            self.terminate_flag.set()
         while not self.terminate_flag.is_set():
             if self._drain_message_queues():
                 time.sleep(IDLE_SLEEP_SECONDS)
