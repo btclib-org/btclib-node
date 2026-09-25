@@ -671,24 +671,11 @@ rejected alternative makes each step fatal on its own — `|| exit`, or a
 shell the reader pasted into, where the chain leaves the session
 standing.
 
-The `mkdir` immediately above the checkout closes a second gap, on a
-*correctly* filled paste: `git worktree add` checks out into a
-pre-existing empty `/tmp/btclib-node-rebuild` exactly as into a fresh
-one, saying nothing about which happened, so a directory left over
-from an earlier rebuild is reused silently rather than refused.
-`mkdir` without `-p` fails wherever the target already exists, empty
-or not, and — placed first — takes the rest of the chain with it. The
-`mkdir` is the fence's first line and it writes, so the
-`: "${version:?}"` above it is what refuses an unfilled paste: a guard
-below the first writing line arrives too late.
-
 ```shell
 version=<the released version>
 ```
 
 ```shell
-: "${version:?}" &&
-mkdir /tmp/btclib-node-rebuild &&
 git worktree add --detach /tmp/btclib-node-rebuild "v${version:?}" &&
 cd /tmp/btclib-node-rebuild &&
 python=$(grep -Ev '^[[:space:]]*(#|$)' .python-version) &&

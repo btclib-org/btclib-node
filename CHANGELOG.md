@@ -106,6 +106,12 @@ in is already clean (issue btclib-org/.github#1352).
 tag `RpcManager` binds `Config.rpc_host`, loopback by default, and
 authenticates nothing, which `SECURITY.md` carries (closes #1056).
 
+### The rebuild of a release can be retried after a failed checkout
+
+`RELEASING.md`'s *Rebuild a release from its tag* drops its `mkdir`,
+which left an empty directory behind a failed `git worktree add` and
+then refused the retry (closes #1061).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
