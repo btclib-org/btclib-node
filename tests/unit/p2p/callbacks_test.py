@@ -2614,8 +2614,11 @@ def test_this_node_answers_a_getheaders_from_what_it_knows() -> None:
     assert list(sent.headers) == chain
 
 
-def test_a_getheaders_this_node_cannot_answer_is_not_answered() -> None:
-    """A `getheaders` resolving to nothing gets no answer, not a refusal."""
+def test_a_getheaders_resolving_to_nothing_is_answered_empty() -> None:
+    """A `getheaders` resolving to nothing draws an empty `headers`.
+
+    Core's own `GETHEADERS` handler sends one where its locator is at its tip.
+    """
     node = a_data_node()
     node.chainstate.block_index = SimpleNamespace(
         get_headers_from_locators=lambda locator, stop: []
@@ -2626,7 +2629,25 @@ def test_a_getheaders_this_node_cannot_answer_is_not_answered() -> None:
         GetHeaders(PROTOCOL_VERSION, [b"\x11" * 32], b"\x00" * 32).serialize(),
         peer,
     )
+    (sent,) = peer.sent
+    assert isinstance(sent, Headers)
+    assert not sent.headers
+
+
+def test_an_empty_headers_batch_asks_for_nothing_more() -> None:
+    """An empty `headers` is the peer having nothing to give: nothing is asked.
+
+    Asking again from the same locator would draw the same empty answer, a
+    loop between two nodes that both answer every `getheaders`.
+    """
+    node = a_data_node(status=NodeStatus.SyncingHeaders)
+    index = FakeHeaderIndex(tip=None)
+    node.chainstate.block_index = index
+    peer = a_peer()
+    headers(node, Headers([]).serialize(), peer)
     assert not peer.sent
+    assert index.given is None
+    assert node.status == NodeStatus.SyncingHeaders
 
 
 def a_filter_hash(height: int) -> bytes:

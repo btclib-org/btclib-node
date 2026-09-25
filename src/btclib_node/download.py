@@ -750,9 +750,11 @@ class DownloadManager:
         for a connection no longer connected is dropped, which is where
         a peer that disconnects hands its turn on. Core's
         `LoadingBlocks()` gate has nothing to read: this tree does not
-        import blocks from disk. The locator starts at the best header
-        itself, where Core's starts at its parent:
-        btclib-org/btclib-node#1102.
+        import blocks from disk.
+
+        The locator starts at the best header's parent, as Core's does,
+        so that a peer already at this node's tip answers with that tip
+        rather than with nothing.
         """
         node = self.node
         connections = [
@@ -762,6 +764,9 @@ class DownloadManager:
         ]
         block_index = node.chainstate.block_index
         best_header = block_index.get_block_info(block_index.header_index[-1]).header
+        # Core's `pindexStart->pprev`, where there is one: genesis has none
+        header_index = block_index.header_index
+        start = header_index[-2] if len(header_index) > 1 else header_index[-1]
         now = time.time()
         best_header_age = now - best_header.time.timestamp()
         recent = best_header_age < _RECENT_BEST_HEADER
@@ -781,7 +786,7 @@ class DownloadManager:
                 _is_preferred_download(conn) or not preferred or not blocks_in_flight
             )
             if (sync_started == 0 and from_peer) or recent:
-                locator = block_index.get_block_locator_hashes()
+                locator = block_index.get_block_locator_hashes(start)
                 conn.send(GetHeaders(PROTOCOL_VERSION, locator, b"\x00" * 32))
                 timeouts[conn.id] = (
                     now

@@ -807,6 +807,21 @@ def test_block_locators(a_chainstate: Callable[[Path | None], Chainstate]) -> No
     assert len(locators) == 14
 
 
+def test_a_locator_from_a_start_header_is_that_header_s_own_tip_locator(
+    a_chainstate: Callable[[Path | None], Chainstate],
+    tmp_path: Path,
+) -> None:
+    """A locator from `start` is the one an index ending at `start` builds."""
+    chain = generate_random_header_chain(24, RegTest().genesis.hash)
+    block_index = a_chainstate(None).block_index
+    block_index.add_headers(chain)
+    shorter = a_chainstate(tmp_path / "shorter").block_index
+    shorter.add_headers(chain[:-1])
+    locators = block_index.get_block_locator_hashes(chain[-2].hash)
+    assert locators == shorter.get_block_locator_hashes()
+    assert locators[0] == chain[-2].hash
+
+
 def test_block_locators_2(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
     """A locator naming only the genesis returns the whole chain after it."""
     chainstate = a_chainstate(None)

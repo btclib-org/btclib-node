@@ -208,6 +208,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `-rpcwhitelist` join `-rpcauth`** (closes #1070):
   a set `-rpcpassword` writes no cookie, and a method not whitelisted is a 403.
 
+### A peer at this node's tip answers its initial `getheaders`, as in Core
+
+- **The locator starts at the best header's parent** (closes #1102), and
+  a `getheaders` with nothing to give draws an empty `headers`
+  (closes #1115), which asks for nothing more.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
