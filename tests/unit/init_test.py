@@ -35,7 +35,11 @@ from btclib_node import Node, install_signal_handlers
 from btclib_node.chains import RegTest
 from btclib_node.config import Config
 from btclib_node.constants import NodeStatus
-from btclib_node.exceptions import NodeShutdownTimeoutError, ReimportedMainProcessError
+from btclib_node.exceptions import (
+    DirectoryLockError,
+    NodeShutdownTimeoutError,
+    ReimportedMainProcessError,
+)
 from btclib_node.interpreter import warm
 from btclib_node.main import prune_up_to_height, update_chain
 from btclib_node.p2p.address import peer_address
@@ -45,6 +49,8 @@ from tests import (
     cookie_path,
     generate_random_chain,
     get_random_port,
+    held_by_another_process,
+    lock_from_another_process,
     taken_port_bind_error,
     wait_until,
 )
@@ -573,6 +579,59 @@ def test_a_second_node_does_not_disown_the_first(tmp_path: Path) -> None:
         node2.p2p_manager.loop.close()
         node2.rpc_manager.loop.close()
         node2.logger.close()
+
+
+def test_a_node_over_a_data_directory_another_process_holds_opens_nothing(
+    tmp_path: Path,
+) -> None:
+    """Core's refusal, ahead of the log and of every store."""
+    data_dir = tmp_path / "regtest"
+    data_dir.mkdir()
+    with held_by_another_process(data_dir):
+        with pytest.raises(DirectoryLockError) as excinfo:
+            a_node(tmp_path)
+        assert str(excinfo.value) == (
+            f"Cannot obtain a lock on directory {data_dir}."
+            " btclib-node is probably already running."
+        )
+    assert sorted(path.name for path in data_dir.iterdir()) == [".lock", "blocks"]
+
+
+def test_a_node_over_a_blocks_directory_another_process_holds_frees_its_data_directory(
+    tmp_path: Path,
+) -> None:
+    """Core's refusal names the blocks directory, locked after the data one."""
+    blocks_dir = tmp_path / "blocksdir" / "regtest" / "blocks"
+    blocks_dir.mkdir(parents=True)
+    config = Config(
+        chain="regtest",
+        data_dir=tmp_path / "datadir",
+        blocks_dir=tmp_path / "blocksdir",
+        allow_p2p=False,
+        allow_rpc=False,
+    )
+    with held_by_another_process(blocks_dir):
+        with pytest.raises(DirectoryLockError) as excinfo:
+            Node(config=config)
+        assert str(excinfo.value) == (
+            f"Cannot obtain a lock on directory {blocks_dir}."
+            " btclib-node is probably already running."
+        )
+        assert lock_from_another_process(config.data_dir) == "locked"
+
+
+def test_a_stopped_node_leaves_its_directories_to_another_process(
+    tmp_path: Path,
+) -> None:
+    """`run`'s teardown releases both locks, after the stores they guard."""
+    node = a_node(tmp_path)
+    blocks_dir = tmp_path / "regtest" / "blocks"
+    assert lock_from_another_process(node.data_dir) != "locked"
+    assert lock_from_another_process(blocks_dir) != "locked"
+    node.start()
+    node.stop()
+    assert lock_from_another_process(node.data_dir) == "locked"
+    assert lock_from_another_process(blocks_dir) == "locked"
 
 
 def test_a_node_is_constructible_off_the_main_thread(tmp_path: Path) -> None:

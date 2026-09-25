@@ -14,12 +14,11 @@ over the whole file, the call Core makes, so a `bitcoind` and a
 `msvcrt.locking` takes the place of Core's `LockFileEx`.
 
 Core keeps what it holds in a table keyed by the lock file's path, and
-answers a second request for a held path with success: one process is
-one node there. A process here can build several `Node`s, so a held
-path is refused instead -- and the table is what makes that refusal
-possible at all, a POSIX lock being the process's own: a second
-`fcntl` lock from the same process succeeds, and closing either
-descriptor releases both.
+answers a request for a path already there with success, so the lock
+excludes other processes and never the one holding it. So does this
+table. Core's entries last as long as the process; a process here can
+build and stop one `Node` after another, so each entry counts its
+holders instead and comes off with the last `release`.
 """
 
 import os
@@ -55,10 +54,14 @@ __all__ = ["LOCK_FILE", "DirectoryLock"]
 # (`src/init.cpp`, same sha)
 LOCK_FILE = ".lock"
 
-# the lock files this process holds, by path: Core's own `dir_locks`.
-# Reentrant, because `DirectoryLock.__del__` takes it too, and a
-# collection can run it on a thread already inside the block.
-_held: set[str] = set()
+# Core's own `dir_locks`: each lock file this process holds, by path, as
+# its descriptor and how many `DirectoryLock`s hold it. A POSIX lock is
+# the process's own, so a second descriptor locking the same file would
+# succeed, and closing either would release both: one descriptor per
+# path is what keeps the lock on while any holder remains. Reentrant,
+# because `DirectoryLock.__del__` takes it too, and a collection can run
+# that on a thread already inside it.
+_held: dict[str, list[int]] = {}
 _held_guard = threading.RLock()
 
 
@@ -67,43 +70,51 @@ class DirectoryLock:
 
     Raises `DirectoryLockError` with Core's own message: "Cannot write
     to directory ..." where the lock file cannot be opened, "Cannot
-    obtain a lock on directory ..." where another holder has it
+    obtain a lock on directory ..." where another process holds it
     (`LockDirectory` in `src/init.cpp`, same sha).
     """
 
     def __init__(self, directory: Path) -> None:
         """Lock `directory`, which has to exist already."""
-        self._fd: int | None = None
+        self._holding = False
         self.directory = directory
         self._key = str(directory / LOCK_FILE)
         with _held_guard:
-            if self._key not in _held:
-                try:
-                    # Core's `fopen(..., "a")` and then `open(O_RDWR)`, as one
-                    fd = os.open(self._key, os.O_RDWR | os.O_CREAT, 0o666)
-                except OSError as error:
-                    err_msg = f"Cannot write to directory '{directory}'; "
-                    err_msg += "check permissions."
-                    raise DirectoryLockError(err_msg) from error
-                try:
-                    _try_lock(fd)
-                except OSError:
-                    os.close(fd)
-                else:
-                    self._fd = fd
-                    _held.add(self._key)
-                    return
-        err_msg = f"Cannot obtain a lock on directory {directory}. "
-        err_msg += f"{CLIENT_NAME} is probably already running."
-        raise DirectoryLockError(err_msg)
+            if self._key in _held:
+                _held[self._key][1] += 1
+                self._holding = True
+                return
+            try:
+                # Core's `fopen(..., "a")` and then `open(O_RDWR)`, as one
+                fd = os.open(self._key, os.O_RDWR | os.O_CREAT, 0o666)
+            except OSError as error:
+                err_msg = f"Cannot write to directory '{directory}'; "
+                err_msg += "check permissions."
+                raise DirectoryLockError(err_msg) from error
+            try:
+                _try_lock(fd)
+            except OSError as error:
+                os.close(fd)
+                err_msg = f"Cannot obtain a lock on directory {directory}. "
+                err_msg += f"{CLIENT_NAME} is probably already running."
+                raise DirectoryLockError(err_msg) from error
+            _held[self._key] = [fd, 1]
+            self._holding = True
 
     def release(self) -> None:
-        """Give the lock up, for the next holder; a second call does nothing."""
+        """Stop holding the lock; the last holder's call unlocks the file.
+
+        A second call does nothing.
+        """
         with _held_guard:
-            if self._fd is not None:
-                os.close(self._fd)
-                self._fd = None
-                _held.discard(self._key)
+            if not self._holding:
+                return
+            self._holding = False
+            entry = _held[self._key]
+            entry[1] -= 1
+            if not entry[1]:
+                del _held[self._key]
+                os.close(entry[0])
 
     def __del__(self) -> None:
         """Release the lock if nothing did, as `Node.__del__` does its pool."""

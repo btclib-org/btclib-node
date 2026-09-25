@@ -50,6 +50,13 @@ btclib\_node.db module
    :members:
    :show-inheritance:
 
+btclib\_node.dirlock module
+----------------------------
+
+.. automodule:: btclib_node.dirlock
+   :members:
+   :show-inheritance:
+
 btclib\_node.download module
 -----------------------------
 
