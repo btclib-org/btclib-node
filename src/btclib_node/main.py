@@ -294,15 +294,14 @@ def prune_up_to_height(node: Node, target_height: int) -> None:
     reader this matters to: without this, a block re-offered after its
     data was pruned would be silently discarded rather than re-stored.
 
-    Never clears height 0: `BlockIndex.__init__` seeds genesis with
-    `downloaded=True` and it is never written to `block_db` in the first
-    place (`chain.genesis` is known outright, not fetched), so `range`
-    below starts at `max(1, ...)` rather than at `pruned_up_to + 1`
-    unguarded -- a `target_height` of `0` would otherwise clear a flag
-    for a block this store never held and never asks a peer for again.
+    Height 0 included: genesis is in `block_db` like any other block
+    (`Node.__init__`), and Core's own `GetPruneRange`
+    (`src/validation.cpp:6382`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag) starts the prunable range at height 0 on a chain not built from
+    a snapshot.
     """
     block_index = node.chainstate.block_index
-    for height in range(max(1, node.block_db.pruned_up_to + 1), target_height + 1):
+    for height in range(node.block_db.pruned_up_to + 1, target_height + 1):
         block_hash = block_index.active_chain[height]
         block_index.set_downloaded(block_hash, downloaded=False)
     node.block_db.prune_up_to(target_height, block_index.active_chain.__getitem__)
@@ -373,7 +372,7 @@ def _prune_to_target(node: Node, max_height: int, prune_target_mib: int) -> None
     against.
     """
     target_bytes = prune_target_mib * 1024 * 1024
-    height = max(1, node.block_db.pruned_up_to + 1)
+    height = node.block_db.pruned_up_to + 1
     while height <= max_height and node.block_db.current_usage() >= target_bytes:
         prune_up_to_height(node, height)
         height += 1

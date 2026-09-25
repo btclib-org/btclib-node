@@ -375,3 +375,20 @@ def test_submit_block_connects_on_a_node_no_peer_has_sent_a_header(
     assert body["result"]["blocks"] == 1
     assert body["result"]["bestblockhash"] == block.header.hash.hex()
     assert node.status == NodeStatus.SyncingHeaders
+
+
+def test_get_block_answers_the_genesis_block_of_a_fresh_node(rpc_node: Node) -> None:
+    """getblock, live, answers genesis on a node with nothing past it.
+
+    Core writes genesis to disk at start, so its own `getblock` answers
+    this as it answers any other block (btclib-org/btclib-node#1072).
+    """
+    node = rpc_node
+    wait_until_listening(node.rpc_manager)
+
+    genesis = RegTest().genesis_block
+    _, body = rpc_client(node).call_raw(
+        "getblock", [genesis.header.hash.hex(), 0], jsonrpc="1.0", request_timeout=2
+    )
+
+    assert body["result"] == genesis.serialize(check_validity=False).hex()

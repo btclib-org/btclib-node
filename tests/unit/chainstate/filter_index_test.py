@@ -79,14 +79,14 @@ def test_the_genesis_filter_is_indexed_before_any_block_arrives(
 ) -> None:
     """A fresh node's filter index already holds the genesis block's filter.
 
-    No peer serves the genesis block, so it never reaches this index
-    through the connect path -- `FilterIndex.__init__` builds it
+    The genesis block never goes through the connect path, so it never
+    reaches this index that way -- `FilterIndex.__init__` builds it
     itself, the one filter every other test here can chain onto.
     """
     node = regtest_node()
     filter_index = node.chainstate.filter_index
-    # no peer serves the genesis block, so it is not indexed by the
-    # connect path and would be the one hole in the chain of headers
+    # the genesis block is not indexed by the connect path, so without
+    # it this would be the one hole in the chain of headers
     genesis_filter = filter_index.get_filter(GENESIS.hash)
     assert genesis_filter is not None
     block_filter = BasicBlockFilter.parse(genesis_filter, GENESIS.hash)

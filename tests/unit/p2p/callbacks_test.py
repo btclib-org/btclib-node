@@ -117,6 +117,7 @@ from tests import (
     generate_random_transaction,
     log_recorder,
 )
+from tests.conftest import unstarted_node_context
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -2171,6 +2172,25 @@ def test_a_pruned_node_serves_a_block_within_its_own_retained_depth() -> None:
     (answer,) = peer.sent
     assert isinstance(answer, BlockMsg)
     assert not peer.stopped
+
+
+def test_a_fresh_node_serves_its_genesis_block(tmp_path: Path) -> None:
+    """A `getdata` for genesis is answered from `block_db`, as Core answers it.
+
+    The store is a real node's, fresh, with nothing connected past
+    genesis (btclib-org/btclib-node#1072).
+    """
+    genesis = RegTest().genesis_block
+    with unstarted_node_context(tmp_path) as real:
+        node = a_data_node(block_db=real.block_db)
+        peer = a_peer()
+        items = [Inventory(InventoryType.MSG_BLOCK, genesis.header.hash)]
+        getdata(node, GetData(items).serialize(), peer)
+    (answer,) = peer.sent
+    assert isinstance(answer, BlockMsg)
+    assert answer.block.serialize(check_validity=False) == genesis.serialize(
+        check_validity=False
+    )
 
 
 def test_an_unpruned_node_never_disconnects_over_a_stale_getdata() -> None:

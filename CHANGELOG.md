@@ -256,6 +256,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   port"** (closes #1093); `btclib-node` exits 1 and prints it, and under
   `-listen=0` the node starts whatever holds the port.
 
+### A node serves its genesis block, as Core's does
+
+- **`Node` writes genesis to `block_db` at start, unless pruned past it, so
+  `getblock` and `getdata` answer it** (closes #1072); pruning clears its
+  `downloaded` too, and `getrawtransaction` refuses its coinbase as Core does.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

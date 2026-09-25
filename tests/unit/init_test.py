@@ -37,7 +37,7 @@ from btclib_node.config import Config
 from btclib_node.constants import NodeStatus
 from btclib_node.exceptions import NodeShutdownTimeoutError, ReimportedMainProcessError
 from btclib_node.interpreter import warm
-from btclib_node.main import update_chain
+from btclib_node.main import prune_up_to_height, update_chain
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
 from btclib_node.rpc.auth import COOKIE_FILE
@@ -157,6 +157,34 @@ def test_pending_getdata_starts_empty(tmp_path: Path) -> None:
     """A fresh node has nothing registered on `pending_getdata`."""
     with unstarted_node_context(tmp_path) as node:
         assert node.pending_getdata == {}
+
+
+def test_a_node_stores_its_genesis_block_once_and_not_over_a_prune(
+    tmp_path: Path,
+) -> None:
+    """Genesis is in `block_db` from the first start, as Core writes it.
+
+    A second start writes nothing more, and a start after pruning has
+    reached height 0 does not write it back (btclib-org/btclib-node#1072).
+    """
+    genesis = RegTest().genesis_block
+    genesis_hash = genesis.header.hash
+    with unstarted_node_context(tmp_path, pruned=True) as node:
+        stored = node.block_db.get_block(genesis_hash)
+        assert stored is not None
+        assert stored.serialize(check_validity=False) == genesis.serialize(
+            check_validity=False
+        )
+        usage = node.block_db.current_usage()
+    with unstarted_node_context(tmp_path, pruned=True) as node:
+        assert node.block_db.current_usage() == usage
+        prune_up_to_height(node, 0)
+        assert node.block_db.get_block(genesis_hash) is None
+        block_info = node.chainstate.block_index.get_block_info(genesis_hash)
+        assert block_info.downloaded is False
+    with unstarted_node_context(tmp_path, pruned=True) as node:
+        assert node.block_db.pruned_up_to == 0
+        assert node.block_db.get_block(genesis_hash) is None
 
 
 def test_drain_message_queues_calls_resume_cfilters(

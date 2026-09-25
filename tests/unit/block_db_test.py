@@ -507,9 +507,8 @@ def _hashes_and_rev_blocks(
 ) -> tuple[list[bytes], Callable[[int], bytes]]:
     """Add every block of `chain` with a rev patch, and return hash-by-height.
 
-    Height 0 is a hash nothing here ever adds to `block_db` -- every
-    caller's own genesis, matching `BlockIndex.active_chain[0]`, which
-    `prune_up_to` is never given anything else for in production.
+    Height 0 is a placeholder hash nothing here adds to `block_db`, so
+    `prune_up_to` reaching it deletes nothing.
     """
     hashes = [b"\x00" * 32] + [block.header.hash for block in chain]
     for height, block in enumerate(chain, start=1):

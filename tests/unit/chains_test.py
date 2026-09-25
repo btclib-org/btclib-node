@@ -93,9 +93,9 @@ def test_genesis() -> None:
 def test_the_genesis_block_carries_the_coinbase_its_header_commits_to() -> None:
     """Each chain's genesis block holds one coinbase, and its id is the root."""
     # the header is derived from the transaction, so a block built
-    # without it hashes the same and is still wrong: it is the only
-    # copy of the genesis block this node has -- no peer serves it --
-    # and the BIP158 filter of height zero is built from its outputs
+    # without it hashes the same and is still wrong: it is the copy
+    # `Node.__init__` writes to `block_db` and serves to peers, and the
+    # BIP158 filter of height zero is built from its outputs
     for chain in CHAINS:
         (coinbase,) = chain.genesis_block.transactions
         assert coinbase.is_coinbase, chain.name
