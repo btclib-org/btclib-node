@@ -100,6 +100,12 @@ declare; it names `setup-python` and its `false` default instead
 export, which has no `.git` for its git commands; the worktree it builds
 in is already clean (issue btclib-org/.github#1352).
 
+### `v2026.8.27`'s release notes are wrong about what the RPC listener binds
+
+`RELEASE_NOTES.md`'s `v2026.8.27` section says every interface; at that
+tag `RpcManager` binds `Config.rpc_host`, loopback by default, and
+authenticates nothing, which `SECURITY.md` carries (closes #1056).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
