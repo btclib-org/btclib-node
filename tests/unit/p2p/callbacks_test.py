@@ -1223,6 +1223,27 @@ def test_a_discouraged_host_gossiped_is_not_stored() -> None:
         assert peer_db.addresses == {replace(kept, timestamp=0)}
 
 
+def test_the_addresses_kept_are_counted_per_peer() -> None:
+    """ISS 1105: Core's `m_addr_processed`, which a discouraged host is not.
+
+    Through `addr` and `addrv2` alike, and added up across messages.
+    """
+    now = int(time.time())
+    kept = [peer_address(f"1.2.3.{n}", 18444, timestamp=now) for n in (1, 2)]
+    discouraged = peer_address("1.2.3.5", 18444, timestamp=now)
+    for callback, message in (
+        (addr, Addr([addr_entry(address) for address in (*kept, discouraged)])),
+        (addrv2, AddrV2([*kept, discouraged])),
+    ):
+        peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+        node = a_handshake_node(peer_db=peer_db, discouraged_hosts=["1.2.3.5"])
+        peer = a_peer()
+        callback(node, message.serialize(), peer)
+        assert peer.stats.addr_processed == len(kept)
+        callback(node, message.serialize(), peer)
+        assert peer.stats.addr_processed == 2 * len(kept)
+
+
 def test_an_octet_past_an_addr_or_addrv2_no_longer_costs_the_peer() -> None:
     """A trailing octet on `addr` or `addrv2` is parsed past, not a disconnect.
 

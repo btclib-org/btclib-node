@@ -389,6 +389,8 @@ class PeerStats:
     in whole seconds. `last_inv_sequence` is `TxRelay::m_last_inv_sequence`,
     `Mempool.sequence` as of this connection's last trickle, which
     `DownloadManager` writes, and 1 before the first, where Core starts it.
+    `addr_processed` is `Peer::m_addr_processed`, which `callbacks.addr`
+    and `callbacks.addrv2` count on `Node`'s thread.
 
     The rest are Core's `nSendBytes`, `nRecvBytes` and their per-command
     tables: the octets written to and read off the socket, the tables by
@@ -399,6 +401,7 @@ class PeerStats:
 
     time_offset: int = 0
     last_inv_sequence: int = 1
+    addr_processed: int = 0
     bytes_sent: int = 0
     bytes_recv: int = 0
     bytes_sent_per_msg: Counter[str] = field(default_factory=Counter)

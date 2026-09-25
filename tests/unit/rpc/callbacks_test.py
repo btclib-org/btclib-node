@@ -433,8 +433,8 @@ def test_a_loopback_local_address_is_kept() -> None:
 def test_every_key_core_pushes_for_every_peer_is_answered() -> None:
     """The unconditional keys of Core's `getpeerinfo`, in Core's order.
 
-    Less `synced_headers`, `synced_blocks` and `addr_processed`, which
-    this node keeps nothing to answer with. `addrlocal` and the ping
+    Less `synced_headers` and `synced_blocks`, which this node keeps
+    nothing to answer with. `addrlocal` and the ping
     fields follow here where Core pushes them.
     """
     peer = a_peer(latency=0, min_ping_time=math.inf)
@@ -466,6 +466,7 @@ def test_every_key_core_pushes_for_every_peer_is_answered() -> None:
         "presynced_headers",
         "inflight",
         "addr_relay_enabled",
+        "addr_processed",
         "addr_rate_limited",
         "permissions",
         "minfeefilter",
@@ -483,6 +484,7 @@ def test_the_fields_this_node_keeps_state_for_read_that_state() -> None:
     peer.stats = PeerStats(
         time_offset=-3,
         last_inv_sequence=42,
+        addr_processed=5,
         bytes_sent=100,
         bytes_recv=200,
         bytes_sent_per_msg=Counter({"version": 60, "ping": 40}),
@@ -502,6 +504,7 @@ def test_the_fields_this_node_keeps_state_for_read_that_state() -> None:
     # in the order they were asked for
     assert info["inflight"] == [11, 10]
     assert info["addr_relay_enabled"] is True
+    assert info["addr_processed"] == 5
     assert info["minfeefilter"].text == "0.00001234"
     # in key order, as Core's `std::map` iterates
     assert list(info["bytessent_per_msg"].items()) == [("ping", 40), ("version", 60)]

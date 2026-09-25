@@ -802,10 +802,9 @@ def _peer_entry(
     # -1, Core's answer where no low-work headers presync runs, which
     # this node never runs.
     entry["presynced_headers"] = -1
-    # `synced_headers`, `synced_blocks` and `addr_processed` are not
-    # answered: this node keeps no per-peer best known header nor last
-    # common block, `best_known_height` being seeded off the peer's own
-    # `version` claim, and counts no addresses processed per peer.
+    # `synced_headers` and `synced_blocks` are not answered: this node
+    # keeps no per-peer best known header nor last common block,
+    # `best_known_height` being seeded off the peer's own `version` claim.
     block_index = node.chainstate.block_index
     entry["inflight"] = [
         block_index.get_block_info(block_hash).index
@@ -814,6 +813,7 @@ def _peer_entry(
     # Every handshake-complete peer is asked `getaddr` and has its `addr`
     # stored; this node limits no peer's address rate.
     entry["addr_relay_enabled"] = p2p_conn.status == P2pConnStatus.Connected
+    entry["addr_processed"] = p2p_conn.stats.addr_processed
     entry["addr_rate_limited"] = 0
     # No `-whitelist`/`-whitebind`: no peer holds a permission.
     entry["permissions"] = []
