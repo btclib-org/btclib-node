@@ -172,6 +172,12 @@ no longer says Core measures on a steady clock (closes #1081).
   for `DELETE`, then 404 off `/` and `/wallet/`, then 405 for a non-`POST`**
   (closes #1075); a reply to a closed socket is dropped (closes #1079).
 
+### `getpeerinfo` answers Core's time fields
+
+- **Its timestamps are whole seconds, `last_block` the last novel
+  block's; `pingtime`, `minping` and `pingwait` appear once they hold a
+  value** (closes #1084).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

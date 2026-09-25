@@ -11,6 +11,7 @@ node did not follow, a peer that goes away mid-lookup, or a transaction
 the mempool refuses.
 """
 
+import math
 import time
 from dataclasses import replace
 from types import SimpleNamespace
@@ -144,6 +145,9 @@ def a_peer(
     bind: str = "5.6.7.8",
     local: str = "9.10.11.12",
     user_agent: bytes = b"/btclib:test/",
+    latency: float = 0.5,
+    min_ping_time: float = 0.25,
+    ping_sent: float = 0,
 ) -> Any:
     """Build a `P2pManager.connections` entry `get_peer_info` can read.
 
@@ -160,10 +164,18 @@ def a_peer(
             user_agent=user_agent,
         ),
         address=SimpleNamespace(network_id=SimpleNamespace(name="IPV4")),
-        last_send=1,
-        last_receive=2,
-        last_block_timestamp=3,
-        latency=0.5,
+        # fractional where the connection keeps them so, and each a
+        # different value, so that an answer naming the wrong source or
+        # left unrounded cannot pass
+        last_send=1.9,
+        last_receive=2.7,
+        last_block_timestamp=3.5,
+        last_novel_block_time=4,
+        last_novel_tx_time=5,
+        connected_time=6,
+        latency=latency,
+        min_ping_time=min_ping_time,
+        ping_sent=ping_sent,
         inbound=True,
     )
 
@@ -269,6 +281,63 @@ def test_the_services_are_named_the_way_core_names_them() -> None:
     assert service_names(
         ServiceFlags.NODE_WITNESS | (1 << 40) | ServiceFlags.NODE_NETWORK
     ) == ["NETWORK", "WITNESS", "UNKNOWN[2^40]"]
+
+
+def test_the_time_fields_are_core_s_whole_seconds() -> None:
+    """`getpeerinfo`'s times are whole seconds, and its block the novel one.
+
+    `lastsend`, `lastrecv`, `last_transaction`, `last_block` and
+    `conntime` are integers, pushed for every peer, and `last_block` is
+    the last novel block rather than the stall check's timestamp.
+    """
+    (info,) = get_peer_info(a_node({7: a_peer()}), _CONN, [])
+    keys = ("lastsend", "lastrecv", "last_transaction", "last_block", "conntime")
+    times = {key: info[key] for key in keys}
+    assert times == {
+        "lastsend": 1,
+        "lastrecv": 2,
+        "last_transaction": 5,
+        "last_block": 4,
+        "conntime": 6,
+    }
+    assert all(type(value) is int for value in times.values())
+
+
+def test_no_ping_field_is_answered_before_a_ping_is_sent() -> None:
+    """`pingtime`, `minping` and `pingwait` are all absent with no ping yet."""
+    peer = a_peer(latency=0, min_ping_time=math.inf, ping_sent=0)
+    (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
+    assert "pingtime" not in info
+    assert "minping" not in info
+    assert "pingwait" not in info
+
+
+def test_a_ping_answered_reports_its_round_trips_and_no_wait() -> None:
+    """After a pong, `pingtime` and `minping` are answered, `pingwait` not."""
+    (info,) = get_peer_info(a_node({7: a_peer()}), _CONN, [])
+    assert info["pingtime"] == 0.5
+    assert info["minping"] == 0.25
+    assert "pingwait" not in info
+
+
+def test_a_ping_outstanding_reports_how_long_it_has_waited() -> None:
+    """`pingwait` is the seconds since the outstanding ping was sent."""
+    before = time.time()
+    peer = a_peer(latency=0, min_ping_time=math.inf, ping_sent=before - 3)
+    (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
+    assert 3 <= info["pingwait"] <= 3 + time.time() - before
+    assert "pingtime" not in info
+    assert "minping" not in info
+
+
+def test_a_ping_sent_after_now_reports_no_wait() -> None:
+    """A wall clock stepped back past the ping answers no `pingwait`.
+
+    Core pushes `pingwait` only where it is positive.
+    """
+    peer = a_peer(ping_sent=time.time() + 3600)
+    (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
+    assert "pingwait" not in info
 
 
 def test_a_peer_still_handshaking_is_not_in_the_table() -> None:

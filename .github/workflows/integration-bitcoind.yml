@@ -15,6 +15,8 @@ name: integration-bitcoind
 # off a branch Core abandons, its own block index, UTXO set and mempool
 # moving back together: a reorg is where a disagreement with Core is a
 # chain split rather than a slow peer.
+# `tests/integration/getpeerinfo_test.py` asks whether this node's
+# `getpeerinfo` answers the time fields bitcoind's does, in the same types.
 #
 # Gated rather than run only on a schedule: connecting to bitcoind and
 # reaching its tip took 0.11s measured against a local build of Bitcoin
