@@ -16,10 +16,13 @@ pip install btclib-node
 btclib-node -h
 ```
 
-`btclib-node -h` lists every flag, spelled the way Bitcoin Core spells
-its own — a single dash, `-datadir` rather than `--datadir`, though the
-double-dash spelling is accepted too. One flag selects the chain,
-mainnet being the default:
+`btclib-node -h` lists the options, read the way Bitcoin Core reads its
+own — a single dash, `-datadir` rather than `--datadir`, though the
+double-dash spelling is accepted too; a value only after `=`,
+`-datadir=<dir>` and never `-datadir <dir>`; and `-no<option>` negating
+one. `-help-debug` adds the options Core registers for debugging,
+`-regtest` among them. One option selects the chain, mainnet being the
+default:
 
 ```shell
 btclib-node
@@ -37,9 +40,19 @@ never share one store and switching between them on the same
 An operator's existing `bitcoin.conf` is read from the data directory
 without being told to, `-conf=<file>` naming another one; a
 `[section]` per chain, `main` included, plus one default section that
-applies to every chain, is the same shape Core's own reader uses, and
-the command line always wins over the file. `-prune` is accepted, and
-`## Pruning` below is what any nonzero value actually does.
+applies to every chain, is the same shape Core's own reader uses. An
+option taking one value takes it from the command line over the file,
+except that `-noregtest`, `-notestnet` and `-nosignet` on the command
+line are skipped, so the file's `regtest=1` still selects regtest where
+`-regtest=0` would not. A list option, such as `-connect`, `-addnode`,
+`-rpcauth`, `-rpcwhitelist` or `-debug`, takes its values from the
+command line and the file together: `-connect=X` there and `connect=Y`
+in the file dials both. Only a negation on the command line drops the
+file's values, and not once a value follows it there:
+`-noconnect -connect=X` keeps the file's own values after `X`.
+`-debug=0` is a value rather than a negation, so it leaves the file's
+`debug=` categories on; `-nodebug` turns them off. `-prune` is accepted,
+and `## Pruning` below is what any nonzero value actually does.
 
 ## Pruning
 
@@ -165,9 +178,7 @@ transaction's own `nLockTime` together with its BIP68 relative lock
 five of those were open questions this tracker carried and are now
 closed.
 
-Pruning is accepted as a flag and refused rather than honoured — see
-*Starting a node* above
-([#601](https://github.com/btclib-org/btclib-node/issues/601)). The
+Pruning is honoured, as *Pruning* above says. The
 UTXO set carries no commitment a caller can audit against
 ([#639](https://github.com/btclib-org/btclib-node/issues/639)), and
 this node answers no `gettxoutsetinfo` of its own.

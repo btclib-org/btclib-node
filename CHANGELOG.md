@@ -304,6 +304,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   discouraged** (issue #1105); `synced_headers` and `synced_blocks` stay out,
   this node keeping no per-peer best known or last common block.
 
+### `btclib-node` reads its options the way Core's `ArgsManager` does
+
+- **A value only after `=`, and `-no<option>` negating, in `bitcoin.conf`
+  too** (closes #1112, closes #1123, closes #1124, closes #1131, closes #1136,
+  closes #1137): `-server` joins, and `-debug=` takes Core's categories.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

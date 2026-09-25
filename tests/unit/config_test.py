@@ -187,7 +187,7 @@ def test_listen_false_is_taken_as_given() -> None:
     """`listen=False` is stored as given, not resolved by `Config` itself.
 
     The `-connect`-implies-`-listen=0` default is `cli.py`'s own
-    `_resolve_listen`, argued against `connect_given` above one layer up
+    `build_config`, argued against `connect_given` above one layer up
     from here -- `Config` only ever stores what it is given.
     """
     assert Config(chain="regtest", connect=["127.0.0.1"], listen=False).listen is False
