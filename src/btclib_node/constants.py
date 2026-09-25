@@ -17,6 +17,7 @@ from datetime import timedelta
 from importlib.metadata import version
 
 __all__ = [
+    "CLIENT_NAME",
     "MAX_TIP_AGE",
     "MIN_BLOCKS_TO_KEEP",
     "MIN_PRUNE_TARGET_MIB",
@@ -83,6 +84,13 @@ MIN_PRUNE_TARGET_MIB = 550
 # worse than a node that says why it will not start.
 # btclib-org/btclib-node#580
 USER_AGENT = f"/btclib:{version('btclib-node')}/"
+
+# Core's own `CLIENT_NAME`, what its refusals name as probably already
+# running where a port or a data directory is taken
+# (`CConnman::BindListenPort`, `src/net.cpp:3356`, and `LockDirectory`,
+# `src/init.cpp`, at bitcoin/bitcoin@9be056a8a7): the program this runs
+# as, the command `pyproject.toml`'s `[project.scripts]` installs.
+CLIENT_NAME = "btclib-node"
 
 
 # The service bits are `btclib.p2p.address.ServiceFlags`, not a table

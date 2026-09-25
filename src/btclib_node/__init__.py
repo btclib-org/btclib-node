@@ -25,12 +25,17 @@ from math import log2
 from multiprocessing.pool import Pool, ThreadPool
 from typing import TYPE_CHECKING, override
 
-from btclib_node.block_db import BlockDB
+from btclib_node.block_db import BlockDB, blocks_directory
 from btclib_node.chainstate import Chainstate
 from btclib_node.config import Config
 from btclib_node.constants import NodeStatus
+from btclib_node.dirlock import DirectoryLock
 from btclib_node.download import DownloadManager
-from btclib_node.exceptions import NodeShutdownTimeoutError, ReimportedMainProcessError
+from btclib_node.exceptions import (
+    DirectoryLockError,
+    NodeShutdownTimeoutError,
+    ReimportedMainProcessError,
+)
 from btclib_node.interpreter import warm
 from btclib_node.log import Logger
 from btclib_node.main import update_chain
@@ -286,6 +291,23 @@ class Node(threading.Thread):
         self.chain = config.chain
         self.data_dir = config.data_dir
         self.data_dir.mkdir(exist_ok=True, parents=True)
+        # Core's own `GetBlocksDirPath` creates the blocks directory where
+        # `AppInitParameterInteraction` first asks for it, ahead of the locks
+        # (`src/common/args.cpp`, `src/init.cpp`, at bitcoin/bitcoin@9be056a8a7)
+        blocks_dir = blocks_directory(self.data_dir, config.blocks_dir)
+        blocks_dir.mkdir(exist_ok=True, parents=True)
+
+        # Core's own `AppInitLockDirectories`: the data directory, then the
+        # blocks directory, both before the log or any store is opened
+        # (`src/init.cpp`, same sha). The first is released where the second
+        # is refused rather than left to the collector, for whoever retries.
+        data_dir_lock = DirectoryLock(self.data_dir)
+        try:
+            blocks_dir_lock = DirectoryLock(blocks_dir)
+        except DirectoryLockError:
+            data_dir_lock.release()
+            raise
+        self._directory_locks = (data_dir_lock, blocks_dir_lock)
 
         self.terminate_flag = threading.Event()
         log_path = self.data_dir / config.log_path if config.log_path else None
@@ -640,6 +662,8 @@ class Node(threading.Thread):
         self.p2p_manager.peer_db.close()
         self.chainstate.close()
         self.block_db.close()
+        for lock in self._directory_locks:
+            lock.release()
 
         # joined before the read below, not asked for: the same race
         # the attribute's own comment above names
