@@ -22,15 +22,16 @@ cannot be reduced to without first owning a socket, a manager and a
 node -- issue #516's own three-way split, and why this harness stops
 at framing rather than reaching `Connection.run`.
 
-`BTClibException` is the whole family `Connection.run`'s own catch
-(`p2p/connection.py`) discourages a peer on: `IncompleteMessageError`
-for a message `stream` does not yet hold whole, `btclib`'s own parse
-refusals from `Message.parse` itself, and `WrongNetworkMagicError` for
-a message whose magic names a chain other than the one this node runs.
-Suppressing that family alone is what makes this harness report: what
-leaves `fuzz_target` below is then either a crash or a refusal outside
-the family `Connection.run` itself tolerates from a peer, and each is a
-finding.
+`BTClibException` is the whole family `frame_message` refuses a peer's
+octets with: `IncompleteMessageError` for a message `stream` does not
+yet hold whole, `WrongNetworkMagicError` for a header whose magic names
+a chain other than the one this node runs, whatever `Message.parse`
+refused a header with where its length is past the bound, and
+`RejectedMessageError` for a whole message whose checksum or command is
+wrong. Suppressing that family alone is what makes this harness report:
+what leaves `fuzz_target` below is then either a crash or a refusal
+outside the family `Connection.parse_messages` answers a peer's octets
+with, and each is a finding.
 
 `fuzz.yml` runs this file as an ordinary script under the interpreter
 `.python-version` pins, and its own header is where that is argued

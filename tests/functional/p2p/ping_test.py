@@ -2,19 +2,25 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""A `pong` matching its `ping` is recorded, one that does not drop the peer."""
+"""A `pong` matching its `ping` is recorded, one that does not is ignored."""
 
 import time
 from typing import TYPE_CHECKING
 
-from btclib.p2p.keepalive import Ping
+from btclib.p2p.keepalive import Ping, Pong
 
 from btclib_node.constants import P2pConnStatus
+from btclib_node.p2p.callbacks import callbacks
 from tests import local_addr, wait_until, wait_until_listening
 from tests.conftest import node_context
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    import pytest
+
+    from btclib_node import Node
+    from btclib_node.p2p.connection import Connection
 
 
 def test_correct_ping(tmp_path: Path) -> None:
@@ -53,18 +59,23 @@ def test_correct_ping(tmp_path: Path) -> None:
         wait_until(lambda: conn.latency)
 
 
-def test_wrong_ping(tmp_path: Path) -> None:
-    """A `pong` whose nonce does not match the pending `ping` drops the peer.
+def test_wrong_ping(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ISS 1133: a `pong` whose nonce matches no pending `ping` is ignored.
 
     `node1` is made to expect nonce `1` (`ping_nonce` set by hand) and
     then sends a `Ping(2)`; node2's `ping` handler echoes `2` back in
-    its `pong`, which cannot match what `node1` is holding, so
-    `p2p.callbacks.pong` discourages and drops the connection on both
-    ends. The check is by connection id and not by an empty
-    `connections`, because a peer whose address is already known to the
-    other side is redialled the moment the drop lowers the live count,
-    which this test is not about.
+    its `pong`. Core's `PONG` logs "Nonce mismatch" and punishes nobody,
+    so once `node1` has handled that `pong` the connection is still
+    held, its host is not discouraged, and the `ping` is still pending.
     """
+    handled: list[int] = []
+    original = callbacks["pong"]
+
+    def counting(node: Node, msg: bytes, conn: Connection) -> None:
+        original(node, msg, conn)
+        handled.append(Pong.parse(msg).nonce)
+
+    monkeypatch.setitem(callbacks, "pong", counting)
     with (
         node_context(tmp_path / "node1", allow_rpc=False) as node1,
         node_context(tmp_path / "node2", allow_rpc=False) as node2,
@@ -83,27 +94,18 @@ def test_wrong_ping(tmp_path: Path) -> None:
         connection = node2.p2p_manager.connections[0]
         wait_until(lambda: connection.status == P2pConnStatus.Connected)
 
-        node1_conn_id = node1.p2p_manager.connections[0].id
-        node2_conn_id = node2.p2p_manager.connections[0].id
-
         # the ping `verack` sends answered first, as `test_correct_ping` above
         # waits for too: `connections` holds a peer before `verack` has sent
         # it, so that ping can go out after the one below and overwrite the
-        # nonce set by hand, and its `pong`, pushed to the front of the queue
-        # (`Connection.parse_messages`), then matches and clears the pending
-        # ping ahead of the wrong one, which is ignored instead of dropping
-        # the peer (btclib-org/btclib-node#1037)
+        # nonce set by hand (btclib-org/btclib-node#1037)
         node1_conn = node1.p2p_manager.connections[0]
         wait_until(lambda: node1_conn.ping_nonce == 0)
-        node1.p2p_manager.connections[0].ping_sent = time.time()
-        node1.p2p_manager.connections[0].ping_nonce = 1
+        node1_conn.ping_sent = time.time()
+        node1_conn.ping_nonce = 1
         node1.p2p_manager.send(Ping(2), 0)
 
-        # by id, and not "the manager holds none": with #70 and #71 both
-        # working, each side now knows the other's own gossiped address, so
-        # manage_connections redials it the moment this drop takes it out of
-        # `already_connected` -- a peer this connection has nothing to
-        # say about (issue #283) and this test is not either, which is only
-        # that the connection the wrong nonce was sent on is gone.
-        wait_until(lambda: node1_conn_id not in node1.p2p_manager.connections)
-        wait_until(lambda: node2_conn_id not in node2.p2p_manager.connections)
+        wait_until(lambda: 2 in handled)
+        assert node1.p2p_manager.connections[0] is node1_conn
+        assert node1_conn.status == P2pConnStatus.Connected
+        assert node1_conn.ping_nonce == 1
+        assert not node1.p2p_manager.is_discouraged(node1_conn.address)

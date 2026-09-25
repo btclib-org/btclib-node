@@ -310,6 +310,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   too** (closes #1112, closes #1123, closes #1124, closes #1131, closes #1136,
   closes #1137): `-server` joins, and `-debug=` takes Core's categories.
 
+### A peer is discouraged only where Core's `ProcessMessage` would
+
+- **A wrong checksum drops only the message, a refused header only the peer**
+  (closes #1130); **a `pong` or a message out of order discourages nobody**
+  (closes #1133); **a misbehaving manual peer stays connected** (closes #1139).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

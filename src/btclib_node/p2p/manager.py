@@ -544,23 +544,16 @@ class P2pManager(threading.Thread):
 
         Core's `MaybeDiscourageAndDisconnect` (`src/net_processing.cpp`,
         at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), answering whether
-        the host was discouraged. A local peer is dropped alone, since
-        discouraging it would discourage every peer on the same local
-        address. Otherwise the host is discouraged and every connection
-        held with it is dropped, whatever its port and its kind, as
-        Core's `DisconnectNode(CSubNet(addr))` does (`src/net.cpp`, same
-        sha).
-
-        A manual peer, one `-connect`, `-addnode` or the `addnode` RPC
-        dialled, is never discouraged. Core does not disconnect it
-        either, and this drops it all the same: every caller stops the
-        connection for a message it could not take, the same stop a
-        failure that discourages nobody gets, and `_maybe_redial_specified`
-        dials a `-connect` or `-addnode` peer again.
+        the host was discouraged. A manual peer, one `-connect`,
+        `-addnode` or the `addnode` RPC dialled, is neither discouraged
+        nor dropped. A local peer is dropped alone, since discouraging
+        it would discourage every peer on the same local address.
+        Otherwise the host is discouraged and every connection held with
+        it is dropped, whatever its port and its kind, as Core's
+        `DisconnectNode(CSubNet(addr))` does (`src/net.cpp`, same sha).
         """
         address = conn.address
         if not conn.inbound and not conn.automatic:
-            conn.stop()
             return False
         if can_addrv1(address) and is_local(address):
             conn.stop()

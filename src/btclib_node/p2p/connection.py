@@ -23,10 +23,10 @@ import threading
 import time
 from collections import Counter
 from dataclasses import dataclass, field
-from io import BytesIO
+from io import SEEK_END, BytesIO
 from typing import TYPE_CHECKING, cast, override
 
-from btclib.exceptions import BTClibException, IncompleteMessageError
+from btclib.exceptions import BTClibValueError, IncompleteMessageError
 from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.addrv2 import network_address
 from btclib.p2p.handshake import Version
@@ -36,7 +36,7 @@ from btclib.p2p.message import Message
 
 from btclib_node.chains import RegTest
 from btclib_node.constants import USER_AGENT, P2pConnStatus
-from btclib_node.exceptions import WrongNetworkMagicError
+from btclib_node.exceptions import RejectedMessageError, WrongNetworkMagicError
 from btclib_node.p2p.address import ip_and_port
 from btclib_node.p2p.callbacks import (
     MAX_GETDATA_INFLIGHT_BYTES,
@@ -339,26 +339,49 @@ _USER_AGENT = USER_AGENT.encode()
 def frame_message(stream: BytesIO, magic: bytes) -> Message:
     """Parse one whole message off `stream`, checking it against `magic`.
 
-    The two-line body `parse_messages`'s own loop used to inline, split
-    out so `fuzz/fuzz_framing.py` can drive it directly -- matching
+    Split out of `parse_messages`'s own loop so `fuzz/fuzz_framing.py`
+    can drive it directly -- matching
     Core's own `p2p_transport_serialization.cpp` fuzz target, which
     likewise feeds raw octets to a `V1Transport` constructed with no
     wider node context (at bitcoin/bitcoin@ca7162cde5): the framing is
     a separable step, fed octets rather than a whole peer connection.
 
-    Raises `IncompleteMessageError` -- `Message.parse`'s own refusal,
-    rewinding `stream` to the start of the partial message -- where
-    `stream` does not yet hold a whole message, and
-    `WrongNetworkMagicError` where it does but the message's own magic
-    disagrees with `magic`. Never touches `stream` beyond what
-    `Message.parse` itself consumes, so a caller looping this over
-    several whole messages in one buffer -- `parse_messages` below --
-    keeps every one of `Message.parse`'s own stream-position guarantees.
+    Raises `IncompleteMessageError`, with `stream` rewound to the start
+    of the message, where `stream` does not yet hold a whole one.
+
+    The rest is Core's `V1Transport` split (`src/net.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `readHeader` refuses a
+    magic other than `magic`, raised here as `WrongNetworkMagicError`
+    once the header is whole, and a length past
+    `MAX_PROTOCOL_MESSAGE_LENGTH`, which `Message.parse` refuses; the
+    connection is dropped for either. `GetReceivedMessage` rejects a
+    whole message whose checksum or command is wrong, raised here as
+    `RejectedMessageError` with `stream` moved past it, and the
+    connection goes on to the next.
     """
-    message = Message.parse(stream)
-    if message.magic != magic:
-        raise WrongNetworkMagicError(message.magic)
-    return message
+    start = stream.tell()
+    header = stream.read(_HEADER_SIZE)
+    stream.seek(start)
+    if len(header) == _HEADER_SIZE and header[:_COMMAND_OFFSET] != magic:
+        raise WrongNetworkMagicError(header[:_COMMAND_OFFSET])
+    try:
+        return Message.parse(stream)
+    except BTClibValueError as e:
+        length = int.from_bytes(
+            header[_LENGTH_OFFSET : _LENGTH_OFFSET + _LENGTH_SIZE], "little"
+        )
+        if length > MAX_PROTOCOL_MESSAGE_LENGTH:
+            raise
+        # A command is refused before its payload is read, so the
+        # payload may still be on its way.
+        end = start + _HEADER_SIZE + length
+        available = stream.seek(0, SEEK_END)
+        if available < end:
+            stream.seek(start)
+            err_msg = "incomplete message payload"
+            raise IncompleteMessageError(err_msg, end - available) from e
+        stream.seek(end)
+        raise RejectedMessageError(end - start) from e
 
 
 def frame_message_bytes(data: bytes) -> Message:
@@ -506,9 +529,8 @@ class Connection:
         # statements, not one, and unlocked the two threads' statements
         # can interleave into a ping outstanding under `ping_nonce ==
         # 0` -- the sentinel `send_ping`'s own comment is careful never
-        # to send -- which reads as a peer answering a nonce it was
-        # never sent and gets it discouraged (#283) and dropped for a
-        # protocol violation this node caused. This lock is what makes
+        # to send -- which the peer's answer, carrying the nonce
+        # actually sent, then cannot match. This lock is what makes
         # each of the two writes one step against the other's; `stop`
         # does not take it, since `stop` never touches either field --
         # what makes two concurrent `stop` calls harmless is argued at
@@ -861,20 +883,14 @@ class Connection:
                 # decides it, rather than falling through to the outer
                 # `finally` by coincidence with nothing having looked at
                 # it
-                except Exception as e:  # noqa: BLE001
-                    # A `BTClibException` is `Message.parse` (or the
-                    # network-magic check right after it) refusing this
-                    # peer's own envelope -- a bad checksum, an oversized
-                    # length, a message for another network. Anything else
-                    # caught here is this node's own bug, not the peer's
-                    # doing. btclib-org/btclib-node#283
-                    #
-                    # Stopped first, so that this task is not the one
-                    # `maybe_discourage_and_disconnect` cancels.
-                    self.stop(cancel_task=False)
-                    if isinstance(e, BTClibException):
-                        self.manager.maybe_discourage_and_disconnect(self)
-                    return None
+                except Exception:  # noqa: BLE001
+                    # `frame_message` refusing a header -- another
+                    # network's magic, an oversized length -- or this
+                    # node's own bug. Core's `ReceiveMsgBytes` answers
+                    # the first by dropping the connection and
+                    # discourages nobody (`src/net.cpp`, at
+                    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+                    return self.stop(cancel_task=False)
         finally:
             self.stop(cancel_task=False)
 
@@ -1139,15 +1155,15 @@ class Connection:
             self.buffer[_LENGTH_OFFSET : _LENGTH_OFFSET + _LENGTH_SIZE],
             byteorder="little",
         )
-        # `length` above the protocol's own bound falls through instead
-        # of waiting for however many further octets it claims: nothing
-        # this node could ever receive completes such a message, and
-        # `Message.parse` below refuses it the moment it reads the
-        # header -- the same refusal a peer telling the truth about a
-        # too-large message would get once its payload actually arrived,
-        # just not deferred until then.
-        if length <= MAX_PROTOCOL_MESSAGE_LENGTH and len(self.buffer) < (
-            _HEADER_SIZE + length
+        # A header `frame_message` refuses -- another network's magic, or
+        # `length` above the protocol's own bound -- falls through instead
+        # of waiting for however many further octets it claims, and is
+        # refused the moment the header is whole, as Core's `readHeader`
+        # refuses it.
+        if (
+            self.buffer[:_COMMAND_OFFSET] == self.node.chain.magic
+            and length <= MAX_PROTOCOL_MESSAGE_LENGTH
+            and len(self.buffer) < _HEADER_SIZE + length
         ):
             return
 
@@ -1175,6 +1191,12 @@ class Connection:
                     # the only refusal more octets can answer, and the
                     # stream is back at the start of the partial message
                     return
+                except RejectedMessageError as e:
+                    # counted where Core's `ReceiveMsgBytes` counts a
+                    # rejected message, and the peer kept
+                    self.last_receive = time.time()
+                    self._count_received(_MESSAGE_TYPE_OTHER, e.size)
+                    continue
                 received = self.last_receive = time.time()
                 size = stream.tell() - start
                 consumed += size

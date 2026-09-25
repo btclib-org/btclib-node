@@ -166,9 +166,8 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     ignored outright -- Core's own guard, `pfrom.nVersion != 0`
     (`net_processing.cpp:3823`, at bitcoin/bitcoin@5f45583e43), which
     logs and returns before doing anything else. `conn.status` stays
-    `Open` until `verack` promotes it, so #283's own discourage-and-drop
-    for a handshake command out of order never reaches a repeat sent
-    before that point -- unguarded, every repeat would resend
+    `Open` until `verack` promotes it, so a repeat sent before that
+    point reaches this callback, and unguarded would resend
     `WtxidRelay`, `SendAddrV2` and `Verack` in answer.
     btclib-org/btclib-node#482
 
@@ -275,14 +274,19 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
 def verack(node: Node, msg: bytes, conn: Connection) -> None:
     """Complete a peer's handshake: promote it and send the follow-up messages.
 
-    Refuses a `verack` ahead of its own `version`/`wtxidrelay`, and
-    records the peer's own address as reachable once promoted -- the
-    comment below is where that recording is argued.
+    Ignores a `verack` ahead of `version`, as Core's `ProcessMessage`
+    ignores any message there (`src/net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Drops a peer that sent
+    no `wtxidrelay` ahead of it, discouraging nobody: Core completes
+    that handshake and relays to the peer by txid, and this node asks
+    for transactions by wtxid alone. Records the peer's own address as
+    reachable once promoted -- the comment below is where that
+    recording is argued.
     """
-    if not conn.version_message or not conn.wtxidrelay_received:
-        # a `verack` ahead of the `version`/`wtxidrelay` it depends on:
-        # out of handshake order, and discouraged for it (#283)
-        node.p2p_manager.maybe_discourage_and_disconnect(conn)
+    if not conn.version_message:
+        return
+    if not conn.wtxidrelay_received:
+        conn.stop()
         return
     conn.status = P2pConnStatus.Connected
     # out of P2pManager.pending_connections and into connections, the
@@ -382,28 +386,37 @@ def ping(node: Node, msg: bytes, conn: Connection) -> None:
     conn.send(Pong(nonce))
 
 
-def pong(node: Node, msg: bytes, conn: Connection) -> None:
-    """Match a `pong` to the outstanding `ping` and record the round trip.
+# the octets of a `pong`'s nonce, Core's `sizeof(nonce)`
+_PONG_NONCE_SIZE = 8
 
-    A nonce that does not match the one this node last sent is a
-    protocol violation, discouraged and dropped rather than matched.
+
+def pong(node: Node, msg: bytes, conn: Connection) -> None:
+    """Finish the outstanding `ping` a `pong` answers, recording the round trip.
+
+    Core's `PONG` (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag) punishes no peer for a `pong`. A nonce matching no
+    outstanding `ping` leaves it outstanding, mismatches being "normal
+    when pings are overlapping"; a zero nonce, or a payload too short to
+    hold one, finishes it with no round trip recorded; and a `pong` with
+    no `ping` outstanding is ignored.
     """
-    nonce = Pong.parse(msg).nonce
+    # Core reads the nonce off the payload's first octets and ignores
+    # the rest. A shorter payload finishes the ping as a zero nonce does.
+    head = msg[:_PONG_NONCE_SIZE]
+    nonce = Pong.parse(head).nonce if len(head) == _PONG_NONCE_SIZE else 0
     # The read that decides which of ping_sent/ping_nonce apply and the
     # clear that answers it are one step under conn._ping_lock, against
     # Connection.send_ping's own pair of writes on the other thread:
     # unlocked, a send_ping slipped in between this method's own two
-    # statements used to clear ping_nonce to 0 out from under a ping
-    # send_ping had just sent, discouraging (#283) and dropping a peer
-    # for a nonce this node itself changed. btclib-org/btclib-node#357
+    # statements would have ping_nonce cleared to 0 out from under the
+    # ping it had just sent. btclib-org/btclib-node#357
     with conn._ping_lock:  # noqa: SLF001 -- the comment above is why
         ping_sent = conn.ping_sent
-        if not ping_sent:
+        if not ping_sent or nonce not in (0, conn.ping_nonce):
             return
-        matched = conn.ping_nonce == nonce
-        if matched:
-            conn.ping_sent = 0
-            conn.ping_nonce = 0
+        conn.ping_sent = 0
+        conn.ping_nonce = 0
+        if nonce:
             # Core's `CNode::PongReceived` (`src/net.h`, at
             # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) records the round
             # trip and keeps the lowest for eviction, and `ProcessMessage`
@@ -417,10 +430,6 @@ def pong(node: Node, msg: bytes, conn: Connection) -> None:
             if ping_time >= 0:
                 conn.latency = ping_time
                 conn.min_ping_time = min(conn.min_ping_time, ping_time)
-    if not matched:
-        # a nonce this node never sent: a protocol violation, and
-        # discouraged for it (#283)
-        node.p2p_manager.maybe_discourage_and_disconnect(conn)
 
 
 # Core's own MAX_PCT_ADDR_TO_SEND (net_processing.cpp, 58a7869f86):
