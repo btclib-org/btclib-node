@@ -47,6 +47,8 @@ from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 from tests import log_recorder
 
 if TYPE_CHECKING:
+    import concurrent.futures
+
     from btclib.p2p.payload import Payload
 
     from btclib_node.p2p.manager import P2pManager
@@ -623,6 +625,55 @@ def test_a_connections_own_task_cancelled_directly_still_closes_its_socket() -> 
     assert ours.fileno() == -1
 
 
+def stop_a_threaded_loop(
+    loop: asyncio.AbstractEventLoop, thread: threading.Thread
+) -> None:
+    """Stop `loop`, then cancel and drain what it left pending, then close it.
+
+    The drain runs on this thread, after `thread` has returned from
+    `run_forever`. A cancelled task needs one more step on `loop` to
+    finish, and a `loop.stop` delivered before that step leaves it
+    pending at `close`, for the collector to report as "Task was destroyed
+    but it is pending!" whenever it next runs
+    (btclib-org/btclib-node#1087). `P2pManager.stop` drains its own loop
+    the same way, one task at a time, which also needs no task to be
+    left: `asyncio.gather()` with none looks for a current event loop,
+    and this thread has none. The loop is closed whether or not the
+    drain raised, so that a failure here is reported by this test and
+    not by whichever later one collects the loop.
+    """
+    loop.call_soon_threadsafe(loop.stop)
+    thread.join(timeout=2)
+    try:
+        pending = asyncio.all_tasks(loop)
+        for task in pending:
+            task.cancel()
+        for task in pending:
+            with suppress(asyncio.CancelledError):
+                loop.run_until_complete(task)
+    finally:
+        loop.close()
+
+
+def the_send_is_over(
+    loop: asyncio.AbstractEventLoop, send: concurrent.futures.Future[None]
+) -> bool:
+    """Whether the test's `_send` ended the way this loop family ends it.
+
+    A selector loop's `sock_sendall` waits on a writer that `_close`
+    unregisters before closing the socket, so nothing completes it and
+    only `stop_a_threaded_loop`'s own cancel ends it. A proactor loop's
+    is one overlapped `WSASend` instead, which Winsock ends when the
+    socket closes, with an error `_send` suppresses as it suppresses
+    every `OSError`: on the Windows job `_send` had already finished,
+    and the drain found no task left (btclib-org/btclib-node#1087).
+    Either way it is over, which is what `done` asks. The loop is asked
+    rather than `sys.platform`, as `manager_test.py` asks it.
+    """
+    selector = isinstance(loop, asyncio.selector_events.BaseSelectorEventLoop)
+    return send.cancelled() if selector else send.done()
+
+
 def test_stop_from_another_thread_does_not_raise_past_a_registered_writer(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -661,8 +712,9 @@ def test_stop_from_another_thread_does_not_raise_past_a_registered_writer(
     try:
         connection = a_running_connection(loop, ours)
         connection.task = asyncio.run_coroutine_threadsafe(connection.run(), loop)
-        # theirs never reads, so this fills ours's own send buffer and
-        # leaves a writer registered on the same fd sock_recv reads from
+        # theirs never reads, so on a selector loop this fills ours's own
+        # send buffer and leaves a writer registered on the same fd
+        # sock_recv reads from
         send = asyncio.run_coroutine_threadsafe(
             connection._send(b"x" * (16 * 1024 * 1024)), loop
         )
@@ -670,20 +722,18 @@ def test_stop_from_another_thread_does_not_raise_past_a_registered_writer(
         connection.stop()
         time.sleep(0.15)
     finally:
-        # cancels _send's own sock_sendall, still pending because theirs
-        # never drained it; not awaited synchronously back on this
-        # thread, so the loop stopping just after can still log its own
-        # harmless "Task was destroyed but it is pending!" for it
-        send.cancel()
-        loop.call_soon_threadsafe(loop.stop)
-        thread.join(timeout=2)
-        loop.close()
+        # on a selector loop _send's own sock_sendall is still pending,
+        # theirs never having drained it, and the drain is what cancels
+        # and finishes it; a proactor loop's close has already ended it
+        stop_a_threaded_loop(loop, thread)
         theirs.close()
 
     assert connection.status == P2pConnStatus.Closed
     # a closed socket's own fileno is -1; still >= 0 is still open
     assert ours.fileno() == -1
     assert "Bad file descriptor" not in caplog.text
+    assert the_send_is_over(loop, send)
+    assert not asyncio.all_tasks(loop)
 
 
 def test_stop_on_the_loop_s_own_thread_does_not_raise_past_a_registered_writer(
@@ -729,15 +779,14 @@ def test_stop_on_the_loop_s_own_thread_does_not_raise_past_a_registered_writer(
         loop.call_soon_threadsafe(connection.stop)
         time.sleep(0.15)
     finally:
-        send.cancel()
-        loop.call_soon_threadsafe(loop.stop)
-        thread.join(timeout=2)
-        loop.close()
+        stop_a_threaded_loop(loop, thread)
         theirs.close()
 
     assert connection.status == P2pConnStatus.Closed
     assert ours.fileno() == -1
     assert "Bad file descriptor" not in caplog.text
+    assert the_send_is_over(loop, send)
+    assert not asyncio.all_tasks(loop)
 
 
 def test_close_on_an_already_closed_socket_touches_neither_reader_nor_writer() -> None:
