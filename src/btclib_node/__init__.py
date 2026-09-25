@@ -651,8 +651,6 @@ class Node(threading.Thread):
         self.p2p_manager.peer_db.close()
         self.chainstate.close()
         self.block_db.close()
-        for lock in self._directory_locks:
-            lock.release()
 
         # joined before the read below, not asked for: the same race
         # the attribute's own comment above names
@@ -662,6 +660,10 @@ class Node(threading.Thread):
 
         self.logger.info("Stopping node")
         self.logger.close()
+        # last, mirroring the acquisition: the log lives in the data
+        # directory, so another process may not take it while it is written
+        for lock in self._directory_locks:
+            lock.release()
 
     def stop(self) -> None:
         """Ask the main loop to stop, and wait up to `STOP_TIMEOUT` for it.

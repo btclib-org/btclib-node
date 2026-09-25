@@ -1171,10 +1171,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         raise SystemExit(1) from error
 
     # Core takes the lock ahead of `CheckHostPortOptions` and of the RPC
-    # options `StartHTTPRPC` refuses (`AppInitMain`, `src/init.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7), where every `build_config` refusal comes
-    # first here: over a locked directory, `bitcoind` answers `-port=0` or a
-    # malformed `-rpcauth` with the lock, and this with the option.
+    # options `StartHTTPRPC` refuses (`AppInitMain`, `src/init.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7), where every `build_config` refusal
+    # comes first here: over a locked directory, `bitcoind` answers
+    # `-port=0` or a malformed `-rpcauth` with the lock, and this with the
+    # option -- an open defect rather than a decision, which
+    # btclib-org/btclib-node#1191 tracks.
     try:
         node = Node(config=config)
     except DirectoryLockError as error:
