@@ -5,8 +5,9 @@
 """What handle_rpc answers, for the shapes it is asked.
 
 `Node.run` calls it without a guard of its own, so a request it cannot
-answer used to end the node rather than the request -- which is what
-these are mostly about.
+answer has to end the request rather than the node. The answers are
+`bitcoind` v31.1.0's, whose envelope and HTTP status follow the version
+a request names (`rpc.jsonrpc`).
 """
 
 from collections import deque
@@ -19,12 +20,9 @@ import btclib_node.rpc.callbacks as rpc_callbacks
 from btclib_node.exceptions import StoreCorruptionError
 from btclib_node.log import Logger
 from btclib_node.rpc.callbacks import callbacks
-from btclib_node.rpc.errors import RpcError, error_msg
-from btclib_node.rpc.main import (
-    get_connection,
-    handle_rpc,
-    is_valid_rpc,
-)
+from btclib_node.rpc.errors import RpcError
+from btclib_node.rpc.jsonrpc import NO_CONTENT, OK, HttpReply
+from btclib_node.rpc.main import get_connection, handle_rpc
 from tests import generate_random_transaction
 
 if TYPE_CHECKING:
@@ -35,12 +33,16 @@ if TYPE_CHECKING:
     from btclib_node.rpc.manager import RpcManager
 
 PING = {"jsonrpc": "2.0", "id": "a", "method": "ping"}
+LEGACY_PING = {"id": "a", "method": "ping"}
+BAD_REQUEST = "400 Bad Request"
+NOT_FOUND = "404 Not Found"
+SERVER_ERROR = "500 Internal Server Error"
 
 
 def make_node(
-    batch: list[Any], conn_id: int = 0, *, callback: Any = None, logger: Any = None
+    body: object, conn_id: int = 0, *, callback: Any = None, logger: Any = None
 ) -> tuple[Any, list[Any], list[Any], list[bool]]:
-    """Build a node whose rpc_manager queues `batch` for handle_rpc to pop.
+    """Build a node whose rpc_manager queues `body` for handle_rpc to pop.
 
     Returns the node, and the lists its double `RpcConnection`'s `send`,
     `send_and_wait` and `stop` each append to -- the answer `handle_rpc`
@@ -56,7 +58,7 @@ def make_node(
     stopped: list[bool] = []
     node = SimpleNamespace(
         rpc_manager=SimpleNamespace(
-            messages=deque([(batch, conn_id)]), connections={0: conn}
+            messages=deque([(body, conn_id)]), connections={0: conn}
         ),
         logger=logger
         if logger is not None
@@ -67,51 +69,185 @@ def make_node(
     return node, sent, waited, stopped
 
 
+def error(code: RPCErrorCode, message: str) -> dict[str, Any]:
+    """Return the error object Core's `JSONRPCError` builds."""
+    return {"code": code.value, "message": message}
+
+
 def test_a_request_is_answered() -> None:
-    """handle_rpc dispatches a valid request and sends its own result back."""
-    node, sent, _, _ = make_node([PING])
+    """A 2.0 request is answered 200 in the 2.0 envelope."""
+    node, sent, _, _ = make_node(PING)
     handle_rpc(node)
-    assert sent == [[{"jsonrpc": "2.0", "result": None, "id": "a"}]]
+    assert sent == [HttpReply(OK, {"jsonrpc": "2.0", "result": None, "id": "a"})]
 
 
-def test_an_empty_batch_answers_an_empty_response() -> None:
-    """handle_rpc leaves `response` empty for an empty batch, not an error.
+def test_a_legacy_request_is_answered_in_the_legacy_envelope() -> None:
+    """A request naming no version, or 1.0, gets `result` and `error` both."""
+    for request in (LEGACY_PING, {**LEGACY_PING, "jsonrpc": "1.0"}):
+        node, sent, _, _ = make_node(request)
+        handle_rpc(node)
+        assert sent == [HttpReply(OK, {"result": None, "error": None, "id": "a"})]
 
-    Matches Core's own `ExecuteHTTPRPC`, which answers an empty
-    client-sent array with an empty array rather than a single error
-    object (`src/httprpc.cpp:135-185`, at bitcoin/bitcoin@ca7162cde5,
-    issue #669); `RpcConnection.is_batch` is what keeps `async_send`
-    from unwrapping this empty `response` into something else on the
-    wire, covered at that level rather than this one. Reading the loop
-    variable after a loop that never ran used to end the node instead.
+
+def test_a_legacy_request_without_an_id_is_answered_without_one() -> None:
+    """`JSONRPCReplyObj` writes an `id` only where the request had one."""
+    node, sent, _, _ = make_node({"method": "ping"})
+    handle_rpc(node)
+    assert sent == [HttpReply(OK, {"result": None, "error": None})]
+
+
+def test_a_legacy_error_is_an_http_error_status() -> None:
+    """`JSONErrorReply`: 400 for an invalid request, 404 for an unknown method.
+
+    The three bodies ISS 1109 measured against `bitcoind` v31.1.0; the
+    third, a request Core's parse refuses, is not run.
     """
+    ran: list[Any] = []
+    node, sent, _, _ = make_node(
+        {"id": 1, "method": "ping", "params": 5}, callback=lambda: ran.append(1)
+    )
+    handle_rpc(node)
+    message = "Params must be an array or object"
+    body = {"result": None, "error": error(RPCErrorCode.INVALID_REQUEST, message)}
+    assert sent == [HttpReply(BAD_REQUEST, {**body, "id": 1})]
+    assert not ran
+
+    node, sent, _, _ = make_node({"jsonrpc": "1.0", "id": 1, "method": "nosuch"})
+    handle_rpc(node)
+    not_found = error(RPCErrorCode.METHOD_NOT_FOUND, "Method not found")
+    assert sent == [HttpReply(NOT_FOUND, {"result": None, "error": not_found, "id": 1})]
+
+
+def test_a_2_0_error_is_http_200() -> None:
+    """A 2.0 request's error is caught into its reply, as `JSONRPCExec` does."""
+    node, sent, _, _ = make_node({"jsonrpc": "2.0", "id": "a", "method": "nosuch"})
+    handle_rpc(node)
+    not_found = error(RPCErrorCode.METHOD_NOT_FOUND, "Method not found")
+    assert sent == [HttpReply(OK, {"jsonrpc": "2.0", "error": not_found, "id": "a"})]
+
+
+def test_a_2_0_request_the_parse_refuses_gets_the_legacy_status() -> None:
+    """Core answers a 2.0 request its parse refuses through `JSONErrorReply`.
+
+    The envelope is 2.0, the version having been read before the refusal,
+    and the status is the legacy one, as `bitcoind` v31.1.0 answers it.
+    """
+    node, sent, _, _ = make_node({"jsonrpc": "2.0", "id": 1, "method": ["a"]})
+    handle_rpc(node)
+    message = "Method must be a string"
+    body = {"jsonrpc": "2.0", "error": error(RPCErrorCode.INVALID_REQUEST, message)}
+    assert sent == [HttpReply(BAD_REQUEST, {**body, "id": 1})]
+
+
+def test_a_request_whose_version_is_refused_is_answered_legacy() -> None:
+    """A `jsonrpc` that is not `"1.0"` or `"2.0"` leaves the request legacy."""
+    for version, message in (
+        (2, "jsonrpc field must be a string"),
+        ("3.0", "JSON-RPC version not supported"),
+    ):
+        node, sent, _, _ = make_node({"jsonrpc": version, "method": "ping"})
+        handle_rpc(node)
+        reply = {"result": None, "error": error(RPCErrorCode.INVALID_REQUEST, message)}
+        assert sent == [HttpReply(BAD_REQUEST, reply)]
+
+
+def test_a_request_without_a_method_is_refused() -> None:
+    """`JSONRPCRequest::parse` refuses a request with no method."""
+    node, sent, _, _ = make_node({"id": 1})
+    handle_rpc(node)
+    missing = error(RPCErrorCode.INVALID_REQUEST, "Missing method")
+    assert sent == [HttpReply(BAD_REQUEST, {"result": None, "error": missing, "id": 1})]
+
+
+def test_a_2_0_notification_runs_and_is_answered_no_content() -> None:
+    """A 2.0 request with no `id` runs, and its answer is 204 with no body."""
+    ran: list[Any] = []
+    node, sent, _, _ = make_node(
+        {"jsonrpc": "2.0", "method": "ping"}, callback=lambda: ran.append(1)
+    )
+    handle_rpc(node)
+    assert sent == [HttpReply(NO_CONTENT, None)]
+    assert ran == [1]
+
+
+def test_a_body_that_is_not_an_object_or_an_array_is_a_parse_error() -> None:
+    """Core's "Top-level object parse error", 500 in the legacy envelope."""
+    node, sent, _, stopped = make_node(5)
+    handle_rpc(node)
+    top = error(RPCErrorCode.PARSE_ERROR, "Top-level object parse error")
+    assert sent == [HttpReply(SERVER_ERROR, {"result": None, "error": top, "id": None})]
+    assert not stopped
+
+
+def test_an_empty_batch_answers_an_empty_array() -> None:
+    """An empty batch is answered `[]`, as Core answers it (issue #669)."""
     node, sent, _, stopped = make_node([])
     handle_rpc(node)
-    assert sent == [[]]
+    assert sent == [HttpReply(OK, [])]
     assert not stopped
 
 
-def test_a_batch_ending_in_something_that_is_not_an_object() -> None:
-    """handle_rpc answers a non-object batch entry as an invalid request."""
-    node, sent, _, stopped = make_node([PING, "garbage"])
+def test_a_batch_is_answered_200_whatever_its_members_versions() -> None:
+    """Every member of a batch is answered inside HTTP 200.
+
+    A member that is not an object is refused before its own `id` is
+    read, so it carries the previous member's `id` and version, as
+    `bitcoind` v31.1.0 answers `[{"id":7,...},5,...]`.
+    """
+    node, sent, _, stopped = make_node(
+        [LEGACY_PING, "garbage", {"id": "b", "method": "nosuch"}]
+    )
     handle_rpc(node)
-    answers = sent[0]
-    assert answers[1] == error_msg(RPCErrorCode.INVALID_REQUEST, "Invalid request")
+    invalid = error(RPCErrorCode.INVALID_REQUEST, "Invalid Request object")
+    not_found = error(RPCErrorCode.METHOD_NOT_FOUND, "Method not found")
+    assert sent == [
+        HttpReply(
+            OK,
+            [
+                {"result": None, "error": None, "id": "a"},
+                {"result": None, "error": invalid, "id": "a"},
+                {"result": None, "error": not_found, "id": "b"},
+            ],
+        )
+    ]
     assert not stopped
 
 
-def test_an_unknown_method_is_answered_not_found() -> None:
-    """handle_rpc answers a method not in the callback table as not found."""
-    node, sent, _, _ = make_node([{"jsonrpc": "2.0", "id": "a", "method": "nosuch"}])
+def test_each_batch_member_is_answered_in_its_own_version() -> None:
+    """A legacy member after a 2.0 one is answered legacy, as in `bitcoind`."""
+    node, sent, _, _ = make_node([PING, LEGACY_PING])
     handle_rpc(node)
-    assert sent == [[error_msg(RPCErrorCode.METHOD_NOT_FOUND, "Method not found", "a")]]
+    assert sent == [
+        HttpReply(
+            OK,
+            [
+                {"jsonrpc": "2.0", "result": None, "id": "a"},
+                {"result": None, "error": None, "id": "a"},
+            ],
+        )
+    ]
 
 
-def test_a_request_without_an_id_is_invalid() -> None:
-    """handle_rpc refuses a request missing JSON-RPC 2.0's own required id."""
-    node, sent, _, _ = make_node([{"jsonrpc": "2.0", "method": "ping"}])
+def test_a_batch_leaves_out_its_notifications() -> None:
+    """A notification in a batch runs and gets no member of the answer."""
+    ran: list[Any] = []
+    notification = {"jsonrpc": "2.0", "method": "ping"}
+    node, sent, _, _ = make_node([notification, PING], callback=lambda: ran.append(1))
     handle_rpc(node)
-    assert sent == [[error_msg(RPCErrorCode.INVALID_REQUEST, "Invalid request")]]
+    assert sent == [HttpReply(OK, [{"jsonrpc": "2.0", "result": None, "id": "a"}])]
+    assert ran == [1, 1]
+
+
+def test_a_batch_of_notifications_is_answered_no_content() -> None:
+    """A non-empty batch with nothing to answer is 204, as in Core.
+
+    The member refused after a notification carries that notification's
+    missing `id` and version, so it is left out too.
+    """
+    notification = {"jsonrpc": "2.0", "method": "ping"}
+    node, sent, _, _ = make_node([notification, "garbage"])
+    handle_rpc(node)
+    assert sent == [HttpReply(NO_CONTENT, None)]
 
 
 def test_a_callback_that_raises_is_answered_internal_error() -> None:
@@ -120,14 +256,22 @@ def test_a_callback_that_raises_is_answered_internal_error() -> None:
     def boom() -> NoReturn:
         raise RuntimeError("no")
 
-    node, sent, _, _ = make_node([PING], callback=boom)
-    logged: list[Any] = []
-    node.logger.exception = logged.append
-    handle_rpc(node)
-    assert sent == [[error_msg(RPCErrorCode.INTERNAL_ERROR, "Internal Error", "a")]]
-    # -32603 is the node reporting itself broken, so it is the one
-    # answer that is also an event of the node's
-    assert logged == ["Exception occurred"]
+    internal = error(RPCErrorCode.INTERNAL_ERROR, "Internal Error")
+    for request, reply in (
+        (PING, HttpReply(OK, {"jsonrpc": "2.0", "error": internal, "id": "a"})),
+        (
+            LEGACY_PING,
+            HttpReply(SERVER_ERROR, {"result": None, "error": internal, "id": "a"}),
+        ),
+    ):
+        node, sent, _, _ = make_node(request, callback=boom)
+        logged: list[Any] = []
+        node.logger.exception = logged.append
+        handle_rpc(node)
+        assert sent == [reply]
+        # -32603 is the node reporting itself broken, so it is the one
+        # answer that is also an event of the node's
+        assert logged == ["Exception occurred"]
 
 
 def test_testmempoolaccept_own_store_error_reaches_the_log(
@@ -154,16 +298,20 @@ def test_testmempoolaccept_own_store_error_reaches_the_log(
 
     monkeypatch.setattr(rpc_callbacks, "verify_mempool_acceptance", corrupted)
     raw = generate_random_transaction().serialize(include_witness=True).hex()
-    batch = [
-        {"jsonrpc": "2.0", "id": "a", "method": "testmempoolaccept", "params": [[raw]]}
-    ]
+    request = {
+        "jsonrpc": "2.0",
+        "id": "a",
+        "method": "testmempoolaccept",
+        "params": [[raw]],
+    }
     log_path = tmp_path / "debug.log"
     logger = Logger(log_path, debug=True)
-    node, sent, _, _ = make_node(batch, logger=logger)
+    node, sent, _, _ = make_node(request, logger=logger)
     handle_rpc(node)
     logger.close()
 
-    assert sent == [[error_msg(RPCErrorCode.INTERNAL_ERROR, "Internal Error", "a")]]
+    internal = error(RPCErrorCode.INTERNAL_ERROR, "Internal Error")
+    assert sent == [HttpReply(OK, {"jsonrpc": "2.0", "error": internal, "id": "a"})]
     lines = [
         line
         for line in log_path.read_text(encoding="utf-8").splitlines()
@@ -183,19 +331,12 @@ def test_a_callback_that_refuses_names_its_own_code_and_reason() -> None:
     def refuse() -> NoReturn:
         raise RpcError(RPCErrorCode.INVALID_ADDRESS_OR_KEY, "Block not found")
 
-    node, sent, _, _ = make_node([PING], callback=refuse)
+    node, sent, _, _ = make_node(PING, callback=refuse)
     logged: list[Any] = []
     node.logger.exception = logged.append
     handle_rpc(node)
-    assert sent == [
-        [
-            {
-                "jsonrpc": "2.0",
-                "error": {"code": -5, "message": "Block not found"},
-                "id": "a",
-            }
-        ]
-    ]
+    not_found = {"code": -5, "message": "Block not found"}
+    assert sent == [HttpReply(OK, {"jsonrpc": "2.0", "error": not_found, "id": "a"})]
     assert not logged
 
 
@@ -203,7 +344,7 @@ def test_params_are_passed_when_given(monkeypatch: pytest.MonkeyPatch) -> None:
     """handle_rpc passes a request's own params through to its callback."""
     seen: list[Any] = []
     node, _, _, _ = make_node(
-        [{"jsonrpc": "2.0", "id": "a", "method": "withparams", "params": [1, 2]}]
+        {"jsonrpc": "2.0", "id": "a", "method": "withparams", "params": [1, 2]}
     )
     monkeypatch.setitem(
         callbacks, "withparams", lambda node, conn, params: seen.append(params)
@@ -213,14 +354,18 @@ def test_params_are_passed_when_given(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_no_params_is_an_empty_list(monkeypatch: pytest.MonkeyPatch) -> None:
-    """handle_rpc passes an empty list where a request carries no params."""
+    """handle_rpc passes an empty list where params are absent or null."""
     seen: list[Any] = []
-    node, _, _, _ = make_node([{"jsonrpc": "2.0", "id": "a", "method": "noparams"}])
     monkeypatch.setitem(
         callbacks, "noparams", lambda node, conn, params: seen.append(params)
     )
-    handle_rpc(node)
-    assert seen == [[]]
+    for request in (
+        {"jsonrpc": "2.0", "id": "a", "method": "noparams"},
+        {"jsonrpc": "2.0", "id": "a", "method": "noparams", "params": None},
+    ):
+        node, _, _, _ = make_node(request)
+        handle_rpc(node)
+    assert seen == [[], []]
 
 
 def test_stop_is_asked_of_the_batch_not_of_its_last_request() -> None:
@@ -232,6 +377,15 @@ def test_stop_is_asked_of_the_batch_not_of_its_last_request() -> None:
     """
     stop = {"jsonrpc": "2.0", "id": "a", "method": "stop"}
     node, sent, waited, stopped = make_node([stop, PING])
+    handle_rpc(node)
+    assert stopped == [True]
+    assert len(waited) == 1
+    assert not sent
+
+
+def test_a_lone_stop_waits_for_its_reply() -> None:
+    """A lone `stop` is answered by `send_and_wait`, then the node stops."""
+    node, sent, waited, stopped = make_node({"id": "a", "method": "stop"})
     handle_rpc(node)
     assert stopped == [True]
     assert len(waited) == 1
@@ -255,7 +409,7 @@ def test_an_answered_connection_is_left_for_async_send_to_forget() -> None:
     membership now: this test pins `handle_rpc`'s own side of that, that
     it touches `connections` not at all.
     """
-    node, _, _, _ = make_node([PING])
+    node, _, _, _ = make_node(PING)
     assert 0 in node.rpc_manager.connections
     handle_rpc(node)
     assert 0 in node.rpc_manager.connections
@@ -264,7 +418,7 @@ def test_an_answered_connection_is_left_for_async_send_to_forget() -> None:
 def test_a_stopped_connection_is_left_registered_too() -> None:
     """handle_rpc does not pop the connection's own entry for `stop` either."""
     stop = {"jsonrpc": "2.0", "id": "a", "method": "stop"}
-    node, _, _, stopped = make_node([stop])
+    node, _, _, stopped = make_node(stop)
     handle_rpc(node)
     assert stopped == [True]
     assert 0 in node.rpc_manager.connections
@@ -272,7 +426,7 @@ def test_a_stopped_connection_is_left_registered_too() -> None:
 
 def test_a_message_for_a_connection_that_is_gone_is_dropped() -> None:
     """handle_rpc drops a message whose connection id is not registered."""
-    node, sent, _, _ = make_node([PING], conn_id=99)
+    node, sent, _, _ = make_node(PING, conn_id=99)
     handle_rpc(node)
     assert not sent
 
@@ -281,45 +435,3 @@ def test_get_connection_answers_none_rather_than_raising() -> None:
     """get_connection answers None for a connection id not in the table."""
     manager = cast("RpcManager", SimpleNamespace(connections={}))
     assert get_connection(manager, 0) is None
-
-
-def test_is_valid_rpc_wants_an_object_with_a_method_and_an_id() -> None:
-    """is_valid_rpc requires an object carrying both a method and an id."""
-    assert is_valid_rpc(PING)
-    assert not is_valid_rpc("garbage")
-    assert not is_valid_rpc({"id": "a"})
-    assert not is_valid_rpc({"method": "ping"})
-
-
-def test_a_method_that_is_not_a_string_is_invalid_not_a_crash() -> None:
-    """is_valid_rpc refuses a non-string method rather than raising (issue #63).
-
-    A list is unhashable, so `request["method"] not in callbacks` raises
-    `TypeError` if `is_valid_rpc` lets it through.
-    """
-    assert not is_valid_rpc({"jsonrpc": "2.0", "id": 1, "method": ["a"]})
-    assert not is_valid_rpc({"jsonrpc": "2.0", "id": 1, "method": {"a": 1}})
-
-
-def test_a_method_that_is_not_a_string_is_answered_invalid_request() -> None:
-    """handle_rpc answers a non-string method invalid, not a crash."""
-    node, sent, _, stopped = make_node([{"jsonrpc": "2.0", "id": 1, "method": ["a"]}])
-    handle_rpc(node)
-    assert sent == [[error_msg(RPCErrorCode.INVALID_REQUEST, "Invalid request")]]
-    assert not stopped
-
-
-def test_an_error_carries_the_id_of_the_request_it_answers() -> None:
-    """handle_rpc's error answers carry the request's own id, or null.
-
-    JSON-RPC 2.0 section 5: the id is the request's own, and null is for
-    a request no id could be read out of -- which is what the
-    specification's own invalid-request example carries.
-    """
-    node, sent, _, _ = make_node([{"jsonrpc": "2.0", "id": "a", "method": "nosuch"}])
-    handle_rpc(node)
-    assert sent[0][0]["id"] == "a"
-
-    node, sent, _, _ = make_node(["garbage"])
-    handle_rpc(node)
-    assert sent[0][0]["id"] is None

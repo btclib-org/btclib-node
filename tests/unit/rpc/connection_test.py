@@ -33,7 +33,9 @@ from btclib_node.rpc.connection import (
     JSONEncoder,
     RawJSON,
     RpcConnection,
+    parse_request_head,
 )
+from btclib_node.rpc.jsonrpc import NO_CONTENT, OK, HttpReply
 from tests import RPCAUTH, RPCAUTH_LINE
 
 if TYPE_CHECKING:
@@ -163,7 +165,7 @@ def test_a_well_formed_request_is_dispatched() -> None:
     """A well-formed request is queued whole onto `manager.messages`."""
     outcome, messages, _ = drive([with_length()])
     assert outcome == "returned"
-    assert messages == [([json.loads(BODY)], 0)]
+    assert messages == [(json.loads(BODY), 0)]
 
 
 def test_a_batch_is_dispatched_as_it_arrived() -> None:
@@ -181,7 +183,7 @@ def test_a_body_split_across_reads_is_reassembled() -> None:
     """A body arriving split across two reads is reassembled before parsing."""
     whole = with_length()
     _, messages, _ = drive([whole[:-10], whole[-10:]])
-    assert messages == [([json.loads(BODY)], 0)]
+    assert messages == [(json.loads(BODY), 0)]
 
 
 def test_a_request_with_no_body_is_refused() -> None:
@@ -209,35 +211,6 @@ def test_a_body_that_is_not_json_is_refused() -> None:
     body = b"not json"
     headers = b"Connection: close\r\nContent-Length: %d\r\n" % len(body)
     _, messages, closed = drive([request(headers, body)])
-    assert not messages
-    assert closed
-
-
-def test_a_negative_content_length_is_refused() -> None:
-    """A negative Content-Length is refused, not read as a body length."""
-    _, messages, closed = drive([request(b"Content-Length: -1\r\n", BODY)])
-    assert not messages
-    assert closed
-
-
-def test_a_content_length_past_the_cap_is_refused() -> None:
-    """A Content-Length past MAX_BODY_BYTES is refused before the read."""
-    over = b"Content-Length: %d\r\n" % (MAX_BODY_BYTES + 1)
-    _, messages, closed = drive([request(over, b"a")])
-    assert not messages
-    assert closed
-
-
-def test_a_content_length_that_is_not_an_integer_is_refused() -> None:
-    """A `Content-Length` `int()` cannot parse is refused, not read as one.
-
-    `parse_request_head`'s own `int(headers.get("Content-Length", 0))`
-    raises `ValueError` here, caught and reraised as
-    `MalformedRequestHeadError` -- `run`'s own bare `except Exception`
-    still catches it exactly as it caught the bare `ValueError` before
-    that wrapping existed.
-    """
-    _, messages, closed = drive([request(b"Content-Length: abc\r\n", BODY)])
     assert not messages
     assert closed
 
@@ -325,7 +298,7 @@ def test_a_stalled_read_is_refused_once_request_timeout_elapses() -> None:
 def test_the_response_is_crlf_framed_and_the_socket_closed() -> None:
     """async_send frames the reply behind an HTTP header and closes the socket.
 
-    A single-element response is unwrapped and `bytes` are hex-encoded.
+    `bytes` are hex-encoded.
     """
 
     async def main() -> bytes:
@@ -339,7 +312,7 @@ def test_the_response_is_crlf_framed_and_the_socket_closed() -> None:
             cast("RpcManager", fake_manager(connections={})),
             0,
         )
-        await conn.async_send([{"result": b"\xff", "id": "x"}])
+        await conn.async_send(HttpReply(OK, {"result": b"\xff", "id": "x"}))
         data = await loop.sock_recv(theirs, 4096)
         theirs.close()
         return data
@@ -348,13 +321,12 @@ def test_the_response_is_crlf_framed_and_the_socket_closed() -> None:
     head, _, body = data.partition(b"\r\n\r\n")
     assert head.startswith(b"HTTP/1.1 200 OK\r\n")
     assert b"\r\nContent-Type: application/json\r\n" in b"\r\n" + head
-    # a single-element response is unwrapped, and bytes become hex
     assert json.loads(body) == {"result": "ff", "id": "x"}
     assert int(head.split(b"Content-Length: ")[1].split(b"\r\n")[0]) == len(body)
 
 
-def test_a_response_of_several_stays_a_list() -> None:
-    """async_send does not unwrap a batch's own response of several entries."""
+def sent(reply: HttpReply, *, keep_alive: bool = True) -> bytes:
+    """Return what `async_send` writes for `reply`."""
 
     async def main() -> bytes:
         ours, theirs = socket.socketpair()
@@ -362,57 +334,45 @@ def test_a_response_of_several_stays_a_list() -> None:
         theirs.setblocking(False)
         loop = asyncio.get_running_loop()
         conn = RpcConnection(
-            loop,
-            ours,
-            cast("RpcManager", fake_manager(connections={})),
-            0,
+            loop, ours, cast("RpcManager", fake_manager(connections={})), 0
         )
-        # What `run` would have set off a real two-member batch: this
-        # calls `async_send` directly, bypassing `run` and the parse it
-        # would otherwise read this off (issue #653).
-        conn.is_batch = True
-        await conn.async_send([{"id": "a"}, {"id": "b"}])
-        data = await loop.sock_recv(theirs, 4096)
+        conn.keep_alive = keep_alive
+        # a kept-alive reply goes on to read the next request, which
+        # never comes: the reply is on the wire before that read
+        task = asyncio.ensure_future(conn.async_send(reply))
+        data = await asyncio.wait_for(loop.sock_recv(theirs, 4096), timeout=2)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
         theirs.close()
+        if ours.fileno() != -1:
+            ours.close()
         return data
 
-    body = asyncio.run(main()).partition(b"\r\n\r\n")[2]
-    assert json.loads(body) == [{"id": "a"}, {"id": "b"}]
+    return asyncio.run(main())
 
 
-def test_a_response_of_one_stays_a_list_where_the_request_was_a_batch() -> None:
-    """A one-member batch's own reply stays an array, not a bare object.
+def test_a_batch_reply_is_written_as_the_array_it_is() -> None:
+    """A batch's reply stays an array, whatever its length (issue #653)."""
+    for body in ([{"id": "a"}], [{"id": "a"}, {"id": "b"}], []):
+        data = sent(HttpReply(OK, body))
+        assert json.loads(data.partition(b"\r\n\r\n")[2]) == body
 
-    `async_send` used to unwrap purely from `len(response) == 1`, which
-    cannot tell a lone request from a one-member batch apart -- both
-    reached it as a response list of the same one-element shape. `run`
-    reads that off the request instead, before it is lost, matching
-    Core's own `ExecuteHTTPRPC`: an array of any size, `valRequest.
-    isArray()`, is always answered as an array, `UniValue::VARR`
-    (`HTTPReq_JSONRPC`, `src/httprpc.cpp:135-169`, at
-    bitcoin/bitcoin@ca7162cde5) -- never unwrapped for having only one
-    member (issue #653).
-    """
 
-    async def main() -> bytes:
-        ours, theirs = socket.socketpair()
-        ours.setblocking(False)
-        theirs.setblocking(False)
-        loop = asyncio.get_running_loop()
-        conn = RpcConnection(
-            loop,
-            ours,
-            cast("RpcManager", fake_manager(connections={})),
-            0,
-        )
-        conn.is_batch = True
-        await conn.async_send([{"id": "a"}])
-        data = await loop.sock_recv(theirs, 4096)
-        theirs.close()
-        return data
+def test_the_status_line_is_the_reply_s_own() -> None:
+    """A legacy error goes out under the HTTP status `handle_rpc` chose."""
+    body = {"result": None, "error": {"code": -32601, "message": "x"}, "id": 1}
+    data = sent(HttpReply("404 Not Found", body))
+    assert data.startswith(b"HTTP/1.1 404 Not Found\r\n")
+    assert json.loads(data.partition(b"\r\n\r\n")[2]) == body
 
-    body = asyncio.run(main()).partition(b"\r\n\r\n")[2]
-    assert json.loads(body) == [{"id": "a"}]
+
+def test_no_content_is_the_status_line_alone() -> None:
+    """A 204 has no body and no `Content-Length`, as `bitcoind` writes it."""
+    assert sent(HttpReply(NO_CONTENT, None)) == b"HTTP/1.1 204 No Content\r\n\r\n"
+    assert sent(HttpReply(NO_CONTENT, None), keep_alive=False) == (
+        b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n"
+    )
 
 
 def test_a_kept_alive_connection_reads_a_second_request_off_the_same_socket() -> None:
@@ -439,7 +399,7 @@ def test_a_kept_alive_connection_reads_a_second_request_off_the_same_socket() ->
         assert conn.keep_alive
 
         await loop.sock_sendall(theirs, with_length())
-        await conn.async_send([{"id": "x", "result": None}])
+        await conn.async_send(HttpReply(OK, {"id": "x", "result": None}))
         head = (await loop.sock_recv(theirs, 4096)).partition(b"\r\n\r\n")[0]
 
         # kept alive by construction -- both requests default to it, and
@@ -480,7 +440,7 @@ def test_a_connection_asking_for_close_is_closed_after_its_reply() -> None:
         await conn.run()
         assert not conn.keep_alive
 
-        await conn.async_send([{"id": "x", "result": None}])
+        await conn.async_send(HttpReply(OK, {"id": "x", "result": None}))
         head = (await loop.sock_recv(theirs, 4096)).partition(b"\r\n\r\n")[0]
 
         # async_send closes `ours` itself, off the `Connection: close`
@@ -520,7 +480,7 @@ def test_a_kept_alive_connection_idles_out_once_request_timeout_elapses() -> Non
         assert conn.keep_alive
 
         await asyncio.wait_for(
-            conn.async_send([{"id": "x", "result": None}]), timeout=2
+            conn.async_send(HttpReply(OK, {"id": "x", "result": None})), timeout=2
         )
 
         # the idle wait inside that async_send is what closes `ours`,
@@ -539,29 +499,35 @@ def test_a_kept_alive_connection_idles_out_once_request_timeout_elapses() -> Non
     [
         (b"HTTP/1.0", b"", False),
         (b"HTTP/1.0", b"Connection: keep-alive\r\n", True),
+        (b"HTTP/1.0", b"Connection: Keep-Alive, x\r\n", True),
+        (b"HTTP/0.9", b"", False),
         (b"HTTP/1.1", b"", True),
+        (b"HTTP/1.9", b"", True),
         (b"HTTP/1.1", b"Connection: close\r\n", False),
+        (b"HTTP/1.1", b"Connection: CLOSE \t\r\n", False),
+        (b"HTTP/1.1", b"Connection: close, x\r\n", True),
     ],
     ids=[
         "1.0-bare-closes",
         "1.0-keep-alive-stays",
+        "1.0-keep-alive-prefix-stays",
+        "0.9-bare-closes",
         "1.1-bare-stays",
+        "1.9-bare-stays",
         "1.1-close-closes",
+        "1.1-close-any-case-trailing-space-closes",
+        "1.1-close-with-more-stays",
     ],
 )
 def test_keep_alive_follows_core_s_own_default_per_version(
     version: bytes, connection_header: bytes, *, expect_keep_alive: bool
 ) -> None:
-    """HTTP/1.0 defaults to closing, HTTP/1.1 to keep-alive, matching Core.
+    """A version before 1.1 defaults to closing, and 1.1 on to keep-alive.
 
-    `HTTPRequest::WriteReply` (`httpserver.cpp:557-575`, at
-    bitcoin/bitcoin@ca7162cde5): HTTP/1.0 stays open only for an
-    explicit `Connection: keep-alive`; HTTP/1.1 stays open unless told
-    `Connection: close`. `run` used to read every request the same way
-    regardless of its own request line's version (issue #640) -- a
-    second request, sent here regardless of what the first asked for,
-    is answered only where `expect_keep_alive` says this connection is
-    still being read from.
+    libevent's `evhttp_send_done`, as `_wants_keep_alive` cites it; each
+    row is what `bitcoind` v31.1.0 does. A second request, sent here
+    regardless of what the first asked for, is answered only where
+    `expect_keep_alive` says this connection is still being read from.
     """
 
     async def main() -> tuple[bool, bool]:
@@ -580,7 +546,7 @@ def test_keep_alive_follows_core_s_own_default_per_version(
         keep_alive = conn.keep_alive
 
         await loop.sock_sendall(theirs, one_request)
-        await conn.async_send([{"id": "x", "result": None}])
+        await conn.async_send(HttpReply(OK, {"id": "x", "result": None}))
         second_arrived = False
         for _ in range(50):
             if len(manager.messages) >= 2:
@@ -691,7 +657,9 @@ def test_a_raw_json_value_is_written_unquoted_and_verbatim() -> None:
             cast("RpcManager", fake_manager(connections={})),
             0,
         )
-        await conn.async_send([{"result": RawJSON("0.00000001"), "id": "x"}])
+        await conn.async_send(
+            HttpReply(OK, {"result": RawJSON("0.00000001"), "id": "x"})
+        )
         data = await loop.sock_recv(theirs, 4096)
         theirs.close()
         return data
@@ -722,7 +690,9 @@ def test_a_raw_json_value_does_not_swallow_a_field_containing_its_own_mark() -> 
             0,
         )
         await conn.async_send(
-            [{"result": "RawJSONx", "extra": RawJSON("1.00000000"), "id": "x"}]
+            HttpReply(
+                OK, {"result": "RawJSONx", "extra": RawJSON("1.00000000"), "id": "x"}
+            )
         )
         data = await loop.sock_recv(theirs, 4096)
         theirs.close()
@@ -890,7 +860,7 @@ def test_send_and_wait_gives_up_rather_than_blocking_forever() -> None:
         loop, ours, cast("RpcManager", fake_manager(connections={})), 0
     )
     started = time.monotonic()
-    conn.send_and_wait([{"id": "x"}])  # returns, does not raise
+    conn.send_and_wait(HttpReply(OK, {"id": "x"}))  # returns, does not raise
     waited = time.monotonic() - started
     assert waited >= 2 - _WINDOWS_TIMER_TICK
     loop.close()
@@ -1093,11 +1063,171 @@ def test_a_method_libevent_does_not_know_is_501_and_closes(method: bytes) -> Non
         assert not messages
 
 
+def error_page(status: bytes) -> bytes:
+    """Return libevent's error page for `status`, as `bitcoind` writes it."""
+    reason = status.partition(b" ")[2]
+    return (
+        b"<HTML><HEAD>\n<TITLE>" + status + b"</TITLE>\n"
+        b"</HEAD><BODY>\n<H1>" + reason + b"</H1>\n</BODY></HTML>\n"
+    )
+
+
+def closing(status: bytes) -> bytes:
+    """Return the reply libevent closes a connection it cannot frame with."""
+    page = error_page(status)
+    return (
+        b"HTTP/1.1 " + status + b"\r\nConnection: close\r\n"
+        b"Content-Length: %d\r\n\r\n" % len(page) + page
+    )
+
+
+def test_the_501_page_is_libevent_s() -> None:
+    """`error_page` builds the 501 page pinned above."""
+    assert error_page(b"501 Not Implemented") == NOT_IMPLEMENTED_PAGE
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        b"POST /",
+        b"POST / HTTP/2.0",
+        b"POST / FOO",
+        b"POST / HTTP/1.1x",
+        b"POST / HTTP/1",
+        b"POST  HTTP/1.1",
+        b"A / HTTP/1.1",
+        b"GET / HTTP/1.",
+    ],
+)
+def test_a_request_line_libevent_refuses_is_400_and_closes(line: bytes) -> None:
+    """A request line `bitcoind` v31.1.0 answers 400 is answered 400 here too.
+
+    Before the credential and before any body is read, and the
+    connection closed: the first three rows are ISS 1086's.
+    """
+    for auth in (b"", RPCAUTH_LINE):
+        data = line + b"\r\nHost: x\r\n" + auth
+        data += b"Content-Length: %d\r\n\r\n" % len(BODY) + BODY
+        reply, _, closed, messages, warnings = refused(data)
+        assert reply == closing(b"400 Bad Request")
+        assert closed
+        assert not messages
+        assert not warnings
+
+
+def test_a_header_section_http_client_refuses_is_400_and_closes() -> None:
+    """More fields than `http.client` reads is a 400 too (issue #1126).
+
+    libevent bounds the section by size and not by count, so this is
+    where the two refuse different requests.
+    """
+    fields = b"X: y\r\n" * 101 + b"Content-Length: %d\r\n" % len(BODY)
+    reply, _, closed, messages, _ = refused(request(fields))
+    assert reply == closing(b"400 Bad Request")
+    assert closed
+    assert not messages
+
+
+def test_a_malformed_request_on_a_kept_alive_connection_closes_it() -> None:
+    """A 400 closes the connection even where the request before it kept it."""
+
+    async def main() -> tuple[bytes, bool]:
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        theirs.setblocking(False)
+        loop = asyncio.get_running_loop()
+        manager = fake_manager(connections={0: None})
+        conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
+        await loop.sock_sendall(theirs, with_length())
+        await conn.run()
+        assert conn.keep_alive
+        await loop.sock_sendall(theirs, request(b"Content-Length: -1\r\n"))
+        await conn.async_send(HttpReply(OK, {"id": "x", "result": None}))
+        reply = b""
+        async with asyncio.timeout(5):
+            while chunk := await loop.sock_recv(theirs, 4096):
+                reply += chunk
+        closed = ours.fileno() == -1
+        theirs.close()
+        return reply, closed
+
+    reply, closed = asyncio.run(main())
+    assert reply.endswith(closing(b"400 Bad Request"))
+    assert closed
+
+
+@pytest.mark.parametrize("value", [b"-1", b"abc", b"", b"1 2", b"0x10", b"1.0"])
+def test_a_content_length_libevent_refuses_is_400_and_closes(value: bytes) -> None:
+    """A `Content-Length` `bitcoind` v31.1.0 answers 400 is answered 400 here.
+
+    `-1` and `abc` are ISS 1086's rows.
+    """
+    for auth in (b"", RPCAUTH_LINE):
+        data = request(b"Content-Length: " + value + b"\r\n", BODY, auth=auth)
+        reply, _, closed, messages, _ = refused(data)
+        assert reply == closing(b"400 Bad Request")
+        assert closed
+        assert not messages
+
+
+def test_a_content_length_past_the_cap_is_413_and_closes() -> None:
+    """Past `MAX_BODY_BYTES`, Core's `MAX_SIZE`, is libevent's 413, unread."""
+    over = b"Content-Length: %d\r\n" % (MAX_BODY_BYTES + 1)
+    reply, _, closed, messages, _ = refused(request(over, b"", auth=b""))
+    assert reply == closing(b"413 Request Entity Too Large")
+    assert closed
+    assert not messages
+
+
+@pytest.mark.parametrize("value", [b"+%d", b" \t%d \t", b"%d\r\nContent-Length: abc"])
+def test_a_content_length_libevent_reads_is_read(value: bytes) -> None:
+    """A sign, blanks and a duplicate field are read as `bitcoind` reads them.
+
+    `strtoll` takes the sign and leading white space, the trailing blanks
+    are trimmed off the value, and the first of two fields is the one
+    read.
+    """
+    headers = b"Content-Length: " + value % len(BODY) + b"\r\n"
+    _, messages, _ = drive([request(headers)])
+    assert messages == [(json.loads(BODY), 0)]
+
+
+@pytest.mark.parametrize("method", [b"HEAD", b"TRACE", b"FOO"])
+def test_a_method_libevent_reads_no_body_for_has_no_content_length(
+    method: bytes,
+) -> None:
+    """No `Content-Length` is read for a method libevent reads no body for.
+
+    So a malformed one is not refused, and bytes after the header section
+    are the next request's, as `bitcoind` v31.1.0 answers a `HEAD` whose
+    "body" is a second request.
+    """
+    data = method + b" / HTTP/1.1\r\nContent-Length: abc\r\n\r\n"
+    assert parse_request_head(data + b"next").length == 0
+
+
+def test_a_body_that_is_not_json_is_a_500_parse_error() -> None:
+    """`HTTPReq_JSONRPC`'s parse error, in the legacy envelope, kept alive."""
+    body = b"not json"
+    reply, _, closed, messages, _ = refused(
+        request(b"Content-Length: %d\r\n" % len(body), body)
+    )
+    head, _, content = reply.partition(b"\r\n\r\n")
+    assert head.startswith(b"HTTP/1.1 500 Internal Server Error\r\n")
+    assert json.loads(content) == {
+        "result": None,
+        "error": {"code": -32700, "message": "Parse error"},
+        "id": None,
+    }
+    assert not closed
+    assert not messages
+
+
 def test_a_request_under_wallet_is_dispatched() -> None:
     """A `POST` under `/wallet/` is dispatched like one to `/`, as in Core."""
     data = request(b"Content-Length: %d\r\n" % len(BODY), target=b"/wallet/w")
     _, messages, _ = drive([data])
-    assert messages == [([json.loads(BODY)], 0)]
+    assert messages == [(json.loads(BODY), 0)]
 
 
 @pytest.mark.parametrize("connection", [b"", b"Connection: close\r\n"])

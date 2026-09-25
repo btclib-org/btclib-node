@@ -274,6 +274,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   minutes is unanswered** (closes #1132), as in Core's
   `MaybeSendGetHeaders`.
 
+### The JSON-RPC listener frames and answers a request as `bitcoind` does
+
+- **A request line or `Content-Length` libevent refuses is a 400, before
+  the credential** (closes #1086); **a legacy request's error is its HTTP
+  status, and one Core's parse refuses is not run** (closes #1109).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

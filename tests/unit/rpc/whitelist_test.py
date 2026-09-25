@@ -28,6 +28,7 @@ from btclib_node.rpc.auth import (
     parse_whitelist,
 )
 from btclib_node.rpc.connection import RpcConnection
+from btclib_node.rpc.jsonrpc import OK, HttpReply
 from tests import RPCAUTH
 
 if TYPE_CHECKING:
@@ -317,7 +318,7 @@ def exchange(auth: RpcAuth, requests: list[Any]) -> tuple[bytes, list[Any], list
             while True:
                 if len(messages) > queued:
                     queued = len(messages)
-                    conn.send([{"result": None}])
+                    conn.send(HttpReply(OK, {"result": None}))
                 try:
                     data = await asyncio.wait_for(loop.sock_recv(theirs, 65536), 0.05)
                 except TimeoutError:
@@ -366,7 +367,7 @@ def test_a_403_keeps_the_connection_for_the_next_request() -> None:
         whitelisted(*PYTEST_ONLY), [{"id": 1, "method": "stop"}, allowed]
     )
     assert reply.startswith(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
-    assert messages == [([allowed], 0)]
+    assert messages == [(allowed, 0)]
 
 
 def test_a_batch_the_whitelist_allows_is_queued_whole() -> None:

@@ -40,6 +40,7 @@ __all__ = [
     "MissingPrevoutError",
     "NodeShutdownTimeoutError",
     "NonStandardTxError",
+    "OversizedRequestBodyError",
     "PrevoutCountMismatchError",
     "ReimportedMainProcessError",
     "StoreClosedError",
@@ -393,17 +394,27 @@ class IncompleteRequestHeadError(BTClibRuntimeError):
 
 
 class MalformedRequestHeadError(BTClibValueError):
-    """A request's header section names a `Content-Length` this node refuses.
+    """A request's header section is one libevent answers 400 Bad Request.
 
-    Not present, defaults to `0` (`RpcConnection.run`'s own prior
-    behaviour); present but not an integer, negative, or past
-    `rpc.connection.MAX_BODY_BYTES` all raise this instead. `BTClibValueError`
-    and not a plain `ValueError`, for `WrongNetworkMagicError`'s own
-    reason above: `RpcConnection.run`'s catch is a bare `except
-    Exception`, so this class only matters where a caller narrows on
-    `BTClibException` the way `fuzz/fuzz_rpc_head.py` and
-    `tests/fuzz_corpus_test.py`'s own `_parsed` both do.
+    A request line, a header field or a `Content-Length` that
+    `rpc.connection.parse_request_head` refuses. `BTClibValueError` and
+    not a plain `ValueError`, for `WrongNetworkMagicError`'s own reason
+    above: `fuzz/fuzz_rpc_head.py` and `tests/fuzz_corpus_test.py`'s own
+    `_parsed` narrow on `BTClibException`.
     """
 
     def __init__(self, detail: str) -> None:
         super().__init__(f"malformed request head: {detail}")
+
+
+class OversizedRequestBodyError(BTClibValueError):
+    """A request's `Content-Length` is one libevent answers 413.
+
+    Past `rpc.connection.MAX_BODY_BYTES`, the body limit Core sets on
+    its HTTP server. A class of its own rather than a
+    `MalformedRequestHeadError`, since the status it is answered with is
+    another.
+    """
+
+    def __init__(self, length: int) -> None:
+        super().__init__(f"request body too large: Content-Length {length}")

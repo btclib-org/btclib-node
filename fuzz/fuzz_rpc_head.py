@@ -23,14 +23,14 @@ upstream by the interpreter's own test suite and not this tree's code.
 
 `BTClibException` is the whole family `parse_request_head` refuses an
 input with -- `IncompleteRequestHeadError` where no header terminator
-is present yet, `MalformedRequestHeadError` for a `Content-Length` this
-node will not honour -- and it is also what `RpcConnection.run`'s own
-catch is a strict superset of: that catch is a bare `except Exception`
-(`run`'s own docstring is where that breadth is argued, against
-`RpcManager.stop`'s own sweep), so nothing this harness can find here
-escapes unhandled in production, only unmeasured by this suite before
-this issue. Suppressing that one family is what makes a green run
-narrow enough to be evidence.
+is present yet, and `MalformedRequestHeadError` and
+`OversizedRequestBodyError` for what libevent answers 400 and 413 -- and
+it is also what `RpcConnection.run`'s own catch is a strict superset
+of: that catch is a bare `except Exception` (`run`'s own docstring is
+where that breadth is argued, against `RpcManager.stop`'s own sweep),
+so nothing this harness can find here escapes unhandled in production,
+only unmeasured by this suite before this issue. Suppressing that one
+family is what makes a green run narrow enough to be evidence.
 
 `fuzz.yml` runs this file as an ordinary script under the interpreter
 `.python-version` pins, and its own header is where that is argued

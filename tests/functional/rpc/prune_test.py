@@ -78,11 +78,12 @@ def test_pruneblockchain_refuses_a_node_not_in_prune_mode(rpc_node: Node) -> Non
     node = rpc_node
     wait_until_listening(node.rpc_manager)
 
-    _, body = rpc_client(node).call_raw(
+    status, body = rpc_client(node).call_raw(
         "pruneblockchain", [3], jsonrpc="1.0", request_timeout=2
     )
 
-    assert "result" not in body
+    assert status == 500
+    assert body["result"] is None
     assert body["error"]["code"] == -1
     assert body["error"]["message"] == (
         "Cannot prune blocks because node is not in prune mode."

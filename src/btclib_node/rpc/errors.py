@@ -8,15 +8,15 @@ from typing import Any
 
 from bitcoin_core_rpc import RPCErrorCode
 
-__all__ = ["RpcError", "bool_param", "error_msg", "type_error"]
+__all__ = ["RpcError", "bool_param", "type_error"]
 
 
 class RpcError(Exception):
     """A request this node refuses, named by the answer it is owed.
 
-    `handle_rpc` turns it into the error object of JSON-RPC 2.0's section
-    5.1, so raising it is how a callback says which of the two was wrong,
-    the request or the node. Opposite in direction from
+    `rpc.jsonrpc.JsonRpcRequest.reply` turns it into the reply's error
+    object, so raising it is how a callback says which of the two was
+    wrong, the request or the node. Opposite in direction from
     `bitcoin_core_rpc.RpcError`, which names an error a node's answer
     already carries -- this one is raised here, not read off a reply.
     """
@@ -99,30 +99,6 @@ def type_error(position: int, name: str, value: object, expected: str) -> RpcErr
         f'not of expected type {expected}"'
         "\n}",
     )
-
-
-def error_msg(
-    code: RPCErrorCode, message: str, request_id: object = None
-) -> dict[str, Any]:
-    """Build the error response of JSON-RPC 2.0's section 5, code and message.
-
-    The specification requires the answer to carry the id of the request
-    it answers, and reserves null for a request whose id could not be
-    read out of it -- which is what its own example for an invalid
-    request object shows. So a caller passes the id wherever
-    `is_valid_rpc` has already found one, and leaves it out where the
-    request -- or, for `PARSE_ERROR`, the body before it was even a
-    request -- is what was wrong. Nothing here reads `request_id` beyond
-    embedding it in the response unchanged, so `object` is as much as
-    the signature needs -- the specification lets a request's `id` be
-    any JSON scalar, and this node does not itself validate the field
-    before echoing it back.
-    """
-    return {
-        "jsonrpc": "2.0",
-        "error": {"code": code, "message": message},
-        "id": request_id,
-    }
 
 
 def bool_param(params: list[Any], position: int, *, name: str, default: bool) -> bool:
