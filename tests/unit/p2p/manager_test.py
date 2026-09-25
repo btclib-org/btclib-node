@@ -62,6 +62,7 @@ def a_conn(
     feefilter: int = 0,
     nonce: int | None = None,
     inbound: bool = False,
+    automatic: bool = False,
 ) -> Any:
     """Build a `Connection` double: no socket, its own `sent`/`stopped` logs.
 
@@ -82,6 +83,7 @@ def a_conn(
         feefilter=feefilter,
         nonce=nonce,
         inbound=inbound,
+        automatic=automatic,
         sent=[],
         stopped=[],
     )
@@ -544,6 +546,7 @@ def test_a_pong_landing_between_the_idle_check_and_its_reread_does_not_drop_the_
         last_receive = time.time() - 200
         relay_tx = True
         feefilter = 0
+        automatic = False
 
         @property
         def ping_sent(self) -> float:
@@ -681,7 +684,7 @@ def test_a_pending_connection_also_counts_toward_the_connection_target(
     synced: reaching for a second would raise into the housekeeping
     loop's own handler, so a quiet log is the assertion that it did not.
     """
-    conn = a_conn(1, status=P2pConnStatus.Open)
+    conn = a_conn(1, status=P2pConnStatus.Open, automatic=True)
     peer_db = a_peer_db_stub(is_empty=False, random_address=refuses_to_be_asked)
     manager = a_manager(peer_db=peer_db, status=NodeStatus.Starting)
     manager.pending_connections[conn.id] = conn
@@ -819,13 +822,17 @@ def test_a_promote_racing_the_snapshot_still_counts_as_already_connected(
 
     promote_thread = threading.Thread(target=manager.promote_connection, args=(1,))
 
+    values_calls: list[None] = []
+
     class HookedPending(dict[int, Any]):
         @override
         def values(self) -> Any:
-            # called exactly once, from the snapshot below -- `len()`,
-            # the only other reader of this dict in the method, does
-            # not go through `values()`
+            # called twice, first from the count and then from the
+            # snapshot below: the second call is the one to race
             result = dict.values(self)
+            values_calls.append(None)
+            if len(values_calls) < 2:
+                return result
             promote_thread.start()
             # A bound only against a hang: on the unfixed tree
             # `promote_connection` takes no lock at all, so this
@@ -855,13 +862,13 @@ def test_a_promote_racing_the_count_does_not_dial_past_the_target(
 
     `_maybe_dial_more_peers` reads `live` under `_connections_lock` too, not
     only the snapshot below it -- a `promote_connection` racing between two
-    unlocked `len()` calls could undercount a node that already has enough
-    peers, one call reading `connections` before the write and the other reading
+    unlocked reads could undercount a node that already has enough
+    peers, one reading `connections` before the write and the other reading
     `pending_connections` after the pop, and this pass would then dial past the
     target it was told to stop at.
     """
     onion = NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, 8333)
-    conn = a_conn(1, status=P2pConnStatus.Open)
+    conn = a_conn(1, status=P2pConnStatus.Open, automatic=True)
     peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: onion)
     manager = a_manager(peer_db=peer_db, status=NodeStatus.SyncingHeaders)
     manager.pending_connections[1] = conn
@@ -876,10 +883,10 @@ def test_a_promote_racing_the_count_does_not_dial_past_the_target(
 
     class HookedPending(dict[int, Any]):
         @override
-        def __len__(self) -> int:
-            # called exactly once, from the count below -- `.values()`,
-            # the snapshot's own reader further down, is never reached
-            # once the count answers on its own
+        def values(self) -> Any:
+            # called exactly once, from the count below -- the
+            # snapshot's own call further down is never reached once
+            # the count answers on its own
             promote_thread.start()
             # Not a race, on either side: `promote_connection` takes
             # the same lock this count is read under, so on the fixed
@@ -889,7 +896,7 @@ def test_a_promote_racing_the_count_does_not_dial_past_the_target(
             # one. On the unfixed tree nothing here contends that lock
             # at all, and a pop and a dict write finish well inside it.
             promote_done.wait(timeout=1)
-            return dict.__len__(self)
+            return dict.values(self)
 
     manager.pending_connections = HookedPending(manager.pending_connections)
 
@@ -901,11 +908,7 @@ def test_a_promote_racing_the_count_does_not_dial_past_the_target(
     assert not promote_thread.is_alive()
     assert not logged
     assert list(manager.connections) == [1]
-    # `dict.__len__`, bypassing the hook above: `list(...)` calls
-    # `__len__` too, as a size hint, and both that and `not
-    # manager.pending_connections` would start `promote_thread` a
-    # second time, which it refuses
-    assert dict.__len__(manager.pending_connections) == 0
+    assert not manager.pending_connections
 
 
 def test_a_dial_that_comes_back_with_nothing_adds_no_connection(
@@ -978,6 +981,19 @@ async def _record_dns_lookup(calls: list[int]) -> None:
     calls.append(1)
 
 
+def _let_runs_own_coroutines_start(manager: P2pManager) -> None:
+    """Return once every coroutine `run` scheduled has taken its first step.
+
+    `run` schedules them before `run_forever`, so one scheduled from here
+    once the loop is running is queued behind them, and its own result
+    arriving means theirs have started: a `get_addr_from_dns` stand-in
+    `run` scheduled has recorded its call by then. Without this, `calls`
+    read the moment the loop runs can be empty where the lookup was
+    scheduled and has not started yet.
+    """
+    asyncio.run_coroutine_threadsafe(asyncio.sleep(0), manager.loop).result(timeout=10)
+
+
 def test_run_skips_the_dns_lookup_under_connect(a_manager: AManagerFactory) -> None:
     """`-connect` also stops `run` from ever scheduling `get_addr_from_dns`.
 
@@ -1003,10 +1019,9 @@ def test_run_skips_the_dns_lookup_under_connect(a_manager: AManagerFactory) -> N
     manager.start()
     # `loop.is_running()` rather than `wait_until_listening`: nothing
     # binds under `listen=False`, so `listening` never sets and a wait
-    # on it would only time out. Every scheduling decision `run` makes
-    # -- this one included -- runs synchronously before `run_forever`
-    # is ever reached, so this is still a sound point to check `calls`.
+    # on it would only time out.
     wait_until(manager.loop.is_running)
+    _let_runs_own_coroutines_start(manager)
     assert not manager.listening.is_set()
     assert not calls
 
@@ -1029,6 +1044,41 @@ def test_run_schedules_the_dns_lookup_without_connect(
     manager.start()
     wait_until_listening(manager)
     wait_until(lambda: calls)
+
+
+def test_zero_max_connections_turns_off_the_dns_lookup(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1066: `max_connections=0` seeds nothing, as `-connect` does not."""
+    assert a_manager(max_connections=0).use_dns_seed is False
+    assert a_manager().use_dns_seed is True
+    assert a_manager(connect=[("1.2.3.4", 8333)]).use_dns_seed is False
+
+
+def test_run_skips_the_dns_lookup_at_zero_max_connections(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1066: `run` never schedules `get_addr_from_dns` at zero.
+
+    `listen=False` beside it, what `-maxconnections=0` alone resolves to
+    (`cli.py`'s own `_resolve_listen`);
+    `test_run_schedules_the_dns_lookup_without_connect` above is the
+    positive control that the stand-in sees a call.
+    """
+    calls: list[int] = []
+    peer_db = a_peer_db_stub(
+        is_empty=True,
+        random_address=refuses_to_be_asked,
+        get_addr_from_dns=partial(_record_dns_lookup, calls),
+    )
+    manager = a_manager(
+        peer_db=peer_db, port=get_random_port(), listen=False, max_connections=0
+    )
+    manager.start()
+    wait_until(manager.loop.is_running)
+    _let_runs_own_coroutines_start(manager)
+    assert not manager.listening.is_set()
+    assert not calls
 
 
 def test_listen_false_binds_nothing_but_still_dials(a_manager: AManagerFactory) -> None:
@@ -1226,7 +1276,7 @@ def test_only_one_peer_is_wanted_until_the_headers_are_synced(
     would raise into the housekeeping loop's own handler, so a quiet
     log is the assertion that one peer was enough.
     """
-    conn = a_conn(1)
+    conn = a_conn(1, automatic=True)
     peer_db = a_peer_db_stub(is_empty=False, random_address=refuses_to_be_asked)
     manager = a_manager([conn], peer_db=peer_db, status=NodeStatus.Starting)
     logged: list[str] = []
@@ -1251,6 +1301,56 @@ def test_no_automatic_outbound_slot_means_no_dial(
         monkeypatch.setattr(manager.logger, "exception", logged.append)
         asyncio.run(one_pass(manager))
         assert bool(logged) is dials
+
+
+@pytest.mark.parametrize(
+    ("status", "conns"),
+    [
+        pytest.param(
+            NodeStatus.BlockSynced,
+            [a_conn(i, inbound=True) for i in range(10)],
+            id="ten-inbound",
+        ),
+        pytest.param(
+            NodeStatus.Starting,
+            [a_conn(1, status=P2pConnStatus.Open, inbound=True)],
+            id="one-inbound-before-headers",
+        ),
+        pytest.param(
+            NodeStatus.Starting,
+            [a_conn(1)],
+            id="one-addnode-before-headers",
+        ),
+    ],
+)
+def test_a_connection_not_dialled_automatically_leaves_the_target_open(
+    a_manager: AManagerFactory, status: NodeStatus, conns: Sequence[Any]
+) -> None:
+    """ISS 1065: inbound and `-connect`/`-addnode` peers do not fill the target.
+
+    Ten inbound peers are the target once headers are synced, and one is
+    the target before: counted, either would stop the draw, so the draw
+    being asked for is the assertion. An `a_conn` that is neither inbound
+    nor `automatic` is what `async_connect`, the `-connect`/`-addnode`
+    route, builds.
+    """
+    drawn: list[None] = []
+    peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: drawn.append(None))
+    manager = a_manager(peer_db=peer_db, status=status)
+    for conn in conns:
+        manager.pending_connections[conn.id] = conn
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert drawn
+
+
+def test_ten_automatic_peers_fill_the_target(a_manager: AManagerFactory) -> None:
+    """The control for the test above: ten dialled automatically fill it."""
+    drawn: list[None] = []
+    peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: drawn.append(None))
+    conns = [a_conn(i, automatic=True) for i in range(10)]
+    manager = a_manager(conns, peer_db=peer_db)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert not drawn
 
 
 def test_a_connection_removed_between_the_check_and_the_send_is_not_a_keyerror(
@@ -1417,6 +1517,7 @@ def test_a_peer_that_answers_the_dial_becomes_a_connection(
         (conn,) = manager.pending_connections.values()
         assert conn.client is ours
         assert not conn.inbound
+        assert conn.automatic
         assert conn.task is not None
         conn.task.cancel()
         await asyncio.sleep(0)
@@ -1779,6 +1880,8 @@ def test_a_manager_dials_the_address_it_is_given(a_manager: AManagerFactory) -> 
         wait_until(lambda: len(manager.pending_connections) == 2)
         inbound = [conn.inbound for conn in manager.pending_connections.values()]
         assert sorted(inbound) == [False, True]
+        # the `-connect`/`-addnode` route: no end of it is automatic
+        assert not any(conn.automatic for conn in manager.pending_connections.values())
     finally:
         manager.stop()
         manager.join(timeout=10)

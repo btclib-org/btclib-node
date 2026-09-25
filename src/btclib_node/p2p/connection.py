@@ -363,6 +363,12 @@ class Connection:
 
         self.status: P2pConnStatus = P2pConnStatus.Open
         self.inbound: bool = inbound
+        # Whether `P2pManager._maybe_dial_more_peers` dialled this off its
+        # own draw -- Core's `OUTBOUND_FULL_RELAY`, the kind that method's
+        # target counts, where an inbound peer and a `-connect`/`-addnode`
+        # one (Core's `MANUAL`) are not. `P2pManager.create_connection`
+        # sets it.
+        self.automatic: bool = False
 
         # Set by `send_version`, below, to what it drew: `None` until
         # then, and afterwards this connection's own share of

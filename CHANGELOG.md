@@ -118,6 +118,18 @@ then refused the retry (closes #1061).
   slots as in Core, and an inbound peer past its share is closed before
   any `Connection` exists** (closes #1054); none is evicted (issue #1064).
 
+### Inbound and `-addnode` peers leave `P2pManager`'s dial target open
+
+- **The target counts only what `P2pManager` dialled off its own draw, as
+  Core counts only automatic outbound peers** (closes #1065): ten inbound
+  peers, or one before headers are synced, used to stop it dialling.
+
+### `-maxconnections=0` neither listens nor seeds
+
+- **It defaults `-listen` off and skips the DNS seed lookup, Core's own
+  soft-set** (closes #1066); an explicit `-listen` still wins, and this
+  node has no `-dnsseed` to set.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

@@ -98,9 +98,7 @@ again.
   (btclib-org/btclib-node#1054). A peer arriving once that share is
   taken is closed, where Core first tries to evict a peer it already
   holds, so connections held open from anywhere lock every later peer
-  out (btclib-org/btclib-node#1064). Inbound connections also
-  count against the outbound dial target, so enough of them stop this
-  node choosing any peer of its own (btclib-org/btclib-node#1065).
+  out (btclib-org/btclib-node#1064).
 - **`Development Status :: 3 - Alpha` is the claim `pyproject.toml`
   makes**, and it is the right one to read the two above against: this
   node has downloaded and validated the chain, which is not the same as
