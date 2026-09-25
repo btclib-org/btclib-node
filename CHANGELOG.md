@@ -83,6 +83,12 @@ A skipped required check reads as passing, so both aggregates now fail
 a first step on `github.event.pull_request.draft` instead of skipping
 on it (issue btclib-org/.github#1327).
 
+### `sdist-rebuild.yml`'s comment names `setup-python`, not `python-version`
+
+The header named `python-version`, an input the called workflow does not
+declare; it names `setup-python` and its `false` default instead
+(issue btclib-org/.github#1346).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
