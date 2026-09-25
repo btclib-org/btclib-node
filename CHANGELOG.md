@@ -378,6 +378,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   and not by a count of fields, and a chunked body is decoded** (closes
   #1126), as in `bitcoind`.
 
+### `init_test.py` waits for a stopping node as long as `Node.stop` does
+
+- **A node's thread is joined for `STOP_TIMEOUT`, not ten seconds** (closes
+  #1159), the released wedged node's included.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
