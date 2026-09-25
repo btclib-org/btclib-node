@@ -41,7 +41,7 @@ choice for a caller who ran them directly instead), and `allow_p2p`/
 `allow_rpc` (both listeners are always requested, matching every
 `Config()` call this module makes, as `bitcoind` soft-sets Core's
 `-server` on; Core's `-server=0` has no flag here (issue #1112). An RPC
-listener that cannot start stops the node, `main` below exiting `1`, as
+or P2P listener that cannot start stops the node, `main` below exiting `1`, as
 Core's init aborts).
 
 `-blocksdir=<dir>` names the base `BlockDB` (`block_db/__init__.py`)

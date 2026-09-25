@@ -1138,7 +1138,8 @@ def test_listen_false_binds_nothing_but_still_dials(a_manager: AManagerFactory) 
     dialer = a_manager(connect=[("127.0.0.1", target_port)], listen=False)
     try:
         wait_until_listening(target)
-        dialer.start()
+        # `-listen=0` is not a failure to listen: nothing to wait for
+        assert dialer.start_listener()
         wait_until(dialer.loop.is_running)
         assert not dialer.listening.is_set()
         dialer.connect(peer_address("127.0.0.1", target_port))
@@ -1165,8 +1166,9 @@ def test_connect_and_explicit_listen_binds_and_dials(
     dialer = a_manager(connect=[("127.0.0.1", target_port)])
     try:
         wait_until_listening(target)
-        dialer.start()
-        wait_until_listening(dialer)
+        # returns once bound, with nothing left to wait for
+        assert dialer.start_listener()
+        assert dialer.listening.is_set()
         dialer.connect(peer_address("127.0.0.1", target_port))
         wait_until(lambda: dialer.pending_connections)
         wait_until(lambda: target.pending_connections)
@@ -2039,7 +2041,6 @@ def test_a_failed_ipv6_bind_does_not_stop_the_ipv4_listener(
         manager.join(timeout=10)
 
 
-@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
 def test_a_manager_that_cannot_bind_never_says_it_is_listening(
     a_manager: AManagerFactory,
 ) -> None:
@@ -2048,11 +2049,6 @@ def test_a_manager_that_cannot_bind_never_says_it_is_listening(
     Set after the bind and not before it, which is the whole of what a
     caller waiting on the event is told: a manager whose bind failed
     never reaches the line that sets it.
-
-    `_bind` raises out of `run` on purpose (#88, below), so `run` ends
-    in an exception on the manager's own thread that nothing there
-    catches -- exactly what this test asks the bind to do, and pytest
-    warns about any uncaught thread exception by default.
     """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
         taken.bind(("", 0))
@@ -2067,7 +2063,6 @@ def test_a_manager_that_cannot_bind_never_says_it_is_listening(
             manager.join(timeout=10)
 
 
-@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
 def test_a_manager_that_cannot_bind_stops_being_alive(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2077,9 +2072,9 @@ def test_a_manager_that_cannot_bind_stops_being_alive(
     `run_coroutine_threadsafe`, whose returned `concurrent.futures.Future`
     nobody read -- a taken port's `OSError` sat there unread, and the
     manager thread ran on, `is_alive()` true over a listener that never
-    came up. `_bind` now runs in `run` itself, before `run_forever`, so
-    the same `OSError` comes back out of `run` -- this thread's own
-    target -- and the thread ends rather than lying about the socket.
+    came up. `_bind` runs in `run` itself, before `run_forever`, so the
+    same `OSError` ends `run` -- this thread's own target -- and
+    `start_listener` answers that it is not listening.
     """
     logged: list[str] = []
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
@@ -2087,9 +2082,9 @@ def test_a_manager_that_cannot_bind_stops_being_alive(
         taken.listen()
         manager = a_manager(port=taken.getsockname()[1])
         monkeypatch.setattr(manager.logger, "exception", logged.append)
-        manager.start()
+        assert not manager.start_listener()
         wait_until(lambda: not manager.is_alive())
-    assert logged
+    assert logged == ["Could not bind the P2P listener"]
     assert not manager.listening.is_set()
 
 
@@ -2491,7 +2486,6 @@ def test_stop_drains_a_task_whose_own_cancellation_needs_a_second_step(
     manager.stop()
 
 
-@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
 def test_stop_does_not_raise_where_start_was_called_but_run_never_reached_run_forever(
     a_manager: AManagerFactory,
 ) -> None:
@@ -2500,7 +2494,7 @@ def test_stop_does_not_raise_where_start_was_called_but_run_never_reached_run_fo
     `self.ident is not None` -- #368's own guard on a grace step this
     method no longer has -- is true from the moment `start()` is
     called, well before `run()` reaches `run_forever()`. Where `run()`
-    raises before that -- a bind failure being the ordinary way -- the
+    returns before that -- a bind failure being the ordinary way -- the
     `loop.stop` `stop()` schedules at its own top is never delivered, and
     `self.ident is not None` read `True` anyway: the grace step that
     guard used to gate ran against a loop with nothing having ever

@@ -318,6 +318,10 @@ class P2pManager(threading.Thread):
         # is refused -- and `dial` answers a refusal with None, which
         # `async_connect` drops. Nothing retries.
         self.listening = threading.Event()
+        # set by `run` once it has bound, given up on binding, or been
+        # told not to bind by `-listen=0`, which is what
+        # `start_listener` waits on
+        self._start_attempted = threading.Event()
 
         self.loop = asyncio.new_event_loop()
         # What `run` binds and `stop` closes -- kept here rather than
@@ -787,9 +791,10 @@ class P2pManager(threading.Thread):
         `concurrent.futures.Future` nobody reads, so a bind failure inside
         one is an `OSError` that vanishes rather than one that reaches
         `run`'s caller (#88). Doing it here instead, before `run_forever`
-        is ever called, means the same failure raises out of `run` --
-        this thread's target -- so the thread ends rather than staying
-        `is_alive()` over a listener that never came up.
+        is ever called, means the same failure reaches `run` -- this
+        thread's target -- which returns on it, so the thread ends
+        rather than staying `is_alive()` over a listener that never came
+        up, and `start_listener` answers that it is not listening.
         """
         server_socket = socket.socket(family, socket.SOCK_STREAM)
         try:
@@ -819,7 +824,7 @@ class P2pManager(threading.Thread):
 
         The IPv6 one is not: a host with no IPv6 route or with it turned
         off at the kernel fails the bind above, and that is not this
-        node's own defect to raise `run` out on, unlike a taken IPv4
+        node's own defect to end `run` on, unlike a taken IPv4
         port. Core's `InitBinds` treats its own "::" the same way --
         "Don't consider errors to bind on IPv6 '::' fatal because the
         host OS may not have IPv6 support" (net.cpp, 58a7869f86) -- while
@@ -834,6 +839,19 @@ class P2pManager(threading.Thread):
             self.logger.info("No IPv6 P2P listener on port %s", self.port)
         self.listening.set()
         return sockets
+
+    def start_listener(self) -> bool:
+        """Start this thread, and answer whether it came up as `-listen` asked.
+
+        Blocks until `run` has bound its listener, failed to, or skipped
+        it under `-listen=0`, and answers False only for the failure:
+        what `Node.run` turns into Core's "Failed to listen on any port",
+        where `start` alone would leave the node running with neither a
+        listener nor the dialling `run` schedules only after the bind.
+        """
+        self.start()
+        self._start_attempted.wait()
+        return not self.listen or self.listening.is_set()
 
     async def _accept_loop(
         self,
@@ -1072,21 +1090,27 @@ class P2pManager(threading.Thread):
 
     @override
     def run(self) -> None:
-        self.logger.info("Starting P2P manager")
         loop = self.loop
-        asyncio.set_event_loop(loop)
         # Core's own `-listen=0`: no bind, no accept, outbound dialling
         # untouched -- `_bind`'s own listener socket is the only thing
         # this skips, `manage_connections` and the dial loop below both
         # running on this same loop regardless of whether `_bind` below
         # ever ran.
         server_sockets: list[socket.socket] = []
-        if self.listen:
-            try:
+        try:
+            self.logger.info("Starting P2P manager")
+            asyncio.set_event_loop(loop)
+            if self.listen:
                 server_sockets = self._bind()
-            except OSError:
-                self.logger.exception("Could not bind the P2P listener")
-                raise
+        except OSError:
+            # `start_listener` reads the failure off `listening`, so it
+            # is not raised into `threading.excepthook` as well; nothing
+            # is scheduled, as Core's `CConnman::Start` returns before
+            # starting any of its threads
+            self.logger.exception("Could not bind the P2P listener")
+            return
+        finally:
+            self._start_attempted.set()
         self._server_sockets = server_sockets
         if self.use_dns_seed:
             asyncio.run_coroutine_threadsafe(self.peer_db.get_addr_from_dns(), loop)
@@ -1145,7 +1169,7 @@ class P2pManager(threading.Thread):
         #   -- `is_alive()` above is `False`, `join` is skipped, and
         #   nothing has ever driven this loop, so the handle is still
         #   sitting in its ready queue, undelivered.
-        # - This thread was started and `run()` raised before ever
+        # - This thread was started and `run()` returned before ever
         #   reaching `run_forever` -- a bind failure being the ordinary
         #   way (btclib-org/btclib-node#353) -- so `self.ident is not
         #   None` even though `run_forever`, again, never ran: the

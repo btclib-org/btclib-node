@@ -63,6 +63,12 @@ on release day.
 - **A command-line argument the node refuses exits 1, not 2**
   (closes #1116), after one `Error: ...` line on stderr, as `bitcoind`
   does: a script testing the exit status for 2 has to test for 1.
+- **A node whose P2P listener cannot bind stops, as `bitcoind` does**
+  (closes #1093). With the P2P port taken, `btclib-node` prints
+  `Error: Failed to listen on any port. Use -listen=0 if you want this.`
+  and exits 1. A caller that starts a `Node` itself finds its thread
+  ended and `Node.init_error` set. Free the port, pick another with
+  `-port`, or start with `-listen=0`.
 
 ## v2026.9.24
 

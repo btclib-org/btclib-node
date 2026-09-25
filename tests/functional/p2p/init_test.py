@@ -19,9 +19,9 @@ def test_init(tmp_path: Path) -> None:
 
     `p2p_port=get_random_port()` matters as much as the assertions do:
     left to regtest's fixed default, a second suite running anywhere on
-    the machine would already hold that port, the bind would raise
-    inside a coroutine nobody awaits, and the listener would never come
-    up with nothing to say why. `node.is_alive()` after `stop` is
+    the machine would already hold that port, the bind would fail and
+    the node would stop with Core's "Failed to listen on any port"
+    instead of listening. `node.is_alive()` after `stop` is
     checked because this is the thread the p2p manager runs under, and
     a test ending with it still running is a test ending with something
     still logging.
@@ -29,8 +29,7 @@ def test_init(tmp_path: Path) -> None:
     # a port of its own, as every other node in the suite has: left to
     # the chain's default this binds regtest's fixed 18444, and a second
     # suite running anywhere on the machine takes it. The bind then
-    # raises inside a coroutine nobody awaits, so the listener never
-    # comes up and nothing says why.
+    # fails and the node stops, as Core's init does.
     node = Node(
         config=Config(
             chain="regtest",

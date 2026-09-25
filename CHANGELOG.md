@@ -250,6 +250,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   net class (closes #1103), an invalid `addrlocal` is left out (closes #1104),
   and most of the fields Core pushes for every peer are answered (issue #1105).
 
+### A P2P listener that cannot bind stops the node, as Core's init does
+
+- **A taken P2P port ends `Node` with Core's "Failed to listen on any
+  port"** (closes #1093); `btclib-node` exits 1 and prints it, and under
+  `-listen=0` the node starts whatever holds the port.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
