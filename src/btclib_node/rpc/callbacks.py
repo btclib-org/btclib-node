@@ -40,6 +40,8 @@ from btclib_node.rpc.errors import RpcError, bool_param, type_error
 
 if TYPE_CHECKING:
     from btclib_node import Node
+    from btclib_node.chainstate.block_index import BlockIndex
+    from btclib_node.p2p.block_availability import BlockAvailability
     from btclib_node.p2p.connection import Connection
     from btclib_node.rpc.connection import RpcConnection
 
@@ -802,10 +804,10 @@ def _peer_entry(
     # -1, Core's answer where no low-work headers presync runs, which
     # this node never runs.
     entry["presynced_headers"] = -1
-    # `synced_headers` and `synced_blocks` are not answered: this node
-    # keeps no per-peer best known header nor last common block,
-    # `best_known_height` being seeded off the peer's own `version` claim.
     block_index = node.chainstate.block_index
+    entry["synced_headers"], entry["synced_blocks"] = _synced_heights(
+        block_index, p2p_conn.block_availability
+    )
     entry["inflight"] = [
         block_index.get_block_info(block_hash).index
         for block_hash in p2p_conn.download_queue
@@ -832,6 +834,22 @@ def _peer_entry(
     entry["transport_protocol_type"] = "v1"
     entry["session_id"] = ""
     return entry
+
+
+def _synced_heights(
+    block_index: BlockIndex, availability: BlockAvailability
+) -> tuple[int, int]:
+    """Return `synced_headers` and `synced_blocks`, as Core computes them.
+
+    The heights of `pindexBestKnownBlock` and `pindexLastCommonBlock`,
+    each -1 where unset (`GetNodeStateStats`, `src/net_processing.cpp`,
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    """
+    best_known, last_common = availability.best_known, availability.last_common
+    return (
+        -1 if best_known is None else block_index.get_block_info(best_known).index,
+        -1 if last_common is None else block_index.get_block_info(last_common).index,
+    )
 
 
 def get_peer_info(

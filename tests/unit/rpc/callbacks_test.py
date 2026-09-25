@@ -48,6 +48,7 @@ from btclib_node.exceptions import MissingPrevoutError, StoreCorruptionError
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import peer_address
+from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.connection import PeerStats
 from btclib_node.rpc.callbacks import (
     add_node,
@@ -189,6 +190,7 @@ def a_peer(
         inbound=inbound,
         automatic=automatic,
         stats=PeerStats(),
+        block_availability=BlockAvailability(),
         tx_announce_queue=[],
         download_queue=[],
         feefilter=0,
@@ -433,9 +435,7 @@ def test_a_loopback_local_address_is_kept() -> None:
 def test_every_key_core_pushes_for_every_peer_is_answered() -> None:
     """The unconditional keys of Core's `getpeerinfo`, in Core's order.
 
-    Less `synced_headers` and `synced_blocks`, which this node keeps
-    nothing to answer with. `addrlocal` and the ping
-    fields follow here where Core pushes them.
+    `addrlocal` and the ping fields follow here where Core pushes them.
     """
     peer = a_peer(latency=0, min_ping_time=math.inf)
     (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
@@ -464,6 +464,8 @@ def test_every_key_core_pushes_for_every_peer_is_answered() -> None:
         "bip152_hb_to",
         "bip152_hb_from",
         "presynced_headers",
+        "synced_headers",
+        "synced_blocks",
         "inflight",
         "addr_relay_enabled",
         "addr_processed",
@@ -543,6 +545,34 @@ def test_the_connection_type_is_core_s(
     peer = a_peer(inbound=inbound, automatic=automatic)
     (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
     assert info["connection_type"] == connection_type
+
+
+@pytest.mark.parametrize(
+    ("best_known", "last_common", "expected"),
+    [
+        (None, None, (-1, -1)),
+        (b"\x0c" * 32, None, (12, -1)),
+        (b"\x0c" * 32, b"\x0a" * 32, (12, 10)),
+    ],
+    ids=["neither", "best-known-only", "both"],
+)
+def test_the_synced_heights_are_the_peer_s_best_known_and_last_common_blocks(
+    best_known: bytes | None,
+    last_common: bytes | None,
+    expected: tuple[int, int],
+) -> None:
+    """`synced_headers` and `synced_blocks` are heights, -1 where unset.
+
+    Core's `pindexBestKnownBlock` and `pindexLastCommonBlock`
+    (btclib-org/btclib-node#1105).
+    """
+    peer = a_peer()
+    peer.block_availability = BlockAvailability(
+        best_known=best_known, last_common=last_common
+    )
+    node = a_node({7: peer}, heights={b"\x0a" * 32: 10, b"\x0c" * 32: 12})
+    (info,) = get_peer_info(node, _CONN, [])
+    assert (info["synced_headers"], info["synced_blocks"]) == expected
 
 
 def test_the_fields_this_node_has_no_state_for_answer_core_s_value() -> None:

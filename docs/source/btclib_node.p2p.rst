@@ -19,6 +19,13 @@ btclib\_node.p2p.address module
    :members:
    :show-inheritance:
 
+btclib\_node.p2p.block\_availability module
+-----------------------------------------------
+
+.. automodule:: btclib_node.p2p.block_availability
+   :members:
+   :show-inheritance:
+
 btclib\_node.p2p.callbacks module
 ------------------------------------
 

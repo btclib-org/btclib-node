@@ -28,10 +28,11 @@ from btclib.p2p.negotiation import FeeFilter
 import btclib_node.download as download_module
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import NodeStatus, P2pConnStatus
-from btclib_node.download import DownloadManager
+from btclib_node.download import MAX_BLOCKS_PER_GETDATA_BURST, DownloadManager
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import peer_address
+from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.callbacks import MAX_GETDATA_INFLIGHT_BYTES
 from btclib_node.p2p.connection import PeerStats
 from tests import generate_random_transaction
@@ -83,6 +84,7 @@ def a_conn(
         tx_announce_queue=[],
         next_inv_send_time=0.0,
         stats=PeerStats(),
+        block_availability=BlockAvailability(),
         tx_requested={},
         status=status,
         feefilter_sent=feefilter_sent,
@@ -132,6 +134,7 @@ def make_manager(
         mempool=mempool if mempool is not None else Mempool(Logger(debug=True)),
         warm_worker_pool=warm_worker_pool or (lambda: None),
         config=SimpleNamespace(min_relay_feerate=min_relay_feerate),
+        chain=SimpleNamespace(consensus=SimpleNamespace(minimum_chain_work=0)),
     )
     manager = DownloadManager(cast("Node", node), Logger(debug=True))
     # `Node`'s own, which `callbacks.maybe_send_getheaders` reads its
@@ -1568,3 +1571,57 @@ def test_a_peer_gone_leaves_no_getheaders_timestamp_behind() -> None:
     manager.last_getheaders_timestamps[2] = time.time()
     manager.sync_headers()
     assert list(manager.last_getheaders_timestamps) == [1]
+
+
+def moved(manager: DownloadManager, monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    """Run `update_last_common_blocks`, returning the peers it moved."""
+    states: list[Any] = []
+    monkeypatch.setattr(
+        download_module,
+        "update_last_common_block",
+        lambda block_index, state, minimum_chain_work: states.append(state),
+    )
+    manager.update_last_common_blocks()
+    connections = manager.node.p2p_manager.connections.values()
+    return [
+        conn
+        for conn in connections
+        if any(conn.block_availability is state for state in states)
+    ]
+
+
+def test_out_of_initial_block_download_every_peer_s_last_common_block_moves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every connected peer that serves blocks and has room in flight.
+
+    Core's gate on `FindNextBlocksToDownload` in `SendMessages`
+    (btclib-org/btclib-node#1105).
+    """
+    inbound = a_conn(1)
+    limited = a_conn(2, version_message=a_version(_LIMITED))
+    full = a_conn(3, queue=[a_hash(n) for n in range(MAX_BLOCKS_PER_GETDATA_BURST)])
+    serves_none = a_conn(4, version_message=a_version(ServiceFlags.NODE_WITNESS))
+    handshaking = a_conn(5, status=P2pConnStatus.Open)
+    conns = [inbound, limited, full, serves_none, handshaking]
+    manager = make_manager(conns, is_initial_block_download=False)
+    assert moved(manager, monkeypatch) == [inbound, limited]
+
+
+@pytest.mark.parametrize("in_flight", [True, False])
+def test_in_initial_block_download_only_a_peer_synced_from_moves(
+    monkeypatch: pytest.MonkeyPatch, *, in_flight: bool
+) -> None:
+    """A preferred peer, any where nothing is in flight, never a limited one.
+
+    Core's `sync_blocks_and_headers_from_peer` and `IsLimitedPeer` terms
+    of the same gate (btclib-org/btclib-node#1105).
+    """
+    preferred = an_outbound(1, queue=[a_hash(1)] if in_flight else [])
+    inbound = a_conn(2)
+    limited = an_outbound(3, version_message=a_version(_LIMITED))
+    manager = make_manager(
+        [preferred, inbound, limited], is_initial_block_download=True
+    )
+    expected = [preferred] if in_flight else [preferred, inbound]
+    assert moved(manager, monkeypatch) == expected

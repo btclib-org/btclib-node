@@ -50,12 +50,16 @@ _OPTIONAL_FIELDS = {
 
 
 def _both_answers(
-    bitcoind: Bitcoind, tmp_path: Path
+    bitcoind: Bitcoind, tmp_path: Path, mined: int = 0
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Dial `bitcoind` over 127.0.0.1 and read each side's entry for the other.
 
-    Read once each side has had its own ping answered, and before either
-    sends the other a block or a transaction.
+    Read once each side has had its own ping answered. Where `bitcoind`
+    mines `mined` blocks first, this node's answer is read once it has
+    connected them and its `synced_blocks` has caught up, and bitcoind's
+    once a ping this node sends after that is answered: whatever this
+    node sent bitcoind about those blocks is ahead of that ping on the
+    wire.
     """
     node = Node(
         config=Config(
@@ -81,11 +85,23 @@ def _both_answers(
 
         wait_until(lambda: any("pingtime" in peer for peer in their_peers()))
 
+        def our_peer() -> dict[str, Any]:
+            _, body = rpc_client(node).call_raw(
+                "getpeerinfo", jsonrpc="1.0", request_timeout=2
+            )
+            (entry,) = body["result"]
+            return cast("dict[str, Any]", entry)
+
+        if mined:
+            anyone = bitcoind.rpc("getdescriptorinfo", ["raw(51)"])
+            descriptor = cast("dict[str, str]", anyone)["descriptor"]
+            bitcoind.rpc("generatetodescriptor", [mined, descriptor])
+            wait_until(lambda: our_peer()["synced_blocks"] == mined)
+            conn.send_ping()
+            wait_until(lambda: not conn.ping_sent)
+
         (theirs,) = their_peers()
-        _, body = rpc_client(node).call_raw(
-            "getpeerinfo", jsonrpc="1.0", request_timeout=2
-        )
-        (ours,) = body["result"]
+        ours = our_peer()
     finally:
         node.stop()
         node.join()
@@ -123,21 +139,16 @@ def test_the_time_fields_have_bitcoind_s_shape(
 def test_the_fields_are_bitcoind_s_and_so_is_a_loopback_peer_s_network(
     bitcoind: Bitcoind, tmp_path: Path
 ) -> None:
-    """Every key Core always pushes is here but two, and no other.
+    """Every key Core always pushes is here, and no other.
 
-    `synced_headers` and `synced_blocks` are what this node keeps no
-    state to answer with. A key both answer holds a value of the same
-    type on each side. Over 127.0.0.1 both sides name
-    the network unroutable, and bitcoind's `version` names the
-    unspecified address for this node, 127.0.0.1 not being routable, so
-    this node answers no `addrlocal`.
+    A key both answer holds a value of the same type on each side. Over
+    127.0.0.1 both sides name the network unroutable, and bitcoind's
+    `version` names the unspecified address for this node, 127.0.0.1 not
+    being routable, so this node answers no `addrlocal`.
     """
     ours, theirs = _both_answers(bitcoind, tmp_path)
 
-    assert set(theirs) - _OPTIONAL_FIELDS - set(ours) == {
-        "synced_headers",
-        "synced_blocks",
-    }
+    assert set(theirs) - _OPTIONAL_FIELDS - set(ours) == set()
     assert set(ours) - _OPTIONAL_FIELDS <= set(theirs)
     shared = set(ours) & set(theirs)
     assert {key: type(ours[key]) for key in shared} == {
@@ -150,3 +161,20 @@ def test_the_fields_are_bitcoind_s_and_so_is_a_loopback_peer_s_network(
     assert ours["bytessent"] > 0
     assert ours["bytesrecv"] > 0
     assert set(ours["bytesrecv_per_msg"]) >= {"version", "verack", "pong"}
+
+
+def test_the_synced_heights_are_what_a_bitcoind_peer_answers(
+    bitcoind: Bitcoind, tmp_path: Path
+) -> None:
+    """After syncing blocks bitcoind mined, each side answers as Core does.
+
+    This node's `synced_headers` and `synced_blocks` for bitcoind are the
+    height it synced to; bitcoind's for this node stay -1, this node
+    announcing back none of the blocks bitcoind sent it. A second
+    bitcoind in this node's place, measured on the same exchange,
+    answers the same on both sides (btclib-org/btclib-node#1105,
+    btclib-org/btclib-node#1160).
+    """
+    ours, theirs = _both_answers(bitcoind, tmp_path, mined=3)
+    assert (ours["synced_headers"], ours["synced_blocks"]) == (3, 3)
+    assert (theirs["synced_headers"], theirs["synced_blocks"]) == (-1, -1)
