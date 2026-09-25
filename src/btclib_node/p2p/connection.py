@@ -478,6 +478,13 @@ class Connection:
         """What this peer is known to have of the block chain."""
         return BlockAvailability()
 
+    # The task awaiting `_send`'s own `sock_sendall`, for `_close` to
+    # cancel: it removes the writer that would have completed that wait.
+    # One at a time, `_deliver` holding `_write_lock` across `_send`; a
+    # class default for the reason `time_received` gives.
+    # btclib-org/btclib-node#1164
+    _writing: asyncio.Task[object] | None = None
+
     def __init__(
         self,
         manager: P2pManager,
@@ -825,12 +832,33 @@ class Connection:
         cleanup, it is the whole of what #518's own fix has to do on a
         loop that was never asked to register a reader or a writer for
         this fd in the first place.
+
+        On a selector loop the writer removed here is what completes the
+        future `sock_sendall` awaits, so a `_send` waiting on it would
+        wait forever: its task stays pending, holding `_write_lock`
+        against every `_deliver` queued behind it and keeping its bytes
+        in `queued_send_bytes`, until `P2pManager.stop`'s own sweep
+        cancels it or the collector frees it pending. Cancelling it here
+        ends it on the next step of this loop, and each `_deliver` behind
+        it then reaches a closed socket, whose `OSError` `_send`
+        suppresses. On a proactor loop the close alone would end that
+        write, `sock_sendall` there being one overlapped `WSASend` on the
+        socket's own handle; the cancel ends it first, and comes before
+        the close so that it does not target a handle already gone --
+        the order CPython's own `_ProactorBasePipeTransport._force_close`
+        keeps, cancelling its futures and closing the socket after. A
+        write the
+        socket had taken whose task has not yet stepped is cancelled all
+        the same, so `_count_sent` misses that one message.
+        btclib-org/btclib-node#1164
         """
         fd = self.client.fileno()
         if fd != -1:
             with contextlib.suppress(NotImplementedError):
                 self.loop.remove_reader(fd)
                 self.loop.remove_writer(fd)
+        if self._writing is not None:
+            self._writing.cancel()
         self.client.close()
 
     async def run(self) -> None:
@@ -924,9 +952,13 @@ class Connection:
             self.stop(cancel_task=False)
 
     async def _send(self, data: bytes) -> None:
-        with contextlib.suppress(OSError):  # probably connection dropped
-            await self.loop.sock_sendall(self.client, data)
-            self._count_sent(data)
+        self._writing = asyncio.current_task()
+        try:
+            with contextlib.suppress(OSError):  # probably connection dropped
+                await self.loop.sock_sendall(self.client, data)
+                self._count_sent(data)
+        finally:
+            self._writing = None
 
     def _count_sent(self, data: bytes) -> None:
         """Add one whole framed message the socket took to `bytes_sent`.
