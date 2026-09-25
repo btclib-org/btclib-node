@@ -110,7 +110,7 @@ from btclib_node.p2p.callbacks import (
     wtxidrelay,
 )
 from btclib_node.p2p.callbacks import block as block_callback
-from btclib_node.p2p.connection import Connection
+from btclib_node.p2p.connection import Connection, PeerStats
 from tests import (
     generate_random_chain,
     generate_random_header_chain,
@@ -444,6 +444,7 @@ def a_peer(**attributes: Any) -> Any:
         client=SimpleNamespace(getpeername=lambda: ("1.2.3.4", 18444)),
         inbound=False,
         address=peer_address("1.2.3.4", 18444),
+        stats=PeerStats(),
     )
     peer.__dict__.update(attributes)
     return peer
@@ -500,6 +501,19 @@ def test_a_version_is_answered_with_what_this_node_speaks() -> None:
     assert peer.relay_tx is True
     assert not peer.stopped
     assert not node.p2p_manager.discouraged
+
+
+def test_a_version_records_the_peer_s_clock_against_this_node_s() -> None:
+    """`time_offset` is the peer's timestamp less this node's clock, seconds.
+
+    `a_version` carries a timestamp of 1, so the offset is minus the
+    seconds since the epoch at the moment the callback read it.
+    """
+    peer = a_peer()
+    before = int(time.time())
+    version(a_handshake_node(), a_version(), peer)
+    after = int(time.time())
+    assert 1 - after <= peer.stats.time_offset <= 1 - before
 
 
 def test_a_second_version_ahead_of_verack_is_ignored_outright() -> None:

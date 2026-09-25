@@ -530,6 +530,9 @@ class DownloadManager:
                 continue
             if conn.next_inv_send_time and now < conn.next_inv_send_time:
                 continue
+            # Core's trickle records the mempool's sequence whether or
+            # not it announces anything
+            conn.stats.last_inv_sequence = self.node.mempool.sequence
             if conn.tx_announce_queue:
                 # `Inv.assert_valid` (btclib.p2p.inventory) refuses more
                 # than `MAX_INV_SZ` entries, and this queue has had this

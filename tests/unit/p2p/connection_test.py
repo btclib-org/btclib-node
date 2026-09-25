@@ -870,6 +870,74 @@ def test_parse_messages_weighs_a_queued_message_against_the_recv_bound() -> None
     assert connection._recv_resume.is_set()
 
 
+def test_parse_messages_counts_each_message_under_core_s_key() -> None:
+    """A command Core names is its own key, and any other is `*other*`."""
+    connection, _ = a_connection()
+    with connection.client:
+        ping = _wire_ping()
+        unknown = Message(RegTest().magic, "invented", b"").serialize()
+        connection.buffer += ping + ping + unknown
+        connection.parse_messages()
+    assert connection.stats.bytes_recv_per_msg == {
+        "ping": 2 * len(ping),
+        "*other*": len(unknown),
+    }
+
+
+def test_run_counts_every_octet_it_reads() -> None:
+    """`bytes_recv` is what `sock_recv` answered, whole messages or not."""
+
+    async def drive() -> Connection:
+        loop = asyncio.get_running_loop()
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        connection = a_running_connection(loop, ours)
+        task = asyncio.ensure_future(asyncio.sleep(60))
+        connection.task = task  # type: ignore[assignment]
+        # a whole ping and the first half of another, then end of stream.
+        # `shutdown`, not `close`: `run` sends its `version` first, and on
+        # `socket.socketpair()`'s Windows fallback, a TCP loopback pair, a
+        # closed peer answers that send with a reset, which discards the
+        # octets still unread and fails `sock_recv` before it returns any.
+        theirs.sendall(_wire_ping() + _wire_ping()[:10])
+        theirs.shutdown(socket.SHUT_WR)
+        try:
+            await connection.run()
+        finally:
+            theirs.close()
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+        return connection
+
+    connection = asyncio.run(drive())
+    assert connection.stats.bytes_recv == len(_wire_ping()) + 10
+    assert connection.stats.bytes_recv_per_msg == {"ping": len(_wire_ping())}
+
+
+def test_a_message_written_is_counted_and_one_that_failed_is_not() -> None:
+    """`bytessent` and its table count what the socket took, by command."""
+
+    async def drive() -> tuple[Connection, Connection]:
+        loop = asyncio.get_running_loop()
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        written = a_running_connection(loop, ours)
+        await written.async_send(Ping(1))
+        ours.close()
+        theirs.close()
+        refused = a_running_connection(loop, socket.socket())
+        await refused.async_send(Ping(1))
+        refused.client.close()
+        return written, refused
+
+    written, refused = asyncio.run(drive())
+    assert written.stats.bytes_sent == len(_wire_ping())
+    assert written.stats.bytes_sent_per_msg == {"ping": len(_wire_ping())}
+    assert refused.stats.bytes_sent == 0
+    assert refused.stats.bytes_sent_per_msg == {}
+
+
 def test_parse_messages_weighs_a_handshake_message_too() -> None:
     """A `handshake_messages`-bound item adds its own wire size too.
 

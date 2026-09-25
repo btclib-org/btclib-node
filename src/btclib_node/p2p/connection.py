@@ -21,6 +21,8 @@ import math
 import secrets
 import threading
 import time
+from collections import Counter
+from dataclasses import dataclass, field
 from io import BytesIO
 from typing import TYPE_CHECKING, cast, override
 
@@ -56,6 +58,7 @@ __all__ = [
     "MAX_QUEUED_RECV_BYTES",
     "MAX_QUEUED_SEND_BYTES",
     "Connection",
+    "PeerStats",
     "frame_message",
     "frame_message_bytes",
 ]
@@ -268,11 +271,59 @@ MAX_QUEUED_RECV_BYTES = 5 * 1000 * 1000
 # argues it against Core's `CMessageHeader` (`src/protocol.h`): magic (4
 # octets) and command (12) ahead of a little-endian `length` (4), then a
 # checksum (4). `btclib.p2p.message` keeps the matching constants private,
-# so `parse_messages` below repeats the two it needs to peek the header
-# itself, rather than reach into another module's underscored names.
+# so `parse_messages` and `_count_sent` below repeat what they need to peek
+# the header themselves, rather than reach into another module's
+# underscored names.
+_COMMAND_OFFSET = 4
 _HEADER_SIZE = 24
 _LENGTH_OFFSET = 16
 _LENGTH_SIZE = 4
+
+# Core's `ALL_NET_MESSAGE_TYPES` (`src/protocol.h`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the commands
+# `bytes_recv_per_msg` keys by name, every other one being counted under
+# `NET_MESSAGE_TYPE_OTHER`, so that a peer inventing commands cannot grow
+# the table.
+_MESSAGE_TYPES = frozenset(
+    (
+        "version",
+        "verack",
+        "addr",
+        "addrv2",
+        "sendaddrv2",
+        "inv",
+        "getdata",
+        "merkleblock",
+        "getblocks",
+        "getheaders",
+        "tx",
+        "headers",
+        "block",
+        "getaddr",
+        "mempool",
+        "ping",
+        "pong",
+        "notfound",
+        "filterload",
+        "filteradd",
+        "filterclear",
+        "sendheaders",
+        "feefilter",
+        "sendcmpct",
+        "cmpctblock",
+        "getblocktxn",
+        "blocktxn",
+        "getcfilters",
+        "cfilter",
+        "getcfheaders",
+        "cfheaders",
+        "getcfcheckpt",
+        "cfcheckpt",
+        "wtxidrelay",
+        "sendtxrcncl",
+    )
+)
+_MESSAGE_TYPE_OTHER = "*other*"
 
 # BIP14's `/Name:Version/`, the shape Core builds in FormatSubVersion
 # (`src/clientversion.cpp:65-70`, at bitcoin/bitcoin@204256c73f) and sends
@@ -329,6 +380,31 @@ def frame_message_bytes(data: bytes) -> Message:
     return frame_message(BytesIO(data), RegTest().magic)
 
 
+@dataclass(slots=True)
+class PeerStats:
+    """What `getpeerinfo` reads of a connection and nothing else does.
+
+    `time_offset` is Core's `Peer::m_time_offset`, the peer's `version`
+    timestamp less this node's clock when `callbacks.version` read it,
+    in whole seconds. `last_inv_sequence` is `TxRelay::m_last_inv_sequence`,
+    `Mempool.sequence` as of this connection's last trickle, which
+    `DownloadManager` writes, and 1 before the first, where Core starts it.
+
+    The rest are Core's `nSendBytes`, `nRecvBytes` and their per-command
+    tables: the octets written to and read off the socket, the tables by
+    whole message, header included. Each is written on this connection's
+    loop alone, by `_send` and `run`, and read from `Node`'s thread,
+    which copies a table before iterating it.
+    """
+
+    time_offset: int = 0
+    last_inv_sequence: int = 1
+    bytes_sent: int = 0
+    bytes_recv: int = 0
+    bytes_sent_per_msg: Counter[str] = field(default_factory=Counter)
+    bytes_recv_per_msg: Counter[str] = field(default_factory=Counter)
+
+
 class Connection:
     """One peer-to-peer socket and everything owed to or by it.
 
@@ -355,8 +431,6 @@ class Connection:
         inbound: bool,
     ) -> None:
         """Set every field a fresh connection starts with, before `run`."""
-        super().__init__()
-
         self.id = connection_id
         self.manager = manager
         self.node: Node = manager.node
@@ -393,6 +467,7 @@ class Connection:
 
         self.version_message: Version | None = None
         self.wtxidrelay_received: bool = False
+        self.stats: PeerStats = PeerStats()
 
         # BIP37's default until the peer's version says otherwise, which
         # is what callbacks.version writes here
@@ -766,6 +841,7 @@ class Connection:
                     return self.stop(cancel_task=False)
                 if not data:
                     return self.stop(cancel_task=False)
+                self.stats.bytes_recv += len(data)
                 try:
                     self.buffer += data
                     self.parse_messages()
@@ -798,6 +874,17 @@ class Connection:
     async def _send(self, data: bytes) -> None:
         with contextlib.suppress(OSError):  # probably connection dropped
             await self.loop.sock_sendall(self.client, data)
+            self._count_sent(data)
+
+    def _count_sent(self, data: bytes) -> None:
+        """Add one whole framed message the socket took to `bytes_sent`.
+
+        Core's `SocketSendData` counts what the socket took, by the
+        command the message was pushed under, read here off the header.
+        """
+        self.stats.bytes_sent += len(data)
+        command = data[_COMMAND_OFFSET:_LENGTH_OFFSET].rstrip(b"\0").decode("ascii")
+        self.stats.bytes_sent_per_msg[command] += len(data)
 
     def _queue(self, payload: Payload) -> bytes | None:
         """Frame `payload` and count it, or refuse and return `None`.
@@ -1084,6 +1171,7 @@ class Connection:
                 received = self.last_receive = time.time()
                 size = stream.tell() - start
                 consumed += size
+                self._count_received(message.command, size)
                 if message.command in handshake_callbacks:
                     self.manager.handshake_messages.append(
                         (message.command, message.payload, self.id, size)
@@ -1112,6 +1200,15 @@ class Connection:
             # once a message has actually been taken off the front.
             if stream.tell():
                 self.buffer = bytearray(stream.read())
+
+    def _count_received(self, command: str, size: int) -> None:
+        """Add one whole message to `bytes_recv_per_msg`, as Core keys it.
+
+        Split out of `parse_messages` for the complexity ceiling
+        `_weigh_against_recv_bound` below is split out for.
+        """
+        key = command if command in _MESSAGE_TYPES else _MESSAGE_TYPE_OTHER
+        self.stats.bytes_recv_per_msg[key] += size
 
     def _weigh_against_recv_bound(self, consumed: int) -> None:
         """Add `consumed` to `queued_recv_bytes`, pausing past the bound.
