@@ -409,14 +409,10 @@ class DownloadManager:
     def tx_download(self) -> None:
         """Announce what this node received, and request what it still wants.
 
-        A no-op until the chain itself is synced: a peer's `inv` for a
-        transaction is only worth requesting once this node has a
-        mempool to check it against, and until then everything received
-        here is a block's own, not a loose transaction.
+        At any sync state: Core's `SendMessages` (`net_processing.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag) gates neither, and what
+        `inv_txs` holds is already gated on IBD by `callbacks.inv`.
         """
-        if self.node.status < NodeStatus.BlockSynced:
-            return
-
         self._queue_announcements_for_received_txs()
         self._send_due_announcements()
         self._request_wanted_txs()
