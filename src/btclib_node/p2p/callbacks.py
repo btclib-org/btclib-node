@@ -480,6 +480,12 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
     The sample itself is a cache, shared and redrawn only once its own
     lifetime and jitter expire -- the comment below argues why.
     """
+    # Core's `GETADDR` handler (`src/net_processing.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) ignores one from a
+    # connection it opened itself: answering it would let a peer plant
+    # addresses and read them back from a node that only dials out.
+    if not conn.inbound:
+        return
     # Once per connection, matching the flag's own docstring
     # (connection.py): a peer asking in a loop is served the table once
     # rather than once per ask. btclib-org/btclib-node#71

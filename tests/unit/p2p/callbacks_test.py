@@ -170,17 +170,22 @@ def make_node(
     *,
     prefer_addressv2: bool = False,
     discouraged: Sequence[NetworkAddressV2] = (),
+    inbound: bool = True,
 ) -> tuple[Any, Any, list[Any]]:
     """Build a node with `peer_db` addresses active, and a peer stand-in.
 
-    `is_discouraged` answers for the hosts of `discouraged`.
+    `is_discouraged` answers for the hosts of `discouraged`. The peer is
+    inbound by default, the only kind whose `getaddr` is answered.
     """
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
     for address in addresses:
         peer_db.active_addresses.append(address)
     sent: list[Any] = []
     conn = SimpleNamespace(
-        prefer_addressv2=prefer_addressv2, send=sent.append, answered_getaddr=False
+        prefer_addressv2=prefer_addressv2,
+        send=sent.append,
+        answered_getaddr=False,
+        inbound=inbound,
     )
     keys = {host_key(address) for address in discouraged}
     node = SimpleNamespace(
@@ -252,6 +257,18 @@ def test_nothing_active_is_answered_with_nothing() -> None:
     assert not sent
 
 
+def test_a_getaddr_from_an_outbound_peer_is_ignored() -> None:
+    """ISS 1177: Core answers a `getaddr` only on an inbound connection.
+
+    Ignored before the once-per-connection flag is set, as Core returns
+    ahead of `m_getaddr_recvd`.
+    """
+    node, conn, sent = make_node([an_address()], inbound=False)
+    getaddr(node, b"", conn)
+    assert not sent
+    assert conn.answered_getaddr is False
+
+
 def test_nothing_active_is_answered_with_nothing_over_addrv2_either() -> None:
     """The same silence holds for an addrv2 peer, not only an addrv1 one."""
     node, conn, sent = make_node([], prefer_addressv2=True)
@@ -308,7 +325,7 @@ def test_a_second_getaddr_on_the_same_connection_is_ignored() -> None:
 def another_conn(sent: list[Any]) -> Any:
     """Build a second peer stand-in sharing `sent` with `make_node`'s own."""
     return SimpleNamespace(
-        prefer_addressv2=False, send=sent.append, answered_getaddr=False
+        prefer_addressv2=False, send=sent.append, answered_getaddr=False, inbound=True
     )
 
 

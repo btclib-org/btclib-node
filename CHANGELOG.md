@@ -340,6 +340,10 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   (closes #1127); **a request-target libevent refuses is a 400** (closes
   #1125); **a bare LF ends a line** (closes #1150), as in `bitcoind`.
 
+### A `getaddr` is answered on an inbound connection alone, as in Core
+
+- **A `getaddr` from a peer this node dialled is ignored** (closes #1177).
+
 ### A second node over a held data directory is refused as `bitcoind` does
 
 - **`btclib-node` exits 1 with Core's "Cannot obtain a lock on directory"**
