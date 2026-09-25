@@ -95,13 +95,15 @@ def test_add_tx(rpc_node: Node) -> None:
     # one whose prevouts are nowhere -- not in the chain, not in the
     # mempool -- is answered with an error, not with the txid of
     # something this node has neither kept nor sent
-    _, body = client.call_raw(
+    status, body = client.call_raw(
         "sendrawtransaction",
         [invalid_tx.serialize(include_witness=True).hex()],
         jsonrpc="1.0",
         request_timeout=2,
     )
-    assert "result" not in body
+    # a legacy error: an HTTP error status, and a null `result` beside it
+    assert status == 500
+    assert body["result"] is None
     assert body["error"]["code"] == -25
     assert body["error"]["message"] == "Missing prevouts"
 

@@ -42,7 +42,8 @@ from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode
 
-from btclib_node.rpc.errors import json_type_name
+from btclib_node.rpc.errors import RpcError, json_type_name
+from btclib_node.rpc.jsonrpc import JsonRpcRequest, error_status
 
 if TYPE_CHECKING:
     import logging
@@ -200,54 +201,24 @@ class Refusal:
     warning: tuple[str, ...] = ()
 
 
-def _error_reply(
-    code: RPCErrorCode, message: str, request: Mapping[str, Any], *, v2: bool
-) -> Refusal:
-    """Return `JSONErrorReply`'s answer to a request `jreq.parse` refused.
-
-    `JSONRPCReplyObj`'s shape: `"jsonrpc":"2.0"` and no `result` where
-    the request's own `jsonrpc` was read as `2.0` before the error,
-    `"result":null` otherwise, and an `id` only where the request has
-    one. 400 for `RPC_INVALID_REQUEST` and 500 for the rest, as
-    `JSONErrorReply` maps them.
-    """
-    body: dict[str, Any] = {"jsonrpc": "2.0"} if v2 else {"result": None}
-    body["error"] = {"code": code.value, "message": message}
-    if "id" in request:
-        body["id"] = request["id"]
-    if code == RPCErrorCode.INVALID_REQUEST:
-        return Refusal("400 Bad Request", body)
-    return Refusal("500 Internal Server Error", body)
-
-
 def _parse_refusal(request: Mapping[str, Any]) -> Refusal | None:
     """Return what `JSONRPCRequest::parse` refuses a lone request with, if any.
 
     Core parses a lone request before it checks the whitelist, so a
     request it refuses is answered by that refusal and not by a 403.
     """
-    v2 = False
-    version = request.get("jsonrpc")
-    if version is not None:
-        if not isinstance(version, str):
-            message = "jsonrpc field must be a string"
-            return _error_reply(RPCErrorCode.INVALID_REQUEST, message, request, v2=v2)
-        if version == "2.0":
-            v2 = True
-        elif version != "1.0":
-            message = "JSON-RPC version not supported"
-            return _error_reply(RPCErrorCode.INVALID_REQUEST, message, request, v2=v2)
-    method = request.get("method")
-    if method is None:
-        message = "Missing method"
-        return _error_reply(RPCErrorCode.INVALID_REQUEST, message, request, v2=v2)
-    if not isinstance(method, str):
-        message = "Method must be a string"
-        return _error_reply(RPCErrorCode.INVALID_REQUEST, message, request, v2=v2)
-    if not isinstance(request.get("params"), list | dict | None):
-        message = "Params must be an array or object"
-        return _error_reply(RPCErrorCode.INVALID_REQUEST, message, request, v2=v2)
+    jreq = JsonRpcRequest()
+    try:
+        jreq.parse(request)
+    except RpcError as error:
+        return Refusal(error_status(error.code), jreq.reply(error=error))
     return None
+
+
+def _batch_error(code: RPCErrorCode, message: str) -> Refusal:
+    """Return `JSONErrorReply`'s answer to a batch refused before it runs."""
+    body = JsonRpcRequest().reply(error=RpcError(code, message))
+    return Refusal(error_status(code), body)
 
 
 def _request_refusal(
@@ -280,10 +251,7 @@ def _batch_refusal(
     """
     for entry in batch:
         if not isinstance(entry, dict):
-            message = "Invalid Request object"
-            return _error_reply(
-                RPCErrorCode.INVALID_REQUEST, message, {"id": None}, v2=False
-            )
+            return _batch_error(RPCErrorCode.INVALID_REQUEST, "Invalid Request object")
         method = entry.get("method")
         if not isinstance(method, str):
             # `UniValue::get_str`'s own message, which Core answers with
@@ -292,9 +260,7 @@ def _batch_refusal(
                 f"JSON value of type {json_type_name(method)} is not of expected "
                 "type string"
             )
-            return _error_reply(
-                RPCErrorCode.PARSE_ERROR, message, {"id": None}, v2=False
-            )
+            return _batch_error(RPCErrorCode.PARSE_ERROR, message)
         if method not in allowed:
             warning = ("RPC User %s not allowed to call method %s", name, method)
             return Refusal(FORBIDDEN, warning=warning)

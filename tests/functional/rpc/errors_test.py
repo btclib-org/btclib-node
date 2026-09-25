@@ -18,11 +18,8 @@ either `call_raw` (one object) or `call_batch` (refuses an empty
 `calls`) can send.
 """
 
-import contextlib
 import json
 from typing import TYPE_CHECKING, Any
-
-from bitcoin_core_rpc import FetchError
 
 from tests import post, rpc_client, wait_until_listening
 
@@ -31,7 +28,7 @@ if TYPE_CHECKING:
 
 
 def test_no_method(rpc_node: Node) -> None:
-    """A request with no method is answered Invalid request, live."""
+    """A request with no method is answered Core's "Missing method", live."""
     node = rpc_node
     wait_until_listening(node.rpc_manager)
 
@@ -40,11 +37,11 @@ def test_no_method(rpc_node: Node) -> None:
     # raw envelope for that reason
     response = json.loads(post(node, {"jsonrpc": "1.0", "id": "pytest"}))
 
-    assert response["error"]["message"] == "Invalid request"
+    assert response["error"] == {"code": -32600, "message": "Missing method"}
 
 
 def test_no_id(rpc_node: Node) -> None:
-    """A request with no id is answered Invalid request, live."""
+    """A legacy request with no id is run, and answered with no id, live."""
     node = rpc_node
     wait_until_listening(node.rpc_manager)
 
@@ -52,19 +49,44 @@ def test_no_id(rpc_node: Node) -> None:
     # entirely has nothing to build it with either
     response = json.loads(post(node, {"jsonrpc": "1.0", "method": "getpeerinfo"}))
 
-    assert response["error"]["message"] == "Invalid request"
+    assert response == {"result": [], "error": None}
 
 
 def test_invalid_method(rpc_node: Node) -> None:
-    """A request naming an unknown method is answered Method not found, live."""
+    """An unknown method is answered Method not found, live.
+
+    404 for a legacy request and 200 for a 2.0 one, as `bitcoind` v31.1.0
+    answers them (issue #1109).
+    """
+    node = rpc_node
+    wait_until_listening(node.rpc_manager)
+    client = rpc_client(node)
+
+    for jsonrpc, expected in (("1.0", 404), (None, 404), ("2.0", 200)):
+        status, body = client.call_raw(
+            "notavalidmethod", jsonrpc=jsonrpc, request_timeout=2
+        )
+        assert status == expected
+        assert body["error"]["message"] == "Method not found"
+
+
+def test_a_legacy_request_core_refuses_is_answered_its_refusal(
+    rpc_node: Node,
+) -> None:
+    """A legacy request Core's parse refuses gets its refusal (issue #1109).
+
+    `post` stays on the raw envelope: `call_raw` refuses `params` that
+    are not an array or an object before anything is sent.
+    """
     node = rpc_node
     wait_until_listening(node.rpc_manager)
 
-    _, body = rpc_client(node).call_raw(
-        "notavalidmethod", jsonrpc="1.0", request_timeout=2
-    )
-
-    assert body["error"]["message"] == "Method not found"
+    request = {"id": 1, "method": "getblockcount", "params": 5}
+    assert json.loads(post(node, request)) == {
+        "result": None,
+        "error": {"code": -32600, "message": "Params must be an array or object"},
+        "id": 1,
+    }
 
 
 def test_an_empty_batch_answers_an_empty_array(rpc_node: Node) -> None:
@@ -104,24 +126,24 @@ def test_an_empty_batch_answers_an_empty_array(rpc_node: Node) -> None:
 def test_a_request_the_handler_cannot_read_does_not_end_the_node(
     rpc_node: Node,
 ) -> None:
-    """A request whose method raises inside the dispatch does not end the node.
+    """A method that is not a string is answered, and the node survives it.
 
-    A method that is not a string reaches `request["method"] not in
-    callbacks` and raises `TypeError: unhashable`. `Node.run`'s guard is
-    what keeps that to one logged line. It gets no answer, which is its
-    own defect and its own issue -- what is asserted here is only that
-    the node is still there afterwards.
-
-    `call_raw` refuses a non-string `method` itself, before anything is
-    sent (`BtcRpcTypeError`) -- a conformance case its own docstring
-    disclaims -- so this stays on `post`, and the timeout this used to
-    read as a `requests` exception is `http_request`'s own `FetchError`.
+    `JSONRPCRequest::parse` refuses it, and inside a batch that refusal
+    is the member's answer. `call_raw` refuses a non-string `method`
+    itself, before anything is sent (`BtcRpcTypeError`) -- a conformance
+    case its own docstring disclaims -- so this stays on `post`.
     """
     node = rpc_node
     wait_until_listening(node.rpc_manager)
 
-    with contextlib.suppress(FetchError):
-        post(node, [{"jsonrpc": "2.0", "id": "a", "method": ["not", "hashable"]}], 2)
+    request = {"jsonrpc": "2.0", "id": "a", "method": ["not", "hashable"]}
+    assert json.loads(post(node, [request], 2)) == [
+        {
+            "jsonrpc": "2.0",
+            "error": {"code": -32600, "message": "Method must be a string"},
+            "id": "a",
+        }
+    ]
 
     assert node.is_alive()
     _, body = rpc_client(node).call_raw("getbestblockhash", jsonrpc="2.0")

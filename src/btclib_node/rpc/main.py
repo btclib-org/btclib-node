@@ -4,11 +4,12 @@
 
 """`handle_rpc`, called once per pass of `Node`'s loop.
 
-Pops one request off `RpcManager.messages`, validates its JSON-RPC
-shape with `is_valid_rpc`, and dispatches it through
-`rpc.callbacks.callbacks` by method name, answering an unknown method or
-a malformed request with an `RpcError` rather than raising past the
-loop.
+Pops one decoded request body off `RpcManager.messages`, reads it the
+way Core's `HTTPReq_JSONRPC` does (`src/httprpc.cpp`, at
+bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and dispatches each request
+through `rpc.callbacks.callbacks` by method name. `rpc.jsonrpc` is
+where a request is parsed and where the answer's envelope and HTTP
+status come from.
 """
 
 from typing import TYPE_CHECKING, Any
@@ -16,14 +17,22 @@ from typing import TYPE_CHECKING, Any
 from bitcoin_core_rpc import RPCErrorCode
 
 from btclib_node.rpc.callbacks import callbacks
-from btclib_node.rpc.errors import RpcError, error_msg
+from btclib_node.rpc.errors import RpcError
+from btclib_node.rpc.jsonrpc import (
+    NO_CONTENT,
+    OK,
+    HttpReply,
+    JsonRpcRequest,
+    error_reply,
+    error_status,
+)
 
 if TYPE_CHECKING:
     from btclib_node import Node
     from btclib_node.rpc.connection import RpcConnection
     from btclib_node.rpc.manager import RpcManager
 
-__all__ = ["get_connection", "handle_rpc", "is_valid_rpc"]
+__all__ = ["get_connection", "handle_rpc"]
 
 
 def get_connection(manager: RpcManager, connection_id: int) -> RpcConnection | None:
@@ -34,119 +43,130 @@ def get_connection(manager: RpcManager, connection_id: int) -> RpcConnection | N
         return None
 
 
-def is_valid_rpc(request: object) -> bool:
-    """Check `request` for JSON-RPC 2.0's own required `method` and `id`."""
-    if not isinstance(request, dict):
-        return False
-    if "method" not in request:
-        return False
-    if not isinstance(request["method"], str):
-        # a JSON-RPC method is a name, and JSON admits an array or an
-        # object anywhere a string is expected: `request["method"] not
-        # in callbacks` below then uses it as a dict key, which raises
-        # `TypeError: unhashable type` for either shape, unhandled by
-        # `handle_rpc`'s own `except Exception` -- that one guards a
-        # callback's own body, not the dispatch in front of it
-        return False
-    return "id" in request
+def _execute(node: Node, conn: RpcConnection, request: JsonRpcRequest) -> object:
+    """Run `request`'s method as `CRPCTable::execute` does, or raise `RpcError`.
+
+    A callback raising anything but `RpcError` is a fault of this node:
+    it is logged and answered `INTERNAL_ERROR`, where Core answers a C++
+    exception with its own message: `RPC_MISC_ERROR` where `JSONRPCExec`
+    catches it (`src/rpc/server.cpp`), for a 2.0 request and a batch
+    member, and `RPC_PARSE_ERROR` from `HTTPReq_JSONRPC`'s last catch
+    for a lone legacy one.
+    """
+    callback = callbacks.get(request.method)
+    if callback is None:
+        raise RpcError(RPCErrorCode.METHOD_NOT_FOUND, "Method not found")
+    try:
+        return callback(node, conn, request.params)  # type: ignore[arg-type]
+    except RpcError:
+        raise
+    except Exception as e:
+        node.logger.exception("Exception occurred")
+        raise RpcError(RPCErrorCode.INTERNAL_ERROR, "Internal Error") from e
+
+
+def _exec(
+    node: Node, conn: RpcConnection, request: JsonRpcRequest, *, catch_errors: bool
+) -> dict[str, Any]:
+    """Answer `request` as `JSONRPCExec` does.
+
+    Where `catch_errors` does not hold, an error is raised to the caller,
+    which answers it with an HTTP error status.
+    """
+    try:
+        result = _execute(node, conn, request)
+    except RpcError as error:
+        if not catch_errors:
+            raise
+        return request.reply(error=error)
+    return request.reply(result)
+
+
+def _answer_one(
+    node: Node, conn: RpcConnection, body: dict[str, Any]
+) -> tuple[HttpReply, bool]:
+    """Answer a lone request object, and say whether it asked to stop.
+
+    Legacy errors are an HTTP error status; 2.0 errors are HTTP 200, and
+    a 2.0 notification is 204 with no body, having run.
+    """
+    request = JsonRpcRequest()
+    try:
+        request.parse(body)
+        reply = _exec(node, conn, request, catch_errors=request.v2)
+    except RpcError as error:
+        # Core's `JSONErrorReply` `Assume`s this is never a 2.0 request,
+        # which a release build does not enforce, and a 2.0 request
+        # `parse` refuses reaches it: `bitcoind` v31.1.0 answers it in
+        # the 2.0 envelope with the legacy status
+        return HttpReply(error_status(error.code), request.reply(error=error)), False
+    stop = request.method == "stop"
+    if request.is_notification:
+        return HttpReply(NO_CONTENT, None), stop
+    return HttpReply(OK, reply), stop
+
+
+def _answer_batch(
+    node: Node, conn: RpcConnection, body: list[Any]
+) -> tuple[HttpReply, bool]:
+    """Answer a batch, and say whether any member asked to stop.
+
+    Every member is answered inside HTTP 200, whatever its version. One
+    `JsonRpcRequest` is parsed into for the whole batch, as in Core, so
+    a member refused before its own `id` is read carries the previous
+    member's `id` and version -- and is dropped where that previous
+    member was a notification.
+    """
+    request = JsonRpcRequest()
+    replies: list[dict[str, Any]] = []
+    stop = False
+    for member in body:
+        try:
+            request.parse(member)
+            stop = stop or request.method == "stop"
+            response = _exec(node, conn, request, catch_errors=True)
+        except RpcError as error:
+            response = request.reply(error=error)
+        if not request.is_notification:
+            replies.append(response)
+    if body and not replies:
+        return HttpReply(NO_CONTENT, None), stop
+    return HttpReply(OK, replies), stop
 
 
 def handle_rpc(node: Node) -> None:
-    """Pop one request batch off `node.rpc_manager.messages` and answer it.
+    """Pop one request body off `node.rpc_manager.messages` and answer it.
 
-    Validates each request in the batch with `is_valid_rpc`, dispatches
-    a valid one by method name through `rpc.callbacks.callbacks`, and
-    answers an unknown method, an invalid request or a raising callback
-    with a JSON-RPC error rather than raising past `Node`'s own loop --
-    except a `stop` request, whose own reply is waited on before
-    `node.stop()` runs, so the client sees it before the loop it arrived
-    on is torn down.
+    An object is a lone request, an array a batch, and anything else is
+    `PARSE_ERROR`'s "Top-level object parse error", as in Core. A `stop`
+    request's reply is waited on before `node.stop()` runs, so the
+    client sees it before the loop it arrived on is torn down.
 
-    `conn_id` is left in `manager.connections` -- `RpcConnection.async_send`
-    is what removes it, on the branch that actually closes `conn`, once
-    `conn` is done answering rather than the instant this function has
-    merely scheduled that answer. This function used to pop it here,
-    unconditionally, on the theory that every reply eventually closes;
-    once a reply could keep the connection open instead (issue #640),
-    that pop raced `async_send`'s own re-entry into `RpcConnection.run`
-    for the *next* request on the same kept-alive connection, on
-    `RpcManager`'s own thread -- `conn.send` below only schedules
-    `async_send`, it does not wait for it, so nothing orders this
-    function's own next line against how far across that coroutine the
-    other thread has already run by the time it executes. Where
-    `async_send` won the race -- wrote the reply, re-armed `conn` and
-    read the next request whole, all inside one burst neither
-    `sock_sendall` nor an already-buffered `sock_recv` had to suspend
-    for -- this function's pop then removed the entry `async_send` had
-    just put back for that next request's own benefit, not the stale one
-    it was meant to remove, and the request already queued behind it was
-    answered by nobody: `rpc.main.get_connection` found no connection
-    for it and `handle_rpc` silently returned, which is what a client
-    pooling one connection across many calls
-    (`tests/functional/rpc/connections_test.py`'s
-    `test_many_unpaced_calls_over_one_session_transport_do_not_reset`)
-    saw as one call in a few hundred stalling for its own full timeout
-    with nothing logged on either side (issue #688).
+    `conn_id` is left in `manager.connections`: `RpcConnection.async_send`
+    removes it, on the branch that closes `conn`, once `conn` is done
+    answering. `conn.send` below only schedules that reply, so a pop here
+    would race `async_send` reading the next request off a kept-alive
+    connection and remove the entry that request's answer needs
+    (issue #688).
     """
-    data, conn_id = node.rpc_manager.messages.popleft()
+    body, conn_id = node.rpc_manager.messages.popleft()
     conn = get_connection(node.rpc_manager, conn_id)
     if not conn:
         return
 
     node.logger.debug("Received rpc message: %s", conn_id)
 
-    response: list[dict[str, Any]] = []
-    # An empty batch -- `data == []` only where the client's own JSON
-    # was `[]`, `run` wrapping every lone object into a one-element list
-    # before this is ever reached -- adds nothing here and the loop
-    # below runs zero times, so `response` reaches `async_send` empty.
-    # `RpcConnection.is_batch`, `True` for this request the same as for
-    # any other array, is what keeps that from being written back
-    # unwrapped: `response` stays `[]` on the wire, matching Core's own
-    # `ExecuteHTTPRPC`, which answers an empty client-sent array with an
-    # empty array too (`src/httprpc.cpp:135-185`, at
-    # bitcoin/bitcoin@ca7162cde5) rather than the single `Invalid
-    # request` object a literal reading of JSON-RPC 2.0 section 6's own
-    # wording would give it (issue #669).
-    for request in data:
-        if not is_valid_rpc(request):
-            response.append(error_msg(RPCErrorCode.INVALID_REQUEST, "Invalid request"))
-        elif request["method"] not in callbacks:
-            response.append(
-                error_msg(
-                    RPCErrorCode.METHOD_NOT_FOUND, "Method not found", request["id"]
-                )
-            )
-        else:
-            try:
-                params = request.get("params", [])
-                response.append(
-                    {
-                        "jsonrpc": "2.0",
-                        "result": callbacks[request["method"]](node, conn, params),
-                        "id": request["id"],
-                    }
-                )
-            # a callback naming its own refusal, which is the request
-            # being wrong and not this node: logged as nothing, since a
-            # client asking for what is not there is not an event of the
-            # node's
-            except RpcError as error:
-                response.append(error_msg(error.code, error.message, request["id"]))
-            except Exception:
-                node.logger.exception("Exception occurred")
-                response.append(
-                    error_msg(
-                        RPCErrorCode.INTERNAL_ERROR, "Internal Error", request["id"]
-                    )
-                )
+    if isinstance(body, dict):
+        reply, stop = _answer_one(node, conn, body)
+    elif isinstance(body, list):
+        reply, stop = _answer_batch(node, conn, body)
+    else:
+        reply = error_reply(RPCErrorCode.PARSE_ERROR, "Top-level object parse error")
+        stop = False
 
-    # asked of the batch, not of whichever request came last: reading
-    # the loop variable after the loop is unbound on an empty batch and
-    # is a str, not a dict, on a batch ending in one.
-    if any(is_valid_rpc(request) and request["method"] == "stop" for request in data):
-        conn.send_and_wait(response)
+    if stop:
+        conn.send_and_wait(reply)
         node.stop()
     else:
-        conn.send(response)
+        conn.send(reply)
     node.logger.debug("Finished rpc\n")

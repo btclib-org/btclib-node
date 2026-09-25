@@ -94,6 +94,8 @@ class Bitcoind:
         """
         self.rpc_port = rpc_port
         self.p2p_port = p2p_port
+        # for a test writing its own `Authorization` over a raw socket
+        self.cookie_path = cookie_path
         self._transport = SessionTransport()
         self._client = BitcoinCoreRpcClient(
             f"http://127.0.0.1:{rpc_port}",

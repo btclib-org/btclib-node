@@ -6,20 +6,25 @@
 
 Parses the header section off the wire, bounded by `MAX_HEADER_BYTES`
 and `MAX_BODY_BYTES` since both are read before any credential is
-checked, refuses a method or a path Core's listener refuses before
-Core checks a credential (`_refusal`), answers a request whose
-`Authorization` header `rpc.auth.RpcAuth` does not accept with 401, and
-decodes the JSON-RPC
-batch of one it does accept, which `rpc.manager.RpcManager.messages`
-queues for `rpc.main.handle_rpc`. `RawJSON` is a JSON number written
+checked, answers a request line or a `Content-Length` Core's listener
+cannot frame with 400 or 413 (`parse_request_head`), refuses a method
+or a path Core's listener refuses before Core checks a credential
+(`_refusal`), answers a request whose `Authorization` header
+`rpc.auth.RpcAuth` does not accept with 401, and decodes the body of
+one it does accept, which `rpc.manager.RpcManager.messages` queues for
+`rpc.main.handle_rpc`. `RawJSON` is a JSON number written
 back out exactly as given, the way Core's own `UniValue` writes one
 built from a string rather than from a `float`.
 
-Matching Core's own per-version keep-alive default (`_wants_keep_alive`,
-`src/httpserver.cpp:557-575`, at bitcoin/bitcoin@ca7162cde5), `async_send`
-keeps the socket open across replies where the request it is answering
-asked to, reading the next request off the same connection rather than
-requiring a fresh accept per call (issue #640).
+Matching Core's own per-version keep-alive default (`_wants_keep_alive`),
+`async_send` keeps the socket open across replies where the request it
+is answering asked to, reading the next request off the same connection
+rather than requiring a fresh accept per call (issue #640).
+
+The framing is the libevent `bitcoind` v31.1.0 links, not Core's own
+source: bitcoin/bitcoin@9be056a8a7, the v31.1 tag, hands the socket to
+`evhttp`, and `depends/packages/libevent.mk` there pins
+2.1.12-stable, read at libevent/libevent@5df3037 (`http.c`).
 """
 
 import asyncio
@@ -34,10 +39,14 @@ from typing import TYPE_CHECKING, Any, override
 
 from bitcoin_core_rpc import RPCErrorCode
 
-from btclib_node.exceptions import IncompleteRequestHeadError, MalformedRequestHeadError
+from btclib_node.exceptions import (
+    IncompleteRequestHeadError,
+    MalformedRequestHeadError,
+    OversizedRequestBodyError,
+)
 from btclib_node.p2p.address import ip_and_port
 from btclib_node.rpc.auth import FAILED_ATTEMPT_DELAY, WWW_AUTHENTICATE, Refusal
-from btclib_node.rpc.errors import error_msg
+from btclib_node.rpc.jsonrpc import HttpReply, error_reply
 
 if TYPE_CHECKING:
     import socket
@@ -178,45 +187,117 @@ class JSONEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
-def _wants_keep_alive(request_line: bytes | bytearray, headers: HTTPMessage) -> bool:
-    """Return whether `request_line` and `headers` ask to be kept alive.
+def _wants_keep_alive(version: tuple[int, int], headers: HTTPMessage) -> bool:
+    """Return whether a request asks for its connection to be kept alive.
 
-    Matches Core's own `HTTPRequest::WriteReply` (`httpserver.cpp:557-575`,
-    at bitcoin/bitcoin@ca7162cde5): HTTP/1.0 defaults to closing and
-    stays open only for an explicit `Connection: keep-alive`; HTTP/1.1
-    defaults to keep-alive and closes only for an explicit `Connection:
-    close` -- which wins where a request carries both, the way Core's
-    own `close` check runs unconditionally after its two version
-    branches and overrides whichever of them ran. `request_line`'s own
-    trailing token is where the version lives; anything other than
-    exactly `HTTP/1.0` reads as 1.1 or later, matching what this
-    listener's own reply already always claims (`async_send` below)
-    regardless of what the request itself asked for.
+    libevent's `evhttp_send_done`: a request older than HTTP/1.1 closes
+    unless its `Connection` starts `keep-alive`, and any request closes
+    for `Connection: close`, which wins where a request carries both.
+    Both compare ASCII case-insensitively, after the trailing spaces and
+    tabs `evutil_rtrim_lws_` trims; `http.client` has already dropped
+    leading tabs libevent keeps, so `Connection:<TAB>close` closes here
+    and not in `bitcoind` (issue #1126).
     """
-    connection_header = headers.get("Connection", "").strip().casefold()
-    keep_alive = not request_line.rstrip().endswith(b"HTTP/1.0")
-    if connection_header == "keep-alive":
-        keep_alive = True
-    if connection_header == "close":
+    # `http.client` decodes a field as Latin-1, where `lower` changes no
+    # character into an ASCII one
+    connection = headers.get("Connection", "").rstrip(" \t").lower()
+    keep_alive = version >= (1, 1) or connection.startswith("keep-alive")
+    if connection == "close":
         keep_alive = False
     return keep_alive
 
 
+def _error_page(status: str) -> str:
+    """Return the page libevent's `evhttp_send_error` writes for `status`."""
+    reason = status.partition(" ")[2]
+    return (
+        f"<HTML><HEAD>\n<TITLE>{status}</TITLE>\n"
+        f"</HEAD><BODY>\n<H1>{reason}</H1>\n</BODY></HTML>\n"
+    )
+
+
+_BAD_REQUEST = "400 Bad Request"
+_ENTITY_TOO_LARGE = "413 Request Entity Too Large"
 _NOT_IMPLEMENTED = "501 Not Implemented"
-# libevent's own error page, as a real `bitcoind` v31.1.0 writes it
-_NOT_IMPLEMENTED_BODY = (
-    "<HTML><HEAD>\n<TITLE>501 Not Implemented</TITLE>\n"
-    "</HEAD><BODY>\n<H1>Not Implemented</H1>\n</BODY></HTML>\n"
-)
 # The methods Core's listener lets through to `http_request_cb`: every
 # other one is answered 501 before that callback runs. Core's source has
 # no 501 and never sets evhttp's allowed methods, so the refusal is the
 # libevent Core links, measured against a real `bitcoind` v31.1.0.
 _LIBEVENT_METHODS = frozenset((b"GET", b"POST", b"HEAD", b"PUT", b"DELETE"))
+# `evhttp_method_may_have_body`: libevent reads no `Content-Length` for
+# any other method, so no body is read for it and none refused
+_BODY_METHODS = frozenset(
+    (b"GET", b"POST", b"PUT", b"DELETE", b"PATCH", b"OPTIONS", b"CONNECT")
+)
+# `evhttp_parse_request_line`'s shortest line, trailing spaces removed
+_MIN_REQUEST_LINE = len(b"GET / HTTP/1.0")
+# `evhttp_parse_http_version`'s `sscanf(version, "HTTP/%d.%d%c", ...)`
+# with exactly two conversions: `%d` skips leading C white space and
+# takes a sign, and nothing may follow the minor number
+_C_SPACE = rb"[ \t\n\v\f\r]*"
+_HTTP_VERSION = re.compile(
+    rb"HTTP/%b([+-]?[0-9]+)\.%b([+-]?[0-9]+)" % (_C_SPACE, _C_SPACE)
+)
+# `evhttp_get_body_length`'s `evutil_strtoll(value, &endp, 10)`, which
+# must consume the whole value: leading C white space and a sign, then
+# decimal digits
+_CONTENT_LENGTH = re.compile(_C_SPACE.decode() + "[+-]?[0-9]+")
 
 
-def _refusal(request_line: bytes) -> tuple[str, str] | None:
-    """Return the status and body Core refuses `request_line` with, or `None`.
+def _split_request_line(line: bytes) -> tuple[bytes, bytes, tuple[int, int]]:
+    """Split `line` into method, target and version as libevent does.
+
+    `evhttp_parse_request_line`: trailing spaces are dropped, the method
+    ends at the first space and the version starts after the last one,
+    so the target is everything between and may hold spaces of its own.
+    Raises `MalformedRequestHeadError` where libevent refuses the line.
+    The target is not parsed as a URI, as `evhttp_uri_parse_with_flags`
+    parses it (issue #1125). The line is the one the caller split off at
+    CRLF, where libevent also ends it at a bare LF (issue #1150), and a
+    NUL in it is an ordinary byte here, where libevent's C string ends
+    at it.
+    """
+    line = line.rstrip(b" ")
+    if len(line) < _MIN_REQUEST_LINE:
+        detail = "request line too short"
+        raise MalformedRequestHeadError(detail)
+    method, space, rest = line.partition(b" ")
+    target, space, version = rest.rpartition(b" ")
+    if not space or not target:
+        detail = "request line not method, target and version"
+        raise MalformedRequestHeadError(detail)
+    match = _HTTP_VERSION.fullmatch(version)
+    if match is None or int(match[1]) > 1:
+        detail = "unsupported HTTP version"
+        raise MalformedRequestHeadError(detail)
+    return method, target, (int(match[1]), int(match[2]))
+
+
+def _content_length(value: str | None) -> int:
+    """Return the body length `value` declares, as libevent reads it.
+
+    Raises `MalformedRequestHeadError` where `evhttp_get_body_length`
+    refuses it and `OversizedRequestBodyError` past `MAX_BODY_BYTES`,
+    the `MAX_SIZE` Core passes to `evhttp_set_max_body_size`.
+    """
+    if value is None:
+        return 0
+    # the spaces and tabs `evutil_rtrim_lws_` trims off a header value
+    value = value.rstrip(" \t")
+    if _CONTENT_LENGTH.fullmatch(value) is None:
+        detail = f"Content-Length {value!r}"
+        raise MalformedRequestHeadError(detail)
+    length = int(value)
+    if length < 0:
+        detail = f"Content-Length {length}"
+        raise MalformedRequestHeadError(detail)
+    if length > MAX_BODY_BYTES:
+        raise OversizedRequestBodyError(length)
+    return length
+
+
+def _refusal(method: bytes, target: bytes) -> tuple[str, str] | None:
+    """Return the status and body Core refuses `method` at `target` with.
 
     Core answers these before `HTTPReq_JSONRPC` reads `Authorization`,
     so a caller without a credential gets them too (`http_request_cb`,
@@ -245,10 +326,8 @@ def _refusal(request_line: bytes) -> tuple[str, str] | None:
     the body, on a connection it keeps open, so nothing framed would
     tell a client where that body ends.
     """
-    method, _, rest = request_line.partition(b" ")
-    target = rest.partition(b" ")[0]
     if method not in _LIBEVENT_METHODS:
-        return _NOT_IMPLEMENTED, _NOT_IMPLEMENTED_BODY
+        return _NOT_IMPLEMENTED, _error_page(_NOT_IMPLEMENTED)
     if method == b"DELETE":
         return "405 Method Not Allowed", ""
     if target != b"/" and not target.startswith(b"/wallet/"):
@@ -266,7 +345,9 @@ class RequestHead:
     split them from, not reduced to `HTTPMessage`'s own parsed object,
     so `serialize` reproduces the exact octets parsed -- the same
     round-trip `tests/fuzz_corpus_test.py` already holds
-    `p2p.connection.frame_message_bytes` to. `length` and `keep_alive`
+    `p2p.connection.frame_message_bytes` to. `method` and `target` are
+    the request line's first part and its middle, as
+    `_split_request_line` splits them. `length` and `keep_alive`
     are the two decisions `RpcConnection.run` draws from this section
     before it knows how many more bytes to read. `authorization` is the
     first `Authorization` field's value, `None` where there is none,
@@ -289,6 +370,8 @@ class RequestHead:
     request_line: bytes
     separator: bytes
     fields: bytes
+    method: bytes
+    target: bytes
     length: int
     keep_alive: bool
     consumed: int
@@ -316,35 +399,34 @@ def parse_request_head(data: bytes) -> RequestHead:
     `HEADER_TERMINATOR` -- `run`'s own call site never hits this,
     since it only calls here once `_recv_until` has already confirmed
     the terminator is present, but a fuzzed byte string has no such
-    guarantee. Raises `MalformedRequestHeadError` for a `Content-Length`
-    that is not a bare non-negative integer within `[0, MAX_BODY_BYTES]`,
-    or a header section `http.client` itself refuses (an unterminated
-    or oversized header line).
+    guarantee. Raises `MalformedRequestHeadError`, answered 400, for a
+    request line `_split_request_line` refuses and a `Content-Length`
+    `_content_length` refuses, as libevent refuses them, and for a
+    header section `http.client` itself refuses, whose limits are not
+    libevent's (issue #1126). Raises `OversizedRequestBodyError` for a
+    `Content-Length` past `MAX_BODY_BYTES`, which libevent answers 413.
     """
     if HEADER_TERMINATOR not in data:
         raise IncompleteRequestHeadError
     head, _, _ = data.partition(HEADER_TERMINATOR)
     consumed = len(head) + len(HEADER_TERMINATOR)
     request_line, separator, fields = head.partition(b"\r\n")
+    method, target, version = _split_request_line(request_line)
     try:
         headers = parse_headers(BytesIO(fields + HEADER_TERMINATOR))
-        length = int(headers.get("Content-Length", 0))
-    except (ValueError, HTTPException) as e:
+    except HTTPException as e:
         raise MalformedRequestHeadError(str(e)) from e
-    # int() admits a negative, which would make `run`'s own
-    # `_recv_until(lambda: len(self.buffer) >= length)` predicate true
-    # before a single body byte arrived and then slice the body from
-    # the wrong end.
-    if not 0 <= length <= MAX_BODY_BYTES:
-        detail = f"Content-Length {length}"
-        raise MalformedRequestHeadError(detail)
-    keep_alive = _wants_keep_alive(request_line, headers)
+    length = 0
+    if method in _BODY_METHODS:
+        length = _content_length(headers.get("Content-Length"))
     return RequestHead(
         request_line=request_line,
         separator=separator,
         fields=fields,
+        method=method,
+        target=target,
         length=length,
-        keep_alive=keep_alive,
+        keep_alive=_wants_keep_alive(version, headers),
         consumed=consumed,
         authorization=headers.get("Authorization"),
     )
@@ -394,24 +476,6 @@ class RpcConnection:
         # reads this once a reply is ready, to decide whether to close
         # the socket or read another request off it (issue #640).
         self.keep_alive = False
-        # Recomputed by `run` alongside `keep_alive`, off the same
-        # request: whether the JSON `run` just parsed was an array at
-        # all, which is what `async_send` below reads instead of its
-        # own former `len(response) == 1` to decide whether to answer
-        # as a bare object or keep the array shape the client sent
-        # (issue #653). Plain `isinstance(body, list)`, with no length
-        # condition, matching Core's own `isArray()` (`HTTPReq_JSONRPC`,
-        # `src/httprpc.cpp:114`, at bitcoin/bitcoin@ca7162cde5) exactly:
-        # an empty `[]` batch used to be excepted from this, kept
-        # `False` so it stayed answered as this tree's own single
-        # `Invalid request` object, but Core's `ExecuteHTTPRPC` answers
-        # an empty client-sent array with an empty array too --
-        # `reply` stays the `UniValue::VARR` it started as and is
-        # returned unchanged, `HTTP_NO_CONTENT` being gated on
-        # `valRequest.size() > 0` (`src/httprpc.cpp:172-181`) and so
-        # never reached by a `valRequest` that is empty to begin with
-        # (issue #669).
-        self.is_batch = False
         # A `-rpcwhitelist` refusal's own reply, kept for the reason
         # `_parse_error_reply` below is
         self._whitelist_reply: asyncio.Task[None] | None = None
@@ -496,13 +560,16 @@ class RpcConnection:
         `client` rather than raising, since nothing reads the `Future`
         this task runs under.
 
-        A request whose `Authorization` header `manager.auth` does not
-        accept is answered 401 by `_send_unauthorized` instead, its body
-        read off the socket and never decoded or queued. A method or a
-        target `_refusal` refuses is answered by `_send_refusal` before
-        that, whatever the credential. One whose decoded body
+        In the order Core answers them, and none of them queued: a
+        header section `parse_request_head` refuses is answered 400 or
+        413 by `_send_framing_error`, and the connection closed; a
+        method or a target `_refusal` refuses is answered by
+        `_send_refusal`, whatever the credential; a request whose
+        `Authorization` header `manager.auth` does not accept is
+        answered 401 by `_send_unauthorized`, its body read off the
+        socket and never decoded; and one whose decoded body
         `manager.auth.refusal` refuses is answered by
-        `_send_whitelist_refusal`, and never queued either.
+        `_send_whitelist_refusal`.
 
         Called again, by `async_send` below, for every request after the
         first one a kept-alive connection carries -- `self.buffer` is
@@ -522,7 +589,11 @@ class RpcConnection:
                 # `bytearray` itself: the function's own contract is
                 # over immutable octets, matching
                 # `p2p.connection.frame_message`'s.
-                head = parse_request_head(bytes(self.buffer))
+                try:
+                    head = parse_request_head(bytes(self.buffer))
+                except (MalformedRequestHeadError, OversizedRequestBodyError) as e:
+                    self._send_framing_error(e)
+                    return
                 self.buffer = self.buffer[head.consumed :]
                 length = head.length
                 self.keep_alive = head.keep_alive
@@ -539,8 +610,8 @@ class RpcConnection:
             # to its next request after a 404 or a 405, and a 501 closes
             # it. `bitcoind` does the same except in two cases: it closes
             # after a 404 to an absolute-form target, and it keeps
-            # reading after a `CONNECT`'s 501 (issue #1086).
-            refusal = _refusal(head.request_line)
+            # reading after a `CONNECT`'s 501 (issue #1125).
+            refusal = _refusal(head.method, head.target)
             if refusal is not None:
                 status, refusal_body = refusal
                 if status == _NOT_IMPLEMENTED:
@@ -571,10 +642,11 @@ class RpcConnection:
             try:
                 body = json.loads(body_bytes)
             except ValueError:
-                # JSON-RPC 2.0 section 5.1's own `PARSE_ERROR`, id
-                # `null`: a body that is not JSON is not a request this
-                # node can read enough of to disagree with, where the
-                # header section above already parsed. `ValueError` and
+                # `HTTPReq_JSONRPC`'s `RPC_PARSE_ERROR`, thrown before
+                # any request is read, so `JSONErrorReply` answers it
+                # 500 in the legacy envelope with `"id":null`
+                # (`src/httprpc.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+                # v31.1 tag). `ValueError` and
                 # not `json.JSONDecodeError` alone, since malformed
                 # bytes `json.loads` cannot even decode as text raise
                 # the stdlib's own `UnicodeDecodeError`, a `ValueError`
@@ -631,16 +703,9 @@ class RpcConnection:
                 # in this class, `create_task` returns an `Awaitable`,
                 # which mypy's own `unused-awaitable` flags as a
                 # likely-missing `await` when discarded outright.
-                # A body `json.loads` could not even parse is never a
-                # batch, whatever it superficially looked like -- and
-                # this is set unconditionally rather than left at
-                # whatever a previous request on a kept-alive connection
-                # last set it to, which this reply would otherwise
-                # inherit.
-                self.is_batch = False
                 self._parse_error_reply = self.loop.create_task(
                     self.async_send(
-                        [error_msg(RPCErrorCode.PARSE_ERROR, "Parse error")]
+                        error_reply(RPCErrorCode.PARSE_ERROR, "Parse error")
                     )
                 )
                 return
@@ -655,9 +720,6 @@ class RpcConnection:
                     self._send_whitelist_refusal(whitelist_refusal)
                 )
                 return
-            self.is_batch = isinstance(body, list)
-            if not isinstance(body, list):
-                body = [body]
             self.manager.messages.append((body, self.id))
         # deliberately blind (BLE001), not for the event loop's own
         # sake: `run` is scheduled through `run_coroutine_threadsafe`,
@@ -671,10 +733,7 @@ class RpcConnection:
         # losing the exception itself to that same unread Future.
         # `self.manager.connections.pop` below covers every other way
         # this method fails: `ConnectionError` (an unterminated header, a
-        # peer that goes away mid-request), `MalformedRequestHeadError`
-        # (a header section `http.client` refuses, an overstated or
-        # negative Content-Length, or a `Content-Length` that
-        # `parse_request_head` otherwise refuses) and `TimeoutError`
+        # peer that goes away mid-request) and `TimeoutError`
         # (`REQUEST_TIMEOUT` elapsing) never reach `send()` or
         # `async_send`'s own close branch either,
         # and one of those two is otherwise the only place this id leaves
@@ -688,8 +747,8 @@ class RpcConnection:
             self.client.close()
             self.manager.connections.pop(self.id, None)
 
-    async def async_send(self, response: list[dict[str, Any]]) -> None:
-        """Write `response` back as one JSON-RPC HTTP reply.
+    async def async_send(self, reply: HttpReply) -> None:
+        """Write `reply` back as one JSON-RPC HTTP reply.
 
         Wraps any `RawJSON` value in a fresh per-call mark before
         encoding, substitutes it back out unquoted once encoding is
@@ -697,24 +756,25 @@ class RpcConnection:
         `self.keep_alive` -- `_wants_keep_alive`'s own answer, set by
         `run` above off the request this is answering -- decides what
         happens once the reply is on the wire: `client` closes, or this
-        reads another request off the same socket, matching Core's own
-        per-version keep-alive default either way (issue #640).
-        `self.is_batch`, set by `run` off the same request, decides
-        whether `response` stays an array here: unwrapping it purely
-        from `len(response) == 1` used to answer a one-member batch
-        with the same bare object a lone request gets, with nothing
-        left in `response` by then to tell the two apart (issue #653).
+        reads another request off the same socket (issue #640). A reply
+        with no body is `rpc.jsonrpc.NO_CONTENT`, which `bitcoind`
+        writes with no `Content-Type` and no `Content-Length`.
         """
-        body: list[dict[str, Any]] | dict[str, Any] = response
-        if not self.is_batch:
-            body = response[0]
+        if reply.body is None:
+            http_response = f"HTTP/1.1 {reply.status}\r\n"
+            if not self.keep_alive:
+                http_response += "Connection: close\r\n"
+            await self._write((http_response + "\r\n").encode())
+            return
         # A fresh token per call, not a fixed word: RawJSON's own
         # docstring has why -- a legitimate string value containing a
         # guessable mark once, unpaired, corrupts a fixed-word
         # substitution the way it cannot corrupt one this unlikely to
         # collide with.
         mark = secrets.token_hex(16)
-        output_str = json.dumps(body, separators=(",", ":"), cls=JSONEncoder, mark=mark)
+        output_str = json.dumps(
+            reply.body, separators=(",", ":"), cls=JSONEncoder, mark=mark
+        )
         # RawJSON's own placeholder, quotes and all, unquoted to the
         # exact text it carries -- before Content-Length below, which
         # has to count what is actually sent rather than what encoding
@@ -723,7 +783,7 @@ class RpcConnection:
         # CRLF, which is what run() above requires of a request and what
         # HTTP/1.1 specifies: this server should not emit framing it
         # would itself refuse to read.
-        http_response = "HTTP/1.1 200 OK\r\n"
+        http_response = f"HTTP/1.1 {reply.status}\r\n"
         http_response += "Content-Type: application/json\r\n"
         if not self.keep_alive:
             # Only written where this is closing: HTTP/1.1 defaults to
@@ -741,6 +801,26 @@ class RpcConnection:
         http_response += output_str
         http_response += "\n"
         await self._write(http_response.encode())
+
+    def _send_framing_error(
+        self, error: MalformedRequestHeadError | OversizedRequestBodyError
+    ) -> None:
+        """Schedule libevent's answer to a header section it cannot frame.
+
+        `evhttp_connection_incoming_fail`: 413 for a body past the limit
+        and 400 for the rest, as `evhttp_send_error`'s own page, and the
+        connection closed, where `bitcoind` v31.1.0 keeps a CONNECT with
+        a malformed `Content-Length` open after its 400 (issue #1125).
+        libevent answers a request line as soon as it
+        is read, where this waits for the whole header section.
+        """
+        status = _BAD_REQUEST
+        if isinstance(error, OversizedRequestBodyError):
+            status = _ENTITY_TOO_LARGE
+        self.keep_alive = False
+        self._refusal_reply = self.loop.create_task(
+            self._send_refusal(status, _error_page(status))
+        )
 
     async def _send_whitelist_refusal(self, refusal: Refusal) -> None:
         """Answer `refusal`, a request `-rpcwhitelist` refuses.
@@ -834,12 +914,12 @@ class RpcConnection:
             # round 2).
             self.manager.connections.pop(self.id, None)
 
-    def send(self, response: list[dict[str, Any]]) -> None:
+    def send(self, reply: HttpReply) -> None:
         """Schedule `async_send` on `loop`, from `handle_rpc`'s own thread."""
-        asyncio.run_coroutine_threadsafe(self.async_send(response), self.loop)
+        asyncio.run_coroutine_threadsafe(self.async_send(reply), self.loop)
 
     # Use with care
-    def send_and_wait(self, response: list[dict[str, Any]]) -> None:
+    def send_and_wait(self, reply: HttpReply) -> None:
         """Like `send`, but block up to 2 seconds for the write to finish.
 
         `handle_rpc`'s own `stop` request is the only caller: the client
@@ -851,7 +931,7 @@ class RpcConnection:
         request this connection could still answer.
         """
         self.keep_alive = False
-        future = asyncio.run_coroutine_threadsafe(self.async_send(response), self.loop)
+        future = asyncio.run_coroutine_threadsafe(self.async_send(reply), self.loop)
         with contextlib.suppress(TimeoutError):
             future.result(timeout=2)
 

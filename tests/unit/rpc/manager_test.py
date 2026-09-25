@@ -24,6 +24,7 @@ import pytest
 from btclib_node.chains import RegTest
 from btclib_node.config import Config
 from btclib_node.log import Logger
+from btclib_node.rpc.jsonrpc import OK, HttpReply
 from btclib_node.rpc.manager import RpcManager
 from tests import (
     RPCAUTH,
@@ -112,7 +113,7 @@ def test_a_manager_says_when_it_is_listening_and_queues_what_arrives(
             data, conn_id = manager.messages.popleft()
         # handed on as it arrived, and addressed to the connection it
         # arrived on, which is how the answer gets back to this client
-        assert data == [REQUEST]
+        assert data == REQUEST
         assert conn_id in manager.connections
     finally:
         manager.stop()
@@ -142,7 +143,7 @@ def test_an_answer_is_written_back_to_the_client_that_asked(
             wait_until(lambda: manager.messages)
             _, conn_id = manager.messages.popleft()
             answer = {"jsonrpc": "2.0", "result": "0" * 64, "id": "a"}
-            manager.connections[conn_id].send([answer])
+            manager.connections[conn_id].send(HttpReply(OK, answer))
             client.settimeout(20)
             head, _, body = client.recv(4096).partition(b"\r\n\r\n")
         assert head.startswith(b"HTTP/1.1 200 OK\r\n")
@@ -184,8 +185,7 @@ def test_a_body_that_is_not_json_answers_parse_error_and_forgets_the_client(
 ) -> None:
     """A non-JSON body over a real socket answers PARSE_ERROR, socket closed.
 
-    JSON-RPC 2.0 section 5.1's own `PARSE_ERROR`, where this used to
-    close the socket with no answer at all (issue #63).
+    `HTTPReq_JSONRPC`'s own, 500 in the legacy envelope (issue #63).
     """
     port = get_random_port()
     manager = a_manager(port)
@@ -199,9 +199,9 @@ def test_a_body_that_is_not_json_answers_parse_error_and_forgets_the_client(
             client.sendall(head + body)
             client.settimeout(20)
             response_head, _, response_body = client.recv(4096).partition(b"\r\n\r\n")
-        assert response_head.startswith(b"HTTP/1.1 200 OK\r\n")
+        assert response_head.startswith(b"HTTP/1.1 500 Internal Server Error\r\n")
         assert json.loads(response_body) == {
-            "jsonrpc": "2.0",
+            "result": None,
             "error": {"code": -32700, "message": "Parse error"},
             "id": None,
         }
@@ -756,7 +756,7 @@ def test_the_cookie_is_there_once_listening_and_gone_once_stopped(
         with socket.create_connection(("127.0.0.1", port), timeout=20) as client:
             client.sendall(head + body)
             wait_until(lambda: manager.messages)
-        assert manager.messages.popleft()[0] == [REQUEST]
+        assert manager.messages.popleft()[0] == REQUEST
     finally:
         manager.stop()
         manager.join(timeout=10)

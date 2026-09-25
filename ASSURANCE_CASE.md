@@ -137,7 +137,7 @@ no defence against them.
 local caller's request crosses in. `RpcConnection` bounds what it will
 read before decoding anything — `MAX_HEADER_BYTES` and `MAX_BODY_BYTES`
 in `rpc/connection.py` — and a body `json.loads` cannot parse answers
-JSON-RPC 2.0's own `PARSE_ERROR` rather than closing the socket with
+`bitcoind`'s own `PARSE_ERROR` rather than closing the socket with
 nothing said. Before that decoding, `RpcConnection.run` checks the
 request's credential against `rpc/auth.py`'s `RpcAuth` and answers one
 it does not accept with a 401, so no handler sees a request from a
@@ -229,9 +229,9 @@ describes.
   peer connections `P2pManager.connect` makes, and the only files it
   opens are its own datadir and whatever `-conf`/`-datadir` name.
 - **Psychological acceptability.** A malformed RPC request answers
-  JSON-RPC 2.0's own error object rather than closing the socket with
-  nothing said, so a caller can tell its own mistake from this node
-  refusing the call outright.
+  the HTTP status and the error `bitcoind` answers it with rather than
+  closing the socket with nothing said, so a caller can tell its own
+  mistake from this node refusing the call outright.
 - **Layering.** ARCHITECTURE.md's own sections are this: the loop does
   not parse wire objects itself, the protocol and RPC surfaces do not
   validate consensus rules themselves, and validation does not open a
