@@ -334,6 +334,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   an address of neither `NODE_NETWORK` nor `NODE_NETWORK_LIMITED` is skipped**
   (closes #1166, closes #1163); `getaddr` goes to outbound peers alone.
 
+### The JSON-RPC listener frames its answers as `bitcoind`'s libevent does
+
+- **An answer is framed in the request's version, as libevent frames it**
+  (closes #1127); **a request-target libevent refuses is a 400** (closes
+  #1125); **a bare LF ends a line** (closes #1150), as in `bitcoind`.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

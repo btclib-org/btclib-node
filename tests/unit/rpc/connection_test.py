@@ -18,12 +18,15 @@ import json
 import os
 import re
 import socket
+import threading
 import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
+import btclib_node.rpc.connection as connection_module
+from btclib_node.exceptions import MalformedRequestHeadError, OversizedRequestBodyError
 from btclib_node.log import Logger
 from btclib_node.rpc.auth import FAILED_ATTEMPT_DELAY, RpcAuth, RpcAuthEntry
 from btclib_node.rpc.connection import (
@@ -79,6 +82,15 @@ def request(
 def with_length(body: bytes = BODY) -> bytes:
     """Build `request` with a correct Content-Length header for `body`."""
     return request(b"Content-Length: %d\r\n" % len(body), body)
+
+
+def answering(conn: RpcConnection, data: bytes = b"") -> RpcConnection:
+    r"""Set `conn` to answer `data`'s head, as `run` sets it for a request.
+
+    `request(b"Connection: close\r\n")` unless `data` is given.
+    """
+    conn.head = parse_request_head(data or request(b"Connection: close\r\n"))
+    return conn
 
 
 def drive(
@@ -306,11 +318,10 @@ def test_the_response_is_crlf_framed_and_the_socket_closed() -> None:
         ours.setblocking(False)
         theirs.setblocking(False)
         loop = asyncio.get_running_loop()
-        conn = RpcConnection(
-            loop,
-            ours,
-            cast("RpcManager", fake_manager(connections={})),
-            0,
+        conn = answering(
+            RpcConnection(
+                loop, ours, cast("RpcManager", fake_manager(connections={})), 0
+            )
         )
         await conn.async_send(HttpReply(OK, {"result": b"\xff", "id": "x"}))
         data = await loop.sock_recv(theirs, 4096)
@@ -336,7 +347,7 @@ def sent(reply: HttpReply, *, keep_alive: bool = True) -> bytes:
         conn = RpcConnection(
             loop, ours, cast("RpcManager", fake_manager(connections={})), 0
         )
-        conn.keep_alive = keep_alive
+        answering(conn, request() if keep_alive else b"")
         # a kept-alive reply goes on to read the next request, which
         # never comes: the reply is on the wire before that read
         task = asyncio.ensure_future(conn.async_send(reply))
@@ -396,7 +407,6 @@ def test_a_kept_alive_connection_reads_a_second_request_off_the_same_socket() ->
 
         await loop.sock_sendall(theirs, with_length())
         await conn.run()
-        assert conn.keep_alive
 
         await loop.sock_sendall(theirs, with_length())
         await conn.async_send(HttpReply(OK, {"id": "x", "result": None}))
@@ -438,7 +448,6 @@ def test_a_connection_asking_for_close_is_closed_after_its_reply() -> None:
         headers = b"Connection: close\r\nContent-Length: %d\r\n" % len(BODY)
         await loop.sock_sendall(theirs, request(headers))
         await conn.run()
-        assert not conn.keep_alive
 
         await conn.async_send(HttpReply(OK, {"id": "x", "result": None}))
         head = (await loop.sock_recv(theirs, 4096)).partition(b"\r\n\r\n")[0]
@@ -451,7 +460,7 @@ def test_a_connection_asking_for_close_is_closed_after_its_reply() -> None:
 
     closed, head = asyncio.run(main())
     assert closed
-    assert b"\r\nConnection: close\r\n" in b"\r\n" + head
+    assert b"\r\nConnection: close\r\n" in head + b"\r\n"
 
 
 def test_a_kept_alive_connection_idles_out_once_request_timeout_elapses() -> None:
@@ -477,7 +486,6 @@ def test_a_kept_alive_connection_idles_out_once_request_timeout_elapses() -> Non
 
         await loop.sock_sendall(theirs, with_length())
         await conn.run()
-        assert conn.keep_alive
 
         await asyncio.wait_for(
             conn.async_send(HttpReply(OK, {"id": "x", "result": None})), timeout=2
@@ -543,10 +551,10 @@ def test_keep_alive_follows_core_s_own_default_per_version(
 
         await loop.sock_sendall(theirs, one_request)
         await conn.run()
-        keep_alive = conn.keep_alive
 
         await loop.sock_sendall(theirs, one_request)
         await conn.async_send(HttpReply(OK, {"id": "x", "result": None}))
+        keep_alive = conn.keep_alive
         second_arrived = False
         for _ in range(50):
             if len(manager.messages) >= 2:
@@ -651,11 +659,10 @@ def test_a_raw_json_value_is_written_unquoted_and_verbatim() -> None:
         ours.setblocking(False)
         theirs.setblocking(False)
         loop = asyncio.get_running_loop()
-        conn = RpcConnection(
-            loop,
-            ours,
-            cast("RpcManager", fake_manager(connections={})),
-            0,
+        conn = answering(
+            RpcConnection(
+                loop, ours, cast("RpcManager", fake_manager(connections={})), 0
+            )
         )
         await conn.async_send(
             HttpReply(OK, {"result": RawJSON("0.00000001"), "id": "x"})
@@ -683,11 +690,10 @@ def test_a_raw_json_value_does_not_swallow_a_field_containing_its_own_mark() -> 
         ours.setblocking(False)
         theirs.setblocking(False)
         loop = asyncio.get_running_loop()
-        conn = RpcConnection(
-            loop,
-            ours,
-            cast("RpcManager", fake_manager(connections={})),
-            0,
+        conn = answering(
+            RpcConnection(
+                loop, ours, cast("RpcManager", fake_manager(connections={})), 0
+            )
         )
         await conn.async_send(
             HttpReply(
@@ -964,9 +970,7 @@ def test_a_refusal_closes_where_the_request_asked() -> None:
     reply, _, closed, _, _ = refused(
         request(b"Connection: close\r\nContent-Length: %d\r\n" % len(BODY), auth=b"")
     )
-    assert reply == UNAUTHORIZED.replace(
-        b"Content-Length", b"Connection: close\r\nContent-Length"
-    )
+    assert reply == UNAUTHORIZED.replace(b"\r\n\r\n", b"\r\nConnection: close\r\n\r\n")
     assert closed
 
 
@@ -1032,7 +1036,7 @@ def test_a_refusal_closes_where_the_request_asked_as_a_401_does() -> None:
     headers = b"Connection: close\r\nContent-Length: %d\r\n" % len(BODY)
     reply, _, closed, _, _ = refused(request(headers, target=b"/x"))
     assert reply == (
-        b"HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
     )
     assert closed
 
@@ -1140,7 +1144,6 @@ def test_a_malformed_request_on_a_kept_alive_connection_closes_it() -> None:
         conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
         await loop.sock_sendall(theirs, with_length())
         await conn.run()
-        assert conn.keep_alive
         await loop.sock_sendall(theirs, request(b"Content-Length: -1\r\n"))
         await conn.async_send(HttpReply(OK, {"id": "x", "result": None}))
         reply = b""
@@ -1276,3 +1279,582 @@ def test_a_reply_to_a_socket_closed_under_it_is_dropped_not_raised(
         return 0 in manager.connections
 
     assert not asyncio.run(main())
+
+
+ANSWER = {"result": 0, "error": None, "id": 1}
+THEN_CLOSE = b"POST /x HTTP/1.1\r\nConnection: close\r\n\r\n"
+THEN_CLOSE_ANSWER = (
+    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+)
+
+
+def conversation(data: bytes) -> tuple[bytes, bool]:
+    """Write `data` to a connection and return what it answers, to the close.
+
+    A request `run` queues is answered `ANSWER`, as `handle_rpc` would
+    answer it. Returns everything written back, and whether the
+    connection closed. Where a request is to be kept open, `data` ends
+    in `THEN_CLOSE`, whose answer is what says it was kept: the
+    connection is left nothing unread where it closes, so a TCP
+    `socketpair`, which Windows emulates one with, closes it cleanly.
+    """
+
+    async def main() -> tuple[bytes, bool]:
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        theirs.setblocking(False)
+        loop = asyncio.get_running_loop()
+        manager = fake_manager(connections={0: None})
+        conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
+        await loop.sock_sendall(theirs, data)
+        await conn.run()
+        if manager.messages:
+            await conn.async_send(HttpReply(OK, ANSWER))
+        reply = b""
+        async with asyncio.timeout(5):
+            while chunk := await loop.sock_recv(theirs, 4096):
+                reply += chunk
+        closed = ours.fileno() == -1
+        theirs.close()
+        ours.close()
+        return reply, closed
+
+    return asyncio.run(main())
+
+
+def good(version: bytes, fields: bytes = b"") -> bytes:
+    """Return a request of `version` that is dispatched, with `fields`."""
+    return request(fields + b"Content-Length: %d\r\n" % len(BODY), version=version)
+
+
+def framed(status_line: bytes, *fields: bytes) -> bytes:
+    """Return `ANSWER` as `async_send` frames it under `status_line`."""
+    body = json.dumps(ANSWER, separators=(",", ":")).encode() + b"\n"
+    lines = [status_line, b"Content-Type: application/json", *fields]
+    head = b"".join(line + b"\r\n" for line in lines) + b"\r\n"
+    return head.replace(b"{length}", b"%d" % len(body)) + body
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        (good(b"HTTP/1.0"), framed(b"HTTP/1.0 200 OK")),
+        (good(b"HTTP/0.9"), framed(b"HTTP/0.9 200 OK")),
+        (good(b"HTTP/1.-1"), framed(b"HTTP/1.-1 200 OK")),
+        (
+            good(b"HTTP/1.0", b"Connection: close\r\n"),
+            framed(b"HTTP/1.0 200 OK", b"Connection: close"),
+        ),
+        (
+            good(b"HTTP/1.5", b"Connection: close\r\n"),
+            framed(
+                b"HTTP/1.5 200 OK", b"Content-Length: {length}", b"Connection: close"
+            ),
+        ),
+        (
+            good(b"HTTP/+01.+01", b"Connection: close\r\n"),
+            framed(
+                b"HTTP/1.1 200 OK", b"Content-Length: {length}", b"Connection: close"
+            ),
+        ),
+        (
+            good(b"HTTP/1.0", b"Connection: keep-alive\r\n") + THEN_CLOSE,
+            framed(
+                b"HTTP/1.0 200 OK",
+                b"Connection: keep-alive",
+                b"Content-Length: {length}",
+            )
+            + THEN_CLOSE_ANSWER,
+        ),
+        (
+            good(b"HTTP/1.5") + THEN_CLOSE,
+            framed(b"HTTP/1.5 200 OK", b"Content-Length: {length}") + THEN_CLOSE_ANSWER,
+        ),
+    ],
+    ids=[
+        "1.0",
+        "0.9",
+        "1.-1",
+        "1.0-close",
+        "1.5-close",
+        "signed-and-zero-padded",
+        "1.0-keep-alive",
+        "1.5-kept",
+    ],
+)
+def test_an_answer_is_written_in_its_request_s_version(
+    data: bytes, expected: bytes
+) -> None:
+    """The status line echoes the request's version, as `bitcoind` does.
+
+    Issue #1127: before HTTP/1.1, no `Content-Length` unless the request
+    asked `keep-alive`, and the connection closed unless it did; each row
+    is what `bitcoind` v31.1.0 answers.
+    """
+    reply, closed = conversation(data)
+    assert reply == expected
+    assert closed
+
+
+def test_a_refusal_is_written_in_its_request_s_version() -> None:
+    """A 401 and a 404 to HTTP/1.0 are framed as the answer to a call is."""
+    reply, closed = conversation(
+        request(b"Content-Length: 0\r\n", b"", version=b"HTTP/1.0", auth=b"")
+    )
+    assert reply == (
+        b'HTTP/1.0 401 Unauthorized\r\nWWW-Authenticate: Basic realm="jsonrpc"\r\n\r\n'
+    )
+    assert closed
+    reply, closed = conversation(b"POST /x HTTP/1.0\r\n\r\n")
+    assert reply == b"HTTP/1.0 404 Not Found\r\n\r\n"
+    assert closed
+
+
+@pytest.mark.parametrize(
+    ("data", "status_line"),
+    [
+        (b"POST / HTTP/1.0\r\nContent-Length: abc\r\n\r\n", b"HTTP/1.1"),
+        (b"POST / HTTP/0.9\r\nContent-Length: abc\r\n\r\n", b"HTTP/1.1"),
+        (b"POST / HTTP/1.5\r\nContent-Length: abc\r\n\r\n", b"HTTP/1.5"),
+        (b"POST 1:x HTTP/1.5\r\n\r\n", b"HTTP/1.5"),
+        (b"POST / HTTP/2.0\r\n\r\n", b"HTTP/1.1"),
+        (b"FOO / HTTP/1.0\r\n\r\n", b"HTTP/1.1"),
+    ],
+    ids=["1.0", "0.9", "1.5", "1.5-target", "2.0", "1.0-501"],
+)
+def test_libevent_s_own_page_is_http_1_1_for_a_version_with_a_zero(
+    data: bytes, status_line: bytes
+) -> None:
+    """`evhttp_send_error`'s page answers a zero in the version as HTTP/1.1.
+
+    And a version it never read too; any other keeps its own. What
+    `bitcoind` v31.1.0 answers, and it closes after each.
+    """
+    reply, closed = conversation(data)
+    assert reply.startswith(status_line + b" ")
+    assert (
+        reply.partition(b" ")[2]
+        == closing(
+            b"501 Not Implemented" if data.startswith(b"FOO") else b"400 Bad Request"
+        ).partition(b" ")[2]
+    )
+    assert closed
+
+
+@pytest.mark.parametrize(
+    "token",
+    [b"HTTP/1." + b"1" * 5000, b"HTTP/1.2147483648", b"HTTP/-2147483649.1"],
+    ids=["past-4300-digits", "past-int", "past-int-negative"],
+)
+def test_a_version_number_past_a_c_int_is_refused(token: bytes) -> None:
+    """A number `sscanf`'s `%d` leaves undefined is a 400, not an exception."""
+    with pytest.raises(MalformedRequestHeadError):
+        parse_request_head(b"POST / " + token + b"\r\n\r\n")
+    assert parse_request_head(b"POST / HTTP/1.2147483647\r\n\r\n").version == (
+        1,
+        2147483647,
+    )
+
+
+@pytest.mark.parametrize(
+    ("value", "error"),
+    [
+        (b"1" * 5000, OversizedRequestBodyError),
+        (b"99999999999999999999", OversizedRequestBodyError),
+        (b"-" + b"1" * 5000, MalformedRequestHeadError),
+    ],
+    ids=["past-4300-digits", "past-strtoll", "negative-past-4300-digits"],
+)
+def test_a_content_length_past_strtoll_is_refused_as_libevent_refuses_it(
+    value: bytes, error: type[Exception]
+) -> None:
+    """`strtoll` clamps: 413 for a length past its range, 400 below it.
+
+    What `bitcoind` v31.1.0 answers, and not the `ValueError` `int`
+    raises past 4300 digits.
+    """
+    with pytest.raises(error):
+        parse_request_head(b"POST / HTTP/1.1\r\nContent-Length: " + value + b"\r\n\r\n")
+
+
+# A run of zeros two digit quantifiers could split between them, which
+# backtracks in quadratic time where what follows it fails: 60000 of them
+# took seconds that way, and take about a millisecond read by one
+LONG_ZEROS = b"0" * 60000
+
+
+@pytest.mark.parametrize(
+    ("data", "outcome"),
+    [
+        (b"POST http://h:" + LONG_ZEROS + b"x/ HTTP/1.1\r\n\r\n", "refused"),
+        (b"POST http://h:" + LONG_ZEROS + b"80/ HTTP/1.1\r\n\r\n", "proxy"),
+        (b"CONNECT h:" + LONG_ZEROS + b"x HTTP/1.1\r\n\r\n", "refused"),
+        (
+            b"POST / HTTP/1.1\r\nContent-Length: " + LONG_ZEROS + b"x\r\n\r\n",
+            "refused",
+        ),
+        (b"POST / HTTP/1.1\r\nContent-Length: " + LONG_ZEROS + b"\r\n\r\n", "0"),
+        (
+            b"POST / HTTP/1.1\r\nContent-Length: -" + LONG_ZEROS + b"3\r\n\r\n",
+            "refused",
+        ),
+    ],
+    ids=[
+        "port-then-x",
+        "port-80",
+        "connect-port-then-x",
+        "length-then-x",
+        "length-0",
+        "length-negative",
+    ],
+)
+def test_a_long_run_of_zeros_is_read_in_linear_time(data: bytes, outcome: str) -> None:
+    """A port or a length of leading zeros is read, or refused, at once.
+
+    The head is read before any credential, on the listener's one loop,
+    so a parse that takes seconds is a stall any client can cause. The
+    bound is generous: it is there to fail a quadratic parse, not to
+    measure a linear one.
+    """
+    start = time.perf_counter()
+    if outcome == "refused":
+        with pytest.raises(MalformedRequestHeadError):
+            parse_request_head(data)
+    else:
+        head = parse_request_head(data)
+        assert head.proxy == (outcome == "proxy")
+        assert head.length == (int(outcome) if outcome.isdigit() else 0)
+    assert time.perf_counter() - start < 2
+
+
+def test_a_negative_zero_content_length_is_zero() -> None:
+    """`strtoll` reads `-0` as 0, which libevent accepts."""
+    data = b"POST / HTTP/1.1\r\nContent-Length: -00\r\n\r\n"
+    assert parse_request_head(data).length == 0
+
+
+def test_an_answer_with_no_request_read_is_refused() -> None:
+    """`_frame` has no version to write before `run` has read a request."""
+    conn = RpcConnection(
+        cast("asyncio.AbstractEventLoop", None),
+        cast("socket.socket", None),
+        cast("RpcManager", fake_manager(connections={})),
+        0,
+    )
+    with pytest.raises(RuntimeError, match="no request to answer"):
+        conn._frame(OK, b"")
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        b"/",
+        b"/a:b",
+        b"a/b:c",
+        b"a:b",
+        b"/?a:b#c:d",
+        b"/a b",
+        b"/%zz",
+        b"http://h",
+        b"http://",
+        b"http:/",
+        b"http://u:p@h:8332/x?y#z",
+        b"http://%41%3a@h%41:/",
+        b"http://h:0000080/",
+        b"http://h:65535/",
+        b"http://[::1]:80/",
+        b"http://[0000::ffff:1.2.3.4]/",
+        b"http://[1:2:3:4:5:6:7::]/",
+        b"http://[v1f.a:b]/",
+        b"http://[v1.]/",
+        b"http://1.2.3.4/",
+        b"//h/",
+        b"a+b.c-d://h/",
+    ],
+)
+def test_a_request_target_libevent_accepts_is_read(target: bytes) -> None:
+    """What `evhttp_uri_parse_with_flags` accepts, not answered 400 here."""
+    head = parse_request_head(b"POST " + target + b" HTTP/1.1\r\n\r\n")
+    assert head.target == target
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        b"1:x",
+        b"1:b:c/d:e",
+        b"http://h:65536/",
+        b"http://h:99999/",
+        b"http://h:" + b"9" * 5000 + b"/",
+        b"http://a b/",
+        b"http://h%4/",
+        b"http://h%/",
+        b"http://u^@h/",
+        b"http://u%4@h/",
+        b"http://h@h@h/",
+        b"http://[zz]/",
+        b"http://[]/",
+        b"http://[v]/",
+        b"http://[v1]/",
+        b"http://[vg.a]/",
+        b"http://[v1.a/b]/",
+        b"http://[00000::1]/",
+        b"http://[::1:2:3:4:5:6:7:8]/",
+        b"http://[::1%25lo0]/",
+        b"http://[::1\0]/",
+        b"http://[::\xe9]/",
+        b"http://::1/",
+        b"//h:x/",
+    ],
+)
+def test_a_request_target_libevent_refuses_is_400(target: bytes) -> None:
+    """What `evhttp_uri_parse_with_flags` refuses is 400, closing (issue #1125).
+
+    `1:x` and a port past 65535 are what `bitcoind` v31.1.0 answers 400.
+    """
+    with pytest.raises(MalformedRequestHeadError, match="request-target"):
+        parse_request_head(b"POST " + target + b" HTTP/1.1\r\n\r\n")
+    reply, closed = conversation(b"POST " + target + b" HTTP/1.1\r\n\r\n")
+    assert reply == closing(b"400 Bad Request")
+    assert closed
+
+
+@pytest.mark.parametrize(
+    ("target", "error"),
+    [
+        (b"/", False),
+        (b"h:1", False),
+        (b"u@h:1/x?y", False),
+        (b"h:1/x:y:z", False),
+        (b"[::1]:8332", False),
+        (b"h:99999", True),
+        (b"h^", True),
+        (b"[zz]", True),
+    ],
+)
+def test_a_connect_target_is_an_authority(target: bytes, *, error: bool) -> None:
+    """`CONNECT` reads its target up to the first `/`, `?` or `#`, as libevent.
+
+    `evhttp_uri_parse_authority`, whatever follows it unread.
+    """
+    data = b"CONNECT " + target + b" HTTP/1.1\r\n\r\n"
+    if error:
+        with pytest.raises(MalformedRequestHeadError, match="request-target"):
+            parse_request_head(data)
+    else:
+        assert not parse_request_head(data).proxy
+
+
+@pytest.mark.parametrize(
+    ("target", "proxy"),
+    [
+        (b"http://h/", True),
+        (b"HTTPS://h/", True),
+        (b"http://", True),
+        (b"http:/", False),
+        (b"http:x", False),
+        (b"ftp://h/", False),
+        (b"//h/", False),
+        (b"/", False),
+    ],
+)
+def test_an_http_target_with_an_authority_is_a_proxy_request(
+    target: bytes, *, proxy: bool
+) -> None:
+    """Set as libevent sets `EVHTTP_PROXY_REQUEST`, Core naming no host."""
+    assert parse_request_head(b"POST " + target + b" HTTP/1.1\r\n\r\n").proxy is proxy
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [b"", b"Connection: keep-alive\r\n", b"Proxy-Connection: keep-alive\r\n"],
+    ids=["bare", "connection-keep-alive", "proxy-connection-keep-alive"],
+)
+def test_a_proxy_request_is_answered_without_connection_and_closed(
+    fields: bytes,
+) -> None:
+    """An absolute-form `http` target: 404 with no `Connection`, then a close.
+
+    What `bitcoind` v31.1.0 answers (issue #1125), whatever the request
+    asks: libevent reads `Proxy-Connection` off the answer too, which
+    Core never writes. A 400 to one is framed the same way, its page's
+    own `Connection: close` kept only where `Proxy-Connection` asks
+    `keep-alive`.
+    """
+    data = b"POST http://127.0.0.1:1/ HTTP/1.1\r\n" + fields + b"\r\n"
+    reply, closed = conversation(data)
+    assert reply == b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"
+    assert closed
+    data = b"POST http://h/ HTTP/1.0\r\nContent-Length: abc\r\n" + fields + b"\r\n"
+    reply, closed = conversation(data)
+    page = closing(b"400 Bad Request")
+    if not fields.startswith(b"Proxy-Connection"):
+        page = page.replace(b"Connection: close\r\n", b"")
+    assert reply == page
+    assert closed
+
+
+@pytest.mark.parametrize("target", [b"ftp://h/", b"http:/", b"/x"])
+def test_a_404_that_is_not_a_proxy_request_keeps_the_connection(target: bytes) -> None:
+    """A 404 keeps an HTTP/1.1 connection, the next request answered on it."""
+    reply, closed = conversation(b"POST " + target + b" HTTP/1.1\r\n\r\n" + THEN_CLOSE)
+    assert reply == b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n" + (
+        THEN_CLOSE_ANSWER
+    )
+    assert closed
+
+
+NOT_IMPLEMENTED_UNFRAMED = (
+    b"HTTP/1.1 501 Not Implemented\r\nConnection: close\r\n\r\n" + NOT_IMPLEMENTED_PAGE
+)
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        (b"CONNECT / HTTP/1.1\r\n\r\n", NOT_IMPLEMENTED_UNFRAMED),
+        (b"CONNECT h:1 HTTP/1.0\r\n\r\n", NOT_IMPLEMENTED_UNFRAMED),
+        (b"CONNECT / HTTP/0.9\r\n\r\n", NOT_IMPLEMENTED_UNFRAMED),
+        (b"CONNECT / HTTP/1.1\r\nConnection: close\r\n\r\n", NOT_IMPLEMENTED_UNFRAMED),
+        (
+            b"CONNECT / HTTP/1.1\r\nContent-Length: 2\r\n\r\nxy",
+            NOT_IMPLEMENTED_UNFRAMED,
+        ),
+        (
+            b"CONNECT / HTTP/1.1\r\nContent-Length: abc\r\n\r\n",
+            b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"
+            + error_page(b"400 Bad Request"),
+        ),
+        (
+            b"CONNECT / HTTP/1.1\r\nContent-Length: %d\r\n\r\n" % (MAX_BODY_BYTES + 1),
+            b"HTTP/1.1 413 Request Entity Too Large\r\nConnection: close\r\n\r\n"
+            + error_page(b"413 Request Entity Too Large"),
+        ),
+    ],
+    ids=["1.1", "1.0", "0.9", "close", "body", "length-abc", "length-past-cap"],
+)
+def test_a_connect_is_answered_unframed_and_kept(data: bytes, expected: bytes) -> None:
+    """The page libevent writes, with no `Content-Length`, and a next request.
+
+    What `bitcoind` v31.1.0 answers a `CONNECT` (issue #1125), whatever
+    its version or `Connection`: `evhttp_is_request_connection_close`
+    never closes one, and `evhttp_response_needs_body` frames no body
+    for one.
+    """
+    reply, closed = conversation(data + THEN_CLOSE)
+    assert reply == expected + THEN_CLOSE_ANSWER
+    assert closed
+
+
+def test_a_connect_libevent_cannot_read_the_line_of_reads_the_next_line() -> None:
+    """A refused `CONNECT` request line is 400, and the next line a request.
+
+    `bitcoind` v31.1.0 answers `CONNECT h:99999` 400 and reads on from
+    the line after it: here the empty line, which is a request line too
+    short, answered 400 and closing.
+    """
+    reply, closed = conversation(b"CONNECT h:99999 HTTP/1.1\r\n\r\n" + THEN_CLOSE)
+    page = error_page(b"400 Bad Request")
+    assert reply == (
+        b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"
+        + page
+        + closing(b"400 Bad Request")
+    )
+    assert closed
+    head = parse_request_head(b"CONNECT / HTTP/1.1\r\n\r\n")
+    assert head.serialize() == b"CONNECT / HTTP/1.1\r\n\r\n"
+
+
+@pytest.mark.parametrize("terminator", [b"\r\n\r\n", b"\n\n", b"\r\n\n", b"\n\r\n"])
+def test_a_refused_connect_line_is_consumed_to_its_own_line_end(
+    terminator: bytes,
+) -> None:
+    """What `run` trims is the line and its own ending, as libevent reads it."""
+    with pytest.raises(MalformedRequestHeadError):
+        parse_request_head(b"CONNECT h:99999 HTTP/1.1" + terminator)
+    head = connection_module._read_head(b"CONNECT h:99999 HTTP/1.1" + terminator)
+    assert (
+        head.serialize()
+        == b"CONNECT h:99999 HTTP/1.1" + terminator.partition(b"\n")[0] + b"\n"
+    )
+    assert head.consumed == len(head.serialize())
+
+
+def lf(data: bytes) -> bytes:
+    """Return `data` with every CRLF a bare LF."""
+    return data.replace(b"\r\n", b"\n")
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        lf(with_length()),
+        with_length().replace(b"\r\n", b"\n", 1),
+        with_length().replace(b"\r\n\r\n", b"\r\n\n"),
+        with_length().replace(b"\r\n\r\n", b"\n\r\n"),
+    ],
+    ids=["every-line", "request-line", "empty-line", "last-field"],
+)
+def test_a_line_ended_by_a_bare_line_feed_is_read(data: bytes) -> None:
+    """A bare LF ends a line, as `EVBUFFER_EOL_CRLF` ends one (issue #1150).
+
+    Each is what `bitcoind` v31.1.0 answers, where CRLF alone was framed
+    here before.
+    """
+    _, messages, _ = drive([data])
+    assert messages == [(json.loads(BODY), 0)]
+    head = parse_request_head(data)
+    assert head.serialize() == data[: -len(BODY)]
+    assert head.consumed == len(data) - len(BODY)
+
+
+def test_only_one_carriage_return_is_dropped_before_a_line_feed() -> None:
+    r"""`POST / HTTP/1.1\r\r\n` keeps a CR in its version, and is 400.
+
+    What `bitcoind` v31.1.0 answers.
+    """
+    with pytest.raises(MalformedRequestHeadError, match="version"):
+        parse_request_head(b"POST / HTTP/1.1\r\r\n\r\n")
+
+
+def test_the_empty_line_ends_the_section_whatever_follows() -> None:
+    """The first empty line ends the section, with a second request after it."""
+    second = lf(with_length())
+    data = b"POST / HTTP/1.1\nHost: x\n\n" + second
+    head = parse_request_head(data)
+    assert data[head.consumed :] == second
+
+
+def test_the_answer_to_stop_closes_a_kept_alive_connection() -> None:
+    """`send_and_wait` writes `Connection: close`, and closes.
+
+    What Core's `HTTPRequest::WriteReply` writes once shutdown has
+    begun, whatever the request asked for: here a request that is kept
+    alive otherwise.
+    """
+    ours, theirs = socket.socketpair()
+    ours.setblocking(False)
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    try:
+        conn = answering(
+            RpcConnection(
+                loop, ours, cast("RpcManager", fake_manager(connections={})), 0
+            ),
+            request(),
+        )
+        conn.send_and_wait(HttpReply(OK, ANSWER))
+        theirs.settimeout(5)
+        reply = b""
+        while chunk := theirs.recv(4096):
+            reply += chunk
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        loop.close()
+        theirs.close()
+    assert reply == framed(
+        b"HTTP/1.1 200 OK", b"Connection: close", b"Content-Length: {length}"
+    )
+    assert ours.fileno() == -1

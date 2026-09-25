@@ -64,10 +64,10 @@ repos:
       # here stops these three from reading it as prose. Measured
       # directly (`pre-commit run --files` against a committed seed,
       # issue #516): end-of-file-fixer drops one `\r\n` of the wire
-      # format's own required two-in-a-row, and --fix=lf rewrites every
-      # `\r\n` in the file to `\n`, in both cases silently turning a
-      # valid `HEADER_TERMINATOR` seed into one `RpcConnection.run`
-      # itself would never produce or accept -- trailing-whitespace
+      # format's own required two-in-a-row, leaving a header section
+      # with no empty line to end it, and --fix=lf rewrites every
+      # `\r\n` in the file to `\n`, in both cases silently changing the
+      # octets a seed exists to hand the harness -- trailing-whitespace
       # left the same file alone in that same measurement, kept here
       # anyway since a future seed carrying a trailing space in a
       # header value is exactly the kind of octet this hook exists to

@@ -71,8 +71,6 @@ UNEXPORTED = {
         "BYTES_PER_FILTER_ELEMENT",
         "ELEMENTS_PER_BUSY_MODERN_BLOCK",
     ],
-    # the header/body split point, read only inside the parser that uses it
-    "btclib_node.rpc.connection": ["HEADER_TERMINATOR"],
     # type_error's own vocabulary lookup, called from nowhere else
     "btclib_node.rpc.errors": ["json_type_name"],
 }
