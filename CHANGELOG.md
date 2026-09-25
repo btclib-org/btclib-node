@@ -350,6 +350,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   first it lacks or the tip's `inv`** (closes #1160); `getpeerinfo`
   answers `synced_headers` and `synced_blocks` (closes #1105).
 
+### A peer without `wtxidrelay` is kept and relayed to by txid, as in Core
+
+- **`verack` keeps a peer that sent no `wtxidrelay`, whose transactions are
+  announced and asked for by txid** (closes #1183).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.address import ServiceFlags
-from btclib.p2p.inventory import GetData, GetHeaders, Inv
+from btclib.p2p.inventory import GetData, GetHeaders, Inv, InventoryType
 from btclib.p2p.limits import MAX_INV_SZ
 from btclib.p2p.negotiation import FeeFilter
 
@@ -66,8 +66,13 @@ def a_conn(
     queued_send_bytes: int = 0,
     version_message: Any = None,
     best_known_height: int = 0,
+    wtxidrelay_received: bool = True,
 ) -> Any:
-    """Build a fake connection, recording every message handed to `send`."""
+    """Build a fake connection, recording every message handed to `send`.
+
+    A wtxid-relay peer by default; `wtxidrelay_received=False` is one
+    relayed to by txid (ISS 1183).
+    """
     sent: list[Any] = []
     return SimpleNamespace(
         id=conn_id,
@@ -96,6 +101,7 @@ def a_conn(
         # payload. btclib-org/btclib-node#706
         version_message=version_message,
         best_known_height=best_known_height,
+        wtxidrelay_received=wtxidrelay_received,
         # what a real `Connection` starts every fresh connection at
         # (`p2p/connection.py`), and what `_send_due_announcements` now
         # paces an `Inv` chunk against the same way `advance_getdata`
@@ -193,6 +199,72 @@ def test_a_step_asks_for_neither_kind_while_the_headers_are_syncing() -> None:
     assert only(conn, GetHeaders)
     (feefilter_msg,) = only(conn, FeeFilter)
     assert feefilter_msg.feerate == manager._max_feefilter
+
+
+def test_a_peer_without_wtxid_relay_is_announced_the_txid() -> None:
+    """ISS 1183: Core announces `MSG_TX` by txid to a peer without it."""
+    by_wtxid, by_txid = a_conn(1), a_conn(2, wtxidrelay_received=False)
+    manager = make_manager([by_wtxid, by_txid])
+    wtxid = a_hash(1)
+    hold(manager, wtxid)
+    txid = manager.node.mempool.transactions[wtxid].id
+    manager.received_txs = [(None, wtxid)]
+    manager.tx_download()
+    (wtx_inv,) = only(by_wtxid, Inv)
+    assert [(i.type_code, i.hash) for i in wtx_inv.items] == [
+        (InventoryType.MSG_WTX, wtxid)
+    ]
+    (tx_inv,) = only(by_txid, Inv)
+    assert [(i.type_code, i.hash) for i in tx_inv.items] == [
+        (InventoryType.MSG_TX, txid)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("services", "fetch_type"),
+    [
+        (ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS, "MSG_WITNESS_TX"),
+        (ServiceFlags.NODE_NETWORK, "MSG_TX"),
+    ],
+)
+def test_a_peer_without_wtxid_relay_is_asked_by_txid(
+    services: int, fetch_type: str
+) -> None:
+    """ISS 1183: `MSG_TX` by txid, with the witness flag where it serves one."""
+    peer = a_conn(
+        1,
+        wtxidrelay_received=False,
+        version_message=SimpleNamespace(services=services),
+    )
+    manager = make_manager([peer])
+    txid = a_hash(9)
+    manager.inv_txs = [(1, txid)]
+    manager.tx_download()
+    (getdata,) = only(peer, GetData)
+    assert [(i.type_code, i.hash) for i in getdata.items] == [
+        (InventoryType[fetch_type], txid)
+    ]
+    assert txid in peer.tx_requested
+
+
+def test_a_transaction_received_answers_an_announcement_by_txid() -> None:
+    """ISS 1183: the txid a peer announced is the transaction now held.
+
+    So that peer is not asked for it, its ask by txid is cleared, and it
+    is not told of it either.
+    """
+    sender = a_conn(1)
+    announcer = a_conn(2, wtxidrelay_received=False)
+    manager = make_manager([sender, announcer])
+    wtxid = a_hash(1)
+    hold(manager, wtxid)
+    txid = manager.node.mempool.transactions[wtxid].id
+    announcer.tx_requested[txid] = time.time()
+    manager.received_txs = [(1, wtxid)]
+    manager.inv_txs = [(2, txid)]
+    manager.tx_download()
+    assert not announcer.sent
+    assert txid not in announcer.tx_requested
 
 
 def test_a_transaction_a_peer_announced_is_asked_of_that_peer() -> None:
