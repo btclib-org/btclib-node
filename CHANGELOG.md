@@ -366,6 +366,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   it, at Core's thresholds** (closes #1180); `sendheaders` waits for the
   peer's best block to carry the minimum chain work.
 
+### An inbound or manual peer is kept without `NODE_WITNESS`, as in Core
+
+- **`NODE_WITNESS` is required only of a peer this node drew itself**
+  (closes #1138).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
