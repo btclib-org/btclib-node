@@ -26,7 +26,7 @@ from enum import IntEnum
 from ipaddress import IPv4Address, IPv4Network, IPv6Address, IPv6Network
 from typing import TYPE_CHECKING, Any
 
-from btclib.p2p.addrv2 import network_address
+from btclib.p2p.addrv2 import BIP155Network, can_addrv1, network_address
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -37,6 +37,7 @@ __all__ = [
     "EvictionCandidate",
     "Network",
     "is_local",
+    "is_routable",
     "is_valid",
     "keyed_net_group",
     "net_class",
@@ -278,6 +279,8 @@ _INTERNAL = IPv6Network("fd6b:88c0:8724::/48")
 # `TORV2_IN_IPV6_PREFIX`: `SetLegacyIPv6` reads an IPv6 address under it
 # as the unspecified address
 _TORV2 = IPv6Network("fd87:d87e:eb43::/48")
+# `CJDNS_PREFIX`, the first octet `CNetAddr::IsValid` asks of a CJDNS address
+_CJDNS_PREFIX = 0xFC
 
 
 def _ip(address: NetworkAddressV2) -> _IP:
@@ -291,9 +294,14 @@ def _ip(address: NetworkAddressV2) -> _IP:
     return ip.ipv4_mapped or ip
 
 
+def _is_valid(ip: _IP) -> bool:
+    """`CNetAddr::IsValid` for IPv4 and IPv6, `NET_INTERNAL` aside."""
+    return not any(ip in net for net in _INVALID)
+
+
 def _is_routable(ip: _IP) -> bool:
-    """`CNetAddr::IsRoutable`, `IsValid` included, for IPv4 and IPv6."""
-    return not any(ip in net for net in (*_LOCAL, *_INVALID, *_UNROUTABLE))
+    """`CNetAddr::IsRoutable` of an IP: `_is_valid`, in none of its ranges."""
+    return _is_valid(ip) and not any(ip in net for net in (*_LOCAL, *_UNROUTABLE))
 
 
 def _linked_ipv4(ip: _IP) -> IPv4Address | None:
@@ -324,14 +332,40 @@ def is_valid(ip: IPv6Address) -> bool:
     """
     if ip in _INTERNAL or ip in _TORV2:
         return False
-    legacy = ip.ipv4_mapped or ip
-    return not any(legacy in net for net in _INVALID)
+    return _is_valid(ip.ipv4_mapped or ip)
 
 
 def is_local(address: NetworkAddressV2) -> bool:
     """Core's `CNetAddr::IsLocal`, what `m_is_local` is read from."""
     ip = _ip(address)
     return any(ip in net for net in _LOCAL)
+
+
+def is_routable(address: NetworkAddressV2) -> bool:
+    """Core's `CNetAddr::IsRoutable`, what `AddrManImpl::AddSingle` asks first.
+
+    An IP address is `_is_routable`'s to answer rather than `is_valid`'s,
+    which reads the octets of an `addr` v1 field: `_ip` reads a mapped
+    IPv4 address as `is_valid` does, and the prefixes `is_valid` refuses
+    ahead of `_is_valid` lie inside RFC4193's range, which `_is_routable`
+    refuses too. A TORv3 or an I2P address is routable, and a CJDNS one
+    under Core's `CJDNS_PREFIX` alone: that prefix is the clause of
+    `IsValid` about a CJDNS address, and no range of `IsRoutable` reaches
+    one. Core decodes any other network id as an address `IsValid`
+    refuses (`CNetAddr::UnserializeV2Stream`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), BIP155's TORv2 id and
+    Yggdrasil's included. An IPv6 record embedding IPv4 or Tor v2, which
+    Core decodes as invalid too, is left to `is_embedded_ipv6`, run ahead
+    of this.
+    """
+    if can_addrv1(address):
+        return _is_routable(_ip(address))
+    if address.network_id in (BIP155Network.TORV3, BIP155Network.I2P):
+        return True
+    return (
+        address.network_id == BIP155Network.CJDNS
+        and address.address[0] == _CJDNS_PREFIX
+    )
 
 
 def net_class(address: NetworkAddressV2) -> Network:

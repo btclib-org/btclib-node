@@ -39,6 +39,7 @@ from btclib.p2p.addrv2 import (
 
 from btclib_node.db import KeyValueStore
 from btclib_node.exceptions import UnsupportedAddressTypeError
+from btclib_node.p2p.eviction import is_routable
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
@@ -457,8 +458,8 @@ class PeerDB:
         # Drawn from the addresses that can be dialled, rather than from
         # the whole table with a retry on the ones that cannot: a table
         # holding none of them -- a seed answering with AAAA records
-        # alone is enough, and `add_addresses` takes whatever tor, i2p
-        # and cjdns a peer sends -- made that retry a loop with no exit,
+        # alone is enough, and `add_addresses` takes the tor, i2p and
+        # routable cjdns a peer sends -- made that retry a loop with no exit,
         # in the caller's event loop. Nothing to dial is an answer, and
         # `None` is it.
         # Locked, unlike `is_empty` above: this walks the set rather
@@ -475,10 +476,12 @@ class PeerDB:
     def add_addresses(self, addresses: Iterable[NetworkAddressV2]) -> None:
         """Merge `addresses` into `self.addresses`, checked and deduplicated.
 
-        BIP155's embedded-IPv6 records are dropped; every other address
-        settles onto its own `endpoint_key` row, up to `_MAX_ADDRESSES`
-        distinct endpoints, past which a genuinely new one is dropped
-        too. Locked with `_addresses_lock`.
+        BIP155's embedded-IPv6 records are dropped, and so is an address
+        `is_routable` refuses, as Core's `AddrManImpl::AddSingle` refuses
+        it (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        tag). Every other address settles onto its own `endpoint_key`
+        row, up to `_MAX_ADDRESSES` distinct endpoints, past which a
+        genuinely new one is dropped too. Locked with `_addresses_lock`.
         """
         # a peer's word for when it last saw an address is not evidence,
         # and keeping it would make the one address several entries
@@ -499,7 +502,7 @@ class PeerDB:
                 # (#151). Checked before the durable write too, so a
                 # dropped record is dropped everywhere, not merely kept
                 # out of the in-memory set.
-                if is_embedded_ipv6(address):
+                if is_embedded_ipv6(address) or not is_routable(address):
                     continue
                 known = replace(address, timestamp=0)
                 key = endpoint_key(known)

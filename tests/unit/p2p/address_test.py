@@ -607,7 +607,7 @@ class FakeIpv6Loop:
         # rather than two, the flow info and the scope id being the two
         # a peer table has nowhere to put
         return [
-            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2001:db8::1", port, 0, 8))
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2a01:4f8::1", port, 0, 8))
         ]
 
 
@@ -624,7 +624,7 @@ def test_a_seed_answering_with_ipv6_gives_up_its_host_and_its_port(
     peer_db = a_peer_db(a_chain(["v6.example"]))
     monkeypatch.setattr(asyncio, "get_running_loop", FakeIpv6Loop)
     asyncio.run(peer_db.get_addr_from_dns())
-    assert peer_db.addresses == {peer_address("2001:db8::1", 18444)}
+    assert peer_db.addresses == {peer_address("2a01:4f8::1", 18444)}
 
 
 def test_a_node_that_already_knows_peers_does_not_ask_the_seeds(
@@ -764,7 +764,69 @@ def test_an_ordinary_ipv6_record_is_kept() -> None:
     # the rule is about the two reserved ranges and not about the
     # network id: an address outside both is an ordinary peer
     peer_db = a_peer_db()
-    address = peer_address("2001:db8::1", 8333)
+    address = peer_address("2a01:4f8::1", 8333)
+    peer_db.add_addresses([address])
+    assert peer_db.addresses == {address}
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        peer_address("127.0.0.1", 18444),
+        peer_address("0.0.0.0", 8333),  # noqa: S104
+        peer_address("10.0.0.1", 8333),
+        peer_address("192.168.1.1", 8333),
+        peer_address("255.255.255.255", 8333),
+        peer_address("::1", 8333),
+        peer_address("2001:db8::1", 8333),
+        peer_address("fe80::1", 8333),
+        NetworkAddressV2(0, 0, BIP155Network.CJDNS, b"\x02" * 16, 8333),
+        NetworkAddressV2(0, 0, BIP155Network.TORV2, b"\x02" * 10, 8333),
+        NetworkAddressV2(0, 0, 7, b"\x02" * 16, 8333),
+        NetworkAddressV2(0, 0, 250, b"\x02" * 8, 8333),
+    ],
+    ids=[
+        "loopback",
+        "any",
+        "rfc1918 10/8",
+        "rfc1918 192.168/16",
+        "none",
+        "ipv6 loopback",
+        "rfc3849",
+        "rfc4862",
+        "cjdns off its prefix",
+        "torv2",
+        "yggdrasil",
+        "an unassigned network",
+    ],
+)
+def test_an_unroutable_address_is_not_kept(address: NetworkAddressV2) -> None:
+    """ISS 1091: Core's `AddrManImpl::AddSingle` refuses what is not routable.
+
+    A network id Core does not decode is an address its `IsValid`
+    refuses, and so not routable either.
+    """
+    peer_db = a_peer_db()
+    peer_db.add_addresses([address])
+    assert not peer_db.addresses
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        peer_address("1.2.3.4", 8333),
+        peer_address("2a01:4f8::1", 8333),
+        NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x02" * 32, 8333),
+        NetworkAddressV2(0, 0, BIP155Network.I2P, b"\x02" * 32, 8333),
+        NetworkAddressV2(0, 0, BIP155Network.CJDNS, b"\xfc" + b"\x02" * 15, 8333),
+    ],
+    ids=["ipv4", "ipv6", "torv3", "i2p", "cjdns"],
+)
+def test_a_routable_address_of_every_network_core_decodes_is_kept(
+    address: NetworkAddressV2,
+) -> None:
+    """ISS 1091: what `is_routable` lets through, one of each network."""
+    peer_db = a_peer_db()
     peer_db.add_addresses([address])
     assert peer_db.addresses == {address}
 
@@ -912,7 +974,7 @@ def test_a_store_holding_only_unconfirmed_gossip_still_asks_the_seeds(
     # seed that answered with AAAA records alone leaves exactly this --
     # is not a reason to skip the seeds
     first = a_peer_db(data_dir=tmp_path)
-    first.add_addresses([peer_address("2001:db8::1", 8333)])
+    first.add_addresses([peer_address("2a01:4f8::1", 8333)])
     first.close()
 
     second = a_peer_db(data_dir=tmp_path)
