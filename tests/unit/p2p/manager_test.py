@@ -27,6 +27,7 @@ from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 from btclib.p2p.keepalive import Ping
 
 from btclib_node.chains import RegTest
+from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.log import Logger
 from btclib_node.p2p import manager as manager_module
@@ -60,6 +61,7 @@ def a_conn(
     relay_tx: bool = True,
     feefilter: int = 0,
     nonce: int | None = None,
+    inbound: bool = False,
 ) -> Any:
     """Build a `Connection` double: no socket, its own `sent`/`stopped` logs.
 
@@ -79,6 +81,7 @@ def a_conn(
         relay_tx=relay_tx,
         feefilter=feefilter,
         nonce=nonce,
+        inbound=inbound,
         sent=[],
         stopped=[],
     )
@@ -122,6 +125,7 @@ class AManagerFactory(Protocol):
         connect: Sequence[tuple[str, int]] = (),
         addnode: Sequence[tuple[str, int]] = (),
         listen: bool = True,
+        max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
     ) -> P2pManager:
         """Build a `P2pManager` seeded with `conns`, `peer_db` and `status`."""
         ...
@@ -141,6 +145,7 @@ def a_manager() -> Iterator[AManagerFactory]:
         connect: Sequence[tuple[str, int]] = (),
         addnode: Sequence[tuple[str, int]] = (),
         listen: bool = True,
+        max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
     ) -> P2pManager:
         # `18444` is regtest's own well-known port -- binding it for
         # real, as a plain default would, collides with a second suite
@@ -164,19 +169,22 @@ def a_manager() -> Iterator[AManagerFactory]:
             # relayed transaction goes through. btclib-org/btclib-node#141
             download_manager=SimpleNamespace(received_txs=[]),
             # `P2pManager.__init__` reads `node.config.connect_given`,
-            # `node.config.listen`, `node.config.connect` and
-            # `node.config.addnode` directly, not through `Config`
-            # itself: a plain namespace is enough. `connect_given`
-            # mirrors what `Config.__init__` itself derives from
-            # `connect` -- true whenever the sequence is non-empty,
-            # `["0"]` included, which nothing here constructs -- and
-            # `listen` defaults to `True` so every existing caller here
-            # keeps binding and accepting.
+            # `node.config.listen`, `node.config.connect`,
+            # `node.config.addnode` and `node.config.max_connections`
+            # directly, not through `Config` itself: a plain namespace
+            # is enough. `connect_given` mirrors what `Config.__init__`
+            # itself derives from `connect` -- true whenever the
+            # sequence is non-empty, `["0"]` included, which nothing
+            # here constructs -- and `listen` defaults to `True` so every
+            # existing caller here keeps binding and accepting.
+            # `max_connections` defaults to `Config`'s own default for
+            # the same reason.
             config=SimpleNamespace(
                 connect=connect,
                 connect_given=bool(connect),
                 addnode=addnode,
                 listen=listen,
+                max_connections=max_connections,
                 pruned=False,
             ),
             # `Connection.send_version`'s own `start_height`
@@ -1227,6 +1235,24 @@ def test_only_one_peer_is_wanted_until_the_headers_are_synced(
     assert not logged
 
 
+def test_no_automatic_outbound_slot_means_no_dial(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`max_connections=0`: no dial, however much room the target leaves.
+
+    The peer db refuses to be asked, as in the test above, so a quiet
+    log is the assertion; the same manager at the default limit is the
+    control that the refusal is reached at all.
+    """
+    for max_connections, dials in ((0, False), (DEFAULT_MAX_PEER_CONNECTIONS, True)):
+        peer_db = a_peer_db_stub(is_empty=False, random_address=refuses_to_be_asked)
+        manager = a_manager(peer_db=peer_db, max_connections=max_connections)
+        logged: list[str] = []
+        monkeypatch.setattr(manager.logger, "exception", logged.append)
+        asyncio.run(one_pass(manager))
+        assert bool(logged) is dials
+
+
 def test_a_connection_removed_between_the_check_and_the_send_is_not_a_keyerror(
     a_manager: AManagerFactory,
 ) -> None:
@@ -1543,6 +1569,100 @@ def test_a_manager_accepts_an_ipv6_peer_too(a_manager: AManagerFactory) -> None:
         assert conn.address.port == peer.getsockname()[1]
         manager.stop()
         manager.join(timeout=10)
+
+
+@pytest.mark.parametrize(
+    ("max_connections", "max_inbound", "max_automatic_outbound"),
+    [
+        # Core's own default: eleven outbound slots reserved, the rest
+        # inbound
+        (DEFAULT_MAX_PEER_CONNECTIONS, 114, 11),
+        # one past the reservation: a single inbound slot
+        (12, 1, 11),
+        # under the reservation: no inbound slot, and the outbound
+        # bound is the total itself
+        (5, 0, 5),
+        (0, 0, 0),
+    ],
+)
+def test_max_connections_is_divided_the_way_core_divides_it(
+    a_manager: AManagerFactory,
+    max_connections: int,
+    max_inbound: int,
+    max_automatic_outbound: int,
+) -> None:
+    """`CConnman::Init`'s own `m_max_inbound`, and `semOutbound`'s bound."""
+    manager = a_manager(max_connections=max_connections)
+    assert manager.max_inbound == max_inbound
+    assert manager.max_automatic_outbound == max_automatic_outbound
+
+
+def test_an_inbound_peer_past_the_limit_is_refused_until_a_slot_frees(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1054: the (N+1)th inbound peer is closed; a closed one frees a slot.
+
+    `max_connections=12` leaves one inbound slot, eleven being reserved
+    for outbound. Raw sockets rather than peers that speak the protocol:
+    the first stays pending, holding its slot the same as a peer past
+    `verack` would. The refused peer is closed before `create_connection`
+    runs for it, which `last_connection_id` not moving says.
+    """
+    port = get_random_port()
+    manager = a_manager(port=port, max_connections=12)
+    logged: list[str] = []
+    monkeypatch.setattr(
+        manager.logger, "debug", lambda msg, *args: logged.append(msg % args)
+    )
+    manager.start()
+    wait_until_listening(manager)
+    with closing(socket.create_connection(("127.0.0.1", port), timeout=20)):
+        wait_until(lambda: manager.pending_connections)
+        assert manager.last_connection_id == 0
+        with closing(
+            socket.create_connection(("127.0.0.1", port), timeout=20)
+        ) as second:
+            # an orderly close, with nothing sent first: this node's own
+            # `version` is what an accepted peer reads, and a peer that
+            # sent nothing and was read nothing is closed with a FIN
+            second.settimeout(20)
+            assert second.recv(4096) == b""
+        assert manager.last_connection_id == 0
+        assert len(manager.pending_connections) == 1
+        assert any("dropped (full)" in line for line in logged)
+    # the first peer closed by the `with`: its `Connection` reads the close,
+    # `manage_connections` lets go of it, and the slot is free again
+    wait_until(lambda: not manager.pending_connections)
+    with closing(socket.create_connection(("127.0.0.1", port), timeout=20)) as third:
+        wait_until(lambda: manager.pending_connections)
+        (conn,) = manager.pending_connections.values()
+        assert conn.id == 1
+        assert conn.address.port == third.getsockname()[1]
+        manager.stop()
+        manager.join(timeout=10)
+
+
+def test_an_outbound_connection_takes_no_inbound_slot(
+    a_manager: AManagerFactory,
+) -> None:
+    """Only `inbound` connections are counted against `max_inbound`."""
+    manager = a_manager([a_conn(1)], max_connections=12)
+    assert not manager._inbound_full()
+    manager.pending_connections[2] = a_conn(2, inbound=True)
+    assert manager._inbound_full()
+
+
+def test_an_inbound_peer_past_verack_still_holds_its_slot(
+    a_manager: AManagerFactory,
+) -> None:
+    """A promoted inbound peer counts, not only a pending one.
+
+    The peer that completes the handshake and stays is the one that
+    holds a slot longest, so `connections` is counted as well as
+    `pending_connections`.
+    """
+    manager = a_manager([a_conn(1, inbound=True)], max_connections=12)
+    assert manager._inbound_full()
 
 
 def test_a_failed_ipv6_bind_does_not_stop_the_ipv4_listener(

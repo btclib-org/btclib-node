@@ -112,6 +112,12 @@ authenticates nothing, which `SECURITY.md` carries (closes #1056).
 which left an empty directory behind a failed `git worktree add` and
 then refused the retry (closes #1061).
 
+### `P2pManager` bounds how many inbound peers it holds
+
+- **`-maxconnections` (default 125) splits into inbound and outbound
+  slots as in Core, and an inbound peer past its share is closed before
+  any `Connection` exists** (closes #1054); none is evicted (issue #1064).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

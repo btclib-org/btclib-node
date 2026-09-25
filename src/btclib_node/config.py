@@ -27,7 +27,12 @@ from btclib_node.exceptions import InvalidChainTypeError, UnknownChainError
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-__all__ = ["DEFAULT_MIN_RELAY_FEERATE", "Config", "split_host_port"]
+__all__ = [
+    "DEFAULT_MAX_PEER_CONNECTIONS",
+    "DEFAULT_MIN_RELAY_FEERATE",
+    "Config",
+    "split_host_port",
+]
 
 # Core's own floor, `DEFAULT_MIN_RELAY_TX_FEE` (`src/policy/policy.h`,
 # read at bitcoin/bitcoin@58a7869f86): 100 sat/kvB. This node prices
@@ -36,6 +41,14 @@ __all__ = ["DEFAULT_MIN_RELAY_FEERATE", "Config", "split_host_port"]
 # only ever the floor this node tells a peer about in `feefilter`
 # (btclib-org/btclib-node#94) -- it is not enforced anywhere else.
 DEFAULT_MIN_RELAY_FEERATE = FeeRate(sats_per_kvbyte=100)
+# Core's own `-maxconnections` default, `DEFAULT_MAX_PEER_CONNECTIONS`
+# (`src/net.h`), read at the release `integration-bitcoind.yml` pins,
+# v31.1 at bitcoin/bitcoin@9be056a8a7. Core's `master` sets 200 (at
+# bitcoin/bitcoin@e8e7e91a11) beside `-inboundrelaypercent`, which by
+# default holds transaction-relaying inbound peers to half of the
+# inbound slots; this node has no such split, so it takes the value the
+# pinned release pairs with no split either.
+DEFAULT_MAX_PEER_CONNECTIONS = 125
 # A named module-level singleton rather than `Main()` written straight
 # into __init__'s own signature below: a call there is made once, at
 # import time, and B008 is what a reader would otherwise have to notice
@@ -216,6 +229,12 @@ class Config:
     # port and starts no `P2pManager` at all, so nothing could dial out
     # either.
     listen: bool
+    # Core's own `-maxconnections`: the automatic connections this node
+    # holds at once, inbound and outbound together. It does not limit a
+    # `-connect` or `-addnode` dial, which Core makes as a manual
+    # connection outside it too. `P2pManager.__init__` divides it into
+    # inbound and outbound slots.
+    max_connections: int
 
     # every parameter here is one independent setting, not a group of
     # related ones this signature happens to expose together: `chain` is
@@ -253,6 +272,7 @@ class Config:
         connect: Sequence[str] = (),
         addnode: Sequence[str] = (),
         listen: bool = True,
+        max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
     ) -> None:
         """Resolve `chain` and ports."""
         self.chain = _resolve_chain(chain)
@@ -285,6 +305,14 @@ class Config:
         )
         self.addnode = _resolve_peers(addnode, self.chain.port)
         self.listen = listen
+
+        if max_connections < 0:
+            # Core's own wording (`AppInitParameterInteraction`,
+            # `src/init.cpp`, at bitcoin/bitcoin@9be056a8a7), fatal
+            # there too
+            err_msg = "-maxconnections must be greater or equal than zero"
+            raise ValueError(err_msg)
+        self.max_connections = max_connections
 
         self.p2p_port = None
         if allow_p2p:

@@ -26,12 +26,15 @@ here are the ones [ARCHITECTURE](./ARCHITECTURE.md) describes.
   returns or raises `BTClibException`, and nothing else" — is checked by
   Hypothesis over the domain it describes and extended by the harnesses
   under `fuzz/`, run under ClusterFuzzLite in `.github/workflows/fuzz.yml`.
-- **What one connection may cost this node is bounded.** A single peer
-  cannot commit this node past `MAX_QUEUED_SEND_BYTES`, a fixed sum of a
-  block's and a filter answer's own sizes
-  (`src/btclib_node/p2p/connection.py`), closed as
-  btclib-org/btclib-node#101; SECURITY.md's *Limitations* states what is
-  not yet bounded.
+- **What one connection may cost this node, and how many inbound
+  connections it holds, are bounded.** A single peer cannot commit this
+  node past `MAX_QUEUED_SEND_BYTES`, a fixed sum of a block's and a
+  filter answer's own sizes (`src/btclib_node/p2p/connection.py`),
+  closed as btclib-org/btclib-node#101, and `P2pManager.server` closes
+  an inbound peer past `Config.max_connections`'s inbound share before
+  building anything for it (`src/btclib_node/p2p/manager.py`), closed
+  as btclib-org/btclib-node#1054; SECURITY.md's *Limitations* states
+  what this node still does not do once its inbound slots are taken.
 - **A published distribution is what this tree built.** SECURITY.md's
   *Supported versions* states how that is verified.
 - **What is not claimed.** `Development Status :: 3 - Alpha`
@@ -105,8 +108,8 @@ vulnerabilities*:
 
 - the JSON-RPC listener authenticating who is asking, once traffic
   reaches whichever interface `Config.rpc_host` binds
-- the number of simultaneous inbound p2p connections, which nothing
-  bounds independently of what one connection may cost
+- the inbound p2p slots, against whoever fills them first, and this
+  node's choice of outbound peers, against enough inbound ones
 - anything SECURITY.md attributes to btclib rather than to this tree —
   the constant-time properties of the arithmetic btclib's own
   [assurance case](https://github.com/btclib-org/btclib/blob/main/ASSURANCE_CASE.md)

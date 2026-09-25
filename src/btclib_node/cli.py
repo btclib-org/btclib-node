@@ -24,8 +24,10 @@ and defaulted the way `SetupServerArgs` (`src/init.cpp`, same sha)
 names and defaults its own -- `-datadir=<dir>`, `-blocksdir=<dir>`,
 `-conf=<file>`, `-chain=`/`-testnet`/`-signet`/`-regtest`, `-port=`,
 `-rpcport=`, `-rpcbind=`, `-prune=`, `-debug`, `-connect=`,
-`-addnode=`, `-listen=`/`-nolisten`. Three `Config` fields have no flag
-here: `min_relay_feerate` (Core's own
+`-addnode=`, `-listen=`/`-nolisten`, and `-maxconnections=`, whose
+default is instead the pinned release's 125 rather than that sha's 200
+-- `config.py`'s comment on `DEFAULT_MAX_PEER_CONNECTIONS` says why. Three
+`Config` fields have no flag here: `min_relay_feerate` (Core's own
 `-minrelaytxfee` is BTC/kvB and this field is priced in sat/kvB
 already, `config.py`'s own comment on `DEFAULT_MIN_RELAY_FEERATE`
 argues why nothing enforces it yet; the unit translation is deferred
@@ -160,7 +162,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from btclib_node import Node, install_signal_handlers
-from btclib_node.config import Config, split_host_port
+from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, Config, split_host_port
 from btclib_node.constants import MIN_PRUNE_TARGET_MIB
 
 if TYPE_CHECKING:
@@ -226,6 +228,7 @@ _RECOGNIZED_KEYS = frozenset(
         "connect",
         "addnode",
         "listen",
+        "maxconnections",
         "blocksdir",
         "includeconf",
     }
@@ -612,6 +615,17 @@ def _build_parser() -> argparse.ArgumentParser:
         const="0",
         help="Same as -listen=0",
     )
+    parser.add_argument(
+        "-maxconnections",
+        "--maxconnections",
+        metavar="<n>",
+        type=int,
+        help=(
+            "Maintain at most <n> automatic connections to peers (default: "
+            f"{DEFAULT_MAX_PEER_CONNECTIONS}); does not limit a peer dialled through "
+            "-connect or -addnode"
+        ),
+    )
     return parser
 
 
@@ -706,6 +720,7 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
     connect = _resolve_list(args.connect, collected, "connect")
     listen = _resolve_listen(args.listen, default_section, connect_given=bool(connect))
     blocksdir = _resolve_str(args.blocksdir, collected, "blocksdir")
+    max_connections = _resolve_int(args.maxconnections, collected, "maxconnections")
 
     return Config(
         chain=chain_name,
@@ -720,6 +735,9 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
         connect=connect,
         addnode=_resolve_list(args.addnode, collected, "addnode"),
         listen=listen,
+        max_connections=(
+            DEFAULT_MAX_PEER_CONNECTIONS if max_connections is None else max_connections
+        ),
     )
 
 

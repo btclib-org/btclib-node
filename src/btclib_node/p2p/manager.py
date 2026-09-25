@@ -85,6 +85,17 @@ _IDLE_TIMEOUT = 120
 _REDIAL_BASE_SECONDS = 1.0
 _REDIAL_MAX_SECONDS = 60.0
 
+# The outbound slots Core reserves out of `-maxconnections` before
+# inbound peers get the rest: `MAX_OUTBOUND_FULL_RELAY_CONNECTIONS`,
+# `MAX_BLOCK_RELAY_ONLY_CONNECTIONS` and `MAX_FEELER_CONNECTIONS`
+# (`src/net.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). This node
+# dials no block-relay-only or feeler connection, and reserves their
+# slots all the same, so that a peer finds as many inbound slots here as
+# in a Core node given the same `-maxconnections`.
+_MAX_OUTBOUND_FULL_RELAY_CONNECTIONS = 8
+_MAX_BLOCK_RELAY_ONLY_CONNECTIONS = 2
+_MAX_FEELER_CONNECTIONS = 1
+
 
 class P2pManager(threading.Thread):
     """The thread listening for and dialling peer connections.
@@ -119,6 +130,26 @@ class P2pManager(threading.Thread):
         # rather than reread from a `Config` a caller could still
         # mutate underneath `run`.
         self.listen = node.config.listen
+        # Core's own division of `-maxconnections`, `CConnman::Init`
+        # (`src/net.h`, at bitcoin/bitcoin@9be056a8a7): the outbound
+        # slots above come off the top, capped by the total itself, and
+        # inbound peers get what is left. `max_automatic_outbound` is
+        # the bound Core's `semOutbound` puts on automatic outbound
+        # connections, `min(m_max_automatic_outbound,
+        # m_max_automatic_connections)` in `CConnman::Start` (`net.cpp`,
+        # same sha), and `_maybe_dial_more_peers` is the one dial held
+        # to it: `async_connect`, the `-connect`/`-addnode` route, reads
+        # neither bound, as Core's manual connections take no
+        # `semOutbound` grant. Read once, for the same reason as the two
+        # fields above.
+        max_connections = node.config.max_connections
+        full_relay = min(_MAX_OUTBOUND_FULL_RELAY_CONNECTIONS, max_connections)
+        block_relay = min(
+            _MAX_BLOCK_RELAY_ONLY_CONNECTIONS, max_connections - full_relay
+        )
+        automatic_outbound = full_relay + block_relay + _MAX_FEELER_CONNECTIONS
+        self.max_inbound = max(0, max_connections - automatic_outbound)
+        self.max_automatic_outbound = min(automatic_outbound, max_connections)
 
         # `-connect` and `-addnode` together, by `endpoint_key`: what
         # `_maybe_redial_specified` below redials once `Node.run`'s own
@@ -533,7 +564,10 @@ class P2pManager(threading.Thread):
         # not pass through here.
         if not self.use_addrman_outgoing:
             return
-        connection_num = 1 if self.node.status < NodeStatus.HeaderSynced else 10
+        connection_num = min(
+            1 if self.node.status < NodeStatus.HeaderSynced else 10,
+            self.max_automatic_outbound,
+        )
         # Locked, and the snapshot below locks separately rather than
         # sharing this one: `promote_connection` moves a connection
         # between `connections` and `pending_connections` in two
@@ -752,6 +786,25 @@ class P2pManager(threading.Thread):
             sock.settimeout(0.0)
             accepted.put_nowait((sock, sockaddr))
 
+    def _inbound_full(self) -> bool:
+        """Whether every inbound slot `max_inbound` allows is already taken.
+
+        Pending connections count: a peer short of `verack` holds its
+        socket and its `Connection` as much as one past it, the same as
+        Core counting every inbound `CNode` in `m_nodes` whether or not
+        its handshake has finished. Locked for the reason
+        `_maybe_dial_more_peers`'s own count is.
+        """
+        with self._connections_lock:
+            inbound = sum(
+                conn.inbound
+                for conn in (
+                    *self.connections.values(),
+                    *self.pending_connections.values(),
+                )
+            )
+        return inbound >= self.max_inbound
+
     async def server(
         self, loop: asyncio.AbstractEventLoop, server_socket: socket.socket
     ) -> None:
@@ -805,6 +858,20 @@ class P2pManager(threading.Thread):
             try:
                 while True:
                     sock, sockaddr = await accepted.get()
+                    # Refused before `create_connection` builds anything
+                    # for it. Core tries `AttemptToEvictConnection`
+                    # first and drops the new peer only where that
+                    # finds no candidate (`CreateNodeFromAcceptedSocket`,
+                    # `src/net.cpp`, at bitcoin/bitcoin@9be056a8a7); this
+                    # node has no eviction, so it always drops
+                    # (btclib-org/btclib-node#1064).
+                    if self._inbound_full():
+                        self.logger.debug(
+                            "connection from %s dropped (full)",
+                            ip_and_port(*sockaddr[:2]),
+                        )
+                        sock.close()
+                        continue
                     # two fields for an AF_INET peer, four for an
                     # AF_INET6 one -- the flow info and the scope id
                     # BIP155 has nowhere to carry either,

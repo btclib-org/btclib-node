@@ -11,7 +11,12 @@ from bitcoin_core_rpc import rpc_port_from_chain
 from btclib.fee import FeeRate
 
 from btclib_node.chains import Main, RegTest, SigNet, TestNet
-from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE, Config, split_host_port
+from btclib_node.config import (
+    DEFAULT_MAX_PEER_CONNECTIONS,
+    DEFAULT_MIN_RELAY_FEERATE,
+    Config,
+    split_host_port,
+)
 
 
 def test_chain_selection() -> None:
@@ -267,3 +272,21 @@ def test_split_host_port_rejects_a_port_past_the_ceiling() -> None:
     """A port above 65535 does not fit a `uint16_t`, and is refused."""
     with pytest.raises(ValueError, match="invalid port"):
         split_host_port("127.0.0.1:70000", 8333)
+
+
+def test_max_connections_defaults_to_core_s_own() -> None:
+    """Core's own `DEFAULT_MAX_PEER_CONNECTIONS`, at the pinned release."""
+    assert DEFAULT_MAX_PEER_CONNECTIONS == 125
+    assert Config(chain="regtest").max_connections == DEFAULT_MAX_PEER_CONNECTIONS
+
+
+def test_max_connections_given_is_stored_back() -> None:
+    """Zero included: Core accepts `-maxconnections=0` too."""
+    assert Config(chain="regtest", max_connections=7).max_connections == 7
+    assert Config(chain="regtest", max_connections=0).max_connections == 0
+
+
+def test_max_connections_negative_raises() -> None:
+    """Core's own `InitError`, not a limit nothing could ever satisfy."""
+    with pytest.raises(ValueError, match="greater or equal than zero"):
+        Config(chain="regtest", max_connections=-1)
