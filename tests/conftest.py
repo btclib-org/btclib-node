@@ -27,11 +27,19 @@ thread. `thread_exception_origin_note` and the hook installed below by
 report pytest already prints, which test actually started the thread,
 so a reader is not sent to look for a defect in the one the exception
 merely surfaced against (btclib-org/btclib-node#1002).
+
+A task left pending on an event loop is the third: found as its loop
+closes or as the collector frees it, it fails the test running then, at
+that test's own teardown, and the whole run where no test is left to
+fail (btclib-org/btclib-node#1107).
 """
 
+import asyncio
+import gc
 import os
 import threading
 import weakref
+from collections import deque
 
 # not under TYPE_CHECKING (TC003's own suggestion): pluggy inspects a
 # hookimpl's signature with annotations forced to evaluate, ahead of
@@ -41,7 +49,7 @@ import weakref
 from collections.abc import Iterator  # noqa: TC003
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import pytest
 from hypothesis import settings
@@ -122,6 +130,155 @@ def pytest_runtest_protocol(item: pytest.Item) -> Iterator[None]:
     """
     _CURRENT_TEST_NODEID[0] = item.nodeid
     yield
+
+
+# Every task found left pending on an event loop since a test's teardown
+# last drained this: its `repr`, after the nodeid `_CURRENT_TEST_NODEID`
+# held when it was found. Written on whichever thread closes a loop or
+# runs the collector -- a node's own, for both managers' loops -- and
+# drained on the test's. A deque and no lock: a collection can run the
+# recorder on the draining thread itself, in the middle of the drain,
+# where a lock it already held would deadlock it, and `append` and
+# `popleft` are atomic without one.
+_PENDING_TASKS: deque[str] = deque()
+
+# What `Task.__del__` hands the loop's exception handler, as the
+# `message` of its context, for a task freed while still pending.
+_DESTROYED_PENDING = "Task was destroyed but it is pending!"
+
+# The key a worker's `pytest_sessionfinish` hands its remainder to the
+# xdist controller under, through `config.workeroutput`.
+_WORKEROUTPUT_KEY = "btclib_node_pending_tasks"
+
+_real_loop_close = asyncio.BaseEventLoop.close
+_real_call_exception_handler = asyncio.BaseEventLoop.call_exception_handler
+# bound here rather than looked up at each close, so that a test
+# replacing `asyncio.all_tasks` -- tests/unit/rpc/manager_test.py does,
+# to hand `stop` tasks of its own -- does not replace what this reads
+_real_all_tasks = asyncio.all_tasks
+
+
+def _record_pending_at_close(self: asyncio.BaseEventLoop) -> None:
+    """Close `self` as `BaseEventLoop.close` does, noting what it left pending.
+
+    asyncio raises nothing when a loop closes with a task pending on it,
+    and no warning either, so `filterwarnings`' `"error"` cannot see it.
+    A task something still references is found here, at the close.
+
+    Patched onto `BaseEventLoop` itself, which the selector and proactor
+    loops' own `close` reach through `super().close()`, and only for a
+    loop neither running nor already closed: each returns or raises
+    ahead of that call otherwise. The tasks are read after the real
+    close, `asyncio.all_tasks` still answering for a closed loop. Each
+    one found is told not to report its own destruction, which
+    `_record_destroyed_pending` would otherwise record a second time.
+    """
+    _real_loop_close(self)
+    during = _CURRENT_TEST_NODEID[0]
+    for task in _real_all_tasks(self):
+        _PENDING_TASKS.append(f"{during}: {task!r}, pending when its loop closed")
+        task._log_destroy_pending = False  # type: ignore[attr-defined]
+
+
+def _record_destroyed_pending(
+    self: asyncio.BaseEventLoop, context: dict[str, Any]
+) -> None:
+    """Hand `context` to the loop's handler, noting a task freed while pending.
+
+    A task nothing references but a cycle of its own -- its coroutine's
+    frame, the future it awaits, that future's wakeup callback back to
+    the task -- is freed by the collector whenever it runs, before its
+    loop closes as readily as after, and `asyncio.all_tasks` no longer
+    answers for it once it is. What is left is `Task.__del__` handing
+    `_DESTROYED_PENDING` to this method, which the default handler
+    merely logs, and pytest's log capture shows only on a test that
+    fails anyway. The handler still runs.
+    """
+    if context.get("message") == _DESTROYED_PENDING:
+        _PENDING_TASKS.append(
+            f"{_CURRENT_TEST_NODEID[0]}: {context.get('task')!r},"
+            " freed by the collector while pending"
+        )
+    _real_call_exception_handler(self, context)
+
+
+asyncio.BaseEventLoop.close = _record_pending_at_close  # type: ignore[method-assign]
+asyncio.BaseEventLoop.call_exception_handler = _record_destroyed_pending  # type: ignore[method-assign]
+
+
+def drain_pending_tasks() -> list[str]:
+    """Empty `_PENDING_TASKS`, returning what it held."""
+    drained = []
+    while _PENDING_TASKS:
+        drained.append(_PENDING_TASKS.popleft())
+    return drained
+
+
+def fail_on_pending_tasks() -> None:
+    """Drain `_PENDING_TASKS`, failing the running test where it held any."""
+    pending = drain_pending_tasks()
+    if pending:
+        pytest.fail(
+            "tasks were left pending on an event loop"
+            " (btclib-org/btclib-node#1107):\n" + "\n".join(pending),
+            pytrace=False,
+        )
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_teardown(nextitem: pytest.Item | None) -> Iterator[None]:
+    """Fail the test that left a task pending on a loop.
+
+    After the fixtures' own finalizers, so a loop a fixture closes is
+    measured against the test it was torn down for, and after a
+    collection, so a task the test left reachable only through its own
+    cycle is freed, and recorded, against this test rather than
+    whichever one the collector next runs during.
+
+    A teardown that raises skips the check, and so does a loop closed
+    on a thread after its test has finished: what either leaves
+    recorded fails the next test's teardown instead, each entry naming
+    the test it was found during. After a worker's last test there is
+    no next one, and `pytest_sessionfinish` reports it instead.
+    """
+    yield
+    gc.collect()
+    if nextitem is None:
+        _CURRENT_TEST_NODEID[0] = "<after the last test>"
+    fail_on_pending_tasks()
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodedown(node: Any, error: object) -> None:
+    """On the xdist controller, take in what a worker's session end found."""
+    _PENDING_TASKS.extend(getattr(node, "workeroutput", {}).get(_WORKEROUTPUT_KEY, ()))
+
+
+def pytest_sessionfinish(
+    session: pytest.Session,
+) -> None:  # pragma: no cover -- pytest-cov stops measuring when pytest_runtestloop ends, ahead of this
+    """Report, and fail the run for, what is found pending after the last test.
+
+    A worker hands it to the controller, whose own run of this reports
+    it with what the controller found itself: xdist fails a run on a
+    worker's exit status only where that was an interrupt.
+    """
+    gc.collect()
+    pending = drain_pending_tasks()
+    workeroutput = getattr(session.config, "workeroutput", None)
+    if workeroutput is not None:
+        workeroutput[_WORKEROUTPUT_KEY] = pending
+    elif pending:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+        reporter = session.config.pluginmanager.getplugin("terminalreporter")
+        reporter.write_sep(
+            "=",
+            "tasks left pending on an event loop after the last test"
+            " (btclib-org/btclib-node#1107)",
+            red=True,
+        )
+        for entry in pending:
+            reporter.write_line(entry)
 
 
 def thread_exception_origin_note(args: threading.ExceptHookArgs) -> str | None:

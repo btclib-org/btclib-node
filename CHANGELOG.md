@@ -220,6 +220,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   arguments:`, and a boolean is Core's `InterpretBool`, `true` and `yes`
   false** (closes #1116, closes #1117), bar `-debug` (issue #1123).
 
+### A test that leaves a task pending on an event loop fails
+
+- **`tests/conftest.py` fails it at teardown, naming each task**
+  (closes #1107), found as its loop closes or as the collector frees it,
+  where asyncio only logs; one found after the last test fails the run.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
