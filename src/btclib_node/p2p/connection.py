@@ -45,6 +45,7 @@ from btclib_node.p2p.callbacks import (
     handshake_callbacks,
 )
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
+from btclib_node.p2p.protocol_version import BIP0031_VERSION, common_version
 
 if TYPE_CHECKING:
     import socket
@@ -465,6 +466,11 @@ class Connection:
     # alone, by `callbacks.verack`, `addr` and `addrv2`; a class default
     # for the same reason as `time_received`.
     addr_token_bucket: float = 1.0
+    # Core's `Peer::m_sent_sendheaders`: set by
+    # `DownloadManager._send_due_sendheaders` once it has asked this
+    # peer for headers announcements, which is asked once. A class
+    # default for the same reason as `time_received`.
+    sent_sendheaders: bool = False
 
     # Core's `CNodeState` block fields (`p2p/block_availability.py`),
     # here rather than in a `DownloadManager` table keyed by connection
@@ -1141,7 +1147,13 @@ class Connection:
         `ping_all`), and from `P2pManager`'s own thread once
         (`manage_connections`); `_ping_lock` is what keeps its own two
         writes one step against `callbacks.pong`'s read and clear.
+
+        Nothing is sent at a common version of `BIP0031_VERSION` or
+        below, where Core sends a `ping` with no nonce: btclib's `Ping`
+        has no such form. btclib-org/btclib-node#1204
         """
+        if common_version(self) <= BIP0031_VERSION:
+            return
         # The nonce is the sender's to choose, and btclib's Ping defaults
         # it to zero rather than drawing one. Zero is also what
         # ping_nonce means "no ping outstanding", so it is drawn here and

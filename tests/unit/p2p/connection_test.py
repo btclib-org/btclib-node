@@ -28,7 +28,7 @@ from btclib.p2p.block_filters import BlockFilterType, CFilter
 from btclib.p2p.handshake import Verack, Version
 from btclib.p2p.inventory import GetData, Inventory, InventoryType
 from btclib.p2p.keepalive import Ping, Pong
-from btclib.p2p.limits import MAX_INV_SZ, MAX_PROTOCOL_MESSAGE_LENGTH
+from btclib.p2p.limits import MAX_INV_SZ, MAX_PROTOCOL_MESSAGE_LENGTH, PROTOCOL_VERSION
 from btclib.p2p.message import Message
 
 from btclib_node.chains import RegTest
@@ -1581,6 +1581,25 @@ def test_a_getdata_of_mostly_misses_does_not_drop_the_connection() -> None:
     assert connection.id in connection.node.pending_getdata
 
 
+@pytest.mark.parametrize(
+    ("protocol", "pinged"), [(None, False), (60000, False), (60001, True)]
+)
+def test_a_ping_goes_only_above_bip31(*, protocol: int | None, pinged: bool) -> None:
+    """ISS 1180: Core's nonce-bearing `ping` goes above `BIP0031_VERSION`.
+
+    Nothing goes at or below it, nor before the peer's `version` is read.
+    """
+    connection, _ = a_connection()
+    sent: list[Any] = []
+    connection.send = sent.append  # type: ignore[method-assign,assignment]
+    if protocol is not None:
+        connection.version_message = cast("Any", SimpleNamespace(version=protocol))
+    connection.send_ping()
+    connection.client.close()
+    assert bool(sent) is pinged
+    assert bool(connection.ping_sent) is pinged
+
+
 def test_send_ping_racing_pong_does_not_tear_the_ping_pair(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1604,6 +1623,8 @@ def test_send_ping_racing_pong_does_not_tear_the_ping_pair(
     """
     connection, _ = a_connection()
     connection.send = lambda msg: None  # type: ignore[method-assign]
+    # a peer past BIP0031_VERSION, which `send_ping` pings with a nonce
+    connection.version_message = cast("Any", SimpleNamespace(version=PROTOCOL_VERSION))
     original_nonce = 111
     connection.ping_nonce = original_nonce
 

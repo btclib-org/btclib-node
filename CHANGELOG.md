@@ -360,6 +360,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A `tx` and a transaction `inv` are gated on initial block download, and
   announcing and asking on nothing, as in Core** (closes #1157).
 
+### A peer is kept from protocol version 31800, as in Core
+
+- **Each message newer than 31800 goes only to a peer whose version reaches
+  it, at Core's thresholds** (closes #1180); `sendheaders` waits for the
+  peer's best block to carry the minimum chain work.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

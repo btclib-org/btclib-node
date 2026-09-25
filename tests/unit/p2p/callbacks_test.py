@@ -64,7 +64,7 @@ from btclib.p2p.limits import (
     MAX_GETCFILTERS_SIZE,
     PROTOCOL_VERSION,
 )
-from btclib.p2p.negotiation import FeeFilter, GetAddr, SendHeaders, WtxidRelay
+from btclib.p2p.negotiation import FeeFilter, GetAddr, WtxidRelay
 from btclib.p2p.reject import Reject, RejectCode
 from btclib.script.witness import Witness
 
@@ -113,6 +113,12 @@ from btclib_node.p2p.callbacks import (
 )
 from btclib_node.p2p.callbacks import block as block_callback
 from btclib_node.p2p.connection import Connection, PeerStats
+from btclib_node.p2p.protocol_version import (
+    BIP0031_VERSION,
+    MIN_PEER_PROTO_VERSION,
+    SHORT_IDS_BLOCKS_VERSION,
+    WTXID_RELAY_VERSION,
+)
 from tests import (
     discourage_recorder,
     generate_random_chain,
@@ -632,15 +638,34 @@ def test_a_version_carrying_our_own_nonce_is_this_node_calling_itself() -> None:
 
 
 def test_a_peer_speaking_an_older_protocol_is_let_go() -> None:
-    """A `version` below `PROTOCOL_VERSION` is refused, and not discouraged.
+    """A `version` below `MIN_PEER_PROTO_VERSION` is refused, not discouraged.
 
     ISS 1090: Core's obsolete-version refusal is `fDisconnect` alone.
     """
     node = a_handshake_node()
     peer = a_peer()
-    version(node, a_version(protocol=PROTOCOL_VERSION - 1), peer)
+    version(node, a_version(protocol=MIN_PEER_PROTO_VERSION - 1), peer)
     assert peer.stopped == [True]
     assert not node.p2p_manager.discouraged
+
+
+@pytest.mark.parametrize(
+    "protocol",
+    [MIN_PEER_PROTO_VERSION, WTXID_RELAY_VERSION - 1],
+)
+def test_a_peer_at_or_above_the_floor_is_kept_without_wtxid_relay(
+    protocol: int,
+) -> None:
+    """ISS 1180: kept from `MIN_PEER_PROTO_VERSION`, as Core keeps it.
+
+    Below `WTXID_RELAY_VERSION` it is sent neither `wtxidrelay` nor
+    `sendaddrv2`, which Core too sends only from 70016 up.
+    """
+    node = a_handshake_node()
+    peer = a_peer()
+    version(node, a_version(protocol=protocol), peer)
+    assert not peer.stopped
+    assert commands(peer) == ["Verack"]
 
 
 def test_a_peer_without_the_witness_service_is_let_go() -> None:
@@ -899,15 +924,10 @@ def test_a_verack_completes_the_handshake() -> None:
     node = a_handshake_node(promote_connection=promoted.append, peer_db=peer_db)
     verack(node, b"", peer)
     assert peer.status == P2pConnStatus.Connected
-    assert commands(peer) == [
-        "SendHeaders",
-        "SendCmpct",
-        "ping",
-        "GetAddr",
-    ]
-    assert isinstance(peer.sent[0], SendHeaders)
-    assert isinstance(peer.sent[1], SendCmpct)
-    assert isinstance(peer.sent[3], GetAddr)
+    # no `sendheaders`: DownloadManager._send_due_sendheaders sends it
+    assert commands(peer) == ["SendCmpct", "ping", "GetAddr"]
+    assert isinstance(peer.sent[0], SendCmpct)
+    assert isinstance(peer.sent[2], GetAddr)
     # ISS 1166: room for the answer, on top of the one token it started with
     assert peer.addr_token_bucket == 1.0 + MAX_ADDR_TO_SEND
     assert not peer.stopped
@@ -927,8 +947,20 @@ def test_a_verack_from_an_inbound_peer_asks_it_for_no_addresses() -> None:
     node = a_handshake_node(peer_db=PeerDB(cast("Chain", None), cast("Path", None)))
     verack(node, b"", peer)
     assert peer.status == P2pConnStatus.Connected
-    assert commands(peer) == ["SendHeaders", "SendCmpct", "ping"]
+    assert commands(peer) == ["SendCmpct", "ping"]
     assert peer.addr_token_bucket == 1.0
+
+
+def test_a_verack_below_short_ids_blocks_version_sends_no_sendcmpct() -> None:
+    """ISS 1180: Core sends `sendcmpct` from `SHORT_IDS_BLOCKS_VERSION` up."""
+    peer = a_peer(
+        version_message=a_parsed_version(protocol=SHORT_IDS_BLOCKS_VERSION - 1),
+        inbound=True,
+    )
+    node = a_handshake_node(peer_db=PeerDB(cast("Chain", None), cast("Path", None)))
+    verack(node, b"", peer)
+    assert peer.status == P2pConnStatus.Connected
+    assert commands(peer) == ["ping"]
 
 
 # No FeeFilter is sent from verack itself: DownloadManager.
@@ -1103,7 +1135,7 @@ def test_the_flags_a_peer_sets_on_this_connection() -> None:
     None of the three carries a payload; receiving one at all is what
     the flag records.
     """
-    peer = a_peer()
+    peer = a_peer(version_message=a_parsed_version())
     wtxidrelay(a_handshake_node(), b"", peer)
     sendaddrv2(a_handshake_node(), b"", peer)
     sendheaders(a_handshake_node(), b"", peer)
@@ -1154,13 +1186,32 @@ def test_a_feefilter_at_the_edge_of_the_money_range_is_kept() -> None:
     assert peer.feefilter == at_the_edge
 
 
+def test_a_wtxidrelay_below_wtxid_relay_version_is_ignored() -> None:
+    """ISS 1180: Core ignores it at a common version below 70016."""
+    old = a_parsed_version(protocol=WTXID_RELAY_VERSION - 1)
+    peer = a_peer(version_message=old)
+    wtxidrelay(a_handshake_node(), b"", peer)
+    assert not peer.wtxidrelay_received
+
+
 def test_a_ping_is_answered_with_the_nonce_it_carried() -> None:
     """A `ping` is answered with a `pong` carrying the same nonce back."""
-    peer = a_peer()
+    peer = a_peer(version_message=a_parsed_version(protocol=BIP0031_VERSION + 1))
     ping(a_handshake_node(), Ping(1234).serialize(), peer)
     (answer,) = peer.sent
     assert isinstance(answer, Pong)
     assert answer.nonce == 1234
+
+
+@pytest.mark.parametrize("payload", [b"", Ping(1234).serialize()])
+def test_a_ping_at_bip31_or_below_is_not_answered(payload: bytes) -> None:
+    """ISS 1180: Core answers a `ping` only above `BIP0031_VERSION`.
+
+    Such a `ping` carries no nonce, and Core reads none from it.
+    """
+    peer = a_peer(version_message=a_parsed_version(protocol=BIP0031_VERSION))
+    ping(a_handshake_node(), payload, peer)
+    assert not peer.sent
 
 
 def test_a_pong_answering_our_ping_is_a_latency_measurement() -> None:

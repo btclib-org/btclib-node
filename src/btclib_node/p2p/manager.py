@@ -43,6 +43,7 @@ from btclib_node.p2p.eviction import (
     net_class,
     select_node_to_evict,
 )
+from btclib_node.p2p.protocol_version import BIP0031_VERSION, common_version
 
 if TYPE_CHECKING:
     from concurrent.futures import Future
@@ -69,7 +70,9 @@ _ACTIVE_PRUNE_INTERVAL = 300
 # (20 minutes, `net.h`, aed80c7395) -- a shorter one of this tree's own:
 # a connection quiet this long is sent a `ping`, and one still quiet
 # this long again after that, or a pending connection stuck short of
-# `verack` this long with no `ping` to wait on at all, is dropped.
+# `verack` this long with no `ping` to wait on at all, is dropped. A
+# peer at `BIP0031_VERSION` or below is sent no `ping`
+# (`Connection.send_ping`) and is dropped once quiet twice this long.
 _IDLE_TIMEOUT = 120
 
 # `_maybe_redial_specified`'s own backoff for a `-connect`/`-addnode`
@@ -639,7 +642,12 @@ class P2pManager(threading.Thread):
                 # `now`, dropping a peer for having just answered.
                 # btclib-org/btclib-node#357
                 ping_sent = conn.ping_sent
-                if not ping_sent:
+                if common_version(conn) <= BIP0031_VERSION:
+                    # no `ping` to wait on (`Connection.send_ping`), so
+                    # the whole quiet span is waited out here instead
+                    if now - conn.last_receive > 2 * _IDLE_TIMEOUT:
+                        self.remove_connection(conn.id)
+                elif not ping_sent:
                     conn.send_ping()
                 elif now - ping_sent > _IDLE_TIMEOUT:
                     self.remove_connection(conn.id)
@@ -1420,7 +1428,11 @@ class P2pManager(threading.Thread):
         self.node.download_manager.received_txs.append((None, tx.hash))
 
     def ping_all(self) -> None:
-        """Send every connected peer a fresh `ping`."""
+        """Send every connected peer a fresh `ping`, as `send_ping` allows.
+
+        A peer at `BIP0031_VERSION` or below is sent none.
+        btclib-org/btclib-node#1204
+        """
         for conn in self.connections.copy().values():
             conn.send_ping()
 
