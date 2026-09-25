@@ -4,15 +4,16 @@
 
 """`DownloadManager`, what decides what this node asks its peers for.
 
-Block download candidates and stall detection, transaction
-announcement and request tracking, and the trickle timing behind both
--- `feefilter` resends, address relay, and the exponential delays that
-keep two peers from being told the same thing in lockstep. Most of the
-constants here are a named Bitcoin Core constant carried over with the
-commit it was read at beside it, per this tree's own convention of
-matching Core's behaviour, always.
+Which peer headers are synced from; block download candidates and stall
+detection, transaction announcement and request tracking, and the
+trickle timing behind both -- `feefilter` resends, address relay, and
+the exponential delays that keep two peers from being told the same
+thing in lockstep. Most of the constants here are a named Bitcoin Core
+constant carried over with the commit it was read at beside it, per
+this tree's own convention of matching Core's behaviour, always.
 """
 
+import math
 import time
 from bisect import bisect_left
 from collections import Counter
@@ -20,8 +21,8 @@ from random import SystemRandom
 from typing import TYPE_CHECKING
 
 from btclib.p2p.address import ServiceFlags
-from btclib.p2p.inventory import GetData, Inv, Inventory, InventoryType
-from btclib.p2p.limits import MAX_INV_SZ
+from btclib.p2p.inventory import GetData, GetHeaders, Inv, Inventory, InventoryType
+from btclib.p2p.limits import MAX_INV_SZ, PROTOCOL_VERSION
 from btclib.p2p.negotiation import FeeFilter
 
 from btclib_node.chainstate.block_index import MAX_DOWNLOAD_WINDOW
@@ -93,6 +94,20 @@ _rng = SystemRandom()
 # `_BLOCK_STALL_DISCONNECT_TIMEOUT` drops the connection outright.
 _BLOCK_STALL_EVICTION_TIMEOUT = 120
 _BLOCK_STALL_DISCONNECT_TIMEOUT = 300
+
+# `sync_headers`'s own timing, in seconds: `HEADERS_DOWNLOAD_TIMEOUT_BASE`
+# and `HEADERS_DOWNLOAD_TIMEOUT_PER_HEADER` (`net_processing.cpp`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag), the second scaled by the
+# headers expected between the best header and now, one per
+# `_POW_TARGET_SPACING` -- `nPowTargetSpacing`, `10 * 60` on every chain
+# `kernel/chainparams.cpp` defines at the same sha. `_RECENT_BEST_HEADER`
+# is the `24h` `SendMessages` compares the best header's own time
+# against: a best header younger than that has every peer asked for
+# headers, not one.
+_HEADERS_DOWNLOAD_TIMEOUT_BASE = 15 * 60
+_HEADERS_DOWNLOAD_TIMEOUT_PER_HEADER = 0.001
+_POW_TARGET_SPACING = 10 * 60
+_RECENT_BEST_HEADER = 24 * 60 * 60
 
 # a block hash already queued to this many connections is left for one
 # of them to answer before being handed to yet another -- redundant
@@ -248,6 +263,19 @@ def _is_limited_peer(conn: Connection) -> bool:
     )
 
 
+def _is_preferred_download(conn: Connection) -> bool:
+    """Whether `conn` is a peer headers and blocks are preferably synced from.
+
+    Core's own `fPreferredDownload` (`net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): an outbound peer that
+    can serve blocks. Core's other two terms have nothing to read here:
+    a `NoBan` inbound peer counts as preferred, and an `ADDR_FETCH`
+    connection never does, and this tree grants no permission and opens
+    no such connection.
+    """
+    return not conn.inbound and _can_serve_blocks(conn)
+
+
 def _extend_tx_announce_queue(conn: Connection, new_for_conn: list[bytes]) -> None:
     """Append `new_for_conn`'s own wtxids not already in `conn`'s queue.
 
@@ -275,10 +303,10 @@ def _extend_tx_announce_queue(conn: Connection, new_for_conn: list[bytes]) -> No
 class DownloadManager:
     """What decides what this node asks its peers for, one `step` at a time.
 
-    Block download candidates and stall detection, transaction
-    announcement and request tracking, and the `feefilter` trickle: the
-    module docstring above is where the constants each of those follows
-    are argued against Core's own.
+    Which peer headers are synced from, block download candidates and
+    stall detection, transaction announcement and request tracking, and
+    the `feefilter` trickle: the module docstring above is where the
+    constants each of those follows are argued against Core's own.
     """
 
     def __init__(self, node: Node, logger: Logger) -> None:
@@ -330,8 +358,20 @@ class DownloadManager:
         # one too, by way of _round_fee_filter's identical truncation.
         self._max_feefilter = int(self._fee_filter_buckets[-1])
 
+        # Core's own `fSyncStarted` and `m_headers_sync_timeout`
+        # (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        # tag), kept here rather than on `Connection` as Core keeps them
+        # in `net_processing`'s own per-peer state rather than in
+        # `CNode`: a connection id is in this dict once `sync_headers`
+        # has sent that peer its initial `getheaders`, and the value is
+        # when it gives up on the peer. `math.inf` is Core's
+        # `microseconds::max()`, the timeout switched off once the best
+        # header is recent.
+        self.headers_sync_timeouts: dict[int, float] = {}
+
     def step(self) -> None:
-        """Run one pass: block download, tx download, then feefilter resends."""
+        """Run one pass: headers, blocks and txs asked for, feefilters sent."""
+        self.sync_headers()
         self.block_download()
         self.tx_download()
         self._send_due_feefilters()
@@ -689,6 +729,83 @@ class DownloadManager:
             due = now + _rng.expovariate(1 / _INBOUND_TX_ANNOUNCE_INTERVAL)
             self._next_inv_to_inbounds[net_class] = due
         return due
+
+    def sync_headers(self) -> None:
+        """Ask one peer for headers, or every peer once the best one is recent.
+
+        Core's own "Start block sync" and "Check for headers sync
+        timeouts" in `SendMessages` (`net_processing.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag). While the best
+        header is older than `_RECENT_BEST_HEADER`, one peer at a time
+        is asked: the first one reached, though one not
+        `_is_preferred_download` waits while a preferred peer exists and
+        a block is in flight. That peer is dropped once its own
+        `headers_sync_timeouts` entry passes, if it is still the only
+        one asked and another preferred peer could take its place. Once
+        the best header is recent every peer that can serve blocks is
+        asked, and the timeout is switched off.
+
+        Core's `nSyncStarted` is a counter `FinalizeNode` decrements;
+        here it is the size of `headers_sync_timeouts` once every entry
+        for a connection no longer connected is dropped, which is where
+        a peer that disconnects hands its turn on. Core's
+        `LoadingBlocks()` gate has nothing to read: this tree does not
+        import blocks from disk. The locator starts at the best header
+        itself, where Core's starts at its parent:
+        btclib-org/btclib-node#1102.
+        """
+        node = self.node
+        connections = [
+            conn
+            for conn in list(node.p2p_manager.connections.values())
+            if conn.status == P2pConnStatus.Connected
+        ]
+        block_index = node.chainstate.block_index
+        best_header = block_index.get_block_info(block_index.header_index[-1]).header
+        now = time.time()
+        best_header_age = now - best_header.time.timestamp()
+        recent = best_header_age < _RECENT_BEST_HEADER
+        preferred = sum(_is_preferred_download(conn) for conn in connections)
+        blocks_in_flight = any(conn.download_queue for conn in connections)
+        timeouts = self.headers_sync_timeouts
+        for conn_id in timeouts.keys() - {conn.id for conn in connections}:
+            del timeouts[conn_id]
+        sync_started = len(timeouts)
+        for conn in connections:
+            if conn.id in timeouts or not _can_serve_blocks(conn):
+                continue
+            # Core's `sync_blocks_and_headers_from_peer`: a peer that is
+            # not preferred is still one to sync from where there is no
+            # preferred peer, or no block in flight from anybody.
+            from_peer = (
+                _is_preferred_download(conn) or not preferred or not blocks_in_flight
+            )
+            if (sync_started == 0 and from_peer) or recent:
+                locator = block_index.get_block_locator_hashes()
+                conn.send(GetHeaders(PROTOCOL_VERSION, locator, b"\x00" * 32))
+                timeouts[conn.id] = (
+                    now
+                    + _HEADERS_DOWNLOAD_TIMEOUT_BASE
+                    + _HEADERS_DOWNLOAD_TIMEOUT_PER_HEADER
+                    * best_header_age
+                    / _POW_TARGET_SPACING
+                )
+                sync_started += 1
+        for conn in connections:
+            if timeouts.get(conn.id, math.inf) == math.inf:
+                continue
+            if recent:
+                timeouts[conn.id] = math.inf
+            elif (
+                now > timeouts[conn.id]
+                and sync_started == 1
+                and preferred - _is_preferred_download(conn) >= 1
+            ):
+                self.logger.info(
+                    "Timeout downloading headers, disconnecting connection %s",
+                    conn.id,
+                )
+                conn.stop()
 
     def block_download(self) -> None:
         """Refresh the block window, evict stalled peers, and request new work.

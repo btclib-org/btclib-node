@@ -190,6 +190,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `InitError`** (closes #1076); `btclib-node` exits 1 and prints it, like
   a `build_config` refusal, after Core's `Error:`, not `btclib-node:`.
 
+### `P2pManager` dials eight outbound peers from the start, as in Core
+
+- **The target is Core's `m_max_outbound_full_relay`, whatever the sync
+  state** (closes #1073); `DownloadManager.sync_headers` asks one peer for
+  headers until the best header is recent, as Core's `SendMessages` does.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

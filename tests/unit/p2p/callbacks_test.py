@@ -773,7 +773,9 @@ def test_a_verack_completes_the_handshake() -> None:
 
     `promote_connection`, moving the peer out of `pending_connections`
     and into `connections`, runs right where `P2pConnStatus.Connected`
-    is set (btclib-org/btclib-node#131).
+    is set (btclib-org/btclib-node#131). No `GetHeaders` among them:
+    whether this peer is asked for headers is
+    `DownloadManager.sync_headers`'s to decide.
     """
     promoted: list[int] = []
     peer = a_peer(id=9, version_message=a_parsed_version(), wtxidrelay_received=True)
@@ -786,12 +788,10 @@ def test_a_verack_completes_the_handshake() -> None:
         "SendCmpct",
         "ping",
         "GetAddr",
-        "GetHeaders",
     ]
     assert isinstance(peer.sent[0], SendHeaders)
     assert isinstance(peer.sent[1], SendCmpct)
     assert isinstance(peer.sent[3], GetAddr)
-    assert isinstance(peer.sent[4], GetHeaders)
     assert not peer.stopped
     # out of P2pManager.pending_connections and into connections, right
     # where P2pConnStatus.Connected is set: btclib-org/btclib-node#131
