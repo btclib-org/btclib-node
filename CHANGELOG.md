@@ -196,6 +196,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   state** (closes #1073); `DownloadManager.sync_headers` asks one peer for
   headers until the best header is recent, as Core's `SendMessages` does.
 
+### The registered-writer tests of `Connection` drain their loop
+
+- **They cancel and finish what is left on it before closing it**
+  (closes #1087): asyncio reported the `_send` task a selector loop left
+  pending as destroyed while pending.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
