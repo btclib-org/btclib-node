@@ -89,6 +89,11 @@ The header named `python-version`, an input the called workflow does not
 declare; it names `setup-python` and its `false` default instead
 (issue btclib-org/.github#1346).
 
+### The rebuild of a release names the interpreter its tag pinned
+
+`RELEASING.md`'s *Rebuild a release from its tag* reads it from the tag's
+`.python-version` rather than naming one (issue btclib-org/.github#1349).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
