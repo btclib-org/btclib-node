@@ -280,6 +280,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   the credential** (closes #1086); **a legacy request's error is its HTTP
   status, and one Core's parse refuses is not run** (closes #1109).
 
+### `PeerDB` refuses an unroutable address, as Core's addrman does
+
+- **`add_addresses` drops what Core's `IsRoutable` refuses, gossiped or
+  from a seed** (closes #1091): a loopback or a private address among
+  them, a CJDNS one off its prefix, and a network Core does not decode.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

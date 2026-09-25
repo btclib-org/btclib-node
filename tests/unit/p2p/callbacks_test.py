@@ -1187,7 +1187,11 @@ def test_the_addresses_a_peer_sends_are_kept() -> None:
     translated back into one; and without the timestamp the peer
     quoted, which is `PeerDB.add_addresses`'s own doing.
     """
-    given = [an_address(1), an_address(2)]
+    now = int(time.time())
+    given = [
+        peer_address("1.2.3.4", 18444, timestamp=now),
+        peer_address("1.2.3.5", 18444, timestamp=now),
+    ]
     for callback, message in (
         (addr, Addr([addr_entry(address) for address in given])),
         (addrv2, AddrV2(given)),
@@ -1241,7 +1245,7 @@ def test_an_octet_past_an_addr_or_addrv2_no_longer_costs_the_peer() -> None:
     # is about where it can without a second copy of btclib's codec --
     # Addr and AddrV2 accept a stream, and btclib's own assert_no_trailing
     # docstring calls a stream "the caller's", nothing past it checked.
-    given = [an_address(1)]
+    given = [peer_address("1.2.3.4", 18444, timestamp=int(time.time()))]
     for callback, message in (
         (addr, Addr([addr_entry(address) for address in given])),
         (addrv2, AddrV2(given)),
@@ -1254,13 +1258,15 @@ def test_an_octet_past_an_addr_or_addrv2_no_longer_costs_the_peer() -> None:
         assert not peer.stopped
 
 
-def test_an_address_of_a_network_nobody_here_has_heard_of_is_kept() -> None:
-    """An addrv2 network id nobody recognizes is stored rather than rejected.
+def test_an_address_of_a_network_nobody_here_has_heard_of_costs_nothing() -> None:
+    """An addrv2 network id nobody recognizes is dropped, and the peer kept.
 
     What this used to cost: the network id was an enumeration over the
     ids BIP155 had assigned, so a yggdrasil peer raised out of the
     parser and p2p.main turned that into a disconnect. The whole point
-    of the format is that a new network needs no new message.
+    of the format is that a new network needs no new message. Not
+    stored either, as Core decodes such an address as one `IsValid`
+    refuses and its addrman refuses it for that (ISS 1091).
     """
     # what this used to cost: the network id was an enumeration over the
     # ids BIP155 had assigned, so a yggdrasil peer raised out of the
@@ -1272,11 +1278,8 @@ def test_an_address_of_a_network_nobody_here_has_heard_of_is_kept() -> None:
     node = a_handshake_node(peer_db=peer_db)
     peer = a_peer()
     addrv2(node, AddrV2([yggdrasil, unassigned]).serialize(), peer)
-    assert peer_db.addresses == {yggdrasil, unassigned}
+    assert not peer_db.addresses
     assert not peer.stopped
-    # and neither is dialled or gossiped on, there being no address of
-    # either kind this node knows what to do with
-    assert peer_db.random_address() is None
 
 
 def test_a_notfound_is_logged_rather_than_held_against_the_peer() -> None:
