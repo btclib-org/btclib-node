@@ -90,14 +90,17 @@ again.
   reach the port can stop the node and make it announce a transaction.
   Run it where nothing else can reach that port, and do not widen the
   bind without one. btclib-org/btclib-node#1055.
-- **What one connection may cost this node is bounded; how many
-  connections may be open at once is not.** `p2p/connection.py` caps
-  what one peer's queue may hold and paces `getdata` and `getcfilters`
-  against that cap, checked before every item rather than once a whole
-  answer is built (btclib-org/btclib-node#101). Nothing bounds the
-  number of simultaneous inbound connections themselves, so the sockets
-  and the fixed per-connection memory each one holds are still unbounded
-  in aggregate. btclib-org/btclib-node#1054.
+- **Whoever fills the inbound slots first keeps them.** What one peer's
+  queue may hold is capped in `p2p/connection.py`, checked before every
+  `getdata` and `getcfilters` item rather than once a whole answer is
+  built (btclib-org/btclib-node#101), and how many inbound peers are
+  held at once is `Config.max_connections`'s inbound share
+  (btclib-org/btclib-node#1054). A peer arriving once that share is
+  taken is closed, where Core first tries to evict a peer it already
+  holds, so connections held open from anywhere lock every later peer
+  out (btclib-org/btclib-node#1064). Inbound connections also
+  count against the outbound dial target, so enough of them stop this
+  node choosing any peer of its own (btclib-org/btclib-node#1065).
 - **`Development Status :: 3 - Alpha` is the claim `pyproject.toml`
   makes**, and it is the right one to read the two above against: this
   node has downloaded and validated the chain, which is not the same as

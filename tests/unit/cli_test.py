@@ -12,6 +12,7 @@ import pytest
 
 from btclib_node import cli
 from btclib_node.chains import RegTest
+from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS
 from btclib_node.constants import MIN_PRUNE_TARGET_MIB
 
 if TYPE_CHECKING:
@@ -432,6 +433,24 @@ def test_build_config_with_nothing_given_uses_every_default(tmp_path: Path) -> N
     assert config.connect == ()
     assert config.addnode == ()
     assert config.listen is True
+    assert config.max_connections == DEFAULT_MAX_PEER_CONNECTIONS
+
+
+def test_build_config_maxconnections_from_the_command_line(tmp_path: Path) -> None:
+    """`-maxconnections=<n>` reaches `Config.max_connections`."""
+    config = cli.build_config(["-datadir", str(tmp_path), "-maxconnections=7"])
+    assert config.max_connections == 7
+
+
+def test_build_config_maxconnections_from_the_file_on_any_chain(
+    tmp_path: Path,
+) -> None:
+    """Read from the default section off `main` too: Core's `ALLOW_ANY`."""
+    (tmp_path / "bitcoin.conf").write_text(
+        "regtest=1\nmaxconnections=7\n", encoding="utf-8"
+    )
+    config = cli.build_config(["-datadir", str(tmp_path)])
+    assert config.max_connections == 7
 
 
 def test_build_config_datadir_a_file_raises(tmp_path: Path) -> None:
