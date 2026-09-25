@@ -129,7 +129,9 @@ def _resolve_peers(
     return tuple(peers)
 
 
-def _resolve_cookie_file(value: str | Path | None, data_dir: Path) -> Path | None:
+def _resolve_cookie_file(
+    value: str | Path | None, data_dir: Path, *, temp: bool = False
+) -> Path | None:
     """Return where `-rpccookiefile=<value>` writes, `None` for no cookie.
 
     Core's `GetAuthCookieFile`: an empty value is `COOKIE_FILE`, any
@@ -141,10 +143,19 @@ def _resolve_cookie_file(value: str | Path | None, data_dir: Path) -> Path | Non
     difference measured is a leading `//`, which POSIX lets `normpath`
     keep and which `lexically_normal` collapses to `/`; macOS and Linux
     both resolve the two to the same file.
+
+    `temp` is `GetAuthCookieFile(true)`, the file the cookie is written
+    to before its rename: `.tmp` appended to the normalised value before
+    it is resolved, so `.` is `<chain dir>/..tmp` and `/` is `/.tmp`, as
+    `bitcoind` v31.1.0 names them. `Path` drops a trailing `.`, so the
+    cookie itself for `.` is the chain directory, where Core's warning
+    names `<chain dir>/.`, and `.tmp` appended to that would be
+    `<chain dir>.tmp`.
     """
     if value is None:
         return None
-    path = Path(os.path.normpath(value)) if value else Path(COOKIE_FILE)
+    arg = os.path.normpath(value) if value else COOKIE_FILE
+    path = Path(arg + ".tmp" if temp else arg)
     return path if path.is_absolute() else data_dir / path
 
 
@@ -217,6 +228,9 @@ class Config:
     # Core's own `-rpccookiefile`, a relative path resolved against
     # `data_dir`; `None` is `-norpccookiefile`, which writes none.
     rpc_cookie_file: Path | None
+    # where the cookie is written before it is renamed to
+    # `rpc_cookie_file`; `None` where that is
+    rpc_cookie_tmp: Path | None
     # Core's own `-rpccookieperms`, as the mode `rpc.auth.cookie_perms`
     # maps it to; `None` is its default, owner-only, and is what it is
     # wherever `-rpcpassword` is set, Core not reading it then.
@@ -391,6 +405,9 @@ class Config:
             RpcAuthEntry.from_password(rpcuser, rpcpassword) if rpcpassword else None
         )
         self.rpc_cookie_file = _resolve_cookie_file(rpccookiefile, self.data_dir)
+        self.rpc_cookie_tmp = _resolve_cookie_file(
+            rpccookiefile, self.data_dir, temp=True
+        )
         # an invalid value is fatal, `cookie_perms`' own `ValueError`,
         # where Core reads it at all
         self.rpc_cookie_perms = None

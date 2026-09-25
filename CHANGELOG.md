@@ -286,6 +286,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   from a seed** (closes #1091): a loopback or a private address among
   them, a CJDNS one off its prefix, and a network Core does not decode.
 
+### A cookie path Core cannot write to stops the node as Core's does
+
+- **The cookie's `.tmp` is Core's, the normalised value plus `.tmp`**
+  (closes #1120): `-rpccookiefile=/` fails at `/.tmp` and `.` at
+  `<chain dir>/..tmp`, each logging `GenerateAuthCookie`'s own warning.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

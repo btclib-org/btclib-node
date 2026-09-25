@@ -38,6 +38,7 @@ import re
 import secrets
 import stat
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode
@@ -48,7 +49,6 @@ from btclib_node.rpc.jsonrpc import JsonRpcRequest, error_status
 if TYPE_CHECKING:
     import logging
     from collections.abc import Mapping, Sequence
-    from pathlib import Path
 
     from btclib_node.config import Config
 
@@ -285,6 +285,7 @@ class RpcAuth:
         *,
         password: RpcAuthEntry | None = None,
         cookie_file: Path | None = None,
+        cookie_tmp: Path | None = None,
         cookie_perms: int | None = None,
         whitelist: Mapping[bytes, frozenset[str]] | None = None,
         whitelist_default: bool = False,
@@ -293,12 +294,14 @@ class RpcAuth:
 
         `password` set is `-rpcpassword` set, which is what stops `start`
         writing a cookie; `cookie_file` `None` is `-norpccookiefile`.
+        `cookie_tmp` is `generate_cookie`'s `tmp`.
         """
         self.entries = [password] if password is not None else []
         self.entries.extend(entries)
         self.password_set = password is not None
         self.rpcauth_set = bool(entries)
         self.cookie_file = cookie_file
+        self.cookie_tmp = cookie_tmp
         self.cookie_perms = cookie_perms
         self.whitelist = dict(whitelist or {})
         self.whitelist_default = whitelist_default
@@ -314,6 +317,7 @@ class RpcAuth:
             config.rpc_auth,
             password=config.rpc_password_entry,
             cookie_file=config.rpc_cookie_file,
+            cookie_tmp=config.rpc_cookie_tmp,
             cookie_perms=config.rpc_cookie_perms,
             whitelist=config.rpc_whitelist,
             whitelist_default=config.rpc_whitelist_default,
@@ -324,8 +328,8 @@ class RpcAuth:
 
         `InitRPCAuthentication`: no cookie where `-rpcpassword` is set,
         with Core's warning that the password sits in plain text, and
-        none where `-norpccookiefile` is given. Raises `OSError` where
-        the cookie cannot be written or its permissions set.
+        none where `-norpccookiefile` is given. Raises `generate_cookie`'s
+        `OSError` where the cookie cannot be written or its permissions set.
         """
         if self.password_set:
             logger.info("Using rpcuser/rpcpassword authentication.")
@@ -333,7 +337,9 @@ class RpcAuth:
         elif self.cookie_file is None:
             logger.info("RPC authentication cookie file generation is disabled.")
         else:
-            path = self.generate_cookie(self.cookie_file, self.cookie_perms)
+            path = self.generate_cookie(
+                self.cookie_file, self.cookie_perms, tmp=self.cookie_tmp
+            )
             logger.info("Generated RPC authentication cookie %s", path)
             # `PermsToSymbolicString`, the nine characters `filemode`
             # writes after the file type
@@ -343,11 +349,15 @@ class RpcAuth:
         if self.rpcauth_set:
             logger.info("Using rpcauth authentication.")
 
-    def generate_cookie(self, path: Path, perms: int | None = None) -> Path:
+    def generate_cookie(
+        self, path: Path, perms: int | None = None, *, tmp: Path | None = None
+    ) -> Path:
         """Write the cookie to `path` and accept the password it holds.
 
-        Written to a `.tmp` sibling and renamed over the real name, as
-        Core does, so a client never reads a half-written file. Created
+        Written to `tmp` and renamed over `path`, as Core does, so a
+        client never reads a half-written file. `tmp` is `.tmp` appended
+        to `path` unless given: `Config.rpc_cookie_tmp` differs from that
+        where `-rpccookiefile` normalises to `.`. Created
         with mode 0600 on POSIX: Core's own default is owner-only
         through the process umask 0077 (`-rpccookieperms`' "default:
         owner"), and this sets the mode on the file rather than the
@@ -359,17 +369,36 @@ class RpcAuth:
         changes anything there: the ACL of the directory the file sits
         in, which it inherits, decides who reads it. A leftover `.tmp`
         is removed first, since `O_CREAT`'s mode applies only to a file
-        it creates. Raises `OSError` where the file cannot be written.
+        it creates.
+
+        Raises `OSError` with `GenerateAuthCookie`'s own warning where
+        the file cannot be opened, renamed or given `perms`, the
+        `.tmp` left where the rename fails, as Core leaves it. A path
+        holding a NUL byte is refused as one that cannot be opened, the
+        `ValueError` Python raises for it forcing a divergence:
+        `bitcoind` v31.1.0 writes to the path cut at that byte instead.
         """
-        tmp = path.with_name(path.name + ".tmp")
+        tmp = Path(f"{path}.tmp") if tmp is None else tmp
         password = secrets.token_hex(_COOKIE_SIZE)
-        tmp.unlink(missing_ok=True)
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            tmp.unlink(missing_ok=True)
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except (OSError, ValueError) as err:
+            msg = f"Unable to open cookie authentication file {tmp} for writing"
+            raise OSError(msg) from err
         with os.fdopen(fd, "w", encoding="ascii") as file:
             file.write(f"{COOKIE_USER}:{password}")
-        tmp.replace(path)
+        try:
+            tmp.replace(path)
+        except OSError as err:
+            msg = f"Unable to rename cookie authentication file {tmp} to {path}"
+            raise OSError(msg) from err
         if perms is not None:
-            path.chmod(perms)
+            try:
+                path.chmod(perms)
+            except OSError as err:
+                msg = f"Unable to set permissions on cookie authentication file {path}"
+                raise OSError(msg) from err
         self.entries.append(RpcAuthEntry.from_password(COOKIE_USER, password))
         self.cookie_path = path
         return path

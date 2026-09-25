@@ -13,7 +13,9 @@ go of both -- and until now only a functional test reached any of it.
 import asyncio
 import base64
 import json
+import os
 import socket
+import threading
 from concurrent.futures import Future
 from contextlib import suppress
 from types import SimpleNamespace
@@ -804,17 +806,63 @@ def test_a_manager_that_cannot_write_its_cookie_does_not_listen(
     The socket already bound is closed by `run` itself, before `stop`
     is ever called, so the port is not held by a manager that failed.
     """
-    logged: list[str] = []
+    logged: list[tuple[object, ...]] = []
     manager = a_manager(get_random_port())
     manager.node.config.data_dir.rmdir()
-    monkeypatch.setattr(manager.logger, "exception", logged.append)
+    monkeypatch.setattr(manager.logger, "warning", lambda *args: logged.append(args))
     assert not manager.start_listener()
     wait_until(lambda: not manager.is_alive())
-    assert logged == ["Could not write the RPC authentication cookie"]
+    tmp = f"{cookie_path(manager.node.config.data_dir)}.tmp"
+    assert [str(args[1]) for args in logged] == [
+        f"Unable to open cookie authentication file {tmp} for writing"
+    ]
     assert not manager.listening.is_set()
     assert manager._server_socket is not None
     # a closed socket's own fileno is -1; still >= 0 is still open
     assert manager._server_socket.fileno() == -1
+    manager.stop()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(
+            "/",
+            marks=pytest.mark.skipif(
+                os.name == "nt" or os.geteuid() == 0,
+                reason="`/` writable by the user",
+            ),
+        ),
+        ".",
+        "a/..",
+    ],
+)
+def test_an_rpccookiefile_core_cannot_write_stops_the_listener(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """Refused on `_listen`'s own path, as `bitcoind` v31.1.0 refuses to start.
+
+    `/` cannot be opened as `/.tmp`, and the chain directory named as
+    `.` is written to `<chain dir>/..tmp` and cannot be renamed over.
+    Nothing reaches `threading.excepthook`, and the socket is closed.
+    """
+    raised: list[threading.ExceptHookArgs] = []
+    monkeypatch.setattr(threading, "excepthook", raised.append)
+    logged: list[tuple[object, ...]] = []
+    manager = a_manager(get_random_port())
+    data_dir = manager.node.config.data_dir
+    config = Config(chain="regtest", data_dir=data_dir.parent, rpccookiefile=value)
+    manager.auth.cookie_file = config.rpc_cookie_file
+    manager.auth.cookie_tmp = config.rpc_cookie_tmp
+    monkeypatch.setattr(manager.logger, "warning", lambda *args: logged.append(args))
+    assert not manager.start_listener()
+    wait_until(lambda: not manager.is_alive())
+    assert raised == []
+    assert len(logged) == 1
+    assert str(logged[0][1]).startswith("Unable to ")
+    assert manager._server_socket is not None
+    assert manager._server_socket.fileno() == -1
+    assert not data_dir.with_name(data_dir.name + ".tmp").exists()
     manager.stop()
 
 
