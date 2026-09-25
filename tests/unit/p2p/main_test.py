@@ -47,7 +47,7 @@ _AN_ADDRESS = NetworkAddressV2(0, 0, 1, b"\x01\x02\x03\x04", 18444)
 
 def make_node(
     queue_name: str,
-    item: tuple[str, bytes, int, int],
+    item: tuple[str, bytes, int, int] | tuple[str, bytes, int, int, float],
     *,
     status: P2pConnStatus,
     present: bool = True,
@@ -317,11 +317,32 @@ def test_a_message_reaches_its_callback(monkeypatch: pytest.MonkeyPatch) -> None
 
     monkeypatch.setitem(callbacks, "ping", a_callback)
     node, stopped = make_node(
-        "messages", ("ping", b"x", 0, 1), status=P2pConnStatus.Connected
+        "messages", ("ping", b"x", 0, 1, 0.0), status=P2pConnStatus.Connected
     )
     handle_p2p(node)
     assert seen == [b"x"]
     assert not stopped
+
+
+def test_a_callback_reads_when_its_message_was_read_off_the_socket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The item's receive time is `conn.time_received` when the callback runs.
+
+    Core's `ProcessMessage` takes it as `time_received`, and `pong` ends a
+    round trip there rather than when `Node`'s loop reaches the message.
+    """
+    seen: list[float] = []
+
+    def a_callback(node: Node, msg: bytes, conn: Any) -> None:
+        seen.append(conn.time_received)
+
+    monkeypatch.setitem(callbacks, "ping", a_callback)
+    node, _stopped = make_node(
+        "messages", ("ping", b"", 0, 1, 123.25), status=P2pConnStatus.Connected
+    )
+    handle_p2p(node)
+    assert seen == [123.25]
 
 
 def test_a_message_before_the_handshake_is_over_drops_the_peer() -> None:
@@ -332,7 +353,7 @@ def test_a_message_before_the_handshake_is_over_drops_the_peer() -> None:
     version above.
     """
     node, stopped = make_node(
-        "messages", ("ping", b"", 0, 1), status=P2pConnStatus.Open
+        "messages", ("ping", b"", 0, 1, 0.0), status=P2pConnStatus.Open
     )
     handle_p2p(node)
     assert stopped == [True]
@@ -342,7 +363,7 @@ def test_a_message_before_the_handshake_is_over_drops_the_peer() -> None:
 def test_a_message_on_a_closed_connection_is_dropped() -> None:
     """An ordinary message for a `Closed` connection is dropped, not run."""
     node, stopped = make_node(
-        "messages", ("ping", b"", 0, 1), status=P2pConnStatus.Closed
+        "messages", ("ping", b"", 0, 1, 0.0), status=P2pConnStatus.Closed
     )
     handle_p2p(node)
     assert not stopped
@@ -351,7 +372,7 @@ def test_a_message_on_a_closed_connection_is_dropped() -> None:
 def test_a_command_nothing_dispatches_is_ignored() -> None:
     """A command with no entry in `callbacks` is ignored, not dropped."""
     node, stopped = make_node(
-        "messages", ("nosuchcommand", b"", 0, 1), status=P2pConnStatus.Connected
+        "messages", ("nosuchcommand", b"", 0, 1, 0.0), status=P2pConnStatus.Connected
     )
     handle_p2p(node)
     assert not stopped
@@ -369,7 +390,7 @@ def test_a_callback_that_raises_drops_the_peer(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setitem(callbacks, "ping", boom)
     node, stopped = make_node(
-        "messages", ("ping", b"", 0, 1), status=P2pConnStatus.Connected
+        "messages", ("ping", b"", 0, 1, 0.0), status=P2pConnStatus.Connected
     )
     handle_p2p(node)
     assert stopped == [True]
@@ -388,7 +409,7 @@ def test_a_callback_that_raises_a_btclib_exception_costs_the_peer(
 
     monkeypatch.setitem(callbacks, "ping", boom)
     node, stopped = make_node(
-        "messages", ("ping", b"", 0, 1), status=P2pConnStatus.Connected
+        "messages", ("ping", b"", 0, 1, 0.0), status=P2pConnStatus.Connected
     )
     handle_p2p(node)
     assert stopped == [True]
@@ -420,7 +441,9 @@ def test_a_consensus_invalid_transaction_costs_the_peer_nothing(
     transaction = generate_random_transaction()
     payload = TxMsg(transaction, include_witness=True).serialize()
     node, stopped = make_node(
-        "messages", ("tx", payload, 0, len(payload)), status=P2pConnStatus.Connected
+        "messages",
+        ("tx", payload, 0, len(payload), 0.0),
+        status=P2pConnStatus.Connected,
     )
     node.status = NodeStatus.BlockSynced
     node.mempool = Mempool(Logger(debug=True))
@@ -432,7 +455,10 @@ def test_a_consensus_invalid_transaction_costs_the_peer_nothing(
 def test_a_message_for_a_connection_that_is_gone_is_dropped() -> None:
     """A message naming an unknown connection id is dropped, not run."""
     node, stopped = make_node(
-        "messages", ("ping", b"", 7, 1), status=P2pConnStatus.Connected, present=False
+        "messages",
+        ("ping", b"", 7, 1, 0.0),
+        status=P2pConnStatus.Connected,
+        present=False,
     )
     handle_p2p(node)
     assert not stopped
@@ -446,7 +472,7 @@ def test_a_message_on_a_connection_still_pending_drops_the_peer() -> None:
     found in `connections` or still in `pending_connections`.
     """
     node, stopped = make_node(
-        "messages", ("ping", b"", 0, 1), status=P2pConnStatus.Open, pending=True
+        "messages", ("ping", b"", 0, 1, 0.0), status=P2pConnStatus.Open, pending=True
     )
     handle_p2p(node)
     assert stopped == [True]
@@ -462,7 +488,7 @@ def test_handle_p2p_weighs_the_message_off_the_connections_own_queued_bytes() ->
     """
     node, stopped = make_node(
         "messages",
-        ("nosuchcommand", b"", 0, 1_000),
+        ("nosuchcommand", b"", 0, 1_000, 0.0),
         status=P2pConnStatus.Connected,
         queued_recv_bytes=1_500,
     )
@@ -481,7 +507,7 @@ def test_handle_p2p_resumes_a_connection_back_under_the_bound() -> None:
     """
     node, stopped = make_node(
         "messages",
-        ("nosuchcommand", b"", 0, 1),
+        ("nosuchcommand", b"", 0, 1, 0.0),
         status=P2pConnStatus.Connected,
         queued_recv_bytes=MAX_QUEUED_RECV_BYTES + 1,
     )
@@ -501,7 +527,7 @@ def test_handle_p2p_does_not_resume_a_connection_still_over_the_bound() -> None:
     """
     node, stopped = make_node(
         "messages",
-        ("nosuchcommand", b"", 0, 1),
+        ("nosuchcommand", b"", 0, 1, 0.0),
         status=P2pConnStatus.Connected,
         queued_recv_bytes=MAX_QUEUED_RECV_BYTES + 2,
     )
@@ -888,7 +914,7 @@ def test_handle_p2p_log_line_distinguishes_the_verdict(
         monkeypatch.setitem(callbacks, "ping", raiser)
         node, _stopped = make_node(
             "messages",
-            ("ping", b"", 0, 1),
+            ("ping", b"", 0, 1, 0.0),
             status=P2pConnStatus.Connected,
             logger=logger,
         )

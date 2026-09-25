@@ -865,7 +865,7 @@ def test_parse_messages_weighs_a_queued_message_against_the_recv_bound() -> None
         connection.buffer += wire
         connection.parse_messages()
     (item,) = connection.manager.messages
-    assert item == ("ping", Ping(1).serialize(), 0, len(wire))
+    assert item == ("ping", Ping(1).serialize(), 0, len(wire), connection.last_receive)
     assert connection.queued_recv_bytes == len(wire)
     assert connection._recv_resume.is_set()
 

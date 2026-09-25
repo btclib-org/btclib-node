@@ -131,7 +131,7 @@ def handle_p2p(node: Node) -> None:
     connection's (`Connection.__init__`'s own comment on `_recv_resume`
     argues why the indirection is required). btclib-org/btclib-node#462
     """
-    msg_type, msg, conn_id, size = node.p2p_manager.messages.popleft()
+    msg_type, msg, conn_id, size, received = node.p2p_manager.messages.popleft()
     manager = node.p2p_manager
     # a connection still pending is still found here, so that anything
     # other than the four handshake commands it sends before `verack`
@@ -147,6 +147,7 @@ def handle_p2p(node: Node) -> None:
         if resume:
             conn.loop.call_soon_threadsafe(conn._recv_resume.set)  # noqa: SLF001
         node.logger.info("Received p2p message: %s, %s", msg_type, conn_id)
+        conn.time_received = received
         try:
             if msg_type in callbacks:
                 if conn.status == P2pConnStatus.Connected:

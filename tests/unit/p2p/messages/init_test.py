@@ -17,6 +17,7 @@ import asyncio
 import importlib
 import inspect
 import threading
+import time
 from collections import deque
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
@@ -144,6 +145,21 @@ def test_one_message_is_dispatched() -> None:
     assert not conn.buffer
     assert [item[0] for item in conn.manager.messages] == ["ping"]
     assert Ping.parse(conn.manager.messages[0][1]).nonce == 7
+
+
+def test_a_queued_message_carries_the_time_it_was_read() -> None:
+    """The fifth element of the item is the receive time, `last_receive`'s own.
+
+    What `callbacks.pong` measures a round trip to (`P2pManager.messages`).
+    """
+    conn = make_connection()
+    conn.buffer = bytearray(framed(Ping(7)))
+    before = time.time()
+    conn.parse_messages()
+    after = time.time()
+    (item,) = conn.manager.messages
+    assert before <= item[4] <= after
+    assert item[4] == conn.last_receive
 
 
 def test_several_messages_in_one_read() -> None:

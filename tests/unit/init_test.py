@@ -255,7 +255,7 @@ def passes_until_resume(node: Node, peers: int) -> int:
         manager.connections[conn_id] = connection
     for _ in range(_ITEMS_PER_BUSY_PEER):
         for conn_id in range(peers):
-            manager.messages.append(("unknown", b"", conn_id, _ONE_QUEUED_MESSAGE))
+            manager.messages.append(("unknown", b"", conn_id, _ONE_QUEUED_MESSAGE, 0.0))
     passes = 0
     while not resumed:
         node._drain_message_queues()
@@ -892,7 +892,7 @@ def test_every_message_waiting_is_taken_before_the_loop_waits(
     p2p_manager = cast("AManager", node.p2p_manager)
     rpc_manager = cast("AManager", node.rpc_manager)
     p2p_manager.handshake_messages.append(("version", None, 99, 0))
-    p2p_manager.messages.append(("ping", None, 99, 0))
+    p2p_manager.messages.append(("ping", None, 99, 0, 0.0))
     rpc_manager.messages.append(([], 99))
 
     def every_queue_is_empty() -> bool:
