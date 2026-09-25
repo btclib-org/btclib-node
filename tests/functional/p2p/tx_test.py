@@ -103,10 +103,9 @@ def test_send_tx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
             # a transaction that arrives before this node is block synced,
             # whatever its own version told the peer. btclib-org/btclib-node#129
             wait_until(lambda: node.status == NodeStatus.BlockSynced)  # noqa: B023
-            # _send_due_feefilters gates outgoing relay on this same flag
-            # (btclib-org/btclib-node#661); update_ibd_status only re-checks
-            # it at update_chain's own settle points, which the wait above
-            # already forces past
+            # _send_due_feefilters gates outgoing relay on this flag
+            # (btclib-org/btclib-node#661), a write of its own on the
+            # node's thread, apart from the status the wait above reads
             wait_until(lambda: node.is_initial_block_download is False)  # noqa: B023
 
         node2.p2p_manager.connect(local_addr(node1.p2p_port))

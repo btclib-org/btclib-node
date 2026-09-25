@@ -292,6 +292,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   (closes #1120): `-rpccookiefile=/` fails at `/.tmp` and `.` at
   `<chain dir>/..tmp`, each logging `GenerateAuthCookie`'s own warning.
 
+### A block connected before the sync ends leaves the mempool, as in Core
+
+- **`update_chain` reconciles the mempool at any `node.status`, and
+  announces a block once out of IBD, as the tip's `inv` past eight blocks
+  or to a peer without `sendheaders`** (closes #1144, closes #1148).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

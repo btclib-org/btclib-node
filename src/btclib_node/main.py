@@ -7,7 +7,8 @@
 Builds a fork's contextual detail, validates it block by block through
 `interpreter.check_transactions`, reconciles the mempool across
 whatever it adds and removes, and announces every added block to every
-connected peer. `verify_mempool_acceptance` is the same validation path
+connected peer once the node is out of initial block download.
+`verify_mempool_acceptance` is the same validation path
 entered from a single transaction instead, for the RPC and p2p callbacks
 that relay one.
 """
@@ -69,26 +70,37 @@ def update_header_index(index: BlockIndex, invalid_hash: bytes) -> None:
     index.invalidate(invalid_hash)
 
 
-# update_chain calls this with every block one of its own calls just put
-# on the active chain, never an empty list: get_fork_details' own add
-# list always carries at least the candidate's own hash. So every peer
-# this node has a live connection to hears about it -- by header where
-# sendheaders (callbacks.sendheaders) asked for that, by inventory
-# otherwise, the same per-connection shape DownloadManager.tx_download
-# already uses to announce a transaction. Every connection, including
-# whichever one the block itself arrived on: unlike Core, nothing here
-# tracks what a given peer already knows, so the peer that sent it this
-# block hears about its own block back. Building that tracking is a
-# larger, separate piece of work than #202 asks for; the cost today is
-# a redundant message, not a correctness gap. btclib-org/btclib-node#202
+# Core's own `MAX_BLOCKS_TO_ANNOUNCE` (`src/net_processing.cpp:152`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+_MAX_BLOCKS_TO_ANNOUNCE = 8
+
+
+# _after_tip_change calls this, out of initial block download, with
+# every block one of update_chain's own calls just put on the active
+# chain, never an empty list: get_fork_details' own add list always
+# carries at least the candidate's own hash. Every peer this node has a
+# live connection to hears about it, the shape Core's `SendMessages`
+# picks (`src/net_processing.cpp`, "Try sending block announcements via
+# headers", same tag): every header where sendheaders
+# (callbacks.sendheaders) asked for that, and an `inv` of the tip alone
+# otherwise -- this node sending no compact blocks -- or wherever the
+# fork adds more than `_MAX_BLOCKS_TO_ANNOUNCE` blocks. Core's
+# `UpdatedBlockTip` queues at most that many of the newest, and
+# `SendMessages` sends them as headers only where they connect to a
+# header the peer has; nothing here tracks what a given peer has, so a
+# fork that long takes the tip's `inv`, which a peer answers from its
+# own header sync. For the same reason every connection hears about the
+# block, including whichever one it arrived on.
+# btclib-org/btclib-node#202
 def _announce_added_blocks(node: Node, blocks: list[Block]) -> None:
     headers = [block.header for block in blocks]
-    inventory = [Inventory(InventoryType.MSG_BLOCK, header.hash) for header in headers]
+    tip_inv = Inv([Inventory(InventoryType.MSG_BLOCK, headers[-1].hash)])
+    as_headers = len(headers) <= _MAX_BLOCKS_TO_ANNOUNCE
     for conn in node.p2p_manager.connections.copy().values():
-        if conn.prefers_headers:
+        if as_headers and conn.prefers_headers:
             conn.send(Headers(headers))
         else:
-            conn.send(Inv(inventory))
+            conn.send(tip_inv)
 
 
 def finish_sync(node: Node) -> None:
@@ -121,9 +133,11 @@ def update_ibd_status(node: Node) -> None:
     Core's function never sets its own cached flag back to `true`
     either, `UpdateIBDStatus`'s own comment naming that explicitly.
 
-    Called at the same two places `finish_sync` is: both are "there is
-    nothing more to try against the active chain right now", which is
-    exactly when the tip this reads could just have moved.
+    Called by `_after_tip_change` whenever a fork commits, where Core's
+    `ConnectTip` and `DisconnectTip` call it, and by
+    `settle_at_no_candidate`, which reaches a tip no fork has moved yet:
+    the one loaded from disk, where Core's `LoadChainTip` calls it
+    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
     """
     if not node.is_initial_block_download:
         return
@@ -140,12 +154,10 @@ def update_ibd_status(node: Node) -> None:
 def settle_at_no_candidate(node: Node) -> None:
     """Run `finish_sync` and `update_ibd_status` together, at one call site.
 
-    The two are separate latches over separate conditions, but every
-    caller that has reason to check one has reason to check the other
-    -- "there is no candidate left to beat the active chain right now"
-    -- so this is what `_ready_fork` and `update_chain` below each call
-    instead of both, one statement rather than two at each of the two
-    places that used to repeat the pair.
+    The two are separate latches over separate conditions, and "there
+    is no candidate left to beat the active chain right now" is reason
+    to check both, so this is what `_ready_fork` and `update_chain`
+    below each call.
     """
     finish_sync(node)
     update_ibd_status(node)
@@ -182,11 +194,11 @@ def _rev_blocks_to_remove(node: Node, to_remove_hash: list[bytes]) -> list[RevBl
     return to_remove
 
 
-# update_chain's own post-commit step, once a fork has actually
-# connected: every abandoned block's own transactions rejoin the
-# mempool where they still verify, and every newly-connected block's
-# own transactions leave it, mirroring what connecting them to the
-# chain already made true of the UTXO set they are checked against.
+# _after_tip_change's own step, once a fork has actually connected:
+# every abandoned block's own transactions rejoin the mempool where they
+# still verify, and every newly-connected block's own transactions
+# leave it, mirroring what connecting them to the chain already made
+# true of the UTXO set they are checked against.
 def _reconcile_mempool_for_reorg(
     node: Node, to_remove: list[RevBlock], to_add: list[Block]
 ) -> None:
@@ -219,8 +231,12 @@ def _reconcile_mempool_for_reorg(
                 continue
             node.mempool.add_tx(tx, fee)
     for block in to_add:
-        for tx in block.transactions[1:]:
-            node.mempool.remove_tx(tx)
+        # an empty mempool holds none of them, and `remove_tx` hashes
+        # each transaction to ask, which a block connected during
+        # initial block download would pay for every transaction
+        if node.mempool.size:
+            for tx in block.transactions[1:]:
+                node.mempool.remove_tx(tx)
         # Core's own `removeForBlock` (`src/txmempool.cpp:405-427`,
         # at bitcoin/bitcoin@58a7869f86): once per block connected,
         # whether or not it held anything this mempool was also
@@ -229,7 +245,24 @@ def _reconcile_mempool_for_reorg(
         # runs once per transaction rather than once per block.
         # btclib-org/btclib-node#294
         node.mempool.note_block_connected()
-    _announce_added_blocks(node, to_add)
+
+
+# update_chain's own step once a fork has committed, whatever
+# `node.status` says. Core's `ConnectTip` and `DisconnectTip` run
+# `UpdateIBDStatus` as the tip moves, and the mempool is reconciled with
+# no gate, by `ConnectTip`'s `removeForBlock` and
+# `ActivateBestChainStep`'s `MaybeUpdateMempoolForReorg`;
+# `PeerManagerImpl::UpdatedBlockTip` then reads that latch: "Don't relay
+# inventory during initial block download." (`src/validation.cpp`,
+# `src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+# tag). btclib-org/btclib-node#1144, btclib-org/btclib-node#1148
+def _after_tip_change(
+    node: Node, to_remove: list[RevBlock], to_add: list[Block]
+) -> None:
+    update_ibd_status(node)
+    _reconcile_mempool_for_reorg(node, to_remove, to_add)
+    if not node.is_initial_block_download:
+        _announce_added_blocks(node, to_add)
 
 
 # update_chain's own commit step, once the trial loop above has gone
@@ -663,9 +696,8 @@ def update_chain(node: Node) -> None:
     before this call; whether it also invalidates the block it happened
     on, or instead propagates out of this call once the rollback has
     run, is `_CONTENT_FAILURE`'s own distinction above. Once a trial
-    succeeds, `_finalize_fork` commits it, the mempool is reconciled
-    against whatever it added and removed, and `_announce_added_blocks`
-    tells every connected peer.
+    succeeds, `_finalize_fork` commits it and `_after_tip_change` runs
+    what Core runs as the tip moves.
     """
     fork = _ready_fork(node)
     if fork is None:
@@ -782,8 +814,8 @@ def update_chain(node: Node) -> None:
         node.logger.debug("Start updating index")
         update_header_index(block_index, failed_hash)
 
-    if success and node.status == NodeStatus.BlockSynced:
-        _reconcile_mempool_for_reorg(node, to_remove, to_add)
+    if success:
+        _after_tip_change(node, to_remove, to_add)
 
     node.logger.debug("Finished main\n")
 

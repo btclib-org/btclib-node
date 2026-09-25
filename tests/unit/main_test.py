@@ -1200,10 +1200,16 @@ def _extend(previous_hash: bytes, start_height: int, count: int) -> list[Block]:
     return continuation
 
 
+@pytest.mark.parametrize("status", [NodeStatus.SyncingHeaders, NodeStatus.BlockSynced])
 def test_a_reorg_still_resurrects_a_transaction_its_prevout_survives(
-    node: Node,
+    node: Node, status: NodeStatus
 ) -> None:
-    """A confirmed tx whose prevout survives the reorg re-enters the mempool."""
+    """A confirmed tx whose prevout survives the reorg re-enters the mempool.
+
+    Before header sync ends too: Core's `MaybeUpdateMempoolForReorg`
+    reads no sync state (btclib-org/btclib-node#1144).
+    """
+    node.status = status
     # #85's fix checks every re-added transaction rather than trusting
     # it: this is the other side of that, a transaction that spent an
     # output the reorg does not touch and is still good on the chain
@@ -1233,6 +1239,7 @@ def test_a_reorg_still_resurrects_a_transaction_its_prevout_survives(
     for block in heavier[1:]:
         node.block_db.add_block(block)
         block_index.set_downloaded(block.header.hash)
+    assert node.status == status
     settle(node)
     assert block_index.active_chain[1:] == hashes(heavier)
 
@@ -1290,28 +1297,34 @@ def test_a_reorg_re_adds_abandoned_transactions_parent_first(
     assert node.mempool.contains_tx(child)
 
 
-def test_a_reorg_before_the_node_is_synced_leaves_the_mempool_alone(
+def test_a_block_connected_before_header_sync_ends_leaves_the_mempool(
     node: Node,
 ) -> None:
-    """A reorg while still syncing does not reconcile the mempool at all."""
-    first = generate_random_chain(2, RegTest().genesis.hash)
-    connect(node, first)
-    node.status = NodeStatus.HeaderSynced
+    """A connected block's own transactions leave the mempool at any status.
 
-    second = generate_random_chain(3, RegTest().genesis.hash)
-    block_index = connect(node, second)
-    # the reorg happened, and left the mempool out of it
-    assert block_index.active_chain[1:] == hashes(second)
-    assert node.mempool.size == 0
+    Core's `ConnectTip` runs `removeForBlock` whatever the sync state
+    (btclib-org/btclib-node#1144).
+    """
+    node.status = NodeStatus.SyncingHeaders
+    # generate_random_chain's own last block, past COINBASE_MATURITY,
+    # carries a second transaction spending chain[0]'s coinbase
+    chain = generate_random_chain(COINBASE_MATURITY + 1, RegTest().genesis.hash)
+    connect(node, chain[:-1])
+    mined = chain[-1].transactions[1]
+    node.mempool.add_tx(mined, verify_mempool_acceptance(node, mined))
+
+    connect(node, chain[-1:])
+    assert node.chainstate.block_index.active_chain[-1] == chain[-1].header.hash
+    assert node.status == NodeStatus.SyncingHeaders
+    assert not node.mempool.contains_tx(mined)
 
 
 def test_a_newly_connected_block_is_announced_to_every_connected_peer(
     node: Node,
 ) -> None:
-    """A connected block reaches every peer, by header or inventory."""
-    # only once the node is synced, the same gate the mempool bookkeeping
-    # above already uses: an accepted block used to reach nobody, by
-    # either shape. btclib-org/btclib-node#202
+    """A connected block reaches every peer: its headers, or the tip's `inv`."""
+    # an accepted block used to reach nobody, by either shape.
+    # btclib-org/btclib-node#202
     first = generate_random_chain(1, RegTest().genesis.hash)
     connect(node, first)
     assert node.status == NodeStatus.BlockSynced
@@ -1325,25 +1338,93 @@ def test_a_newly_connected_block_is_announced_to_every_connected_peer(
         "Connection", SimpleNamespace(prefers_headers=False, send=inv_sent.append)
     )
 
-    second = generate_random_chain(2, RegTest().genesis.hash)
+    # a recent tip, so that connecting it ends initial block download
+    second = generate_random_chain(
+        2, RegTest().genesis.hash, tip_time=datetime.now(UTC)
+    )
     connect(node, second)
 
     (sent,) = header_sent
     assert isinstance(sent, Headers)
-    assert list(sent.headers) == [block.header for block in second]
+    assert [header.hash for header in sent.headers] == hashes(second)
 
+    # Core's `SendMessages` sends a peer that did not ask for headers an
+    # `inv` of the tip alone
     (sent,) = inv_sent
     assert isinstance(sent, Inv)
-    assert sent.items == tuple(
-        Inventory(InventoryType.MSG_BLOCK, block.header.hash) for block in second
+    assert sent.items == (Inventory(InventoryType.MSG_BLOCK, second[-1].header.hash),)
+
+
+@pytest.mark.parametrize(("length", "as_headers"), [(8, True), (9, False)])
+def test_a_fork_longer_than_eight_blocks_is_announced_by_its_tip_alone(
+    node: Node, length: int, *, as_headers: bool
+) -> None:
+    """A fork adding more than eight blocks reaches a peer as the tip's `inv`.
+
+    Core's `MAX_BLOCKS_TO_ANNOUNCE`, `UpdatedBlockTip` queueing no more
+    of the newest and `SendMessages` sending headers only where they
+    connect to one the peer has, which nothing here tracks.
+    """
+    # a chain one block shorter, so that the recent-tipped one below
+    # replaces it in a single fork of `length` blocks
+    connect(node, generate_random_chain(length - 1, RegTest().genesis.hash))
+    sent: list[Any] = []
+    node.p2p_manager.connections[1] = cast(
+        "Connection", SimpleNamespace(prefers_headers=True, send=sent.append)
     )
 
+    fork = generate_random_chain(
+        length, RegTest().genesis.hash, tip_time=datetime.now(UTC)
+    )
+    connect(node, fork)
+    assert node.chainstate.block_index.active_chain[1:] == hashes(fork)
 
-def test_a_reorg_before_the_node_is_synced_announces_nothing(node: Node) -> None:
-    """A reorg while still syncing sends no connected peer anything."""
+    (message,) = sent
+    if as_headers:
+        assert isinstance(message, Headers)
+        assert [header.hash for header in message.headers] == hashes(fork)
+    else:
+        assert isinstance(message, Inv)
+        assert message.items == (
+            Inventory(InventoryType.MSG_BLOCK, fork[-1].header.hash),
+        )
+
+
+def test_a_block_connected_with_an_empty_mempool_asks_it_nothing_per_tx(
+    node: Node, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty mempool is asked for no transaction, yet sees every block.
+
+    `Mempool.remove_tx` hashes the transaction it is asked about, which
+    every block connected in initial block download would pay for; the
+    once-per-block `note_block_connected` still runs, as Core's
+    `removeForBlock` does.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY + 1, RegTest().genesis.hash)
+    connect(node, chain[:-1])
+    assert node.mempool.size == 0
+    asked: list[Tx] = []
+    monkeypatch.setattr(node.mempool, "remove_tx", asked.append)
+    node.mempool._block_since_last_rolling_fee_bump = False
+
+    connect(node, chain[-1:])
+    assert len(chain[-1].transactions) > 1
+    assert not asked
+    assert node.mempool._block_since_last_rolling_fee_bump is True
+
+
+def test_a_reorg_during_initial_block_download_announces_nothing(
+    node: Node,
+) -> None:
+    """A reorg in initial block download sends no peer anything, synced or not.
+
+    Core's `UpdatedBlockTip` returns on `fInitialDownload` alone
+    (btclib-org/btclib-node#1148): `generate_random_chain` dates every
+    block too far back for the tip to end it.
+    """
     first = generate_random_chain(2, RegTest().genesis.hash)
     connect(node, first)
-    node.status = NodeStatus.HeaderSynced
+    assert node.status == NodeStatus.BlockSynced
 
     sent: list[Any] = []
     node.p2p_manager.connections[1] = cast(
@@ -1353,7 +1434,34 @@ def test_a_reorg_before_the_node_is_synced_announces_nothing(node: Node) -> None
 
     second = generate_random_chain(3, RegTest().genesis.hash)
     connect(node, second)
+    assert node.is_initial_block_download is True
     assert not sent
+
+
+def test_the_block_ending_initial_block_download_is_announced_before_sync(
+    node: Node,
+) -> None:
+    """The block ending initial block download is announced at any status.
+
+    A node no peer has sent a header stays `SyncingHeaders`, and the
+    block `submitblock` hands it is announced once it is recent
+    (btclib-org/btclib-node#1148): Core's `ConnectTip` updates the IBD
+    latch before `UpdatedBlockTip` reads it.
+    """
+    node.status = NodeStatus.SyncingHeaders
+    sent: list[Any] = []
+    node.p2p_manager.connections[1] = cast(
+        "Connection",
+        SimpleNamespace(prefers_headers=True, send=sent.append),
+    )
+
+    chain = generate_random_chain(1, RegTest().genesis.hash, tip_time=datetime.now(UTC))
+    connect(node, chain)
+    assert node.status == NodeStatus.SyncingHeaders
+    assert node.is_initial_block_download is False
+    (headers,) = sent
+    assert isinstance(headers, Headers)
+    assert [header.hash for header in headers.headers] == hashes(chain)
 
 
 def test_a_refused_branch_invalidates_only_the_block_that_failed(

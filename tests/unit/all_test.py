@@ -55,8 +55,9 @@ UNEXPORTED = {
     "btclib_node.config": ["DEFAULT_CHAIN"],
     # download.py's own burst size, read only where it is defined
     "btclib_node.download": ["MAX_BLOCKS_PER_GETDATA_BURST"],
-    # finish_sync/update_ibd_status: called only from settle_at_no_candidate,
-    # itself called only from update_chain's own module; update_header_index:
+    # finish_sync: called only from settle_at_no_candidate; update_ibd_status:
+    # from that and _after_tip_change, which main.py alone calls, as it
+    # alone calls settle_at_no_candidate; update_header_index:
     # update_chain's own failure-path helper, called from nowhere else
     "btclib_node.main": [
         "finish_sync",
