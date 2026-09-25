@@ -469,6 +469,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 - **A refused inbound peer is sent nothing** (closes #1207).
 
+### JSON-RPC named parameters are mapped onto positions, as in Core
+
+- **A `params` object is read as `transformNamedArguments` reads it**
+  (closes #1168), `args` holding the leading positions; a name repeated,
+  unknown or given both ways is refused with `RPC_INVALID_PARAMETER`.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
