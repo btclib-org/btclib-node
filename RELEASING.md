@@ -729,16 +729,9 @@ reading a mismatch as tampering:
 - **the build reads the working directory, not git.** `uv_build` walks
   the tree through the glob patterns of `[tool.uv.build-backend]`, so an
   *untracked* file matching one of them is packed like any other and
-  changes the digest. Rebuild in a clean export, which takes the
-  version from the fence above:
-
-  ```shell
-  : "${version:?}" &&
-  d=$(mktemp -d) &&
-  git archive "v${version:?}" | tar -x -C "$d" &&
-  cd "$d"
-  ```
-
+  changes the digest. The worktree the command above adds is a clean
+  tree whatever the reader's checkout holds, having only the files the
+  tag tracks.
 - **the build backend is bounded, not pinned.** `[build-system] requires`
   names a range and not a version, and a build takes whichever version in
   that range the uv running it carries, so a rebuild months later runs a

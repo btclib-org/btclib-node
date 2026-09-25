@@ -94,6 +94,12 @@ declare; it names `setup-python` and its `false` default instead
 `RELEASING.md`'s *Rebuild a release from its tag* reads it from the tag's
 `.python-version` rather than naming one (issue btclib-org/.github#1349).
 
+### The rebuild of a release drops the export it could not run in
+
+`RELEASING.md`'s *Rebuild a release from its tag* drops the `git archive`
+export, which has no `.git` for its git commands; the worktree it builds
+in is already clean (issue btclib-org/.github#1352).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
