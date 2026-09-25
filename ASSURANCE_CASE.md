@@ -30,11 +30,14 @@ here are the ones [ARCHITECTURE](./ARCHITECTURE.md) describes.
   connections it holds, are bounded.** A single peer cannot commit this
   node past `MAX_QUEUED_SEND_BYTES`, a fixed sum of a block's and a
   filter answer's own sizes (`src/btclib_node/p2p/connection.py`),
-  closed as btclib-org/btclib-node#101, and `P2pManager.server` closes
-  an inbound peer past `Config.max_connections`'s inbound share before
-  building anything for it (`src/btclib_node/p2p/manager.py`), closed
-  as btclib-org/btclib-node#1054; SECURITY.md's *Limitations* states
-  what this node still does not do once its inbound slots are taken.
+  closed as btclib-org/btclib-node#101. Past `Config.max_connections`'s
+  inbound share, `P2pManager.server` evicts an inbound peer by Core's
+  own rules and closes the new one, before building anything for it,
+  only where every peer held is protected
+  (`src/btclib_node/p2p/manager.py`, `src/btclib_node/p2p/eviction.py`),
+  closed as btclib-org/btclib-node#1054 and btclib-org/btclib-node#1064;
+  SECURITY.md's *Limitations* states what the eviction does not know
+  about a peer.
 - **Inbound connections do not stop this node dialling.** The outbound
   dial target counts only the connections `P2pManager` dialled off its
   own draw, not inbound or `-connect`/`-addnode` ones
@@ -114,7 +117,7 @@ vulnerabilities*:
 - the JSON-RPC listener, against a caller holding an accepted
   credential, who may call every method, and against whoever can read
   the plain HTTP it is sent over
-- the inbound p2p slots, against whoever fills them first
+- an inbound p2p slot, against a peer this node has already discouraged
 - anything SECURITY.md attributes to btclib rather than to this tree —
   the constant-time properties of the arithmetic btclib's own
   [assurance case](https://github.com/btclib-org/btclib/blob/main/ASSURANCE_CASE.md)

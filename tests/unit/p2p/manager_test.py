@@ -17,7 +17,7 @@ import threading
 import time
 import warnings
 from concurrent.futures import Future
-from contextlib import closing, suppress
+from contextlib import ExitStack, closing, suppress
 from functools import partial
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast, override
@@ -1706,8 +1706,10 @@ def test_an_inbound_peer_past_the_limit_is_refused_until_a_slot_frees(
     `max_connections=12` leaves one inbound slot, eleven being reserved
     for outbound. Raw sockets rather than peers that speak the protocol:
     the first stays pending, holding its slot the same as a peer past
-    `verack` would. The refused peer is closed before `create_connection`
-    runs for it, which `last_connection_id` not moving says.
+    `verack` would. That one peer is protected from eviction (ISS 1064),
+    its netgroup being among the four kept, so the second is refused,
+    and closed before `create_connection` runs for it, which
+    `last_connection_id` not moving says.
     """
     port = get_random_port()
     manager = a_manager(port=port, max_connections=12)
@@ -1730,7 +1732,9 @@ def test_an_inbound_peer_past_the_limit_is_refused_until_a_slot_frees(
             assert second.recv(4096) == b""
         assert manager.last_connection_id == 0
         assert len(manager.pending_connections) == 1
-        assert any("dropped (full)" in line for line in logged)
+        assert (
+            "failed to find an eviction candidate - connection dropped (full)" in logged
+        )
     # the first peer closed by the `with`: its `Connection` reads the close,
     # `manage_connections` lets go of it, and the slot is free again
     wait_until(lambda: not manager.pending_connections)
@@ -1741,6 +1745,73 @@ def test_an_inbound_peer_past_the_limit_is_refused_until_a_slot_frees(
         assert conn.address.port == third.getsockname()[1]
         manager.stop()
         manager.join(timeout=10)
+
+
+def test_a_full_manager_evicts_an_inbound_peer_to_accept_a_new_one(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1064: past the inbound share, a held peer makes way for a new one.
+
+    `max_connections=32` leaves twenty-one inbound slots. Twenty-one raw
+    sockets from one address answer no ping and relay nothing, so Core's
+    fixed protections keep twenty of them -- four by netgroup, eight by
+    ping, four by transaction, four by block -- and the ratio keeps none
+    of one: one is left to evict, and the twenty-second peer takes its
+    slot.
+    """
+    port = get_random_port()
+    manager = a_manager(port=port, max_connections=32)
+    assert manager.max_inbound == 21
+    logged, record = log_recorder()
+    monkeypatch.setattr(manager.logger, "debug", record)
+    manager.start()
+    wait_until_listening(manager)
+    with ExitStack() as peers:
+        for _ in range(manager.max_inbound):
+            peers.enter_context(
+                closing(socket.create_connection(("127.0.0.1", port), timeout=20))
+            )
+        wait_until(lambda: len(manager.pending_connections) == manager.max_inbound)
+        held = set(manager.pending_connections)
+        peers.enter_context(
+            closing(socket.create_connection(("127.0.0.1", port), timeout=20))
+        )
+        wait_until(lambda: manager.last_connection_id == manager.max_inbound)
+        wait_until(lambda: len(manager.pending_connections) == manager.max_inbound)
+        (evicted,) = held - set(manager.pending_connections)
+        assert manager.max_inbound in manager.pending_connections
+        assert any(
+            line.startswith(
+                f"selected inbound connection for eviction, disconnecting peer={evicted}"
+                " peeraddr=127.0.0.1:"
+            )
+            for line in logged
+        )
+        manager.stop()
+        manager.join(timeout=10)
+
+
+def test_an_eviction_candidate_reads_relay_off_the_version_message() -> None:
+    """ISS 1064: the relay flag comes from `version`, not a later write.
+
+    `callbacks.version` sets `version_message` before `relay_tx`, so a
+    connection between the two writes still holds `relay_tx`'s default.
+    """
+    conn = a_conn(1, inbound=True, relay_tx=True)
+    conn.__dict__.update(
+        connected_time=0,
+        min_ping_time=0.0,
+        last_novel_block_time=0,
+        last_novel_tx_time=0,
+        has_all_wanted_services=False,
+        keyed_net_group=0,
+        version_message=None,
+    )
+    assert not manager_module._eviction_candidate(conn).relay_txs
+    conn.version_message = SimpleNamespace(is_relay_requested=False)
+    assert not manager_module._eviction_candidate(conn).relay_txs
+    conn.version_message = SimpleNamespace(is_relay_requested=True)
+    assert manager_module._eviction_candidate(conn).relay_txs
 
 
 def test_an_outbound_connection_takes_no_inbound_slot(

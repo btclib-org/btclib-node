@@ -121,6 +121,17 @@ __all__ = [
 ]
 
 
+def _has_all_desirable_services(node: Node, services: int) -> bool:
+    """Core's `HasAllDesirableServiceFlags`, argued in `version` below."""
+    desirable = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
+    if (
+        services & ServiceFlags.NODE_NETWORK_LIMITED
+        and node.status >= NodeStatus.BlockSynced
+    ):
+        desirable = ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS
+    return not desirable & ~services
+
+
 def version(node: Node, msg: bytes, conn: Connection) -> None:
     """Handle a peer's `version`: refuse an incompatible peer, else continue.
 
@@ -192,7 +203,8 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     # included, and disconnected a peer this node itself never dialled
     # for a service it never asked that peer to have).
     #
-    # `desirable` below is `GetDesirableServiceFlags`'s own shape
+    # `_has_all_desirable_services`' own `desirable` (above) is
+    # `GetDesirableServiceFlags`'s shape
     # (`net_processing.cpp:1861-1869`): `NODE_NETWORK | NODE_WITNESS`
     # ordinarily, or `NODE_NETWORK_LIMITED | NODE_WITNESS` -- satisfied
     # by a `NODE_NETWORK_LIMITED`-only peer -- once this node's own
@@ -200,7 +212,7 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     # `NODE_NETWORK_LIMITED_ALLOW_CONN_BLOCKS` (144). This tree computes
     # no block-time depth estimate; `node.status >= NodeStatus.BlockSynced`
     # stands in for "close to the tip" instead, kept as the gate on the
-    # whole check rather than only on the substitution below, matching
+    # whole check rather than only on the substitution there, matching
     # this rule's own pre-#725 scope of tolerating a missing service
     # until this node actually wants blocks -- a one-way latch
     # `main.finish_sync` sets once `_ready_fork` finds no candidate left
@@ -214,14 +226,21 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     # every connection above, so it is never the bit that trips this
     # once reached, but it is kept in `desirable` for the same shape
     # Core's own check has rather than a narrower one this tree invented.
-    if not conn.inbound and node.status >= NodeStatus.BlockSynced:
-        desirable = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
-        if version_msg.services & ServiceFlags.NODE_NETWORK_LIMITED:
-            desirable = ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS
-        if desirable & ~version_msg.services:
-            node.p2p_manager.discourage(conn.address)
-            conn.stop()
-            return
+    #
+    # The same answer is what Core records as `m_has_all_wanted_services`
+    # for every connection, inbound included, and reads when choosing an
+    # inbound peer to evict.
+    conn.has_all_wanted_services = _has_all_desirable_services(
+        node, version_msg.services
+    )
+    if (
+        not conn.inbound
+        and node.status >= NodeStatus.BlockSynced
+        and not conn.has_all_wanted_services
+    ):
+        node.p2p_manager.discourage(conn.address)
+        conn.stop()
+        return
 
     conn.send(WtxidRelay())
     conn.send(SendAddrV2())
@@ -367,13 +386,26 @@ def pong(node: Node, msg: bytes, conn: Connection) -> None:
         if matched:
             conn.ping_sent = 0
             conn.ping_nonce = 0
+            # Core's `CNode::PongReceived` (`src/net.h`, at
+            # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) records the round
+            # trip and keeps the lowest for eviction, and `ProcessMessage`
+            # calls it only for a round trip that is not negative: a clock
+            # stepped back between ping and pong finishes the ping and
+            # records nothing. Core measures on a steady clock, to the
+            # moment the pong was read off the socket; this measures on
+            # the wall clock `ping_sent` and the idle bound share, to the
+            # moment `Node`'s loop handles it, the queue carrying no
+            # receive time (btclib-org/btclib-node#1078,
+            # btclib-org/btclib-node#1081).
+            ping_time = time.time() - ping_sent
+            if ping_time >= 0:
+                conn.latency = ping_time
+                conn.min_ping_time = min(conn.min_ping_time, ping_time)
     if not matched:
         # a nonce this node never sent: a protocol violation, and
         # discouraged for it (#283)
         node.p2p_manager.discourage(conn.address)
         conn.stop()
-        return
-    conn.latency = time.time() - ping_sent
 
 
 # Core's own MAX_PCT_ADDR_TO_SEND (net_processing.cpp, 58a7869f86):
@@ -584,6 +616,10 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
     # that then asks for it getting `notfound` for its trouble.
     # btclib-org/btclib-node#277
     if node.mempool.add_tx(tx, fee):
+        # novel and accepted into the mempool: what Core's own
+        # `m_last_tx_time` records for eviction (`net_processing.cpp`'s
+        # `ProcessMessage`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+        conn.last_novel_tx_time = int(time.time())
         node.download_manager.received_txs.append((conn.id, tx.hash))
 
 
@@ -660,6 +696,11 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
             block_index.invalidate(block_hash)
             raise
         node.block_db.add_block(block)
+        # novel, past its own checks and on disk: what Core's own
+        # `m_last_block_time` records for eviction, whether or not the
+        # block later connects (`PeerManagerImpl::ProcessBlock`, at
+        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+        conn.last_novel_block_time = int(time.time())
         node.logger.info("Received new block with hash:%s", block_hash.hex())
         block_index.set_downloaded(block_hash)
 

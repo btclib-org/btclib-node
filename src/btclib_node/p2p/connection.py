@@ -17,6 +17,7 @@ beside each below.
 
 import asyncio
 import contextlib
+import math
 import secrets
 import threading
 import time
@@ -417,6 +418,28 @@ class Connection:
         # `stop` itself, and is a different property from this one.
         # btclib-org/btclib-node#357
         self._ping_lock: threading.Lock = threading.Lock()
+
+        # What `P2pManager` reads to pick an inbound peer to evict: Core's
+        # `CNode` fields `m_connected`, `m_min_ping_time`,
+        # `m_last_block_time`, `m_last_tx_time`, `m_has_all_wanted_services`
+        # and `nKeyedNetGroup` (`src/net.h`, at bitcoin/bitcoin@9be056a8a7,
+        # the v31.1 tag), in whole seconds as Core keeps them, the ping
+        # aside. `connected_time` is set here and the netgroup by
+        # `P2pManager.create_connection`, both before this connection's
+        # task is scheduled; `callbacks.version`, `pong`, `block` and `tx`
+        # write the rest from `Node`'s thread, and `P2pManager.server`
+        # reads them all from its own. One writer per field, storing one
+        # immutable value, so the reader sees the old value or the new one
+        # and nothing between, which is what Core's `std::atomic` fields
+        # give its own reader. `callbacks.pong` updates `min_ping_time`
+        # inside its `_ping_lock` block, where it reads the `ping_sent` the
+        # round trip is measured from.
+        self.connected_time: int = int(time.time())
+        self.min_ping_time: float = math.inf
+        self.last_novel_block_time: int = 0
+        self.last_novel_tx_time: int = 0
+        self.has_all_wanted_services: bool = False
+        self.keyed_net_group: int = 0
 
         self.download_queue: list[bytes] = []
         self.pending_eviction: bool = False
