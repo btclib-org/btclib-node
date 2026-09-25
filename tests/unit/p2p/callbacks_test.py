@@ -1393,6 +1393,7 @@ def a_data_node(
         headers_sync_timeouts={},
         inv_triggered_getheaders=set(),
         last_block_inv_triggering_headers_sync=None,
+        last_getheaders_timestamps={},
     )
     # written by `getdata` only where `advance_getdata` pauses; empty
     # here for every test that never trips that pacing bound
@@ -1973,7 +1974,7 @@ def test_a_peer_syncing_headers_is_asked_on_every_block_announced() -> None:
 
     Neither once per peer nor once per block: here the peer has had its
     `inv`-triggered `getheaders` already, and another peer has brought in
-    the same block.
+    the same block. Each `getheaders` is answered before the next block.
     """
     node = a_data_node(status=NodeStatus.SyncingHeaders, block_index=an_inv_index())
     peer = a_peer()
@@ -1982,6 +1983,7 @@ def test_a_peer_syncing_headers_is_asked_on_every_block_announced() -> None:
     manager.inv_triggered_getheaders.add(peer.id)
     manager.last_block_inv_triggering_headers_sync = b"\x11" * 32
     inv(node, block_inv(b"\x11" * 32), peer)
+    headers(node, Headers([]).serialize(), peer)
     inv(node, block_inv(b"\x22" * 32), peer)
     assert len(peer.sent) == 2
     # a peer already syncing brings no block in
@@ -2011,6 +2013,63 @@ def test_a_block_announced_before_the_sync_widens_it_by_one_peer() -> None:
     inv(node, block_inv(b"\x22" * 32), second)
     assert len(second.sent) == 1
     assert node.download_manager.inv_triggered_getheaders == {1, 2}
+
+
+def test_a_block_announced_while_a_getheaders_is_in_flight_asks_nothing() -> None:
+    """Core's `MaybeSendGetHeaders`: one `getheaders` in flight per peer.
+
+    The sync's own request unanswered, a block announced asks nothing more,
+    so it cannot start a second stream of batches from the same peer.
+    """
+    node = a_data_node(status=NodeStatus.SyncingHeaders, block_index=an_inv_index())
+    peer = a_peer()
+    node.download_manager.headers_sync_timeouts[peer.id] = math.inf
+    inv(node, block_inv(b"\x11" * 32), peer)
+    inv(node, block_inv(b"\x22" * 32), peer)
+    assert len(peer.sent) == 1
+
+
+@pytest.mark.parametrize(
+    ("elapsed", "sent"),
+    [
+        pytest.param(119, False, id="119s"),
+        pytest.param(120, False, id="120s-exactly"),
+        pytest.param(121, True, id="121s"),
+    ],
+)
+def test_a_getheaders_unanswered_for_longer_than_two_minutes_is_sent_again(
+    monkeypatch: pytest.MonkeyPatch, elapsed: int, *, sent: bool
+) -> None:
+    """Core's `HEADERS_RESPONSE_TIME`, strictly: two minutes, then another."""
+    now = 1_700_000_000.0
+    monkeypatch.setattr(time, "time", lambda: now)
+    node = a_data_node(status=NodeStatus.SyncingHeaders, block_index=an_inv_index())
+    peer = a_peer()
+    manager = node.download_manager
+    manager.headers_sync_timeouts[peer.id] = math.inf
+    manager.last_getheaders_timestamps[peer.id] = now - elapsed
+    inv(node, block_inv(b"\x11" * 32), peer)
+    assert bool(peer.sent) is sent
+    assert manager.last_getheaders_timestamps[peer.id] == (
+        now if sent else now - elapsed
+    )
+
+
+def test_a_block_announced_while_in_flight_still_spends_the_peer_s_turn() -> None:
+    """Before the sync, a request dropped as in flight still counts, as in Core.
+
+    `m_inv_triggered_getheaders_before_sync` and
+    `m_last_block_inv_triggering_headers_sync` are set whether or not
+    `MaybeSendGetHeaders` sent.
+    """
+    node = a_data_node(status=NodeStatus.SyncingHeaders, block_index=an_inv_index())
+    peer = a_peer()
+    manager = node.download_manager
+    manager.last_getheaders_timestamps[peer.id] = time.time()
+    inv(node, block_inv(b"\x11" * 32), peer)
+    assert not peer.sent
+    assert manager.inv_triggered_getheaders == {peer.id}
+    assert manager.last_block_inv_triggering_headers_sync == b"\x11" * 32
 
 
 def test_a_transaction_announced_that_we_lack_is_wanted() -> None:
@@ -2842,6 +2901,63 @@ def test_an_empty_headers_batch_asks_for_nothing_more() -> None:
     assert not peer.sent
     assert index.given is None
     assert node.status == NodeStatus.SyncingHeaders
+
+
+def test_an_empty_batch_answers_the_getheaders_in_flight() -> None:
+    """Core takes an empty `headers` as the answer to the last `getheaders`."""
+    node = a_data_node(status=NodeStatus.SyncingHeaders)
+    peer = a_peer()
+    node.download_manager.last_getheaders_timestamps[peer.id] = time.time()
+    headers(node, Headers([]).serialize(), peer)
+    assert peer.id not in node.download_manager.last_getheaders_timestamps
+
+
+def test_a_full_batch_that_connects_asks_for_the_next_one_at_once() -> None:
+    """A connecting batch answers the request in flight, so the next goes out.
+
+    Core's `ProcessHeadersMessage` clears the timestamp for a batch that
+    connects before its own `MaybeSendGetHeaders` asks for more.
+    """
+    chain = generate_random_header_chain(2000, RegTest().genesis.hash)
+    node = a_data_node(status=NodeStatus.SyncingHeaders)
+    node.chainstate.block_index = FakeHeaderIndex(
+        tip=chain[-1].hash, header_index_tip=chain[-1].hash
+    )
+    peer = a_peer()
+    manager = node.download_manager
+    manager.last_getheaders_timestamps[peer.id] = time.time() - 1
+    headers(node, Headers(chain).serialize(), peer)
+    (answer,) = peer.sent
+    assert isinstance(answer, GetHeaders)
+
+
+def test_a_short_batch_that_connects_answers_the_getheaders_in_flight() -> None:
+    """The end of a sync leaves no request in flight to hold the next one."""
+    chain = generate_random_header_chain(2, RegTest().genesis.hash)
+    node = a_data_node(status=NodeStatus.SyncingHeaders)
+    node.chainstate.block_index = FakeHeaderIndex(tip=chain[-1].hash)
+    peer = a_peer()
+    node.download_manager.last_getheaders_timestamps[peer.id] = time.time()
+    headers(node, Headers(chain).serialize(), peer)
+    assert peer.id not in node.download_manager.last_getheaders_timestamps
+
+
+def test_a_batch_connecting_to_nothing_answers_nothing_in_flight() -> None:
+    """Core's `HandleUnconnectingHeaders`: no answer, and no second request.
+
+    A batch connecting to nothing known may be an announcement rather than
+    the answer, so the request in flight stays in flight and holds off
+    the `getheaders` this batch would otherwise draw.
+    """
+    chain = generate_random_header_chain(4, RegTest().genesis.hash)
+    node = a_data_node(status=NodeStatus.SyncingHeaders)
+    node.chainstate.block_index = FakeHeaderIndex(tip=None)
+    peer = a_peer()
+    in_flight = time.time()
+    node.download_manager.last_getheaders_timestamps[peer.id] = in_flight
+    headers(node, Headers(chain).serialize(), peer)
+    assert not peer.sent
+    assert node.download_manager.last_getheaders_timestamps[peer.id] == in_flight
 
 
 def a_filter_hash(height: int) -> bytes:

@@ -133,7 +133,11 @@ def make_manager(
         warm_worker_pool=warm_worker_pool or (lambda: None),
         config=SimpleNamespace(min_relay_feerate=min_relay_feerate),
     )
-    return DownloadManager(cast("Node", node), Logger(debug=True))
+    manager = DownloadManager(cast("Node", node), Logger(debug=True))
+    # `Node`'s own, which `callbacks.maybe_send_getheaders` reads its
+    # timestamps through
+    node.download_manager = manager
+    return manager
 
 
 def hold(manager: DownloadManager, *wtxids: bytes) -> None:
@@ -1540,3 +1544,27 @@ def test_a_peer_gone_leaves_no_inv_triggered_getheaders_behind() -> None:
     manager.inv_triggered_getheaders.update({1, 2})
     manager.sync_headers()
     assert manager.inv_triggered_getheaders == {1}
+
+
+def test_a_peer_with_a_getheaders_in_flight_takes_no_turn() -> None:
+    """Core sets `fSyncStarted` only where `MaybeSendGetHeaders` sent.
+
+    The first peer, its `inv`-triggered request still unanswered, is not
+    asked and not counted, so the next peer takes the turn.
+    """
+    first, second = an_outbound(1), an_outbound(2)
+    manager = make_manager([first, second], block_index=HeaderIndex(age=_OLD))
+    manager.last_getheaders_timestamps[1] = time.time()
+    manager.sync_headers()
+    assert not asked(first)
+    assert asked(second)
+    assert list(manager.headers_sync_timeouts) == [2]
+
+
+def test_a_peer_gone_leaves_no_getheaders_timestamp_behind() -> None:
+    """Core's `m_last_getheaders_timestamp` lives as long as its peer does."""
+    staying = an_outbound(1)
+    manager = make_manager([staying], block_index=HeaderIndex(age=_RECENT))
+    manager.last_getheaders_timestamps[2] = time.time()
+    manager.sync_headers()
+    assert list(manager.last_getheaders_timestamps) == [1]
