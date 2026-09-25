@@ -4,6 +4,8 @@
 
 """`cli.py`: argument parsing, `bitcoin.conf` reading, and `main`'s dispatch."""
 
+import functools
+import os
 import re
 import runpy
 from pathlib import Path
@@ -953,6 +955,275 @@ def test_build_config_conf_explicit_and_missing_raises(tmp_path: Path) -> None:
     """`-conf` naming a file that is not there is fatal, not skipped."""
     with pytest.raises(ValueError, match="could not be opened"):
         cli.build_config([f"-datadir={tmp_path}", "-conf=nope.conf"])
+
+
+def _ignored_conf(datadir: str, config: str, conf: str) -> str:
+    """Return `InitConfig`'s refusal of an ignored `bitcoin.conf`, as measured.
+
+    `bitcoind` v31.1.0 printed it after `Error: `, the paths absolute.
+    """
+    return (
+        f'Data directory "{datadir}" contains a "bitcoin.conf" file which is '
+        f'ignored, because a different configuration file "{config}" from command '
+        f'line argument "-conf={conf}" is being used instead. Possible ways to '
+        "address this would be to:\n"
+        f'- Delete or rename the "bitcoin.conf" file in data directory "{datadir}".\n'
+        "- Change datadir= or conf= options to specify one configuration file, not "
+        "two, and use includeconf= to include any other configuration files.\n"
+        "- Set allowignoredconf=1 option to treat this condition as a warning, not "
+        "an error."
+    )
+
+
+@pytest.mark.parametrize(
+    ("datadir", "conf", "shown_datadir", "shown_config"),
+    [
+        ("{d}", "other.conf", "{d}", "{d}{s}other.conf"),
+        ("{d}/", "./sub/../other.conf", "{d}", "{d}{s}other.conf"),
+        ("{d}", "{d}/other.conf", "{d}", "{d}{s}other.conf"),
+        ("d", "other.conf", "{d}", "{d}{s}other.conf"),
+        ("d", "../d/other.conf", "{d}", "{d}{s}..{s}d{s}other.conf"),
+    ],
+    ids=["relative", "normalised", "absolute", "relative -datadir", "up and back"],
+)
+def test_build_config_an_ignored_bitcoin_conf_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    datadir: str,
+    conf: str,
+    shown_datadir: str,
+    shown_config: str,
+) -> None:
+    """A `bitcoin.conf` `-conf` leaves unread stops the node, as it stops Core.
+
+    Each case is one `bitcoind` v31.1.0 was run against, from the same
+    working directory, with `-help`: Core refuses ahead of the help.
+    """
+    data = tmp_path / "d"
+    (data / "sub").mkdir(parents=True)
+    (data / "bitcoin.conf").write_text("regtest=1\n", encoding="utf-8")
+    (data / "other.conf").write_text("regtest=1\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    d = str(data)
+    argv = [f"-datadir={datadir.format(d=d)}", f"-conf={conf.format(d=d)}", "-h"]
+    expected = _ignored_conf(
+        shown_datadir.format(d=d), shown_config.format(d=d, s=os.sep), conf.format(d=d)
+    )
+    with pytest.raises(ValueError, match=r"^Data directory") as error:
+        cli.build_config(argv)
+    assert str(error.value) == expected
+
+
+def test_build_config_an_ignored_bitcoin_conf_keeps_a_dot_datadir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`-datadir=.` is shown as `fs::absolute` shows it, the `.` kept."""
+    (tmp_path / "bitcoin.conf").write_text("", encoding="utf-8")
+    (tmp_path / "other.conf").write_text("", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ValueError, match=r"^Data directory") as error:
+        cli.build_config(["-datadir=.", "-conf=other.conf"])
+    dot = os.path.join(str(tmp_path), ".")  # noqa: PTH118
+    other_conf = os.path.join(dot, "other.conf")  # noqa: PTH118
+    assert str(error.value) == _ignored_conf(dot, other_conf, "other.conf")
+
+
+def test_build_config_an_ignored_bitcoin_conf_in_the_default_datadir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no `-datadir`, the default data directory is the one checked."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    data = tmp_path / ".btclib"
+    data.mkdir()
+    (data / "bitcoin.conf").write_text("", encoding="utf-8")
+    (data / "other.conf").write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"^Data directory") as error:
+        cli.build_config(["-conf=other.conf"])
+    expected = _ignored_conf(str(data), str(data / "other.conf"), "other.conf")
+    assert str(error.value) == expected
+
+
+@pytest.mark.skipif(os.name == "nt", reason='`"` names no Windows file')
+def test_build_config_an_ignored_bitcoin_conf_is_quoted_as_core_quotes(
+    tmp_path: Path,
+) -> None:
+    """A `"` or a `&` in a path is escaped with `&`, as `fs::quoted` does."""
+    (tmp_path / "bitcoin.conf").write_text("", encoding="utf-8")
+    (tmp_path / 'o"t&.conf').write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"^Data directory") as error:
+        cli.build_config([f"-datadir={tmp_path}", '-conf=o"t&.conf'])
+    assert f'file "{tmp_path}/o&"t&&.conf" from' in str(error.value)
+    assert 'argument "-conf=o&"t&&.conf" is' in str(error.value)
+
+
+def test_build_config_an_ignored_bitcoin_conf_directory_is_refused(
+    tmp_path: Path,
+) -> None:
+    """`fs::exists` is true of a directory, and no file is equivalent to it."""
+    (tmp_path / "bitcoin.conf").mkdir()
+    (tmp_path / "other.conf").write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"^Data directory"):
+        cli.build_config([f"-datadir={tmp_path}", "-conf=other.conf"])
+
+
+def test_build_config_an_ignored_bitcoin_conf_comes_before_the_token(
+    tmp_path: Path,
+) -> None:
+    """`InitConfig` runs inside `ParseArgs`, ahead of its "unexpected token"."""
+    (tmp_path / "bitcoin.conf").write_text("", encoding="utf-8")
+    (tmp_path / "other.conf").write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"^Data directory"):
+        cli.build_config([f"-datadir={tmp_path}", "-conf=other.conf", "token"])
+
+
+@pytest.mark.parametrize(
+    ("argv", "other"),
+    [
+        (["-allowignoredconf"], ""),
+        (["-allowignoredconf=1"], ""),
+        ([], "allowignoredconf=1\n"),
+        ([], "[regtest]\nallowignoredconf=1\n"),
+    ],
+    ids=["bare", "=1", "in the file", "in the chain's section"],
+)
+def test_build_config_allowignoredconf_warns_instead(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    other: str,
+) -> None:
+    """`-allowignoredconf` makes the refusal a warning, `-conf`'s file read."""
+    (tmp_path / "bitcoin.conf").write_text("", encoding="utf-8")
+    (tmp_path / "other.conf").write_text(
+        "regtest=1\n" + other + "[regtest]\nport=9123\n", encoding="utf-8"
+    )
+    config = cli.build_config([f"-datadir={tmp_path}", "-conf=other.conf", *argv])
+    assert config.p2p_port == 9123
+    other_conf = str(tmp_path / "other.conf")
+    expected = _ignored_conf(str(tmp_path), other_conf, "other.conf")
+    warning = expected.rpartition("\n")[0]
+    assert capsys.readouterr().err == f"warning: {warning}\n"
+
+
+@pytest.mark.parametrize("argv", [["-allowignoredconf=0"], ["-noallowignoredconf"]])
+def test_build_config_allowignoredconf_false_still_refuses(
+    tmp_path: Path, argv: list[str]
+) -> None:
+    """`-allowignoredconf=0` and `-noallowignoredconf` refuse, as in Core."""
+    (tmp_path / "bitcoin.conf").write_text("", encoding="utf-8")
+    (tmp_path / "other.conf").write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"^Data directory"):
+        cli.build_config([f"-datadir={tmp_path}", "-conf=other.conf", *argv])
+
+
+@pytest.mark.parametrize(
+    ("argv", "link"),
+    [
+        (["-conf=./bitcoin.conf"], False),
+        (["-conf={d}/bitcoin.conf"], False),
+        (["-conf="], False),
+        (["-conf=other.conf"], True),
+        (["-noconf", "-regtest"], False),
+    ],
+    ids=["./bitcoin.conf", "absolute", "empty", "a hard link to it", "-noconf"],
+)
+def test_build_config_bitcoin_conf_itself_is_not_ignored(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], argv: list[str], *, link: bool
+) -> None:
+    """The data directory's own file, by any name, is the file in use."""
+    (tmp_path / "bitcoin.conf").write_text("regtest=1\n", encoding="utf-8")
+    if link:
+        (tmp_path / "other.conf").hardlink_to(tmp_path / "bitcoin.conf")
+    argv = [arg.format(d=tmp_path) for arg in argv]
+    config = cli.build_config([f"-datadir={tmp_path}", *argv])
+    assert config.chain.name == "regtest"
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a symbolic link needs a privilege")
+@pytest.mark.parametrize(
+    ("argv", "files", "refused"),
+    [
+        (["-datadir={x}/a/sym/.."], ["real/bitcoin.conf"], False),
+        (["-datadir={x}/a/sym/.."], ["real/bitcoin.conf", "a/bitcoin.conf"], False),
+        (
+            ["-datadir={x}/D", "-conf=sym/../other.conf"],
+            ["D/bitcoin.conf", "real/other.conf"],
+            True,
+        ),
+    ],
+    ids=["datadir", "datadir, a bitcoin.conf beside the link", "conf"],
+)
+def test_build_config_an_ignored_bitcoin_conf_through_a_symbolic_link(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    files: list[str],
+    *,
+    refused: bool,
+) -> None:
+    """The file compared with `bitcoin.conf` is the file that was read.
+
+    `a/sym` and `D/sym` link to `real/inner`, so `sym/..` is `real` to the
+    operating system and `a` or `D` to Core's lexical normalisation.
+    `bitcoind` v31.1.0 starts on the first two, and refuses the third
+    with "could not be opened", where this node, which reads the file
+    `real/other.conf` (btclib-org/btclib-node#1187), refuses it as ignoring
+    `D/bitcoin.conf`.
+    """
+    for directory in ("real/inner", "a", "D"):
+        (tmp_path / directory).mkdir(parents=True)
+    for link in ("a/sym", "D/sym"):
+        (tmp_path / link).symlink_to(tmp_path / "real" / "inner")
+    for name in files:
+        (tmp_path / name).write_text("regtest=1\n", encoding="utf-8")
+    argv = [arg.format(x=tmp_path) for arg in argv]
+    if refused:
+        with pytest.raises(ValueError, match=r"^Data directory"):
+            cli.build_config([*argv, "-h"])
+        return
+    with pytest.raises(SystemExit) as stop:
+        cli.build_config([*argv, "-h"])
+    assert stop.value.code == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_build_config_an_ignored_bitcoin_conf_os_error_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An `OSError` comparing the files is refused, as Core's `catch` does."""
+
+    def refuse(*_: object) -> bool:
+        raise PermissionError(13, "Permission denied")
+
+    (tmp_path / "bitcoin.conf").write_text("", encoding="utf-8")
+    (tmp_path / "other.conf").write_text("", encoding="utf-8")
+    monkeypatch.setattr(Path, "samefile", refuse)
+    with pytest.raises(ValueError, match=r"^\[Errno 13\] Permission denied$"):
+        cli.build_config([f"-datadir={tmp_path}", "-conf=other.conf"])
+
+
+def test_build_config_an_absolute_datadir_needs_no_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An absolute `-datadir` asks for no working directory: `fs::absolute`."""
+    (tmp_path / "bitcoin.conf").write_text("", encoding="utf-8")
+    (tmp_path / "other.conf").write_text("", encoding="utf-8")
+    # records a call and answers one, as a working directory
+    calls: dict[str, str] = {}
+    getcwd = functools.partial(calls.setdefault, "getcwd", str(tmp_path))
+    monkeypatch.setattr(os, "getcwd", getcwd)
+    with pytest.raises(ValueError, match=r"^Data directory"):
+        cli.build_config([f"-datadir={tmp_path}", "-conf=other.conf"])
+    assert calls == {}
+
+
+def test_build_config_conf_with_no_bitcoin_conf_beside_it(tmp_path: Path) -> None:
+    """With no `bitcoin.conf` in the data directory, `-conf` refuses nothing."""
+    (tmp_path / "other.conf").write_text("regtest=1\n", encoding="utf-8")
+    config = cli.build_config([f"-datadir={tmp_path}", "-conf=other.conf"])
+    assert config.chain.name == "regtest"
 
 
 def test_build_config_cli_port_overrides_the_file(tmp_path: Path) -> None:

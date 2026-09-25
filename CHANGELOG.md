@@ -416,6 +416,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`BITCOIN_CORE_COPYING` sits beside `blockfilters.json`, pinned in
   `tests/_data/README.md`** (closes #1202), so the sdist carries it too.
 
+### A `bitcoin.conf` that `-conf` leaves unread stops the node, as in Core
+
+- **`-conf` naming another file beside the data directory's `bitcoin.conf`
+  refuses to start** (closes #1155), with `bitcoind`'s message;
+  `-allowignoredconf` makes it a warning.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

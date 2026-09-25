@@ -142,6 +142,11 @@ Warned about on stderr with its own message rather than the generic one
 below, since `datadir` is a real, documented option and not a typo the
 generic message would have a reader believe it was.
 
+A `bitcoin.conf` in the data directory that `-conf` leaves unread, by
+naming another file, is refused as `InitConfig` (`src/common/init.cpp`,
+same sha) refuses it, and `-allowignoredconf` makes that a warning:
+`_check_ignored_conf` below.
+
 An unrecognised key in the file is warned about, on stderr, and
 ignored -- Core's own default (`ReadConfigFiles(error,
 /*ignore_invalid_keys=*/true)`, called this way from `bitcoin.cpp`,
@@ -156,6 +161,7 @@ A boolean, wherever it is read from, is Core's `InterpretBool`
 """
 
 import json
+import os
 import re
 import sys
 import textwrap
@@ -292,6 +298,12 @@ _OPTIONS: dict[str, _Option] = {
         "can be specified multiple times.",
         _CONNECTION_TITLE,
         network_only=True,
+    ),
+    "allowignoredconf": _Option(
+        "",
+        f"For backwards compatibility, treat an unused {_DEFAULT_CONF_FILENAME} "
+        "file in the datadir as a warning, not an error.",
+        _OPTIONS_TITLE,
     ),
     "blocksdir": _Option(
         "=<dir>",
@@ -998,6 +1010,70 @@ def _check_datadir(base_dir: Path) -> None:
         raise ValueError(err_msg)
 
 
+def _quoted(text: str) -> str:
+    """Return Core's `fs::quoted`: `std::quoted` with `&` as its escape."""
+    return '"' + text.replace("&", "&&").replace('"', '&"') + '"'
+
+
+def _check_ignored_conf(
+    settings: _Settings, base_dir: Path, conf_path: Path | None
+) -> None:
+    """Refuse a `bitcoin.conf` in `base_dir` that `-conf` leaves unread.
+
+    `InitConfig` (`src/common/init.cpp`, at bitcoin/bitcoin@9be056a8a7),
+    and its message. `conf_path`, the file read, `None` under `-noconf`,
+    is compared with `base_dir`'s own as `fs::equivalent` compares them,
+    and an `OSError` is refused as `InitConfig`'s `catch` refuses an
+    exception, in Python's words rather than the C++ library's. The
+    message's paths are Core's: `-datadir` and `-conf` lexically normal
+    (`GetPathArg`), the first made absolute and a relative `-conf` joined
+    to it (`AbsPathForConfigVal`); the file read is not normalised
+    (btclib-org/btclib-node#1187), so it is not what the message shows
+    where a `..` follows a symbolic link. `-allowignoredconf` makes the
+    refusal a warning on stderr, as this module's other warnings are,
+    where Core logs it. Core's other source, "data directory", is a
+    `datadir=` line that moved the data directory, which `_parse_conf_text`
+    drops; and the line Core logs under `-noconf` is not written.
+    """
+    base_config = base_dir / _DEFAULT_CONF_FILENAME
+    if conf_path is None or not base_config.exists():
+        return
+    # strings rather than `Path`, which drops the `.` segment Core keeps:
+    # `-datadir=.` is shown as "<cwd>/.", and `-conf=other.conf` under it
+    # as "<cwd>/./other.conf"; `fs::absolute` asks for the working
+    # directory only where the path is relative
+    base = str(base_dir)
+    try:
+        if conf_path.samefile(base_config):
+            return
+        if datadir := _get_arg(settings, "datadir"):
+            base = os.path.normpath(datadir)
+            if not os.path.isabs(base):  # noqa: PTH117
+                base = os.path.join(os.getcwd(), base)  # noqa: PTH109, PTH118
+    except OSError as os_error:
+        raise ValueError(str(os_error)) from None
+    conf = _get_arg(settings, "conf") or ""
+    config = os.path.join(base, os.path.normpath(conf or _DEFAULT_CONF_FILENAME))  # noqa: PTH118
+    name = _quoted(_DEFAULT_CONF_FILENAME)
+    error = (
+        f"Data directory {_quoted(base)} contains a {name} file which is ignored, "
+        f"because a different configuration file {_quoted(config)} from command "
+        f"line argument {_quoted('-conf=' + conf)} is being used instead. Possible "
+        "ways to address this would be to:\n"
+        f"- Delete or rename the {name} file in data directory {_quoted(base)}.\n"
+        "- Change datadir= or conf= options to specify one configuration file, not "
+        "two, and use includeconf= to include any other configuration files."
+    )
+    if _get_bool(settings, "allowignoredconf"):
+        sys.stderr.write(f"warning: {error}\n")
+        return
+    error += (
+        "\n- Set allowignoredconf=1 option to treat this condition as a warning, "
+        "not an error."
+    )
+    raise ValueError(error)
+
+
 def _check_prune(prune: int) -> None:
     """Refuse a `-prune` Core refuses (`node/blockmanager_args.cpp`)."""
     if prune < 0:
@@ -1038,6 +1114,7 @@ def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
     base_dir = Path(datadir) if datadir else Path.home() / ".btclib"
     if datadir:
         _check_datadir(base_dir)
+    conf_path = None
     if not _is_negated(settings, "conf"):
         conf_value = Path(_get_arg(settings, "conf") or _DEFAULT_CONF_FILENAME)
         conf_path = conf_value if conf_value.is_absolute() else base_dir / conf_value
@@ -1049,6 +1126,7 @@ def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
         )
     chain_name = _resolve_chain_name(settings)
     settings.network = _CHAIN_SECTION[chain_name]
+    _check_ignored_conf(settings, base_dir, conf_path)
 
     if token is not None:
         err_msg = (
