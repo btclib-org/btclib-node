@@ -174,29 +174,46 @@ def test_resolve_bool_defaults_to_false_when_absent_everywhere() -> None:
 
 
 def test_resolve_listen_cli_value_wins_true() -> None:
-    """An explicit `-listen`/`-listen=1` wins even under `-connect`."""
-    assert cli._resolve_listen("1", {}, connect_given=True) is True
+    """An explicit `-listen`/`-listen=1` wins under `-connect` and at zero."""
+    assert cli._resolve_listen("1", {}, connect_given=True, max_connections=125)
+    assert cli._resolve_listen("1", {}, connect_given=False, max_connections=0)
 
 
 def test_resolve_listen_cli_value_wins_false() -> None:
     """An explicit `-nolisten`/`-listen=0` wins even without `-connect`."""
-    assert cli._resolve_listen("0", {}, connect_given=False) is False
+    assert (
+        cli._resolve_listen("0", {}, connect_given=False, max_connections=125) is False
+    )
 
 
 def test_resolve_listen_falls_back_to_the_files_own_last_value() -> None:
-    """The file's own `listen=` wins over the `-connect`-driven default."""
-    assert cli._resolve_listen(None, {"listen": ["0"]}, connect_given=False) is False
-    assert cli._resolve_listen(None, {"listen": ["1"]}, connect_given=True) is True
+    """The file's own `listen=` wins over the interaction's own default."""
+    off, on = {"listen": ["0"]}, {"listen": ["1"]}
+    assert (
+        cli._resolve_listen(None, off, connect_given=False, max_connections=125)
+        is False
+    )
+    assert cli._resolve_listen(None, on, connect_given=True, max_connections=125)
+    assert cli._resolve_listen(None, on, connect_given=False, max_connections=0)
 
 
 def test_resolve_listen_defaults_to_true_without_connect() -> None:
-    """Named nowhere, and `-connect` not given: Core's own `DEFAULT_LISTEN`."""
-    assert cli._resolve_listen(None, {}, connect_given=False) is True
+    """Named nowhere, no `-connect`, connections on: Core's `DEFAULT_LISTEN`."""
+    assert cli._resolve_listen(None, {}, connect_given=False, max_connections=125)
 
 
 def test_resolve_listen_defaults_to_false_under_connect() -> None:
     """Named nowhere, `-connect` given: the interaction's own default."""
-    assert cli._resolve_listen(None, {}, connect_given=True) is False
+    assert (
+        cli._resolve_listen(None, {}, connect_given=True, max_connections=125) is False
+    )
+
+
+def test_resolve_listen_defaults_to_false_at_zero_connections() -> None:
+    """ISS 1066: named nowhere, `-maxconnections=0`: the same default."""
+    assert (
+        cli._resolve_listen(None, {}, connect_given=False, max_connections=0) is False
+    )
 
 
 def _args(**overrides: Any) -> argparse.Namespace:
@@ -682,6 +699,25 @@ def test_build_config_connect_and_explicit_listen_enables_both() -> None:
     config = cli.build_config(["-regtest", "-connect", "10.0.0.1", "-listen=1"])
     assert config.listen is True
     assert config.connect == (("10.0.0.1", RegTest().port),)
+
+
+def test_build_config_maxconnections_zero_defaults_listen_to_false(
+    tmp_path: Path,
+) -> None:
+    """ISS 1066: `-maxconnections=0` alone turns the listener off."""
+    config = cli.build_config(["-datadir", str(tmp_path), "-maxconnections=0"])
+    assert config.listen is False
+    assert config.max_connections == 0
+
+
+def test_build_config_maxconnections_zero_and_explicit_listen_listens(
+    tmp_path: Path,
+) -> None:
+    """`-maxconnections=0` plus `-listen=1`: the explicit flag wins."""
+    config = cli.build_config(
+        ["-datadir", str(tmp_path), "-maxconnections=0", "-listen=1"]
+    )
+    assert config.listen is True
 
 
 def test_build_config_nolisten_forces_listen_false() -> None:

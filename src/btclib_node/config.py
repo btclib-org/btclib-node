@@ -220,10 +220,11 @@ class Config:
     # (`connOptions.m_added_nodes`, `src/init.cpp:2193-2198`, same sha).
     addnode: tuple[tuple[str, int], ...]
     # Core's own `-listen`, `DEFAULT_LISTEN` (`src/net.h`) true unless
-    # `-connect` is given, in which case `InitParameterInteraction`
-    # (`src/init.cpp:814-819`, same sha) soft-sets it false -- a default
-    # `cli.py`'s own `_resolve_listen` computes the same way, an explicit
-    # `-listen`/`-nolisten` always winning over it. `False` here means
+    # `-connect` or `-maxconnections=0` is given, in which case
+    # `InitParameterInteraction` (`src/init.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) soft-sets it false --
+    # a default `cli.py`'s own `_resolve_listen` computes the same way, an
+    # explicit `-listen`/`-nolisten` always winning over it. `False` here means
     # Core's own `-listen=0`: no bound listening socket, outbound
     # connections still made -- not `allow_p2p=False`, which unsets the
     # port and starts no `P2pManager` at all, so nothing could dial out

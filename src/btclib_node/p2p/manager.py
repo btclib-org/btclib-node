@@ -150,6 +150,12 @@ class P2pManager(threading.Thread):
         automatic_outbound = full_relay + block_relay + _MAX_FEELER_CONNECTIONS
         self.max_inbound = max(0, max_connections - automatic_outbound)
         self.max_automatic_outbound = min(automatic_outbound, max_connections)
+        # Core's own `-dnsseed`, which `InitParameterInteraction` soft-sets
+        # off under `-connect` and under `-maxconnections=0` alike
+        # (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        # This node has no `-dnsseed` for an operator to set, so the
+        # soft-set is the whole of it: whether `run` schedules the lookup.
+        self.use_dns_seed = self.use_addrman_outgoing and max_connections > 0
 
         # `-connect` and `-addnode` together, by `endpoint_key`: what
         # `_maybe_redial_specified` below redials once `Node.run`'s own
@@ -313,7 +319,12 @@ class P2pManager(threading.Thread):
         ] = {}
 
     def create_connection(
-        self, client: socket.socket, address: NetworkAddressV2, *, inbound: bool
+        self,
+        client: socket.socket,
+        address: NetworkAddressV2,
+        *,
+        inbound: bool,
+        automatic: bool = False,
     ) -> None:
         """Build a `Connection` for `client`, hold it pending, and start it.
 
@@ -363,6 +374,7 @@ class P2pManager(threading.Thread):
         conn = Connection(
             self, client, address, self.last_connection_id, inbound=inbound
         )
+        conn.automatic = automatic
         self.pending_connections[self.last_connection_id] = conn
         task = asyncio.run_coroutine_threadsafe(conn.run(), self.loop)
         conn.task = task
@@ -568,11 +580,23 @@ class P2pManager(threading.Thread):
             1 if self.node.status < NodeStatus.HeaderSynced else 10,
             self.max_automatic_outbound,
         )
+        # Only this method's own dials count against the target, pending
+        # ones included: `CConnman::ThreadOpenConnections` counts
+        # `IsFullOutboundConn()` and `IsBlockOnlyConn()` peers in
+        # `m_nodes`, handshake finished or not, and leaves inbound and
+        # `MANUAL` ones out (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
+        # the v31.1 tag). Inbound connections cost an attacker nothing, so
+        # counting them would let enough of them stop this node choosing
+        # any peer of its own. A dial still in flight is in neither table
+        # and in neither count: `ThreadOpenConnections` finishes its own
+        # `OpenNetworkConnection` before it counts again, as
+        # `manage_connections` awaits this method before its next pass.
+        #
         # Locked, and the snapshot below locks separately rather than
         # sharing this one: `promote_connection` moves a connection
         # between `connections` and `pending_connections` in two
-        # statements, so two unlocked reads taken apart -- a `len()`
-        # here, `.values()` there -- could each miss it, out of
+        # statements, so two unlocked reads, one of each dict, could
+        # each miss it, out of
         # `connections` because the read ran before the write, out of
         # `pending_connections` because it ran after the pop, and this
         # count would then undercount a node that already has enough
@@ -584,7 +608,13 @@ class P2pManager(threading.Thread):
         # throw away -- is not owed every 100 ms just because this
         # count is.
         with self._connections_lock:
-            live = len(self.connections) + len(self.pending_connections)
+            live = sum(
+                conn.automatic
+                for conn in (
+                    *self.connections.values(),
+                    *self.pending_connections.values(),
+                )
+            )
         if live >= connection_num or self.peer_db.is_empty:
             return
         # By endpoint_key, not raw equality: a drawn address
@@ -623,7 +653,7 @@ class P2pManager(threading.Thread):
             ):
                 sock = await dial(address)
                 if sock:
-                    self.create_connection(sock, address, inbound=False)
+                    self.create_connection(sock, address, inbound=False, automatic=True)
         except Exception:
             self.logger.exception("Exception occurred")
 
@@ -946,7 +976,7 @@ class P2pManager(threading.Thread):
                 self.logger.exception("Could not bind the P2P listener")
                 raise
         self._server_sockets = server_sockets
-        if self.use_addrman_outgoing:
+        if self.use_dns_seed:
             asyncio.run_coroutine_threadsafe(self.peer_db.get_addr_from_dns(), loop)
         for server_socket in server_sockets:
             asyncio.run_coroutine_threadsafe(

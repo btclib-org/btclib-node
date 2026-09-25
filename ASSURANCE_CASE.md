@@ -35,6 +35,11 @@ here are the ones [ARCHITECTURE](./ARCHITECTURE.md) describes.
   building anything for it (`src/btclib_node/p2p/manager.py`), closed
   as btclib-org/btclib-node#1054; SECURITY.md's *Limitations* states
   what this node still does not do once its inbound slots are taken.
+- **Inbound connections do not stop this node dialling.** The outbound
+  dial target counts only the connections `P2pManager` dialled off its
+  own draw, not inbound or `-connect`/`-addnode` ones
+  (`src/btclib_node/p2p/manager.py`), closed as
+  btclib-org/btclib-node#1065.
 - **A published distribution is what this tree built.** SECURITY.md's
   *Supported versions* states how that is verified.
 - **What is not claimed.** `Development Status :: 3 - Alpha`
@@ -108,8 +113,7 @@ vulnerabilities*:
 
 - the JSON-RPC listener authenticating who is asking, once traffic
   reaches whichever interface `Config.rpc_host` binds
-- the inbound p2p slots, against whoever fills them first, and this
-  node's choice of outbound peers, against enough inbound ones
+- the inbound p2p slots, against whoever fills them first
 - anything SECURITY.md attributes to btclib rather than to this tree —
   the constant-time properties of the arithmetic btclib's own
   [assurance case](https://github.com/btclib-org/btclib/blob/main/ASSURANCE_CASE.md)

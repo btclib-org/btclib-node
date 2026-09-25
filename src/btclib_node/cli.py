@@ -359,14 +359,19 @@ def _resolve_bool(cli_value: bool, key: str, default_section: _ConfSection) -> b
 
 
 def _resolve_listen(
-    cli_value: str | None, default_section: _ConfSection, *, connect_given: bool
+    cli_value: str | None,
+    default_section: _ConfSection,
+    *,
+    connect_given: bool,
+    max_connections: int,
 ) -> bool:
     """Return whether to bind and accept inbound connections.
 
     Unlike `_resolve_bool` above, `-listen`'s own default is not always
-    `False`: Core's `DEFAULT_LISTEN` is true, except under `-connect`,
-    where `InitParameterInteraction` (`src/init.cpp:814-819`, at
-    bitcoin/bitcoin@ca7162cde5) soft-sets it false -- soft, meaning an
+    `False`: Core's `DEFAULT_LISTEN` is true, except under `-connect` or
+    `-maxconnections=0`, where `InitParameterInteraction`
+    (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+    soft-sets it false -- soft, meaning an
     explicit `-listen`/`-nolisten`/`-listen=0`, from the command line or
     the file's own default section, still wins either way. `cli_value`
     is `None` when neither `-listen` nor `-nolisten` was given, `"0"`
@@ -377,7 +382,7 @@ def _resolve_listen(
     values = default_section.get("listen")
     if values:
         return values[-1] != _FALSE
-    return not connect_given
+    return not connect_given and max_connections > 0
 
 
 def _resolve_chain_name(args: argparse.Namespace, default_section: _ConfSection) -> str:
@@ -603,8 +608,8 @@ def _build_parser() -> argparse.ArgumentParser:
         const="1",
         default=None,
         help=(
-            "Accept connections from outside (default: 1, unless -connect is given, "
-            "which defaults it to 0)"
+            "Accept connections from outside (default: 1, unless -connect or "
+            "-maxconnections=0 is given, which defaults it to 0)"
         ),
     )
     parser.add_argument(
@@ -718,9 +723,16 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
     )
     debug = _resolve_bool(args.debug, "debug", default_section)
     connect = _resolve_list(args.connect, collected, "connect")
-    listen = _resolve_listen(args.listen, default_section, connect_given=bool(connect))
     blocksdir = _resolve_str(args.blocksdir, collected, "blocksdir")
     max_connections = _resolve_int(args.maxconnections, collected, "maxconnections")
+    if max_connections is None:
+        max_connections = DEFAULT_MAX_PEER_CONNECTIONS
+    listen = _resolve_listen(
+        args.listen,
+        default_section,
+        connect_given=bool(connect),
+        max_connections=max_connections,
+    )
 
     return Config(
         chain=chain_name,
@@ -735,9 +747,7 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
         connect=connect,
         addnode=_resolve_list(args.addnode, collected, "addnode"),
         listen=listen,
-        max_connections=(
-            DEFAULT_MAX_PEER_CONNECTIONS if max_connections is None else max_connections
-        ),
+        max_connections=max_connections,
     )
 
 
