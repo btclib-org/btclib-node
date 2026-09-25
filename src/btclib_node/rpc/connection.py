@@ -36,7 +36,7 @@ from bitcoin_core_rpc import RPCErrorCode
 
 from btclib_node.exceptions import IncompleteRequestHeadError, MalformedRequestHeadError
 from btclib_node.p2p.address import ip_and_port
-from btclib_node.rpc.auth import FAILED_ATTEMPT_DELAY, WWW_AUTHENTICATE
+from btclib_node.rpc.auth import FAILED_ATTEMPT_DELAY, WWW_AUTHENTICATE, Refusal
 from btclib_node.rpc.errors import error_msg
 
 if TYPE_CHECKING:
@@ -412,6 +412,9 @@ class RpcConnection:
         # never reached by a `valRequest` that is empty to begin with
         # (issue #669).
         self.is_batch = False
+        # A `-rpcwhitelist` refusal's own reply, kept for the reason
+        # `_parse_error_reply` below is
+        self._whitelist_reply: asyncio.Task[None] | None = None
         # A parse error's own reply, set by `run` below and never read
         # back: `asyncio.Task` only holds a *weak* reference to itself
         # in the loop's own bookkeeping, so a `Task` nothing else
@@ -497,7 +500,9 @@ class RpcConnection:
         accept is answered 401 by `_send_unauthorized` instead, its body
         read off the socket and never decoded or queued. A method or a
         target `_refusal` refuses is answered by `_send_refusal` before
-        that, whatever the credential.
+        that, whatever the credential. One whose decoded body
+        `manager.auth.refusal` refuses is answered by
+        `_send_whitelist_refusal`, and never queued either.
 
         Called again, by `async_send` below, for every request after the
         first one a kept-alive connection carries -- `self.buffer` is
@@ -553,7 +558,8 @@ class RpcConnection:
                     self._send_unauthorized(0)
                 )
                 return
-            if not self.manager.auth.authorized(head.authorization):
+            user = self.manager.auth.authenticated_user(head.authorization)
+            if user is None:
                 self.manager.logger.warning(
                     "ThreadRPCServer incorrect password attempt from %s",
                     self._peer_address(),
@@ -639,6 +645,16 @@ class RpcConnection:
                 )
                 return
 
+            # Core's per-method check, which needs the decoded body and
+            # so comes after the credential's
+            whitelist_refusal = self.manager.auth.refusal(user, body)
+            if whitelist_refusal is not None:
+                if whitelist_refusal.warning:
+                    self.manager.logger.warning(*whitelist_refusal.warning)
+                self._whitelist_reply = self.loop.create_task(
+                    self._send_whitelist_refusal(whitelist_refusal)
+                )
+                return
             self.is_batch = isinstance(body, list)
             if not isinstance(body, list):
                 body = [body]
@@ -725,6 +741,28 @@ class RpcConnection:
         http_response += output_str
         http_response += "\n"
         await self._write(http_response.encode())
+
+    async def _send_whitelist_refusal(self, refusal: Refusal) -> None:
+        """Answer `refusal`, a request `-rpcwhitelist` refuses.
+
+        Measured against a real `bitcoind` v31.1.0: a 403 is
+        `HTTP/1.1 403 Forbidden` with `Content-Length: 0` and no body,
+        and a request Core refuses before its whitelist check is its
+        JSON-RPC error object on one line, as `application/json`. The
+        connection is kept open or closed as the request asked. The
+        `Date` header libevent adds, and the `Content-Type` it adds to a
+        403, are not written, as `_send_unauthorized` does not write them.
+        """
+        http_response = f"HTTP/1.1 {refusal.status}\r\n"
+        body = b""
+        if refusal.body is not None:
+            http_response += "Content-Type: application/json\r\n"
+            text = json.dumps(refusal.body, separators=(",", ":"), ensure_ascii=False)
+            body = (text + "\n").encode()
+        if not self.keep_alive:
+            http_response += "Connection: close\r\n"
+        http_response += f"Content-Length: {len(body)}\r\n\r\n"
+        await self._write(http_response.encode() + body)
 
     async def _send_unauthorized(self, delay: float) -> None:
         """Answer 401 with Core's `WWW-Authenticate`, `delay` seconds from now.

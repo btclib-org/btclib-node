@@ -94,8 +94,9 @@ security section below holds.
 
 ## Security
 
-The JSON-RPC listener takes Bitcoin Core's cookie and `-rpcauth`
-credentials, and any caller it accepts may call every method —
+The JSON-RPC listener takes Bitcoin Core's cookie, `-rpcauth` and
+`-rpcuser`/`-rpcpassword` credentials, and any caller it accepts may
+call every method its `-rpcwhitelist` leaves it —
 [SECURITY.md](./SECURITY.md) carries that and the rest of what is known
 and recorded rather than a vulnerability to report again, and how to
 report one that is not already there.

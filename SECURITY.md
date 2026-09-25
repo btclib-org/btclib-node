@@ -79,19 +79,19 @@ the sdist and the bill of materials.
 The [assurance case](./ASSURANCE_CASE.md) is the threat model these are
 written against, and the argument for what this file does promise.
 
-Known, recorded, and each an open issue rather than something to report
-again.
+Known and recorded, rather than something to report again.
 
-- **Every caller the JSON-RPC listener accepts may call every method,
-  over plain HTTP.** It accepts Core's cookie and `-rpcauth` users
-  (btclib-org/btclib-node#1055) and has no `-rpcwhitelist`, so whoever
-  holds the cookie or an `-rpcauth` password can call `stop` and
-  `sendrawtransaction`. The credential crosses the wire as HTTP Basic,
-  unencrypted, as Core's has since Core dropped `-rpcssl`.
-  `Config.rpc_host` binds loopback by default and `-rpcbind` is what
-  widens it, matching Core's own `rpcbind`/`rpcallowip` default
-  (btclib-org/btclib-node#27): do not widen the bind past a network
-  whose traffic you trust. btclib-org/btclib-node#1070.
+- **Every caller the JSON-RPC listener accepts may call every method
+  `-rpcwhitelist` leaves it, over plain HTTP.** It accepts Core's
+  cookie, `-rpcauth` and `-rpcuser`/`-rpcpassword` users
+  (btclib-org/btclib-node#1055, btclib-org/btclib-node#1070), and with
+  no `-rpcwhitelist`, Core's default too, whoever holds one of those
+  credentials can call `stop` and `sendrawtransaction`. The credential
+  crosses the wire as HTTP Basic, unencrypted, as Core's has since Core
+  dropped `-rpcssl`. `Config.rpc_host` binds loopback by default and
+  `-rpcbind` is what widens it, matching Core's own
+  `rpcbind`/`rpcallowip` default (btclib-org/btclib-node#27): do not
+  widen the bind past a network whose traffic you trust.
 - **`Development Status :: 3 - Alpha` is the claim `pyproject.toml`
   makes**, and it is the right one to read the limitation above against: this
   node has downloaded and validated the chain, which is not the same as

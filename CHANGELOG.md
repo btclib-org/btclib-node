@@ -202,6 +202,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   (closes #1087): asyncio reported the `_send` task a selector loop left
   pending as destroyed while pending.
 
+### The JSON-RPC listener takes the rest of Core's RPC authentication
+
+- **`-rpcuser`/`-rpcpassword`, `-rpccookiefile`, `-rpccookieperms` and
+  `-rpcwhitelist` join `-rpcauth`** (closes #1070):
+  a set `-rpcpassword` writes no cookie, and a method not whitelisted is a 403.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
