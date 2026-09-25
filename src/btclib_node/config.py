@@ -360,7 +360,7 @@ class Config:
             # caller here is content to have created on first use.
             resolved = Path(blocks_dir).absolute()
             if not resolved.is_dir():
-                err_msg = f"specified blocks directory {resolved} does not exist"
+                err_msg = f'Specified blocks directory "{blocks_dir}" does not exist.'
                 raise ValueError(err_msg)
             self.blocks_dir = resolved / self.chain.name
 
@@ -403,9 +403,6 @@ class Config:
         # value refuses nothing
         if not allow_rpc:
             rpcauth, rpccookieperms, rpcwhitelist = (), None, ()
-        # a malformed value is fatal, `RpcAuthEntry.parse`'s own
-        # `ValueError`, as Core refuses to start on one
-        self.rpc_auth = tuple(RpcAuthEntry.parse(value) for value in rpcauth)
         # `InitRPCAuthentication`'s `GetArg("-rpcpassword", "") == ""`:
         # an empty password is no password
         self.rpc_password_entry = (
@@ -420,6 +417,10 @@ class Config:
         self.rpc_cookie_perms = None
         if rpccookieperms is not None and self.rpc_password_entry is None:
             self.rpc_cookie_perms = cookie_perms(rpccookieperms)
+        # a malformed value is fatal, `RpcAuthEntry.parse`'s own
+        # `ValueError`, as Core refuses to start on one, after
+        # `-rpccookieperms` as `InitRPCAuthentication` reads them
+        self.rpc_auth = tuple(RpcAuthEntry.parse(value) for value in rpcauth)
         self.rpc_whitelist = parse_whitelist(rpcwhitelist)
         self.rpc_whitelist_default = (
             bool(rpcwhitelist) if rpcwhitelistdefault is None else rpcwhitelistdefault
