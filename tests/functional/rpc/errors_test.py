@@ -21,7 +21,9 @@ either `call_raw` (one object) or `call_batch` (refuses an empty
 import json
 from typing import TYPE_CHECKING, Any
 
-from tests import post, rpc_client, wait_until_listening
+from bitcoin_core_rpc import http_request
+
+from tests import authorization, post, rpc_client, wait_until_listening
 
 if TYPE_CHECKING:
     from btclib_node import Node
@@ -209,5 +211,32 @@ def test_a_missing_argument_is_not_answered_internal_error(rpc_node: Node) -> No
         "code": -1,
         "message": 'sendrawtransaction "hexstring" ( maxfeerate maxburnamount )',
     }
+
+    assert node.is_alive()
+
+
+def test_an_object_argument_is_named_an_object(rpc_node: Node) -> None:
+    """`getblockhash` given an object is Core's type error, live (issue #1151).
+
+    Measured against a real `bitcoind` v31.1.0: -3, naming the object
+    `object`, a key named twice in it or not.
+    """
+    node = rpc_node
+    wait_until_listening(node.rpc_manager)
+    message = (
+        'Wrong type passed:\n{\n    "Position 1 (height)": "JSON value of type '
+        'object is not of expected type number"\n}'
+    )
+    # raw bytes rather than `post`'s `json.dumps`, which cannot write a
+    # key twice
+    for argument in (b"{}", b'{"a":1,"a":2}'):
+        _, body = http_request(
+            f"http://127.0.0.1:{node.rpc_port}",
+            data=b'{"jsonrpc":"2.0","id":1,"method":"getblockhash","params":[%s]}'
+            % argument,
+            headers={"Authorization": authorization(node.config.data_dir)},
+            timeout=5,
+        )
+        assert json.loads(body)["error"] == {"code": -3, "message": message}
 
     assert node.is_alive()

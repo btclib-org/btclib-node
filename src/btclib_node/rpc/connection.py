@@ -46,7 +46,7 @@ from btclib_node.exceptions import (
 )
 from btclib_node.p2p.address import ip_and_port
 from btclib_node.rpc.auth import FAILED_ATTEMPT_DELAY, WWW_AUTHENTICATE, Refusal
-from btclib_node.rpc.jsonrpc import HttpReply, error_reply
+from btclib_node.rpc.jsonrpc import HttpReply, decode, error_reply
 
 if TYPE_CHECKING:
     import socket
@@ -640,7 +640,7 @@ class RpcConnection:
                 )
                 return
             try:
-                body = json.loads(body_bytes)
+                body = decode(body_bytes)
             except ValueError:
                 # `HTTPReq_JSONRPC`'s `RPC_PARSE_ERROR`, thrown before
                 # any request is read, so `JSONErrorReply` answers it

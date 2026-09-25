@@ -35,7 +35,7 @@ from btclib_node.rpc.connection import (
     RpcConnection,
     parse_request_head,
 )
-from btclib_node.rpc.jsonrpc import NO_CONTENT, OK, HttpReply
+from btclib_node.rpc.jsonrpc import NO_CONTENT, OK, HttpReply, decode
 from tests import RPCAUTH, RPCAUTH_LINE
 
 if TYPE_CHECKING:
@@ -1221,6 +1221,20 @@ def test_a_body_that_is_not_json_is_a_500_parse_error() -> None:
     }
     assert not closed
     assert not messages
+
+
+def test_a_key_named_twice_is_read_as_its_first_value() -> None:
+    """`method` named twice runs the first, as `bitcoind` does (issue #1151)."""
+    body = b'{"id":1,"method":"getblockcount","method":"nosuch"}'
+    _, messages, _ = drive([with_length(body)])
+    assert messages == [({"id": 1, "method": "getblockcount"}, 0)]
+
+
+def test_an_id_naming_a_key_twice_is_written_back_whole() -> None:
+    """An object is written back with every pair it was read with."""
+    request_id = decode(b'{"a":1,"a":2}')
+    data = sent(HttpReply(OK, {"result": 0, "error": None, "id": request_id}))
+    assert data.endswith(b'"id":{"a":1,"a":2}}\n')
 
 
 def test_a_request_under_wallet_is_dispatched() -> None:

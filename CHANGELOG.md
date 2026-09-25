@@ -322,6 +322,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   listen on any port", each as `Error: <message>`** (closes #1135); the
   list `Node.init_errors` replaces `Node.init_error`.
 
+### A JSON-RPC request naming a key twice is read as `bitcoind` reads it
+
+- **A key an object names twice reads as its first value** (closes #1151),
+  as Core's `UniValue` finds it, and an `id` object is written back with
+  every pair it carried.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

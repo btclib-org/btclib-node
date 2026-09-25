@@ -14,7 +14,8 @@ carries `result` and `error` both. A `"2.0"` request gets the JSON-RPC
 request with no `id` is a notification, run and answered with no body.
 """
 
-from typing import Any, NamedTuple
+import json
+from typing import Any, NamedTuple, override
 
 from bitcoin_core_rpc import RPCErrorCode
 
@@ -24,13 +25,51 @@ __all__ = [
     "NO_CONTENT",
     "OK",
     "HttpReply",
+    "JsonObject",
     "JsonRpcRequest",
+    "decode",
     "error_reply",
     "error_status",
 ]
 
 OK = "200 OK"
 NO_CONTENT = "204 No Content"
+
+
+class JsonObject(dict[str, Any]):
+    """A JSON object as Core's `UniValue` reads one, a key named twice included.
+
+    `UniValue::read` keeps every pair in the order the text gives them,
+    and `find_value`, what `JSONRPCRequest::parse` reads each field
+    through, answers the first pair holding a key; `UniValue::write`
+    writes every pair back (`src/univalue/lib/`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag). So a lookup here answers a key's first value, and
+    `items`, which `json.dumps` writes an object from, answers every pair.
+
+    Every other view -- iteration, `keys`, `values`, `len`, `repr` --
+    is the plain `dict`'s, one pair per key, and `items` answers the
+    pairs as decoded whatever is written in since. A decoded object is
+    read, never mutated.
+    """
+
+    def __init__(self, pairs: list[tuple[str, Any]]) -> None:
+        """Hold `pairs`, each key looked up as its first value."""
+        super().__init__()
+        for key, value in pairs:
+            self.setdefault(key, value)
+        self._pairs = pairs
+
+    @override
+    def items(self) -> list[tuple[str, Any]]:  # type: ignore[override]
+        return self._pairs
+
+
+def decode(body: bytes | bytearray) -> Any:  # noqa: ANN401
+    """Decode a request body, each object a `JsonObject`.
+
+    Raises `ValueError` where `json.loads` does.
+    """
+    return json.loads(body, object_pairs_hook=JsonObject)
 
 
 class HttpReply(NamedTuple):
