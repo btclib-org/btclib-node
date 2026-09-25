@@ -562,8 +562,12 @@ for e in pypi testpypi; do
 done
 # pypi
 # fametrano self_review=false
+# giacomocaironi self_review=false
+# pmazzocchi self_review=false
 # testpypi
 # fametrano self_review=false
+# giacomocaironi self_review=false
+# pmazzocchi self_review=false
 gh api "$env/pypi/deployment-branch-policies" \
   --jq '.branch_policies[] | "\(.name) (\(.type))"'
 # v* (tag)
@@ -576,7 +580,8 @@ lands. `pypi` additionally takes only `v*` tags, which is the only ref
 its own `if:` lets it run on; `testpypi` takes any, a rehearsal being
 dispatched from a branch on purpose. `RELEASING.md`'s *One-time setup*
 is where the rest of the argument is, self-review included -- allowed
-on both, the maintainer who pushes the tag being the reviewer.
+on both, whichever of the three reviewers pushes the tag being free to
+approve their own deployment.
 
 ### What has already been published is a changing world, not a decision
 

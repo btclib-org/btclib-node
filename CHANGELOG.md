@@ -148,6 +148,12 @@ disagrees stops the chain after it (closes #1063).
   `SelectNodeToEvict`, the new one refused only where all are protected**
   (closes #1064); a discouraged peer is not evicted first (issue #1078).
 
+### The `pypi` and `testpypi` environments have three reviewers, not one
+
+- **`RELEASING.md` and `REPOSITORY.md` name `fametrano`, `giacomocaironi`
+  and `pmazzocchi` as the environments' required reviewers, self-review
+  left allowed on all** (issue btclib-org/.github#1355).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
