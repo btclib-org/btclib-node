@@ -10,12 +10,13 @@ docstring has the keep-alive that decides which -- and queuing what
 each one parses onto `messages` for `Node`'s own thread to read in
 `rpc.main.handle_rpc`. `listening` is what a caller waits on rather
 than `is_alive()` alone, that flag being true before anything is bound.
-`auth` is who may call it. `run` binds, then writes the cookie, then
-sets `listening`, so a client that waits on `listening` finds the cookie
-there; `stop` deletes it. That is the order of Core's `AppInitServers`
-(`src/init.cpp:748-761`, at bitcoin/bitcoin@9be056a8a7): `InitHTTPServer`
-binds before `StartHTTPRPC` writes the cookie, so a bind that fails
-leaves no cookie behind. `start_listener` is how `Node` learns that
+`auth` is who may call it, and which methods. `run` binds, then writes
+the cookie where one is written, then sets `listening`, so a client that
+waits on `listening` finds the cookie there; `stop` deletes it. That is
+the order of Core's `AppInitServers` (`src/init.cpp:748-761`, at
+bitcoin/bitcoin@9be056a8a7): `InitHTTPServer` binds before
+`StartHTTPRPC` writes the cookie, so a bind that fails leaves no cookie
+behind. `start_listener` is how `Node` learns that
 either step failed, which Core turns into an `InitError`.
 """
 
@@ -67,9 +68,9 @@ class RpcManager(threading.Thread):
         # connection it means to time out, without waiting through
         # REQUEST_TIMEOUT's own real, Core-matching value.
         self.request_timeout = REQUEST_TIMEOUT
-        # `Config.rpc_auth`'s users, and the cookie's once `run` writes
-        # it: what `RpcConnection.run` checks every request against
-        self.auth = RpcAuth(node.config.rpc_auth)
+        # `Config`'s users and whitelists, and the cookie's once `run`
+        # writes it: what `RpcConnection.run` checks every request against
+        self.auth = RpcAuth.from_config(node.config)
 
         # see P2pManager.listening: `is_alive()` is true before `run`
         # has bound anything, and a client that posts on the strength of
@@ -144,7 +145,7 @@ class RpcManager(threading.Thread):
         return server_socket
 
     def _listen(self) -> socket.socket:
-        """Bind, write the cookie, and only then set `listening`.
+        """Bind, write the cookie where one is written, then set `listening`.
 
         Raises `OSError` where either step fails, having logged it and
         closed the socket: Core's "Unable to bind any endpoint for RPC
@@ -157,12 +158,11 @@ class RpcManager(threading.Thread):
             self.logger.exception("Could not bind the RPC listener")
             raise
         try:
-            cookie_path = self.auth.generate_cookie(self.node.config.data_dir)
+            self.auth.start(self.logger)
         except OSError:
             self._server_socket.close()
             self.logger.exception("Could not write the RPC authentication cookie")
             raise
-        self.logger.info("Generated RPC authentication cookie %s", cookie_path)
         self.listening.set()
         return self._server_socket
 

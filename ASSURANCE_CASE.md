@@ -98,7 +98,8 @@ under a GIL interpreter.
   has it open.
 - The user's control over what serves the RPC port and to whom: the
   caller-supplied `Config.rpc_host`/`-rpcbind` decides who can reach
-  it, and the cookie and `-rpcauth` decide who it answers.
+  it, the credentials it accepts decide who it answers, and
+  `-rpcwhitelist` which methods each of them may call.
 
 **The adversaries.**
 
@@ -118,8 +119,8 @@ under a GIL interpreter.
 vulnerabilities*:
 
 - the JSON-RPC listener, against a caller holding an accepted
-  credential, who may call every method, and against whoever can read
-  the plain HTTP it is sent over
+  credential, who may call every method `-rpcwhitelist` leaves it, and
+  against whoever can read the plain HTTP it is sent over
 - anything SECURITY.md attributes to btclib rather than to this tree —
   the constant-time properties of the arithmetic btclib's own
   [assurance case](https://github.com/btclib-org/btclib/blob/main/ASSURANCE_CASE.md)
@@ -140,9 +141,12 @@ JSON-RPC 2.0's own `PARSE_ERROR` rather than closing the socket with
 nothing said. Before that decoding, `RpcConnection.run` checks the
 request's credential against `rpc/auth.py`'s `RpcAuth` and answers one
 it does not accept with a 401, so no handler sees a request from a
-caller without the cookie or an `-rpcauth` password.
-`rpc/callbacks.py`'s own module docstring states the rest of the
-boundary: every caller that is accepted may call every handler.
+caller without an accepted credential; once the body is decoded,
+`RpcAuth.refusal` answers a method `-rpcwhitelist` does not allow that
+caller with a 403. `rpc/callbacks.py`'s own module docstring states the
+rest of the boundary: a caller no whitelist names may call every
+handler, unless `-rpcwhitelistdefault` holds, which it does by default
+once any `-rpcwhitelist` is set.
 
 **btclib-node and btclib.** Every object on the wire and every
 consensus rule crosses this boundary rather than being reimplemented:

@@ -24,8 +24,10 @@ and defaulted the way `SetupServerArgs` (`src/init.cpp`, same sha)
 names and defaults its own -- `-datadir=<dir>`, `-blocksdir=<dir>`,
 `-conf=<file>`, `-chain=`/`-testnet`/`-signet`/`-regtest`, `-port=`,
 `-rpcport=`, `-rpcbind=`, `-prune=`, `-debug`, `-connect=`,
-`-addnode=`, `-listen=`/`-nolisten`, `-rpcauth=`, and `-maxconnections=`,
-whose default is instead the pinned release's 125 rather than that sha's
+`-addnode=`, `-listen=`/`-nolisten`, `-rpcauth=`, `-rpcuser=`,
+`-rpcpassword=`, `-rpccookiefile=`/`-norpccookiefile`, `-rpccookieperms=`,
+`-rpcwhitelist=`, `-rpcwhitelistdefault`, and `-maxconnections=`, whose
+default is instead the pinned release's 125 rather than that sha's
 200 -- `config.py`'s comment on `DEFAULT_MAX_PEER_CONNECTIONS` says why. Three
 `Config` fields have no flag here: `min_relay_feerate` (Core's own
 `-minrelaytxfee` is BTC/kvB and this field is priced in sat/kvB
@@ -132,11 +134,13 @@ the common shape being one `includeconf=` naming a secrets file from
 the top of an otherwise ordinary `bitcoin.conf`. `-includeconf` is not
 a flag of this module's own: Core accepts it on the command line only
 negated (`-noincludeconf`), and this module has no generic negation --
-`-nolisten` is the one negated spelling it registers, by hand, because
-Core's own `-connect` interaction turns `-listen` off and an operator
-needs a way to say so -- so `-includeconf` is simply not registered as
-a flag here at all, which refuses it exactly where the negated case
-would have covered no other command line spelling anyway. `conf=`
+`-nolisten` and `-norpccookiefile` are the negated spellings it
+registers, by hand, the first because Core's own `-connect` interaction
+turns `-listen` off and an operator needs a way to say so, the second
+because it is how Core is told to write no cookie, `norpccookiefile=1`
+being its spelling in a file -- so `-includeconf` is simply not
+registered as a flag here at all, which refuses it exactly where the
+negated case would have covered no other command line spelling anyway. `conf=`
 inside a file is refused the way Core refuses it -- fatally, "conf
 cannot be set in a configuration file" -- and `datadir=` inside one is
 not read at all
@@ -164,9 +168,10 @@ that is issue #1116.
 """
 
 import argparse
+import re
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from btclib_node import Node, install_signal_handlers
 from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, Config, split_host_port
@@ -237,6 +242,13 @@ _RECOGNIZED_KEYS = frozenset(
         "listen",
         "maxconnections",
         "rpcauth",
+        "rpcuser",
+        "rpcpassword",
+        "rpccookiefile",
+        "norpccookiefile",
+        "rpccookieperms",
+        "rpcwhitelist",
+        "rpcwhitelistdefault",
         "blocksdir",
         "includeconf",
     }
@@ -261,13 +273,16 @@ def _parse_conf_text(text: str, path: str) -> _ConfTree:
     `src/common/config.cpp:32-75`, at bitcoin/bitcoin@ca7162cde5): one
     `key=value` or `[section]` per non-blank, non-comment line. Raises
     `ValueError` on a line matching neither shape, on one starting with
-    `-` (an option is named without it in a file), and on a `conf=`
-    key -- the three parse errors Core's own reader raises for too.
+    `-` (an option is named without it in a file), on a `conf=` key,
+    and on a key naming `rpcpassword` on a line holding a `#` anywhere
+    -- the parse errors Core's own reader raises for too, the last
+    because a `#` may be part of the password or start a comment.
     """
     sections: _ConfTree = {None: {}}
     section: str | None = None
     for lineno, raw in enumerate(text.splitlines(), start=1):
-        line = raw.split("#", 1)[0].strip()
+        line, used_hash, _ = raw.partition("#")
+        line = line.strip()
         if not line:
             continue
         if line[0] == "[" and line[-1] == "]":
@@ -288,6 +303,12 @@ def _parse_conf_text(text: str, path: str) -> _ConfTree:
         value = value.strip()
         if key == "conf":
             err_msg = f"{path}:{lineno}: conf cannot be set in a configuration file"
+            raise ValueError(err_msg)
+        if used_hash and "rpcpassword" in key:
+            err_msg = (
+                f"{path}:{lineno}: using # in rpcpassword can be ambiguous and "
+                "should be avoided"
+            )
             raise ValueError(err_msg)
         sections.setdefault(section, {}).setdefault(key, []).append(value)
     return sections
@@ -364,6 +385,24 @@ def _resolve_bool(cli_value: bool, key: str, default_section: _ConfSection) -> b
     if not values:
         return False
     return values[-1] != _FALSE
+
+
+def _interpret_bool(value: str) -> bool:
+    """Return Core's `InterpretBool` of `value`; `-rpcwhitelistdefault` alone.
+
+    `""` is true, and anything else is true where `LocaleIndependentAtoi`
+    reads a non-zero integer off its front, once the whitespace Core
+    trims and a leading `+` are gone: `false`, `no` and `00` are false.
+    The other booleans here still read only `0` as false, which is
+    btclib-org/btclib-node#1117.
+    """
+    if not value:
+        return True
+    text = value.strip(" \f\n\r\t\v")
+    if text.startswith("+-"):
+        return False
+    digits = re.match(r"-?[0-9]+", text.removeprefix("+"))
+    return digits is not None and int(digits.group()) != 0
 
 
 def _resolve_listen(
@@ -652,7 +691,95 @@ def _build_parser() -> argparse.ArgumentParser:
             "share/rpcauth. This option can be specified multiple times"
         ),
     )
+    parser.add_argument(
+        "-rpcuser",
+        "--rpcuser",
+        metavar="<user>",
+        help="Username for JSON-RPC connections",
+    )
+    parser.add_argument(
+        "-rpcpassword",
+        "--rpcpassword",
+        metavar="<pw>",
+        help="Password for JSON-RPC connections",
+    )
+    parser.add_argument(
+        "-rpccookiefile",
+        "--rpccookiefile",
+        metavar="<loc>",
+        help=(
+            "Location of the auth cookie. Relative paths will be prefixed by a "
+            "net-specific datadir location. (default: data dir)"
+        ),
+    )
+    parser.add_argument(
+        "-norpccookiefile",
+        "--norpccookiefile",
+        dest="rpccookiefile",
+        action="store_const",
+        const=False,
+        help="Write no auth cookie",
+    )
+    parser.add_argument(
+        "-rpccookieperms",
+        "--rpccookieperms",
+        metavar="<readable-by>",
+        help=(
+            "Set permissions on the RPC auth cookie file so that it is readable by "
+            "[owner|group|all] (default: owner)"
+        ),
+    )
+    parser.add_argument(
+        "-rpcwhitelist",
+        "--rpcwhitelist",
+        metavar="<whitelist>",
+        action="append",
+        default=[],
+        help=(
+            "Set a whitelist to filter incoming RPC calls for a specific user. The "
+            "field <whitelist> comes in the format: <USERNAME>:<rpc 1>,<rpc 2>,...,"
+            "<rpc n>. If multiple whitelists are set for a given user, they are "
+            "set-intersected. See -rpcwhitelistdefault documentation for "
+            "information on default whitelist behavior."
+        ),
+    )
+    parser.add_argument(
+        "-rpcwhitelistdefault",
+        "--rpcwhitelistdefault",
+        metavar="<n>",
+        nargs="?",
+        const="1",
+        default=None,
+        help=(
+            "Sets default behavior for rpc whitelisting. Unless rpcwhitelistdefault "
+            "is set to 0, if any -rpcwhitelist is set, the rpc server acts as if all "
+            "rpc users are subject to empty-unless-otherwise-specified whitelists. "
+            "If rpcwhitelistdefault is set to 1 and no -rpcwhitelist is set, rpc "
+            "server acts as if all rpc users are subject to empty whitelists."
+        ),
+    )
     return parser
+
+
+def _resolve_cookie_file(
+    cli_value: str | Literal[False] | None, collected: dict[str, list[str]]
+) -> str | None:
+    """Return `Config`'s `rpccookiefile`, `None` for `-norpccookiefile`.
+
+    `cli_value` is `None` where neither flag was given and `False` for
+    `-norpccookiefile`, the command line winning over the file either
+    way. In the file, `norpccookiefile=` with any value but `0` wins over
+    `rpccookiefile=`, the two being separate keys here where Core
+    reads them as one.
+    """
+    if cli_value is False:
+        return None
+    if cli_value is not None:
+        return cli_value
+    negated = collected.get("norpccookiefile")
+    if negated and negated[-1] != _FALSE:
+        return None
+    return _resolve_str(None, collected, "rpccookiefile") or ""
 
 
 def _check_datadir(base_dir: Path) -> None:
@@ -754,6 +881,9 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
         connect_given=bool(connect),
         max_connections=max_connections,
     )
+    whitelist_default = _resolve_str(
+        args.rpcwhitelistdefault, collected, "rpcwhitelistdefault"
+    )
 
     return Config(
         chain=chain_name,
@@ -770,6 +900,14 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
         listen=listen,
         max_connections=max_connections,
         rpcauth=_resolve_list(args.rpcauth, collected, "rpcauth"),
+        rpcuser=_resolve_str(args.rpcuser, collected, "rpcuser") or "",
+        rpcpassword=_resolve_str(args.rpcpassword, collected, "rpcpassword") or "",
+        rpccookiefile=_resolve_cookie_file(args.rpccookiefile, collected),
+        rpccookieperms=_resolve_str(args.rpccookieperms, collected, "rpccookieperms"),
+        rpcwhitelist=_resolve_list(args.rpcwhitelist, collected, "rpcwhitelist"),
+        rpcwhitelistdefault=(
+            None if whitelist_default is None else _interpret_bool(whitelist_default)
+        ),
     )
 
 

@@ -46,6 +46,14 @@ on release day.
   its thread ended and `Node.init_error` set. Free the port or pick
   another with `-rpcport`, and make the chain's data directory writable
   where the cookie could not be written.
+- **`rpcpassword=` in `bitcoin.conf` is read, and stops the cookie**
+  (closes #1070). The node used to warn about the key and write
+  `.cookie` all the same; a client reading `.cookie` beside a
+  `rpcpassword=` line now has to send that user and password instead. A
+  `#` anywhere on the line refuses to start, as in Core.
+- **Any `rpcwhitelist=` refuses every method to a user it does not name**
+  (closes #1070), as in Core: give that user a whitelist of its own, or
+  set `rpcwhitelistdefault=0`.
 
 ## v2026.9.24
 

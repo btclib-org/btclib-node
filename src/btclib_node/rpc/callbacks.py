@@ -8,10 +8,9 @@ Every handler shares the signature `(node, conn, params)` that
 `rpc.main.handle_rpc` calls each one with, whether or not its own body
 reads every argument -- the same shared-signature reasoning `p2p.callbacks`
 carries for its own two tables. A request reaches an entry here only
-once `rpc.connection.RpcConnection.run` has accepted its credential
-(`rpc.auth`), and every user it accepts may call every entry, `stop`
-included, Core's `-rpcwhitelist` having no counterpart here
-(btclib-org/btclib-node#1070).
+once `rpc.connection.RpcConnection.run` has accepted its credential and
+`-rpcwhitelist` its method (`rpc.auth`): a user no whitelist names may
+call every entry, `stop` included, unless `-rpcwhitelistdefault` holds.
 """
 
 import math

@@ -14,7 +14,7 @@ from btclib_node import cli
 from btclib_node.chains import RegTest
 from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS
 from btclib_node.constants import MIN_PRUNE_TARGET_MIB
-from btclib_node.rpc.auth import RpcAuthEntry
+from btclib_node.rpc.auth import COOKIE_FILE, RpcAuthEntry, password_hmac
 from tests import RPCAUTH
 
 if TYPE_CHECKING:
@@ -858,3 +858,160 @@ def test_dunder_main_imported_plainly_does_not_call_main(
     monkeypatch.setattr(cli, "main", lambda: calls.append(1))
     runpy.run_module("btclib_node.__main__", run_name="btclib_node.__main__")
     assert calls == []
+
+
+def test_build_config_rpcuser_and_rpcpassword_from_the_file_on_any_chain(
+    tmp_path: Path,
+) -> None:
+    """Core's `-rpcuser`/`-rpcpassword` are `ALLOW_ANY` and not network-only."""
+    (tmp_path / "bitcoin.conf").write_text(
+        "regtest=1\nrpcuser=alice\nrpcpassword=pw\n", encoding="utf-8"
+    )
+    entry = cli.build_config(["-datadir", str(tmp_path)]).rpc_password_entry
+    assert entry is not None
+    assert entry.user == b"alice"
+    assert entry.hmac == password_hmac(entry.salt, b"pw")
+
+
+def test_build_config_rpcpassword_on_the_command_line_beats_the_file(
+    tmp_path: Path,
+) -> None:
+    """The command line over the file, as for every other scalar."""
+    (tmp_path / "bitcoin.conf").write_text("rpcpassword=file\n", encoding="utf-8")
+    argv = ["-datadir", str(tmp_path), "-rpcpassword=cli"]
+    entry = cli.build_config(argv).rpc_password_entry
+    assert entry is not None
+    assert entry.user == b""
+    assert entry.hmac == password_hmac(entry.salt, b"cli")
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["rpcpassword=ab#c\n", "rpcuser=u\nrpcpassword=abc # a comment\n"],
+    ids=["inside the password", "a comment after it"],
+)
+def test_a_hash_on_an_rpcpassword_line_is_refused(tmp_path: Path, text: str) -> None:
+    """Core's parse error: the `#` may be the password's or a comment's."""
+    (tmp_path / "bitcoin.conf").write_text(text, encoding="utf-8")
+    line = text.count("\n")
+    err_msg = f":{line}: using # in rpcpassword can be ambiguous and should be avoided$"
+    with pytest.raises(ValueError, match=err_msg):
+        cli.build_config(["-datadir", str(tmp_path)])
+
+
+def test_a_hash_on_another_line_is_a_comment(tmp_path: Path) -> None:
+    """Only a key naming `rpcpassword` refuses a `#`, as `bitcoind` does."""
+    (tmp_path / "bitcoin.conf").write_text(
+        "rpcuser=u # a comment\nrpcpassword=abc\n", encoding="utf-8"
+    )
+    entry = cli.build_config(["-datadir", str(tmp_path)]).rpc_password_entry
+    assert entry is not None
+    assert entry.user == b"u"
+
+
+def test_build_config_rpccookiefile_from_the_command_line(tmp_path: Path) -> None:
+    """`-rpccookiefile=<loc>`, relative to the chain's data directory."""
+    config = cli.build_config(["-datadir", str(tmp_path), "-rpccookiefile=c"])
+    assert config.rpc_cookie_file == tmp_path / "mainnet" / "c"
+    config = cli.build_config(["-datadir", str(tmp_path)])
+    assert config.rpc_cookie_file == tmp_path / "mainnet" / COOKIE_FILE
+
+
+@pytest.mark.parametrize(
+    ("argv", "text", "written"),
+    [
+        (["-norpccookiefile"], "", False),
+        ([], "norpccookiefile=1\n", False),
+        ([], "rpccookiefile=c\nnorpccookiefile=1\n", False),
+        ([], "norpccookiefile=0\n", True),
+        (["-rpccookiefile=c"], "norpccookiefile=1\n", True),
+        (["-rpccookiefile=c", "-norpccookiefile"], "", False),
+        (["-norpccookiefile", "-rpccookiefile=c"], "", True),
+    ],
+    ids=[
+        "the flag",
+        "the file",
+        "the file, over rpccookiefile=",
+        "the file, =0",
+        "the command line over the file",
+        "the last flag, negated",
+        "the last flag, a path",
+    ],
+)
+def test_norpccookiefile_writes_no_cookie(
+    tmp_path: Path, argv: list[str], text: str, *, written: bool
+) -> None:
+    """`-norpccookiefile`, `norpccookiefile=1` in the file."""
+    (tmp_path / "bitcoin.conf").write_text(text, encoding="utf-8")
+    config = cli.build_config(["-datadir", str(tmp_path), *argv])
+    assert (config.rpc_cookie_file is not None) == written
+
+
+def test_build_config_rpccookieperms_from_the_file(tmp_path: Path) -> None:
+    """`rpccookieperms=` in the file, and a bad value refused."""
+    (tmp_path / "bitcoin.conf").write_text("rpccookieperms=all\n", encoding="utf-8")
+    assert cli.build_config(["-datadir", str(tmp_path)]).rpc_cookie_perms == 0o644
+    with pytest.raises(ValueError, match=r"^Invalid -rpccookieperms=x;"):
+        cli.build_config(["-datadir", str(tmp_path), "-rpccookieperms=x"])
+
+
+def test_build_config_rpcwhitelist_from_the_command_line_and_the_file(
+    tmp_path: Path,
+) -> None:
+    """Every `-rpcwhitelist` from both, which then intersect for one user."""
+    (tmp_path / "bitcoin.conf").write_text(
+        "regtest=1\nrpcwhitelist=alice:b,c\n", encoding="utf-8"
+    )
+    config = cli.build_config(["-datadir", str(tmp_path), "-rpcwhitelist=alice:a,b"])
+    assert config.rpc_whitelist == {b"alice": frozenset({"b"})}
+    assert config.rpc_whitelist_default
+
+
+@pytest.mark.parametrize(
+    ("argv", "text", "default"),
+    [
+        ([], "", False),
+        (["-rpcwhitelistdefault"], "", True),
+        (["-rpcwhitelistdefault=1"], "", True),
+        (["-rpcwhitelistdefault=0", "-rpcwhitelist=a:b"], "", False),
+        ([], "rpcwhitelistdefault=1\n", True),
+        (["-rpcwhitelist=a:b"], "rpcwhitelistdefault=0\n", False),
+        (["-rpcwhitelistdefault=1"], "rpcwhitelistdefault=0\n", True),
+    ],
+)
+def test_build_config_rpcwhitelistdefault(
+    tmp_path: Path, argv: list[str], text: str, *, default: bool
+) -> None:
+    """A flag with an optional value, the command line over the file."""
+    (tmp_path / "bitcoin.conf").write_text(text, encoding="utf-8")
+    config = cli.build_config(["-datadir", str(tmp_path), *argv])
+    assert config.rpc_whitelist_default == default
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("", True),
+        ("1", True),
+        ("0", False),
+        ("false", False),
+        ("no", False),
+        ("00", False),
+        ("+1", True),
+        ("+-1", False),
+        ("-1", True),
+        ("1x", True),
+        ("x1", False),
+        ("-0", False),
+        (" 2", True),
+    ],
+)
+def test_rpcwhitelistdefault_is_read_as_core_s_interpret_bool(
+    tmp_path: Path, value: str, *, expected: bool
+) -> None:
+    """Each value as `bitcoind` v31.1.0 read `-rpcwhitelistdefault=<value>`.
+
+    Measured there with no `-rpcwhitelist`: a 403 for true, a 200 for false.
+    """
+    argv = ["-datadir", str(tmp_path), f"-rpcwhitelistdefault={value}"]
+    assert cli.build_config(argv).rpc_whitelist_default == expected

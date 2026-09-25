@@ -106,9 +106,13 @@ added the other members above).
 A call carries HTTP Basic credentials, as it does against `bitcoind`.
 At start the node writes `.cookie` in its chain's data directory,
 `<datadir>/<chain>/` with `<chain>` one of `mainnet`, `testnet`,
-`signet` and `regtest`, and deletes it at stop. Its mode is 0600 on
-POSIX; on Windows the data directory's ACL decides who reads it. It
-holds `__cookie__:<password>`, which is what `curl` sends:
+`signet` and `regtest`, and deletes it at stop. `-rpccookiefile=<loc>`
+names another file, a relative one under that same directory, and
+`-norpccookiefile` writes none. Its mode is 0600 on POSIX, and
+`-rpccookieperms=group` or `-rpccookieperms=all` makes it 0640 or 0644;
+on Windows none of these modes changes anything, and the ACL of the
+directory the cookie is in decides who reads it. It holds
+`__cookie__:<password>`, which is what `curl` sends:
 
 ```shell
 curl -s --user "$(cat <datadir>/<chain>/.cookie)" \
@@ -119,8 +123,21 @@ curl -s --user "$(cat <datadir>/<chain>/.cookie)" \
 `-rpcauth=<user>:<salt>$<hash>`, repeatable and read from
 `bitcoin.conf` too, adds a user with a password of its own, beside the
 cookie: `share/rpcauth/rpcauth.py` in Bitcoin Core's source generates
-the line. A request without an accepted credential is answered 401,
-after a quarter of a second where it carried a wrong one.
+the line. `-rpcuser=<user>` and `-rpcpassword=<pw>` add a user whose
+password is written in plain text, and a set `-rpcpassword` stops the
+cookie being written, as it does in Core, which warns about it at start.
+A `#` anywhere on an `rpcpassword=` line of `bitcoin.conf` refuses to
+start, since it could be the password's or a comment's. A request
+without an accepted credential is answered 401, after a quarter of a
+second where it carried a wrong one.
+
+`-rpcwhitelist=<user>:<method>,<method>` lets that user call the methods
+it names and no others; given twice for one user, the two lists
+intersect. A method outside the list is answered 403, and a batch is
+refused whole where any call in it is. Once any `-rpcwhitelist` is set,
+a user without one is refused every method, unless
+`-rpcwhitelistdefault=0`; `-rpcwhitelistdefault=1` refuses every user
+without a whitelist even where none is set.
 
 ## RPC methods
 

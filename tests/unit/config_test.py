@@ -17,7 +17,7 @@ from btclib_node.config import (
     Config,
     split_host_port,
 )
-from btclib_node.rpc.auth import RpcAuthEntry
+from btclib_node.rpc.auth import COOKIE_FILE, RpcAuthEntry, password_hmac
 from tests import RPCAUTH
 
 
@@ -306,3 +306,73 @@ def test_a_malformed_rpcauth_raises() -> None:
     """Core refuses to start on one, with this message."""
     with pytest.raises(ValueError, match=r"^Invalid -rpcauth argument\.$"):
         Config(chain="regtest", rpcauth=["pytest"])
+
+
+def test_rpcpassword_is_kept_hashed_and_empty_is_unset() -> None:
+    """Only the salted HMAC is kept, and `""` is no password, as in Core."""
+    assert Config(chain="regtest").rpc_password_entry is None
+    assert Config(chain="regtest", rpcpassword="").rpc_password_entry is None
+    config = Config(chain="regtest", rpcuser="alice", rpcpassword="s3cr3t")
+    entry = config.rpc_password_entry
+    assert entry is not None
+    assert entry.user == b"alice"
+    assert entry.hmac == password_hmac(entry.salt, b"s3cr3t")
+    assert "s3cr3t" not in repr(config)
+
+
+def test_rpccookiefile_resolves_against_the_chain_s_data_dir(tmp_path: Path) -> None:
+    """`AbsPathForConfigVal`: relative under `data_dir`, absolute as given."""
+    config = Config(chain="regtest", data_dir=tmp_path)
+    assert config.rpc_cookie_file == config.data_dir / COOKIE_FILE
+    for value in ("", COOKIE_FILE):
+        config = Config(chain="regtest", data_dir=tmp_path, rpccookiefile=value)
+        assert config.rpc_cookie_file == config.data_dir / COOKIE_FILE
+    config = Config(chain="regtest", data_dir=tmp_path, rpccookiefile="sub/c")
+    assert config.rpc_cookie_file == config.data_dir / "sub" / "c"
+    config = Config(chain="regtest", data_dir=tmp_path, rpccookiefile=tmp_path / "c")
+    assert config.rpc_cookie_file == tmp_path / "c"
+
+
+def test_no_rpccookiefile_is_no_cookie() -> None:
+    """`-norpccookiefile`, which `None` stands for here."""
+    assert Config(chain="regtest", rpccookiefile=None).rpc_cookie_file is None
+
+
+def test_rpccookieperms_is_parsed_unless_rpcpassword_is_set() -> None:
+    """Core reads it only on the way to a cookie, refusing a bad one there."""
+    assert Config(chain="regtest").rpc_cookie_perms is None
+    assert Config(chain="regtest", rpccookieperms="group").rpc_cookie_perms == 0o640
+    with pytest.raises(ValueError, match=r"^Invalid -rpccookieperms=bogus;"):
+        Config(chain="regtest", rpccookieperms="bogus")
+    config = Config(chain="regtest", rpcpassword="pw", rpccookieperms="bogus")
+    assert config.rpc_cookie_perms is None
+
+
+def test_rpcwhitelistdefault_defaults_to_whether_a_whitelist_is_set() -> None:
+    """Core's `GetBoolArg("-rpcwhitelistdefault", !GetArgs(...).empty())`."""
+    assert Config(chain="regtest").rpc_whitelist == {}
+    assert not Config(chain="regtest").rpc_whitelist_default
+    config = Config(chain="regtest", rpcwhitelist=["alice:a,b", "alice:b"])
+    assert config.rpc_whitelist == {b"alice": frozenset({"b"})}
+    assert config.rpc_whitelist_default
+    config = Config(
+        chain="regtest", rpcwhitelist=["alice:a"], rpcwhitelistdefault=False
+    )
+    assert not config.rpc_whitelist_default
+    assert Config(chain="regtest", rpcwhitelistdefault=True).rpc_whitelist_default
+
+
+@pytest.mark.parametrize(
+    ("value", "name"),
+    [("missing/../mycookie", "mycookie"), ("sub/", "sub"), ("./a//b/.", "a/b")],
+)
+def test_rpccookiefile_is_normalised_as_core_s_get_path_arg(
+    tmp_path: Path, value: str, name: str
+) -> None:
+    """Lexical, as `lexically_normal`: `bitcoind` v31.1.0 writes `mycookie`.
+
+    Measured there with `-rpccookiefile=nonexist/../mycookie` and
+    `-rpccookiefile=sub/`, the second writing a file named `sub`.
+    """
+    config = Config(chain="regtest", data_dir=tmp_path, rpccookiefile=value)
+    assert config.rpc_cookie_file == config.data_dir / name

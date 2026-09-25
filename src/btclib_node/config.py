@@ -14,6 +14,7 @@ port too, which is why it is public here rather than named with a
 leading underscore.
 """
 
+import os
 from dataclasses import dataclass
 from ipaddress import ip_address
 from pathlib import Path
@@ -23,10 +24,15 @@ from btclib.fee import FeeRate
 
 from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet
 from btclib_node.exceptions import InvalidChainTypeError, UnknownChainError
-from btclib_node.rpc.auth import RpcAuthEntry
+from btclib_node.rpc.auth import (
+    COOKIE_FILE,
+    RpcAuthEntry,
+    cookie_perms,
+    parse_whitelist,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
 __all__ = [
     "DEFAULT_MAX_PEER_CONNECTIONS",
@@ -123,6 +129,25 @@ def _resolve_peers(
     return tuple(peers)
 
 
+def _resolve_cookie_file(value: str | Path | None, data_dir: Path) -> Path | None:
+    """Return where `-rpccookiefile=<value>` writes, `None` for no cookie.
+
+    Core's `GetAuthCookieFile`: an empty value is `COOKIE_FILE`, any
+    other is normalised the way `GetPathArg` normalises it, and
+    `AbsPathForConfigVal` resolves a relative one against the chain's
+    own data directory. `os.path.normpath` is `lexically_normal` plus
+    `GetPathArg`'s own trailing-slash strip: both are lexical, so
+    `missing/../name` is `name` whether or not `missing` exists. The one
+    difference measured is a leading `//`, which POSIX lets `normpath`
+    keep and which `lexically_normal` collapses to `/`; macOS and Linux
+    both resolve the two to the same file.
+    """
+    if value is None:
+        return None
+    path = Path(os.path.normpath(value)) if value else Path(COOKIE_FILE)
+    return path if path.is_absolute() else data_dir / path
+
+
 def _resolve_chain(chain: Chain | str) -> Chain:
     if isinstance(chain, Chain):
         return chain
@@ -182,9 +207,27 @@ class Config:
     # listener is supposed to accept a stranger.
     rpc_host: str
     # Core's own `-rpcauth`, one entry per value: users the RPC listener
-    # accepts beside the cookie `rpc.auth.RpcAuth.generate_cookie`
-    # writes, which it accepts whatever this holds.
+    # accepts beside the cookie and `rpc_password_entry`.
     rpc_auth: tuple[RpcAuthEntry, ...]
+    # Core's own `-rpcuser`/`-rpcpassword`, hashed with a random salt so
+    # that the plaintext password is not what is kept; `None` where
+    # `-rpcpassword` is unset or empty. Set, it stops the cookie being
+    # written, as it stops Core's.
+    rpc_password_entry: RpcAuthEntry | None
+    # Core's own `-rpccookiefile`, a relative path resolved against
+    # `data_dir`; `None` is `-norpccookiefile`, which writes none.
+    rpc_cookie_file: Path | None
+    # Core's own `-rpccookieperms`, as the mode `rpc.auth.cookie_perms`
+    # maps it to; `None` is its default, owner-only, and is what it is
+    # wherever `-rpcpassword` is set, Core not reading it then.
+    rpc_cookie_perms: int | None
+    # Core's own `-rpcwhitelist`, parsed by `rpc.auth.parse_whitelist`:
+    # the methods each user named may call.
+    rpc_whitelist: Mapping[bytes, frozenset[str]]
+    # Core's own `-rpcwhitelistdefault`: whether a user with no
+    # whitelist may call nothing. Its default is whether any
+    # `-rpcwhitelist` is given.
+    rpc_whitelist_default: bool
     # `True` is Core's own `IsPruneMode()`: some block and undo data may
     # be deleted, `MIN_BLOCKS_TO_KEEP` (constants.py, 288, Core's own two
     # days) behind the tip never among it -- `block_db.BlockDB.prune_up_to`
@@ -279,6 +322,12 @@ class Config:
         listen: bool = True,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
         rpcauth: Sequence[str] = (),
+        rpcuser: str = "",
+        rpcpassword: str = "",
+        rpccookiefile: str | Path | None = COOKIE_FILE,
+        rpccookieperms: str | None = None,
+        rpcwhitelist: Sequence[str] = (),
+        rpcwhitelistdefault: bool | None = None,
     ) -> None:
         """Resolve `chain` and ports."""
         self.chain = _resolve_chain(chain)
@@ -336,6 +385,21 @@ class Config:
         # a malformed value is fatal, `RpcAuthEntry.parse`'s own
         # `ValueError`, as Core refuses to start on one
         self.rpc_auth = tuple(RpcAuthEntry.parse(value) for value in rpcauth)
+        # `InitRPCAuthentication`'s `GetArg("-rpcpassword", "") == ""`:
+        # an empty password is no password
+        self.rpc_password_entry = (
+            RpcAuthEntry.from_password(rpcuser, rpcpassword) if rpcpassword else None
+        )
+        self.rpc_cookie_file = _resolve_cookie_file(rpccookiefile, self.data_dir)
+        # an invalid value is fatal, `cookie_perms`' own `ValueError`,
+        # where Core reads it at all
+        self.rpc_cookie_perms = None
+        if rpccookieperms is not None and self.rpc_password_entry is None:
+            self.rpc_cookie_perms = cookie_perms(rpccookieperms)
+        self.rpc_whitelist = parse_whitelist(rpcwhitelist)
+        self.rpc_whitelist_default = (
+            bool(rpcwhitelist) if rpcwhitelistdefault is None else rpcwhitelistdefault
+        )
 
         self.pruned = pruned
         self.prune_target_mib = prune_target_mib
