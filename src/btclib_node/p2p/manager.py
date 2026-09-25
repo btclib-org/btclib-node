@@ -24,13 +24,14 @@ from concurrent.futures import CancelledError
 from contextlib import suppress
 from typing import TYPE_CHECKING, override
 
-from btclib.p2p.addrv2 import can_addrv1, network_address
+from btclib.p2p.addrv2 import BIP155Network, can_addrv1, network_address
 
 from btclib_node.constants import CLIENT_NAME, P2pConnStatus
 from btclib_node.p2p.address import (
     PeerDB,
     dial,
     endpoint_key,
+    fixed_seed_addresses,
     host_key,
     ip_and_port,
     peer_address,
@@ -109,6 +110,25 @@ _REDIAL_MAX_SECONDS = 60.0
 _MAX_OUTBOUND_FULL_RELAY_CONNECTIONS = 8
 _MAX_BLOCK_RELAY_ONLY_CONNECTIONS = 2
 _MAX_FEELER_CONNECTIONS = 1
+
+# How long `_maybe_add_fixed_seeds` gives DNS seeding and `-addnode` to
+# fill the table before falling back on the chain's fixed seeds: Core's
+# `start + std::chrono::minutes{1}` in `ThreadOpenConnections`
+# (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+_FIXED_SEEDS_DELAY = 60
+
+# How often `_maybe_add_fixed_seeds` looks, at most: once per pass of
+# `ThreadOpenConnections`, which sleeps 500ms (same sha). Core's
+# `addrman.Size(net)` is a counter, and `PeerDB.holds_network` is a walk
+# of both tables, so this loop's own 100ms would walk them five times as
+# often for nothing.
+_FIXED_SEEDS_CHECK_INTERVAL = 0.5
+
+# The networks Core reaches by default, which are this node's two:
+# `g_reachable_nets` loses Tor, I2P and CJDNS in `AppInitMain` where no
+# proxy, SAM bridge or `-cjdnsreachable` is given (`src/init.cpp`, same
+# sha), and `dial` opens a socket for IPv4 and IPv6 alone.
+_REACHABLE_NETWORKS = (BIP155Network.IPV4, BIP155Network.IPV6)
 
 # How many hosts `P2pManager.discourage` remembers. Core keeps them in
 # `BanMan::m_discouraged`, a `CRollingBloomFilter{50000, 0.000001}`
@@ -193,12 +213,32 @@ class P2pManager(threading.Thread):
         automatic_outbound = full_relay + block_relay + _MAX_FEELER_CONNECTIONS
         self.max_inbound = max(0, max_connections - automatic_outbound)
         self.max_outbound_full_relay = full_relay
+        # The size of Core's `semOutbound`,
+        # `min(m_max_automatic_outbound, m_max_automatic_connections)`
+        # (`src/net.cpp`, same sha): what `ThreadOpenConnections` holds
+        # a grant of before its fixed-seed step, whichever kind of
+        # automatic connection it goes on to open. Every automatic
+        # outbound connection counts against it, `_automatic_outbound`
+        # below being the one count of them.
+        self.max_automatic_outbound = min(automatic_outbound, max_connections)
         # Core's own `-dnsseed`, which `InitParameterInteraction` soft-sets
         # off under `-connect` and under `-maxconnections=0` alike
         # (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
         # This node has no `-dnsseed` for an operator to set, so the
         # soft-set is the whole of it: whether `run` schedules the lookup.
         self.use_dns_seed = self.use_addrman_outgoing and max_connections > 0
+        # Core's `-fixedseeds`, `DEFAULT_FIXEDSEEDS` being true, which
+        # this node has no option to turn off; cleared once the seeds
+        # are added, as `ThreadOpenConnections` clears `add_fixed_seeds`.
+        self.add_fixed_seeds = True
+        # Core's `m_added_node_params` being non-empty, which only
+        # `-addnode` fills here: the `addnode` RPC's `add` dials once and
+        # keeps no list (`rpc.callbacks.add_node`), so it does not count
+        # as it does in Core.
+        self._addnode_given = bool(node.config.addnode)
+        # Core's `start`, reset when `manage_connections` begins.
+        self._dial_start = time.time()
+        self._next_fixed_seeds_check = 0.0
 
         # `-connect` and `-addnode` together, by `endpoint_key`: what
         # `_maybe_redial_specified` below redials once `Node.run`'s own
@@ -685,6 +725,64 @@ class P2pManager(threading.Thread):
         except Exception:
             self.logger.exception("Exception occurred")
 
+    def _maybe_add_fixed_seeds(self) -> None:
+        """Add the chain's fixed seeds for every reachable network held empty.
+
+        `CConnman::ThreadOpenConnections`'s own step ahead of its draw
+        (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+        once `_FIXED_SEEDS_DELAY` has passed, or at once where DNS
+        seeding is off and no `-addnode` was given, and once only. Core's
+        `-seednode` has no counterpart here.
+        """
+        now = time.time()
+        if not self.add_fixed_seeds or now < self._next_fixed_seeds_check:
+            return
+        self._next_fixed_seeds_check = now + _FIXED_SEEDS_CHECK_INTERVAL
+        empty = [
+            network
+            for network in _REACHABLE_NETWORKS
+            if not self.peer_db.holds_network(network)
+        ]
+        if not empty:
+            return
+        if now > self._dial_start + _FIXED_SEEDS_DELAY:
+            self.logger.info(
+                "Adding fixed seeds as 60 seconds have passed and addrman is "
+                "empty for at least one reachable network"
+            )
+        elif not self.use_dns_seed and not self._addnode_given:
+            self.logger.info(
+                "Adding fixed seeds as -dnsseed=0 (or IPv4/IPv6 connections are "
+                "disabled via -onlynet) and neither -addnode nor -seednode are "
+                "provided"
+            )
+        else:
+            return
+        seeds = [
+            address
+            for address in fixed_seed_addresses(self.node.chain.fixed_seeds)
+            if address.network_id in empty
+        ]
+        self.peer_db.add_addresses(seeds)
+        self.add_fixed_seeds = False
+        self.logger.info("Added %s fixed seeds from reachable networks.", len(seeds))
+
+    def _automatic_outbound(self) -> int:
+        """Count the connections holding what Core's `semOutbound` grants.
+
+        This node's own automatic dials, pending ones included, and not
+        inbound or manual peers. Locked for the reason
+        `_maybe_dial_more_peers` gives.
+        """
+        with self._connections_lock:
+            return sum(
+                conn.automatic
+                for conn in (
+                    *self.connections.values(),
+                    *self.pending_connections.values(),
+                )
+            )
+
     async def _maybe_dial_more_peers(self) -> None:
         # `-connect`'s own other half: `peer_db`'s table is never drawn
         # from at all, on top of `run` below never scheduling the DNS
@@ -724,19 +822,24 @@ class P2pManager(threading.Thread):
         # count would then undercount a node that already has enough
         # peers (btclib-org/btclib-node#367). A second acquisition
         # rather than one covering both this count and the snapshot
-        # below is what keeps this early return cheap: most passes,
-        # once the node already holds enough peers, return here, and
+        # below is what keeps the early returns cheap: most passes,
+        # once the node already holds enough peers, return ahead of the
+        # snapshot, and
         # building `already_connected` -- which such a pass would only
         # throw away -- is not owed every 100 ms just because this
         # count is.
-        with self._connections_lock:
-            live = sum(
-                conn.automatic
-                for conn in (
-                    *self.connections.values(),
-                    *self.pending_connections.values(),
-                )
-            )
+        live = self._automatic_outbound()
+        if live >= self.max_automatic_outbound:
+            return
+        # Past the grant and ahead of the full-relay target, as Core
+        # takes a `semOutbound` grant and then adds fixed seeds before
+        # it counts full-relay peers, so a node holding all eight of
+        # them still seeds. Guarded as the draw below is:
+        # `add_addresses` writes to the store.
+        try:
+            self._maybe_add_fixed_seeds()
+        except Exception:
+            self.logger.exception("Exception occurred")
         if live >= self.max_outbound_full_relay or self.peer_db.is_empty:
             return
         # By endpoint_key, not raw equality: a drawn address
@@ -845,6 +948,7 @@ class P2pManager(threading.Thread):
         has room for it; `_maybe_redial_specified` is the standing
         redial issue #651 asked for, for `-connect`/`-addnode` alone.
         """
+        self._dial_start = time.time()
         while True:
             now = time.time()
             self._prune_stale_connections(now)

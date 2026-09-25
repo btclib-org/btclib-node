@@ -25,9 +25,11 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import replace
+from io import BytesIO
 from ipaddress import IPv4Address, IPv6Address, ip_address
 from typing import TYPE_CHECKING, cast
 
+from btclib import var_int
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.addrv2 import (
     BIP155Network,
@@ -52,6 +54,7 @@ __all__ = [
     "can_connect",
     "dial",
     "endpoint_key",
+    "fixed_seed_addresses",
     "host_key",
     "ip_and_port",
     "peer_address",
@@ -82,6 +85,27 @@ def peer_address(
         BIP155Network.IPV4 if parsed.version == 4 else BIP155Network.IPV6  # noqa: PLR2004
     )
     return NetworkAddressV2(timestamp, services, network_id, parsed.packed, port)
+
+
+def fixed_seed_addresses(seeds: bytes) -> list[NetworkAddressV2]:
+    """Decode a chain's `fixed_seeds`, as Core's `ConvertSeeds` does.
+
+    Each endpoint is a BIP155 network id, a compact-size length, the
+    address and a big-endian port (`src/net.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), and is given Core's
+    `SeedsServiceFlags`, `NODE_NETWORK | NODE_WITNESS`. Core also gives
+    each a random time one to two weeks past, which is left at 0 here:
+    `PeerDB.add_addresses` keeps no address's time.
+    """
+    services = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
+    stream = BytesIO(seeds)
+    addresses: list[NetworkAddressV2] = []
+    while stream.tell() < len(seeds):
+        network_id = stream.read(1)[0]
+        address = stream.read(var_int.parse(stream))
+        port = int.from_bytes(stream.read(2), "big")
+        addresses.append(NetworkAddressV2(0, services, network_id, address, port))
+    return addresses
 
 
 def can_connect(address: NetworkAddressV2) -> bool:
@@ -462,6 +486,20 @@ class PeerDB:
         # empty for can gain an entry the instant after, dialable or
         # not, and nothing here promised otherwise).
         return not len(self.addresses)
+
+    def holds_network(self, network_id: int) -> bool:
+        """Whether either table holds an address on `network_id`.
+
+        Core's `addrman.Size(net) != 0`, which `GetReachableEmptyNetworks`
+        asks of each reachable network (`src/net.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Each table is read
+        under its own lock, one after the other.
+        """
+        with self._addresses_lock:
+            known = any(a.network_id == network_id for a in self.addresses)
+        with self._active_lock:
+            answered = any(a.network_id == network_id for a in self.active_addresses)
+        return known or answered
 
     def random_address(self) -> NetworkAddressV2 | None:
         """Return a random dialable address, or `None` if there is none.

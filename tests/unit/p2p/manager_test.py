@@ -29,12 +29,12 @@ from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 from btclib.p2p.keepalive import Ping
 from btclib.p2p.limits import PROTOCOL_VERSION
 
-from btclib_node.chains import RegTest
+from btclib_node.chains import Main, RegTest
 from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.log import Logger
 from btclib_node.p2p import manager as manager_module
-from btclib_node.p2p.address import PeerDB, peer_address
+from btclib_node.p2p.address import PeerDB, fixed_seed_addresses, peer_address
 from btclib_node.p2p.main import handle_p2p_handshake
 from btclib_node.p2p.manager import P2pManager
 
@@ -114,9 +114,13 @@ def a_peer_db_stub(**attributes: Any) -> Any:
     once `_ACTIVE_PRUNE_INTERVAL` has passed regardless of what else a
     test's own scenario does, btclib-org/btclib-node#71, so a peer db
     missing it fails a test on an `AttributeError` the test is not
-    about.
+    about. `holds_network` is too, answering that every network is
+    held, so that no fixed seed is added where a test is not about them.
     """
-    defaults: dict[str, Any] = {"get_active_addresses": list}
+    defaults: dict[str, Any] = {
+        "get_active_addresses": list,
+        "holds_network": lambda network_id: True,
+    }
     defaults.update(attributes)
     return SimpleNamespace(**defaults)
 
@@ -1141,6 +1145,157 @@ def test_an_outbound_peer_s_network_group_is_not_dialled_again(
     assert dialled == ([drawn] if dials else [])
 
 
+def a_seeding_manager(
+    a_manager: AManagerFactory,
+    *,
+    held: Sequence[BIP155Network] = (),
+    elapsed: float = 0.0,
+    use_dns_seed: bool = True,
+    addnode: Sequence[tuple[str, int]] = (),
+    conns: Sequence[Any] = (),
+) -> tuple[P2pManager, list[list[NetworkAddressV2]]]:
+    """Build a mainnet manager whose peer db holds only the `held` networks.
+
+    What `add_addresses` is handed is returned beside the manager, and
+    the dial start is backdated by `elapsed` seconds.
+    """
+    added: list[list[NetworkAddressV2]] = []
+    peer_db = a_peer_db_stub(
+        is_empty=True,
+        holds_network=lambda network_id: network_id in held,
+        add_addresses=lambda addresses: added.append(list(addresses)),
+    )
+    manager = a_manager(conns, peer_db=peer_db, addnode=addnode)
+    manager.node.chain = Main()
+    manager.use_dns_seed = use_dns_seed
+    manager._dial_start = time.time() - elapsed
+    return manager, added
+
+
+def test_no_fixed_seed_is_added_within_the_first_minute(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1099: DNS seeding and `-addnode` are given Core's sixty seconds."""
+    manager, added = a_seeding_manager(a_manager, elapsed=59)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert added == []
+    assert manager.add_fixed_seeds
+
+
+@pytest.mark.parametrize(
+    ("held", "networks"),
+    [
+        pytest.param((), {BIP155Network.IPV4, BIP155Network.IPV6}, id="none-held"),
+        pytest.param((BIP155Network.IPV4,), {BIP155Network.IPV6}, id="ipv4-held"),
+    ],
+)
+def test_the_fixed_seeds_of_every_empty_network_are_added_after_a_minute(
+    a_manager: AManagerFactory,
+    held: Sequence[BIP155Network],
+    networks: set[BIP155Network],
+) -> None:
+    """ISS 1099: past sixty seconds, the seeds of each empty reachable network.
+
+    Core adds the seeds of the reachable networks `addrman` holds nothing
+    for, and only once: a second pass adds nothing more.
+    """
+    manager, added = a_seeding_manager(a_manager, held=held, elapsed=61)
+    asyncio.run(manager._maybe_dial_more_peers())
+    (seeds,) = added
+    assert {address.network_id for address in seeds} == networks
+    assert seeds == [
+        address
+        for address in fixed_seed_addresses(Main().fixed_seeds)
+        if address.network_id in networks
+    ]
+    assert not manager.add_fixed_seeds
+    manager._next_fixed_seeds_check = 0.0
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert len(added) == 1
+
+
+def test_no_fixed_seed_is_added_where_every_reachable_network_is_held(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1099: a table holding IPv4 and IPv6 gets none, and keeps asking."""
+    held = (BIP155Network.IPV4, BIP155Network.IPV6)
+    manager, added = a_seeding_manager(a_manager, held=held, elapsed=61)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert added == []
+    assert manager.add_fixed_seeds
+
+
+@pytest.mark.parametrize(
+    ("addnode", "adds"),
+    [
+        pytest.param((), True, id="no-addnode"),
+        pytest.param([("1.2.3.4", 8333)], False, id="addnode"),
+    ],
+)
+def test_the_fixed_seeds_are_added_at_once_without_dns_seeding(
+    a_manager: AManagerFactory, addnode: Sequence[tuple[str, int]], *, adds: bool
+) -> None:
+    """ISS 1099: with DNS seeding off and no `-addnode`, Core does not wait."""
+    manager, added = a_seeding_manager(a_manager, use_dns_seed=False, addnode=addnode)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert bool(added) is adds
+
+
+@pytest.mark.parametrize(("live", "adds"), [(8, True), (11, False)])
+def test_fixed_seeds_wait_on_the_outbound_grant_not_the_full_relay_target(
+    a_manager: AManagerFactory, live: int, *, adds: bool
+) -> None:
+    """ISS 1099: Core's `semOutbound` holds eleven, not the eight full-relay.
+
+    `ThreadOpenConnections` takes a grant before its fixed-seed step,
+    and the grant counts block-relay and feeler slots too, so eight
+    full-relay peers still leave it to seed; eleven automatic peers
+    fill it, and the step is not reached.
+    """
+    conns = [a_conn(i, automatic=True) for i in range(live)]
+    manager, added = a_seeding_manager(a_manager, elapsed=61, conns=conns)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert bool(added) is adds
+    assert manager.add_fixed_seeds is not adds
+
+
+def test_the_tables_are_walked_for_fixed_seeds_once_per_cores_pass(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1099: Core looks once per 500ms pass of its loop, not every 100ms.
+
+    Every network held keeps the step asking, so the second pass, right
+    after the first, is the one the cadence turns away.
+    """
+    asked: list[int] = []
+
+    def holds_network(network_id: int) -> bool:
+        asked.append(network_id)
+        return True
+
+    peer_db = a_peer_db_stub(is_empty=True, holds_network=holds_network)
+    manager = a_manager(peer_db=peer_db)
+    manager._dial_start = time.time() - 61
+    asyncio.run(manager._maybe_dial_more_peers())
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert asked == [BIP155Network.IPV4, BIP155Network.IPV6]
+    manager._next_fixed_seeds_check = 0.0
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert len(asked) == 4
+
+
+def test_a_fixed_seed_step_that_raises_is_logged(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1099: a store that raises while seeding does not end the loop."""
+    peer_db = a_peer_db_stub(is_empty=True, holds_network=refuses_to_be_asked)
+    manager = a_manager(peer_db=peer_db)
+    logged: list[str] = []
+    monkeypatch.setattr(manager.logger, "exception", logged.append)
+    assert asyncio.run(one_pass(manager)) is True
+    assert logged
+
+
 def refuses_to_be_asked() -> NoReturn:
     """Stand in for `random_address`/`get_active_addresses`, unreachable."""
     raise RuntimeError("no")
@@ -1883,17 +2038,17 @@ def test_a_manager_accepts_an_ipv6_peer_too(a_manager: AManagerFactory) -> None:
 
 
 @pytest.mark.parametrize(
-    ("max_connections", "max_inbound", "max_outbound_full_relay"),
+    ("max_connections", "max_inbound", "max_outbound_full_relay", "grant"),
     [
         # Core's own default: eleven outbound slots reserved, the rest
         # inbound, eight of the eleven full-relay
-        (DEFAULT_MAX_PEER_CONNECTIONS, 114, 8),
+        (DEFAULT_MAX_PEER_CONNECTIONS, 114, 8, 11),
         # one past the reservation: a single inbound slot
-        (12, 1, 8),
+        (12, 1, 8, 11),
         # under the reservation: no inbound slot, and the full-relay
-        # target is the total itself
-        (5, 0, 5),
-        (0, 0, 0),
+        # target and the grant are the total itself
+        (5, 0, 5, 5),
+        (0, 0, 0, 0),
     ],
 )
 def test_max_connections_is_divided_the_way_core_divides_it(
@@ -1901,11 +2056,13 @@ def test_max_connections_is_divided_the_way_core_divides_it(
     max_connections: int,
     max_inbound: int,
     max_outbound_full_relay: int,
+    grant: int,
 ) -> None:
-    """`CConnman::Init`'s `m_max_inbound` and `m_max_outbound_full_relay`."""
+    """`CConnman::Init`'s division, and the size of `semOutbound`."""
     manager = a_manager(max_connections=max_connections)
     assert manager.max_inbound == max_inbound
     assert manager.max_outbound_full_relay == max_outbound_full_relay
+    assert manager.max_automatic_outbound == grant
 
 
 def test_an_inbound_peer_past_the_limit_is_refused_until_a_slot_frees(
