@@ -1099,7 +1099,7 @@ def test_run_skips_the_dns_lookup_under_connect(a_manager: AManagerFactory) -> N
 
     `listen=False` alongside `connect`, matching what `-connect` alone
     resolves to without an explicit `-listen=1` (`cli.py`'s own
-    `_resolve_listen`) -- so this is also where "no listener under
+    `build_config`) -- so this is also where "no listener under
     `-connect`" is pinned, in place of the `wait_until_listening` an
     earlier version of this test waited on, which held regardless of
     `-connect` and so proved nothing about it.
@@ -1161,7 +1161,7 @@ def test_run_skips_the_dns_lookup_at_zero_max_connections(
     """ISS 1066: `run` never schedules `get_addr_from_dns` at zero.
 
     `listen=False` beside it, what `-maxconnections=0` alone resolves to
-    (`cli.py`'s own `_resolve_listen`);
+    (`cli.py`'s own `build_config`);
     `test_run_schedules_the_dns_lookup_without_connect` above is the
     positive control that the stand-in sees a call.
     """
@@ -1185,7 +1185,7 @@ def test_listen_false_binds_nothing_but_still_dials(a_manager: AManagerFactory) 
     """`listen=False`: no bound socket, and the explicit dial still works.
 
     `-connect` alone resolves to exactly this combination
-    (`cli.py`'s own `_resolve_listen`): `Node.run`'s dial loop calls
+    (`cli.py`'s own `build_config`): `Node.run`'s dial loop calls
     `P2pManager.connect` for every `config.connect`/`config.addnode`
     peer regardless of `listen`, so a manager with `listen=False` has to
     still be able to reach one -- dialled here at a second, ordinary

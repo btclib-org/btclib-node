@@ -284,7 +284,7 @@ class Config:
     # `-connect` or `-maxconnections=0` is given, in which case
     # `InitParameterInteraction` (`src/init.cpp`,
     # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) soft-sets it false --
-    # a default `cli.py`'s own `_resolve_listen` computes the same way, an
+    # a default `cli.py`'s own `build_config` computes the same way, an
     # explicit `-listen`/`-nolisten` always winning over it. `False` here means
     # Core's own `-listen=0`: no bound listening socket, outbound
     # connections still made -- not `allow_p2p=False`, which unsets the
@@ -396,6 +396,13 @@ class Config:
                 self.rpc_port = rpc_port
 
         self.rpc_host = rpc_host
+        # Core reads the RPC options below in `StartHTTPRPC` and its
+        # `InitRPCAuthentication` (`src/httprpc.cpp`), which `AppInitMain`
+        # runs under `-server` alone (`src/init.cpp`, both at
+        # bitcoin/bitcoin@9be056a8a7): with no RPC listener a malformed
+        # value refuses nothing
+        if not allow_rpc:
+            rpcauth, rpccookieperms, rpcwhitelist = (), None, ()
         # a malformed value is fatal, `RpcAuthEntry.parse`'s own
         # `ValueError`, as Core refuses to start on one
         self.rpc_auth = tuple(RpcAuthEntry.parse(value) for value in rpcauth)

@@ -56,10 +56,13 @@ on release day.
   set `rpcwhitelistdefault=0`.
 - **A boolean in `bitcoin.conf`, or after `-listen=`, is read as Core
   reads it** (closes #1117): `true`, `yes` and `on` are false, as they are
-  to `bitcoind`, so `testnet=true` selects mainnet, `listen=yes` does not
-  listen and `norpccookiefile=true` writes the cookie. Write `1` for true
-  and `0` for false. `debug=` is the exception, off at `0` alone
-  (issue #1123).
+  to `bitcoind`, so `testnet=true` selects mainnet and `listen=yes` does
+  not listen. Write `1` for true and `0` for false. `norpccookiefile=true`
+  and `-norpccookiefile=0` are double negatives, read as
+  `rpccookiefile=1`: the cookie is written to a file named `1` in the
+  chain's data directory, not to `.cookie`, as `bitcoind` writes it. Drop
+  the line to keep `.cookie` where a client reads it, or write
+  `norpccookiefile=1` for no cookie.
 - **A command-line argument the node refuses exits 1, not 2**
   (closes #1116), after one `Error: ...` line on stderr, as `bitcoind`
   does: a script testing the exit status for 2 has to test for 1.
@@ -69,6 +72,17 @@ on release day.
   and exits 1. A caller that starts a `Node` itself finds its thread
   ended and `Node.init_error` set. Free the port, pick another with
   `-port`, or start with `-listen=0`.
+- **An option's value follows `=`, never the next argument**
+  (closes #1136): `-datadir <dir>` is refused as `bitcoind` refuses it,
+  with "Command line contains unexpected token"; write `-datadir=<dir>`.
+- **`bitcoin.conf` is read as Core reads it** (closes #1137). Within one
+  section the first value of an option taking one value wins, so keep one
+  line per option or put the one you mean first. A `no`-prefixed key negates
+  (`nolisten=1` does not listen), `prune=` is read, and `listen=` and
+  `debug=` apply from a chain's own section too.
+- **`-debug=<category>` takes Core's logging category names**
+  (closes #1123): `debug=false`, or any name Core does not know, refuses
+  to start with `Unsupported logging category`, and `debug=none` is off.
 
 ## v2026.9.24
 
