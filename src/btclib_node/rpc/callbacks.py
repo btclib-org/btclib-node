@@ -1594,6 +1594,9 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
 def ping(node: Node, conn: RpcConnection, _: list[Any]) -> None:
     """Answer `ping` by sending every peer a fresh one, via `ping_all`.
 
+    A peer at `BIP0031_VERSION` or below is sent none, where Core sends
+    it a `ping` with no nonce. btclib-org/btclib-node#1204
+
     Called on `Node`'s own thread, `handle_rpc`'s the same as every
     handler here; `ping_all` is defined on `P2pManager` but reaches this
     one call site as a plain method call, not a coroutine scheduled on

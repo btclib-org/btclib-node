@@ -26,6 +26,7 @@ import pytest
 from btclib.exceptions import BTClibValueError
 from btclib.p2p.handshake import Verack
 from btclib.p2p.keepalive import Ping
+from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.p2p.message import Message
 from btclib.p2p.negotiation import Mempool
 from btclib.p2p.payload import Payload
@@ -37,6 +38,8 @@ from btclib_node.p2p.callbacks import callbacks, handshake_callbacks
 from btclib_node.p2p.connection import Connection, PeerStats
 
 if TYPE_CHECKING:
+    from btclib.p2p.handshake import Version
+
     from btclib_node.p2p.manager import P2pManager
 
 MAGIC = RegTest().magic
@@ -123,6 +126,8 @@ def make_connection() -> Connection:
     conn.status = P2pConnStatus.Open
     conn.last_receive = 0
     conn._ping_lock = threading.Lock()
+    # a peer past BIP0031_VERSION, which `send_ping` pings with a nonce
+    conn.version_message = cast("Version", SimpleNamespace(version=PROTOCOL_VERSION))
     conn.queued_recv_bytes = 0
     conn._recv_lock = threading.Lock()
     conn._recv_resume = asyncio.Event()

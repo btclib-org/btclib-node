@@ -68,6 +68,13 @@ btclib\_node.p2p.manager module
    :members:
    :show-inheritance:
 
+btclib\_node.p2p.protocol\_version module
+--------------------------------------------
+
+.. automodule:: btclib_node.p2p.protocol_version
+   :members:
+   :show-inheritance:
+
 Module contents
 ---------------
 
