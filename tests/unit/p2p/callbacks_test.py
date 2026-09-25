@@ -1290,7 +1290,13 @@ def a_data_node(
     node.mempool = mempool if mempool is not None else Mempool(Logger(debug=True))
     node.chain = RegTest()
     node.block_db = block_db
-    node.download_manager = SimpleNamespace(received_txs=[], inv_txs=[])
+    node.download_manager = SimpleNamespace(
+        received_txs=[],
+        inv_txs=[],
+        headers_sync_timeouts={},
+        inv_triggered_getheaders=set(),
+        last_block_inv_triggering_headers_sync=None,
+    )
     # written by `getdata` only where `advance_getdata` pauses; empty
     # here for every test that never trips that pacing bound
     node.pending_getdata = {}
@@ -1814,28 +1820,100 @@ def test_an_unsolicited_block_with_an_unknown_parent_is_refused() -> None:
     assert orphan.header.hash not in index.infos
 
 
-def test_an_inventory_is_ignored_until_the_blocks_are_synced() -> None:
-    """An `inv` before `BlockSynced` is ignored: nothing is asked for it yet."""
+def block_inv(*hashes: bytes) -> bytes:
+    """Serialize an `inv` announcing `hashes` as blocks."""
+    return Inv([Inventory(InventoryType.MSG_BLOCK, h) for h in hashes]).serialize()
+
+
+# the best header of `an_inv_index`, and the one header it holds
+_HELD = b"\x33" * 32
+
+
+def an_inv_index() -> Any:
+    """Build a block index holding the one header `_HELD`, its best."""
+    return SimpleNamespace(
+        header_dict={_HELD: None}, get_block_locator_hashes=lambda: [_HELD]
+    )
+
+
+def test_a_transaction_announced_before_the_blocks_are_synced_is_ignored() -> None:
+    """A `wtx` `inv` before `BlockSynced` is not queued: IBD asks for none."""
     node = a_data_node(status=NodeStatus.HeaderSynced)
-    peer = a_peer()
-    inv(node, Inv([Inventory(InventoryType.MSG_BLOCK, b"\x11" * 32)]).serialize(), peer)
+    peer = a_peer(id=4)
+    items = [Inventory(InventoryType.MSG_WTX, a_transaction().hash)]
+    inv(node, Inv(items).serialize(), peer)
+    assert node.download_manager.inv_txs == []
     assert not peer.sent
 
 
 def test_a_block_announced_is_answered_with_a_getheaders() -> None:
-    """An `inv` naming blocks gets `getheaders` stopping at the last one.
+    """An `inv` naming unknown blocks gets a `getheaders` from the best header.
 
-    The last one announced: the headers between are what we are after.
+    With no stop hash, as Core's `MaybeSendGetHeaders` sends it: the headers
+    past the best one are what is asked for, not only up to the announced one.
     """
-    node = a_data_node()
+    node = a_data_node(block_index=an_inv_index())
     peer = a_peer()
-    hashes = [b"\x11" * 32, b"\x22" * 32]
-    items = [Inventory(InventoryType.MSG_BLOCK, h) for h in hashes]
-    inv(node, Inv(items).serialize(), peer)
+    node.download_manager.headers_sync_timeouts[peer.id] = math.inf
+    inv(node, block_inv(b"\x11" * 32, b"\x22" * 32), peer)
     (answer,) = peer.sent
     assert isinstance(answer, GetHeaders)
-    # the last one announced: the headers between are what we are after
-    assert answer.hash_stop == hashes[-1]
+    assert answer.hash_stop == b"\x00" * 32
+    assert answer.locator == (_HELD,)
+
+
+def test_a_block_this_node_has_a_header_for_asks_for_nothing() -> None:
+    """An `inv` naming only blocks whose header is held asks for nothing."""
+    node = a_data_node(block_index=an_inv_index())
+    peer = a_peer()
+    node.download_manager.headers_sync_timeouts[peer.id] = math.inf
+    inv(node, block_inv(_HELD), peer)
+    assert not peer.sent
+
+
+def test_a_peer_syncing_headers_is_asked_on_every_block_announced() -> None:
+    """A peer `sync_headers` already asked is asked on every block it announces.
+
+    Neither once per peer nor once per block: here the peer has had its
+    `inv`-triggered `getheaders` already, and another peer has brought in
+    the same block.
+    """
+    node = a_data_node(status=NodeStatus.SyncingHeaders, block_index=an_inv_index())
+    peer = a_peer()
+    manager = node.download_manager
+    manager.headers_sync_timeouts[peer.id] = math.inf
+    manager.inv_triggered_getheaders.add(peer.id)
+    manager.last_block_inv_triggering_headers_sync = b"\x11" * 32
+    inv(node, block_inv(b"\x11" * 32), peer)
+    inv(node, block_inv(b"\x22" * 32), peer)
+    assert len(peer.sent) == 2
+    # a peer already syncing brings no block in
+    assert manager.last_block_inv_triggering_headers_sync == b"\x11" * 32
+
+
+def test_a_block_announced_before_the_sync_widens_it_by_one_peer() -> None:
+    """Before `BlockSynced`, a new block adds its sender to the header sync.
+
+    Core's `m_inv_triggered_getheaders_before_sync` and
+    `m_last_block_inv_triggering_headers_sync`: a peer not yet asked for
+    headers is asked once, and one block brings in one peer only.
+    """
+    node = a_data_node(status=NodeStatus.SyncingHeaders, block_index=an_inv_index())
+    first, second = a_peer(id=1), a_peer(id=2)
+    inv(node, block_inv(b"\x11" * 32), first)
+    (answer,) = first.sent
+    assert isinstance(answer, GetHeaders)
+    # the same block from a second peer: that block has already brought
+    # one peer in
+    inv(node, block_inv(b"\x11" * 32), second)
+    assert not second.sent
+    # a new block from the first peer: that peer has had its one
+    inv(node, block_inv(b"\x22" * 32), first)
+    assert len(first.sent) == 1
+    # the new block from the second peer brings it in
+    inv(node, block_inv(b"\x22" * 32), second)
+    assert len(second.sent) == 1
+    assert node.download_manager.inv_triggered_getheaders == {1, 2}
 
 
 def test_a_transaction_announced_that_we_lack_is_wanted() -> None:

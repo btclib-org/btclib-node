@@ -630,7 +630,8 @@ class P2pManager(threading.Thread):
         # `ThreadOpenConnections` opens a full-relay connection whenever
         # `nOutboundFullRelay < m_max_outbound_full_relay`, from its first
         # pass on. Which peer headers are synced from, one at a time until
-        # the best header is recent, is `DownloadManager.sync_headers`'s
+        # the best header is recent and one more per block announced by
+        # `inv`, is `DownloadManager.sync_headers`'s and `callbacks.inv`'s
         # choice, as it is `net_processing`'s in Core, not a cap on how
         # many peers are dialled.
         #

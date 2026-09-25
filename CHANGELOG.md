@@ -226,6 +226,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   (closes #1107), found as its loop closes or as the collector frees it,
   where asyncio only logs; one found after the last test fails the run.
 
+### A block announced during the sync adds its sender to header sync
+
+- **`inv` asks for the headers behind an unknown block in any sync state**
+  (closes #1101): from a peer not yet syncing headers, once per peer and
+  once per new block, as Core's `INV` handler does.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

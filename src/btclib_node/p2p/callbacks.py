@@ -709,17 +709,39 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
 def inv(node: Node, msg: bytes, conn: Connection) -> None:
     """Ask for headers behind an announced block, queue missing transactions.
 
-    A no-op before this node's own chain is synced.
+    The `INV` branch of Core's `ProcessMessage` (`net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). The last block announced
+    that has no header here is asked for with a `getheaders` from the best
+    header, whatever the sync state, where `sync_headers` has already asked
+    this peer for headers; where it has not, once per peer and once per
+    new block, so that header sync takes on one more peer for each block
+    found. Transactions are queued only once this node's own chain is
+    synced.
     """
-    if node.status < NodeStatus.BlockSynced:
-        return
     inv = Inv.parse(msg)
 
-    blocks = [x.hash for x in inv.items if x.type_code == InventoryType.MSG_BLOCK]
-    if blocks:
-        block_locators = node.chainstate.block_index.get_block_locator_hashes()
-        conn.send(GetHeaders(PROTOCOL_VERSION, block_locators, blocks[-1]))
+    block_index = node.chainstate.block_index
+    unknown = [
+        x.hash
+        for x in inv.items
+        if x.type_code == InventoryType.MSG_BLOCK
+        and x.hash not in block_index.header_dict
+    ]
+    if unknown:
+        manager = node.download_manager
+        sync_started = conn.id in manager.headers_sync_timeouts
+        if sync_started or (
+            conn.id not in manager.inv_triggered_getheaders
+            and unknown[-1] != manager.last_block_inv_triggering_headers_sync
+        ):
+            block_locators = block_index.get_block_locator_hashes()
+            conn.send(GetHeaders(PROTOCOL_VERSION, block_locators, b"\x00" * 32))
+            if not sync_started:
+                manager.inv_triggered_getheaders.add(conn.id)
+                manager.last_block_inv_triggering_headers_sync = unknown[-1]
 
+    if node.status < NodeStatus.BlockSynced:
+        return
     wtransactions = [x.hash for x in inv.items if x.type_code == InventoryType.MSG_WTX]
     missing_tx = node.mempool.get_missing(wtransactions, wtxid=True)
     if missing_tx:
