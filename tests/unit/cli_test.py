@@ -5,6 +5,7 @@
 """`cli.py`: argument parsing, `bitcoin.conf` reading, and `main`'s dispatch."""
 
 import argparse
+import re
 import runpy
 from typing import TYPE_CHECKING, Any
 
@@ -161,18 +162,76 @@ def test_load_conf_tree_a_missing_included_file_is_fatal(tmp_path: Path) -> None
 
 def test_resolve_bool_cli_value_wins() -> None:
     """`cli_value=True` is true regardless of what the file says."""
-    assert cli._resolve_bool(True, "debug", {"debug": ["0"]}) is True  # noqa: FBT003
+    assert cli._resolve_bool(True, "testnet", {"testnet": ["0"]}) is True  # noqa: FBT003
 
 
 def test_resolve_bool_falls_back_to_the_files_own_last_value() -> None:
     """`cli_value=False`: the file's own last value for the key decides."""
-    assert cli._resolve_bool(False, "debug", {"debug": ["0", "1"]}) is True  # noqa: FBT003
-    assert cli._resolve_bool(False, "debug", {"debug": ["1", "0"]}) is False  # noqa: FBT003
+    assert cli._resolve_bool(False, "testnet", {"testnet": ["0", "1"]}) is True  # noqa: FBT003
+    assert cli._resolve_bool(False, "testnet", {"testnet": ["1", "0"]}) is False  # noqa: FBT003
 
 
 def test_resolve_bool_defaults_to_false_when_absent_everywhere() -> None:
     """Neither the flag nor the file names the key: `False`."""
-    assert cli._resolve_bool(False, "debug", {}) is False  # noqa: FBT003
+    assert cli._resolve_bool(False, "testnet", {}) is False  # noqa: FBT003
+
+
+@pytest.mark.parametrize("value", ["false", "no", "yes", "00", "+-1"])
+def test_build_config_a_files_chain_selector_is_read_as_interpret_bool(
+    tmp_path: Path, value: str
+) -> None:
+    """`testnet=<value>` is false where `InterpretBool` reads it as false.
+
+    `bitcoind` v31.1.0, run as `-regtest -version` beside a `bitcoin.conf`
+    holding each of these, printed its version rather than refusing the
+    combination of two chains.
+    """
+    (tmp_path / "bitcoin.conf").write_text(f"testnet={value}\n", encoding="utf-8")
+    assert cli.build_config(["-datadir", str(tmp_path)]).chain.name == "mainnet"
+
+
+@pytest.mark.parametrize(
+    ("text", "debug"),
+    [("", False), ("debug=0\n", False), ("debug=1\n", True), ("debug=false\n", True)],
+)
+def test_build_config_debug_from_the_file_is_off_only_at_0(
+    tmp_path: Path, text: str, *, debug: bool
+) -> None:
+    """`debug=` is not read as `InterpretBool`: `false` is on (issue #1123)."""
+    (tmp_path / "bitcoin.conf").write_text(text, encoding="utf-8")
+    assert cli.build_config(["-datadir", str(tmp_path)]).debug is debug
+
+
+def test_build_config_debug_flag_wins_over_the_file(tmp_path: Path) -> None:
+    """`-debug` on the command line is on whatever the file says."""
+    (tmp_path / "bitcoin.conf").write_text("debug=0\n", encoding="utf-8")
+    assert cli.build_config(["-datadir", str(tmp_path), "-debug"]).debug is True
+
+
+@pytest.mark.parametrize(
+    ("argv", "text"),
+    [
+        (["-listen=false"], ""),
+        (["-listen=no"], ""),
+        ([], "listen=false\n"),
+        ([], "listen=00\n"),
+    ],
+    ids=["cli false", "cli no", "file false", "file 00"],
+)
+def test_build_config_listen_is_read_as_interpret_bool(
+    tmp_path: Path, argv: list[str], text: str
+) -> None:
+    """`-listen`, on the command line or in the file, is `InterpretBool`."""
+    (tmp_path / "bitcoin.conf").write_text(text, encoding="utf-8")
+    assert cli.build_config(["-datadir", str(tmp_path), *argv]).listen is False
+
+
+def test_build_config_norpccookiefile_false_still_writes_a_cookie(
+    tmp_path: Path,
+) -> None:
+    """`norpccookiefile=false` in the file does not negate the cookie."""
+    (tmp_path / "bitcoin.conf").write_text("norpccookiefile=false\n", encoding="utf-8")
+    assert cli.build_config(["-datadir", str(tmp_path)]).rpc_cookie_file is not None
 
 
 def test_resolve_listen_cli_value_wins_true() -> None:
@@ -428,18 +487,39 @@ def test_build_parser_help_exits_zero(capsys: pytest.CaptureFixture[str]) -> Non
     assert "btclib-node" in capsys.readouterr().out
 
 
-def test_build_parser_rejects_an_unknown_flag() -> None:
-    """An unrecognised flag is refused by `argparse` itself, exit `2`."""
-    parser = cli._build_parser()
-    with pytest.raises(SystemExit) as excinfo:
-        parser.parse_args(["-notaflag"])
-    assert excinfo.value.code == 2
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    [
+        (
+            ["-notaflag=1", "foo"],
+            "Error parsing command line arguments: Invalid parameter -notaflag=1",
+        ),
+        (
+            ["--notaflag"],
+            "Error parsing command line arguments: Invalid parameter --notaflag",
+        ),
+        (
+            ["foo", "-notaflag"],
+            (
+                "Command line contains unexpected token 'foo', "
+                "see btclib-node -h for a list of options."
+            ),
+        ),
+    ],
+    ids=["unknown option first", "double dash", "token first"],
+)
+def test_parse_args_refuses_the_first_unparsed_argument_as_core_does(
+    argv: list[str], message: str
+) -> None:
+    """Each message as `bitcoind` v31.1.0 printed it for the same argument."""
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        cli._parse_args(argv)
 
 
 def test_build_parser_rejects_an_unknown_chain_alias() -> None:
     """`-chain`'s own `choices=` refuses an alias outside Core's four."""
     parser = cli._build_parser()
-    with pytest.raises(SystemExit):
+    with pytest.raises(ValueError, match=r"^Error parsing command line arguments: "):
         parser.parse_args(["-chain", "bogus"])
 
 
@@ -824,6 +904,16 @@ def test_main_a_node_that_failed_to_start_exits_one_with_its_init_error(
     assert capsys.readouterr().err == f"Error: {FakeNode.init_error}\n"
 
 
+@pytest.fixture
+def no_node(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remove `cli.Node`: an argument `main` does not refuse is a `NameError`.
+
+    With `Node` in place such an argument starts a node that never stops.
+    """
+    monkeypatch.delattr(cli, "Node")
+
+
+@pytest.mark.usefixtures("no_node")
 def test_main_a_bad_argument_exits_one_with_a_message(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -832,6 +922,26 @@ def test_main_a_bad_argument_exits_one_with_a_message(
         cli.main(["-datadir", str(tmp_path), "-conf", "nope.conf"])
     assert excinfo.value.code == 1
     assert capsys.readouterr().err.startswith("Error: ")
+
+
+@pytest.mark.parametrize(
+    ("argument", "message"),
+    [
+        ("-notaflag", "Invalid parameter -notaflag"),
+        ("-port=abc", "argument -port/--port: invalid int value: 'abc'"),
+    ],
+)
+@pytest.mark.usefixtures("no_node")
+def test_main_an_argument_argparse_refuses_exits_one_as_init_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], argument: str, message: str
+) -> None:
+    """`ParseArgs`'s `InitError`: one `Error:` line on stderr, exit `1`."""
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["-datadir", str(tmp_path), argument])
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.err == (f"Error: Error parsing command line arguments: {message}\n")
+    assert not captured.out
 
 
 def test_dunder_main_calls_cli_main_under_the_guard(
