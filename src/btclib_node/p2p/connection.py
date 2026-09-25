@@ -23,6 +23,7 @@ import threading
 import time
 from collections import Counter
 from dataclasses import dataclass, field
+from functools import cached_property
 from io import SEEK_END, BytesIO
 from typing import TYPE_CHECKING, cast, override
 
@@ -38,6 +39,7 @@ from btclib_node.chains import RegTest
 from btclib_node.constants import USER_AGENT, P2pConnStatus
 from btclib_node.exceptions import RejectedMessageError, WrongNetworkMagicError
 from btclib_node.p2p.address import ip_and_port
+from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.callbacks import (
     MAX_GETDATA_INFLIGHT_BYTES,
     handshake_callbacks,
@@ -464,6 +466,18 @@ class Connection:
     # for the same reason as `time_received`.
     addr_token_bucket: float = 1.0
 
+    # Core's `CNodeState` block fields (`p2p/block_availability.py`),
+    # here rather than in a `DownloadManager` table keyed by connection
+    # id: `CNodeState` lives exactly as long as the peer, which is this
+    # object's own life, and every reader -- `callbacks`, `main`'s block
+    # announcement, `DownloadManager` and `getpeerinfo` -- holds the
+    # connection, on `Node`'s thread. Built on first read rather than in
+    # `__init__`, for the same ceiling as `time_received` above.
+    @cached_property
+    def block_availability(self) -> BlockAvailability:
+        """What this peer is known to have of the block chain."""
+        return BlockAvailability()
+
     def __init__(
         self,
         manager: P2pManager,
@@ -584,11 +598,12 @@ class Connection:
         # This connection's own best known chain height -- callbacks.version
         # sets it from the peer's own `start_height` and callbacks.headers
         # raises it as headers this peer sent verify a taller tip. Core's
-        # own `pindexBestKnownBlock` (net_processing.cpp) is ranked by
-        # chainwork and updated off inv/headers announcements alone; this
-        # tree keeps no per-peer chainwork-ranked index for `download.py`
-        # to rank against, so height off what this peer has itself sent
-        # stands in for it. `start_height` is the useful seed Core's own
+        # own `pindexBestKnownBlock` (net_processing.cpp) is
+        # `block_availability.best_known`, ranked by chainwork and
+        # updated off inv/headers announcements alone; `download.py`
+        # reads this height instead (btclib-org/btclib-node#1179), so
+        # height off what this peer has itself sent stands in for it
+        # there. `start_height` is the useful seed Core's own
         # field is in practice between two btclib-node peers, once
         # `Connection.send_version` carries this node's own real tip
         # (`Node.best_height`) rather than the literal `0` it used to

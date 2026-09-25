@@ -27,6 +27,7 @@ from btclib.p2p.negotiation import FeeFilter
 
 from btclib_node.chainstate.block_index import MAX_DOWNLOAD_WINDOW
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, NodeStatus, P2pConnStatus
+from btclib_node.p2p.block_availability import update_last_common_block
 from btclib_node.p2p.callbacks import (
     MAX_GETDATA_INFLIGHT_BYTES,
     maybe_send_getheaders,
@@ -385,6 +386,7 @@ class DownloadManager:
     def step(self) -> None:
         """Run one pass: headers, blocks and txs asked for, feefilters sent."""
         self.sync_headers()
+        self.update_last_common_blocks()
         self.block_download()
         self.tx_download()
         self._send_due_feefilters()
@@ -845,6 +847,47 @@ class DownloadManager:
                     conn.id,
                 )
                 conn.stop()
+
+    def update_last_common_blocks(self) -> None:
+        """Move each peer's `last_common` block, as Core's `SendMessages` does.
+
+        Core runs `FindNextBlocksToDownload` for a peer that can serve
+        blocks and has fewer than `MAX_BLOCKS_IN_TRANSIT_PER_PEER` in
+        flight, where this node is out of initial block download or the
+        peer is one `sync_headers` would sync from and not limited
+        (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        tag). This runs the part of it that moves `last_common`
+        (`block_availability.update_last_common_block`) under the same
+        gate, every pass, `block_download` being what chooses the
+        blocks to request. Every connection serves witnesses, which
+        `callbacks.version` requires, so Core's stop at a block a peer
+        without witnesses cannot serve has nothing to stop at.
+        """
+        node = self.node
+        connections = [
+            conn
+            for conn in list(node.p2p_manager.connections.values())
+            if conn.status == P2pConnStatus.Connected
+        ]
+        preferred = sum(_is_preferred_download(conn) for conn in connections)
+        blocks_in_flight = any(conn.download_queue for conn in connections)
+        block_index = node.chainstate.block_index
+        minimum_chain_work = node.chain.consensus.minimum_chain_work
+        for conn in connections:
+            from_peer = (
+                _is_preferred_download(conn) or not preferred or not blocks_in_flight
+            )
+            if (
+                _can_serve_blocks(conn)
+                and (
+                    (from_peer and not _is_limited_peer(conn))
+                    or not node.is_initial_block_download
+                )
+                and len(conn.download_queue) < MAX_BLOCKS_PER_GETDATA_BURST
+            ):
+                update_last_common_block(
+                    block_index, conn.block_availability, minimum_chain_work
+                )
 
     def block_download(self) -> None:
         """Refresh the block window, evict stalled peers, and request new work.

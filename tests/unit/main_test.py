@@ -38,6 +38,7 @@ from btclib_node.exceptions import (
 )
 from btclib_node.interpreter import check_transactions, get_flags
 from btclib_node.main import update_chain, verify_mempool_acceptance
+from btclib_node.p2p.block_availability import BlockAvailability
 from tests import (
     build_block,
     generate_coinbase,
@@ -1319,6 +1320,23 @@ def test_a_block_connected_before_header_sync_ends_leaves_the_mempool(
     assert not node.mempool.contains_tx(mined)
 
 
+def a_peer(
+    sent: list[Any],
+    availability: BlockAvailability | None = None,
+    *,
+    prefers_headers: bool = True,
+) -> Connection:
+    """Build a connection double that records what it is sent."""
+    return cast(
+        "Connection",
+        SimpleNamespace(
+            prefers_headers=prefers_headers,
+            send=sent.append,
+            block_availability=availability or BlockAvailability(),
+        ),
+    )
+
+
 def test_a_newly_connected_block_is_announced_to_every_connected_peer(
     node: Node,
 ) -> None:
@@ -1331,11 +1349,12 @@ def test_a_newly_connected_block_is_announced_to_every_connected_peer(
 
     header_sent: list[Any] = []
     inv_sent: list[Any] = []
-    node.p2p_manager.connections[1] = cast(
-        "Connection", SimpleNamespace(prefers_headers=True, send=header_sent.append)
+    genesis = RegTest().genesis.hash
+    node.p2p_manager.connections[1] = a_peer(
+        header_sent, BlockAvailability(best_known=genesis)
     )
-    node.p2p_manager.connections[2] = cast(
-        "Connection", SimpleNamespace(prefers_headers=False, send=inv_sent.append)
+    node.p2p_manager.connections[2] = a_peer(
+        inv_sent, BlockAvailability(best_known=genesis), prefers_headers=False
     )
 
     # a recent tip, so that connecting it ends initial block download
@@ -1347,6 +1366,8 @@ def test_a_newly_connected_block_is_announced_to_every_connected_peer(
     (sent,) = header_sent
     assert isinstance(sent, Headers)
     assert [header.hash for header in sent.headers] == hashes(second)
+    peer = node.p2p_manager.connections[1]
+    assert peer.block_availability.best_header_sent == second[-1].header.hash
 
     # Core's `SendMessages` sends a peer that did not ask for headers an
     # `inv` of the tip alone
@@ -1355,34 +1376,109 @@ def test_a_newly_connected_block_is_announced_to_every_connected_peer(
     assert sent.items == (Inventory(InventoryType.MSG_BLOCK, second[-1].header.hash),)
 
 
-@pytest.mark.parametrize(("length", "as_headers"), [(8, True), (9, False)])
-def test_a_fork_longer_than_eight_blocks_is_announced_by_its_tip_alone(
-    node: Node, length: int, *, as_headers: bool
+@pytest.mark.parametrize("field", ["best_known", "best_header_sent"])
+def test_a_peer_is_sent_the_headers_from_the_first_one_it_lacks(
+    node: Node, field: str
 ) -> None:
-    """A fork adding more than eight blocks reaches a peer as the tip's `inv`.
+    """A header the peer has is not sent again, whichever way it has it.
 
-    Core's `MAX_BLOCKS_TO_ANNOUNCE`, `UpdatedBlockTip` queueing no more
-    of the newest and `SendMessages` sending headers only where they
-    connect to one the peer has, which nothing here tracks.
+    Core's `PeerHasHeader` reads the best block the peer announced and
+    the best header it was sent (btclib-org/btclib-node#1160).
+    """
+    # a chain one block shorter, so that the one below replaces it in a
+    # single fork, announced whole
+    connect(node, generate_random_chain(2, RegTest().genesis.hash))
+    chain = generate_random_chain(3, RegTest().genesis.hash, tip_time=datetime.now(UTC))
+    node.chainstate.block_index.add_headers([block.header for block in chain])
+    sent: list[Any] = []
+    availability = BlockAvailability(**{field: chain[0].header.hash})
+    node.p2p_manager.connections[1] = a_peer(sent, availability)
+
+    connect(node, chain)
+    assert node.chainstate.block_index.active_chain[1:] == hashes(chain)
+
+    (message,) = sent
+    assert isinstance(message, Headers)
+    assert [header.hash for header in message.headers] == hashes(chain[1:])
+
+
+@pytest.mark.parametrize("prefers_headers", [True, False])
+def test_the_peer_that_sent_the_block_hears_nothing_back(
+    node: Node, *, prefers_headers: bool
+) -> None:
+    """A peer that has the new tip is sent neither its headers nor its `inv`.
+
+    Core's `SendMessages` skips every header `PeerHasHeader` answers for,
+    and sends no `inv` of a tip the peer has (btclib-org/btclib-node#1160).
+    """
+    chain = generate_random_chain(1, RegTest().genesis.hash, tip_time=datetime.now(UTC))
+    sent: list[Any] = []
+    node.p2p_manager.connections[1] = a_peer(
+        sent,
+        BlockAvailability(best_known=chain[0].header.hash),
+        prefers_headers=prefers_headers,
+    )
+    node.chainstate.block_index.add_headers([chain[0].header])
+
+    connect(node, chain)
+    assert node.chainstate.block_index.active_chain[-1] == chain[0].header.hash
+    assert not sent
+
+
+def test_a_peer_that_has_no_header_to_connect_to_is_sent_the_tip_s_inv(
+    node: Node,
+) -> None:
+    """Headers that would not connect to one the peer has become an `inv`.
+
+    Core's `SendMessages` reverts to an `inv` of the tip where the first
+    header the peer lacks has a parent it lacks too.
+    """
+    chain = generate_random_chain(2, RegTest().genesis.hash, tip_time=datetime.now(UTC))
+    sent: list[Any] = []
+    node.p2p_manager.connections[1] = a_peer(sent)
+
+    connect(node, chain)
+
+    (message,) = sent
+    assert isinstance(message, Inv)
+    assert message.items == (Inventory(InventoryType.MSG_BLOCK, chain[-1].header.hash),)
+    peer = node.p2p_manager.connections[1]
+    assert peer.block_availability.best_header_sent is None
+
+
+@pytest.mark.parametrize(
+    ("length", "known", "announced"),
+    [(8, None, 8), (9, None, 0), (9, 0, 8)],
+)
+def test_a_fork_is_announced_by_its_newest_eight_blocks_at_most(
+    node: Node, length: int, known: int | None, announced: int
+) -> None:
+    """Only the newest eight blocks of a fork are ever sent as headers.
+
+    Core's `MAX_BLOCKS_TO_ANNOUNCE`: `UpdatedBlockTip` queues no more of
+    the newest, and `SendMessages` sends them as headers only where the
+    first connects to a header the peer has, else the tip's `inv`.
+    `known` is the fork block the peer has, genesis where `None`;
+    `announced` is how many headers it is sent, 0 for the `inv`.
     """
     # a chain one block shorter, so that the recent-tipped one below
     # replaces it in a single fork of `length` blocks
     connect(node, generate_random_chain(length - 1, RegTest().genesis.hash))
-    sent: list[Any] = []
-    node.p2p_manager.connections[1] = cast(
-        "Connection", SimpleNamespace(prefers_headers=True, send=sent.append)
-    )
-
     fork = generate_random_chain(
         length, RegTest().genesis.hash, tip_time=datetime.now(UTC)
     )
+    node.chainstate.block_index.add_headers([block.header for block in fork])
+    has = RegTest().genesis.hash if known is None else fork[known].header.hash
+    sent: list[Any] = []
+    node.p2p_manager.connections[1] = a_peer(sent, BlockAvailability(best_known=has))
+
     connect(node, fork)
     assert node.chainstate.block_index.active_chain[1:] == hashes(fork)
 
     (message,) = sent
-    if as_headers:
+    if announced:
         assert isinstance(message, Headers)
-        assert [header.hash for header in message.headers] == hashes(fork)
+        assert [header.hash for header in message.headers] == hashes(fork[-announced:])
     else:
         assert isinstance(message, Inv)
         assert message.items == (
@@ -1427,9 +1523,8 @@ def test_a_reorg_during_initial_block_download_announces_nothing(
     assert node.status == NodeStatus.BlockSynced
 
     sent: list[Any] = []
-    node.p2p_manager.connections[1] = cast(
-        "Connection",
-        SimpleNamespace(prefers_headers=True, send=sent.append),
+    node.p2p_manager.connections[1] = a_peer(
+        sent, BlockAvailability(best_known=RegTest().genesis.hash)
     )
 
     second = generate_random_chain(3, RegTest().genesis.hash)
@@ -1450,9 +1545,8 @@ def test_the_block_ending_initial_block_download_is_announced_before_sync(
     """
     node.status = NodeStatus.SyncingHeaders
     sent: list[Any] = []
-    node.p2p_manager.connections[1] = cast(
-        "Connection",
-        SimpleNamespace(prefers_headers=True, send=sent.append),
+    node.p2p_manager.connections[1] = a_peer(
+        sent, BlockAvailability(best_known=RegTest().genesis.hash)
     )
 
     chain = generate_random_chain(1, RegTest().genesis.hash, tip_time=datetime.now(UTC))
