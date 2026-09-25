@@ -107,7 +107,9 @@ under a GIL interpreter.
   handlers read.
 - Whoever can reach the RPC port: a request's credential is checked
   before its body is decoded, and a caller without an accepted one gets
-  a 401 and nothing else.
+  a closed connection for a request the listener does not read whole;
+  for one it does, a 501, a 405 or a 404 for a method or a path it
+  refuses, as from `bitcoind`, and otherwise a 401.
 - A party tampering with the medium the datadir sits on, or opening the
   same datadir from a second process.
 - A party tampering with a distribution between this tree and the user.

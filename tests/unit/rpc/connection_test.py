@@ -58,6 +58,8 @@ def request(
     *,
     version: bytes = b"HTTP/1.1",
     auth: bytes = RPCAUTH_LINE,
+    method: bytes = b"POST",
+    target: bytes = b"/",
 ) -> bytes:
     """Build a raw HTTP request line and headers, followed by `body`.
 
@@ -65,9 +67,10 @@ def request(
     by default, which is every existing caller's own request; a caller
     of `_wants_keep_alive`'s HTTP/1.0 half passes `b"HTTP/1.0"` instead.
     `auth` is the `Authorization` line, `RPCAUTH`'s user's unless a
-    caller passes another, or `b""` for none.
+    caller passes another, or `b""` for none. `method` and `target` are
+    the request line's first two tokens.
     """
-    head = b"POST / " + version + b"\r\nHost: x\r\n" + auth + headers
+    head = method + b" " + target + b" " + version + b"\r\nHost: x\r\n" + auth + headers
     return head + b"\r\n" + body
 
 
@@ -896,14 +899,21 @@ def test_send_and_wait_gives_up_rather_than_blocking_forever() -> None:
 
 
 def refused(data: bytes) -> tuple[bytes, float, bool, list[Any], list[tuple[Any, ...]]]:
-    """Send `data` to a `RpcConnection.run` expecting a 401, and read it back.
+    """Send `data` to a `RpcConnection.run` expecting a refusal, and read it.
 
-    Returns the reply's header section, the seconds from `run`
-    starting to the reply arriving, whether the connection closed
-    after it, what was queued for `handle_rpc`, and every warning
-    logged.
+    Returns the reply, up to the end of the body its own
+    `Content-Length` counts, the seconds from `run` starting to the
+    reply arriving, whether the connection closed after it, what was
+    queued for `handle_rpc`, and every warning logged.
     """
     warnings: list[tuple[Any, ...]] = []
+
+    def whole(reply: bytes) -> bool:
+        """Return whether `reply` holds its header section and its body."""
+        head, _, body = reply.partition(b"\r\n\r\n")
+        return b"\r\n\r\n" in reply and len(body) >= int(
+            re.findall(rb"Content-Length: (\d+)", head)[0]
+        )
 
     async def main() -> tuple[bytes, float, bool, list[Any]]:
         ours, theirs = socket.socketpair()
@@ -919,7 +929,7 @@ def refused(data: bytes) -> tuple[bytes, float, bool, list[Any], list[tuple[Any,
         await conn.run()
         reply = b""
         async with asyncio.timeout(5):
-            while b"\r\n\r\n" not in reply:
+            while not whole(reply):
                 reply += await loop.sock_recv(theirs, 4096)
         elapsed = time.monotonic() - start
         # the reply is on the wire before `_write` decides what comes
@@ -997,3 +1007,128 @@ def test_a_body_that_is_not_json_is_not_parsed_without_a_credential() -> None:
         request(b"Content-Length: %d\r\n" % len(body), body, auth=b"")
     )
     assert reply == UNAUTHORIZED
+
+
+ONLY_POST = b"JSONRPC server handles only POST requests"
+NOT_IMPLEMENTED_PAGE = (
+    b"<HTML><HEAD>\n<TITLE>501 Not Implemented</TITLE>\n"
+    b"</HEAD><BODY>\n<H1>Not Implemented</H1>\n</BODY></HTML>\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("method", "target", "status", "body"),
+    [
+        (b"GET", b"/", b"405 Method Not Allowed", ONLY_POST),
+        (b"HEAD", b"/wallet/w", b"405 Method Not Allowed", ONLY_POST),
+        (b"PUT", b"/wallet/", b"405 Method Not Allowed", ONLY_POST),
+        (b"DELETE", b"/", b"405 Method Not Allowed", b""),
+        (b"DELETE", b"/x", b"405 Method Not Allowed", b""),
+        (b"POST", b"/x", b"404 Not Found", b""),
+        (b"GET", b"/x", b"404 Not Found", b""),
+        (b"POST", b"/wallet", b"404 Not Found", b""),
+        (b"POST", b"/?a=1", b"404 Not Found", b""),
+        (b"POST", b"/rest/chaininfo.json", b"404 Not Found", b""),
+    ],
+)
+def test_a_method_or_a_path_core_refuses_is_refused_before_the_credential(
+    method: bytes, target: bytes, status: bytes, body: bytes
+) -> None:
+    """A method or a path `bitcoind` refuses gets its reply, credential or not.
+
+    Each row is what a real `bitcoind` v31.1.0 answers, with no
+    `Authorization` as with a good one, and it keeps an HTTP/1.1
+    connection open afterwards; `DELETE` is refused on any path and `GET`
+    off `/` is a 404, the order `_refusal`'s own docstring cites.
+    """
+    for auth in (b"", RPCAUTH_LINE):
+        data = request(
+            b"Content-Length: %d\r\n" % len(BODY),
+            auth=auth,
+            method=method,
+            target=target,
+        )
+        reply, _, closed, messages, warnings = refused(data)
+        assert reply == (
+            b"HTTP/1.1 " + status + b"\r\nContent-Length: %d\r\n\r\n" % len(body) + body
+        )
+        assert not closed
+        assert not messages
+        assert not warnings
+
+
+def test_a_refusal_closes_where_the_request_asked_as_a_401_does() -> None:
+    """`Connection: close` on the request is honoured on a 404 too."""
+    headers = b"Connection: close\r\nContent-Length: %d\r\n" % len(BODY)
+    reply, _, closed, _, _ = refused(request(headers, target=b"/x"))
+    assert reply == (
+        b"HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+    )
+    assert closed
+
+
+@pytest.mark.parametrize("method", [b"OPTIONS", b"PATCH", b"TRACE", b"FOO", b"post"])
+def test_a_method_libevent_does_not_know_is_501_and_closes(method: bytes) -> None:
+    """A method outside libevent's own five is 501, and the connection closes.
+
+    What a real `bitcoind` v31.1.0 answers, on a path it would answer as
+    well as on one it would not, even where the request asked to be kept
+    alive.
+    """
+    for target in (b"/", b"/x"):
+        data = request(
+            b"Content-Length: %d\r\n" % len(BODY),
+            auth=b"",
+            method=method,
+            target=target,
+        )
+        reply, _, closed, messages, _ = refused(data)
+        assert reply == (
+            b"HTTP/1.1 501 Not Implemented\r\nConnection: close\r\n"
+            b"Content-Length: %d\r\n\r\n"
+            % len(NOT_IMPLEMENTED_PAGE)
+            + NOT_IMPLEMENTED_PAGE
+        )
+        assert closed
+        assert not messages
+
+
+def test_a_request_under_wallet_is_dispatched() -> None:
+    """A `POST` under `/wallet/` is dispatched like one to `/`, as in Core."""
+    data = request(b"Content-Length: %d\r\n" % len(BODY), target=b"/wallet/w")
+    _, messages, _ = drive([data])
+    assert messages == [([json.loads(BODY)], 0)]
+
+
+@pytest.mark.parametrize("connection", [b"", b"Connection: close\r\n"])
+def test_a_reply_to_a_socket_closed_under_it_is_dropped_not_raised(
+    connection: bytes,
+) -> None:
+    """A reply whose socket closed while it was queued leaves no exception.
+
+    Issue #1079: `run` schedules a parse error's reply as a task of its
+    own, and closing `ours` before that task runs used to fail its
+    `sock_sendall` with `EBADF`, left on a task nothing awaits. The
+    connection is let go of either way, whether or not it was to be
+    kept alive.
+    """
+
+    async def main() -> bool:
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        theirs.setblocking(False)
+        loop = asyncio.get_running_loop()
+        manager = fake_manager(connections={0: None})
+        conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
+        headers = connection + b"Content-Length: 3\r\n"
+        await loop.sock_sendall(theirs, request(headers, b"bad"))
+        await conn.run()
+        reply = conn._parse_error_reply
+        assert reply is not None
+        assert not reply.done()
+        ours.close()
+        await reply
+        theirs.close()
+        return 0 in manager.connections
+
+    assert not asyncio.run(main())
