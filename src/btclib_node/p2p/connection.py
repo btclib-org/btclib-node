@@ -398,6 +398,12 @@ class Connection:
         # (net_processing.cpp's m_prefers_headers). btclib-org/btclib-node#202
         self.prefers_headers: bool = False
 
+        # These and the eviction fields below are on the wall clock, not
+        # `time.monotonic()`: Core's `m_last_recv`, `m_last_send`,
+        # `m_ping_start`, `m_connected`, `m_last_block_time` and
+        # `m_last_tx_time` are all read off `NodeClock`, its mockable
+        # system clock (`src/util/time.h`, at bitcoin/bitcoin@9be056a8a7,
+        # the v31.1 tag).
         self.last_receive: float = time.time()
         self.last_send: float = time.time()
         self.ping_nonce: int | None = None
