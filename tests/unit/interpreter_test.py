@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from btclib.consensus import CONSENSUS_PARAMS
-from btclib.curves import point_from_pub_key
 from btclib.ecc import dsa, ssa
 from btclib.exceptions import BTClibValueError, ScriptError
 from btclib.hashes import hash160, sha256
@@ -165,7 +164,8 @@ def test_a_transaction_that_prints_money_is_refused() -> None:
 
 
 _PRV = 0x1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF
-_PUB = PrvKeyData(_PRV).pub.sec
+_PUB_KEY = PrvKeyData(_PRV).pub
+_PUB = _PUB_KEY.sec
 
 # ALL, NONE, SINGLE and each of them with ANYONECANPAY: the branches the
 # legacy preimage blanks the transaction differently for, and the ones
@@ -195,7 +195,7 @@ def _spend_of(script_pub_key: ScriptPubKey | Octets) -> tuple[list[TxOut], Tx]:
 
 def a_p2pkh_spend(hash_type: int) -> tuple[list[TxOut], Tx]:
     """Return a p2pkh prevout and the legacy-preimage spend of it."""
-    prevouts, tx = _spend_of(ScriptPubKey.p2pkh(_PUB))
+    prevouts, tx = _spend_of(ScriptPubKey.p2pkh(_PUB_KEY))
     signature = dsa.sign_(sig_hash.from_tx(prevouts, tx, 0, hash_type), _PRV)
     tx.vin[0].script_sig = script.serialize(
         [signature.serialize().hex() + f"{hash_type:02x}", _PUB.hex()]
@@ -205,7 +205,7 @@ def a_p2pkh_spend(hash_type: int) -> tuple[list[TxOut], Tx]:
 
 def a_p2wpkh_spend(hash_type: int) -> tuple[list[TxOut], Tx]:
     """Return a p2wpkh prevout and the BIP143-preimage spend of it."""
-    prevouts, tx = _spend_of(ScriptPubKey.p2wpkh(_PUB))
+    prevouts, tx = _spend_of(ScriptPubKey.p2wpkh(_PUB_KEY))
     signature = dsa.sign_(sig_hash.from_tx(prevouts, tx, 0, hash_type), _PRV)
     tx.vin[0].script_witness = Witness(
         [signature.serialize() + bytes([hash_type]), _PUB]
@@ -215,7 +215,7 @@ def a_p2wpkh_spend(hash_type: int) -> tuple[list[TxOut], Tx]:
 
 def a_p2tr_spend(hash_type: int) -> tuple[list[TxOut], Tx]:
     """Return a p2tr prevout and the key-path spend of it."""
-    prevouts, tx = _spend_of(ScriptPubKey.p2tr(point_from_pub_key(_PUB)))
+    prevouts, tx = _spend_of(ScriptPubKey.p2tr(_PUB_KEY))
     # BIP341's preimage reads the witness stack -- for the annex, and for
     # how many items are on it -- so there has to be one before the
     # signature that goes on it exists
@@ -285,7 +285,7 @@ def test_get_flags_is_the_chains_consensus_row_asked_by_height_and_hash() -> Non
 
 def _multi_input_p2wpkh_spend(n: int) -> tuple[list[TxOut], Tx]:
     """N independent p2wpkh prevouts, and the transaction spending them."""
-    prevouts = [TxOut(50 * 10**8, ScriptPubKey.p2wpkh(_PUB)) for _ in range(n)]
+    prevouts = [TxOut(50 * 10**8, ScriptPubKey.p2wpkh(_PUB_KEY)) for _ in range(n)]
     tx = Tx(
         version=1,
         lock_time=0,
@@ -297,7 +297,7 @@ def _multi_input_p2wpkh_spend(n: int) -> tuple[list[TxOut], Tx]:
             )
             for j in range(n)
         ],
-        vout=[TxOut(49 * 10**8 * n, ScriptPubKey.p2wpkh(_PUB))],
+        vout=[TxOut(49 * 10**8 * n, ScriptPubKey.p2wpkh(_PUB_KEY))],
     )
     for i in range(n):
         signature = dsa.sign_(sig_hash.from_tx(prevouts, tx, i, 1), _PRV)
@@ -494,7 +494,7 @@ def _taproot_spend(
 def a_non_canonical_sighash_byte() -> tuple[list[TxOut], Tx]:
     """Return a p2pkh spend whose sighash byte is not a defined type."""
     hash_type = 0x05
-    prevouts, tx = _spend(ScriptPubKey.p2pkh(_PUB).script)
+    prevouts, tx = _spend(ScriptPubKey.p2pkh(_PUB_KEY).script)
     signature = dsa.sign_(sig_hash.from_tx(prevouts, tx, 0, hash_type), _PRV)
     tx.vin[0].script_sig = script.serialize(
         [signature.serialize().hex() + f"{hash_type:02x}", _PUB.hex()]
@@ -504,7 +504,7 @@ def a_non_canonical_sighash_byte() -> tuple[list[TxOut], Tx]:
 
 def a_high_s_signature() -> tuple[list[TxOut], Tx]:
     """Return a p2pkh spend whose signature carries the negated s."""
-    prevouts, tx = _spend(ScriptPubKey.p2pkh(_PUB).script)
+    prevouts, tx = _spend(ScriptPubKey.p2pkh(_PUB_KEY).script)
     signature = dsa.sign_(sig_hash.from_tx(prevouts, tx, 0, 1), _PRV)
     high_s = dsa.Sig(signature.r, signature.ec.n - signature.s)
     tx.vin[0].script_sig = script.serialize(

@@ -389,6 +389,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   genesis, and an empty locator asks for its stop header alone** (closes
   #1128).
 
+### The functional tests take `BitcoinCoreFetcher` from `btclib-wallet`
+
+- **`btclib_wallet.fetch.bitcoin_core` replaces `btclib.fetch.bitcoin_core`,
+  `btclib-wallet` joins the `test` group, and `btclib`'s floor moves to the
+  `2026.9.24` it requires** (closes #1181); nothing under `src/` imports it.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
