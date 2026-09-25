@@ -43,8 +43,8 @@ on release day.
   does** (closes #1076). With the RPC port taken or `.cookie` unwritable,
   `btclib-node` prints `Error: Unable to start HTTP server. See debug log
   for details.` and exits 1. A caller that starts a `Node` itself finds
-  its thread ended and `Node.init_error` set. Free the port or pick
-  another with `-rpcport`, and make the chain's data directory writable
+  its thread ended and the message in `Node.init_errors`. Free the port
+  or pick another with `-rpcport`, and make the chain's data directory writable
   where the cookie could not be written.
 - **`rpcpassword=` in `bitcoin.conf` is read, and stops the cookie**
   (closes #1070). The node used to warn about the key and write
@@ -67,11 +67,12 @@ on release day.
   (closes #1116), after one `Error: ...` line on stderr, as `bitcoind`
   does: a script testing the exit status for 2 has to test for 1.
 - **A node whose P2P listener cannot bind stops, as `bitcoind` does**
-  (closes #1093). With the P2P port taken, `btclib-node` prints
-  `Error: Failed to listen on any port. Use -listen=0 if you want this.`
+  (closes #1093). With the P2P port taken, `btclib-node` prints why the
+  bind failed (closes #1135), then
+  `Error: Failed to listen on any port. Use -listen=0 if you want this.`,
   and exits 1. A caller that starts a `Node` itself finds its thread
-  ended and `Node.init_error` set. Free the port, pick another with
-  `-port`, or start with `-listen=0`.
+  ended and both messages in `Node.init_errors`. Free the port, pick
+  another with `-port`, or start with `-listen=0`.
 - **An option's value follows `=`, never the next argument**
   (closes #1136): `-datadir <dir>` is refused as `bitcoind` refuses it,
   with "Command line contains unexpected token"; write `-datadir=<dir>`.

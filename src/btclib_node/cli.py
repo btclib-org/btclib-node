@@ -1155,11 +1155,12 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     Waits on the node's thread until a signal `install_signal_handlers`
     below caught, or the `stop` RPC, stops it. A `build_config` refusal,
-    or a node whose start-up failed and ended with `Node.init_error`
-    set, is printed as `Error: <message>` and the exit status is `1`:
-    Core's `InitError` reaches stderr through `noui_ThreadSafeMessageBox`
-    with that caption (`src/noui.cpp:22-46`, at bitcoin/bitcoin@9be056a8a7),
-    and `bitcoind` exits `EXIT_FAILURE`.
+    or each of `Node.init_errors` where the node's start-up failed, is
+    printed as `Error: <message>` and the exit status is `1`: Core's
+    `InitError`, and `CConnman`'s own `MSG_ERROR` for a failed bind,
+    reach stderr through `noui_ThreadSafeMessageBox` with that caption
+    (`src/noui.cpp:22-46`, at bitcoin/bitcoin@9be056a8a7), and
+    `bitcoind` exits `EXIT_FAILURE`.
     """
     try:
         config = build_config(argv)
@@ -1171,6 +1172,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     install_signal_handlers(node)
     node.start()
     node.join()
-    if node.init_error is not None:
-        sys.stderr.write(f"Error: {node.init_error}\n")
+    if node.init_errors:
+        for message in node.init_errors:
+            sys.stderr.write(f"Error: {message}\n")
         raise SystemExit(1)

@@ -41,7 +41,13 @@ from btclib_node.main import prune_up_to_height, update_chain
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
 from btclib_node.rpc.auth import COOKIE_FILE
-from tests import cookie_path, generate_random_chain, get_random_port, wait_until
+from tests import (
+    cookie_path,
+    generate_random_chain,
+    get_random_port,
+    taken_port_bind_error,
+    wait_until,
+)
 from tests.conftest import node_context, unstarted_node_context
 
 if TYPE_CHECKING:
@@ -860,7 +866,7 @@ def test_a_node_whose_rpc_port_is_taken_stops_before_its_p2p_side_starts(
             wait_until(lambda: not node.is_alive())
         finally:
             node.stop()
-    assert node.init_error == btclib_node.RPC_INIT_ERROR
+    assert node.init_errors == [btclib_node.RPC_INIT_ERROR]
     assert node.p2p_manager.ident is None
     assert not cookie_path(node.data_dir).exists()
     assert node.chainstate.db.closed
@@ -893,18 +899,18 @@ def test_a_node_that_cannot_write_its_cookie_stops_and_frees_its_rpc_port(
         wait_until(lambda: not node.is_alive())
     finally:
         node.stop()
-    assert node.init_error == btclib_node.RPC_INIT_ERROR
+    assert node.init_errors == [btclib_node.RPC_INIT_ERROR]
     assert not cookie_path(node.data_dir).exists()
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", port))
 
 
-def test_a_node_whose_rpc_listener_starts_has_no_init_error(tmp_path: Path) -> None:
-    """`init_error` stays None, and the node runs, once its listener is up."""
+def test_a_node_whose_rpc_listener_starts_has_no_init_errors(tmp_path: Path) -> None:
+    """`init_errors` stays empty, and the node runs, once its listener is up."""
     with node_context(tmp_path, allow_p2p=False) as node:
         wait_until(node.rpc_manager.listening.is_set)
         assert node.is_alive()
-    assert node.init_error is None
+    assert node.init_errors == []
 
 
 def test_a_node_whose_p2p_port_is_taken_stops_and_frees_its_rpc_port(
@@ -912,18 +918,21 @@ def test_a_node_whose_p2p_port_is_taken_stops_and_frees_its_rpc_port(
 ) -> None:
     """Core's `CConnman::Start` failing to bind ends start-up: the node ends.
 
-    The RPC listener, already started by then as Core's HTTP server is,
-    is stopped by `run`'s own teardown, and the databases are closed.
+    Its errors are `CConnman::Bind`'s reason, in the form
+    `taken_port_bind_error` says, and then `CConnman::Start`'s own. The RPC
+    listener, already started by then as Core's HTTP server is, is
+    stopped by `run`'s own teardown, and the databases are closed.
     """
     rpc_port = get_random_port()
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
         taken.bind(("", 0))
         taken.listen()
+        p2p_port = taken.getsockname()[1]
         node = Node(
             config=Config(
                 chain="regtest",
                 data_dir=tmp_path,
-                p2p_port=taken.getsockname()[1],
+                p2p_port=p2p_port,
                 rpc_port=rpc_port,
                 debug=True,
             )
@@ -933,13 +942,40 @@ def test_a_node_whose_p2p_port_is_taken_stops_and_frees_its_rpc_port(
             wait_until(lambda: not node.is_alive())
         finally:
             node.stop()
-    assert node.init_error == btclib_node.P2P_INIT_ERROR
+    bind_error, start_error = node.init_errors
+    assert taken_port_bind_error(p2p_port).fullmatch(bind_error)
+    assert start_error == btclib_node.P2P_INIT_ERROR
     assert not node.rpc_manager.is_alive()
     assert node.chainstate.db.closed
     log_text = (node.data_dir / "history.log").read_text(encoding="utf-8")
+    assert bind_error in log_text
     assert btclib_node.P2P_INIT_ERROR in log_text
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", rpc_port))
+
+
+def test_a_p2p_listener_failing_with_no_reason_stops_the_node_all_the_same(
+    a_networked_node: Node,
+) -> None:
+    """No `bind_error` to show, `CConnman::Start`'s own message stands alone.
+
+    A manager whose `run` ended on something other than an `OSError`
+    answers that it is not listening and has no reason to give.
+    """
+
+    class NoReason(AManager):
+        bind_error = None
+
+        @override
+        def start_listener(self) -> bool:
+            self.start()
+            return False
+
+    node = a_networked_node
+    node.p2p_manager = NoReason()  # type: ignore[assignment]
+    node.start()
+    wait_until(lambda: not node.is_alive())
+    assert node.init_errors == [btclib_node.P2P_INIT_ERROR]
 
 
 def test_a_node_under_listen_0_runs_whatever_holds_its_p2p_port(
@@ -968,7 +1004,7 @@ def test_a_node_under_listen_0_runs_whatever_holds_its_p2p_port(
             assert node.is_alive()
         finally:
             node.stop()
-    assert node.init_error is None
+    assert node.init_errors == []
 
 
 def test_every_message_waiting_is_taken_before_the_loop_waits(

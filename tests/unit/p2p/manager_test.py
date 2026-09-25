@@ -11,6 +11,8 @@ messages addressed to a connection that is no longer there.
 """
 
 import asyncio
+import errno
+import re
 import socket
 import sys
 import threading
@@ -48,6 +50,7 @@ from tests import (
     generate_random_transaction,
     get_random_port,
     log_recorder,
+    taken_port_bind_error,
     wait_until,
     wait_until_listening,
 )
@@ -2134,17 +2137,158 @@ def test_a_manager_that_cannot_bind_stops_being_alive(
     came up. `_bind` runs in `run` itself, before `run_forever`, so the
     same `OSError` ends `run` -- this thread's own target -- and
     `start_listener` answers that it is not listening.
+
+    Why is kept as `bind_error` and logged, in Core's words for the error
+    the platform answers, which `taken_port_bind_error` says.
     """
     logged: list[str] = []
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
         taken.bind(("", 0))
         taken.listen()
-        manager = a_manager(port=taken.getsockname()[1])
+        port = taken.getsockname()[1]
+        manager = a_manager(port=port)
         monkeypatch.setattr(manager.logger, "exception", logged.append)
         assert not manager.start_listener()
         wait_until(lambda: not manager.is_alive())
-    assert logged == ["Could not bind the P2P listener"]
+    assert manager.bind_error is not None
+    assert taken_port_bind_error(port).fullmatch(manager.bind_error)
+    assert logged == [manager.bind_error]
     assert not manager.listening.is_set()
+
+
+class RefusingSocket:
+    """A listening socket's stand-in whose `refused` call raises `error`."""
+
+    def __init__(self, refused: str, error: OSError) -> None:
+        """Refuse `refused` -- "bind" or "listen" -- with `error`."""
+        self.refused = refused
+        self.error = error
+        self.closed = False
+
+    def setsockopt(self, *args: Any) -> None:
+        """Accept any option, as a real socket does these."""
+
+    def bind(self, address: Any) -> None:
+        """Raise `error` if `bind` is what is refused."""
+        self._refuse_if("bind")
+
+    def listen(self) -> None:
+        """Raise `error` if `listen` is what is refused."""
+        self._refuse_if("listen")
+
+    def _refuse_if(self, call: str) -> None:
+        if self.refused == call:
+            raise self.error
+
+    def close(self) -> None:
+        """Record that `_bind_one` closed this socket."""
+        self.closed = True
+
+
+# CPython's own text for `WSAEACCES`, as the windows-latest runner printed it
+_WINSOCK_TEXT = (
+    "An attempt was made to access a socket in a way forbidden by its access"
+    " permissions"
+)
+
+
+def a_winsock_error(number: int, winerror: int) -> OSError:
+    """Build a Windows socket call's error: `errno` renumbered, `winerror` not.
+
+    Settable on any platform, which is how the Windows number is reached here.
+    """
+    error = OSError(number, _WINSOCK_TEXT)
+    error.winerror = winerror  # type: ignore[attr-defined]
+    return error
+
+
+@pytest.mark.parametrize(
+    ("refused", "family", "host", "error", "message"),
+    [
+        (
+            "socket",
+            socket.AF_INET,
+            "0.0.0.0",  # noqa: S104
+            OSError(errno.EMFILE, "Too many open files"),
+            (
+                "Couldn't open socket for incoming connections (socket returned"
+                f" error Too many open files ({errno.EMFILE}))"
+            ),
+        ),
+        (
+            "bind",
+            socket.AF_INET6,
+            "::",
+            OSError(errno.EADDRINUSE, "Address already in use"),
+            (
+                "Unable to bind to [::]:8333 on this computer."
+                " btclib-node is probably already running."
+            ),
+        ),
+        (
+            "bind",
+            socket.AF_INET,
+            "0.0.0.0",  # noqa: S104
+            OSError(errno.EACCES, "Permission denied"),
+            (
+                "Unable to bind to 0.0.0.0:8333 on this computer (bind returned"
+                f" error Permission denied ({errno.EACCES}))"
+            ),
+        ),
+        (
+            "bind",
+            socket.AF_INET,
+            "0.0.0.0",  # noqa: S104
+            a_winsock_error(errno.EACCES, 10013),
+            (
+                "Unable to bind to 0.0.0.0:8333 on this computer (bind returned"
+                f" error {_WINSOCK_TEXT} (10013))"
+            ),
+        ),
+        (
+            "listen",
+            socket.AF_INET,
+            "0.0.0.0",  # noqa: S104
+            OSError(errno.EOPNOTSUPP, "Operation not supported"),
+            (
+                "Listening for incoming connections failed (listen returned"
+                f" error Operation not supported ({errno.EOPNOTSUPP}))"
+            ),
+        ),
+    ],
+)
+def test_a_failed_bind_says_which_call_failed_and_why_as_core_does(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    refused: str,
+    family: socket.AddressFamily,
+    host: str,
+    error: OSError,
+    message: str,
+) -> None:
+    """`_bind_one` raises the message Core's `CConnman::BindListenPort` sets.
+
+    A taken port, any other `bind` error, a failed `listen` and a socket
+    that could not be opened each have a message of their own there
+    (`src/net.cpp:3307-3373`, at bitcoin/bitcoin@9be056a8a7), and an IPv6
+    address is written in brackets. The socket is closed whenever it
+    was opened.
+    """
+    manager = a_manager(port=8333)
+    stand_in = RefusingSocket(refused, error)
+
+    def a_socket(*args: Any) -> RefusingSocket:
+        if refused == "socket":
+            raise error
+        return stand_in
+
+    monkeypatch.setattr(socket, "socket", a_socket)
+    with pytest.raises(OSError, match=re.escape(message)) as excinfo:
+        manager._bind_one(family, host)
+    assert str(excinfo.value) == message
+    assert excinfo.value.__cause__ is error
+    assert stand_in.closed is (refused != "socket")
 
 
 def test_a_manager_dials_the_address_it_is_given(a_manager: AManagerFactory) -> None:

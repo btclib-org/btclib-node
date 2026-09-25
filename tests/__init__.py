@@ -24,6 +24,7 @@ import json
 import re
 import secrets
 import socket
+import sys
 import threading
 import time
 from datetime import datetime, timedelta
@@ -377,6 +378,26 @@ def get_random_port() -> int:
         port = sock.getsockname()[1]
         assert isinstance(port, int)
         return port
+
+
+def taken_port_bind_error(port: int) -> re.Pattern[str]:
+    """Match what `P2pManager` says of its "0.0.0.0" bind on a taken `port`.
+
+    The port is held the way these tests hold one: a plain socket bound to
+    the wildcard address with no option set. Against it, a bind that sets
+    `SO_REUSEADDR` -- this node's own, and Core's in `BindListenPort` --
+    fails with `EADDRINUSE` on Linux and macOS, which Core words as "is
+    probably already running". Windows answers `WSAEACCES` (10013), the
+    "Default" first bind against a "SO_REUSEADDR" wildcard second bind in
+    Microsoft's own table, "Using SO_REUSEADDR and SO_EXCLUSIVEADDRUSE",
+    which has no holder answering `WSAEADDRINUSE` to that second bind at
+    all; Core words any error but `EADDRINUSE` as "bind returned error",
+    with the Winsock code.
+    """
+    prefix = re.escape(f"Unable to bind to 0.0.0.0:{port} on this computer")
+    if sys.platform == "win32":  # pragma: no cover -- Windows alone answers 10013
+        return re.compile(prefix + r" \(bind returned error .+ \(10013\)\)")
+    return re.compile(prefix + r"\. btclib-node is probably already running\.")
 
 
 def wait_until(func: Callable[[], object], timeout: float = 60) -> None:
