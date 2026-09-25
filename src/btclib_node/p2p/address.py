@@ -29,7 +29,13 @@ from ipaddress import IPv4Address, IPv6Address, ip_address
 from typing import TYPE_CHECKING, cast
 
 from btclib.p2p.address import ServiceFlags
-from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2, is_embedded_ipv6
+from btclib.p2p.addrv2 import (
+    BIP155Network,
+    NetworkAddressV2,
+    can_addrv1,
+    is_embedded_ipv6,
+    network_address,
+)
 
 from btclib_node.db import KeyValueStore
 from btclib_node.exceptions import UnsupportedAddressTypeError
@@ -45,6 +51,7 @@ __all__ = [
     "can_connect",
     "dial",
     "endpoint_key",
+    "host_key",
     "ip_and_port",
     "peer_address",
 ]
@@ -232,6 +239,22 @@ def endpoint_key(address: NetworkAddressV2) -> bytes:
     """
     endpoint = replace(address, timestamp=0, services=ServiceFlags.NODE_NONE)
     return endpoint.serialize(check_validity=False)
+
+
+def host_key(address: NetworkAddressV2) -> bytes:
+    """Return the octets Core's `CNetAddr::GetAddrBytes` gives: no port.
+
+    What `P2pManager.discourage` keys on, as Core's `BanMan::Discourage`
+    does (`src/banman.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag), so every peer on one host shares one entry whatever port it
+    connects from. An address an `addr` entry can carry is that entry's
+    sixteen octets, an IPv4 one mapped, which makes an IPv4 peer and the
+    same peer mapped into IPv6 one host; any other is its own octets,
+    with no network id, as in Core.
+    """
+    if can_addrv1(address):
+        return network_address(address).ip.packed
+    return address.address
 
 
 class PeerDB:

@@ -31,17 +31,18 @@ from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.log import Logger
 from btclib_node.p2p import manager as manager_module
-from btclib_node.p2p.address import PeerDB, endpoint_key, peer_address
+from btclib_node.p2p.address import PeerDB, peer_address
 from btclib_node.p2p.main import handle_p2p_handshake
 from btclib_node.p2p.manager import P2pManager
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Iterable, Iterator, Sequence
     from pathlib import Path
 
     from btclib.p2p.payload import Payload
 
     from btclib_node import Node
+    from btclib_node.p2p.eviction import EvictionCandidate
 from tests import (
     WaitTimeoutError,
     generate_random_transaction,
@@ -369,14 +370,54 @@ def test_a_promote_racing_remove_connection_waits_for_its_own_two_pops(
     assert not manager.pending_connections
 
 
-def test_discourage_marks_the_endpoint_dialled_or_accepted(
+def test_discourage_marks_the_host_whatever_the_port(
     a_manager: AManagerFactory,
 ) -> None:
-    """`discourage` keys the endpoint by `endpoint_key`, not the raw address."""
+    """ISS 1078: `discourage` keys the host, not the endpoint, as Core does.
+
+    An inbound peer connects from a port of its own choosing each time,
+    so only a key without the port finds it again; the same IPv4 host
+    mapped into IPv6 is the same host, and a different one is not.
+    """
     manager = a_manager()
-    address = peer_address("1.2.3.4", 18444)
-    manager.discourage(address)
-    assert endpoint_key(address) in manager.discouraged
+    manager.discourage(peer_address("1.2.3.4", 18444))
+    assert manager.is_discouraged(peer_address("1.2.3.4", 50000))
+    assert manager.is_discouraged(peer_address("::ffff:1.2.3.4", 50001))
+    assert not manager.is_discouraged(peer_address("1.2.3.5", 18444))
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "0.1.2.3", "::1", "::ffff:127.0.0.1"])
+def test_a_local_host_is_never_discouraged(
+    a_manager: AManagerFactory, host: str
+) -> None:
+    """ISS 1078: Core's `MaybeDiscourageAndDisconnect` spares a local peer.
+
+    Keyed without the port, one local peer discouraged would be every
+    local peer discouraged.
+    """
+    manager = a_manager()
+    manager.discourage(peer_address(host, 18444))
+    assert not manager.is_discouraged(peer_address(host, 18444))
+
+
+def test_the_host_discouraged_longest_ago_is_forgotten_first(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1078: past its capacity the record forgets its oldest host.
+
+    Discouraging a host again makes it the newest, so the one forgotten
+    is the one discouraged longest ago rather than the one first seen.
+    """
+    monkeypatch.setattr(manager_module, "_DISCOURAGED_CAPACITY", 2)
+    manager = a_manager()
+    first, second, third = (peer_address(f"1.2.3.{i}", 18444) for i in (1, 2, 3))
+    manager.discourage(first)
+    manager.discourage(second)
+    manager.discourage(first)
+    manager.discourage(third)
+    assert manager.is_discouraged(first)
+    assert not manager.is_discouraged(second)
+    assert manager.is_discouraged(third)
 
 
 def test_add_pending_outbound_nonce_makes_it_visible_to_is_self_connect_nonce(
@@ -727,7 +768,7 @@ def test_a_discouraged_address_is_not_dialled_again(
     onion = NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, 8333)
     peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: onion)
     manager = a_manager(peer_db=peer_db)
-    manager.discouraged.add(endpoint_key(onion))
+    manager.discourage(onion)
     logged: list[str] = []
     monkeypatch.setattr(manager.logger, "exception", logged.append)
     asyncio.run(one_pass(manager))
@@ -1791,6 +1832,128 @@ def test_a_full_manager_evicts_an_inbound_peer_to_accept_a_new_one(
         manager.join(timeout=10)
 
 
+def land_an_inbound_peer(
+    manager: P2pManager, host: str, port: int
+) -> tuple[socket.socket, socket.socket]:
+    """Hand `server` an accepted socket that says it came from `host`.
+
+    Through `P2pManager._accept_queues`, since a peer the suite can
+    really connect from is a local one, which is never discouraged.
+    Returns the pair, the second being the peer's own end.
+    """
+    server_socket = manager._server_sockets[0]
+    wait_until(lambda: server_socket in manager._accept_queues)
+    ours, theirs = socket.socketpair()
+    manager.loop.call_soon_threadsafe(
+        manager._accept_queues[server_socket].put_nowait, (ours, (host, port))
+    )
+    theirs.settimeout(20)
+    return ours, theirs
+
+
+def test_a_discouraged_host_is_refused_where_it_would_fill_the_last_slot(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1078: with one inbound slot, a discouraged host is refused outright.
+
+    `max_connections=12` leaves one inbound slot, and Core refuses a
+    discouraged peer once `nInbound + 1 >= m_max_inbound`: here with no
+    peer held at all, from a port other than the one discouraged. A
+    host that is not discouraged takes the same slot.
+    """
+    port = get_random_port()
+    manager = a_manager(port=port, max_connections=12)
+    manager.discourage(peer_address("1.2.3.4", 18444))
+    logged, record = log_recorder()
+    monkeypatch.setattr(manager.logger, "debug", record)
+    manager.start()
+    wait_until_listening(manager)
+    with ExitStack() as peers:
+        _, refused = land_an_inbound_peer(manager, "1.2.3.4", 50000)
+        peers.enter_context(closing(refused))
+        # closed before `create_connection`, so nothing was sent to it
+        assert refused.recv(4096) == b""
+        assert manager.last_connection_id == -1
+        assert "connection from 1.2.3.4:50000 dropped (discouraged)" in logged
+        _, accepted = land_an_inbound_peer(manager, "1.2.3.5", 50000)
+        peers.enter_context(closing(accepted))
+        wait_until(lambda: manager.last_connection_id == 0)
+        assert not manager.pending_connections[0].prefer_evict
+        manager.stop()
+        manager.join(timeout=10)
+
+
+def test_a_discouraged_host_with_slots_to_spare_is_accepted_to_evict_first(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1078: short of the last slot, a discouraged host is `prefer_evict`.
+
+    `max_connections=13` leaves two inbound slots. The first discouraged
+    peer is accepted, as Core's `prefer_evict`, which its eviction
+    candidate carries; a second one is refused with one slot still free,
+    since it would take the last.
+    """
+    port = get_random_port()
+    manager = a_manager(port=port, max_connections=13)
+    assert manager.max_inbound == 2
+    manager.discourage(peer_address("1.2.3.4", 18444))
+    manager.start()
+    wait_until_listening(manager)
+    with ExitStack() as peers:
+        _, first = land_an_inbound_peer(manager, "1.2.3.4", 50000)
+        peers.enter_context(closing(first))
+        wait_until(lambda: manager.last_connection_id == 0)
+        conn = manager.pending_connections[0]
+        assert conn.prefer_evict
+        assert manager_module._eviction_candidate(conn).prefer_evict
+        _, second = land_an_inbound_peer(manager, "1.2.3.4", 50001)
+        peers.enter_context(closing(second))
+        assert second.recv(4096) == b""
+        assert manager.last_connection_id == 0
+        manager.stop()
+        manager.join(timeout=10)
+
+
+def test_a_discouraged_host_knocking_on_a_full_manager_evicts_nobody(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1078: the discouraged refusal comes before any eviction, as in Core.
+
+    `max_connections=13` leaves two inbound slots, both held here. An
+    eviction tried ahead of the refusal would drop an honest peer for a
+    newcomer that is then refused anyway, so the selector is replaced by
+    a recorder, and nothing may reach it: whichever peer it would name,
+    asking at all is the order Core does not take.
+    """
+    port = get_random_port()
+    manager = a_manager(port=port, max_connections=13)
+    assert manager.max_inbound == 2
+    manager.discourage(peer_address("1.2.3.4", 18444))
+    selections: list[Iterable[EvictionCandidate]] = []
+    monkeypatch.setattr(manager_module, "select_node_to_evict", selections.append)
+    logged, record = log_recorder()
+    monkeypatch.setattr(manager.logger, "debug", record)
+    manager.start()
+    wait_until_listening(manager)
+    with ExitStack() as peers:
+        _, held = land_an_inbound_peer(manager, "1.2.3.5", 50000)
+        peers.enter_context(closing(held))
+        wait_until(lambda: manager.last_connection_id == 0)
+        _, held = land_an_inbound_peer(manager, "1.2.3.6", 50000)
+        peers.enter_context(closing(held))
+        wait_until(lambda: manager.last_connection_id == 1)
+        _, refused = land_an_inbound_peer(manager, "1.2.3.4", 50000)
+        peers.enter_context(closing(refused))
+        assert refused.recv(4096) == b""
+        assert manager.last_connection_id == 1
+        assert sorted(manager.pending_connections) == [0, 1]
+        assert not selections
+        assert not any(line.startswith("selected inbound") for line in logged)
+        assert "connection from 1.2.3.4:50000 dropped (discouraged)" in logged
+        manager.stop()
+        manager.join(timeout=10)
+
+
 def test_an_eviction_candidate_reads_relay_off_the_version_message() -> None:
     """ISS 1064: the relay flag comes from `version`, not a later write.
 
@@ -1805,6 +1968,7 @@ def test_an_eviction_candidate_reads_relay_off_the_version_message() -> None:
         last_novel_tx_time=0,
         has_all_wanted_services=False,
         keyed_net_group=0,
+        prefer_evict=False,
         version_message=None,
     )
     assert not manager_module._eviction_candidate(conn).relay_txs
@@ -1819,9 +1983,9 @@ def test_an_outbound_connection_takes_no_inbound_slot(
 ) -> None:
     """Only `inbound` connections are counted against `max_inbound`."""
     manager = a_manager([a_conn(1)], max_connections=12)
-    assert not manager._inbound_full()
+    assert manager._inbound_count() == 0
     manager.pending_connections[2] = a_conn(2, inbound=True)
-    assert manager._inbound_full()
+    assert manager._inbound_count() == 1
 
 
 def test_an_inbound_peer_past_verack_still_holds_its_slot(
@@ -1834,7 +1998,7 @@ def test_an_inbound_peer_past_verack_still_holds_its_slot(
     `pending_connections`.
     """
     manager = a_manager([a_conn(1, inbound=True)], max_connections=12)
-    assert manager._inbound_full()
+    assert manager._inbound_count() == 1
 
 
 def test_a_failed_ipv6_bind_does_not_stop_the_ipv4_listener(

@@ -33,11 +33,12 @@ here are the ones [ARCHITECTURE](./ARCHITECTURE.md) describes.
   closed as btclib-org/btclib-node#101. Past `Config.max_connections`'s
   inbound share, `P2pManager.server` evicts an inbound peer by Core's
   own rules and closes the new one, before building anything for it,
-  only where every peer held is protected
+  only where every peer held is protected. A peer from a host this node
+  has discouraged is closed where it would take the last inbound slot or
+  none is left, and is otherwise preferred for eviction, as in Core
   (`src/btclib_node/p2p/manager.py`, `src/btclib_node/p2p/eviction.py`),
-  closed as btclib-org/btclib-node#1054 and btclib-org/btclib-node#1064;
-  SECURITY.md's *Limitations* states what the eviction does not know
-  about a peer.
+  closed as btclib-org/btclib-node#1054, btclib-org/btclib-node#1064 and
+  btclib-org/btclib-node#1078.
 - **Inbound connections do not stop this node dialling.** The outbound
   dial target counts only the connections `P2pManager` dialled off its
   own draw, not inbound or `-connect`/`-addnode` ones
@@ -117,7 +118,6 @@ vulnerabilities*:
 - the JSON-RPC listener, against a caller holding an accepted
   credential, who may call every method, and against whoever can read
   the plain HTTP it is sent over
-- an inbound p2p slot, against a peer this node has already discouraged
 - anything SECURITY.md attributes to btclib rather than to this tree —
   the constant-time properties of the arithmetic btclib's own
   [assurance case](https://github.com/btclib-org/btclib/blob/main/ASSURANCE_CASE.md)

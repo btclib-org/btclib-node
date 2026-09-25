@@ -160,6 +160,12 @@ disagrees stops the chain after it (closes #1063).
 each of its own off `NodeClock`, the system clock, and `pong`'s comment
 no longer says Core measures on a steady clock (closes #1081).
 
+### A discouraged host is refused near full, and preferred for eviction
+
+- **Discouragement is keyed by host, and `P2pManager.server` refuses a
+  discouraged host once one more peer would fill the inbound share, and
+  accepts it as `prefer_evict` otherwise, as Core does** (closes #1078).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
