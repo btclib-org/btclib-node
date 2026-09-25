@@ -412,8 +412,9 @@ class PeerStats:
     in whole seconds. `last_inv_sequence` is `TxRelay::m_last_inv_sequence`,
     `Mempool.sequence` as of this connection's last trickle, which
     `DownloadManager` writes, and 1 before the first, where Core starts it.
-    `addr_processed` is `Peer::m_addr_processed`, which `callbacks.addr`
-    and `callbacks.addrv2` count on `Node`'s thread.
+    `addr_processed` and `addr_rate_limited` are `Peer::m_addr_processed`
+    and `m_addr_rate_limited`, which `callbacks.addr` and
+    `callbacks.addrv2` count on `Node`'s thread.
 
     The rest are Core's `nSendBytes`, `nRecvBytes` and their per-command
     tables: the octets written to and read off the socket, the tables by
@@ -425,6 +426,7 @@ class PeerStats:
     time_offset: int = 0
     last_inv_sequence: int = 1
     addr_processed: int = 0
+    addr_rate_limited: int = 0
     bytes_sent: int = 0
     bytes_recv: int = 0
     bytes_sent_per_msg: Counter[str] = field(default_factory=Counter)
@@ -446,6 +448,21 @@ class Connection:
     # rather than an `__init__` assignment, `__init__` being at ruff's
     # `too-many-statements` ceiling.
     time_received: float = 0
+    # Set by callbacks.getaddr the first time it answers this
+    # connection: a peer that asks again gets nothing, rather than a
+    # second answer from the cache. The cache already stops a fresh
+    # draw per ask; what this flag alone still stops is a peer using
+    # a loop of getaddr on the one connection to learn when this
+    # node's cached sample itself changes. btclib-org/btclib-node#71
+    # A class default for the same reason as `time_received`.
+    answered_getaddr: bool = False
+    # Core's `Peer::m_addr_token_bucket` (`net_processing.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how many gossiped
+    # addresses this peer may still have taken in, one to start with so
+    # that it can announce itself. Written and read on `Node`'s thread
+    # alone, by `callbacks.verack`, `addr` and `addrv2`; a class default
+    # for the same reason as `time_received`.
+    addr_token_bucket: float = 1.0
 
     def __init__(
         self,
@@ -591,13 +608,10 @@ class Connection:
         # that has not). btclib-org/btclib-node#706
         self.best_known_height: int = 0
 
-        # Set by callbacks.getaddr the first time it answers this
-        # connection: a peer that asks again gets nothing, rather than a
-        # second answer from the cache. The cache already stops a fresh
-        # draw per ask; what this flag alone still stops is a peer using
-        # a loop of getaddr on the one connection to learn when this
-        # node's cached sample itself changes. btclib-org/btclib-node#71
-        self.answered_getaddr: bool = False
+        # When `addr_token_bucket`, above, was last topped up: Core's
+        # `Peer::m_addr_token_timestamp`, which starts at the peer's
+        # creation.
+        self.addr_token_timestamp: float = time.time()
 
         # What `DownloadManager.tx_download` is waiting to tell this peer
         # about, and when it may next do so -- Core's `TxRelay` holds the

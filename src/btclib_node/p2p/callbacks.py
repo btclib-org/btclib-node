@@ -337,7 +337,14 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     # fSuccessfullyConnected, not from a one-time handshake action.
     # btclib-org/btclib-node#275
     conn.send_ping()
-    conn.send(GetAddr())
+    # Core's `VERACK` handler (`net_processing.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) asks an outbound peer
+    # alone, and makes room for its answer past
+    # `_MAX_ADDR_PROCESSING_TOKEN_BUCKET`; an inbound peer keeps the one
+    # token it started with.
+    if not conn.inbound:
+        conn.send(GetAddr())
+        conn.addr_token_bucket += MAX_ADDR_TO_SEND
     # No `getheaders` here: whether this peer is asked for headers is
     # `DownloadManager.sync_headers`'s decision, made on the next pass
     # of `Node`'s own loop, as Core makes it in `SendMessages` rather
@@ -552,23 +559,64 @@ def addrv2(node: Node, msg: bytes, conn: Connection) -> None:
     _store_gossip(node, conn, AddrV2.parse(BytesIO(msg)).addresses)
 
 
+# Core's `MAX_ADDR_RATE_PER_SECOND` and `MAX_ADDR_PROCESSING_TOKEN_BUCKET`
+# (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+# tag): the rate a peer's address tokens refill at, and the ceiling that
+# refill stops at, which the `MAX_ADDR_TO_SEND` added by `verack`'s own
+# `getaddr` may exceed.
+_MAX_ADDR_RATE_PER_SECOND = 0.1
+_MAX_ADDR_PROCESSING_TOKEN_BUCKET = MAX_ADDR_TO_SEND
+
+
 def _store_gossip(
     node: Node, conn: Connection, addresses: Iterable[NetworkAddressV2]
 ) -> None:
-    """Merge gossiped `addresses` into the table, a discouraged host left out.
+    """Merge gossiped `addresses` into the table, in Core's order of filters.
 
     Core's `ADDR`/`ADDRV2` loop (`src/net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) neither stores nor relays
-    an address `IsDiscouraged` answers for, and adds what it keeps to the
-    peer's `m_addr_processed` before `AddrMan` refuses any of it.
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) tops up the peer's
+    `m_addr_token_bucket`, shuffles the message, and then takes each
+    address in turn: one without a token is dropped and counted in
+    `m_addr_rate_limited`; one with a token spends it, and is then
+    skipped if its services carry neither `NODE_NETWORK` nor
+    `NODE_NETWORK_LIMITED`, skipped if `IsDiscouraged` answers for it,
+    and otherwise counted in `m_addr_processed` before `AddrMan` refuses
+    any of it.
     """
+    now = time.time()
+    if conn.addr_token_bucket < _MAX_ADDR_PROCESSING_TOKEN_BUCKET:
+        elapsed = max(now - conn.addr_token_timestamp, 0)
+        conn.addr_token_bucket = min(
+            conn.addr_token_bucket + elapsed * _MAX_ADDR_RATE_PER_SECOND,
+            _MAX_ADDR_PROCESSING_TOKEN_BUCKET,
+        )
+    conn.addr_token_timestamp = now
+    received = list(addresses)
+    secrets.SystemRandom().shuffle(received)
     manager = node.p2p_manager
-    kept = [address for address in addresses if not manager.is_discouraged(address)]
-    # Core also leaves out of the count what its rate limit drops, and an
-    # address with neither `NODE_NETWORK` nor `NODE_NETWORK_LIMITED`; this
-    # node applies neither, so it counts what it keeps.
-    # btclib-org/btclib-node#1163
+    kept: list[NetworkAddressV2] = []
+    rate_limited = 0
+    for address in received:
+        # Core exempts a peer holding `NetPermissionFlags::Addr`, which
+        # only `-whitelist`/`-whitebind` grant and this node has neither
+        if conn.addr_token_bucket < 1:
+            rate_limited += 1
+            continue
+        conn.addr_token_bucket -= 1
+        # Core's `!MayHaveUsefulAddressDB && !HasAllDesirableServiceFlags`:
+        # every set `GetDesirableServiceFlags` answers holds one of these
+        # two flags, so the second half never keeps what the first drops
+        if not address.services & (
+            ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_NETWORK_LIMITED
+        ):
+            continue
+        # Core's `IsBanned` beside it has no counterpart: this node keeps
+        # no ban list (btclib-org/btclib-node#1088)
+        if manager.is_discouraged(address):
+            continue
+        kept.append(address)
     conn.stats.addr_processed += len(kept)
+    conn.stats.addr_rate_limited += rate_limited
     manager.peer_db.add_addresses(kept)
 
 
