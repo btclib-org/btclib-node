@@ -530,6 +530,8 @@ class Connection:
         self.nonce: int | None = None
 
         self.version_message: Version | None = None
+        # Core's `Peer::m_wtxid_relay`: whether transactions are
+        # announced to and asked of this peer by wtxid, else by txid.
         self.wtxidrelay_received: bool = False
         self.stats: PeerStats = PeerStats()
 
@@ -643,9 +645,11 @@ class Connection:
         # check always treats as due. btclib-org/btclib-node#141
         self.tx_announce_queue: list[bytes] = []
         self.next_inv_send_time: float = 0.0
-        # wtxid -> when this peer was asked for it, so a `notfound` this
+        # hash -> when this peer was asked for it, so a `notfound` this
         # node receives has something to clear and a second `getdata` for
-        # the same wtxid is not sent while the first is still outstanding.
+        # the same hash is not sent while the first is still outstanding.
+        # The hash is a wtxid for a peer that sent `wtxidrelay`, a txid
+        # for one that did not.
         # btclib-org/btclib-node#144
         self.tx_requested: dict[bytes, float] = {}
 

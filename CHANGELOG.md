@@ -395,6 +395,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `btclib-wallet` joins the `test` group, and `btclib`'s floor moves to the
   `2026.9.24` it requires** (closes #1181); nothing under `src/` imports it.
 
+### A peer without `wtxidrelay` is kept and relayed to by txid, as in Core
+
+- **`verack` keeps a peer that sent no `wtxidrelay`, whose transactions are
+  announced and asked for by txid** (closes #1183).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

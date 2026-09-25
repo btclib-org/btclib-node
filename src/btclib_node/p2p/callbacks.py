@@ -278,17 +278,13 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
 
     Ignores a `verack` ahead of `version`, as Core's `ProcessMessage`
     ignores any message there (`src/net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Drops a peer that sent
-    no `wtxidrelay` ahead of it, discouraging nobody: Core completes
-    that handshake and relays to the peer by txid, and this node asks
-    for transactions by wtxid alone. Records the peer's own address as
-    reachable once promoted -- the comment below is where that
-    recording is argued.
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). A peer that sent no
+    `wtxidrelay` ahead of it completes its handshake all the same, and
+    has transactions relayed by txid, as in Core. Records the peer's own
+    address as reachable once promoted -- the comment below is where
+    that recording is argued.
     """
     if not conn.version_message:
-        return
-    if not conn.wtxidrelay_received:
-        conn.stop()
         return
     conn.status = P2pConnStatus.Connected
     # out of P2pManager.pending_connections and into connections, the
@@ -852,10 +848,15 @@ def inv(node: Node, msg: bytes, conn: Connection) -> None:
 
     if node.status < NodeStatus.BlockSynced:
         return
-    wtransactions = [x.hash for x in inv.items if x.type_code == InventoryType.MSG_WTX]
-    missing_tx = node.mempool.get_missing(wtransactions, wtxid=True)
+    # Core keeps only the items matching the peer's `wtxidrelay`: wtxids
+    # from a peer that sent it, txids from one that did not. `inv_txs`
+    # then holds each hash in the peer's own space.
+    by_wtxid = conn.wtxidrelay_received
+    tx_type = InventoryType.MSG_WTX if by_wtxid else InventoryType.MSG_TX
+    hashes = [x.hash for x in inv.items if x.type_code == tx_type]
+    missing_tx = node.mempool.get_missing(hashes, wtxid=by_wtxid)
     if missing_tx:
-        node.download_manager.inv_txs.extend([(conn.id, wtxid) for wtxid in missing_tx])
+        node.download_manager.inv_txs.extend([(conn.id, h) for h in missing_tx])
 
 
 # The two families `advance_getdata` below dispatches on -- everything
