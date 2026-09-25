@@ -340,6 +340,10 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   (closes #1127); **a request-target libevent refuses is a 400** (closes
   #1125); **a bare LF ends a line** (closes #1150), as in `bitcoind`.
 
+### A `getaddr` is answered on an inbound connection alone, as in Core
+
+- **A `getaddr` from a peer this node dialled is ignored** (closes #1177).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
