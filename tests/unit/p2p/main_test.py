@@ -31,7 +31,7 @@ from btclib_node.p2p.main import (
     resume_cfilters,
     resume_getdata,
 )
-from tests import generate_random_transaction
+from tests import discourage_recorder, generate_random_transaction, log_recorder
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -71,7 +71,7 @@ def make_node(
     `conn.stop` was told to record onto.
     """
     stopped: list[bool] = []
-    discouraged: list[Any] = []
+    discouraged, record = discourage_recorder()
     resumed: list[bool] = []
     conn = SimpleNamespace(
         status=status,
@@ -88,7 +88,7 @@ def make_node(
         handshake_messages=deque(),
         connections={0: conn} if present and not pending else {},
         pending_connections={0: conn} if present and pending else {},
-        discourage=discouraged.append,
+        maybe_discourage_and_disconnect=record,
         discouraged=discouraged,
     )
     getattr(manager, queue_name).append(item)
@@ -416,6 +416,39 @@ def test_a_callback_that_raises_a_btclib_exception_costs_the_peer(
     assert node.p2p_manager.discouraged == [_AN_ADDRESS]  # #283
 
 
+def test_a_peer_the_manager_spares_is_logged_as_not_discouraged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1090: the verdict logged is the one the manager answered.
+
+    A btclib exception from a manual or a local peer drops it without
+    discouraging it, and the line says so.
+    """
+
+    def boom(node: Node, msg: bytes, conn: Connection) -> None:
+        raise BTClibValueError("no")
+
+    def spare(conn: Any) -> bool:
+        conn.stop()
+        return False
+
+    monkeypatch.setitem(callbacks, "ping", boom)
+    logged, record = log_recorder()
+    node, stopped = make_node(
+        "messages",
+        ("ping", b"", 0, 1, 0.0),
+        status=P2pConnStatus.Connected,
+        logger=SimpleNamespace(
+            info=lambda *a: None, debug=lambda *a: None, exception=record
+        ),
+    )
+    node.p2p_manager.maybe_discourage_and_disconnect = spare
+    handle_p2p(node)
+    assert stopped == [True]
+    (line,) = logged
+    assert line.endswith("peer not discouraged")
+
+
 def test_a_consensus_invalid_transaction_costs_the_peer_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -543,15 +576,15 @@ def a_pending_node(
 ) -> tuple[Any, list[Any], list[Any]]:
     """Build a node stand-in with one connection on `pending_cfilters`.
 
-    Returns the node alongside the lists its `p2p_manager.discourage` and
+    Returns the node alongside the lists its discouraging stand-in and
     `logger.exception` calls are recorded into -- `logged` stays empty
     where `logger` is a real `Logger`, since nothing appends to it then.
     """
-    discouraged: list[Any] = []
+    discouraged, record = discourage_recorder()
     logged: list[Any] = []
     node = SimpleNamespace(
         pending_cfilters={conn.id: (conn, heights)},
-        p2p_manager=SimpleNamespace(discourage=discouraged.append),
+        p2p_manager=SimpleNamespace(maybe_discourage_and_disconnect=record),
         logger=logger
         if logger is not None
         else SimpleNamespace(exception=lambda *a: logged.append(a)),
@@ -698,14 +731,14 @@ def a_pending_getdata_node(
 
     The same shape as `a_pending_node` above, over `pending_getdata`
     instead: returns the node alongside the lists its
-    `p2p_manager.discourage` and `logger.exception` calls are recorded
+    discouraging stand-in and `logger.exception` calls are recorded
     into.
     """
-    discouraged: list[Any] = []
+    discouraged, record = discourage_recorder()
     logged: list[Any] = []
     node = SimpleNamespace(
         pending_getdata={conn.id: (conn, items)},
-        p2p_manager=SimpleNamespace(discourage=discouraged.append),
+        p2p_manager=SimpleNamespace(maybe_discourage_and_disconnect=record),
         logger=logger
         if logger is not None
         else SimpleNamespace(exception=lambda *a: logged.append(a)),

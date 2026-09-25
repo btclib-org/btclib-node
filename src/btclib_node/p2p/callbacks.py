@@ -84,6 +84,8 @@ from btclib_node.p2p.address import ip_and_port
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from btclib_node import Node
     from btclib_node.p2p.connection import Connection
 
@@ -161,12 +163,10 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     # off headers this peer actually sends (below) only ever raises it
     # further. btclib-org/btclib-node#706
     conn.best_known_height = version_msg.start_height
-    # Every refusal below is discouraged, and not only a protocol
-    # violation: Core's own discouragement covers "incompatible or
-    # broken peers" alike (banman.h, at bitcoin/bitcoin@58a7869f86), and a
-    # peer stopped here is redialled from the address it dialled or was
-    # accepted on, not one a later `verack` may still rewrite (#70).
-    # btclib-org/btclib-node#283
+    # Every refusal below drops the peer and discourages nobody. Core's
+    # `VERSION` handling answers a self-connect, an obsolete version and
+    # missing services with `fDisconnect` alone (`src/net_processing.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
     #
     # `is_self_connect_nonce` replaces a fixed-size ring of recently
     # sent nonces, which a burst of outbound connects could evict a
@@ -174,34 +174,24 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     # came back (btclib-org/btclib-node#448) -- its own docstring is
     # where the search it runs is argued against Core's.
     if node.p2p_manager.is_self_connect_nonce(version_msg.nonce):
-        node.p2p_manager.discourage(conn.address)
         conn.stop()
         return
 
     # For simplicity we only allow current protocol version
     if version_msg.version < PROTOCOL_VERSION:
-        node.p2p_manager.discourage(conn.address)
         conn.stop()
         return
     # we only connect to witness nodes
     if not version_msg.services & ServiceFlags.NODE_WITNESS:
-        node.p2p_manager.discourage(conn.address)
         conn.stop()
         return
-    # Core disconnects for missing services too, on a narrower and
-    # differently-shaped condition than this used to be:
-    # `ExpectServicesFromConn` (`net.h:847-856`, at
-    # bitcoin/bitcoin@ca7162cde5) is `false` for `INBOUND`, `MANUAL` and
-    # `FEELER` connections, `true` only for an outbound one Core itself
-    # dialled expecting given services from addrman. This tree has only
-    # two of Core's connection types -- inbound, and the outbound this
-    # node dials itself; no manual add-node, no feeler -- so the check
-    # below now runs only for `not conn.inbound`, an inbound peer never
-    # being disconnected for its services, matching Core's own scope
-    # rather than every connection (btclib-org/btclib-node#725; this
-    # used to test `NODE_NETWORK` alone on every connection, inbound
-    # included, and disconnected a peer this node itself never dialled
-    # for a service it never asked that peer to have).
+    # Core disconnects for missing services only where
+    # `ExpectServicesFromConn` (`src/net.h`, at bitcoin/bitcoin@9be056a8a7,
+    # the v31.1 tag) holds, which is `false` for `INBOUND`, `MANUAL` and
+    # `FEELER` connections and `true` for every other outbound kind. Of
+    # this node's connections that is `conn.automatic`, what
+    # `_maybe_dial_more_peers` dials, and not a `-connect` or `-addnode`
+    # peer (btclib-org/btclib-node#725).
     #
     # `_has_all_desirable_services`' own `desirable` (above) is
     # `GetDesirableServiceFlags`'s shape
@@ -234,11 +224,10 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
         node, version_msg.services
     )
     if (
-        not conn.inbound
+        conn.automatic
         and node.status >= NodeStatus.BlockSynced
         and not conn.has_all_wanted_services
     ):
-        node.p2p_manager.discourage(conn.address)
         conn.stop()
         return
 
@@ -268,8 +257,7 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     if not conn.version_message or not conn.wtxidrelay_received:
         # a `verack` ahead of the `version`/`wtxidrelay` it depends on:
         # out of handshake order, and discouraged for it (#283)
-        node.p2p_manager.discourage(conn.address)
-        conn.stop()
+        node.p2p_manager.maybe_discourage_and_disconnect(conn)
         return
     conn.status = P2pConnStatus.Connected
     # out of P2pManager.pending_connections and into connections, the
@@ -407,8 +395,7 @@ def pong(node: Node, msg: bytes, conn: Connection) -> None:
     if not matched:
         # a nonce this node never sent: a protocol violation, and
         # discouraged for it (#283)
-        node.p2p_manager.discourage(conn.address)
-        conn.stop()
+        node.p2p_manager.maybe_discourage_and_disconnect(conn)
 
 
 # Core's own MAX_PCT_ADDR_TO_SEND (net_processing.cpp, 58a7869f86):
@@ -462,7 +449,16 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
     peer_db = node.p2p_manager.peer_db
     now = time.time()
     if now >= peer_db.addr_sample_expiration:
-        peer_db.addr_sample = _addresses_to_send(peer_db.get_active_addresses())
+        # Drawn and then filtered, as Core's `GetAddressesUnsafe` leaves
+        # every discouraged host out of what addrman drew (`src/net.cpp`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) before the cache
+        # is kept.
+        is_discouraged = node.p2p_manager.is_discouraged
+        peer_db.addr_sample = [
+            address
+            for address in _addresses_to_send(peer_db.get_active_addresses())
+            if not is_discouraged(address)
+        ]
         # The sample can go on naming an endpoint `active_addresses` has
         # since aged out or dropped, for as long as this cache is still
         # good: intended, not overlooked -- the cache is not what a
@@ -511,9 +507,7 @@ def addr(node: Node, msg: bytes, conn: Connection) -> None:
     entries = Addr.parse(BytesIO(msg)).addresses
     # BIP155's record is what the table holds, an addr version 1 entry
     # having no room for the networks a peer may yet gossip
-    node.p2p_manager.peer_db.add_addresses(
-        peer_from_addr_entry(entry) for entry in entries
-    )
+    _store_gossip(node, (peer_from_addr_entry(entry) for entry in entries))
 
 
 def addrv2(node: Node, msg: bytes, conn: Connection) -> None:
@@ -521,8 +515,20 @@ def addrv2(node: Node, msg: bytes, conn: Connection) -> None:
     # the same leniency as addr above, and the same reason: BIP155
     # entries fully read, anything past them left unchecked rather than
     # costing the peer its connection. btclib-org/btclib-node#149
-    addresses = AddrV2.parse(BytesIO(msg)).addresses
-    node.p2p_manager.peer_db.add_addresses(addresses)
+    _store_gossip(node, AddrV2.parse(BytesIO(msg)).addresses)
+
+
+def _store_gossip(node: Node, addresses: Iterable[NetworkAddressV2]) -> None:
+    """Merge gossiped `addresses` into the table, a discouraged host left out.
+
+    Core's `ADDR`/`ADDRV2` loop (`src/net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) neither stores nor relays
+    an address `IsDiscouraged` answers for.
+    """
+    manager = node.p2p_manager
+    manager.peer_db.add_addresses(
+        address for address in addresses if not manager.is_discouraged(address)
+    )
 
 
 def feefilter(node: Node, msg: bytes, conn: Connection) -> None:

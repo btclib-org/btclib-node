@@ -125,6 +125,23 @@ def log_recorder() -> tuple[list[str], Callable[..., None]]:
     return entries, record
 
 
+def discourage_recorder() -> tuple[list[Any], Callable[[Any], bool]]:
+    """Return a list and a stand-in for `maybe_discourage_and_disconnect`.
+
+    The stand-in stops the connection it is handed, records its address
+    as discouraged, and answers that it was: which connections the real
+    method spares, and which others it stops, is `manager_test.py`'s.
+    """
+    discouraged: list[Any] = []
+
+    def record(conn: Any) -> bool:
+        conn.stop()
+        discouraged.append(conn.address)
+        return True
+
+    return discouraged, record
+
+
 class _ListensOnAPort(Protocol):
     # what wait_until_listening needs: a manager, or a stand-in for one
     listening: threading.Event

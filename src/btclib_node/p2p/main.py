@@ -8,9 +8,9 @@ The first two pop one message off their own queue -- `P2pManager.messages`
 or `P2pManager.handshake_messages` -- and dispatch it through
 `p2p.callbacks.callbacks` or `p2p.callbacks.handshake_callbacks`
 depending on the connection's own `P2pConnStatus`. An exception raised
-by a callback stops that connection rather than the loop, and is
-discouraged for where it is a parse failure from the peer's own bytes
-rather than a bug in the handler.
+by a callback stops that connection rather than the loop, and goes to
+`P2pManager.maybe_discourage_and_disconnect` where it is a parse failure
+from the peer's own bytes rather than a bug in the handler.
 
 Each also weighs its own queued item's wire size back off the
 connection it came from, `queued_recv_bytes`, resuming that connection's
@@ -41,16 +41,31 @@ from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
 
 if TYPE_CHECKING:
     from btclib_node import Node
+    from btclib_node.p2p.connection import Connection
+    from btclib_node.p2p.manager import P2pManager
 
 __all__ = ["handle_p2p", "handle_p2p_handshake", "resume_cfilters", "resume_getdata"]
+
+
+def _drop(manager: P2pManager, conn: Connection, e: Exception) -> bool:
+    """Stop `conn` over `e`, and answer whether its host was discouraged.
+
+    Only a `BTClibException` can discourage it, `handle_p2p`'s own
+    `except` explaining why.
+    """
+    if isinstance(e, BTClibException):
+        return manager.maybe_discourage_and_disconnect(conn)
+    conn.stop()
+    return False
 
 
 def handle_p2p_handshake(node: Node) -> None:
     """Pop one queued handshake message and dispatch it, or drop the peer.
 
-    A message out of handshake order gets the connection discouraged
-    and stopped rather than dispatched; a callback that raises stops it
-    too, discouraged only where the exception is a `BTClibException`.
+    A message out of handshake order goes to
+    `P2pManager.maybe_discourage_and_disconnect` rather than being
+    dispatched; a callback that raises stops the connection too, and
+    goes there only where the exception is a `BTClibException`.
 
     Weighs the item's own size back off the connection's
     `queued_recv_bytes` the moment it is popped, the same as `handle_p2p`
@@ -80,15 +95,11 @@ def handle_p2p_handshake(node: Node) -> None:
             else:
                 # a second version/verack/wtxidrelay/sendaddrv2, out of
                 # handshake order: discouraged for it (#283)
-                manager.discourage(conn.address)
-                conn.stop()
+                manager.maybe_discourage_and_disconnect(conn)
         except Exception as e:
-            conn.stop()
             # discouraged for a parse failure, `handle_p2p`'s own
             # `except` below explaining which exceptions count as one
-            discourage = isinstance(e, BTClibException)
-            if discourage:
-                manager.discourage(conn.address)
+            discourage = _drop(manager, conn, e)
             # `conn_id`, not `conn.address`: this line is what
             # distinguishes the two branches above on disk (#526), and
             # the verdict and the command are what that takes -- the
@@ -116,9 +127,10 @@ def handle_p2p(node: Node) -> None:
     """Pop one queued message and dispatch it, once its handshake is done.
 
     A message ahead of `verack`, or one arriving out of order otherwise,
-    gets the connection discouraged and stopped rather than dispatched;
-    a callback that raises stops it too, discouraged only for a
-    `BTClibException` (the comment below argues why that split matters).
+    goes to `P2pManager.maybe_discourage_and_disconnect` rather than
+    being dispatched; a callback that raises stops the connection too,
+    and goes there only for a `BTClibException` (the comment below
+    argues why that split matters).
 
     Weighs the item's own size back off the connection's
     `queued_recv_bytes` the moment it is popped, whatever happens to it
@@ -157,11 +169,9 @@ def handle_p2p(node: Node) -> None:
                 else:
                     # a message ahead of `verack`, out of handshake
                     # order: discouraged for it (#283)
-                    manager.discourage(conn.address)
-                    conn.stop()
+                    manager.maybe_discourage_and_disconnect(conn)
                 node.logger.debug("Finished p2p\n")
         except Exception as e:
-            conn.stop()
             # A `BTClibException` is btclib refusing this peer's own
             # wire content -- a malformed message, or one failing a
             # consensus check such as `add_headers`'s or `assert_valid`'s
@@ -170,9 +180,7 @@ def handle_p2p(node: Node) -> None:
             # filter for a block on the active chain" among them -- and
             # not cause to discourage the peer that merely triggered it.
             # btclib-org/btclib-node#283
-            discourage = isinstance(e, BTClibException)
-            if discourage:
-                manager.discourage(conn.address)
+            discourage = _drop(manager, conn, e)
             # `conn_id`, not `conn.address`: same reasoning as
             # `handle_p2p_handshake` above (#526)
             node.logger.exception(
@@ -221,12 +229,9 @@ def resume_cfilters(node: Node) -> bool:
                 done.append(conn_id)
                 progressed = True
         except Exception as e:
-            conn.stop()
             done.append(conn_id)
             progressed = True
-            discourage = isinstance(e, BTClibException)
-            if discourage:
-                manager.discourage(conn.address)
+            discourage = _drop(manager, conn, e)
             # `conn_id`, not `conn.address`: same reasoning as
             # `handle_p2p_handshake` above (#526)
             node.logger.exception(
@@ -266,12 +271,9 @@ def resume_getdata(node: Node) -> bool:
                 done.append(conn_id)
                 progressed = True
         except Exception as e:
-            conn.stop()
             done.append(conn_id)
             progressed = True
-            discourage = isinstance(e, BTClibException)
-            if discourage:
-                manager.discourage(conn.address)
+            discourage = _drop(manager, conn, e)
             # `conn_id`, not `conn.address`: same reasoning as
             # `handle_p2p_handshake` above (#526)
             node.logger.exception(

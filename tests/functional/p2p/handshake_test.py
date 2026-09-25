@@ -220,9 +220,7 @@ def test_connection_to_ourselves(tmp_path: Path) -> None:
         # `callbacks.addrv2` need a peer to gossip and the one connection
         # attempted is the self-connect refused above, and
         # `get_addr_from_dns` iterates `RegTest.addresses`, which is empty
-        # (`chains.py`). `discourage` on the self-connect is a second
-        # filter, never reached in this test because `is_empty` returns
-        # first. A test that later gains a `connect=`, an `addnode`, a
+        # (`chains.py`). A test that later gains a `connect=`, an `addnode`, a
         # gossiping peer or a seeded chain is standing on all of that and
         # has to re-establish it for itself.
         _wait_or_describe(

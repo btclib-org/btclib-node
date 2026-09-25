@@ -44,7 +44,7 @@ from btclib_node.p2p.callbacks import (
 )
 from btclib_node.p2p.connection import Connection
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
-from tests import log_recorder
+from tests import discourage_recorder, log_recorder
 
 if TYPE_CHECKING:
     import concurrent.futures
@@ -337,7 +337,7 @@ def a_running_connection(
     """Build a `Connection` with enough manager state for `run` to actually run.
 
     Unlike `a_connection` above, this one carries a real loop, a
-    `pending_outbound_nonces` set, a stub `discourage`, and the two
+    `pending_outbound_nonces` set, a discouraging stand-in, and the two
     queues `parse_messages` routes a completed message onto, which is
     what the tests below need to drive `Connection.run` end to end
     rather than only a synchronous method on an idle connection.
@@ -353,7 +353,7 @@ def a_running_connection(
             warning=lambda *a: None, info=lambda *a: None, debug=lambda *a: None
         ),
     )
-    discouraged: list[object] = []
+    discouraged, record = discourage_recorder()
     pending_outbound_nonces: set[int] = set()
     manager = SimpleNamespace(
         node=node,
@@ -362,7 +362,7 @@ def a_running_connection(
         add_pending_outbound_nonce=pending_outbound_nonces.add,
         port=18444,
         peer_db=None,
-        discourage=discouraged.append,
+        maybe_discourage_and_disconnect=record,
         discouraged=discouraged,
         messages=deque(),
         handshake_messages=deque(),
@@ -377,12 +377,12 @@ def a_running_connection(
 
 
 def discouraged_of(connection: Connection) -> list[Any]:
-    """Read back the stub `discourage` list `a_running_connection` built.
+    """Read back the addresses `a_running_connection`'s stand-in discouraged.
 
     `connection.manager` is typed `P2pManager`, whose own `discouraged`
     is a `set[bytes]` -- the stub underneath is a `SimpleNamespace`
     carrying a `list` instead, so a caller comparing it against what was
-    passed to `discourage` needs its own, unstatic view of the attribute.
+    passed to the stand-in needs its own, unstatic view of the attribute.
     """
     return cast("list[Any]", cast("Any", connection.manager).discouraged)
 
@@ -421,14 +421,20 @@ def test_a_peer_sending_something_this_node_cannot_read_is_dropped(
     at -- a checksum matching no payload, and a magic naming another
     network -- and both are #283's own case for discouraging: the
     refusal is `Message.parse`'s own reading of what the peer sent,
-    not a bug of this node's.
+    not a bug of this node's. The connection is closed before the manager
+    is handed it, so the manager's own `stop` does not cancel the task
+    still running `run`.
     """
+    cancelled: list[bool] = []
 
     async def drive() -> Connection:
         loop = asyncio.get_running_loop()
         ours, theirs = socket.socketpair()
         ours.setblocking(False)
         connection = a_running_connection(loop, ours)
+        connection.task = cast(
+            "Any", SimpleNamespace(cancel=lambda: cancelled.append(True))
+        )
         try:
             theirs.sendall(octets)
             await connection.run()
@@ -441,6 +447,7 @@ def test_a_peer_sending_something_this_node_cannot_read_is_dropped(
     # #283: `Message.parse`, or the network-magic check right after it,
     # refusing this peer's own envelope is cause to discourage it
     assert discouraged_of(connection) == [connection.address]
+    assert not cancelled
 
 
 def test_a_bug_of_this_node_s_own_in_parsing_drops_the_peer_but_not_discouraged() -> (
@@ -1605,8 +1612,10 @@ def test_send_ping_racing_pong_does_not_tear_the_ping_pair(
     send_ping_thread = threading.Thread(target=connection.send_ping)
     hook_armed[0] = True
 
-    discouraged: list[Any] = []
-    node = SimpleNamespace(p2p_manager=SimpleNamespace(discourage=discouraged.append))
+    discouraged, record = discourage_recorder()
+    node = SimpleNamespace(
+        p2p_manager=SimpleNamespace(maybe_discourage_and_disconnect=record)
+    )
     pong(cast("Any", node), Pong(original_nonce).serialize(), connection)
 
     send_ping_thread.join(timeout=5)
