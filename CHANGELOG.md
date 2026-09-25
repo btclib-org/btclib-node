@@ -100,6 +100,12 @@ declare; it names `setup-python` and its `false` default instead
 export, which has no `.git` for its git commands; the worktree it builds
 in is already clean (issue btclib-org/.github#1352).
 
+### `REVIEWING.md` links Conventional Comments at its GitLab Pages address
+
+`REVIEWING.md` links `https://conventionalcomments.gitlab.io/`, a name the
+`*.gitlab.io` certificate covers, which `conventionalcomments.org` can present
+and fail the TLS check (issue btclib-org/.github#1341).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
