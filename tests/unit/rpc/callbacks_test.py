@@ -180,7 +180,6 @@ def a_peer(
         # left unrounded cannot pass
         last_send=1.9,
         last_receive=2.7,
-        last_block_timestamp=3.5,
         last_novel_block_time=4,
         last_novel_tx_time=5,
         connected_time=6,

@@ -5,15 +5,13 @@
 """`BlockIndex`, every header this node has seen and which chain is active.
 
 `BlockStatus` tracks a header from `valid_header` up through however far
-its block has been validated; `get_download_candidates` and
-`MAX_DOWNLOAD_WINDOW` are what bound how far ahead of the active chain a
-download is allowed to run, read from both `download.py` and here.
-`invalidate` is what a failed contextual check calls, through
-`main.update_header_index`, to drop a header and everything built on it.
-`stage_status` and `finalize` are `set_status` split into its two halves
--- the in-memory move and the disk write -- so that `main._finalize_fork`
-can hold the second half back across more than one block; `db.py`'s own
-docstring is where that staging, shared with `UtxoIndex`, is argued.
+its block has been validated. `invalidate` is what a failed contextual
+check calls, through `main.update_header_index`, to drop a header and
+everything built on it. `stage_status` and `finalize` are `set_status`
+split into its two halves -- the in-memory move and the disk write -- so
+that `main._finalize_fork` can hold the second half back across more
+than one block; `db.py`'s own docstring is where that staging, shared
+with `UtxoIndex`, is argued.
 
 `set_downloaded` and `set_status` both check `pending` before writing
 through, and for the same reason: either can be asked to change a hash
@@ -43,7 +41,9 @@ through `stage_status`, before that fork's own `finalize` ever runs --
 and `to_add` is not bounded by `MIN_BLOCKS_TO_KEEP` anywhere.
 `get_fork_details` walks back to the common ancestor with no depth
 limit, `_ready_fork` accepts whatever it returns once every hash is
-downloaded, and `MAX_DOWNLOAD_WINDOW` allows up to 1024 -- so a single
+downloaded, and a peer is asked for blocks up to
+`block_availability.BLOCK_DOWNLOAD_WINDOW`, 1024, past its own
+`last_common` block -- so a single
 `update_chain` call connecting a fork longer than the retained depth
 stages hashes into `pending` that `prune_up_to_height`, run once at the
 end of that same call, reaches too. `p2p.callbacks.block` only ever
@@ -79,20 +79,12 @@ if TYPE_CHECKING:
     from btclib_node.log import Logger
 
 __all__ = [
-    "MAX_DOWNLOAD_WINDOW",
     "BlockIndex",
     "BlockInfo",
     "BlockStatus",
     "block_time",
     "calculate_work",
 ]
-
-# `get_download_candidates`'s own cap on how many hashes it hands back
-# at once, and `download.py`'s `block_download` reads the same number
-# to decide whether the download window has run too far ahead of the
-# active chain to keep extending it -- one bound on how large that
-# window is ever allowed to get, read from both ends of it.
-MAX_DOWNLOAD_WINDOW = 1024
 
 
 def calculate_work(header: BlockHeader) -> int:
@@ -816,40 +808,6 @@ class BlockIndex:
                 if self._branch_is_downloaded(block_hash):
                     return candidate
         return best_candidate
-
-    # return a list of blocks that have to be downloaded
-    def get_download_candidates(self) -> list[bytes]:
-        """Return every undownloaded block a candidate branch still needs.
-
-        Walks each entry of `block_candidates` back from its own tip,
-        collecting every not-yet-downloaded hash until it reaches one
-        already seen or already on the active chain, then returns the
-        union in height order, capped at `MAX_DOWNLOAD_WINDOW`.
-        """
-        chainwork = self.chainwork[self.active_chain[-1]]
-        candidates: list[bytes] = []
-        seen = set()
-        i = -1
-        while len(candidates) < MAX_DOWNLOAD_WINDOW:
-            i += 1
-            if i >= len(self.block_candidates):
-                break
-            candidate_hash, candidate_chainwork = self.block_candidates[i]
-            if candidate_chainwork <= chainwork:
-                continue
-            while True:
-                block_info = self.get_block_info(candidate_hash)
-                if (
-                    candidate_hash in seen
-                    or block_info.status == BlockStatus.in_active_chain
-                ):
-                    break
-                if not block_info.downloaded:
-                    candidates.append(candidate_hash)
-                seen.add(candidate_hash)
-                candidate_hash = block_info.header.previous_block_hash
-        candidates.sort(key=lambda x: self.get_block_info(x).index)
-        return candidates[:MAX_DOWNLOAD_WINDOW]
 
     # return a list of block hashes looking at the current best chain
     def get_block_locator_hashes(self, start: bytes | None = None) -> list[bytes]:

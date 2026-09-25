@@ -1185,6 +1185,17 @@ def test_a_connected_block_restarts_the_mempool_s_decay_clock(node: Node) -> Non
     assert node.mempool._last_rolling_fee_update > 0.0
 
 
+def test_each_connected_block_brings_the_stalling_timeout_down(node: Node) -> None:
+    """`DownloadManager.block_connected` runs once per block connected.
+
+    Core's `PeerManagerImpl::BlockConnected`. btclib-org/btclib-node#1179
+    """
+    node.download_manager.block_stalling_timeout = 64
+    connect(node, generate_random_chain(2, RegTest().genesis.hash))
+    # 64 * 0.85 is 54, and 54 * 0.85 is 45, in whole seconds
+    assert node.download_manager.block_stalling_timeout == 45
+
+
 def _extend(previous_hash: bytes, start_height: int, count: int) -> list[Block]:
     # generate_random_chain restarts its own height at 0 for any start,
     # which is a timestamp that has to beat the median of *these*
@@ -1391,7 +1402,8 @@ def test_a_peer_is_sent_the_headers_from_the_first_one_it_lacks(
     chain = generate_random_chain(3, RegTest().genesis.hash, tip_time=datetime.now(UTC))
     node.chainstate.block_index.add_headers([block.header for block in chain])
     sent: list[Any] = []
-    availability = BlockAvailability(**{field: chain[0].header.hash})
+    availability = BlockAvailability()
+    setattr(availability, field, chain[0].header.hash)
     node.p2p_manager.connections[1] = a_peer(sent, availability)
 
     connect(node, chain)

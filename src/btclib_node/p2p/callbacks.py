@@ -81,7 +81,10 @@ from btclib_node.exceptions import (
 )
 from btclib_node.main import verify_mempool_acceptance
 from btclib_node.p2p.address import ip_and_port
-from btclib_node.p2p.block_availability import update_block_availability
+from btclib_node.p2p.block_availability import (
+    remove_block_request,
+    update_block_availability,
+)
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 from btclib_node.p2p.protocol_version import (
     BIP0031_VERSION,
@@ -190,14 +193,6 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     version_msg = Version.parse(msg)
 
     conn.version_message = version_msg
-    # `Connection.best_known_height`'s own docstring (connection.py) is
-    # where reading `start_height` here is argued: `send_version`
-    # (connection.py) carries this node's own real tip as of
-    # btclib-org/btclib-node#722, so between two btclib-node peers this
-    # already seeds at the peer's own real height, and a taller value
-    # off headers this peer actually sends (below) only ever raises it
-    # further. btclib-org/btclib-node#706
-    conn.best_known_height = version_msg.start_height
     # Every refusal below drops the peer and discourages nobody. Core's
     # `VERSION` handling answers a self-connect, an obsolete version and
     # missing services with `fDisconnect` alone (`src/net_processing.cpp`,
@@ -798,11 +793,14 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
     block = BlockMsg.parse(msg, check_validity=False).block
     block_hash = block.header.hash
 
-    if block_hash in conn.download_queue:
-        conn.download_queue.remove(block_hash)
-
-    conn.last_block_timestamp = time.time()
-    conn.pending_eviction = False
+    # no longer awaited from this peer, whatever it turns out to be: the
+    # `RemoveBlockRequest` of Core's `BLOCK` handling (`net_processing.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+    # a snapshot, as every other reader on Node's thread takes: P2pManager's
+    # thread pops from the dict itself when it drops a stale connection.
+    # Reused below, only Node's thread adding to a queue.
+    connections = list(node.p2p_manager.connections.values())
+    remove_block_request(connections, block_hash, time.time(), conn.id)
 
     block_index = node.chainstate.block_index
     if (
@@ -835,6 +833,8 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
         conn.last_novel_block_time = int(time.time())
         node.logger.info("Received new block with hash:%s", block_hash.hex())
         block_index.set_downloaded(block_hash)
+        # stored, so awaited from nobody: Core's `ProcessBlock`
+        remove_block_request(connections, block_hash, time.time())
 
 
 def inv(node: Node, msg: bytes, conn: Connection) -> None:
@@ -1290,13 +1290,6 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     )
     if tip is not None:
         node.download_manager.last_getheaders_timestamps.pop(conn.id, None)
-        # This batch connected, so its own tip is a taller header this
-        # connection has sent than any before it. `download.py`'s own
-        # citation is where a connection's `best_known_height` is read
-        # back. btclib-org/btclib-node#706
-        conn.best_known_height = max(
-            conn.best_known_height, block_index.get_block_info(tip).index
-        )
     if tip is None:
         # a batch connecting to nothing this node knows, whatever its
         # length: get_block_locator_hashes asks from what this node

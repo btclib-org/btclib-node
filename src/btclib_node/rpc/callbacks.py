@@ -625,8 +625,8 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     Stores through the same `block_index`/`block_db` calls
     `p2p.callbacks.block` makes for a block delivered over the wire,
     minus that callback's own `Connection`-specific bookkeeping
-    (`download_queue`, `last_block_timestamp`, `pending_eviction`),
-    none of which applies to a block submitted out of band. Connecting
+    (`remove_block_request`), which does not apply to a block submitted
+    out of band. Connecting
     the block to the active chain, on either path, is `main.
     update_chain`'s own job, run once every pass of `Node`'s loop
     rather than inline here -- the same pass this callback's own return
@@ -755,9 +755,7 @@ def _peer_entry(
     # Whole seconds, pushed unconditionally, and the ping fields in
     # fractional seconds, each only once it holds a value.
     # `last_block` and `last_transaction` are the last novel block and
-    # transaction, `0` until one arrives. `last_block_timestamp` is not
-    # the field: `callbacks.block` refreshes it for every `block`, novel
-    # or not, for the download stall check.
+    # transaction, `0` until one arrives.
     entry["lastsend"] = int(p2p_conn.last_send)
     entry["lastrecv"] = int(p2p_conn.last_receive)
     entry["last_transaction"] = p2p_conn.last_novel_tx_time

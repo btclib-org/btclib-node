@@ -478,11 +478,6 @@ def a_peer(**attributes: Any) -> Any:
         # way a real connection whose peer reads promptly never would
         queued_send_bytes=0,
         version_message=None,
-        # what `Connection` starts every fresh connection at, and what
-        # `callbacks.version`/`callbacks.headers` overwrite -- 0 rather
-        # than `None`, matching the real field (`p2p/connection.py`).
-        # btclib-org/btclib-node#706
-        best_known_height=0,
         block_availability=BlockAvailability(),
         wtxidrelay_received=False,
         prefer_addressv2=False,
@@ -490,8 +485,6 @@ def a_peer(**attributes: Any) -> Any:
         # what Connection sets, and what the version callback overwrites
         relay_tx=True,
         download_queue=[],
-        pending_eviction=False,
-        last_block_timestamp=0,
         tx_requested={},
         ping_sent=0,
         ping_nonce=0,
@@ -558,6 +551,7 @@ def a_handshake_node(
         status=status,
         config=SimpleNamespace(min_relay_feerate=min_relay_feerate, pruned=False),
         p2p_manager=SimpleNamespace(
+            connections={},
             pending_outbound_nonces=own_nonces,
             is_self_connect_nonce=own_nonces.__contains__,
             peer_db=peer_db,
@@ -2051,10 +2045,8 @@ def a_block() -> Block:
 def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded() -> None:
     """A block matching a pending download-queue entry is stored and marked.
 
-    The peer's own bookkeeping clears too: the hash leaves
-    `download_queue`, `last_block_timestamp` advances, and
-    `pending_eviction` drops, since the block this peer was about to be
-    evicted for being slow on has now arrived.
+    Stored, it is no longer awaited from anybody: it leaves the queue of
+    every peer it was asked of, which stop stalling.
     """
     block = a_block()
     index = FakeBlockIndex({block.header.hash: SimpleNamespace(downloaded=False)})
@@ -2062,11 +2054,10 @@ def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded() -> None:
     node = a_data_node(
         block_index=index, block_db=SimpleNamespace(add_block=added.append)
     )
-    peer = a_peer(
-        download_queue=[block.header.hash],
-        last_block_timestamp=0,
-        pending_eviction=True,
-    )
+    peer = a_peer(download_queue=[block.header.hash])
+    other = a_peer(id=1, download_queue=[block.header.hash])
+    other.block_availability.stalling_since = 5.0
+    node.p2p_manager.connections = {0: peer, 1: other}
     block_callback(
         node,
         BlockMsg(block, include_witness=True, check_validity=False).serialize(
@@ -2075,8 +2066,8 @@ def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded() -> None:
         peer,
     )
     assert peer.download_queue == []
-    assert peer.last_block_timestamp > 0
-    assert peer.pending_eviction is False
+    assert other.download_queue == []
+    assert other.block_availability.stalling_since == 0.0
     # novel and stored: what eviction reads (ISS 1064)
     assert peer.last_novel_block_time > 0
     assert added == [block]
@@ -2085,14 +2076,19 @@ def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded() -> None:
 
 
 def test_a_block_already_stored_is_not_stored_again() -> None:
-    """A block already downloaded is a no-op: not re-added, not re-marked."""
+    """A block already downloaded is a no-op: not re-added, not re-marked.
+
+    Only the peer that sent it stops being asked for it.
+    """
     block = a_block()
     index = FakeBlockIndex({block.header.hash: SimpleNamespace(downloaded=True)})
     added: list[Block] = []
     node = a_data_node(
         block_index=index, block_db=SimpleNamespace(add_block=added.append)
     )
-    peer = a_peer()
+    peer = a_peer(download_queue=[block.header.hash])
+    other = a_peer(id=1, download_queue=[block.header.hash])
+    node.p2p_manager.connections = {0: peer, 1: other}
     block_callback(
         node,
         BlockMsg(block, include_witness=True, check_validity=False).serialize(
@@ -2103,6 +2099,8 @@ def test_a_block_already_stored_is_not_stored_again() -> None:
     assert added == []
     assert index.marked == []
     assert peer.last_novel_block_time == 0
+    assert peer.download_queue == []
+    assert other.download_queue == [block.header.hash]
 
 
 def a_block_claiming_an_easier_target_than_the_chain_allows(block: Block) -> Block:
@@ -2961,14 +2959,7 @@ class FakeHeaderIndex:
         return self.tip
 
     def get_block_info(self, block_hash: bytes) -> SimpleNamespace:
-        """Answer every hash with the same fixed `tip_status`, and index 0.
-
-        `index` is never asserted against by a test built on this double
-        -- `headers`'s own `conn.best_known_height` update
-        (btclib-org/btclib-node#706) is the only reader, and every test
-        here only checks `Connection.sent`/`node.status`, not the height
-        that update leaves behind.
-        """
+        """Answer every hash with the same fixed `tip_status`, and index 0."""
         return SimpleNamespace(status=self.tip_status, index=0)
 
     def get_block_locator_hashes(self) -> list[bytes]:

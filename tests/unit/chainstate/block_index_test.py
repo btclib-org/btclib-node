@@ -749,49 +749,6 @@ def test_long_init(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
     assert block_index.chainwork == new_block_index.chainwork
 
 
-def test_block_candidates(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
-    """A freshly indexed 512-header chain is entirely its own candidates.
-
-    Nothing on it is downloaded or on the active chain yet, so
-    get_download_candidates returns every one of its headers, in order.
-    """
-    chainstate = a_chainstate(None)
-    block_index = chainstate.block_index
-    chain = generate_random_header_chain(512, RegTest().genesis.hash)
-    block_index.add_headers(chain)
-    assert block_index.get_download_candidates() == [x.hash for x in chain]
-
-
-def test_block_candidates_2(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
-    """The same check as above, at exactly MAX_DOWNLOAD_WINDOW headers."""
-    chainstate = a_chainstate(None)
-    block_index = chainstate.block_index
-    chain = generate_random_header_chain(1024, RegTest().genesis.hash)
-    block_index.add_headers(chain)
-    assert block_index.get_download_candidates() == [x.hash for x in chain]
-
-
-def test_block_candidates_3(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
-    """Once the chain is active, only its fork's headers are candidates.
-
-    With the 2000-header chain marked `in_active_chain` and reloaded,
-    get_download_candidates on the reopened index answers with the
-    200-header fork alone, in order.
-    """
-    chainstate = a_chainstate(None)
-    block_index = chainstate.block_index
-    chain = generate_random_header_chain(2000, RegTest().genesis.hash)
-    fork = generate_random_header_chain(200, chain[-10 - 1].hash, chain[-10 - 1].time)
-    block_index.add_headers(chain)
-    block_index.add_headers(fork)
-    for x in chain:
-        block_index.set_status(x.hash, BlockStatus.in_active_chain)
-    chainstate.db.close()
-    new_chainstate = a_chainstate(None)
-    new_block_index = new_chainstate.block_index
-    assert new_block_index.get_download_candidates() == [x.hash for x in fork]
-
-
 def test_block_locators(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
     """A 24-header chain's locator carries 14 entries.
 
@@ -900,46 +857,6 @@ def test_a_header_that_does_not_outweigh_the_chain_is_not_a_candidate(
     assert block_index.add_headers(short_fork)
     assert short_fork[0].hash in block_index.header_dict
     assert not block_index.block_candidates
-    chainstate.close()
-
-
-def test_a_candidate_the_chain_has_caught_up_with_is_not_downloaded_again(
-    a_chainstate: Callable[[Path | None], Chainstate],
-) -> None:
-    """A branch the active chain has connected stops appearing as a candidate.
-
-    The deque is not emptied when a branch connects, so what keeps a
-    connected block from being fetched all over again is the work it
-    is weighed against, not its removal from `block_candidates`.
-    """
-    chainstate = a_chainstate(None)
-    block_index = chainstate.block_index
-    chain = generate_random_header_chain(3, RegTest().genesis.hash)
-    block_index.add_headers(chain)
-    assert block_index.get_download_candidates() == [header.hash for header in chain]
-
-    for header in chain:
-        block_index.add_to_active_chain(header.hash)
-    assert block_index.get_download_candidates() == []
-    chainstate.close()
-
-
-def test_a_block_already_held_is_left_out_of_what_is_asked_for(
-    a_chainstate: Callable[[Path | None], Chainstate],
-) -> None:
-    """get_download_candidates skips a block already marked downloaded.
-
-    The walk back from a candidate goes through blocks this node may
-    already have: they are what it is walking towards, and asking a
-    peer for them again is the download running twice.
-    """
-    chainstate = a_chainstate(None)
-    block_index = chainstate.block_index
-    chain = generate_random_header_chain(3, RegTest().genesis.hash)
-    block_index.add_headers(chain)
-    block_index.set_downloaded(chain[1].hash)
-
-    assert block_index.get_download_candidates() == [chain[0].hash, chain[2].hash]
     chainstate.close()
 
 

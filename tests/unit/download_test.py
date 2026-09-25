@@ -26,24 +26,28 @@ from btclib.p2p.limits import MAX_INV_SZ, PROTOCOL_VERSION
 from btclib.p2p.negotiation import FeeFilter, SendHeaders
 
 import btclib_node.download as download_module
+from btclib_node.chains import RegTest
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import NodeStatus, P2pConnStatus
-from btclib_node.download import MAX_BLOCKS_PER_GETDATA_BURST, DownloadManager
+from btclib_node.download import MAX_BLOCKS_IN_TRANSIT_PER_PEER, DownloadManager
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import peer_address
-from btclib_node.p2p.block_availability import BlockAvailability
+from btclib_node.p2p.block_availability import BLOCK_DOWNLOAD_WINDOW, BlockAvailability
 from btclib_node.p2p.callbacks import MAX_GETDATA_INFLIGHT_BYTES
 from btclib_node.p2p.connection import PeerStats
 from btclib_node.p2p.protocol_version import FEEFILTER_VERSION, SENDHEADERS_VERSION
-from tests import generate_random_transaction
+from tests import generate_random_header_chain, generate_random_transaction
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable
 
     from btclib.p2p.addrv2 import NetworkAddressV2
 
     from btclib_node import Node
+    from btclib_node.chainstate.block_index import BlockIndex
+
+GENESIS = RegTest().genesis.hash
 
 
 def a_hash(n: int) -> bytes:
@@ -55,18 +59,15 @@ def a_conn(
     conn_id: int,
     *,
     queue: list[bytes] | None = None,
-    last_block: float | None = None,
     relay_tx: bool = True,
     feefilter: int = 0,
     inbound: bool = True,
-    pending_eviction: bool = False,
     address: NetworkAddressV2 | None = None,
     status: Any = P2pConnStatus.Connected,
     feefilter_sent: int = 0,
     next_feefilter_send_time: float = 0.0,
     queued_send_bytes: int = 0,
     version_message: Any = ...,
-    best_known_height: int = 0,
     wtxidrelay_received: bool = True,
 ) -> Any:
     """Build a fake connection, recording every message handed to `send`.
@@ -90,8 +91,6 @@ def a_conn(
         inbound=inbound,
         address=address if address is not None else peer_address("10.0.0.1", 8333),
         download_queue=queue if queue is not None else [],
-        pending_eviction=pending_eviction,
-        last_block_timestamp=time.time() if last_block is None else last_block,
         stop=lambda: None,
         tx_announce_queue=[],
         next_inv_send_time=0.0,
@@ -106,7 +105,6 @@ def a_conn(
         # of the two stands in for the real `Version` payload.
         # btclib-org/btclib-node#706
         version_message=version_message,
-        best_known_height=best_known_height,
         wtxidrelay_received=wtxidrelay_received,
         sent_sendheaders=False,
         # what a real `Connection` starts every fresh connection at
@@ -1047,229 +1045,213 @@ def test_a_move_close_to_its_own_schedule_already_is_not_pulled_forward() -> Non
     assert conn.next_feefilter_send_time == soon
 
 
-class FakeBlockIndex:
-    """A `BlockIndex` stand-in: fixed candidates, and which of them are held."""
-
-    def __init__(
-        self,
-        candidates: list[bytes],
-        *,
-        downloaded: Sequence[bytes] = (),
-        active_chain_length: int = 1,
-    ) -> None:
-        """Hold `candidates` and mark `downloaded` of them as already stored."""
-        self.candidates = list(candidates)
-        self.downloaded = set(downloaded)
-        self.active_chain = [a_hash(0)] * active_chain_length
-
-    def get_download_candidates(self) -> list[bytes]:
-        """Return every candidate this index was built with."""
-        return list(self.candidates)
-
-    def get_block_info(self, block_hash: bytes) -> Any:
-        """Answer whether `block_hash` is downloaded and its candidate index."""
-        return SimpleNamespace(
-            downloaded=block_hash in self.downloaded,
-            index=self.candidates.index(block_hash) + 1,
-        )
+@pytest.fixture
+def index(regtest_node: Callable[[], Node]) -> BlockIndex:
+    """Return a fresh regtest node's block index, holding genesis alone."""
+    return regtest_node().chainstate.block_index
 
 
-def test_nothing_is_downloaded_before_the_headers_are_synced() -> None:
-    """`block_download` is a no-op before this node's headers are synced."""
-    conn = a_conn(1)
-    manager = make_manager(
-        [conn],
-        status=NodeStatus.SyncingHeaders,
-        block_index=FakeBlockIndex([a_hash(1)]),
-    )
+def extend(block_index: BlockIndex, length: int, start: bytes = GENESIS) -> list[bytes]:
+    """Index `length` new headers on top of `start`, and return their hashes."""
+    previous_time = block_index.get_block_info(start).header.time
+    chain = generate_random_header_chain(length, start, previous_time)
+    block_index.add_headers(chain)
+    return [header.hash for header in chain]
+
+
+def knowing(conn: Any, best_known: bytes) -> Any:
+    """Record that `conn` announced `best_known`, and return it."""
+    conn.block_availability.best_known = best_known
+    return conn
+
+
+def test_each_peer_is_asked_for_the_blocks_of_its_own_best_chain(
+    index: BlockIndex,
+) -> None:
+    """Two peers on two branches are each asked for their own.
+
+    What they are asked for is in flight from them from now on.
+    """
+    first_chain = extend(index, 2)
+    second_chain = extend(index, 3)
+    first = knowing(a_conn(1), first_chain[-1])
+    second = knowing(a_conn(2), second_chain[-1])
+    manager = make_manager([first, second], block_index=index)
+    before = time.time()
     manager.block_download()
-    assert not conn.sent
+    for conn, chain in ((first, first_chain), (second, second_chain)):
+        (getdata,) = only(conn, GetData)
+        assert hashes_of(getdata) == chain
+        assert {item.type_code for item in getdata.items} == {
+            InventoryType.MSG_WITNESS_BLOCK
+        }
+        assert conn.download_queue == chain
+        assert conn.block_availability.downloading_since >= before
 
 
-def test_a_block_is_asked_of_a_peer_with_an_empty_queue() -> None:
-    """A peer with an empty queue is handed the whole download window."""
-    conn = a_conn(1)
-    wanted = [a_hash(n) for n in range(1, 4)]
-    manager = make_manager([conn], block_index=FakeBlockIndex(wanted))
+def test_a_block_asked_of_one_peer_is_not_asked_of_another(
+    index: BlockIndex,
+) -> None:
+    """The second peer on the same chain is asked for what is left."""
+    chain = extend(index, MAX_BLOCKS_IN_TRANSIT_PER_PEER + 2)
+    first = knowing(a_conn(1), chain[-1])
+    second = knowing(a_conn(2), chain[-1])
+    manager = make_manager([first, second], block_index=index)
+    manager.block_download()
+    assert first.download_queue == chain[:MAX_BLOCKS_IN_TRANSIT_PER_PEER]
+    assert second.download_queue == chain[MAX_BLOCKS_IN_TRANSIT_PER_PEER:]
+
+
+def test_a_peer_with_blocks_in_flight_is_asked_for_the_rest_of_its_room(
+    index: BlockIndex,
+) -> None:
+    """Up to `MAX_BLOCKS_IN_TRANSIT_PER_PEER` in flight, and no more."""
+    chain = extend(index, MAX_BLOCKS_IN_TRANSIT_PER_PEER + 2)
+    conn = knowing(a_conn(1, queue=chain[:2]), chain[-1])
+    since = time.time() - 7
+    conn.block_availability.downloading_since = since
+    manager = make_manager([conn], block_index=index)
     manager.block_download()
     (getdata,) = only(conn, GetData)
-    assert hashes_of(getdata) == wanted
-    assert conn.download_queue == wanted
+    assert hashes_of(getdata) == chain[2:MAX_BLOCKS_IN_TRANSIT_PER_PEER]
+    assert conn.download_queue == chain[:MAX_BLOCKS_IN_TRANSIT_PER_PEER]
+    # awaited since the front of the queue was, not since now
+    assert conn.block_availability.downloading_since == since
 
 
-def test_asking_for_a_block_warms_the_worker_pool() -> None:
-    """Sending a block `GetData` also calls `warm_worker_pool`."""
-    # the earliest point a script is actually going to be validated,
-    # with the peer's round trip ahead of it as warm-up runway, rather
-    # than the moment header sync merely completes -- a node whose
-    # headers are synced but which never has a block to ask for never
-    # reaches this and never pays for the pool: btclib-org/btclib-node#262
-    warmed = []
-    conn = a_conn(1)
-    wanted = [a_hash(n) for n in range(1, 4)]
+def test_asking_for_a_block_warms_the_worker_pool(index: BlockIndex) -> None:
+    """Sending a block `GetData` also calls `warm_worker_pool`.
+
+    The earliest point a script is going to be validated: a node with no
+    block to ask for never pays for the pool. btclib-org/btclib-node#262
+    """
+    warmed: list[bool] = []
+    chain = extend(index, 1)
+    idle = a_conn(1)
     manager = make_manager(
-        [conn],
-        block_index=FakeBlockIndex(wanted),
-        warm_worker_pool=lambda: warmed.append(True),
+        [idle], block_index=index, warm_worker_pool=lambda: warmed.append(True)
     )
+    manager.block_download()
+    assert not idle.sent
+    assert not warmed
+
+    knowing(idle, chain[0])
     manager.block_download()
     assert warmed == [True]
 
 
-def test_a_header_only_node_with_nothing_to_download_never_warms_the_pool() -> None:
-    """A node with no download candidate at all never builds the worker pool."""
-    warmed = []
+def test_a_peer_holding_up_the_window_is_marked_stalling(index: BlockIndex) -> None:
+    """A peer finding nothing short of the window's end marks who it waits on.
+
+    Once, keeping the time it started.
+    """
+    chain = extend(index, BLOCK_DOWNLOAD_WINDOW + 2)
+    now = time.time()
+    staller = knowing(a_conn(2, queue=chain[:BLOCK_DOWNLOAD_WINDOW]), chain[-1])
+    staller.block_availability.downloading_since = now
+    waiting = knowing(a_conn(1), chain[-1])
+    manager = make_manager([staller, waiting], block_index=index)
+    manager.block_download()
+    assert not waiting.sent
+    since = staller.block_availability.stalling_since
+    assert since >= now
+
+    manager.block_download()
+    assert staller.block_availability.stalling_since == since
+
+
+def test_a_peer_with_blocks_in_flight_marks_nobody_stalling(
+    index: BlockIndex,
+) -> None:
+    """Only a peer left with nothing in flight is held up by another."""
+    chain = extend(index, BLOCK_DOWNLOAD_WINDOW + 2)
+    now = time.time()
+    last = BLOCK_DOWNLOAD_WINDOW - 1
+    staller = knowing(a_conn(2, queue=chain[:last]), chain[-1])
+    waiting = knowing(a_conn(1, queue=chain[last : last + 1]), chain[-1])
+    for conn in (staller, waiting):
+        conn.block_availability.downloading_since = now
+    manager = make_manager([waiting, staller], block_index=index)
+    manager.block_download()
+    assert staller.block_availability.stalling_since == 0.0
+
+
+@pytest.mark.parametrize(("timeout", "doubled"), [(2, 4), (40, 64), (64, 64)])
+def test_a_peer_stalling_past_the_timeout_is_dropped_and_the_timeout_doubles(
+    timeout: int, doubled: int
+) -> None:
+    """Dropped past `block_stalling_timeout`, which doubles up to 64 seconds."""
     conn = a_conn(1)
-    manager = make_manager(
-        [conn],
-        block_index=FakeBlockIndex([]),
-        warm_worker_pool=lambda: warmed.append(True),
-    )
+    stopped = recording_stops(conn)
+    conn.block_availability.stalling_since = time.time() - timeout - 1
+    manager = make_manager([conn])
+    manager.block_stalling_timeout = timeout
     manager.block_download()
-    assert not conn.sent
-    assert not warmed
-
-
-def test_a_node_with_no_peer_to_ask_never_warms_the_pool() -> None:
-    """Candidates with no connection to ask never trigger `warm_worker_pool`."""
-    warmed = []
-    manager = make_manager(
-        [],
-        block_index=FakeBlockIndex([a_hash(1)]),
-        warm_worker_pool=lambda: warmed.append(True),
-    )
-    manager.block_download()
-    assert not warmed
-
-
-def test_a_block_that_arrived_while_the_window_was_held_is_not_asked_for() -> None:
-    """A block downloaded since the window was built is filtered from it."""
-    # get_download_candidates never offers a block already stored, so
-    # the filter below it is about the window this manager is holding
-    # from an earlier pass, across which a block can have arrived
-    conn = a_conn(1)
-    wanted = [a_hash(1), a_hash(2)]
-    manager = make_manager(
-        [conn], block_index=FakeBlockIndex(wanted, downloaded=[a_hash(1)])
-    )
-    manager.block_window = wanted
-    manager.block_download()
-    (getdata,) = only(conn, GetData)
-    assert hashes_of(getdata) == [a_hash(2)]
-
-
-def test_nothing_left_to_download_asks_for_nothing() -> None:
-    """Once its only candidate downloads, the window empties, asking nothing."""
-    conn = a_conn(1)
-    manager = make_manager(
-        [conn], block_index=FakeBlockIndex([a_hash(1)], downloaded=[a_hash(1)])
-    )
-    manager.block_window = [a_hash(1)]
-    manager.block_download()
-    assert not conn.sent
-    assert manager.block_window == []
-
-
-def test_a_download_too_far_ahead_of_the_chain_waits() -> None:
-    """Past `MAX_DOWNLOAD_WINDOW` ahead of the chain, no request is sent."""
-    # the window is filled from the headers, which run far ahead of the
-    # blocks; fetching all of them at once is what the bound is for
-    conn = a_conn(1)
-    wanted = [a_hash(n) for n in range(1, 1200)]
-    manager = make_manager([conn], block_index=FakeBlockIndex(wanted))
-    manager.block_window = wanted[1025:]
-    manager.block_download()
+    assert stopped == [1]
+    assert manager.block_stalling_timeout == doubled
     assert not conn.sent
 
 
-def test_a_peer_that_is_already_busy_is_not_asked_again() -> None:
-    """A peer with a non-empty queue is left alone, given no more work."""
-    busy = a_conn(1, queue=[a_hash(1)])
-    manager = make_manager([busy], block_index=FakeBlockIndex([a_hash(1), a_hash(2)]))
+def test_a_peer_stalling_within_the_timeout_is_kept() -> None:
+    """Not dropped before `block_stalling_timeout` has passed."""
+    conn = a_conn(1)
+    stopped = recording_stops(conn)
+    conn.block_availability.stalling_since = time.time() - 1
+    manager = make_manager([conn])
     manager.block_download()
-    assert not busy.sent
-    assert busy.download_queue == [a_hash(1)]
+    assert stopped == []
+    assert manager.block_stalling_timeout == 2
 
 
-def test_a_block_that_arrived_leaves_the_queue_it_was_asked_in() -> None:
-    """A downloaded block leaves the queue of the peer it was asked of."""
+@pytest.mark.parametrize(
+    ("others", "waited", "dropped"),
+    [(0, 601, True), (0, 599, False), (1, 899, False), (1, 901, True)],
+)
+def test_a_block_awaited_too_long_drops_its_peer(
+    others: int, waited: int, *, dropped: bool
+) -> None:
+    """Ten minutes, plus five for each other peer with a block in flight.
+
+    The stalling timeout is left alone.
+    """
+    now = time.time()
     conn = a_conn(1, queue=[a_hash(1)])
-    manager = make_manager(
-        [conn],
-        block_index=FakeBlockIndex([a_hash(1), a_hash(2)], downloaded=[a_hash(1)]),
-    )
+    conn.block_availability.downloading_since = now - waited
+    busy = [a_conn(2 + n, queue=[a_hash(2 + n)]) for n in range(others)]
+    for other in busy:
+        other.block_availability.downloading_since = now
+    stopped = recording_stops(conn)
+    manager = make_manager([conn, *busy])
     manager.block_download()
-    assert conn.download_queue == [a_hash(2)]
+    assert stopped == ([1] if dropped else [])
+    assert manager.block_stalling_timeout == 2
 
 
-def test_a_peer_that_stopped_sending_blocks_is_marked_and_then_dropped() -> None:
-    """A quiet peer is marked for eviction, then dropped past a harder bound."""
-    # only while still syncing blocks: a peer with nothing to send is not
-    # a peer that has stalled
-    quiet = a_conn(1, last_block=time.time() - 200)
-    stalled = a_conn(2, last_block=time.time() - 400)
-    stopped = []
-    stalled.stop = lambda: stopped.append(True)
-    manager = make_manager(
-        [quiet, stalled],
-        status=NodeStatus.HeaderSynced,
-        block_index=FakeBlockIndex([a_hash(1)]),
-    )
+def test_a_peer_asked_in_this_pass_counts_towards_another_s_allowance(
+    index: BlockIndex,
+) -> None:
+    """A peer first asked for blocks earlier in the same pass is counted."""
+    chain = extend(index, 1)
+    now = time.time()
+    asked = knowing(a_conn(1), chain[0])
+    waited = a_conn(2, queue=[a_hash(2)])
+    waited.block_availability.downloading_since = now - 700
+    stopped = recording_stops(waited)
+    manager = make_manager([asked, waited], block_index=index)
     manager.block_download()
-    assert quiet.pending_eviction
-    assert stopped == [True]
+    assert asked.download_queue == chain
+    assert stopped == []
 
 
-def test_a_block_only_one_peer_was_asked_for_is_asked_of_a_second() -> None:
-    """An idle peer is given a block another peer already carries too."""
-    # nothing left in the window that nobody is fetching, and a peer
-    # sitting idle: it is given what somebody else is already carrying,
-    # which is how a block a peer never sends stops holding the chain up
-    busy = a_conn(1, queue=[a_hash(1)])
-    idle = a_conn(2)
-    manager = make_manager([busy, idle], block_index=FakeBlockIndex([a_hash(1)]))
-    manager.block_download()
-    # and the peer already carrying it keeps it rather than being asked
-    # for it a second time
-    assert not busy.sent
-    assert busy.download_queue == [a_hash(1)]
-    (getdata,) = only(idle, GetData)
-    assert hashes_of(getdata) == [a_hash(1)]
-
-
-def test_a_stalled_peers_own_blocks_are_not_handed_straight_back_to_it() -> None:
-    """A stalled peer's emptied queue goes to a healthy peer, not back to it."""
-    # the queue emptied for stalling past the 120s mark is not read as
-    # "ready for more work": the blocks it was holding go to the healthy
-    # peer instead, and the stalled one is asked for nothing at all
-    stalled = a_conn(1, last_block=time.time() - 200, queue=[a_hash(1), a_hash(2)])
-    healthy = a_conn(2)
-    manager = make_manager(
-        [stalled, healthy],
-        status=NodeStatus.HeaderSynced,
-        block_index=FakeBlockIndex([a_hash(1), a_hash(2), a_hash(3)]),
-    )
-    manager.block_download()
-    assert stalled.pending_eviction
-    assert not stalled.sent
-    (getdata,) = only(healthy, GetData)
-    assert hashes_of(getdata) == [a_hash(1), a_hash(2), a_hash(3)]
-
-
-def test_a_peer_that_is_already_pending_eviction_is_left_alone() -> None:
-    """A peer already marked `pending_eviction` keeps its queue, asked none."""
-    quiet = a_conn(1, last_block=time.time() - 200, queue=[a_hash(1)])
-    quiet.pending_eviction = True
-    manager = make_manager(
-        [quiet],
-        status=NodeStatus.HeaderSynced,
-        block_index=FakeBlockIndex([a_hash(1)]),
-    )
-    manager.block_download()
-    # the queue it was already given is not thrown away a second time,
-    # so it is not asked for the same block again either
-    assert quiet.download_queue == [a_hash(1)]
-    assert not quiet.sent
+@pytest.mark.parametrize(("timeout", "decayed"), [(64, 54), (4, 3), (3, 2), (2, 2)])
+def test_a_block_connected_brings_the_stalling_timeout_back_down(
+    timeout: int, decayed: int
+) -> None:
+    """85% of it, in whole seconds, and never under 2."""
+    manager = make_manager([])
+    manager.block_stalling_timeout = timeout
+    manager.block_connected()
+    assert manager.block_stalling_timeout == decayed
 
 
 def a_version(services: ServiceFlags, protocol: int = PROTOCOL_VERSION) -> Any:
@@ -1322,129 +1304,6 @@ def test_can_serve_blocks_is_true_for_either_service_bit_and_no_message() -> Non
     assert download_module._can_serve_blocks(a_conn(1, version_message=None))
 
 
-def test_a_peer_that_cannot_serve_blocks_gets_no_block_work() -> None:
-    """A peer with neither service bit is offered no candidate (closes #725).
-
-    Matches Core's own `CanServeBlocks` gate (net_processing.cpp:1254,
-    at bitcoin/bitcoin@ca7162cde5), rather than the whole download
-    window this peer used to be offered, as though it were archival.
-    """
-    wanted = [a_hash(n) for n in range(1, 4)]
-    witness_only = a_conn(1, version_message=a_version(ServiceFlags.NODE_WITNESS))
-    manager = make_manager([witness_only], block_index=FakeBlockIndex(wanted))
-    manager.block_download()
-    assert not witness_only.sent
-    assert witness_only.download_queue == []
-
-
-def test_a_peer_that_cannot_serve_blocks_leaves_work_for_the_next_peer() -> None:
-    """A peer that cannot serve blocks does not stall a peer that can.
-
-    Mirrors `test_a_limited_peer_with_nothing_in_reach_is_skipped_not_stalled`
-    below: the loop's own early `return` fires only once neither
-    `waiting` nor `pending` holds anything for *any* connection, so a
-    peer `_can_serve_blocks` refuses is `continue`d past rather than
-    ending the pass for everybody after it.
-    """
-    wanted = [a_hash(n) for n in range(1, 4)]
-    witness_only = a_conn(1, version_message=a_version(ServiceFlags.NODE_WITNESS))
-    healthy = a_conn(2, version_message=a_version(_FULL))
-    manager = make_manager([witness_only, healthy], block_index=FakeBlockIndex(wanted))
-    manager.block_download()
-    assert not witness_only.sent
-    assert witness_only.download_queue == []
-    (getdata,) = only(healthy, GetData)
-    assert hashes_of(getdata) == wanted
-
-
-def test_a_limited_peer_without_network_skips_a_block_far_behind_its_own_tip(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A `NODE_NETWORK_LIMITED`-only peer is not offered a block too old for it.
-
-    `MIN_BLOCKS_TO_KEEP` stands in for Core's own
-    `NODE_NETWORK_LIMITED_MIN_BLOCKS`; patched to 5 here so the reachable
-    boundary (`best_known_height - (5 - 2)` = 7) falls inside a small,
-    readable window rather than needing 288 candidates to demonstrate.
-    """
-    monkeypatch.setattr(download_module, "MIN_BLOCKS_TO_KEEP", 5)
-    wanted = [a_hash(n) for n in range(1, 11)]  # indices 1..10
-    limited = a_conn(1, version_message=a_version(_LIMITED), best_known_height=10)
-    manager = make_manager([limited], block_index=FakeBlockIndex(wanted))
-    manager.block_download()
-    (getdata,) = only(limited, GetData)
-    # index > 10 - (5 - 2) == 7, so only 8, 9 and 10 are in reach
-    assert hashes_of(getdata) == [a_hash(8), a_hash(9), a_hash(10)]
-    assert limited.download_queue == [a_hash(8), a_hash(9), a_hash(10)]
-
-
-def test_a_peer_advertising_both_services_is_offered_the_whole_window(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """`NODE_NETWORK_LIMITED` and `NODE_NETWORK` together is not a limited peer.
-
-    Same window and the same low `best_known_height` as the skipping
-    test above, so the only variable is the peer's own advertised
-    services -- Core's own `IsLimitedPeer` (net_processing.cpp:1261, at
-    bitcoin/bitcoin@ca7162cde5) reads `!(services & NODE_NETWORK)`, an
-    archival peer that also sets `NODE_NETWORK_LIMITED` still failing it.
-    """
-    monkeypatch.setattr(download_module, "MIN_BLOCKS_TO_KEEP", 5)
-    wanted = [a_hash(n) for n in range(1, 11)]
-    full = a_conn(1, version_message=a_version(_FULL), best_known_height=10)
-    manager = make_manager([full], block_index=FakeBlockIndex(wanted))
-    manager.block_download()
-    (getdata,) = only(full, GetData)
-    assert hashes_of(getdata) == wanted
-
-
-def test_a_limited_peer_with_nothing_in_reach_is_skipped_not_stalled(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A limited peer with nothing reachable leaves work for the next peer.
-
-    The loop's own early `return` fires only once neither `waiting` nor
-    `pending` holds anything for *any* connection; a limited peer that
-    cannot reach the window on offer is `continue`d past instead, so an
-    ordinary peer later in the same pass still gets asked.
-    """
-    monkeypatch.setattr(download_module, "MIN_BLOCKS_TO_KEEP", 5)
-    wanted = [a_hash(n) for n in range(1, 11)]
-    # best_known_height=10 puts the reachable boundary at index 7 (see
-    # the skipping test above); holding the window to indices 1..3 keeps
-    # every candidate below it, so nothing here is in reach for `stuck`.
-    stuck = a_conn(1, version_message=a_version(_LIMITED), best_known_height=10)
-    healthy = a_conn(2)
-    manager = make_manager([stuck, healthy], block_index=FakeBlockIndex(wanted))
-    manager.block_window = wanted[:3]
-    manager.block_download()
-    assert not stuck.sent
-    assert stuck.download_queue == []
-    (getdata,) = only(healthy, GetData)
-    assert hashes_of(getdata) == wanted[:3]
-
-
-def test_an_idle_peer_is_asked_for_nothing_once_every_block_has_three_takers() -> None:
-    """A fourth, idle peer is asked nothing once every block has 3 takers."""
-    # three peers already hold the window's one block between them, which
-    # is what Counter's `x[1] < 3` reads as fully requested: the fourth,
-    # idle peer's own turn in the loop finds neither `waiting` nor
-    # `pending` with anything left to hand it. Whether that happens at
-    # all otherwise depends on how the window divides across peers at
-    # that instant, which is what btclib-org/btclib-node#319 is about.
-    takers = [a_conn(n, queue=[a_hash(1)]) for n in (1, 2, 3)]
-    idle = a_conn(4)
-    manager = make_manager([*takers, idle], block_index=FakeBlockIndex([a_hash(1)]))
-    manager.block_download()
-    assert not idle.sent
-    assert idle.download_queue == []
-    for taker in takers:
-        assert not taker.sent
-        assert taker.download_queue == [a_hash(1)]
-
-
-# A best header this far behind the clock is one `sync_headers` asks a
-# single peer about; `_RECENT` is one every peer is asked about.
 _OLD = 2 * 24 * 60 * 60
 _RECENT = 60
 
@@ -1750,15 +1609,18 @@ def test_a_peer_gone_leaves_no_getheaders_timestamp_behind() -> None:
     assert list(manager.last_getheaders_timestamps) == [1]
 
 
-def moved(manager: DownloadManager, monkeypatch: pytest.MonkeyPatch) -> list[Any]:
-    """Run `update_last_common_blocks`, returning the peers it moved."""
+def asked_for_blocks(
+    manager: DownloadManager, monkeypatch: pytest.MonkeyPatch
+) -> list[Any]:
+    """Run `block_download`, returning the peers whose walk it ran."""
     states: list[Any] = []
-    monkeypatch.setattr(
-        download_module,
-        "update_last_common_block",
-        lambda block_index, state, minimum_chain_work: states.append(state),
-    )
-    manager.update_last_common_blocks()
+
+    def record(block_index: Any, state: Any, *args: Any, **kwargs: Any) -> Any:
+        states.append(state)
+        return [], None
+
+    monkeypatch.setattr(download_module, "find_next_blocks_to_download", record)
+    manager.block_download()
     connections = manager.node.p2p_manager.connections.values()
     return [
         conn
@@ -1767,38 +1629,40 @@ def moved(manager: DownloadManager, monkeypatch: pytest.MonkeyPatch) -> list[Any
     ]
 
 
-def test_out_of_initial_block_download_every_peer_s_last_common_block_moves(
+def test_out_of_initial_block_download_every_peer_with_room_is_asked(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Every connected peer that serves blocks and has room in flight.
 
-    Core's gate on `FindNextBlocksToDownload` in `SendMessages`
-    (btclib-org/btclib-node#1105).
+    Core's gate on `FindNextBlocksToDownload` in `SendMessages`.
     """
     inbound = a_conn(1)
     limited = a_conn(2, version_message=a_version(_LIMITED))
-    full = a_conn(3, queue=[a_hash(n) for n in range(MAX_BLOCKS_PER_GETDATA_BURST)])
+    full = a_conn(3, queue=[a_hash(n) for n in range(MAX_BLOCKS_IN_TRANSIT_PER_PEER)])
+    full.block_availability.downloading_since = time.time()
     serves_none = a_conn(4, version_message=a_version(ServiceFlags.NODE_WITNESS))
     handshaking = a_conn(5, status=P2pConnStatus.Open)
     conns = [inbound, limited, full, serves_none, handshaking]
     manager = make_manager(conns, is_initial_block_download=False)
-    assert moved(manager, monkeypatch) == [inbound, limited]
+    assert asked_for_blocks(manager, monkeypatch) == [inbound, limited]
+    assert not only(full, GetData)
 
 
 @pytest.mark.parametrize("in_flight", [True, False])
-def test_in_initial_block_download_only_a_peer_synced_from_moves(
+def test_in_initial_block_download_only_a_peer_synced_from_is_asked(
     monkeypatch: pytest.MonkeyPatch, *, in_flight: bool
 ) -> None:
     """A preferred peer, any where nothing is in flight, never a limited one.
 
     Core's `sync_blocks_and_headers_from_peer` and `IsLimitedPeer` terms
-    of the same gate (btclib-org/btclib-node#1105).
+    of the same gate.
     """
     preferred = an_outbound(1, queue=[a_hash(1)] if in_flight else [])
+    preferred.block_availability.downloading_since = time.time()
     inbound = a_conn(2)
     limited = an_outbound(3, version_message=a_version(_LIMITED))
     manager = make_manager(
         [preferred, inbound, limited], is_initial_block_download=True
     )
     expected = [preferred] if in_flight else [preferred, inbound]
-    assert moved(manager, monkeypatch) == expected
+    assert asked_for_blocks(manager, monkeypatch) == expected

@@ -283,11 +283,15 @@ def _reconcile_mempool_for_reorg(
 # `PeerManagerImpl::UpdatedBlockTip` then reads that latch: "Don't relay
 # inventory during initial block download." (`src/validation.cpp`,
 # `src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-# tag). btclib-org/btclib-node#1144, btclib-org/btclib-node#1148
+# tag). `PeerManagerImpl::BlockConnected`, once per block connected,
+# decays the block stalling timeout. btclib-org/btclib-node#1144,
+# btclib-org/btclib-node#1148, btclib-org/btclib-node#1179
 def _after_tip_change(
     node: Node, to_remove: list[RevBlock], to_add: list[Block]
 ) -> None:
     update_ibd_status(node)
+    for _ in to_add:
+        node.download_manager.block_connected()
     _reconcile_mempool_for_reorg(node, to_remove, to_add)
     if not node.is_initial_block_download:
         _announce_added_blocks(node, to_add)

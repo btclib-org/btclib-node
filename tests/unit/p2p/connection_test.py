@@ -33,7 +33,7 @@ from btclib.p2p.message import Message
 
 from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus, P2pConnStatus
-from btclib_node.download import MAX_BLOCKS_PER_GETDATA_BURST
+from btclib_node.download import MAX_BLOCKS_IN_TRANSIT_PER_PEER
 from btclib_node.p2p import connection as connection_module
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.callbacks import (
@@ -1528,7 +1528,7 @@ def test_send_counts_a_message_before_the_loop_has_written_it() -> None:
 def test_a_getdata_answer_paces_on_what_it_has_already_handed_over() -> None:
     """A `getdata` for more blocks than fit is paced, not dropped.
 
-    A whole `MAX_BLOCKS_PER_GETDATA_BURST` (`btclib_node/download.py`)
+    A whole `MAX_BLOCKS_IN_TRANSIT_PER_PEER` (`btclib_node/download.py`)
     of megabyte blocks, which is the request this node makes of its own
     peers and so an ordinary one to answer. The peer drains nothing, so
     `advance_getdata` stops within one block of
@@ -1541,7 +1541,7 @@ def test_a_getdata_answer_paces_on_what_it_has_already_handed_over() -> None:
     size = 1_000_000
     blocks = {
         bytes([i]) + b"\x00" * 31: _FakeBigBlock(size)
-        for i in range(MAX_BLOCKS_PER_GETDATA_BURST)
+        for i in range(MAX_BLOCKS_IN_TRANSIT_PER_PEER)
     }
     items = [Inventory(InventoryType.MSG_BLOCK, h) for h in blocks]
 
