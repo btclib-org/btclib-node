@@ -298,6 +298,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   announces a block once out of IBD, as the tip's `inv` past eight blocks
   or to a peer without `sendheaders`** (closes #1144, closes #1148).
 
+### `getpeerinfo` answers `addr_processed`
+
+- **`addr_processed` counts the addresses a peer gossips that are not
+  discouraged** (issue #1105); `synced_headers` and `synced_blocks` stay out,
+  this node keeping no per-peer best known or last common block.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

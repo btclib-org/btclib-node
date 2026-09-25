@@ -123,10 +123,11 @@ def test_the_time_fields_have_bitcoind_s_shape(
 def test_the_fields_are_bitcoind_s_and_so_is_a_loopback_peer_s_network(
     bitcoind: Bitcoind, tmp_path: Path
 ) -> None:
-    """Every key Core always pushes is here but three, and no other.
+    """Every key Core always pushes is here but two, and no other.
 
-    `synced_headers`, `synced_blocks` and `addr_processed` are what this
-    node keeps no state to answer with. Over 127.0.0.1 both sides name
+    `synced_headers` and `synced_blocks` are what this node keeps no
+    state to answer with. A key both answer holds a value of the same
+    type on each side. Over 127.0.0.1 both sides name
     the network unroutable, and bitcoind's `version` names the
     unspecified address for this node, 127.0.0.1 not being routable, so
     this node answers no `addrlocal`.
@@ -136,9 +137,12 @@ def test_the_fields_are_bitcoind_s_and_so_is_a_loopback_peer_s_network(
     assert set(theirs) - _OPTIONAL_FIELDS - set(ours) == {
         "synced_headers",
         "synced_blocks",
-        "addr_processed",
     }
     assert set(ours) - _OPTIONAL_FIELDS <= set(theirs)
+    shared = set(ours) & set(theirs)
+    assert {key: type(ours[key]) for key in shared} == {
+        key: type(theirs[key]) for key in shared
+    }
     assert ours["network"] == theirs["network"] == "not_publicly_routable"
     assert "addrlocal" not in ours
     assert ours["connection_type"] == "manual"

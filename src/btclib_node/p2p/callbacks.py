@@ -532,7 +532,7 @@ def addr(node: Node, msg: bytes, conn: Connection) -> None:
     entries = Addr.parse(BytesIO(msg)).addresses
     # BIP155's record is what the table holds, an addr version 1 entry
     # having no room for the networks a peer may yet gossip
-    _store_gossip(node, (peer_from_addr_entry(entry) for entry in entries))
+    _store_gossip(node, conn, (peer_from_addr_entry(entry) for entry in entries))
 
 
 def addrv2(node: Node, msg: bytes, conn: Connection) -> None:
@@ -540,20 +540,27 @@ def addrv2(node: Node, msg: bytes, conn: Connection) -> None:
     # the same leniency as addr above, and the same reason: BIP155
     # entries fully read, anything past them left unchecked rather than
     # costing the peer its connection. btclib-org/btclib-node#149
-    _store_gossip(node, AddrV2.parse(BytesIO(msg)).addresses)
+    _store_gossip(node, conn, AddrV2.parse(BytesIO(msg)).addresses)
 
 
-def _store_gossip(node: Node, addresses: Iterable[NetworkAddressV2]) -> None:
+def _store_gossip(
+    node: Node, conn: Connection, addresses: Iterable[NetworkAddressV2]
+) -> None:
     """Merge gossiped `addresses` into the table, a discouraged host left out.
 
     Core's `ADDR`/`ADDRV2` loop (`src/net_processing.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag) neither stores nor relays
-    an address `IsDiscouraged` answers for.
+    an address `IsDiscouraged` answers for, and adds what it keeps to the
+    peer's `m_addr_processed` before `AddrMan` refuses any of it.
     """
     manager = node.p2p_manager
-    manager.peer_db.add_addresses(
-        address for address in addresses if not manager.is_discouraged(address)
-    )
+    kept = [address for address in addresses if not manager.is_discouraged(address)]
+    # Core also leaves out of the count what its rate limit drops, and an
+    # address with neither `NODE_NETWORK` nor `NODE_NETWORK_LIMITED`; this
+    # node applies neither, so it counts what it keeps.
+    # btclib-org/btclib-node#1163
+    conn.stats.addr_processed += len(kept)
+    manager.peer_db.add_addresses(kept)
 
 
 def feefilter(node: Node, msg: bytes, conn: Connection) -> None:
