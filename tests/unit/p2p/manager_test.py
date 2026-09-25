@@ -721,13 +721,13 @@ def test_a_pending_connection_also_counts_toward_the_connection_target(
 ) -> None:
     """A connection still pending counts toward the target, so no second dial.
 
-    One already pending fills the one-peer target before headers are
-    synced: reaching for a second would raise into the housekeeping
+    One already pending fills the one-peer target `max_connections=1`
+    leaves: reaching for a second would raise into the housekeeping
     loop's own handler, so a quiet log is the assertion that it did not.
     """
     conn = a_conn(1, status=P2pConnStatus.Open, automatic=True)
     peer_db = a_peer_db_stub(is_empty=False, random_address=refuses_to_be_asked)
-    manager = a_manager(peer_db=peer_db, status=NodeStatus.Starting)
+    manager = a_manager(peer_db=peer_db, max_connections=1)
     manager.pending_connections[conn.id] = conn
     logged: list[str] = []
     monkeypatch.setattr(manager.logger, "exception", logged.append)
@@ -911,7 +911,7 @@ def test_a_promote_racing_the_count_does_not_dial_past_the_target(
     onion = NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, 8333)
     conn = a_conn(1, status=P2pConnStatus.Open, automatic=True)
     peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: onion)
-    manager = a_manager(peer_db=peer_db, status=NodeStatus.SyncingHeaders)
+    manager = a_manager(peer_db=peer_db, max_connections=1)
     manager.pending_connections[1] = conn
 
     promote_done = threading.Event()
@@ -1308,22 +1308,23 @@ def test_a_peer_db_that_raises_does_not_stop_the_housekeeping(
     assert logged
 
 
-def test_only_one_peer_is_wanted_until_the_headers_are_synced(
-    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("status", list(NodeStatus))
+@pytest.mark.parametrize(("automatic", "dials"), [(7, True), (8, False)])
+def test_eight_automatic_peers_are_the_target_however_far_the_sync_is(
+    a_manager: AManagerFactory, status: NodeStatus, automatic: int, *, dials: bool
 ) -> None:
-    """Before headers are synced, one connected peer is enough; no second dial.
+    """ISS 1073: `m_max_outbound_full_relay`, eight, from the first pass on.
 
-    A peer db that refuses to be asked: reaching for a second peer
-    would raise into the housekeeping loop's own handler, so a quiet
-    log is the assertion that one peer was enough.
+    Seven dialled automatically leave room for an eighth whatever
+    `node.status` says, headers unsynced included, and eight fill it:
+    the draw being asked for, or not, is the assertion.
     """
-    conn = a_conn(1, automatic=True)
-    peer_db = a_peer_db_stub(is_empty=False, random_address=refuses_to_be_asked)
-    manager = a_manager([conn], peer_db=peer_db, status=NodeStatus.Starting)
-    logged: list[str] = []
-    monkeypatch.setattr(manager.logger, "exception", logged.append)
-    asyncio.run(one_pass(manager))
-    assert not logged
+    drawn: list[None] = []
+    peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: drawn.append(None))
+    conns = [a_conn(i, automatic=True) for i in range(automatic)]
+    manager = a_manager(conns, peer_db=peer_db, status=status)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert bool(drawn) is dials
 
 
 def test_no_automatic_outbound_slot_means_no_dial(
@@ -1345,50 +1346,46 @@ def test_no_automatic_outbound_slot_means_no_dial(
 
 
 @pytest.mark.parametrize(
-    ("status", "conns"),
+    "conns",
     [
         pytest.param(
-            NodeStatus.BlockSynced,
-            [a_conn(i, inbound=True) for i in range(10)],
-            id="ten-inbound",
+            [a_conn(i, inbound=True) for i in range(8)],
+            id="eight-inbound",
         ),
         pytest.param(
-            NodeStatus.Starting,
+            [a_conn(i) for i in range(8)],
+            id="eight-addnode",
+        ),
+        pytest.param(
             [a_conn(1, status=P2pConnStatus.Open, inbound=True)],
-            id="one-inbound-before-headers",
-        ),
-        pytest.param(
-            NodeStatus.Starting,
-            [a_conn(1)],
-            id="one-addnode-before-headers",
+            id="one-inbound-pending",
         ),
     ],
 )
 def test_a_connection_not_dialled_automatically_leaves_the_target_open(
-    a_manager: AManagerFactory, status: NodeStatus, conns: Sequence[Any]
+    a_manager: AManagerFactory, conns: Sequence[Any]
 ) -> None:
     """ISS 1065: inbound and `-connect`/`-addnode` peers do not fill the target.
 
-    Ten inbound peers are the target once headers are synced, and one is
-    the target before: counted, either would stop the draw, so the draw
-    being asked for is the assertion. An `a_conn` that is neither inbound
-    nor `automatic` is what `async_connect`, the `-connect`/`-addnode`
-    route, builds.
+    Eight of either are the target: counted, they would stop the draw,
+    so the draw being asked for is the assertion. An `a_conn` that is
+    neither inbound nor `automatic` is what `async_connect`, the
+    `-connect`/`-addnode` route, builds.
     """
     drawn: list[None] = []
     peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: drawn.append(None))
-    manager = a_manager(peer_db=peer_db, status=status)
+    manager = a_manager(peer_db=peer_db)
     for conn in conns:
         manager.pending_connections[conn.id] = conn
     asyncio.run(manager._maybe_dial_more_peers())
     assert drawn
 
 
-def test_ten_automatic_peers_fill_the_target(a_manager: AManagerFactory) -> None:
-    """The control for the test above: ten dialled automatically fill it."""
+def test_eight_automatic_peers_fill_the_target(a_manager: AManagerFactory) -> None:
+    """The control for the test above: eight dialled automatically fill it."""
     drawn: list[None] = []
     peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: drawn.append(None))
-    conns = [a_conn(i, automatic=True) for i in range(10)]
+    conns = [a_conn(i, automatic=True) for i in range(8)]
     manager = a_manager(conns, peer_db=peer_db)
     asyncio.run(manager._maybe_dial_more_peers())
     assert not drawn
@@ -1714,15 +1711,15 @@ def test_a_manager_accepts_an_ipv6_peer_too(a_manager: AManagerFactory) -> None:
 
 
 @pytest.mark.parametrize(
-    ("max_connections", "max_inbound", "max_automatic_outbound"),
+    ("max_connections", "max_inbound", "max_outbound_full_relay"),
     [
         # Core's own default: eleven outbound slots reserved, the rest
-        # inbound
-        (DEFAULT_MAX_PEER_CONNECTIONS, 114, 11),
+        # inbound, eight of the eleven full-relay
+        (DEFAULT_MAX_PEER_CONNECTIONS, 114, 8),
         # one past the reservation: a single inbound slot
-        (12, 1, 11),
-        # under the reservation: no inbound slot, and the outbound
-        # bound is the total itself
+        (12, 1, 8),
+        # under the reservation: no inbound slot, and the full-relay
+        # target is the total itself
         (5, 0, 5),
         (0, 0, 0),
     ],
@@ -1731,12 +1728,12 @@ def test_max_connections_is_divided_the_way_core_divides_it(
     a_manager: AManagerFactory,
     max_connections: int,
     max_inbound: int,
-    max_automatic_outbound: int,
+    max_outbound_full_relay: int,
 ) -> None:
-    """`CConnman::Init`'s own `m_max_inbound`, and `semOutbound`'s bound."""
+    """`CConnman::Init`'s `m_max_inbound` and `m_max_outbound_full_relay`."""
     manager = a_manager(max_connections=max_connections)
     assert manager.max_inbound == max_inbound
-    assert manager.max_automatic_outbound == max_automatic_outbound
+    assert manager.max_outbound_full_relay == max_outbound_full_relay
 
 
 def test_an_inbound_peer_past_the_limit_is_refused_until_a_slot_frees(

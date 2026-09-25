@@ -120,15 +120,17 @@ def pruned_server_and_client(
             allow_rpc=False,
         )
     )
-    # The handshake alone (`callbacks.verack`) sends a real `getheaders`,
-    # and once the answer indexes past `HeaderSynced`,
-    # `DownloadManager.block_download` would start requesting real
-    # blocks on its own -- eventually the pruned ones too, disconnecting
-    # the client out from under these tests before they ever send their
-    # own `GetData`. Silencing `step` keeps every `block` message these
-    # tests see traceable to the one `GetData` each of them sends by
-    # hand.
-    monkeypatch.setattr(client.download_manager, "step", lambda: None)
+    # `DownloadManager.sync_headers` sends the server a real
+    # `getheaders` once the handshake is done, and once the answer
+    # indexes past `HeaderSynced`, `DownloadManager.block_download` would
+    # start requesting real blocks on its own -- eventually the pruned
+    # ones too, disconnecting the client out from under these tests
+    # before they ever send their own `GetData`. `step` cut down to the
+    # header sync keeps every `block` message these tests see traceable
+    # to the one `GetData` each of them sends by hand.
+    monkeypatch.setattr(
+        client.download_manager, "step", client.download_manager.sync_headers
+    )
     try:
         server.start()
         client.start()
@@ -180,13 +182,13 @@ def test_a_pruned_server_serves_a_block_it_still_holds(
 
     Waits for the client's own header sync first, the same guard
     `test_a_client_never_asks_the_pruned_server_for_a_block_past_its_depth`
-    below already applies: `callbacks.verack`'s own `GetHeaders`, sent
-    after the connection already reads `Connected`, races this test's own
-    hand-built `GetData` for a block deep past genesis. Where the block
-    arrives first its parent is not yet indexed, `callbacks.block` raises
-    and `main.handle_p2p`'s `except` drops the connection -- after the
-    block was received, so what fails is the `Connected` assertion below
-    (btclib-org/btclib-node#1029).
+    below already applies: `DownloadManager.sync_headers`'s own
+    `GetHeaders`, sent after the connection already reads `Connected`,
+    races this test's own hand-built `GetData` for a block deep past
+    genesis. Where the block arrives first its parent is not yet
+    indexed, `callbacks.block` raises and `main.handle_p2p`'s `except`
+    drops the connection -- after the block was received, so what fails
+    is the `Connected` assertion below (btclib-org/btclib-node#1029).
     """
     server, client = pruned_server_and_client
     wait_until(lambda: client.status >= NodeStatus.HeaderSynced)

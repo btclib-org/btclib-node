@@ -101,8 +101,8 @@ def test_wrong_ping(tmp_path: Path) -> None:
 
         # by id, and not "the manager holds none": with #70 and #71 both
         # working, each side now knows the other's own gossiped address, so
-        # manage_connections redials it the moment this drop takes the live
-        # count under connection_num -- a peer this connection has nothing to
+        # manage_connections redials it the moment this drop takes it out of
+        # `already_connected` -- a peer this connection has nothing to
         # say about (issue #283) and this test is not either, which is only
         # that the connection the wrong nonce was sent on is gone.
         wait_until(lambda: node1_conn_id not in node1.p2p_manager.connections)

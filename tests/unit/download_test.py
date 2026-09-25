@@ -12,14 +12,16 @@ asked for it, which peer a block is fetched from, and when a peer that
 has stopped sending blocks is let go.
 """
 
+import math
 import time
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.address import ServiceFlags
-from btclib.p2p.inventory import GetData, Inv
+from btclib.p2p.inventory import GetData, GetHeaders, Inv
 from btclib.p2p.limits import MAX_INV_SZ
 from btclib.p2p.negotiation import FeeFilter
 
@@ -162,19 +164,24 @@ def only[M](conn: Any, kind: type[M]) -> list[M]:
 
 
 def test_a_step_asks_for_neither_kind_while_the_headers_are_syncing() -> None:
-    """`step` sends a `feefilter` during header sync, but no `GetData`/`Inv`."""
+    """`step` sends a `feefilter` and a `GetHeaders` while syncing, no more."""
     # _send_due_feefilters still runs while syncing -- Core's own
     # MaybeSendFeefilter tells a peer MAX_MONEY during IBD rather than
     # skip the send outright, so a step() while headers are syncing is
     # not silent, only silent of GetData/Inv. btclib-org/btclib-node#275
     conn = a_conn(1)
     manager = make_manager(
-        [conn], status=NodeStatus.SyncingHeaders, is_initial_block_download=True
+        [conn],
+        status=NodeStatus.SyncingHeaders,
+        is_initial_block_download=True,
+        block_index=HeaderIndex(age=_OLD),
     )
     manager.inv_txs = [(1, a_hash(1))]
     manager.step()
     assert not only(conn, GetData)
     assert not only(conn, Inv)
+    # the header sync is the one thing asked for while syncing
+    assert only(conn, GetHeaders)
     (feefilter_msg,) = only(conn, FeeFilter)
     assert feefilter_msg.feerate == manager._max_feefilter
 
@@ -1233,3 +1240,265 @@ def test_an_idle_peer_is_asked_for_nothing_once_every_block_has_three_takers() -
     for taker in takers:
         assert not taker.sent
         assert taker.download_queue == [a_hash(1)]
+
+
+# A best header this far behind the clock is one `sync_headers` asks a
+# single peer about; `_RECENT` is one every peer is asked about.
+_OLD = 2 * 24 * 60 * 60
+_RECENT = 60
+
+
+class HeaderIndex:
+    """A `BlockIndex` stand-in holding one best header, `age` seconds old."""
+
+    def __init__(self, *, age: float) -> None:
+        """Hold one best header timestamped `age` seconds before now."""
+        self.header_index = [a_hash(7)]
+        self.time = datetime.fromtimestamp(time.time() - age, UTC)
+
+    def get_block_info(self, block_hash: bytes) -> Any:
+        """Answer the one header's own time, whatever `block_hash` is."""
+        return SimpleNamespace(header=SimpleNamespace(time=self.time))
+
+    def get_block_locator_hashes(self) -> list[bytes]:
+        """Return a locator naming the one best header."""
+        return list(self.header_index)
+
+
+def an_outbound(conn_id: int, **kwargs: Any) -> Any:
+    """Build a fake outbound connection, the kind `fPreferredDownload` is."""
+    return a_conn(conn_id, inbound=False, **kwargs)
+
+
+def asked(conn: Any) -> bool:
+    """Whether `sync_headers` sent `conn` its initial `getheaders`."""
+    return bool(only(conn, GetHeaders))
+
+
+def test_an_old_best_header_is_asked_of_one_peer_only() -> None:
+    """Before the best header is recent, one peer is asked, not every one.
+
+    Core's own `nSyncStarted == 0` gate (`SendMessages`,
+    `net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7).
+    """
+    first, second = an_outbound(1), an_outbound(2)
+    manager = make_manager([first, second], block_index=HeaderIndex(age=_OLD))
+    manager.sync_headers()
+    assert asked(first)
+    assert not asked(second)
+    assert list(manager.headers_sync_timeouts) == [1]
+    (getheaders,) = only(first, GetHeaders)
+    assert list(getheaders.locator) == [a_hash(7)]
+    # a second pass asks nobody again: the one peer already asked holds
+    # the turn, and is not asked twice
+    manager.sync_headers()
+    assert len(only(first, GetHeaders)) == 1
+    assert not asked(second)
+
+
+def test_a_recent_best_header_is_asked_of_every_peer() -> None:
+    """Once the best header is recent, every peer is asked for headers."""
+    conns = [an_outbound(1), an_outbound(2), a_conn(3)]
+    manager = make_manager(conns, block_index=HeaderIndex(age=_RECENT))
+    manager.sync_headers()
+    assert all(asked(conn) for conn in conns)
+
+
+def test_a_peer_that_cannot_serve_blocks_is_not_asked_for_headers() -> None:
+    """`CanServeBlocks` gates the initial `getheaders` too, not only blocks."""
+    witness_only = an_outbound(1, version_message=a_version(ServiceFlags.NODE_WITNESS))
+    manager = make_manager([witness_only], block_index=HeaderIndex(age=_RECENT))
+    manager.sync_headers()
+    assert not asked(witness_only)
+
+
+def test_a_connection_not_yet_connected_is_not_asked_for_headers() -> None:
+    """Only a connection past its `verack` takes a turn, or counts as one."""
+    closed = an_outbound(1, status=P2pConnStatus.Closed)
+    fresh = an_outbound(2)
+    manager = make_manager([closed, fresh], block_index=HeaderIndex(age=_OLD))
+    manager.headers_sync_timeouts[1] = time.time() + 60
+    manager.sync_headers()
+    # the closed peer's turn is not counted, so the next peer takes it:
+    # what `FinalizeNode`'s own `nSyncStarted--` does in Core
+    assert not closed.sent
+    assert asked(fresh)
+
+
+def test_an_inbound_peer_waits_while_a_preferred_one_has_blocks_in_flight() -> None:
+    """Core's `sync_blocks_and_headers_from_peer`, for a peer not preferred.
+
+    Ahead of the outbound peer in the loop, the inbound one is still
+    passed over: a preferred peer exists and a block is in flight.
+    """
+    inbound = a_conn(1)
+    outbound = an_outbound(2, queue=[a_hash(1)])
+    manager = make_manager([inbound, outbound], block_index=HeaderIndex(age=_OLD))
+    manager.sync_headers()
+    assert not asked(inbound)
+    assert asked(outbound)
+
+
+def test_an_inbound_peer_is_asked_where_no_block_is_in_flight() -> None:
+    """With nothing in flight, the first peer reached takes the turn."""
+    inbound = a_conn(1)
+    outbound = an_outbound(2)
+    manager = make_manager([inbound, outbound], block_index=HeaderIndex(age=_OLD))
+    manager.sync_headers()
+    assert asked(inbound)
+    assert not asked(outbound)
+
+
+def test_an_inbound_peer_is_asked_where_there_is_no_preferred_peer() -> None:
+    """With no outbound peer at all, an inbound one takes the turn."""
+    inbound = a_conn(1, queue=[a_hash(1)])
+    manager = make_manager([inbound], block_index=HeaderIndex(age=_OLD))
+    manager.sync_headers()
+    assert asked(inbound)
+
+
+def test_the_headers_sync_timeout_scales_with_the_best_headers_age() -> None:
+    """Core's `m_headers_sync_timeout`: a base, plus one allowance per header.
+
+    The headers expected are the best header's age over
+    `nPowTargetSpacing`, each allowed `HEADERS_DOWNLOAD_TIMEOUT_PER_HEADER`.
+    """
+    age = 10**7  # far enough back for the per-header term to show
+    conn = an_outbound(1)
+    manager = make_manager([conn], block_index=HeaderIndex(age=age))
+    before = time.time()
+    manager.sync_headers()
+    after = time.time()
+    allowance = 15 * 60 + 0.001 * age / 600
+    timeout = manager.headers_sync_timeouts[1]
+    assert before + allowance - 1 <= timeout <= after + allowance
+
+
+def recording_stops(conn: Any) -> list[int]:
+    """Replace `conn.stop` with one recording that it was called."""
+    stopped: list[int] = []
+    conn.stop = lambda: stopped.append(conn.id)
+    return stopped
+
+
+def test_a_sole_sync_peer_past_its_timeout_is_dropped_for_another() -> None:
+    """The one peer asked, still short of a recent header, is let go.
+
+    Only where another preferred peer is there to be asked next; the
+    same pass does not ask that one, whose turn comes once the dropped
+    peer is no longer connected.
+    """
+    stalled, other = an_outbound(1), an_outbound(2)
+    stopped = recording_stops(stalled)
+    manager = make_manager([stalled, other], block_index=HeaderIndex(age=_OLD))
+    manager.headers_sync_timeouts[1] = time.time() - 1
+    manager.sync_headers()
+    assert stopped == [1]
+    assert not asked(other)
+
+
+def test_a_sole_sync_peer_is_kept_where_no_preferred_peer_could_replace_it() -> None:
+    """With only inbound peers left beside it, the stalled peer stays."""
+    stalled = an_outbound(1)
+    stopped = recording_stops(stalled)
+    manager = make_manager([stalled, a_conn(2)], block_index=HeaderIndex(age=_OLD))
+    manager.headers_sync_timeouts[1] = time.time() - 1
+    manager.sync_headers()
+    assert stopped == []
+
+
+def test_a_sync_peer_is_kept_while_another_is_also_syncing() -> None:
+    """`nSyncStarted == 1` is part of the rule: two asked, neither dropped."""
+    stalled, other = an_outbound(1), an_outbound(2)
+    stopped = recording_stops(stalled)
+    manager = make_manager([stalled, other], block_index=HeaderIndex(age=_OLD))
+    manager.headers_sync_timeouts.update({1: time.time() - 1, 2: time.time() + 60})
+    manager.sync_headers()
+    assert stopped == []
+
+
+def test_a_sync_peer_is_kept_until_its_timeout_passes() -> None:
+    """The timeout has to have passed, not merely been set."""
+    waiting = an_outbound(1)
+    stopped = recording_stops(waiting)
+    manager = make_manager([waiting, an_outbound(2)], block_index=HeaderIndex(age=_OLD))
+    manager.headers_sync_timeouts[1] = time.time() + 60
+    manager.sync_headers()
+    assert stopped == []
+
+
+def test_a_recent_best_header_switches_the_timeout_off() -> None:
+    """Caught up once, a sync peer is never dropped for this timeout."""
+    synced = an_outbound(1)
+    stopped = recording_stops(synced)
+    manager = make_manager(
+        [synced, an_outbound(2)], block_index=HeaderIndex(age=_RECENT)
+    )
+    manager.headers_sync_timeouts[1] = time.time() - 1
+    manager.sync_headers()
+    assert stopped == []
+    assert manager.headers_sync_timeouts[1] == math.inf
+    # and a later pass with an old best header again does not revive it
+    manager.node.chainstate.block_index = cast("Any", HeaderIndex(age=_OLD))
+    manager.sync_headers()
+    assert stopped == []
+
+
+_HOUR = 60 * 60
+
+
+@pytest.mark.parametrize(
+    ("age", "every_peer"),
+    [
+        pytest.param(23 * _HOUR, True, id="23h"),
+        pytest.param(24 * _HOUR, False, id="24h-exactly"),
+        pytest.param(25 * _HOUR, False, id="25h"),
+    ],
+)
+def test_recent_is_younger_than_24h_strictly(
+    monkeypatch: pytest.MonkeyPatch, age: int, *, every_peer: bool
+) -> None:
+    """Core's `m_best_header->Time() > NodeClock::now() - 24h`, strict.
+
+    The clock is frozen, so a header exactly 24h old is exactly that
+    old when `sync_headers` reads it, and is not recent.
+    """
+    now = 1_700_000_000.0
+    monkeypatch.setattr(time, "time", lambda: now)
+    first, second = an_outbound(1), an_outbound(2)
+    manager = make_manager([first, second], block_index=HeaderIndex(age=age))
+    manager.sync_headers()
+    assert asked(first)
+    assert asked(second) is every_peer
+
+
+def test_a_peer_that_cannot_serve_blocks_is_no_replacement_for_a_stalled_one() -> None:
+    """`fPreferredDownload` needs `CanServeBlocks`: such a peer does not count.
+
+    An outbound peer that cannot serve blocks is not preferred, so beside
+    it the stalled sole sync peer has nobody to be replaced by and stays.
+    """
+    stalled = an_outbound(1)
+    witness_only = an_outbound(2, version_message=a_version(ServiceFlags.NODE_WITNESS))
+    stopped = recording_stops(stalled)
+    manager = make_manager([stalled, witness_only], block_index=HeaderIndex(age=_OLD))
+    manager.headers_sync_timeouts[1] = time.time() - 1
+    manager.sync_headers()
+    assert stopped == []
+
+
+def test_a_peer_whose_timeout_is_off_still_holds_the_turn() -> None:
+    """Core's `nSyncStarted` counts a sync peer whose timeout is switched off.
+
+    Caught up once, then with the best header old again, a fresh peer is
+    not asked: the first peer is still the one syncing.
+    """
+    synced = an_outbound(1)
+    manager = make_manager([synced], block_index=HeaderIndex(age=_RECENT))
+    manager.sync_headers()
+    assert manager.headers_sync_timeouts[1] == math.inf
+    fresh = an_outbound(2)
+    manager.node.p2p_manager.connections[2] = fresh
+    manager.node.chainstate.block_index = cast("Any", HeaderIndex(age=_OLD))
+    manager.sync_headers()
+    assert not asked(fresh)

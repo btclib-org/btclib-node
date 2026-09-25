@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, override
 
 from btclib.p2p.addrv2 import can_addrv1, network_address
 
-from btclib_node.constants import NodeStatus, P2pConnStatus
+from btclib_node.constants import P2pConnStatus
 from btclib_node.p2p.address import (
     PeerDB,
     dial,
@@ -154,15 +154,13 @@ class P2pManager(threading.Thread):
         # Core's own division of `-maxconnections`, `CConnman::Init`
         # (`src/net.h`, at bitcoin/bitcoin@9be056a8a7): the outbound
         # slots above come off the top, capped by the total itself, and
-        # inbound peers get what is left. `max_automatic_outbound` is
-        # the bound Core's `semOutbound` puts on automatic outbound
-        # connections, `min(m_max_automatic_outbound,
-        # m_max_automatic_connections)` in `CConnman::Start` (`net.cpp`,
-        # same sha), and `_maybe_dial_more_peers` is the one dial held
-        # to it: `async_connect`, the `-connect`/`-addnode` route, reads
-        # neither bound, as Core's manual connections take no
-        # `semOutbound` grant. Read once, for the same reason as the two
-        # fields above.
+        # inbound peers get what is left. `max_outbound_full_relay` is
+        # Core's `m_max_outbound_full_relay`, the target
+        # `ThreadOpenConnections` dials full-relay peers up to, and
+        # `_maybe_dial_more_peers` is the one dial held to it:
+        # `async_connect`, the `-connect`/`-addnode` route, reads no
+        # bound, as Core's manual connections take no `semOutbound`
+        # grant. Read once, for the same reason as the two fields above.
         max_connections = node.config.max_connections
         full_relay = min(_MAX_OUTBOUND_FULL_RELAY_CONNECTIONS, max_connections)
         block_relay = min(
@@ -170,7 +168,7 @@ class P2pManager(threading.Thread):
         )
         automatic_outbound = full_relay + block_relay + _MAX_FEELER_CONNECTIONS
         self.max_inbound = max(0, max_connections - automatic_outbound)
-        self.max_automatic_outbound = min(automatic_outbound, max_connections)
+        self.max_outbound_full_relay = full_relay
         # Core's own `-dnsseed`, which `InitParameterInteraction` soft-sets
         # off under `-connect` and under `-maxconnections=0` alike
         # (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
@@ -628,10 +626,14 @@ class P2pManager(threading.Thread):
         # not pass through here.
         if not self.use_addrman_outgoing:
             return
-        connection_num = min(
-            1 if self.node.status < NodeStatus.HeaderSynced else 10,
-            self.max_automatic_outbound,
-        )
+        # The target does not depend on how far this node has synced:
+        # `ThreadOpenConnections` opens a full-relay connection whenever
+        # `nOutboundFullRelay < m_max_outbound_full_relay`, from its first
+        # pass on. Which peer headers are synced from, one at a time until
+        # the best header is recent, is `DownloadManager.sync_headers`'s
+        # choice, as it is `net_processing`'s in Core, not a cap on how
+        # many peers are dialled.
+        #
         # Only this method's own dials count against the target, pending
         # ones included: `CConnman::ThreadOpenConnections` counts
         # `IsFullOutboundConn()` and `IsBlockOnlyConn()` peers in
@@ -667,7 +669,7 @@ class P2pManager(threading.Thread):
                     *self.pending_connections.values(),
                 )
             )
-        if live >= connection_num or self.peer_db.is_empty:
+        if live >= self.max_outbound_full_relay or self.peer_db.is_empty:
             return
         # By endpoint_key, not raw equality: a drawn address
         # carries whatever timestamp and services callbacks.verack

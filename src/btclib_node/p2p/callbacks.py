@@ -318,8 +318,10 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     # btclib-org/btclib-node#275
     conn.send_ping()
     conn.send(GetAddr())
-    block_locators = node.chainstate.block_index.get_block_locator_hashes()
-    conn.send(GetHeaders(PROTOCOL_VERSION, block_locators, b"\x00" * 32))
+    # No `getheaders` here: whether this peer is asked for headers is
+    # `DownloadManager.sync_headers`'s decision, made on the next pass
+    # of `Node`'s own loop, as Core makes it in `SendMessages` rather
+    # than in its own `verack` handler.
     sockaddr = conn.client.getpeername()
     # the connection id beside the address, once, is what makes the
     # id-keyed lines everywhere else resolvable back to a peer -- #526's
