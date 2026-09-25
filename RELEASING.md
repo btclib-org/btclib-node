@@ -691,11 +691,12 @@ version=<the released version>
 mkdir /tmp/btclib-node-rebuild &&
 git worktree add --detach /tmp/btclib-node-rebuild "v${version:?}" &&
 cd /tmp/btclib-node-rebuild &&
+python=$(grep -Ev '^[[:space:]]*(#|$)' .python-version) &&
 export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct) &&
 uv build &&
-uv run --no-project --python 3.14 \
+uv run --no-project --python "$python" \
   .github/scripts/normalize_sdist.py dist/ &&
-uv run --no-project --python 3.14 \
+uv run --no-project --python "$python" \
   .github/scripts/generate_sbom.py dist/ sbom/ &&
 repo=btclib-org/btclib-node &&
 signer=btclib-org/.github/.github/workflows/reusable-attest.yml &&
@@ -715,7 +716,14 @@ for one of those `signer` is `"$repo/.github/workflows/release.yml"`,
 the flag there only narrowing what passes. Each path verifies only the
 releases its own workflow signed.
 
-Two things bound that guarantee, and both are worth knowing before
+`python` is the interpreter the tag's own `.python-version` pins, its
+comment and blank lines dropped, and not the one `main` pins:
+`normalize_sdist.py` writes the sdist again through the running
+interpreter's `gzip`, so a rebuild under another pin is the published
+bytes only where the two interpreters' zlib compress alike (issue
+btclib-org/.github#1349).
+
+Three things bound that guarantee, and each is worth knowing before
 reading a mismatch as tampering:
 
 - **the build reads the working directory, not git.** `uv_build` walks
