@@ -12,6 +12,7 @@ is the path where every message is welcome; these are the rest.
 """
 
 import math
+import secrets
 import socket
 import threading
 import time
@@ -484,9 +485,28 @@ def a_peer(**attributes: Any) -> Any:
         automatic=False,
         address=peer_address("1.2.3.4", 18444),
         stats=PeerStats(),
+        # what `Connection` starts every connection at, and what
+        # `verack`, `addr` and `addrv2` spend and top up (ISS 1166)
+        addr_token_bucket=1.0,
+        addr_token_timestamp=time.time(),
     )
     peer.__dict__.update(attributes)
     return peer
+
+
+def a_gossiping_peer(**attributes: Any) -> Any:
+    """Build a peer past `verack`, which topped its address tokens up.
+
+    `**attributes` overrides any default, as for `a_peer`.
+    """
+    return a_peer(**{"addr_token_bucket": 1.0 + MAX_ADDR_TO_SEND, **attributes})
+
+
+def a_gossiped_address(
+    host: str, services: int = ServiceFlags.NODE_NETWORK
+) -> NetworkAddressV2:
+    """Build what a peer gossips of `host`: by default a full node, seen now."""
+    return peer_address(host, 18444, timestamp=int(time.time()), services=services)
 
 
 def a_handshake_node(
@@ -869,10 +889,27 @@ def test_a_verack_completes_the_handshake() -> None:
     assert isinstance(peer.sent[0], SendHeaders)
     assert isinstance(peer.sent[1], SendCmpct)
     assert isinstance(peer.sent[3], GetAddr)
+    # ISS 1166: room for the answer, on top of the one token it started with
+    assert peer.addr_token_bucket == 1.0 + MAX_ADDR_TO_SEND
     assert not peer.stopped
     # out of P2pManager.pending_connections and into connections, right
     # where P2pConnStatus.Connected is set: btclib-org/btclib-node#131
     assert promoted == [9]
+
+
+def test_a_verack_from_an_inbound_peer_asks_it_for_no_addresses() -> None:
+    """ISS 1166: Core sends `getaddr` to an outbound peer alone.
+
+    So an inbound peer's `addr` has only the one token it started with.
+    """
+    peer = a_peer(
+        version_message=a_parsed_version(), wtxidrelay_received=True, inbound=True
+    )
+    node = a_handshake_node(peer_db=PeerDB(cast("Chain", None), cast("Path", None)))
+    verack(node, b"", peer)
+    assert peer.status == P2pConnStatus.Connected
+    assert commands(peer) == ["SendHeaders", "SendCmpct", "ping"]
+    assert peer.addr_token_bucket == 1.0
 
 
 # No FeeFilter is sent from verack itself: DownloadManager.
@@ -1218,18 +1255,14 @@ def test_the_addresses_a_peer_sends_are_kept() -> None:
     translated back into one; and without the timestamp the peer
     quoted, which is `PeerDB.add_addresses`'s own doing.
     """
-    now = int(time.time())
-    given = [
-        peer_address("1.2.3.4", 18444, timestamp=now),
-        peer_address("1.2.3.5", 18444, timestamp=now),
-    ]
+    given = [a_gossiped_address("1.2.3.4"), a_gossiped_address("1.2.3.5")]
     for callback, message in (
         (addr, Addr([addr_entry(address) for address in given])),
         (addrv2, AddrV2(given)),
     ):
         peer_db = PeerDB(cast("Chain", None), cast("Path", None))
         node = a_handshake_node(peer_db=peer_db)
-        callback(node, message.serialize(), a_peer())
+        callback(node, message.serialize(), a_gossiping_peer())
         # BIP155's record either way, the addr version 1 entry being
         # translated back into one; and without the timestamp the peer
         # quoted, which is PeerDB.add_addresses' doing
@@ -1241,16 +1274,15 @@ def test_a_discouraged_host_gossiped_is_not_stored() -> None:
 
     Through `addr` and `addrv2` alike, whatever port it is gossiped on.
     """
-    now = int(time.time())
-    kept = peer_address("1.2.3.4", 18444, timestamp=now)
-    discouraged = peer_address("1.2.3.5", 18444, timestamp=now)
+    kept = a_gossiped_address("1.2.3.4")
+    discouraged = a_gossiped_address("1.2.3.5")
     for callback, message in (
         (addr, Addr([addr_entry(address) for address in (kept, discouraged)])),
         (addrv2, AddrV2([kept, discouraged])),
     ):
         peer_db = PeerDB(cast("Chain", None), cast("Path", None))
         node = a_handshake_node(peer_db=peer_db, discouraged_hosts=["1.2.3.5"])
-        callback(node, message.serialize(), a_peer())
+        callback(node, message.serialize(), a_gossiping_peer())
         assert peer_db.addresses == {replace(kept, timestamp=0)}
 
 
@@ -1259,20 +1291,148 @@ def test_the_addresses_kept_are_counted_per_peer() -> None:
 
     Through `addr` and `addrv2` alike, and added up across messages.
     """
-    now = int(time.time())
-    kept = [peer_address(f"1.2.3.{n}", 18444, timestamp=now) for n in (1, 2)]
-    discouraged = peer_address("1.2.3.5", 18444, timestamp=now)
+    kept = [a_gossiped_address(f"1.2.3.{n}") for n in (1, 2)]
+    discouraged = a_gossiped_address("1.2.3.5")
     for callback, message in (
         (addr, Addr([addr_entry(address) for address in (*kept, discouraged)])),
         (addrv2, AddrV2([*kept, discouraged])),
     ):
         peer_db = PeerDB(cast("Chain", None), cast("Path", None))
         node = a_handshake_node(peer_db=peer_db, discouraged_hosts=["1.2.3.5"])
-        peer = a_peer()
+        peer = a_gossiping_peer()
         callback(node, message.serialize(), peer)
         assert peer.stats.addr_processed == len(kept)
         callback(node, message.serialize(), peer)
         assert peer.stats.addr_processed == 2 * len(kept)
+
+
+def test_an_address_of_no_full_node_is_neither_stored_nor_counted() -> None:
+    """ISS 1163: Core skips an address with neither `NODE_NETWORK` flag.
+
+    Neither `NODE_NETWORK` nor `NODE_NETWORK_LIMITED`, through `addr`
+    and `addrv2` alike: not stored and not in `addr_processed`.
+    """
+    kept = [
+        a_gossiped_address("1.2.3.1", ServiceFlags.NODE_NETWORK),
+        a_gossiped_address("1.2.3.2", ServiceFlags.NODE_NETWORK_LIMITED),
+    ]
+    skipped = [
+        a_gossiped_address("1.2.3.3", ServiceFlags.NODE_WITNESS),
+        a_gossiped_address("1.2.3.4", ServiceFlags.NODE_NONE),
+    ]
+    for callback, message in (
+        (addr, Addr([addr_entry(address) for address in (*kept, *skipped)])),
+        (addrv2, AddrV2([*kept, *skipped])),
+    ):
+        peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+        node = a_handshake_node(peer_db=peer_db)
+        peer = a_gossiping_peer()
+        callback(node, message.serialize(), peer)
+        assert peer_db.addresses == {replace(address, timestamp=0) for address in kept}
+        assert peer.stats.addr_processed == len(kept)
+        assert peer.stats.addr_rate_limited == 0
+
+
+def test_what_a_peer_sends_past_its_tokens_is_dropped_and_counted() -> None:
+    """ISS 1166: one token to a fresh peer, the rest in `addr_rate_limited`.
+
+    Through `addr` and `addrv2` alike, a peer this node has not yet sent
+    its `getaddr` holding the one token Core starts `m_addr_token_bucket`
+    at.
+    """
+    given = [a_gossiped_address(f"1.2.3.{n}") for n in (1, 2, 3)]
+    for callback, message in (
+        (addr, Addr([addr_entry(address) for address in given])),
+        (addrv2, AddrV2(given)),
+    ):
+        peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+        node = a_handshake_node(peer_db=peer_db)
+        peer = a_peer()
+        callback(node, message.serialize(), peer)
+        assert len(peer_db.addresses) == 1
+        assert peer_db.addresses <= {replace(a, timestamp=0) for a in given}
+        assert peer.stats.addr_processed == 1
+        assert peer.stats.addr_rate_limited == len(given) - 1
+
+
+def test_a_token_is_spent_ahead_of_the_other_filters() -> None:
+    """ISS 1166: Core's rate limit comes first, then services, then discouraged.
+
+    One token and two addresses the later filters skip: the second is
+    counted rate-limited whichever the shuffle puts first, where a token
+    spent only on what those filters keep would leave none so.
+    """
+    no_services = [
+        a_gossiped_address(f"1.2.3.{n}", ServiceFlags.NODE_NONE) for n in (1, 2)
+    ]
+    discouraged = [a_gossiped_address("1.2.3.5"), a_gossiped_address("1.2.3.6")]
+    for given in (no_services, discouraged):
+        peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+        node = a_handshake_node(
+            peer_db=peer_db, discouraged_hosts=["1.2.3.5", "1.2.3.6"]
+        )
+        peer = a_peer()
+        addrv2(node, AddrV2(given).serialize(), peer)
+        assert not peer_db.addresses
+        assert peer.stats.addr_processed == 0
+        assert peer.stats.addr_rate_limited == 1
+
+
+def test_the_message_is_shuffled_before_its_tokens_are_spent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1166: Core shuffles, so the peer's order picks no survivor."""
+
+    class Reversing:
+        """A `SystemRandom` whose shuffle reverses, standing in for a draw."""
+
+        def shuffle(self, items: list[Any]) -> None:
+            """Reverse `items` in place."""
+            items.reverse()
+
+    monkeypatch.setattr(secrets, "SystemRandom", Reversing)
+    first, last = a_gossiped_address("1.2.3.1"), a_gossiped_address("1.2.3.2")
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+    node = a_handshake_node(peer_db=peer_db)
+    addrv2(node, AddrV2([first, last]).serialize(), a_peer())
+    assert peer_db.addresses == {replace(last, timestamp=0)}
+
+
+@pytest.mark.parametrize(
+    ("bucket", "since", "processed", "left"),
+    [
+        # 0.1 a second: twenty seconds is two tokens, for two of three
+        (0.0, 20.0, 2, 0.0),
+        # the refill stops at `MAX_ADDR_TO_SEND`
+        (0.0, 1e6, 3, MAX_ADDR_TO_SEND - 3),
+        # a bucket above it, as `verack`'s `getaddr` leaves one, is not refilled
+        (MAX_ADDR_TO_SEND + 1.0, 1e6, 3, MAX_ADDR_TO_SEND - 2),
+        # a clock gone backwards refills nothing and takes nothing away
+        (1.5, -100.0, 1, 0.5),
+    ],
+)
+def test_tokens_refill_at_core_s_rate_up_to_its_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+    bucket: float,
+    since: float,
+    processed: int,
+    left: float,
+) -> None:
+    """ISS 1166: Core's `MAX_ADDR_RATE_PER_SECOND` and its ceiling.
+
+    `since` is how long before this message the bucket was last topped up.
+    """
+    now = time.time()
+    monkeypatch.setattr(time, "time", lambda: now)
+    given = [a_gossiped_address(f"1.2.3.{n}") for n in (1, 2, 3)]
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+    node = a_handshake_node(peer_db=peer_db)
+    peer = a_peer(addr_token_bucket=bucket, addr_token_timestamp=now - since)
+    addrv2(node, AddrV2(given).serialize(), peer)
+    assert peer.stats.addr_processed == processed
+    assert peer.stats.addr_rate_limited == len(given) - processed
+    assert peer.addr_token_bucket == pytest.approx(left)
+    assert peer.addr_token_timestamp == now
 
 
 def test_an_octet_past_an_addr_or_addrv2_no_longer_costs_the_peer() -> None:
@@ -1297,7 +1457,7 @@ def test_an_octet_past_an_addr_or_addrv2_no_longer_costs_the_peer() -> None:
     # is about where it can without a second copy of btclib's codec --
     # Addr and AddrV2 accept a stream, and btclib's own assert_no_trailing
     # docstring calls a stream "the caller's", nothing past it checked.
-    given = [peer_address("1.2.3.4", 18444, timestamp=int(time.time()))]
+    given = [a_gossiped_address("1.2.3.4")]
     for callback, message in (
         (addr, Addr([addr_entry(address) for address in given])),
         (addrv2, AddrV2(given)),
@@ -1324,12 +1484,15 @@ def test_an_address_of_a_network_nobody_here_has_heard_of_costs_nothing() -> Non
     # ids BIP155 had assigned, so a yggdrasil peer raised out of the
     # parser and p2p.main turned that into a disconnect. The whole point
     # of the format is that a new network needs no new message.
-    yggdrasil = NetworkAddressV2(0, 0, 7, b"\x02" + b"\x22" * 15, 18444)
-    unassigned = NetworkAddressV2(0, 0, 250, b"\x33" * 8, 18444)
+    full_node = ServiceFlags.NODE_NETWORK
+    yggdrasil = NetworkAddressV2(0, full_node, 7, b"\x02" + b"\x22" * 15, 18444)
+    unassigned = NetworkAddressV2(0, full_node, 250, b"\x33" * 8, 18444)
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
     node = a_handshake_node(peer_db=peer_db)
-    peer = a_peer()
+    peer = a_gossiping_peer()
     addrv2(node, AddrV2([yggdrasil, unassigned]).serialize(), peer)
+    # past every filter ahead of `AddrMan`, which is what refuses them
+    assert peer.stats.addr_processed == 2
     assert not peer_db.addresses
     assert not peer.stopped
 

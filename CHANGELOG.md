@@ -328,6 +328,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   as Core's `UniValue` finds it, and an `id` object is written back with
   every pair it carried.
 
+### Address gossip is rate-limited and kept to full nodes, as in Core
+
+- **Gossip past Core's token bucket is dropped into `addr_rate_limited`, and
+  an address of neither `NODE_NETWORK` nor `NODE_NETWORK_LIMITED` is skipped**
+  (closes #1166, closes #1163); `getaddr` goes to outbound peers alone.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

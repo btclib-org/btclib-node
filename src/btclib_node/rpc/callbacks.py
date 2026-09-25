@@ -810,11 +810,12 @@ def _peer_entry(
         block_index.get_block_info(block_hash).index
         for block_hash in p2p_conn.download_queue
     ]
-    # Every handshake-complete peer is asked `getaddr` and has its `addr`
-    # stored; this node limits no peer's address rate.
+    # True for every handshake-complete peer, where Core waits on an
+    # inbound one's first `addr`, `addrv2` or `getaddr`
+    # (btclib-org/btclib-node#1178).
     entry["addr_relay_enabled"] = p2p_conn.status == P2pConnStatus.Connected
     entry["addr_processed"] = p2p_conn.stats.addr_processed
-    entry["addr_rate_limited"] = 0
+    entry["addr_rate_limited"] = p2p_conn.stats.addr_rate_limited
     # No `-whitelist`/`-whitebind`: no peer holds a permission.
     entry["permissions"] = []
     entry["minfeefilter"] = _btc_amount(p2p_conn.feefilter if relays else 0)

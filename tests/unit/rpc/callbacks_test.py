@@ -485,6 +485,7 @@ def test_the_fields_this_node_keeps_state_for_read_that_state() -> None:
         time_offset=-3,
         last_inv_sequence=42,
         addr_processed=5,
+        addr_rate_limited=6,
         bytes_sent=100,
         bytes_recv=200,
         bytes_sent_per_msg=Counter({"version": 60, "ping": 40}),
@@ -505,6 +506,7 @@ def test_the_fields_this_node_keeps_state_for_read_that_state() -> None:
     assert info["inflight"] == [11, 10]
     assert info["addr_relay_enabled"] is True
     assert info["addr_processed"] == 5
+    assert info["addr_rate_limited"] == 6
     assert info["minfeefilter"].text == "0.00001234"
     # in key order, as Core's `std::map` iterates
     assert list(info["bytessent_per_msg"].items()) == [("ping", 40), ("version", 60)]
@@ -544,12 +546,11 @@ def test_the_connection_type_is_core_s(
 
 
 def test_the_fields_this_node_has_no_state_for_answer_core_s_value() -> None:
-    """No compact blocks, presync, permissions, rate limit or BIP324 here."""
+    """No compact blocks, presync, permissions or BIP324 here."""
     (info,) = get_peer_info(a_node({7: a_peer()}), _CONN, [])
     assert info["bip152_hb_to"] is False
     assert info["bip152_hb_from"] is False
     assert info["presynced_headers"] == -1
-    assert info["addr_rate_limited"] == 0
     assert info["permissions"] == []
     assert info["transport_protocol_type"] == "v1"
     assert info["session_id"] == ""

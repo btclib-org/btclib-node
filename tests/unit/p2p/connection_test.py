@@ -319,6 +319,19 @@ def test_a_connection_brackets_an_ipv6_peer(host: str, endpoint: str) -> None:
     assert repr(connection) == f"Connection to {endpoint}"
 
 
+def test_a_connection_starts_with_one_address_token_topped_up_now() -> None:
+    """ISS 1166: one address token to start, as Core's `m_addr_token_bucket`.
+
+    And `m_addr_token_timestamp` at the peer's creation, so that the
+    first `addr` refills only for the time since.
+    """
+    before = time.time()
+    connection, _ = a_connection()
+    with connection.client:
+        assert connection.addr_token_bucket == 1.0
+        assert before <= connection.addr_token_timestamp <= time.time()
+
+
 def test_a_connection_whose_socket_is_gone_says_so() -> None:
     """`repr` on a connection whose socket already closed does not raise.
 
