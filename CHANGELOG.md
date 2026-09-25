@@ -428,6 +428,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   after sixty seconds** (closes #1099); `scripts/seeds/` holds Core's lists,
   its licence, which the wheel carries too, and the generator.
 
+### An oversized `inv` costs the peer in any sync state, as in Core
+
+- **An `inv` of more than `MAX_INV_SZ` items drops and discourages its
+  sender before the sync state is read** (closes #1145).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

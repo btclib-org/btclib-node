@@ -18,9 +18,10 @@ import pytest
 from btclib.exceptions import BTClibValueError
 from btclib.p2p.addrv2 import NetworkAddressV2
 from btclib.p2p.data import TxPayload as TxMsg
+from btclib.p2p.limits import MAX_INV_SZ
 
 import btclib_node.p2p.callbacks as cb
-from btclib_node.constants import P2pConnStatus
+from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from btclib_node.p2p import main as main_module
@@ -460,6 +461,29 @@ def test_a_callback_that_raises_a_btclib_exception_costs_the_peer(
     handle_p2p(node)
     assert stopped == [True]
     assert node.p2p_manager.discouraged == [_AN_ADDRESS]  # #283
+
+
+@pytest.mark.parametrize("status", list(NodeStatus))
+def test_an_oversized_inv_costs_the_peer_whatever_the_sync_state(
+    status: NodeStatus,
+) -> None:
+    """More than `MAX_INV_SZ` items drops the peer, discouraged.
+
+    Core's `INV` branch calls `Misbehaving` for it before reading the
+    node's own state (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag): `callbacks.inv` parses first, and `Inv.parse` refuses
+    the count. btclib-org/btclib-node#1145
+    """
+    count = MAX_INV_SZ + 1
+    item = (2).to_bytes(4, "little") + bytes(32)
+    payload = b"\xfe" + count.to_bytes(4, "little") + item * count
+    node, stopped = make_node(
+        "messages", ("inv", payload, 0, 1, 0.0), status=P2pConnStatus.Connected
+    )
+    node.status = status
+    handle_p2p(node)
+    assert stopped == [True]
+    assert node.p2p_manager.discouraged == [_AN_ADDRESS]
 
 
 def test_a_peer_the_manager_spares_is_logged_as_not_discouraged(
