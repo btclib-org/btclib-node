@@ -159,19 +159,26 @@ ignored -- Core's own default (`ReadConfigFiles(error,
 /*ignore_invalid_keys=*/true)`, called this way from `bitcoin.cpp`,
 `common/init.cpp` and `bitcoin-cli.cpp` alike, same sha) rather than
 the fatal alternative that flag also allows. An unrecognised key on the
-command line is refused by `argparse` itself, which prints
-`btclib-node: error: ...` and exits 2. Core refuses one too, but as an
-`InitError`: "Error: Error parsing command line arguments: Invalid
-parameter %s" and exit 1 (`src/common/args.cpp:236` and
-`src/bitcoind.cpp:118-119`, at bitcoin/bitcoin@9be056a8a7), a divergence
-that is issue #1116.
+command line is refused the way Core's `InitError` refuses it, "Error:
+Error parsing command line arguments: Invalid parameter <argument>" on
+stderr and exit 1 (`ArgsManager::ParseParameters`,
+`src/common/args.cpp`, and `ParseArgs`, `src/bitcoind.cpp`, at
+bitcoin/bitcoin@9be056a8a7), and a token that is not an option with
+Core's "Command line contains unexpected token" -- `_parse_args` below.
+Every other argument `argparse` refuses, such as `-port=abc`, gets the
+same prefix and exit status with `argparse`'s own message after it,
+where Core reads the value first and refuses it later, with a message
+of its own.
+
+A boolean, wherever it is read from, is Core's `InterpretBool`
+(`src/common/args.cpp`, same sha): `_interpret_bool` below.
 """
 
 import argparse
 import re
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, NoReturn, override
 
 from btclib_node import Node, install_signal_handlers
 from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, Config, split_host_port
@@ -254,13 +261,12 @@ _RECOGNIZED_KEYS = frozenset(
     }
 )
 
-# What `_resolve_bool` below treats as false: Core's own `InterpretBool`
-# (`src/common/args.cpp`) special-cases a handful of spellings and
-# raises on the rest; a file in this tree instead follows the one
-# spelling every example in Core's own documentation and every example
-# in this module's own tests uses, `<key>=0` for false and anything
-# else -- `1` above all -- for true.
-_FALSE = "0"
+# The one value `_resolve_debug` below reads as off. Core's `-debug` is
+# a list of logging categories rather than a boolean
+# (`SetLoggingCategories`, `src/init/common.cpp`, at
+# bitcoin/bitcoin@9be056a8a7), which `InterpretBool` would read as off
+# for every category name: issue #1123.
+_DEBUG_OFF = "0"
 
 _ConfSection = dict[str, list[str]]
 _ConfTree = dict[str | None, _ConfSection]
@@ -377,24 +383,37 @@ def _resolve_bool(cli_value: bool, key: str, default_section: _ConfSection) -> b
     """Return whether `key` is true, `cli_value` over the file's own last value.
 
     `cli_value` wins if the flag was passed; otherwise the file's own
-    last `key=value` in the default section; otherwise `False`.
+    last `key=value` in the default section, read by `_interpret_bool`;
+    otherwise `False`.
     """
     if cli_value:
         return True
     values = default_section.get(key)
     if not values:
         return False
-    return values[-1] != _FALSE
+    return _interpret_bool(values[-1])
+
+
+def _resolve_debug(cli_value: bool, default_section: _ConfSection) -> bool:  # noqa: FBT001
+    """Return whether `-debug` is on, `cli_value` over the file's last value.
+
+    `_resolve_bool`'s shape, with `_DEBUG_OFF` in place of `_interpret_bool`.
+    """
+    if cli_value:
+        return True
+    values = default_section.get("debug")
+    if not values:
+        return False
+    return values[-1] != _DEBUG_OFF
 
 
 def _interpret_bool(value: str) -> bool:
-    """Return Core's `InterpretBool` of `value`; `-rpcwhitelistdefault` alone.
+    """Return Core's `InterpretBool` of `value`.
 
     `""` is true, and anything else is true where `LocaleIndependentAtoi`
     reads a non-zero integer off its front, once the whitespace Core
-    trims and a leading `+` are gone: `false`, `no` and `00` are false.
-    The other booleans here still read only `0` as false, which is
-    btclib-org/btclib-node#1117.
+    trims and a leading `+` are gone: `false`, `no`, `yes` and `00` are
+    false.
     """
     if not value:
         return True
@@ -422,13 +441,14 @@ def _resolve_listen(
     explicit `-listen`/`-nolisten`/`-listen=0`, from the command line or
     the file's own default section, still wins either way. `cli_value`
     is `None` when neither `-listen` nor `-nolisten` was given, `"0"`
-    for `-nolisten`/`-listen=0`, and the flag's own text otherwise.
+    for `-nolisten`, and the flag's own text otherwise; either source is
+    read by `_interpret_bool`.
     """
     if cli_value is not None:
-        return cli_value != _FALSE
+        return _interpret_bool(cli_value)
     values = default_section.get("listen")
     if values:
-        return values[-1] != _FALSE
+        return _interpret_bool(values[-1])
     return not connect_given and max_connections > 0
 
 
@@ -535,6 +555,51 @@ def _resolve_list(
     return [*cli_values, *collected.get(key, [])]
 
 
+class _ArgumentParser(argparse.ArgumentParser):
+    """An `ArgumentParser` whose refusal raises rather than exiting `2`."""
+
+    @override
+    def error(self, message: str) -> NoReturn:
+        """Raise `ValueError` under `ParseArgs`'s own prefix, for `main`.
+
+        `argparse`'s own `error` prints the usage line and exits `2`;
+        `ParseArgs` (`src/bitcoind.cpp`, at bitcoin/bitcoin@9be056a8a7)
+        prefixes its `InitError` this way and `bitcoind` exits `1`.
+        """
+        err_msg = f"Error parsing command line arguments: {message}"
+        raise ValueError(err_msg)
+
+
+def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
+    """Parse `argv`, refusing the first argument no flag takes as Core does.
+
+    An option no flag names is `ParseParameters`'s "Invalid parameter",
+    quoted whole, `=value` included (`src/common/args.cpp`, at
+    bitcoin/bitcoin@9be056a8a7). A token that is not an option is
+    `ParseArgs`'s "Command line contains unexpected token", which
+    carries no parsing prefix (`src/bitcoind.cpp`, same sha). Whichever
+    comes first decides, since Core stops reading options at the first
+    token that is not one.
+
+    A value `argparse` refuses, such as `-port=abc`, is refused ahead of
+    both wherever it stands, `parse_known_args` reading the whole line
+    before the unparsed arguments are looked at; `bitcoind` answers
+    `-notaflag -port=abc` with the "Invalid parameter" instead.
+    """
+    parser = _build_parser()
+    args, extras = parser.parse_known_args(argv)
+    if extras:
+        first = extras[0]
+        if first.startswith("-"):
+            parser.error(f"Invalid parameter {first}")
+        err_msg = (
+            f"Command line contains unexpected token '{first}', "
+            f"see {parser.prog} -h for a list of options."
+        )
+        raise ValueError(err_msg)
+    return args
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """Return the parser, one argument per `Config` field this module owns.
 
@@ -542,7 +607,7 @@ def _build_parser() -> argparse.ArgumentParser:
     (module docstring); `allow_abbrev=False` because Core's own parser
     does not treat a prefix of an option as the option either.
     """
-    parser = argparse.ArgumentParser(
+    parser = _ArgumentParser(
         prog="btclib-node",
         description="Run a bitcoin full node over btclib.",
         allow_abbrev=False,
@@ -768,16 +833,16 @@ def _resolve_cookie_file(
 
     `cli_value` is `None` where neither flag was given and `False` for
     `-norpccookiefile`, the command line winning over the file either
-    way. In the file, `norpccookiefile=` with any value but `0` wins over
-    `rpccookiefile=`, the two being separate keys here where Core
-    reads them as one.
+    way. In the file, `norpccookiefile=` with a value `_interpret_bool`
+    reads as true wins over `rpccookiefile=`, the two being separate
+    keys here where Core reads them as one.
     """
     if cli_value is False:
         return None
     if cli_value is not None:
         return cli_value
     negated = collected.get("norpccookiefile")
-    if negated and negated[-1] != _FALSE:
+    if negated and _interpret_bool(negated[-1]):
         return None
     return _resolve_str(None, collected, "rpccookiefile") or ""
 
@@ -821,7 +886,7 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
     Raises `ValueError` on a malformed argument, a malformed
     configuration file, or an unknown chain.
     """
-    args = _build_parser().parse_args(argv)
+    args = _parse_args(argv)
 
     base_dir = Path(args.datadir) if args.datadir else Path.home() / ".btclib"
     if args.datadir:
@@ -869,7 +934,7 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
     prune_target_mib = (
         prune if prune is not None and prune >= MIN_PRUNE_TARGET_MIB else None
     )
-    debug = _resolve_bool(args.debug, "debug", default_section)
+    debug = _resolve_debug(args.debug, default_section)
     connect = _resolve_list(args.connect, collected, "connect")
     blocksdir = _resolve_str(args.blocksdir, collected, "blocksdir")
     max_connections = _resolve_int(args.maxconnections, collected, "maxconnections")

@@ -214,6 +214,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   a `getheaders` with nothing to give draws an empty `headers`
   (closes #1115), which asks for nothing more.
 
+### `btclib-node` refuses an argument and reads a boolean as Core does
+
+- **A refused option exits 1 after Core's `Error parsing command line
+  arguments:`, and a boolean is Core's `InterpretBool`, `true` and `yes`
+  false** (closes #1116, closes #1117), bar `-debug` (issue #1123).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

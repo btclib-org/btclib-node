@@ -54,6 +54,15 @@ on release day.
 - **Any `rpcwhitelist=` refuses every method to a user it does not name**
   (closes #1070), as in Core: give that user a whitelist of its own, or
   set `rpcwhitelistdefault=0`.
+- **A boolean in `bitcoin.conf`, or after `-listen=`, is read as Core
+  reads it** (closes #1117): `true`, `yes` and `on` are false, as they are
+  to `bitcoind`, so `testnet=true` selects mainnet, `listen=yes` does not
+  listen and `norpccookiefile=true` writes the cookie. Write `1` for true
+  and `0` for false. `debug=` is the exception, off at `0` alone
+  (issue #1123).
+- **A command-line argument the node refuses exits 1, not 2**
+  (closes #1116), after one `Error: ...` line on stderr, as `bitcoind`
+  does: a script testing the exit status for 2 has to test for 1.
 
 ## v2026.9.24
 
