@@ -14,6 +14,8 @@ included, Core's `-rpcwhitelist` having no counterpart here
 (btclib-org/btclib-node#1070).
 """
 
+import math
+import time
 from typing import TYPE_CHECKING, Any, cast
 
 from bitcoin_core_rpc import RPCErrorCode, chain_from_network
@@ -764,10 +766,30 @@ def get_peer_info(
             # enum member here without being one.
             network_id = cast("BIP155Network", p2p_conn.address.network_id)
             conn_dict["network"] = network_id.name.lower()
-            conn_dict["lastsend"] = p2p_conn.last_send
-            conn_dict["lastrecv"] = p2p_conn.last_receive
-            conn_dict["last_block"] = p2p_conn.last_block_timestamp
-            conn_dict["pingtime"] = p2p_conn.latency
+            # Whole seconds, pushed unconditionally, and the ping fields
+            # in fractional seconds, each only once it holds a value, as
+            # `getpeerinfo` pushes them (`src/rpc/net.cpp`, at
+            # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `last_block` and
+            # `last_transaction` are the last novel block and transaction,
+            # `0` until one arrives. `last_block_timestamp` is not the
+            # field: `callbacks.block` refreshes it for every `block`,
+            # novel or not, for the download stall check.
+            conn_dict["lastsend"] = int(p2p_conn.last_send)
+            conn_dict["lastrecv"] = int(p2p_conn.last_receive)
+            conn_dict["last_transaction"] = p2p_conn.last_novel_tx_time
+            conn_dict["last_block"] = p2p_conn.last_novel_block_time
+            conn_dict["conntime"] = p2p_conn.connected_time
+            if p2p_conn.latency > 0:
+                conn_dict["pingtime"] = p2p_conn.latency
+            if p2p_conn.min_ping_time < math.inf:
+                conn_dict["minping"] = p2p_conn.min_ping_time
+            # Nonzero exactly while a ping is outstanding, which is what
+            # Core's own test of `m_ping_nonce_sent` asks.
+            ping_sent = p2p_conn.ping_sent
+            if ping_sent:
+                ping_wait = time.time() - ping_sent
+                if ping_wait > 0:
+                    conn_dict["pingwait"] = ping_wait
             conn_dict["version"] = version_message.version
             # `connect_nodes` (`test_framework.py:568-594`, at
             # bitcoin/bitcoin@bb529657) matches this against the peer's
