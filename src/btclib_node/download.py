@@ -368,6 +368,12 @@ class DownloadManager:
         # `microseconds::max()`, the timeout switched off once the best
         # header is recent.
         self.headers_sync_timeouts: dict[int, float] = {}
+        # Core's `m_inv_triggered_getheaders_before_sync`, the peers
+        # `callbacks.inv` has sent a `getheaders` before `sync_headers`
+        # did, and `m_last_block_inv_triggering_headers_sync`, the block
+        # announced that last did so.
+        self.inv_triggered_getheaders: set[int] = set()
+        self.last_block_inv_triggering_headers_sync: bytes | None = None
 
     def step(self) -> None:
         """Run one pass: headers, blocks and txs asked for, feefilters sent."""
@@ -775,6 +781,10 @@ class DownloadManager:
         timeouts = self.headers_sync_timeouts
         for conn_id in timeouts.keys() - {conn.id for conn in connections}:
             del timeouts[conn_id]
+        # Core's flag lives as long as the peer does
+        self.inv_triggered_getheaders.intersection_update(
+            list(node.p2p_manager.connections)
+        )
         sync_started = len(timeouts)
         for conn in connections:
             if conn.id in timeouts or not _can_serve_blocks(conn):

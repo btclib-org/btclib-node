@@ -1514,3 +1514,12 @@ def test_a_peer_whose_timeout_is_off_still_holds_the_turn() -> None:
     manager.node.chainstate.block_index = cast("Any", HeaderIndex(age=_OLD))
     manager.sync_headers()
     assert not asked(fresh)
+
+
+def test_a_peer_gone_leaves_no_inv_triggered_getheaders_behind() -> None:
+    """An `inv`-triggered flag lives as long as its peer does, as in Core."""
+    staying = an_outbound(1)
+    manager = make_manager([staying], block_index=HeaderIndex(age=_RECENT))
+    manager.inv_triggered_getheaders.update({1, 2})
+    manager.sync_headers()
+    assert manager.inv_triggered_getheaders == {1}
