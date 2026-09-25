@@ -19,19 +19,23 @@ from bitcoin_core_rpc import BitcoinCoreRpcClient
 from btclib.fetch.bitcoin_core import BitcoinCoreFetcher
 
 from btclib_node.chains import RegTest
-from btclib_node.constants import NodeStatus
+from btclib_node.constants import NodeStatus, P2pConnStatus
 from tests import (
     build_block,
     cookie_path,
     generate_coinbase,
     generate_random_chain,
     generate_random_header_chain,
+    local_addr,
     rpc_client,
     wait_until,
     wait_until_listening,
 )
+from tests.conftest import node_context
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from btclib_node import Node
 
 
@@ -392,3 +396,49 @@ def test_get_block_answers_the_genesis_block_of_a_fresh_node(rpc_node: Node) -> 
     )
 
     assert body["result"] == genesis.serialize(check_validity=False).hex()
+
+
+def test_submit_block_reaches_a_peer_neither_node_has_synced_from(
+    tmp_path: Path,
+) -> None:
+    """A fresh regtest pair relays the block `submitblock` hands one of them.
+
+    Neither node has had a header from the other, so both are
+    `SyncingHeaders` when the block connects on `submitter`; it is
+    recent, which ends initial block download there, and `receiver`
+    learns of it only from `submitter`'s own announcement
+    (btclib-org/btclib-node#1148).
+    """
+    with (
+        node_context(tmp_path / "submitter") as submitter,
+        node_context(tmp_path / "receiver", allow_rpc=False) as receiver,
+    ):
+        wait_until_listening(submitter.p2p_manager)
+        wait_until_listening(submitter.rpc_manager)
+        wait_until_listening(receiver.p2p_manager)
+
+        receiver.p2p_manager.connect(local_addr(submitter.p2p_port))
+        wait_until(lambda: len(submitter.p2p_manager.connections))
+        connection = submitter.p2p_manager.connections[0]
+        wait_until(lambda: connection.status == P2pConnStatus.Connected)
+        wait_until(lambda: len(receiver.p2p_manager.connections))
+        connection = receiver.p2p_manager.connections[0]
+        wait_until(lambda: connection.status == P2pConnStatus.Connected)
+        assert submitter.status == NodeStatus.SyncingHeaders
+
+        block = build_block(
+            RegTest().genesis.hash,
+            [generate_coinbase(height=1)],
+            0,
+            time=datetime.now(UTC),
+        )
+        _, body = rpc_client(submitter).call_raw(
+            "submitblock",
+            [block.serialize(check_validity=False).hex()],
+            jsonrpc="1.0",
+            request_timeout=2,
+        )
+        assert body["result"] is None
+
+        block_index = receiver.chainstate.block_index
+        wait_until(lambda: block_index.active_chain[-1] == block.header.hash)
