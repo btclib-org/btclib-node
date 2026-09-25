@@ -431,6 +431,8 @@ def a_peer(**attributes: Any) -> Any:
         ping_sent=0,
         ping_nonce=0,
         latency=0,
+        # what `handle_p2p` sets before each callback, from the queue
+        time_received=0,
         # what `Connection` starts every fresh connection at, and what
         # `version`, `pong`, `block` and `tx` write for eviction (ISS 1064)
         min_ping_time=math.inf,
@@ -1037,12 +1039,14 @@ def test_a_pong_answering_our_ping_is_a_latency_measurement() -> None:
 
     `ping_sent` and `ping_nonce` are reset to zero once answered, so a
     second, unrelated `pong` cannot be mistaken for answering the same
-    round trip again.
+    round trip again. The round trip ends when the `pong` was read off
+    the socket, as Core's `ping_end = time_received`, however long ago
+    that was when the callback runs.
     """
     node = a_handshake_node()
-    peer = a_peer(ping_sent=time.time() - 0.5, ping_nonce=1234)
+    peer = a_peer(ping_sent=100.0, ping_nonce=1234, time_received=100.5)
     pong(node, Pong(1234).serialize(), peer)
-    assert peer.latency > 0
+    assert peer.latency == 0.5
     assert peer.ping_sent == 0
     assert peer.ping_nonce == 0
     assert not peer.stopped
@@ -1051,7 +1055,7 @@ def test_a_pong_answering_our_ping_is_a_latency_measurement() -> None:
     # later does not raise it (ISS 1064)
     assert peer.min_ping_time == peer.latency
     fastest = peer.min_ping_time
-    peer.ping_sent, peer.ping_nonce = time.time() - 5, 99
+    peer.ping_sent, peer.ping_nonce, peer.time_received = 200.0, 99, 205.0
     pong(node, Pong(99).serialize(), peer)
     assert peer.latency > fastest
     assert peer.min_ping_time == fastest
@@ -1065,7 +1069,7 @@ def test_a_pong_arriving_before_its_ping_by_the_clock_records_no_round_trip() ->
     `ping` and its `pong` is what reaches this here.
     """
     node = a_handshake_node()
-    peer = a_peer(ping_sent=time.time() + 60, ping_nonce=1234)
+    peer = a_peer(ping_sent=160.0, ping_nonce=1234, time_received=100.0)
     pong(node, Pong(1234).serialize(), peer)
     assert peer.ping_sent == 0
     assert peer.ping_nonce == 0

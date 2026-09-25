@@ -337,6 +337,14 @@ class Connection:
     are argued.
     """
 
+    # When the message `handle_p2p` is dispatching was read off the
+    # socket, set by it before each callback: Core's `ProcessMessage`
+    # parameter `time_received`, which `callbacks.pong` measures a round
+    # trip to. Written and read on `Node`'s thread alone. A class default
+    # rather than an `__init__` assignment, `__init__` being at ruff's
+    # `too-many-statements` ceiling.
+    time_received: float = 0
+
     def __init__(
         self,
         manager: P2pManager,
@@ -1018,6 +1026,10 @@ class Connection:
         two passes -- what the size on this queue's own items is for,
         argued beside `consumed` below. btclib-org/btclib-node#482
 
+        An item of `messages` carries a fifth element, the time it was
+        read off the socket, for `callbacks.pong`
+        (`P2pManager.messages`'s own comment).
+
         Peeks the header's own `length` field in `buffer` before
         building a stream or calling `Message.parse` at all: a chunk
         that does not yet complete even the first message in `buffer`
@@ -1069,7 +1081,7 @@ class Connection:
                     # the only refusal more octets can answer, and the
                     # stream is back at the start of the partial message
                     return
-                self.last_receive = time.time()
+                received = self.last_receive = time.time()
                 size = stream.tell() - start
                 consumed += size
                 if message.command in handshake_callbacks:
@@ -1077,7 +1089,7 @@ class Connection:
                         (message.command, message.payload, self.id, size)
                     )
                     continue
-                item = (message.command, message.payload, self.id, size)
+                item = (message.command, message.payload, self.id, size, received)
                 if message.command in ("ping", "pong"):
                     self.manager.messages.appendleft(item)
                 else:

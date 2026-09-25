@@ -49,10 +49,9 @@ if TYPE_CHECKING:
 # 3000 is, which this test has no need of.
 _CHAIN_LENGTH = MIN_BLOCKS_TO_KEEP + 8
 
-# What Connection.parse_messages puts on the queue: the command, the
-# payload behind it, which connection it came in on, and its own wire
-# size -- the same shape block_filters_test.py's own Message names.
-_Message = tuple[str, bytes, int, int]
+# What Connection.parse_messages puts on the queue -- the same shape
+# block_filters_test.py's own Message names.
+_Message = tuple[str, bytes, int, int, float]
 
 
 class _RecordingDeque(deque[_Message]):

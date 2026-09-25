@@ -393,12 +393,11 @@ def pong(node: Node, msg: bytes, conn: Connection) -> None:
             # trip and keeps the lowest for eviction, and `ProcessMessage`
             # calls it only for a round trip that is not negative: a clock
             # stepped back between ping and pong finishes the ping and
-            # records nothing. Core measures on the wall clock, as
-            # `Connection.ping_sent` does, to the moment the pong was read
-            # off the socket; this measures to the moment `Node`'s loop
-            # handles it, the queue carrying no receive time
-            # (btclib-org/btclib-node#1092).
-            ping_time = time.time() - ping_sent
+            # records nothing. Both ends are on the wall clock, and the
+            # round trip ends when the pong was read off the socket, not
+            # when `Node`'s loop reached it: `ping_end = time_received`
+            # there, `Connection.time_received` here.
+            ping_time = conn.time_received - ping_sent
             if ping_time >= 0:
                 conn.latency = ping_time
                 conn.min_ping_time = min(conn.min_ping_time, ping_time)

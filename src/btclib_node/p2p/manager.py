@@ -236,7 +236,8 @@ class P2pManager(threading.Thread):
         # included -- not a second snapshot-style reader this lock left
         # out.
         self._connections_lock = threading.Lock()
-        # (command, payload, connection id, wire size) -- the size,
+        # (command, payload, connection id, wire size), and for
+        # `messages` a receive time after that, below -- the size,
         # `Connection.parse_messages`'s own addition since #462, is what
         # `handle_p2p`/`handle_p2p_handshake` (`p2p/main.py`) weigh back
         # off `queued_recv_bytes`, `MAX_QUEUED_RECV_BYTES`'s own comment
@@ -267,7 +268,14 @@ class P2pManager(threading.Thread):
         # same method on one deque at once, never happens here: this is
         # the only appender and `Node`'s thread the only popper.
         # btclib-org/btclib-node#484
-        self.messages: deque[tuple[str, bytes, int, int]] = deque()
+        #
+        # The receive time is the wall clock time the message was read
+        # off the socket: Core's `CNetMessage::m_time`, which
+        # `ProcessMessage` takes as `time_received` and reads only in its
+        # `pong` handling (`src/net_processing.cpp`, at
+        # bitcoin/bitcoin@9be056a8a7), as only `callbacks.pong` reads it
+        # here. `handshake_messages` carries no `pong`, and no time.
+        self.messages: deque[tuple[str, bytes, int, int, float]] = deque()
         self.handshake_messages: deque[tuple[str, bytes, int, int]] = deque()
         # Every nonce `add_pending_outbound_nonce` (below) has recorded
         # for an outbound connection still short of its own `verack` --
