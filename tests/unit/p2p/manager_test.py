@@ -914,11 +914,11 @@ def test_a_connected_peer_drawn_with_a_different_timestamp_is_not_redialled(
 ) -> None:
     """A peer drawn back with a different timestamp is still not redialled.
 
-    #70/#71: callbacks.version records the peer at a live timestamp and
-    # with its handshake's own services, so the row PeerDB.random_address
-    # can draw back is never equal, field for field, to the Connection's
-    # own address -- endpoint_key is what the manager has to compare on
-    # instead, or a peer already connected to is dialled a second time.
+    #70/#71: `callbacks.version` records the peer at a live timestamp and
+    with its handshake's own services, so the row `PeerDB.random_address`
+    can draw back is never equal, field for field, to the Connection's
+    own address: the manager compares by `host_key`, or a peer already
+    connected to is dialled a second time.
     An onion address the same way the sibling tests above use one: `not
     in already_connected` regressing to raw equality would reach the
     real `dial`, which raises on a network this node cannot open a

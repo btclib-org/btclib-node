@@ -892,8 +892,8 @@ class P2pManager(threading.Thread):
         if live >= self.max_outbound_full_relay or self.peer_db.is_empty:
             return
         # By host, as Core's `AlreadyConnectedToAddress(const CNetAddr&)`
-        # compares each node's address with no port (`src/net.cpp`, at
-        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a host this node
+        # compares each node's address with no port (`src/net.cpp`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a host this node
         # holds any connection with, an inbound one on its ephemeral port
         # included, is not dialled again on another port.
         #
