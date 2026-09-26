@@ -496,6 +496,22 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 - **Its list is the method table's, with no count** (closes #1221).
 
+### Compact blocks are served, and offered at version 2, as in Core
+
+- **`sendcmpct` offers version 2, and a `MSG_CMPCT_BLOCK` or a `getblocktxn`
+  is answered at Core's depths** (closes #1206).
+
+### Core's licence travels in the fixed seeds' module, not in `license-files`
+
+- **`_chainparamsseeds.py` opens with Core's `COPYING` in full, and
+  `license-files` drops it** (closes btclib-org/.github#1390); the file
+  stays beside the lists, and in the sdist.
+
+### An outbound peer behind this node's tip is dropped, as in Core
+
+- **Core's `ConsiderEviction`: `CHAIN_SYNC_TIMEOUT`, one `getheaders`, then
+  a disconnect, with up to four peers at the tip protected** (closes #1154).
+
 ### A malformed `-rpcauth` or `-rpccookieperms` is named in the log alone
 
 - **Stderr reads "Unable to start HTTP server. See debug log for details.",
@@ -507,6 +523,10 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **The stores open once the RPC listener is up** (closes #1279), so a
   refused start leaves `.lock`, `blocks/` and the log, `bitcoind` opening
   none of them before its steps 6 and 7.
+### An oversized `inv` costs the peer in any sync state, as in Core
+
+- **An `inv` of more than `MAX_INV_SZ` items drops and discourages its
+  sender before the sync state is read** (closes #1145).
 
 ## v2026.9.24
 
