@@ -133,11 +133,19 @@ def a_peer_db_stub(**attributes: Any) -> Any:
     about. `holds_network` is too, answering that every network is
     held, so that no fixed seed is added where a test is not about them.
     A `random_address` given is the draw `address_sampler` hands back,
-    so each call of it is one draw of the pass.
+    so each call of it is one draw of the pass. `attempt` records every
+    try in `tries`, by `endpoint_key`, which `last_try` reads: whether
+    the table holds the endpoint is `PeerDB`'s own test.
     """
+    tries: dict[bytes, float] = {}
     defaults: dict[str, Any] = {
         "get_active_addresses": list,
         "holds_network": lambda network_id: True,
+        "tries": tries,
+        "attempt": lambda address: tries.__setitem__(
+            endpoint_key(address), time.time()
+        ),
+        "last_try": lambda address: tries.get(endpoint_key(address), 0.0),
     }
     if "random_address" in attributes:
         draw = attributes.pop("random_address")
@@ -3538,6 +3546,11 @@ def a_dialling_manager(
     return a_manager(peer_db=peer_db, **kwargs), drawn, dialled
 
 
+def tries_of(manager: P2pManager) -> dict[bytes, float]:
+    """Return the tries `a_peer_db_stub`'s `attempt` recorded."""
+    return cast("dict[bytes, float]", cast("Any", manager.peer_db).tries)
+
+
 @pytest.mark.parametrize(
     ("passed_over", "addnode_args"),
     [
@@ -3572,8 +3585,7 @@ def test_a_recently_tried_draw_is_followed_by_another(
     manager, drawn, dialled = a_dialling_manager(
         a_manager, monkeypatch, [tried, tried, other]
     )
-    manager._record_attempt(tried)
-    manager._last_try[endpoint_key(tried)] -= 10 * 60 - 5
+    tries_of(manager)[endpoint_key(tried)] = time.time() - (10 * 60 - 5)
     asyncio.run(manager._maybe_dial_more_peers())
     assert len(drawn) == 3
     assert dialled == [other]
@@ -3588,7 +3600,7 @@ def test_a_try_ten_minutes_old_is_not_recent(
     now = time.time()
     # one clock for the record and the pass, so ten minutes is exact
     monkeypatch.setattr(time, "time", lambda: now)
-    manager._last_try[endpoint_key(tried)] = now - 10 * 60
+    tries_of(manager)[endpoint_key(tried)] = now - 10 * 60
     asyncio.run(manager._maybe_dial_more_peers())
     assert dialled == [tried]
 
@@ -3615,7 +3627,7 @@ def test_a_skip_core_bounds_by_draws_gives_way_at_its_bound(
         a_manager, monkeypatch, [address] * _MAX_DRAWS
     )
     if recent:
-        manager._record_attempt(address)
+        manager.peer_db.attempt(address)
     asyncio.run(manager._maybe_dial_more_peers())
     assert len(drawn) == draws
     assert dialled == [address]
@@ -3670,17 +3682,23 @@ def test_an_addnode_value_names_a_draw_as_added_nodes_contain_does(
     assert manager._added_node(address) is named
 
 
-def test_a_dial_records_its_try_and_forgets_one_too_old_to_read(
-    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("dialler", ["automatic", "connect"])
+def test_every_dial_records_its_try(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, dialler: str
 ) -> None:
-    """ISS 1224: Core's `Attempt_` sets `m_last_try` when a dial is made."""
-    drawn_address = a_full_node("5.6.7.8", 8333)
-    old = a_full_node("9.9.9.9", 8333)
-    manager, _, dialled = a_dialling_manager(a_manager, monkeypatch, [drawn_address])
+    """ISS 1277: Core's `ConnectNode` calls `Attempt` for every dial.
+
+    The automatic dial's and `async_connect`'s alike, the latter being
+    the `-connect`/`-addnode` redial's and the `addnode` RPC's, whether
+    or not the dial comes up.
+    """
+    address = a_full_node("5.6.7.8", 8333)
+    manager, _, dialled = a_dialling_manager(a_manager, monkeypatch, [address])
     now = time.time()
-    # one clock, so the old entry is exactly ten minutes old
     monkeypatch.setattr(time, "time", lambda: now)
-    manager._last_try[endpoint_key(old)] = now - 10 * 60
-    asyncio.run(manager._maybe_dial_more_peers())
-    assert dialled == [drawn_address]
-    assert manager._last_try == {endpoint_key(drawn_address): now}
+    if dialler == "automatic":
+        asyncio.run(manager._maybe_dial_more_peers())
+    else:
+        asyncio.run(manager.async_connect(address))
+    assert dialled == [address]
+    assert tries_of(manager) == {endpoint_key(address): now}

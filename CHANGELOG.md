@@ -461,6 +461,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   early in a pass for a recent try or a bad port** (closes #1224), as in Core;
   a DNS seed's answer carries Core's `SeedsServiceFlags` (closes #1236).
 
+### Every dial records its try, as Core's `Attempt` does
+
+- **A `-connect` or `-addnode` dial counts as a recent try too, for an address
+  the table holds** (closes #1277); as in Core, a restart forgets every try.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
