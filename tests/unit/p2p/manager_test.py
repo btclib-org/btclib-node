@@ -1911,7 +1911,7 @@ def test_a_name_s_answers_are_tried_in_a_shuffled_order_and_one_is_kept(
         answering=frozenset({"1.2.3.4", "5.6.7.8"}),
     )
     monkeypatch.setattr(
-        manager_module.secrets,
+        secrets,
         "SystemRandom",
         lambda: SimpleNamespace(shuffle=lambda items: items.reverse()),
     )
