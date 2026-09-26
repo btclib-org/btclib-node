@@ -518,6 +518,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   and the log names the value** (closes #1210), refused once the RPC
   listener is bound, `-rpcauth` after the cookie, as `bitcoind` refuses it.
 
+### `getdata` serves a block only where Core's `BlockRequestAllowed` would
+
+- **A block off the active chain is served only once validated and recent, and
+  an unknown or refused one is ignored before the prune threshold is read**
+  (closes #1254).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
