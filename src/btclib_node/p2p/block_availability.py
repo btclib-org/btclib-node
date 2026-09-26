@@ -53,9 +53,10 @@ __all__ = [
 # `last_common` block anything is asked of it.
 BLOCK_DOWNLOAD_WINDOW = 1024
 
-# How many successors Core's `FindNextBlocks` reads at a time at least,
-# "because CBlockIndex::GetAncestor may be as expensive as iterating over
-# ~100 CBlockIndex* entries anyway"
+# How many successors Core's `FindNextBlocks` (`src/net_processing.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) reads at a time at
+# least, "because CBlockIndex::GetAncestor may be as expensive as
+# iterating over ~100 CBlockIndex* entries anyway"
 _FETCH_CHUNK = 128
 
 
