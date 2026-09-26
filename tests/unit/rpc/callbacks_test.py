@@ -156,6 +156,7 @@ def a_peer(
     inbound: bool = True,
     automatic: bool = False,
     block_relay: bool = False,
+    feeler: bool = False,
     versioned: bool = True,
 ) -> Any:
     """Build a `P2pManager.connections` entry `get_peer_info` can read.
@@ -191,6 +192,7 @@ def a_peer(
         inbound=inbound,
         automatic=automatic,
         block_relay=block_relay,
+        feeler=feeler,
         stats=PeerStats(),
         block_availability=BlockAvailability(),
         tx_announce_queue=[],
@@ -531,22 +533,26 @@ def test_a_peer_that_asked_for_no_relay_has_no_tx_relay() -> None:
 
 
 @pytest.mark.parametrize(
-    ("inbound", "automatic", "block_relay", "connection_type"),
+    ("inbound", "automatic", "block_relay", "feeler", "connection_type"),
     [
-        (True, False, False, "inbound"),
-        (False, True, False, "outbound-full-relay"),
-        (False, True, True, "block-relay-only"),
-        (False, False, False, "manual"),
+        (True, False, False, False, "inbound"),
+        (False, True, False, False, "outbound-full-relay"),
+        (False, True, True, False, "block-relay-only"),
+        (False, True, False, True, "feeler"),
+        (False, False, False, False, "manual"),
     ],
 )
 def test_the_connection_type_is_core_s(
     inbound: bool,  # noqa: FBT001
     automatic: bool,  # noqa: FBT001
     block_relay: bool,  # noqa: FBT001
+    feeler: bool,  # noqa: FBT001
     connection_type: str,
 ) -> None:
-    """Inbound, drawn by this node as either kind, or named by an operator."""
-    peer = a_peer(inbound=inbound, automatic=automatic, block_relay=block_relay)
+    """Inbound, drawn by this node as any kind, or named by an operator."""
+    peer = a_peer(
+        inbound=inbound, automatic=automatic, block_relay=block_relay, feeler=feeler
+    )
     (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
     assert info["connection_type"] == connection_type
 
@@ -3100,3 +3106,10 @@ def test_submit_block_invalidates_a_block_whose_body_mismatches_its_header(
     block_info = node.chainstate.block_index.get_block_info(mismatched.header.hash)
     assert not block_info.downloaded
     assert node.block_db.get_block(mismatched.header.hash) is None
+
+
+def test_a_feeler_has_no_tx_relay() -> None:
+    """ISS 1096: Core builds no `TxRelay` for a feeler either."""
+    peer = a_peer(inbound=False, automatic=True, feeler=True, relay=True)
+    (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
+    assert info["relaytxes"] is False

@@ -550,7 +550,9 @@ class PeerDB:
         """
         return self.address_sampler()()
 
-    def address_sampler(self) -> Callable[[], NetworkAddressV2 | None]:
+    def address_sampler(
+        self, *, new_only: bool = False
+    ) -> Callable[[], NetworkAddressV2 | None]:
         """Return a draw over the dialable addresses of both tables, as of now.
 
         Each call of what this returns is one `_select`, between the
@@ -559,7 +561,9 @@ class PeerDB:
         answered endpoint is left out of the gossiped side, where
         `addresses` holds it too, as Core's `Good_` moves an entry from
         the new table to the tried one and `Select_` flips between two
-        tables that never hold one endpoint twice.
+        tables that never hold one endpoint twice. With `new_only` the
+        draw is from the gossiped side alone, Core's `Select(true, ...)`
+        that a feeler makes.
         """
         answered = [addr for addr in self.get_active_addresses() if can_connect(addr)]
         tried = {endpoint_key(addr) for addr in answered}
@@ -581,7 +585,7 @@ class PeerDB:
                 for address in self.addresses
                 if can_connect(address) and endpoint_key(address) not in tried
             ]
-        return partial(_select, answered, known)
+        return partial(_select, [] if new_only else answered, known)
 
     def add_addresses(self, addresses: Iterable[NetworkAddressV2]) -> None:
         """Merge `addresses` into `self.addresses`, checked and deduplicated.

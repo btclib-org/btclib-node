@@ -476,6 +476,8 @@ def a_peer(**attributes: Any) -> Any:
         sent=sent,
         stop=lambda: stopped.append(True),
         stopped=stopped,
+        # recorded among what was sent, so that its place after them shows
+        stop_when_sent=lambda: sent.append("stop_when_sent"),
         status=P2pConnStatus.Open,
         # what Connection starts every fresh connection at, and what
         # `advance_cfilters` reads to pace a `getcfilters` answer: never
@@ -518,7 +520,9 @@ def a_peer(**attributes: Any) -> Any:
         automatic=False,
         # what `Connection` starts every connection at, and what
         # `P2pManager.create_connection` sets for a block-relay-only one
+        # or a feeler
         block_relay=False,
+        feeler=False,
         address=peer_address("1.2.3.4", 18444),
         stats=PeerStats(),
         # what `Connection` starts every connection at, and what
@@ -4422,3 +4426,51 @@ def test_a_transaction_announced_by_a_full_relay_peer_drops_nobody() -> None:
     inv(node, Inv(items).serialize(), peer)
     assert not peer.stopped
     assert peer.block_availability.last_unknown == b"\x22" * 32
+
+
+@pytest.mark.parametrize("feeler", [True, False])
+def test_a_feeler_is_asked_for_addresses_recorded_and_dropped_at_its_version(
+    *, feeler: bool
+) -> None:
+    """ISS 1096: Core's `VERSION` handler ends a feeler once it has answered.
+
+    `getaddr` after the three answers, the address recorded as answered
+    with the services the `version` names, then the drop, after what
+    was sent. A full-relay peer, the control, waits for its `verack`.
+    """
+    dialled = peer_address("1.2.3.4", 18444)
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+    # gossiped first: `add_active_address` records a known endpoint alone
+    peer_db.add_addresses([dialled])
+    peer = a_peer(inbound=False, automatic=True, feeler=feeler, address=dialled)
+    version(a_handshake_node(peer_db=peer_db), a_version(), peer)
+    assert not peer.stopped
+    assert peer.relay_tx is not feeler
+    if feeler:
+        assert commands(peer) == [
+            "WtxidRelay",
+            "SendAddrV2",
+            "Verack",
+            "GetAddr",
+            "stop_when_sent",
+        ]
+        (recorded,) = peer_db.active_addresses
+        assert endpoint_key(recorded) == endpoint_key(dialled)
+        assert (
+            recorded.services == ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
+        )
+    else:
+        assert commands(peer) == ["WtxidRelay", "SendAddrV2", "Verack"]
+        assert not peer_db.active_addresses
+
+
+def test_a_feeler_short_of_desirable_services_is_not_let_go_for_it() -> None:
+    """`ExpectServicesFromConn` is false for `FEELER`, as for `MANUAL`."""
+    node = a_handshake_node(
+        status=NodeStatus.BlockSynced,
+        peer_db=PeerDB(cast("Chain", None), cast("Path", None)),
+    )
+    peer = a_peer(inbound=False, automatic=True, feeler=True)
+    version(node, a_version(services=ServiceFlags.NODE_WITNESS), peer)
+    assert not peer.stopped
+    assert commands(peer)[-1] == "stop_when_sent"

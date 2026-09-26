@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast, override
 from unittest.mock import AsyncMock
 
 import pytest
+from btclib.p2p.address import ServiceFlags
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 from btclib.p2p.keepalive import Ping
 from btclib.p2p.limits import PROTOCOL_VERSION
@@ -74,6 +75,7 @@ def a_conn(
     automatic: bool = False,
     protocol: int = PROTOCOL_VERSION,
     block_relay: bool = False,
+    feeler: bool = False,
 ) -> Any:
     """Build a `Connection` double: no socket, its own `sent`/`stopped` logs.
 
@@ -98,6 +100,7 @@ def a_conn(
         automatic=automatic,
         version_message=SimpleNamespace(version=protocol),
         block_relay=block_relay,
+        feeler=feeler,
         sent=[],
         stopped=[],
     )
@@ -124,15 +127,20 @@ def a_peer_db_stub(**attributes: Any) -> Any:
     about. `holds_network` is too, answering that every network is
     held, so that no fixed seed is added where a test is not about them.
     A `random_address` given is the draw `address_sampler` hands back,
-    so each call of it is one draw of the pass.
+    so each call of it is one draw of the pass, and a `random_new_address`
+    the draw it hands back for `new_only`, a feeler's; the one not given
+    refuses to be asked.
     """
     defaults: dict[str, Any] = {
         "get_active_addresses": list,
         "holds_network": lambda network_id: True,
     }
-    if "random_address" in attributes:
-        draw = attributes.pop("random_address")
-        defaults["address_sampler"] = lambda: draw
+    if "random_address" in attributes or "random_new_address" in attributes:
+        draw = attributes.pop("random_address", refuses_to_be_asked)
+        new_draw = attributes.pop("random_new_address", refuses_to_be_asked)
+        defaults["address_sampler"] = lambda *, new_only=False: (
+            new_draw if new_only else draw
+        )
     defaults.update(attributes)
     return SimpleNamespace(**defaults)
 
@@ -1891,7 +1899,9 @@ def test_block_relay_only_peers_are_dialled_once_full_relay_ones_are_met(
     )
     with ours, theirs:
         asyncio.run(manager._maybe_dial_more_peers())
-    assert made == [{"inbound": False, "automatic": True, "block_relay": kind}]
+    assert made == [
+        {"inbound": False, "automatic": True, "block_relay": kind, "feeler": False}
+    ]
 
 
 @pytest.mark.parametrize(
@@ -3668,3 +3678,259 @@ def test_report_server_failure_does_not_log_a_returned_cancelled_error(
     future.set_exception(asyncio.CancelledError())
     manager._report_server_failure(future)
     assert logged == []
+
+
+FULL_NODE = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
+
+
+def a_feeler_manager(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    new: NetworkAddressV2 | None,
+    conns: Sequence[Any] = (),
+) -> tuple[P2pManager, list[dict[str, Any]]]:
+    """Build a manager whose next dial is a feeler to `new`, recording it.
+
+    Both targets are met by `conns`, or by eight and two peers where none
+    are given, and the feeler timer is due. The draw without `new_only`
+    refuses to be asked: a feeler draws from the new table alone.
+    """
+    ours, theirs = socket.socketpair()
+    ours.close()
+    theirs.close()
+
+    async def answers(address: NetworkAddressV2) -> socket.socket:
+        return ours
+
+    made: list[dict[str, Any]] = []
+    monkeypatch.setattr(manager_module, "dial", answers)
+    monkeypatch.setattr(manager_module, "_FEELER_SLEEP_WINDOW", 0)
+    peer_db = a_peer_db_stub(is_empty=False, random_new_address=lambda: new)
+    manager = a_manager(peer_db=peer_db)
+    for conn in conns or automatic_conns(8, 2):
+        conn.address = conn.address if conns else peer_address(f"10.{conn.id}.0.1", 1)
+        manager.connections[conn.id] = conn
+    manager._next_feeler = 0
+    monkeypatch.setattr(
+        manager, "create_connection", lambda *args, **kwargs: made.append(kwargs)
+    )
+    return manager, made
+
+
+def test_a_feeler_is_dialled_once_both_targets_are_met(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1096: `ConnectionType::FEELER`, off the new table, on its timer.
+
+    Picking it draws the timer again, so a second pass dials nothing.
+    """
+    new = peer_address("5.6.7.8", 18444, services=FULL_NODE)
+    manager, made = a_feeler_manager(a_manager, monkeypatch, new)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert made == [
+        {"inbound": False, "automatic": True, "block_relay": False, "feeler": True}
+    ]
+    assert manager._next_feeler > time.time()
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert len(made) == 1
+
+
+@pytest.mark.parametrize(
+    ("services", "dials"),
+    [
+        (FULL_NODE, True),
+        (ServiceFlags.NODE_NETWORK_LIMITED, True),
+        (ServiceFlags.NODE_WITNESS, False),
+        (0, False),
+    ],
+)
+def test_a_feeler_wants_only_an_address_db(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    services: int,
+    *,
+    dials: bool,
+) -> None:
+    """Core's `MayHaveUsefulAddressDB`, not `HasAllDesirableServiceFlags`."""
+    new = peer_address("5.6.7.8", 18444, services=services)
+    manager, made = a_feeler_manager(a_manager, monkeypatch, new)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert bool(made) is dials
+
+
+def test_a_feeler_draws_again_past_an_address_with_no_address_db(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `continue` on `MayHaveUsefulAddressDB`, inside the 100 tries.
+
+    The first draw fails it and the second is dialled, in the same pass;
+    a pass whose every draw fails it stops at `_MAX_DRAWS_PER_PASS`.
+    """
+    useless = peer_address("5.6.7.8", 18444, services=ServiceFlags.NODE_WITNESS)
+    useful = peer_address("9.9.9.9", 18444, services=FULL_NODE)
+    draws = iter([useless, useful])
+    manager, _ = a_feeler_manager(a_manager, monkeypatch, None)
+    manager.peer_db = a_peer_db_stub(
+        is_empty=False, random_new_address=lambda: next(draws)
+    )
+    dialled: list[NetworkAddressV2] = []
+
+    async def dial(address: NetworkAddressV2) -> None:
+        dialled.append(address)
+
+    monkeypatch.setattr(manager_module, "dial", dial)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert dialled == [useful]
+    counted: list[NetworkAddressV2] = []
+
+    def count() -> NetworkAddressV2:
+        counted.append(useless)
+        return useless
+
+    manager.peer_db = a_peer_db_stub(is_empty=False, random_new_address=count)
+    manager._next_feeler = 0
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert len(counted) == manager_module._MAX_DRAWS_PER_PASS
+    assert dialled == [useful]
+
+
+def test_a_feeler_is_held_to_no_network_group(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `!fFeeler &&` ahead of its network-group refusal."""
+    conns = automatic_conns(8, 2)
+    for conn in conns:
+        conn.address = peer_address(f"5.6.{conn.id}.1", 1)
+    new = peer_address("5.6.7.8", 18444, services=FULL_NODE)
+    manager, made = a_feeler_manager(a_manager, monkeypatch, new, conns)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert made
+
+
+def test_a_feeler_waits_a_uniform_second_before_its_dial(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `FEELER_SLEEP_WINDOW`: up to a second, drawn ahead of the dial."""
+    window = manager_module._FEELER_SLEEP_WINDOW
+    new = peer_address("5.6.7.8", 18444, services=FULL_NODE)
+    manager, _ = a_feeler_manager(a_manager, monkeypatch, new)
+    monkeypatch.setattr(manager_module, "_FEELER_SLEEP_WINDOW", window)
+    events: list[object] = []
+
+    class Draws:
+        def uniform(self, low: float, high: float) -> float:
+            events.append((low, high))
+            return 0.0
+
+        def expovariate(self, rate: float) -> float:
+            return 1 / rate
+
+    async def dial(address: NetworkAddressV2) -> None:
+        events.append(address)
+
+    monkeypatch.setattr(secrets, "SystemRandom", Draws)
+    monkeypatch.setattr(manager_module, "dial", dial)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert events == [(0, 1.0), new]
+
+
+def test_a_feeler_to_nothing_new_dials_nothing(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty new table is Core's invalid address: the pass ends."""
+    manager, made = a_feeler_manager(a_manager, monkeypatch, None)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert not made
+
+
+def test_a_feeler_waits_behind_both_targets_and_the_extra_peer(
+    a_manager: AManagerFactory,
+) -> None:
+    """`ThreadOpenConnections`' order: a feeler comes after the other three."""
+    manager = a_manager()
+    manager._next_feeler = 0
+    manager.start_extra_block_relay_peers = True
+    manager._next_extra_block_relay = 0
+    outbound = manager_module._Outbound
+    assert manager._next_outbound(7, 2) is outbound.FULL_RELAY
+    assert manager._next_outbound(8, 1) is outbound.BLOCK_RELAY
+    assert manager._next_outbound(8, 2) is outbound.BLOCK_RELAY
+    assert manager._next_outbound(8, 2) is outbound.FEELER
+    assert manager._next_outbound(8, 2) is None
+
+
+def test_a_feeler_counts_against_the_grants_and_no_target(
+    a_manager: AManagerFactory,
+) -> None:
+    """A feeler holds a `semOutbound` grant, and is no full-relay peer.
+
+    Seven full-relay peers and a feeler leave the full-relay target
+    unmet; eight, two and a feeler take every grant at the default.
+    """
+    drawn: list[None] = []
+    peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: drawn.append(None))
+    feeler = a_conn(20, automatic=True, feeler=True)
+    manager = a_manager([*automatic_conns(7, 2), feeler], peer_db=peer_db)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert drawn
+    drawn.clear()
+    manager = a_manager([*automatic_conns(8, 2), feeler], peer_db=peer_db)
+    manager._next_feeler = 0
+    manager.start_extra_block_relay_peers = True
+    manager._next_extra_block_relay = 0
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert not drawn
+
+
+def test_a_feeler_leaves_its_network_group_to_other_peers(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `case ConnectionType::FEELER: break`: a feeler adds no group."""
+    dialled: list[NetworkAddressV2] = []
+
+    async def records(address: NetworkAddressV2) -> None:
+        dialled.append(address)
+
+    monkeypatch.setattr(manager_module, "dial", records)
+    drawn = peer_address("5.6.7.8", 18444)
+    peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: drawn)
+    feeler = a_conn(
+        1, automatic=True, feeler=True, address=peer_address("5.6.1.1", 18444)
+    )
+    manager = a_manager([feeler], peer_db=peer_db)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert dialled == [drawn]
+
+
+def test_the_feeler_timer_is_drawn_as_the_manager_runs(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`run` draws Core's `next_feeler` off its own start, `FEELER_INTERVAL`."""
+    monkeypatch.setattr(manager_module, "_exponential_delay", lambda mean: mean)
+    manager = a_manager(listen=False, max_connections=0)
+    assert manager._next_feeler == math.inf
+    before = time.time()
+    manager.start()
+    wait_until(manager.loop.is_running)
+    assert before + 120 <= manager._next_feeler <= time.time() + 120
+
+
+def test_create_connection_marks_a_feeler(a_manager: AManagerFactory) -> None:
+    """ISS 1096: the kind is on the connection before its task first runs."""
+    manager = a_manager()
+    ours, theirs = socket.socketpair()
+    address = peer_address("1.2.3.4", 18444)
+
+    async def create() -> None:
+        manager.create_connection(
+            ours, address, inbound=False, automatic=True, feeler=True
+        )
+        (conn,) = manager.pending_connections.values()
+        assert conn.feeler
+        assert not conn.block_relay
+        assert conn.task is not None
+        conn.task.cancel()
+        await asyncio.sleep(0)
+
+    with ours, theirs:
+        manager.loop.run_until_complete(create())

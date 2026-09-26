@@ -471,6 +471,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   blocks alone** (closes #1095), as `CConnman::ThreadOpenConnections` opens
   `BLOCK_RELAY`, and a third on its five-minute timer once the tip is recent.
 
+### Feelers test an address never answered, as in Core
+
+- **Every two minutes on average an extra short-lived connection is dialled
+  to an address never answered** (closes #1096), as Core's `FEELER`: it is
+  asked for addresses, recorded as answered and dropped at its `version`.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

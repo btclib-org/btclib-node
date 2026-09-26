@@ -709,7 +709,7 @@ def _network_name(network: Network) -> str:
 
 
 def _connection_type(p2p_conn: Connection) -> str:
-    """Core's `ConnectionTypeAsString` for the four types this node opens.
+    """Core's `ConnectionTypeAsString` for the five types this node opens.
 
     An outbound connection `P2pManager` did not draw itself is a
     `-connect`, `-addnode` or `addnode` peer, Core's `MANUAL`.
@@ -718,6 +718,8 @@ def _connection_type(p2p_conn: Connection) -> str:
         return "inbound"
     if p2p_conn.block_relay:
         return "block-relay-only"
+    if p2p_conn.feeler:
+        return "feeler"
     return "outbound-full-relay" if p2p_conn.automatic else "manual"
 
 
@@ -733,12 +735,13 @@ def _peer_entry(
     version_message = p2p_conn.version_message
     # Core's `TxRelay` exists only once the peer's `version` asked for
     # relay, this node offering no `NODE_BLOOM`, and never for a
-    # block-relay-only peer; the fields read off it answer 0 or false
-    # where it does not.
+    # block-relay-only peer or a feeler; the fields read off it answer 0
+    # or false where it does not.
     relays = (
         version_message is not None
         and version_message.is_relay_requested
         and not p2p_conn.block_relay
+        and not p2p_conn.feeler
     )
     services = 0 if version_message is None else version_message.services
 

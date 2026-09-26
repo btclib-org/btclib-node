@@ -102,7 +102,12 @@ def handle_p2p_handshake(node: Node) -> None:
             conn.loop.call_soon_threadsafe(conn._recv_resume.set)  # noqa: SLF001
         node.logger.info("Received p2p message: %s, %s", msg_type, conn_id)
         try:
-            if conn.status == P2pConnStatus.Open:
+            # A feeler past its `version` is being dropped, and Core's
+            # `ProcessMessages` reads nothing more of a peer once
+            # `fDisconnect` is set: a `verack` behind it would promote it.
+            if conn.status == P2pConnStatus.Open and not (
+                conn.feeler and conn.version_message is not None
+            ):
                 handshake_callbacks[msg_type](node, msg, conn)
             elif conn.status == P2pConnStatus.Connected and msg_type in (
                 "wtxidrelay",
@@ -178,6 +183,7 @@ def handle_p2p(node: Node) -> None:
                     msg_type in _BEFORE_VERACK
                     and conn.status == P2pConnStatus.Open
                     and conn.version_message is not None
+                    and not conn.feeler
                 ):
                     callbacks[msg_type](node, msg, conn)
                 node.logger.debug("Finished p2p\n")

@@ -77,6 +77,7 @@ def make_node(
         status=status,
         address=_AN_ADDRESS,
         block_relay=False,
+        feeler=False,
         stop=lambda: stopped.append(True),
         queued_recv_bytes=queued_recv_bytes,
         _recv_lock=threading.Lock(),
@@ -123,6 +124,36 @@ def test_a_handshake_message_reaches_its_callback(
     )
     handle_p2p_handshake(node)
     assert seen == [b""]
+    assert not stopped
+
+
+@pytest.mark.parametrize("versioned", [True, False])
+def test_a_feeler_past_its_version_is_read_no_further(
+    monkeypatch: pytest.MonkeyPatch,
+    versioned: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1096: Core's `fDisconnect`, set on a feeler at its `version`.
+
+    Its `version` is still read, and nothing behind it: a `verack` queued
+    after it would otherwise promote a connection already being dropped,
+    and a `sendheaders` would be recorded on it.
+    """
+    seen: list[str] = []
+    monkeypatch.setitem(
+        handshake_callbacks, "verack", lambda node, msg, conn: seen.append("verack")
+    )
+    node, stopped = make_node(
+        "handshake_messages", ("verack", b"", 0, 1), status=P2pConnStatus.Open
+    )
+    conn = node.p2p_manager.connections[0]
+    conn.feeler = True
+    conn.version_message = object() if versioned else None
+    conn.prefers_headers = False
+    node.p2p_manager.messages.append(("sendheaders", b"", 0, 1, 0.0))
+    handle_p2p_handshake(node)
+    handle_p2p(node)
+    assert seen == ([] if versioned else ["verack"])
+    assert conn.prefers_headers is False
     assert not stopped
 
 
