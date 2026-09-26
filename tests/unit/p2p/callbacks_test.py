@@ -4273,7 +4273,9 @@ def test_a_header_version_btclib_refuses_is_misbehaving_bad_version(
     header = BlockHeader(
         version=version,
         previous_block_hash=genesis.hash,
-        merkle_root=secrets.token_bytes(32),
+        # fixed, and one nonce 0 does not solve at either version, so the
+        # search below runs its step every time
+        merkle_root=b"\x07" * 32,
         time=genesis.time + timedelta(seconds=1),
         bits=genesis.bits,
         nonce=0,
