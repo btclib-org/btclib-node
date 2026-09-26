@@ -323,6 +323,12 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     # off headers this peer actually sends (below) only ever raises it
     # further. btclib-org/btclib-node#706
     conn.best_known_height = version_msg.start_height
+    # Core's `SetServices` of an outbound peer's own services, ahead of
+    # every refusal below (`src/net_processing.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a table row gossip
+    # mislabelled is corrected here, the peer dropped or not
+    if not conn.inbound:
+        node.p2p_manager.peer_db.set_services(conn.address, version_msg.services)
     # Every refusal below drops the peer and discourages nobody. Core's
     # `VERSION` handling answers a self-connect, an obsolete version and
     # missing services with `fDisconnect` alone (`src/net_processing.cpp`,

@@ -460,11 +460,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A peer is recorded as answered only where gossip already holds its
   endpoint** (closes #1189), as Core's `Good_` updates only what addrman holds.
 
-### A gossip adds services to an address and never takes one away
-
-- **`add_addresses` ORs a known endpoint's services with the gossiped ones**
-  (closes #1276), as Core's `AddSingle` does, where the last gossip replaced
-  them.
 ### A message that does not parse costs its peer nothing, as in Core
 
 - **A peer is discouraged only where Core calls `Misbehaving`** (closes
@@ -490,6 +485,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A `..` comes off, and a leading `//` becomes `/`, before the file system is
   asked** (closes #1187); a missing data directory and an unreadable
   configuration file are refused in Core's words.
+
+### A gossip adds services to an address, and a dialled peer's own replace them
+
+- **`add_addresses` ORs gossiped services into both rows of an endpoint, and
+  an outbound peer's `version` overwrites them** (closes #1276), as Core's
+  `AddSingle` and `SetServices` do, where the last gossip replaced them.
 
 ## v2026.9.24
 

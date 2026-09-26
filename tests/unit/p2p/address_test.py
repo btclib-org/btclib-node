@@ -16,6 +16,7 @@ import secrets
 import socket
 import threading
 import time
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -194,12 +195,14 @@ def test_add_active_address_waits_out_a_prune_already_in_progress(
         real_reindex()
 
     monkeypatch.setattr(peer_db, "_reindex_active", paused_reindex)
+    # known ahead of the prune: `add_addresses` takes `_active_lock` too,
+    # for the answered row a gossip reaches
+    peer_db.add_addresses([peer_address("1.2.3.4", 18444)])
 
     pruner = threading.Thread(target=peer_db.get_active_addresses)
     pruner.start()
     assert entered_prune.wait(timeout=5)
 
-    peer_db.add_addresses([peer_address("1.2.3.4", 18444)])
     adder = threading.Thread(
         target=peer_db.add_active_address, args=(peer_address("1.2.3.4", 18444),)
     )
@@ -892,6 +895,62 @@ def test_two_gossiped_records_for_one_endpoint_settle_on_every_service(
     peer_db.close()
     (reloaded,) = a_peer_db(data_dir=tmp_path).addresses
     assert reloaded.services == first | second
+
+
+def test_a_gossip_adds_its_services_to_the_answered_row_too(tmp_path: Path) -> None:
+    """ISS 1276: Core's `AddSingle` ORs gossip into a tried entry as well.
+
+    The answered row stands for Core's tried entry, and its row on disk
+    carries the same services, two records of one gossip included.
+    """
+    peer_db = a_peer_db(data_dir=tmp_path)
+    endpoint = peer_address("1.2.3.4", 8333)
+    peer_db.add_addresses([endpoint])
+    peer_db.add_active_address(endpoint)
+    peer_db.add_addresses(
+        replace(endpoint, services=services)
+        for services in (ServiceFlags.NODE_NETWORK, ServiceFlags.NODE_WITNESS)
+    )
+    (answered,) = peer_db.active_addresses
+    assert answered.services == _FULL
+    peer_db.close()
+    (reloaded,) = a_peer_db(data_dir=tmp_path).active_addresses
+    assert reloaded.services == _FULL
+
+
+@pytest.mark.parametrize("answered", [False, True], ids=["known", "answered"])
+def test_set_services_replaces_what_gossip_had_added(
+    tmp_path: Path, *, answered: bool
+) -> None:
+    """ISS 1276: Core's `SetServices`, which overwrites rather than ORs.
+
+    Both rows the endpoint has are written, in memory and on disk.
+    """
+    peer_db = a_peer_db(data_dir=tmp_path)
+    endpoint = peer_address("1.2.3.4", 8333, services=_FULL)
+    peer_db.add_addresses([endpoint])
+    if answered:
+        peer_db.add_active_address(endpoint)
+    peer_db.set_services(
+        replace(endpoint, services=ServiceFlags.NODE_NONE),
+        ServiceFlags.NODE_NETWORK_LIMITED,
+    )
+    rows = [*peer_db.addresses, *peer_db.active_addresses]
+    assert len(rows) == 1 + answered
+    assert {row.services for row in rows} == {ServiceFlags.NODE_NETWORK_LIMITED}
+    peer_db.close()
+    reloaded = a_peer_db(data_dir=tmp_path)
+    rows = [*reloaded.addresses, *reloaded.active_addresses]
+    assert {row.services for row in rows} == {ServiceFlags.NODE_NETWORK_LIMITED}
+
+
+def test_set_services_records_no_endpoint_the_table_does_not_hold() -> None:
+    """ISS 1276: `SetServices_` bails out where `Find` finds nothing."""
+    peer_db = a_peer_db()
+    peer_db.add_addresses([peer_address("5.6.7.8", 8333)])
+    peer_db.set_services(peer_address("1.2.3.4", 8333), _FULL)
+    assert peer_db.addresses == {peer_address("5.6.7.8", 8333)}
+    assert not peer_db.active_addresses
 
 
 def test_updating_an_endpoint_already_known_does_not_spend_the_cap() -> None:

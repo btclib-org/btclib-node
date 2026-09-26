@@ -555,7 +555,8 @@ def a_handshake_node(
     """Build a node double with just what handshake callbacks read or write.
 
     `is_discouraged` answers for the IPs `discouraged_hosts` names,
-    whatever the port.
+    whatever the port, and the peer table is an empty one in memory
+    unless `peer_db` names another.
     """
     discouraged, record = discourage_recorder()
     discouraged_keys = {host_key(peer_address(host, 0)) for host in discouraged_hosts}
@@ -566,7 +567,7 @@ def a_handshake_node(
         p2p_manager=SimpleNamespace(
             pending_outbound_nonces=own_nonces,
             is_self_connect_nonce=own_nonces.__contains__,
-            peer_db=peer_db,
+            peer_db=(PeerDB(cast("Chain", None), None) if peer_db is None else peer_db),
             promote_connection=promote_connection or (lambda conn_id: None),
             maybe_discourage_and_disconnect=record,
             discouraged=discouraged,
@@ -644,6 +645,24 @@ def test_a_version_carrying_our_own_nonce_is_this_node_calling_itself() -> None:
     assert peer.stopped == [True]
     assert not peer.sent
     assert not node.p2p_manager.discouraged
+
+
+@pytest.mark.parametrize("inbound", [False, True], ids=["outbound", "inbound"])
+def test_an_outbound_peer_s_own_services_replace_its_row_s(*, inbound: bool) -> None:
+    """ISS 1276: Core's `SetServices` of an outbound `version`, before refusal.
+
+    A self-connection is refused after it, so the row is written all the
+    same; an inbound peer's word is not taken.
+    """
+    peer = a_peer(inbound=inbound)
+    full = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
+    peer_db = PeerDB(cast("Chain", None), None)
+    peer_db.add_addresses([replace(peer.address, services=full)])
+    node = a_handshake_node(pending_outbound_nonces=[7], peer_db=peer_db)
+    version(node, a_version(nonce=7, services=ServiceFlags.NODE_WITNESS), peer)
+    assert peer.stopped == [True]
+    (row,) = peer_db.addresses
+    assert row.services == (full if inbound else ServiceFlags.NODE_WITNESS)
 
 
 @pytest.mark.parametrize("inbound", [True, False], ids=["inbound", "outbound"])
