@@ -356,7 +356,7 @@ def test_the_lookup_is_held_to_addrconfig_where_libevent_holds_it(
 def test_a_zone_naming_an_interface_is_a_literal_libevent_parses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """ISS 1269: `evutil_inet_pton_scope` takes a zone `if_nametoindex` knows."""
+    """ISS 1269: `evutil_inet_pton_scope` takes a zone naming an interface."""
     monkeypatch.setattr(manager_module, "_WINDOWS", True)
     name = socket.if_nameindex()[0][1]
     assert manager_module._address_flags(f"fe80::1%{name}") == PASSIVE
