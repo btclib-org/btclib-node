@@ -8,9 +8,11 @@ import functools
 import os
 import re
 import runpy
+import stat
+import sys
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -27,6 +29,22 @@ from tests import (
     lock_from_another_process,
     wait_until_listening,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Sequence
+
+
+@pytest.fixture(autouse=True)
+def caller_umask() -> Iterator[None]:
+    """Give back, after each test, the umask `cli.main` makes owner-only.
+
+    The umask is the process's, so a test calling `main` would otherwise
+    leave it on every test after it in the same worker.
+    """
+    umask = os.umask(0o022)
+    os.umask(umask)
+    yield
+    os.umask(umask)
 
 
 def test_parse_conf_text_reads_a_key_value_pair_in_the_default_section() -> None:
@@ -355,6 +373,31 @@ def _build(tmp_path: Path, *argv: str, conf: str = "") -> Config:
     """Build a `Config` from `argv`, `conf` in `tmp_path`'s `bitcoin.conf`."""
     (tmp_path / "bitcoin.conf").write_text(conf, encoding="utf-8")
     return cli.build_config([f"-datadir={tmp_path}", *argv])
+
+
+@pytest.mark.parametrize("port", ["+80", " 80", "8_0", "\u0668\u0660"])
+def test_build_config_an_rpcbind_port_int_would_read_is_refused(
+    tmp_path: Path, port: str
+) -> None:
+    """`CheckHostPortOptions`' refusal, as `bitcoind` v31.1.0 words each."""
+    value = f"127.0.0.1:{port}"
+    expected = re.escape(f"Invalid port specified in -rpcbind: '{value}'")
+    with pytest.raises(ValueError, match=f"^{expected}$"):
+        _build(tmp_path, "-regtest", f"-rpcbind={value}")
+
+
+@pytest.mark.parametrize("option", ["connect", "addnode"])
+def test_build_config_a_peer_s_port_int_would_read_is_refused(
+    tmp_path: Path, option: str
+) -> None:
+    """Refused as `0x50` already is, where `int` would dial port 80.
+
+    `bitcoind` v31.1.0 starts with `-connect` or `-addnode` at
+    `127.0.0.1:+<port>` and never connects, as it does for `0x50`:
+    btclib-org/btclib-node#1264's refusal of what Core would look up.
+    """
+    with pytest.raises(ValueError, match="invalid port"):
+        _build(tmp_path, "-regtest", f"-{option}=127.0.0.1:+80")
 
 
 @pytest.mark.parametrize(
@@ -764,8 +807,41 @@ def test_build_config_server_off_reads_no_rpc_option(
     config = _build(tmp_path, "-server=0", argument)
     assert config.rpc_auth == ()
     assert config.rpc_cookie_perms is None
-    with pytest.raises(ValueError, match="rpc"):
-        _build(tmp_path, argument)
+    assert not config.rpc_auth_invalid
+    assert config.rpc_cookie_perms_error is None
+    config = _build(tmp_path, argument)
+    assert config.rpc_auth_invalid or config.rpc_cookie_perms_error is not None
+
+
+@pytest.mark.parametrize(
+    "argument", ["-rpcauth=bogus", "-rpccookieperms=bogus"], ids=["rpcauth", "perms"]
+)
+def test_main_a_refused_rpc_credential_prints_core_s_one_line(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    argument: str,
+) -> None:
+    """Stderr holds "Unable to start HTTP server" alone, as `bitcoind` has it.
+
+    `bitcoind` v31.1.0 with either value, and with both, prints this line
+    alone and exits 1; the value's own line is in its log.
+    """
+    monkeypatch.setattr(cli, "install_signal_handlers", lambda node: None)
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(
+            [
+                f"-datadir={tmp_path}",
+                "-regtest",
+                "-listen=0",
+                f"-rpcport={get_random_port()}",
+                argument,
+            ]
+        )
+    assert excinfo.value.code == 1
+    assert capsys.readouterr().err == (
+        "Error: Unable to start HTTP server. See debug log for details.\n"
+    )
 
 
 def test_build_config_noblocksdir_is_the_working_directory(
@@ -951,13 +1027,12 @@ def test_build_config_norpcauth_is_get_settings_list(
     assert [entry.user.decode() for entry in config.rpc_auth] == users
 
 
-def test_build_config_a_malformed_rpcauth_in_the_file_raises(tmp_path: Path) -> None:
-    """A malformed `rpcauth=` stops the node starting, as it stops Core."""
+def test_build_config_a_malformed_rpcauth_in_the_file_is_kept(tmp_path: Path) -> None:
+    """A malformed `rpcauth=` is left for the RPC listener to refuse."""
     (tmp_path / "bitcoin.conf").write_text(
         "regtest=1\nrpcauth=pytest:no-dollar-sign\n", encoding="utf-8"
     )
-    with pytest.raises(ValueError, match="Invalid -rpcauth argument"):
-        cli.build_config([f"-datadir={tmp_path}"])
+    assert cli.build_config([f"-datadir={tmp_path}"]).rpc_auth_invalid
 
 
 def test_build_config_datadir_a_file_raises(tmp_path: Path) -> None:
@@ -1879,10 +1954,6 @@ def test_main_these_options_are_refused_before_a_held_directory(
             ["-rpcbind=1.2.3.4:0", "-rpcport=0"],
             "Invalid port specified in -rpcport: '0'",
         ),
-        (
-            ["-rpcauth=bogus", "-rpccookieperms=bogus"],
-            "Invalid -rpccookieperms=bogus; must be one of 'owner', 'group', or 'all'.",
-        ),
     ],
     ids=[
         "blocksdir, maxconnections",
@@ -1890,7 +1961,6 @@ def test_main_these_options_are_refused_before_a_held_directory(
         "debug, prune",
         "rpcbind",
         "rpcport, rpcbind",
-        "rpccookieperms, rpcauth",
     ],
 )
 def test_build_config_refuses_in_core_order(
@@ -1898,10 +1968,7 @@ def test_build_config_refuses_in_core_order(
 ) -> None:
     """Two refusals in one command line: the one `bitcoind` names first.
 
-    Each measured on `bitcoind` v31.1.0 but the last, where both refusals
-    are its "Unable to start HTTP server", and `StartHTTPRPC` reads
-    `-rpccookieperms` ahead of `-rpcauth` (`src/httprpc.cpp`, at
-    bitcoin/bitcoin@9be056a8a7).
+    Each measured on `bitcoind` v31.1.0.
     """
     argv = [arg.format(x=tmp_path) for arg in argv]
     expected = re.escape(refusal.format(x=tmp_path))
@@ -2101,8 +2168,9 @@ def test_build_config_rpccookieperms_from_the_file(tmp_path: Path) -> None:
     """`rpccookieperms=` in the file, and a bad value refused."""
     (tmp_path / "bitcoin.conf").write_text("rpccookieperms=all\n", encoding="utf-8")
     assert cli.build_config([f"-datadir={tmp_path}"]).rpc_cookie_perms == 0o644
-    with pytest.raises(ValueError, match=r"^Invalid -rpccookieperms=x;"):
-        cli.build_config([f"-datadir={tmp_path}", "-rpccookieperms=x"])
+    config = cli.build_config([f"-datadir={tmp_path}", "-rpccookieperms=x"])
+    assert config.rpc_cookie_perms_error is not None
+    assert config.rpc_cookie_perms_error.startswith("Invalid -rpccookieperms=x;")
 
 
 def test_build_config_rpcwhitelist_from_the_command_line_and_the_file(
@@ -2165,3 +2233,47 @@ def test_rpcwhitelistdefault_is_read_as_core_s_interpret_bool(
     """
     argv = [f"-datadir={tmp_path}", f"-rpcwhitelistdefault={value}"]
     assert cli.build_config(argv).rpc_whitelist_default == expected
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX modes")
+def test_main_makes_what_the_node_creates_owner_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1198: Core's `SetupEnvironment` umask, set by `main` first.
+
+    Under a group- and world-readable umask, what is created after `main`
+    is 0700 for a directory and 0600 for a file, as `bitcoind` v31.1.0
+    leaves its own chain directory and `debug.log`.
+    """
+    os.umask(0o022)
+    monkeypatch.setattr(cli, "_before_lock", _refused)
+    with pytest.raises(SystemExit):
+        cli.main([])
+    directory = tmp_path / "chain"
+    directory.mkdir()
+    (directory / "history.log").write_text("")
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+    assert stat.S_IMODE((directory / "history.log").stat().st_mode) == 0o600
+
+
+def _refused(argv: Sequence[str]) -> Any:
+    """Stand in for `_before_lock`, refusing whatever it is given."""
+    raise ValueError(argv)
+
+
+def test_setup_environment_leaves_the_umask_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1198: Core's `SetupEnvironment` sets no umask under `WIN32`.
+
+    The calls are recorded rather than read back from the process, so
+    the test answers the same on every platform; the POSIX call after
+    it is the control.
+    """
+    calls: list[int] = []
+    monkeypatch.setattr(os, "umask", calls.append)
+    monkeypatch.setattr(sys, "platform", "win32")
+    cli._setup_environment()
+    monkeypatch.setattr(sys, "platform", "linux")
+    cli._setup_environment()
+    assert calls == [0o077]
