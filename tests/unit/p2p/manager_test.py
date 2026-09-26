@@ -37,7 +37,12 @@ from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.log import Logger
 from btclib_node.p2p import manager as manager_module
-from btclib_node.p2p.address import PeerDB, fixed_seed_addresses, peer_address
+from btclib_node.p2p.address import (
+    PeerDB,
+    endpoint_key,
+    fixed_seed_addresses,
+    peer_address,
+)
 from btclib_node.p2p.main import handle_p2p_handshake
 from btclib_node.p2p.manager import P2pManager
 
@@ -2047,6 +2052,94 @@ _SEEDNODE_ENABLED = (
 )
 
 
+def test_a_name_given_by_the_operator_is_dialled_as_a_manual_peer(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1264: `-connect`, `-addnode` and `addnode` dial by name.
+
+    The connection is a manual one, and the endpoint it came up on is
+    the name's, as Core's `m_addr_name` is.
+    """
+    manager, calls = a_name_fetching_manager(
+        a_manager, monkeypatch, ["1.2.3.4"], answering=frozenset({"1.2.3.4"})
+    )
+    asyncio.run(manager.async_connect_host("peer.example", 8333))
+    kept = peer_address("1.2.3.4", 8333)
+    assert calls == [
+        ("lookup", "peer.example", 256),
+        ("dial", kept),
+        ("create", kept, {"inbound": False, "automatic": False, "addr_fetch": False}),
+    ]
+    assert manager._named_endpoints == {("peer.example", 8333): endpoint_key(kept)}
+
+
+def test_a_name_already_connected_is_not_looked_up_again(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1264: Core's `AlreadyConnectedToHost`, ahead of any lookup."""
+    held = peer_address("1.2.3.4", 8333)
+    manager, calls = a_name_fetching_manager(
+        a_manager, monkeypatch, ["1.2.3.4"], conns=[a_conn(1, address=held)]
+    )
+    manager._named_endpoints[("peer.example", 8333)] = endpoint_key(held)
+    asyncio.run(manager.async_connect_host("peer.example", 8333))
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("host", "addr_fetch", "logged"),
+    [
+        pytest.param(
+            "peer.example",
+            False,
+            [("info", "Dial to peer.example:8333 did not come up")],
+            id="manual",
+        ),
+        pytest.param(
+            "::1", False, [("info", "Dial to [::1]:8333 did not come up")], id="ipv6"
+        ),
+        pytest.param("peer.example", True, [], id="addr-fetch"),
+    ],
+)
+def test_a_manual_name_that_connects_nowhere_is_logged(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    host: str,
+    addr_fetch: bool,
+    logged: list[tuple[str, str]],
+) -> None:
+    """ISS 1264: a manual dial lost is logged, as `async_connect` logs it.
+
+    An IP address is written as `ip_and_port` writes it.
+    """
+    manager, calls = a_name_fetching_manager(a_manager, monkeypatch, [])
+    asyncio.run(manager.async_connect_host(host, 8333, addr_fetch=addr_fetch))
+    assert calls[1:] == logged
+
+
+def test_a_given_ip_address_names_its_own_endpoint(a_manager: AManagerFactory) -> None:
+    """ISS 1264: Core's `m_addr_name` for an address, known from the start."""
+    manager = a_manager(connect=[("1.2.3.4", 8333), ("peer.example", 8333)])
+    assert manager._named_endpoints == {
+        ("1.2.3.4", 8333): endpoint_key(peer_address("1.2.3.4", 8333))
+    }
+
+
+def test_a_name_connected_is_not_redialled(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1264: the redial reads a name's endpoint, and resets its backoff."""
+    held = peer_address("1.2.3.4", 8333)
+    manager = a_manager([a_conn(1, address=held)], connect=[("peer.example", 8333)])
+    (key,) = manager._redial_peers
+    manager._named_endpoints[key] = endpoint_key(held)
+    manager._redial_backoff[key] = manager_module._REDIAL_MAX_SECONDS
+    monkeypatch.setattr(manager, "async_connect_host", _not_dialled)
+    asyncio.run(manager._maybe_redial_specified())
+    assert manager._redial_backoff[key] == manager_module._REDIAL_BASE_SECONDS
+
+
 def test_dns_seeding_waits_on_no_seed_node_where_none_is_given(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2402,13 +2495,22 @@ def test_connect_and_explicit_listen_binds_and_dials(
         target.join(timeout=10)
 
 
+async def _not_dialled(host: str, port: int) -> NoReturn:
+    """Stand in for `async_connect_host` where nothing may be dialled.
+
+    `pytest.fail` rather than an exception, which
+    `_maybe_redial_specified` would log and pass over.
+    """
+    pytest.fail(f"dialled {host}:{port}")
+
+
 def test_maybe_redial_specified_is_a_noop_with_nothing_specified(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """No `-connect`/`-addnode` given: nothing is ever redialled."""
     manager = a_manager()
     assert not manager._redial_peers
-    monkeypatch.setattr(manager, "async_connect", refuses_to_be_asked)
+    monkeypatch.setattr(manager, "async_connect_host", _not_dialled)
     asyncio.run(manager._maybe_redial_specified())
 
 
@@ -2419,7 +2521,7 @@ def test_maybe_redial_specified_skips_a_peer_not_yet_due(
     manager = a_manager(connect=[("1.2.3.4", 8333)])
     (key,) = manager._redial_peers
     manager._redial_next[key] = time.time() + 100
-    monkeypatch.setattr(manager, "async_connect", refuses_to_be_asked)
+    monkeypatch.setattr(manager, "async_connect_host", _not_dialled)
     asyncio.run(manager._maybe_redial_specified())
 
 
@@ -2435,11 +2537,11 @@ def test_maybe_redial_specified_dials_a_due_peer_and_doubles_the_backoff(
     """
     dialled: list[Any] = []
 
-    async def record_dial(address: Any) -> None:
-        dialled.append(address)
+    async def record_dial(host: str, port: int) -> None:
+        dialled.append((host, port))
 
     manager = a_manager(connect=[("1.2.3.4", 8333)])
-    monkeypatch.setattr(manager, "async_connect", record_dial)
+    monkeypatch.setattr(manager, "async_connect_host", record_dial)
     (key,) = manager._redial_peers
     assert manager._redial_backoff[key] == manager_module._REDIAL_BASE_SECONDS
     asyncio.run(manager._maybe_redial_specified())
@@ -2457,11 +2559,11 @@ def test_maybe_redial_specified_caps_the_backoff(
 ) -> None:
     """The backoff never grows past `_REDIAL_MAX_SECONDS`."""
 
-    async def do_nothing(address: Any) -> None:
-        del address
+    async def do_nothing(host: str, port: int) -> None:
+        del host, port
 
     manager = a_manager(connect=[("1.2.3.4", 8333)])
-    monkeypatch.setattr(manager, "async_connect", do_nothing)
+    monkeypatch.setattr(manager, "async_connect_host", do_nothing)
     (key,) = manager._redial_peers
     manager._redial_backoff[key] = manager_module._REDIAL_MAX_SECONDS
     asyncio.run(manager._maybe_redial_specified())
@@ -2477,7 +2579,7 @@ def test_maybe_redial_specified_resets_the_backoff_once_connected(
     manager = a_manager([conn], connect=[("1.2.3.4", 8333)])
     (key,) = manager._redial_peers
     manager._redial_backoff[key] = manager_module._REDIAL_MAX_SECONDS
-    monkeypatch.setattr(manager, "async_connect", refuses_to_be_asked)
+    monkeypatch.setattr(manager, "async_connect_host", _not_dialled)
     asyncio.run(manager._maybe_redial_specified())
     assert manager._redial_backoff[key] == manager_module._REDIAL_BASE_SECONDS
 
@@ -2488,7 +2590,7 @@ def test_maybe_redial_specified_logs_and_continues_on_a_dial_that_raises(
     """A dial that raises is logged, like every other housekeeping step."""
     logged: list[str] = []
     manager = a_manager(connect=[("1.2.3.4", 8333)])
-    monkeypatch.setattr(manager, "async_connect", refuses_to_be_asked)
+    monkeypatch.setattr(manager, "async_connect_host", refuses_to_be_asked)
     monkeypatch.setattr(manager.logger, "exception", logged.append)
     asyncio.run(manager._maybe_redial_specified())
     assert logged

@@ -97,9 +97,9 @@ names a peer to fetch addresses from, as Core's `ADDR_FETCH`
 connection does: one is dialled at once where the address table is
 empty, one more every ten seconds while fewer than two full-relay
 outbound peers are held, and each is dropped once it answers with more
-than one address. Only a literal IP address is
-accepted in any of the three; a hostname is refused rather than resolved
-([#573](https://github.com/btclib-org/btclib-node/issues/573)).
+than one address. A hostname in any of the three is resolved at each
+dial, as in Core, and the addresses it names are tried in a random order
+until one connects.
 `-dnsseed=0` turns DNS seeding off, and `-fixedseeds=0` the fall-back on
 the chain's fixed seeds.
 

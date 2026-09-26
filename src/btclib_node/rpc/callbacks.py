@@ -33,7 +33,7 @@ from btclib_node.main import (
     prune_up_to_height,
     verify_mempool_acceptance,
 )
-from btclib_node.p2p.address import ip_and_port, peer_address
+from btclib_node.p2p.address import ip_and_port
 from btclib_node.p2p.eviction import Network, is_valid, net_class
 from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import RpcError, bool_param, type_error
@@ -1026,15 +1026,12 @@ def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
 
     try:
         host, port = split_host_port(node_arg, node.chain.port)
-        address = peer_address(host, port)
     except ValueError as error:
-        # a hostname, or a malformed port: `_resolve_peers` (config.py)
-        # refuses `-addnode`'s own spec the identical way and for the
-        # identical reason -- this node's synchronous RPC path resolves
-        # no DNS
+        # a malformed port, which `_resolve_peers` (config.py) refuses
+        # in `-addnode`'s own spec the same way
         raise RpcError(RPCErrorCode.INVALID_PARAMETER, str(error)) from error
 
-    node.p2p_manager.connect(address)
+    node.p2p_manager.connect_host(host, port)
 
 
 def _btc_amount(sats: int) -> RawJSON:

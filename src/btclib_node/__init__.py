@@ -625,22 +625,11 @@ class Node(threading.Thread):
             )
         elif self.p2p_port:
             # `config.connect` and `config.addnode` together, once the
-            # listener is bound, or skipped under `-listen=0`.
-            #
-            # A one-shot dial, not the standing connection Core keeps:
-            # `CConnman::ThreadOpenConnections`'s own `-connect` arm
-            # loops forever, redialling with backoff
-            # (`for (int64_t nLoop = 0;; nLoop++)`, `src/net.cpp:2599`,
-            # at bitcoin/bitcoin@ca7162cde5), and
-            # `ThreadOpenAddedConnections` does the same for `-addnode`.
-            # `P2pManager._maybe_dial_more_peers` is this node's own
-            # equivalent of that loop and, under `-connect`, is exactly
-            # what `use_addrman_outgoing` above turns off -- so a peer
-            # named here that drops after the handshake is not redialled
-            # by anything. btclib-org/btclib-node#651 is the follow-up
-            # this leaves open, filed rather than solved in this branch.
+            # listener is bound, or skipped under `-listen=0`, each by
+            # the name given. A one-shot dial: a peer that drops is
+            # redialled by `P2pManager._maybe_redial_specified`.
             for host, port in (*self.config.connect, *self.config.addnode):
-                self.p2p_manager.connect(peer_address(host, port))
+                self.p2p_manager.connect_host(host, port)
         while not self.terminate_flag.is_set():
             if self._drain_message_queues():
                 time.sleep(IDLE_SLEEP_SECONDS)

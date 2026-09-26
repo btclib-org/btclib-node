@@ -42,7 +42,6 @@ from btclib_node.exceptions import (
 )
 from btclib_node.interpreter import warm
 from btclib_node.main import prune_up_to_height, update_chain
-from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
 from btclib_node.rpc.auth import COOKIE_FILE
 from tests import (
@@ -114,9 +113,9 @@ class AManager:
         """Record that `run`'s own teardown reached this stand-in."""
         self.stopped = True
 
-    def connect(self, address: Any) -> None:
-        """Record `address`, in the order `run` dialled it."""
-        self.connect_calls.append(address)
+    def connect_host(self, host: str, port: int) -> None:
+        """Record `host` and `port`, in the order `run` dialled them."""
+        self.connect_calls.append((host, port))
 
 
 @pytest.fixture
@@ -857,7 +856,7 @@ def test_a_port_configured_is_a_manager_started_and_stopped(
 
 
 def test_run_dials_every_connect_and_addnode_peer_at_startup(tmp_path: Path) -> None:
-    """`run` calls `p2p_manager.connect` once per `connect`/`addnode` peer.
+    """`run` calls `p2p_manager.connect_host` once per `connect`/`addnode` peer.
 
     Built by hand rather than through `a_networked_node`, which carries
     no `connect`/`addnode` of its own: the real `P2pManager` this
@@ -872,7 +871,7 @@ def test_run_dials_every_connect_and_addnode_peer_at_startup(tmp_path: Path) -> 
             p2p_port=18444,
             allow_rpc=False,
             connect=["10.0.0.1:1"],
-            addnode=["10.0.0.2:2"],
+            addnode=["example.com:2"],
             debug=True,
         )
     )
@@ -883,10 +882,7 @@ def test_run_dials_every_connect_and_addnode_peer_at_startup(tmp_path: Path) -> 
     try:
         node.start()
         wait_until(lambda: len(p2p_manager.connect_calls) == 2)
-        assert p2p_manager.connect_calls == [
-            peer_address("10.0.0.1", 1),
-            peer_address("10.0.0.2", 2),
-        ]
+        assert p2p_manager.connect_calls == [("10.0.0.1", 1), ("example.com", 2)]
     finally:
         node.stop()
 
@@ -894,7 +890,7 @@ def test_run_dials_every_connect_and_addnode_peer_at_startup(tmp_path: Path) -> 
 def test_run_dials_nothing_extra_without_connect_or_addnode(
     a_networked_node: Node,
 ) -> None:
-    """`connect`/`addnode` empty, the ordinary case: no `connect` call."""
+    """`connect`/`addnode` empty, the ordinary case: no `connect_host` call."""
     node = a_networked_node
     p2p_manager = cast("AManager", node.p2p_manager)
     node.start()

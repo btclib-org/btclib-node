@@ -182,6 +182,20 @@ _MAX_DRAWS_PER_PASS = 100
 _DISCOURAGED_CAPACITY = 50_000
 
 
+def _is_ip(host: str) -> bool:
+    """Answer whether `host` is an IP address rather than a name."""
+    try:
+        ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
+def _host_and_port(host: str, port: int) -> str:
+    """Return `ip_and_port`'s text for an IP address, `host:port` for a name."""
+    return ip_and_port(host, port) if _is_ip(host) else f"{host}:{port}"
+
+
 def _legacy_ipv6(ip: str) -> IPv6Address:
     """Return the sixteen octets Core's `CNetAddr` compares `ip` by."""
     parsed = ip_address(ip)
@@ -300,27 +314,33 @@ class P2pManager(threading.Thread):
         self._dial_start = time.time()
         self._next_fixed_seeds_check = 0.0
 
-        # `-connect` and `-addnode` together, by `endpoint_key`: what
-        # `_maybe_redial_specified` below redials once `Node.run`'s own
-        # one-shot dial (`__init__.py`, issue #573) drops one of them.
-        # Built once, here, for the same "a caller cannot change it
-        # mid-flight" reason as the two fields above -- and a plain
-        # `dict` rather than a `set`, since a redial needs the address
-        # back, not only the key it is compared by.
-        self._redial_peers: dict[bytes, NetworkAddressV2] = {
-            endpoint_key(address): address
-            for address in (
-                *(peer_address(host, port) for host, port in node.config.connect),
-                *(peer_address(host, port) for host, port in node.config.addnode),
-            )
+        # `-connect` and `-addnode` together, as given, a hostname
+        # included: what `_maybe_redial_specified` below redials once
+        # `Node.run`'s own one-shot dial (`__init__.py`, issue #573)
+        # drops one of them. Built once, here, for the same "a caller
+        # cannot change it mid-flight" reason as the two fields above.
+        self._redial_peers: tuple[tuple[str, int], ...] = tuple(
+            dict.fromkeys((*node.config.connect, *node.config.addnode))
+        )
+        # The endpoint each host and port given by name last connected
+        # on, which Core keeps on the connection as `m_addr_name` and
+        # `AlreadyConnectedToHost` compares a name against. An IP address
+        # names its own endpoint from the start, as `m_addr_name` is the
+        # address's text for a connection not made by name.
+        self._named_endpoints: dict[tuple[str, int], bytes] = {
+            (host, port): endpoint_key(peer_address(host, port))
+            for host, port in self._redial_peers
+            if _is_ip(host)
         }
         # Backoff state for the dict above, seeded in `run` rather than
         # here -- `run`'s own comment on `_redial_next` is where the
         # race this seeding avoids is argued.
-        self._redial_backoff: dict[bytes, float] = dict.fromkeys(
+        self._redial_backoff: dict[tuple[str, int], float] = dict.fromkeys(
             self._redial_peers, _REDIAL_BASE_SECONDS
         )
-        self._redial_next: dict[bytes, float] = dict.fromkeys(self._redial_peers, 0.0)
+        self._redial_next: dict[tuple[str, int], float] = dict.fromkeys(
+            self._redial_peers, 0.0
+        )
 
         self.connections: dict[int, Connection] = {}
         # A connection accepted or dialled but not yet past `verack`,
@@ -727,6 +747,67 @@ class P2pManager(threading.Thread):
         """Schedule `async_connect(address)` onto this manager's own loop."""
         asyncio.run_coroutine_threadsafe(self.async_connect(address), self.loop)
 
+    async def async_connect_host(
+        self, host: str, port: int, *, addr_fetch: bool = False
+    ) -> None:
+        """Resolve `host` and dial what it names, as Core's `ConnectNode` does.
+
+        Its `pszDest` arm (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
+        the v31.1 tag), behind `OpenNetworkConnection`'s
+        `AlreadyConnectedToHost`: nothing is dialled where the name
+        already connected, where an answer is invalid or where one is
+        already connected, and otherwise every answer, shuffled, is
+        dialled until one connects. A literal IP address is its own one
+        answer. A connection that is not an addr-fetch one is manual,
+        and one that came up with nothing is logged as
+        `async_connect` logs it.
+        """
+        name = (host, port)
+        with self._connections_lock:
+            connected = (
+                *self.connections.values(),
+                *self.pending_connections.values(),
+            )
+        held = {endpoint_key(c.address) for c in connected}
+        if self._named_endpoints.get(name) in held:
+            return
+        ips = await lookup_host(host, _MAX_NAME_ANSWERS)
+        secrets.SystemRandom().shuffle(ips)
+        addresses = [peer_address(ip, port) for ip in ips]
+        for ip, address in zip(ips, addresses, strict=True):
+            if not is_valid(_legacy_ipv6(ip)):
+                self.logger.debug(
+                    "Resolver returned invalid address %s for %s",
+                    ip_and_port(ip, port),
+                    host,
+                )
+                return
+            if endpoint_key(address) in held:
+                self.logger.info(
+                    "Not opening a connection to %s, already connected to %s",
+                    host,
+                    ip_and_port(ip, port),
+                )
+                return
+        for address in addresses:
+            sock = await dial(address)
+            if sock:
+                self._named_endpoints[name] = endpoint_key(address)
+                self.create_connection(
+                    sock,
+                    address,
+                    inbound=False,
+                    automatic=addr_fetch,
+                    addr_fetch=addr_fetch,
+                )
+                return
+        if not addr_fetch:
+            self.logger.info("Dial to %s did not come up", _host_and_port(host, port))
+
+    def connect_host(self, host: str, port: int) -> None:
+        """Schedule `async_connect_host(host, port)` onto this loop."""
+        asyncio.run_coroutine_threadsafe(self.async_connect_host(host, port), self.loop)
+
     def _prune_stale_connections(self, now: float) -> None:
         for conn in self.connections.copy().values():
             if conn.status == P2pConnStatus.Closed:
@@ -913,47 +994,15 @@ class P2pManager(threading.Thread):
         bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the entry leaves the
         queue whether or not it is dialled, as it does there where no
         `semOutbound` grant is free. An entry is a `-seednode` or a DNS
-        seed `get_addr_from_dns` returned, and is resolved as
-        `ConnectNode` resolves its `pszDest`: every answer shuffled, none
-        dialled where one is invalid or already connected, and the first
-        that connects kept.
+        seed `get_addr_from_dns` returned, dialled by
+        `async_connect_host`.
         """
         if not self._addr_fetches:
             return
         host, port = self._addr_fetches.popleft()
         if self._automatic_outbound() >= self.max_automatic_outbound:
             return
-        with self._connections_lock:
-            connected = (
-                *self.connections.values(),
-                *self.pending_connections.values(),
-            )
-        held = {endpoint_key(c.address) for c in connected}
-        ips = await lookup_host(host, _MAX_NAME_ANSWERS)
-        secrets.SystemRandom().shuffle(ips)
-        addresses = [peer_address(ip, port) for ip in ips]
-        for ip, address in zip(ips, addresses, strict=True):
-            if not is_valid(_legacy_ipv6(ip)):
-                self.logger.debug(
-                    "Resolver returned invalid address %s for %s",
-                    ip_and_port(ip, port),
-                    host,
-                )
-                return
-            if endpoint_key(address) in held:
-                self.logger.info(
-                    "Not opening a connection to %s, already connected to %s",
-                    host,
-                    ip_and_port(ip, port),
-                )
-                return
-        for address in addresses:
-            sock = await dial(address)
-            if sock:
-                self.create_connection(
-                    sock, address, inbound=False, automatic=True, addr_fetch=True
-                )
-                return
+        await self.async_connect_host(host, port, addr_fetch=True)
 
     async def _maybe_dial_more_peers(self) -> None:
         # `-connect`'s own other half: `peer_db`'s table is never drawn
@@ -1130,8 +1179,8 @@ class P2pManager(threading.Thread):
                     *self.pending_connections.values(),
                 )
             }
-        for key, address in self._redial_peers.items():
-            if key in connected:
+        for key in self._redial_peers:
+            if self._named_endpoints.get(key) in connected:
                 self._redial_backoff[key] = _REDIAL_BASE_SECONDS
                 continue
             if now < self._redial_next[key]:
@@ -1141,7 +1190,7 @@ class P2pManager(threading.Thread):
                 self._redial_backoff[key] * 2, _REDIAL_MAX_SECONDS
             )
             try:
-                await self.async_connect(address)
+                await self.async_connect_host(*key)
             except Exception:
                 self.logger.exception("Exception occurred")
 

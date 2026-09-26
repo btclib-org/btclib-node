@@ -225,28 +225,23 @@ def test_connect_and_addnode_both_take_several_entries() -> None:
     assert config.addnode == (("10.0.0.3", RegTest().port),)
 
 
-def test_connect_rejects_a_hostname() -> None:
-    """A spec whose host is not an IP literal raises rather than dialling wrong.
+def test_a_hostname_is_kept_for_the_dial_to_resolve() -> None:
+    """ISS 1264: Core's `ConnectNode` resolves a name at each dial.
 
-    `p2p_manager.connect(peer_address(...))` -- the route `Node.run`
-    dials `connect`/`addnode` through -- takes a parsed IP; this node
-    resolves no hostname anywhere in its synchronous startup path
-    (`config.py`'s own `_resolve_peers` docstring), so a hostname here
-    is refused rather than silently mishandled.
+    So nothing refuses one at start, a name that resolves to nothing
+    included.
     """
-    with pytest.raises(
-        ValueError, match="does not appear to be an IPv4 or IPv6 address"
-    ):
-        Config(chain="regtest", connect=["example.com"])
+    names = ["example.com", "nowhere.invalid:1"]
+    config = Config(chain="regtest", connect=names, addnode=names, seednode=names)
+    split = (("example.com", RegTest().port), ("nowhere.invalid", 1))
+    assert config.connect == config.addnode == config.seednode == split
 
 
 def test_seednode_is_the_same_shape_as_addnode() -> None:
-    """ISS 1192: `seednode` resolves as `addnode` does, a hostname refused."""
+    """ISS 1192: `seednode` is split as `addnode` is."""
     config = Config(chain="regtest", seednode=["10.0.0.1:1", "[::1]"])
     assert config.seednode == (("10.0.0.1", 1), ("::1", RegTest().port))
     assert config.addnode == ()
-    with pytest.raises(ValueError, match="does not appear to be an IPv4 or IPv6"):
-        Config(chain="regtest", seednode=["example.com"])
 
 
 @pytest.mark.parametrize(

@@ -16,7 +16,6 @@ leading underscore.
 
 import os
 from dataclasses import dataclass
-from ipaddress import ip_address
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -103,24 +102,15 @@ def split_host_port(spec: str, default_port: int) -> tuple[str, int]:
 def _resolve_peers(
     specs: Sequence[str], default_port: int
 ) -> tuple[tuple[str, int], ...]:
-    """Split every spec in `specs` and check its host is a literal IP.
+    """Split every spec in `specs` into its host and port.
 
-    A hostname is not resolved here, unlike Core's own `-connect`,
-    `-addnode` and `-seednode`, which dial through `CConnman::ConnectNode`
-    and resolve one via `Resolve` (`src/net.cpp`) same as any other peer.
-    This node dials a `NetworkAddressV2` built straight off a parsed IP
-    (`p2p/address.py`'s `peer_address`), and DNS is asked only through
-    `p2p/address.py`'s `lookup_host`, awaited on `P2pManager`'s asyncio
-    loop by DNS seeding and by `P2pManager._process_addr_fetch`. A
-    hostname is refused up front, at `Config` construction, rather than
-    dialled wrong or silently dropped later.
+    The host is not resolved here: Core's `-connect`, `-addnode` and
+    `-seednode` reach `CConnman::ConnectNode` as a name, resolved at
+    each dial (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag), which is `P2pManager.async_connect_host` here. A host that
+    resolves to nothing is not refused: its dial connects to nothing.
     """
-    peers: list[tuple[str, int]] = []
-    for spec in specs:
-        host, port = split_host_port(spec, default_port)
-        ip_address(host)  # raises ValueError on a hostname or garbage
-        peers.append((host, port))
-    return tuple(peers)
+    return tuple(split_host_port(spec, default_port) for spec in specs)
 
 
 def _resolve_cookie_file(
@@ -376,9 +366,8 @@ class Config:
 
         self.connect_given = bool(connect)
         # Core's own "-connect=0": still the -connect arm above, but
-        # nobody named to dial -- `_resolve_peers` never sees the "0"
-        # itself, since `ip_address("0")` is not a valid literal and
-        # would raise where Core instead special-cases the value.
+        # nobody named to dial -- `_resolve_peers` never sees the "0",
+        # which Core special-cases rather than dials as a host.
         self.connect = (
             () if list(connect) == ["0"] else _resolve_peers(connect, self.chain.port)
         )

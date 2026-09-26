@@ -481,6 +481,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   whose subdomain answers nothing is dialled for its addresses** (closes
   #1284), where the seed's own name was resolved and every answer kept.
 
+### `-connect`, `-addnode` and `-seednode` take a hostname, as in Core
+
+- **A hostname is resolved at each dial, and its addresses tried until one
+  connects** (closes #1264), where it stopped the node at start; the `addnode`
+  RPC takes one too.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
