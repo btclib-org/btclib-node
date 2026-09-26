@@ -460,6 +460,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A peer is recorded as answered only where gossip already holds its
   endpoint** (closes #1189), as Core's `Good_` updates only what addrman holds.
 
+### A gossip adds services to an address and never takes one away
+
+- **`add_addresses` ORs a known endpoint's services with the gossiped ones**
+  (closes #1276), as Core's `AddSingle` does, where the last gossip replaced
+  them.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

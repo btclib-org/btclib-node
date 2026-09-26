@@ -863,23 +863,35 @@ def test_an_address_a_peer_told_us_about_is_kept_without_its_timestamp() -> None
     assert kept.address == early.address
 
 
-def test_two_gossiped_records_for_one_endpoint_settle_on_the_latest_services() -> None:
-    """One endpoint gossiped with two different `services` settles on the last.
+_FULL = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
 
-    #247: two records for the same network id, address and port but
-    different `services` used to become two members of the table
-    instead of one settling on the endpoint's latest `services`, since
-    `services` too is part of the equality a plain set dedups on.
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        (_FULL, ServiceFlags.NODE_NONE),
+        (ServiceFlags.NODE_NONE, _FULL),
+        (ServiceFlags.NODE_NETWORK, ServiceFlags.NODE_WITNESS),
+    ],
+    ids=["fewer later", "more later", "disjoint"],
+)
+def test_two_gossiped_records_for_one_endpoint_settle_on_every_service(
+    tmp_path: Path, first: int, second: int
+) -> None:
+    """ISS 1276: Core's `AddSingle` ORs the services of a known endpoint.
+
+    #247: the two records are one member of the table, not one per
+    `services` value, and the row on disk carries the same services, so
+    a restart reads them back.
     """
-    # #247: two records for the same network id, address and port but
-    # different `services` used to become two members of the table
-    # instead of one settling on the endpoint's latest `services`
-    peer_db = a_peer_db()
-    old = peer_address("1.2.3.4", 8333, services=0)
-    new = peer_address("1.2.3.4", 8333, services=1)
-    peer_db.add_addresses([old, new])
+    peer_db = a_peer_db(data_dir=tmp_path)
+    peer_db.add_addresses([peer_address("1.2.3.4", 8333, services=first)])
+    peer_db.add_addresses([peer_address("1.2.3.4", 8333, services=second)])
     (kept,) = peer_db.addresses
-    assert kept.services == 1
+    assert kept.services == first | second
+    peer_db.close()
+    (reloaded,) = a_peer_db(data_dir=tmp_path).addresses
+    assert reloaded.services == first | second
 
 
 def test_updating_an_endpoint_already_known_does_not_spend_the_cap() -> None:

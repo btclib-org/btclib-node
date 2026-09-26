@@ -587,9 +587,10 @@ class PeerDB:
         """Merge `addresses` into `self.addresses`, checked and deduplicated.
 
         An address `_storable` refuses is dropped. Every other address
-        settles onto its own `endpoint_key`
-        row, up to `_MAX_ADDRESSES` distinct endpoints, past which a
-        genuinely new one is dropped too. Locked with `_addresses_lock`.
+        settles onto its own `endpoint_key` row, its services ORed into
+        those the row held, up to `_MAX_ADDRESSES` distinct endpoints,
+        past which a genuinely new one is dropped too. Locked with
+        `_addresses_lock`.
         """
         # a peer's word for when it last saw an address is not evidence,
         # and keeping it would make the one address several entries
@@ -612,9 +613,16 @@ class PeerDB:
                 # out of the in-memory set.
                 if not _storable(address):
                     continue
-                known = replace(address, timestamp=0)
-                key = endpoint_key(known)
+                key = endpoint_key(address)
                 existing = by_endpoint.get(key)
+                # a gossip adds services to an endpoint already held and
+                # never takes one away, as Core's `AddSingle` ORs them in
+                # (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+                # v31.1 tag)
+                services = address.services
+                if existing is not None:
+                    services |= existing.services
+                known = replace(address, timestamp=0, services=services)
                 # the cap is on distinct endpoints, so updating one
                 # already held does not spend it -- only a genuinely new
                 # endpoint can run the table out of room
