@@ -99,7 +99,7 @@ def split_host_port(spec: str, default_port: int) -> tuple[str, int]:
     return host, port
 
 
-def _resolve_peers(
+def _split_peers(
     specs: Sequence[str], default_port: int
 ) -> tuple[tuple[str, int], ...]:
     """Split every spec in `specs` into its host and port.
@@ -244,9 +244,10 @@ class Config:
     prune_target_mib: int | None
     debug: bool
     min_relay_feerate: FeeRate
-    # (ip, port) pairs, resolved by `_resolve_peers` above: Core's own
-    # `-connect`, which dials these alone, soft-sets DNS seeding off and
-    # turns off every automatically-drawn outbound connection
+    # (host, port) pairs, split by `_split_peers` above, the host an IP
+    # address or a name: Core's own `-connect`, which dials these alone,
+    # soft-sets DNS seeding off and turns off every automatically-drawn
+    # outbound connection
     # (`InitParameterInteraction`, `src/init.cpp:814-819`, and
     # `connOptions.m_use_addrman_outgoing = false`, `src/init.cpp:2337`,
     # both at bitcoin/bitcoin@ca7162cde5). Empty for `-connect=0` too --
@@ -290,9 +291,10 @@ class Config:
     # Core's own `-fixedseeds`, `DEFAULT_FIXEDSEEDS` (same file) true:
     # whether `P2pManager` may fall back on the chain's fixed seeds.
     fixedseeds: bool
-    # (ip, port) pairs, resolved by `_resolve_peers` above: Core's own
-    # `-seednode`, each dialled to fetch addresses and then dropped
-    # (`connOptions.vSeedNodes`, `src/init.cpp`, same sha).
+    # (host, port) pairs, split by `_split_peers` above, the host an IP
+    # address or a name: Core's own `-seednode`, each dialled to fetch
+    # addresses and then dropped (`connOptions.vSeedNodes`,
+    # `src/init.cpp`, same sha).
     seednode: tuple[tuple[str, int], ...]
 
     # every parameter here is one independent setting, not a group of
@@ -366,12 +368,12 @@ class Config:
 
         self.connect_given = bool(connect)
         # Core's own "-connect=0": still the -connect arm above, but
-        # nobody named to dial -- `_resolve_peers` never sees the "0",
+        # nobody named to dial -- `_split_peers` never sees the "0",
         # which Core special-cases rather than dials as a host.
         self.connect = (
-            () if list(connect) == ["0"] else _resolve_peers(connect, self.chain.port)
+            () if list(connect) == ["0"] else _split_peers(connect, self.chain.port)
         )
-        self.addnode = _resolve_peers(addnode, self.chain.port)
+        self.addnode = _split_peers(addnode, self.chain.port)
         self.listen = listen
 
         if max_connections < 0:
@@ -387,7 +389,7 @@ class Config:
             else dnsseed
         )
         self.fixedseeds = fixedseeds
-        self.seednode = _resolve_peers(seednode, self.chain.port)
+        self.seednode = _split_peers(seednode, self.chain.port)
 
         self.p2p_port = None
         if allow_p2p:

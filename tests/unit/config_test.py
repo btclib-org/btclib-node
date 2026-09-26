@@ -166,11 +166,11 @@ def test_connect_and_addnode_default_to_empty() -> None:
 def test_connect_zero_dials_nobody_but_still_counts_as_given() -> None:
     """Core's own `-connect=0`: an empty dial list, not a raised error.
 
-    `ip_address("0")` is not a valid literal, so `_resolve_peers` never
-    sees it -- `Config` special-cases the one-element `["0"]` list the
-    same way `CConnman`'s own options builder does
-    (`connect.size() != 1 || connect[0] != "0"`, `src/init.cpp:2333`,
-    at bitcoin/bitcoin@ca7162cde5) before resolving anything.
+    `_split_peers` never sees it -- `Config` special-cases the
+    one-element `["0"]` list the same way `CConnman`'s own options
+    builder does (`connect.size() != 1 || connect[0] != "0"`,
+    `src/init.cpp:2333`, at bitcoin/bitcoin@ca7162cde5) before
+    splitting anything.
     `connect_given` stays `True`: this is still the `-connect` arm,
     dialling nobody rather than never having been asked to.
     """

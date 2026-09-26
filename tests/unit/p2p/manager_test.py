@@ -1571,6 +1571,42 @@ def test_a_seed_node_is_dialled_at_once_for_an_empty_table(
     assert (line in logged) is queued
 
 
+@pytest.mark.parametrize(
+    ("holds_nothing", "line"),
+    [
+        pytest.param(
+            True,
+            "Empty addrman, adding seednode (seed.example:18444) to addrfetch",
+            id="empty",
+        ),
+        pytest.param(
+            False,
+            "Couldn't connect to peers from addrman after 10 seconds. Adding "
+            "seednode (seed.example:18444) to addrfetch",
+            id="held",
+        ),
+    ],
+)
+def test_a_seed_node_given_by_name_is_logged_by_its_name(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    holds_nothing: bool,
+    line: str,
+) -> None:
+    """ISS 1264: Core logs the `-seednode` string it was given."""
+    manager, _, logged = a_seed_node_manager(
+        a_manager,
+        monkeypatch,
+        seednode=(("seed.example", 18444),),
+        holds_nothing=holds_nothing,
+    )
+    manager._add_addr_fetch = True
+    manager._maybe_queue_seed_node()
+    assert logged == [line]
+    assert list(manager._addr_fetches) == [("seed.example", 18444)]
+
+
 def test_the_next_seed_node_is_queued_every_ten_seconds(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

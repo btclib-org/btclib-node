@@ -950,7 +950,7 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
 # bitcoin/bitcoin@bb529657); `add`/`remove` mutate `CConnman`'s own
 # persistent added-node list, which this node has no counterpart to --
 # `Config.addnode`, its own equivalent of `-addnode`, is a tuple
-# resolved once at startup (`config.py`'s `_resolve_peers`) and dialled
+# split once at startup (`config.py`'s `_split_peers`) and dialled
 # through `P2pManager`'s own redial set, never grown or shrunk at
 # runtime. `connect_nodes`, the one caller this node's own tf2 census
 # names for this method (`test_framework.py:568-594`, same sha), only
@@ -1027,7 +1027,7 @@ def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     try:
         host, port = split_host_port(node_arg, node.chain.port)
     except ValueError as error:
-        # a malformed port, which `_resolve_peers` (config.py) refuses
+        # a malformed port, which `_split_peers` (config.py) refuses
         # in `-addnode`'s own spec the same way
         raise RpcError(RPCErrorCode.INVALID_PARAMETER, str(error)) from error
 

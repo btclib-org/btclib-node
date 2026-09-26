@@ -153,8 +153,8 @@ _SEEDNODE_CHECK_INTERVAL = 0.5
 # Core's `10 * AVG_ADDRESS_BROADCAST_INTERVAL` (`src/net_processing.cpp`,
 # same sha), 30 seconds being the interval.
 _ADDR_FETCH_TIMEOUT = 10 * 30
-# How many addresses a name dialled by `_process_addr_fetch` is resolved
-# to at most: `ConnectNode`'s `Lookup(pszDest, ..., 256)` (`src/net.cpp`,
+# How many addresses a name `async_connect_host` dials is resolved to at
+# most: `ConnectNode`'s `Lookup(pszDest, ..., 256)` (`src/net.cpp`,
 # same sha).
 _MAX_NAME_ANSWERS = 256
 
@@ -264,8 +264,8 @@ class P2pManager(threading.Thread):
         # Core's `m_max_outbound_full_relay`, the target
         # `ThreadOpenConnections` dials full-relay peers up to, and
         # `_maybe_dial_more_peers` is the one dial held to it:
-        # `async_connect`, the `-connect`/`-addnode` route, reads no
-        # bound, as Core's manual connections take no `semOutbound`
+        # `async_connect_host`, the `-connect`/`-addnode` route, reads
+        # no bound, as Core's manual connections take no `semOutbound`
         # grant. Read once, for the same reason as the two fields above.
         max_connections = node.config.max_connections
         full_relay = min(_MAX_OUTBOUND_FULL_RELAY_CONNECTIONS, max_connections)
@@ -460,7 +460,7 @@ class P2pManager(threading.Thread):
         # thread was started, which is true before `run` below has
         # scheduled anything, so a peer that dials on the strength of it
         # is refused -- and `dial` answers a refusal with None, which
-        # `async_connect` drops. Nothing retries.
+        # `async_connect` drops. Nothing retries it.
         self.listening = threading.Event()
         # set by `run` once it has bound, given up on binding, or been
         # told not to bind by `-listen=0`, which is what
@@ -540,7 +540,7 @@ class P2pManager(threading.Thread):
 
         `info`, matching `verack`'s own line: this runs once per
         connection actually made, dialled or accepted, never once per
-        attempt -- `async_connect` and `_maybe_dial_more_peers` below
+        attempt -- every dial below
         only call this once `dial` has already returned a socket, so a
         dial that goes nowhere never reaches here to begin with.
 
@@ -725,13 +725,12 @@ class P2pManager(threading.Thread):
 
         Logged rather than silent where `dial` (p2p/address.py) comes
         back with nothing: unlike `_maybe_dial_more_peers` below, whose
-        next pass draws another address, and `_maybe_redial_specified`
-        beside it, which comes back to the same named peer on its own
-        backoff, `connect` is only ever called once per address --
-        `Node.run`'s own one-shot startup dial, or a caller reaching for
-        one specific peer -- so a dial lost here has nothing behind it
-        to try again, and used to vanish with nothing in `debug.log`
-        naming it (issue #1020).
+        next pass draws another address, `connect` is called once per
+        address, by a caller reaching for one specific peer, so a dial
+        lost here has nothing behind it to try again, and used to vanish
+        with nothing in `debug.log` naming it (issue #1020). A peer given
+        by `-connect`, `-addnode` or the `addnode` RPC is dialled by
+        `async_connect_host` instead.
         """
         client = await dial(address)
         if client:
@@ -983,14 +982,14 @@ class P2pManager(threading.Thread):
         if self.peer_db.holds_nothing:
             self.logger.info(
                 "Empty addrman, adding seednode (%s) to addrfetch",
-                ip_and_port(host, port),
+                _host_and_port(host, port),
             )
         else:
             self.logger.info(
                 "Couldn't connect to peers from addrman after %d seconds. "
                 "Adding seednode (%s) to addrfetch",
                 _ADD_NEXT_SEEDNODE,
-                ip_and_port(host, port),
+                _host_and_port(host, port),
             )
 
     async def _process_addr_fetch(self) -> None:
@@ -1015,7 +1014,7 @@ class P2pManager(threading.Thread):
         # from at all, on top of `run` below not scheduling the DNS
         # lookup that would otherwise fill it unless `-dnsseed` is
         # given. `Node.run` dials `node.config.connect` directly through
-        # `connect()`, which does not pass through here.
+        # `connect_host()`, which does not pass through here.
         if not self.use_addrman_outgoing:
             return
         # `ThreadOpenConnections`'s own order: a `-seednode` is queued
@@ -1648,7 +1647,7 @@ class P2pManager(threading.Thread):
         # scheduled, rather than at `__init__` time: `Node.run`'s own
         # one-shot dial for these same peers (`__init__.py`, issue
         # #573) races this manager's first `manage_connections` pass,
-        # each reaching `async_connect` from a different thread, and a
+        # each reaching `async_connect_host` from a different thread, and a
         # peer `_redial_next` already called overdue by the time this
         # loop starts would sometimes win that race and dial a peer
         # `Node.run` is dialling in the same instant. A `__init__`-time
