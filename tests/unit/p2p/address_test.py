@@ -588,7 +588,7 @@ def test_each_seed_is_asked_for_its_x9_subdomain_and_answers_on_the_chain_port(
     """ISS 1284: Core's `x%x.` of `SeedsServiceFlags`, never the bare name.
 
     The table is the union of what every seed answers, on the chain's
-    own port, and a seed that answered is not handed back.
+    own port, and each seed answers how many addresses it named.
     """
     peer_db = a_peer_db(a_chain(["one.example", "two.example"]))
     loop = FakeLoop(
@@ -598,7 +598,11 @@ def test_each_seed_is_asked_for_its_x9_subdomain_and_answers_on_the_chain_port(
         }
     )
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
-    assert asyncio.run(peer_db.get_addr_from_dns()) == []
+    named = [
+        asyncio.run(peer_db.query_dns_seed(seed))
+        for seed in ("one.example", "two.example")
+    ]
+    assert named == [2, 2]
     assert loop.asked == [
         ("x9.one.example", socket.AI_ADDRCONFIG),
         ("x9.two.example", socket.AI_ADDRCONFIG),
@@ -615,19 +619,20 @@ def test_each_seed_is_asked_for_its_x9_subdomain_and_answers_on_the_chain_port(
     [socket.gaierror("no such host"), []],
     ids=["failed", "empty"],
 )
-def test_a_seed_whose_subdomain_answers_nothing_is_handed_back(
+def test_a_seed_whose_subdomain_answers_nothing_names_nothing(
     monkeypatch: pytest.MonkeyPatch, answer: Exception | list[str]
 ) -> None:
-    """ISS 1284: Core's `AddAddrFetch(seed)`, of the name the chain gives.
+    """ISS 1284: the bare name is not resolved here: `P2pManager` dials it.
 
-    The bare name is not resolved here: `P2pManager` dials it.
+    Core's `AddAddrFetch(seed)`, which `P2pManager` does for a seed that
+    names nothing.
     """
-    peer_db = a_peer_db(a_chain(["down.example", "up.example"]))
-    loop = FakeLoop({"x9.down.example": answer, "x9.up.example": ["1.2.3.4"]})
+    peer_db = a_peer_db(a_chain(["down.example"]))
+    loop = FakeLoop({"x9.down.example": answer})
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
-    assert asyncio.run(peer_db.get_addr_from_dns()) == ["down.example"]
+    assert asyncio.run(peer_db.query_dns_seed("down.example")) == 0
     assert "down.example" not in {host for host, _ in loop.asked}
-    assert peer_db.addresses == {peer_address("1.2.3.4", 18444)}
+    assert not peer_db.addresses
 
 
 def test_a_seed_adds_at_most_32_answers_in_the_resolver_s_order(
@@ -642,7 +647,7 @@ def test_a_seed_adds_at_most_32_answers_in_the_resolver_s_order(
     peer_db = a_peer_db(a_chain(["many.example"]))
     loop = FakeLoop({"x9.many.example": ["fd6b:88c0:8724::1", *ips]})
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
-    asyncio.run(peer_db.get_addr_from_dns())
+    assert asyncio.run(peer_db.query_dns_seed("many.example")) == 32
     assert peer_db.addresses == {peer_address(ip, 18444) for ip in ips[:32]}
 
 
@@ -735,27 +740,6 @@ def test_an_answer_of_another_family_is_passed_over(
 def test_a_numeric_host_resolves_to_itself() -> None:
     """ISS 1284: the real resolver, asked for a literal, answers the literal."""
     assert asyncio.run(lookup_host("127.0.0.1", 256)) == ["127.0.0.1"]
-
-
-def test_a_node_that_already_knows_peers_does_not_ask_the_seeds(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """`ask_dns_nodes` false skips the DNS lookup, checked at the lookup itself.
-
-    `get_running_loop` is patched to fail the test outright rather than
-    to record that it was called: a flag set from inside an `or`'s
-    right-hand side (`asked.append(True) or FakeLoop({})`) would look
-    equivalent but is not, since `list.append` returns `None` and that
-    branch runs every time regardless of whether the left side already
-    holds a value. Failing where the call would happen has no such gap.
-    """
-    peer_db = a_peer_db(a_chain(["up.example"]))
-    peer_db.addresses.add(peer_address("1.2.3.4", 8333))
-    peer_db.ask_dns_nodes = False
-    monkeypatch.setattr(
-        asyncio, "get_running_loop", lambda: pytest.fail("asked the seeds")
-    )
-    assert asyncio.run(peer_db.get_addr_from_dns()) == []
 
 
 def test_an_address_is_drawn_from_the_ones_that_can_be_dialled() -> None:
@@ -1093,79 +1077,6 @@ def test_an_address_that_answered_survives_a_restart_and_is_drawn(
     second.close()
 
 
-def test_a_fresh_store_asks_the_seeds(tmp_path: Path) -> None:
-    """A brand-new, empty store starts out willing to ask the DNS seeds."""
-    peer_db = a_peer_db(data_dir=tmp_path)
-    assert peer_db.ask_dns_nodes
-    peer_db.close()
-
-
-def test_a_store_holding_only_unconfirmed_gossip_still_asks_the_seeds(
-    tmp_path: Path,
-) -> None:
-    """A store that only ever heard gossip, none of it confirmed, still asks.
-
-    #89: a table that is not empty but is not dialable either -- a
-    seed that answered with AAAA records alone leaves exactly this --
-    is not a reason to skip the seeds.
-    """
-    # #89: a table that is not empty but is not dialable either -- a
-    # seed that answered with AAAA records alone leaves exactly this --
-    # is not a reason to skip the seeds
-    first = a_peer_db(data_dir=tmp_path)
-    first.add_addresses([peer_address("2a01:4f8::1", 8333)])
-    first.close()
-
-    second = a_peer_db(data_dir=tmp_path)
-    assert second.ask_dns_nodes
-    second.close()
-
-
-def test_a_store_with_a_recently_answered_address_skips_the_seeds(
-    tmp_path: Path,
-) -> None:
-    """A store restarting with a recently confirmed address skips the seeds.
-
-    `ask_dns_nodes` is decided from `get_active_addresses()` at
-    construction, filtered to what `can_connect` accepts, so a durable
-    active row read back from a fresh store answers the same way a
-    freshly confirmed one in memory would.
-    """
-    first = a_peer_db(data_dir=tmp_path)
-    answered = peer_address("1.2.3.4", 8333)
-    first.add_addresses([answered])
-    first.add_active_address(answered)
-    first.close()
-
-    second = a_peer_db(data_dir=tmp_path)
-    assert not second.ask_dns_nodes
-    second.close()
-
-
-def test_a_stale_answered_address_no_longer_holds_off_the_seeds(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An active address recorded four hours ago no longer skips the seeds.
-
-    `time.time` is patched to four hours in the past only for the
-    `add_active_address` call, so the row is written stale rather than
-    aged after the fact; a fresh `PeerDB` on the same store reads it
-    back past the three-hour active window and asks the seeds anyway.
-    """
-    first = a_peer_db(data_dir=tmp_path)
-    stale = peer_address("1.2.3.4", 8333)
-    four_hours_ago = time.time() - 3600 * 4
-    with monkeypatch.context() as patch:
-        patch.setattr(time, "time", lambda: four_hours_ago)
-        first.add_addresses([stale])
-        first.add_active_address(stale)
-    first.close()
-
-    second = a_peer_db(data_dir=tmp_path)
-    assert second.ask_dns_nodes
-    second.close()
-
-
 def test_get_active_addresses_deletes_a_stale_row_from_the_store(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1200,8 +1111,7 @@ def test_a_stale_answered_row_does_not_survive_a_restart(
 ) -> None:
     """A stale active row is gone from the store by the time a restart returns.
 
-    `__init__` already calls `get_active_addresses` once, to decide
-    `ask_dns_nodes`, so the pruning
+    `__init__` already calls `get_active_addresses` once, so the pruning
     `test_get_active_addresses_deletes_a_stale_row_from_the_store`
     checks explicitly also happens as a side effect of just opening a
     second `PeerDB` on the same store.
@@ -1216,9 +1126,9 @@ def test_a_stale_answered_row_does_not_survive_a_restart(
     first.close()
 
     second = a_peer_db(data_dir=tmp_path)
-    # `__init__` already calls `get_active_addresses` once, to decide
-    # `ask_dns_nodes`, so the row is gone from the store by the time
-    # construction returns, where the gossiped row it was known by stays
+    # `__init__` already calls `get_active_addresses` once, so the row is
+    # gone from the store by the time construction returns, where the
+    # gossiped row it was known by stays
     assert second.db is not None
     assert [key for key, _ in second.db] == [
         b"known-" + address_module.endpoint_key(stale)

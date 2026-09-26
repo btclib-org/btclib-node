@@ -357,6 +357,11 @@ _OPTIONS: dict[str, _Option] = {
         "Allow fixed seeds if DNS seeds don't provide peers (default: 1)",
         _CONNECTION_TITLE,
     ),
+    "forcednsseed": _Option(
+        "",
+        "Always query for peer addresses via DNS lookup (default: 0)",
+        _CONNECTION_TITLE,
+    ),
     "h": _Option("", "", None),
     "help": _Option(
         "", "Print this help message and exit (also -h or -?)", _OPTIONS_TITLE
@@ -1168,8 +1173,9 @@ class _BeforeLock:
 
     `directories` is a `Config` of the chain, the data directory and
     `-blocksdir`, the fields that name the directories `Node.__init__`
-    locks, and of `-maxconnections`, which `Config.__init__` refuses just
-    after a missing blocks directory, as Core does.
+    locks, and of `-forcednsseed` and `-maxconnections`, which
+    `Config.__init__` refuses just after a missing blocks directory, as
+    Core does.
     """
 
     settings: _Settings
@@ -1187,7 +1193,8 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
 
     `InitConfig`, then `AppInitParameterInteraction` (`src/init.cpp`, at
     bitcoin/bitcoin@9be056a8a7) in its order: a missing blocks directory,
-    a negative `-maxconnections`, `-debug`'s categories, `-prune`.
+    `-forcednsseed` beside a `-dnsseed` that is off, a negative
+    `-maxconnections`, `-debug`'s categories, `-prune`.
     """
     settings, base_dir, chain_name = _read_settings(argv)
     # `GetBlocksDirPath`: a negated `-blocksdir` is an empty path, which
@@ -1198,11 +1205,19 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     max_connections = _get_int(settings, "maxconnections")
     if max_connections is None:
         max_connections = DEFAULT_MAX_PEER_CONNECTIONS
+    # `-dnsseed` as `InitParameterInteraction` soft-sets it, which
+    # `-forcednsseed` is refused against
+    dnsseed = _get_bool(settings, "dnsseed")
+    if dnsseed is None:
+        connect = _get_args(settings, "connect") or _is_negated(settings, "connect")
+        dnsseed = not connect and max_connections > 0
     directories = Config(
         chain=chain_name,
         data_dir=base_dir,
         blocks_dir=blocksdir,
         max_connections=max_connections,
+        dnsseed=dnsseed,
+        forcednsseed=bool(_get_bool(settings, "forcednsseed")),
     )
     debug = _resolve_debug(settings)
     prune = _get_int(settings, "prune") or 0
@@ -1302,6 +1317,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         listen=listen,
         max_connections=before.max_connections,
         dnsseed=dnsseed,
+        forcednsseed=bool(_get_bool(settings, "forcednsseed")),
         fixedseeds=fixedseeds is None or fixedseeds,
         seednode=_get_args(settings, "seednode"),
         rpcauth=_get_args(settings, "rpcauth"),

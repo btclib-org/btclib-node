@@ -1393,6 +1393,9 @@ def test_build_config_connect_and_addnode_reach_config() -> None:
     ("argv", "dnsseed", "fixedseeds"),
     [
         pytest.param([], True, True, id="default"),
+        pytest.param(
+            ["-connect=0", "-dnsseed", "-forcednsseed"], True, True, id="forced"
+        ),
         pytest.param(["-nodnsseed", "-fixedseeds=0"], False, False, id="off"),
         pytest.param(["-connect=10.0.0.1"], False, True, id="connect"),
         pytest.param(["-noconnect"], False, True, id="noconnect"),
@@ -1403,10 +1406,14 @@ def test_build_config_connect_and_addnode_reach_config() -> None:
 def test_build_config_reads_dnsseed_and_fixedseeds(
     tmp_path: Path, argv: list[str], *, dnsseed: bool, fixedseeds: bool
 ) -> None:
-    """ISS 1192: `-dnsseed`'s default is soft-set off, `-fixedseeds`' is not."""
+    """ISS 1192: `-dnsseed`'s default is soft-set off, `-fixedseeds`' is not.
+
+    ISS 1265: `-forcednsseed` is read beside them.
+    """
     config = cli.build_config([f"-datadir={tmp_path}", "-regtest", *argv])
     assert config.dnsseed is dnsseed
     assert config.fixedseeds is fixedseeds
+    assert config.forcednsseed is ("-forcednsseed" in argv)
 
 
 def test_build_config_seednode_is_a_list_from_every_level(tmp_path: Path) -> None:
@@ -1567,6 +1574,10 @@ _BEFORE_THE_LOCK = [
     (["-debug=bogus"], "Unsupported logging category -debug=bogus."),
     (["-maxconnections=-1"], "-maxconnections must be greater or equal than zero"),
     (
+        ["-forcednsseed", "-nodnsseed"],
+        "Cannot set -forcednsseed to true when setting -dnsseed to false.",
+    ),
+    (
         ["-blocksdir={x}/nosuch"],
         'Specified blocks directory "{x}/nosuch" does not exist.',
     ),
@@ -1627,6 +1638,14 @@ def test_main_these_options_are_refused_before_a_held_directory(
             "-maxconnections must be greater or equal than zero",
         ),
         (
+            ["-blocksdir={x}/nosuch", "-forcednsseed", "-dnsseed=0"],
+            'Specified blocks directory "{x}/nosuch" does not exist.',
+        ),
+        (
+            ["-forcednsseed", "-maxconnections=-1"],
+            "Cannot set -forcednsseed to true when setting -dnsseed to false.",
+        ),
+        (
             ["-debug=bogus", "-prune=-1"],
             "Unsupported logging category -debug=bogus.",
         ),
@@ -1646,6 +1665,8 @@ def test_main_these_options_are_refused_before_a_held_directory(
     ids=[
         "blocksdir, maxconnections",
         "maxconnections, debug",
+        "blocksdir, forcednsseed",
+        "forcednsseed, maxconnections",
         "debug, prune",
         "rpcbind",
         "rpcport, rpcbind",

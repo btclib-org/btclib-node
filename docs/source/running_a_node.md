@@ -100,8 +100,9 @@ outbound peers are held, and each is dropped once it answers with more
 than one address. Only a literal IP address is
 accepted in any of the three; a hostname is refused rather than resolved
 ([#573](https://github.com/btclib-org/btclib-node/issues/573)).
-`-dnsseed=0` turns DNS seeding off, and `-fixedseeds=0` the fall-back on
-the chain's fixed seeds.
+`-dnsseed=0` turns DNS seeding off, `-forcednsseed` asks every DNS seed at
+once whatever the address table holds, and `-fixedseeds=0` turns off the
+fall-back on the chain's fixed seeds.
 
 This is the answer to "I already have the chain on another node, can
 this one validate it against that copy instead of the internet":

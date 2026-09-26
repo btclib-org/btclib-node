@@ -169,6 +169,29 @@ def _resolve_chain(chain: Chain | str) -> Chain:
     raise UnknownChainError(chain)
 
 
+def _dnsseed(
+    *,
+    dnsseed: bool | None,
+    forcednsseed: bool,
+    connect_given: bool,
+    max_connections: int,
+) -> bool:
+    """Return `-dnsseed` after Core's soft-set, refusing `-forcednsseed`.
+
+    `None` is the soft-set's own default: off where `-connect` is given
+    or `-maxconnections` is not positive. `-forcednsseed` with seeding
+    off is refused after that soft-set and ahead of the `-maxconnections`
+    refusal, the order of `AppInitParameterInteraction` (`src/init.cpp`,
+    at bitcoin/bitcoin@9be056a8a7), whose wording this is.
+    """
+    if dnsseed is None:
+        dnsseed = not connect_given and max_connections > 0
+    if forcednsseed and not dnsseed:
+        err_msg = "Cannot set -forcednsseed to true when setting -dnsseed to false."
+        raise ValueError(err_msg)
+    return dnsseed
+
+
 @dataclass
 class Config:
     """Every setting one `Node` is built from, flat and keyword-only.
@@ -297,6 +320,9 @@ class Config:
     # soft-sets it false: `__init__` below computes that default where it
     # is given `None`, an explicit value winning over it.
     dnsseed: bool
+    # Core's own `-forcednsseed`, `DEFAULT_FORCEDNSSEED` (`src/net.h`, same
+    # sha) false: every DNS seed asked at once, whatever the table holds
+    forcednsseed: bool
     # Core's own `-fixedseeds`, `DEFAULT_FIXEDSEEDS` (same file) true:
     # whether `P2pManager` may fall back on the chain's fixed seeds.
     fixedseeds: bool
@@ -343,6 +369,7 @@ class Config:
         listen: bool = True,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
         dnsseed: bool | None = None,
+        forcednsseed: bool = False,
         fixedseeds: bool = True,
         seednode: Sequence[str] = (),
         rpcauth: Sequence[str] = (),
@@ -385,18 +412,19 @@ class Config:
         self.addnode = _resolve_peers(addnode, self.chain.port)
         self.listen = listen
 
+        self.dnsseed = _dnsseed(
+            dnsseed=dnsseed,
+            forcednsseed=forcednsseed,
+            connect_given=self.connect_given,
+            max_connections=max_connections,
+        )
+        self.forcednsseed = forcednsseed
         if max_connections < 0:
-            # Core's own wording (`AppInitParameterInteraction`,
-            # `src/init.cpp`, at bitcoin/bitcoin@9be056a8a7), fatal
-            # there too
+            # Core's own wording (`AppInitParameterInteraction`, same
+            # sha), fatal there too
             err_msg = "-maxconnections must be greater or equal than zero"
             raise ValueError(err_msg)
         self.max_connections = max_connections
-        self.dnsseed = (
-            not self.connect_given and max_connections > 0
-            if dnsseed is None
-            else dnsseed
-        )
         self.fixedseeds = fixedseeds
         self.seednode = _resolve_peers(seednode, self.chain.port)
 

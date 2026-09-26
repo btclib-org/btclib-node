@@ -5,6 +5,7 @@
 """`Config`'s chain resolution, path arithmetic, ports and feerate floor."""
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -269,6 +270,33 @@ def test_dnsseed_is_soft_set_off_as_core_s(
     and `-dnsseed=1` beside it starts the DNS seed thread all the same.
     """
     assert Config(chain="regtest", **kwargs).dnsseed is dnsseed
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        pytest.param({"dnsseed": False}, id="dnsseed-0"),
+        pytest.param({"connect": ["0"]}, id="noconnect"),
+        pytest.param({"max_connections": 0}, id="maxconnections-0"),
+        pytest.param({"max_connections": -1}, id="maxconnections-negative"),
+    ],
+)
+def test_forcednsseed_is_refused_beside_dnsseed_off(kwargs: dict[str, Any]) -> None:
+    """ISS 1265: `AppInitParameterInteraction`'s refusal, after the soft-set.
+
+    Measured on `bitcoind` v31.1.0 for each: it exits 1 with this, the
+    negative `-maxconnections` included, which it refuses only after.
+    """
+    message = "Cannot set -forcednsseed to true when setting -dnsseed to false."
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        Config(chain="regtest", forcednsseed=True, **kwargs)
+
+
+def test_forcednsseed_is_off_unless_given() -> None:
+    """ISS 1265: `DEFAULT_FORCEDNSSEED`, and an explicit `-dnsseed` wins."""
+    assert Config(chain="regtest").forcednsseed is False
+    forced = Config(chain="regtest", connect=["0"], dnsseed=True, forcednsseed=True)
+    assert forced.forcednsseed is True
 
 
 def test_fixedseeds_is_on_unless_turned_off() -> None:

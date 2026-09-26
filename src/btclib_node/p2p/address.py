@@ -410,7 +410,7 @@ class PeerDB:
         # A lock of its own, not `_active_lock` below: `add_addresses`
         # reaches this set from both threads too (#298) -- gossip
         # through `callbacks.addr`/`addrv2` on `Node`'s, DNS seed
-        # answers through `get_addr_from_dns` on `P2pManager`'s, and
+        # answers through `query_dns_seed` on `P2pManager`'s, and
         # `address_sampler`'s own dialable-address comprehension on
         # `P2pManager`'s as well, racing against gossip on `Node`'s, and
         # `add_active_address` asks `_known_keys` under it on `Node`'s.
@@ -467,16 +467,9 @@ class PeerDB:
         self.db = KeyValueStore(data_dir / "peers") if data_dir is not None else None
 
         self.init_from_db()
-        # DNS is asked only where the durable table came back with
-        # nothing this node has itself confirmed working recently:
-        # `get_active_addresses` is what "recently" already means, and
-        # `can_connect` is what catches a table `add_addresses` filled
-        # with tor, i2p or an ipv6-only answer from a seed -- #89, where
-        # a nonempty table was exactly the case DNS was skipped for and
-        # none of it was dialable.
-        self.ask_dns_nodes = not any(
-            can_connect(address) for address in self.get_active_addresses()
-        )
+        # an answered row that aged out while the node was down leaves
+        # the store now, rather than at the first prune
+        self.get_active_addresses()
 
     def init_from_db(self) -> None:
         """Load every stored address into `addresses` or `active_addresses`.
@@ -553,35 +546,33 @@ class PeerDB:
         if self.db is not None:
             self.db.close()
 
-    async def get_addr_from_dns(self) -> list[str]:
-        """Ask every chain DNS seed for peers; return the ones to addr-fetch.
+    async def query_dns_seed(self, seed: str) -> int:
+        """Ask one chain DNS seed for peers, answering how many it named.
 
-        Core's `ThreadDNSAddressSeed` asks a seed's `x9.` subdomain
-        (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+        One seed of Core's `ThreadDNSAddressSeed` (`src/net.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): its `x9.` subdomain,
         on which the seed answers with peers offering `NODE_NETWORK` and
-        `NODE_WITNESS`, and adds at most `_MAX_SEED_ANSWERS` of them on
-        the chain's port. A seed whose subdomain answers nothing is
-        returned, for `P2pManager` to queue as Core's `AddAddrFetch(seed)`.
-
-        A no-op unless `ask_dns_nodes` said, at construction time, that
-        the durable table came back with nothing dialable.
+        `NODE_WITNESS`, and at most `_MAX_SEED_ANSWERS` of the answers,
+        added on the chain's port. `P2pManager` queues a seed that names
+        none for an addr-fetch, Core's `AddAddrFetch(seed)`.
         """
-        if not self.ask_dns_nodes:
-            return []
         chain = self.chain
-        unanswered: list[str] = []
-        for seed in chain.addresses:
-            host = f"x{_SEED_SERVICE_BITS:x}.{seed}"
-            ips = await lookup_host(host, _MAX_SEED_ANSWERS)
-            if not ips:
-                unanswered.append(seed)
-                continue
-            # through add_addresses, and not a bare add to the set: a
-            # seed is gossip like a peer's is, and belongs in the durable
-            # table the same way, so a later restart has it without
-            # asking again
-            self.add_addresses(peer_address(ip, chain.port) for ip in ips)
-        return unanswered
+        ips = await lookup_host(f"x{_SEED_SERVICE_BITS:x}.{seed}", _MAX_SEED_ANSWERS)
+        # through add_addresses, and not a bare add to the set: a seed is
+        # gossip like a peer's is, and belongs in the durable table the
+        # same way, so a later restart has it without asking again
+        self.add_addresses(peer_address(ip, chain.port) for ip in ips)
+        return len(ips)
+
+    @property
+    def size(self) -> int:
+        """How many endpoints the table holds, Core's `addrman.Size()`.
+
+        Every answered endpoint is a known one too, so the known table's
+        size is the count. Read without a lock, for the reason `is_empty`
+        gives.
+        """
+        return len(self.addresses)
 
     @property
     def is_empty(self) -> bool:

@@ -149,6 +149,13 @@ _ADD_NEXT_SEEDNODE = 10
 # `_SEEDNODE_CHECK_INTERVAL`, its `sleep_for(500ms)`.
 _SEEDNODE_TIMEOUT = 30
 _SEEDNODE_CHECK_INTERVAL = 0.5
+# `ThreadDNSAddressSeed`'s schedule (`src/net.h`, same sha): how many
+# seeds are asked between two waits, how long a wait is, and the table
+# size from which it is the longer one
+_DNSSEEDS_TO_QUERY_AT_ONCE = 3
+_DNSSEEDS_DELAY_FEW_PEERS = 11
+_DNSSEEDS_DELAY_MANY_PEERS = 5 * 60
+_DNSSEEDS_DELAY_PEER_THRESHOLD = 1000
 # How long a `-seednode` connection is held waiting for its `addr`:
 # Core's `10 * AVG_ADDRESS_BROADCAST_INTERVAL` (`src/net_processing.cpp`,
 # same sha), 30 seconds being the interval.
@@ -272,6 +279,9 @@ class P2pManager(threading.Thread):
         # Core's own `-dnsseed`, `Config.dnsseed` having taken its
         # soft-set: whether `run` schedules the lookup.
         self.use_dns_seed = node.config.dnsseed
+        # Core's `-forcednsseed`: every seed asked at once, whatever the
+        # table holds
+        self.force_dns_seed = node.config.forcednsseed
         # Core's `-fixedseeds`, cleared once the seeds are added, as
         # `ThreadOpenConnections` clears `add_fixed_seeds`.
         self.add_fixed_seeds = node.config.fixedseeds
@@ -913,7 +923,7 @@ class P2pManager(threading.Thread):
         bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the entry leaves the
         queue whether or not it is dialled, as it does there where no
         `semOutbound` grant is free. An entry is a `-seednode` or a DNS
-        seed `get_addr_from_dns` returned, and is resolved as
+        seed `_query_dns_seeds` queued, and is resolved as
         `ConnectNode` resolves its `pszDest`: every answer shuffled, none
         dialled where one is invalid or already connected, and the first
         that connects kept.
@@ -1510,10 +1520,9 @@ class P2pManager(threading.Thread):
         """Wait on the `-seednode` peers, then ask the DNS seeds if still owed.
 
         Core's `ThreadDNSAddressSeed` (`src/net.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), as far as its
-        `-seednode` wait and the decision after it, logged in its words.
-        Whether the seeds are then asked is `PeerDB.get_addr_from_dns`'s
-        own `ask_dns_nodes`.
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), logged in its words:
+        the `-seednode` wait, then `_query_dns_seeds` unless two
+        full-relay peers came of it and the table holds something.
         """
         outbound = 0
         if self._seednode_given:
@@ -1537,20 +1546,73 @@ class P2pManager(threading.Thread):
                         "P2P peers available. Finished fetching data from seed nodes."
                     )
                     break
-        # Core's `seeds_right_now`, which only an empty table sets here,
-        # this node having no `-forcednsseed`
-        if (
-            outbound >= _SEED_OUTBOUND_CONNECTION_THRESHOLD
-            and not self.peer_db.holds_nothing
-        ):
+        seeds = list(self.node.chain.addresses)
+        secrets.SystemRandom().shuffle(seeds)
+        # Core's `seeds_right_now`: every seed at once under
+        # `-forcednsseed` or for an empty table
+        right_now = (
+            len(seeds) if self.force_dns_seed or self.peer_db.holds_nothing else 0
+        )
+        if outbound >= _SEED_OUTBOUND_CONNECTION_THRESHOLD and not right_now:
             self.logger.info("Skipping DNS seeds. Enough peers have been found")
             return
-        # a seed whose `x9.` subdomain answered nothing is dialled for
-        # its `addr` instead, Core's `AddAddrFetch(seed)`, on the port
-        # `GetDefaultPort` gives a name
-        port = self.node.chain.port
-        for seed in await self.peer_db.get_addr_from_dns():
-            self._addr_fetches.append((seed, port))
+        found = await self._query_dns_seeds(seeds, right_now)
+        if found is not None:
+            self.logger.info("%d addresses found from DNS seeds", found)
+
+    async def _query_dns_seeds(self, seeds: list[str], right_now: int) -> int | None:
+        """Ask `seeds`, waiting ahead of each few; answer how many they named.
+
+        `ThreadDNSAddressSeed`'s loop: `right_now` seeds are asked at
+        once, then, for a table holding something, a wait of
+        `_DNSSEEDS_DELAY_FEW_PEERS`, or `_DNSSEEDS_DELAY_MANY_PEERS`
+        from `_DNSSEEDS_DELAY_PEER_THRESHOLD` endpoints up, ahead of
+        each `_DNSSEEDS_TO_QUERY_AT_ONCE` more. The wait looks every
+        `_DNSSEEDS_DELAY_FEW_PEERS` for two full-relay peers past the
+        handshake, and ends the seeding there, answering `None`. A seed
+        that names nothing is queued for an addr-fetch, Core's
+        `AddAddrFetch(seed)`, on the port `GetDefaultPort` gives a name.
+        """
+        found = 0
+        wait = (
+            _DNSSEEDS_DELAY_MANY_PEERS
+            if self.peer_db.size >= _DNSSEEDS_DELAY_PEER_THRESHOLD
+            else _DNSSEEDS_DELAY_FEW_PEERS
+        )
+        for seed in seeds:
+            if not right_now:
+                right_now = _DNSSEEDS_TO_QUERY_AT_ONCE
+                if not self.peer_db.holds_nothing and await self._seeds_waited_out(
+                    wait, found
+                ):
+                    return None
+            self.logger.info("Loading addresses from DNS seed %s", seed)
+            named = await self.peer_db.query_dns_seed(seed)
+            if not named:
+                self._addr_fetches.append((seed, self.node.chain.port))
+            found += named
+            right_now -= 1
+        return found
+
+    async def _seeds_waited_out(self, wait: float, found: int) -> bool:
+        """Wait `wait` seconds, answering whether enough peers came meanwhile.
+
+        Logged as `ThreadDNSAddressSeed` logs its wait and its early end.
+        """
+        self.logger.info("Waiting %d seconds before querying DNS seeds.", wait)
+        while wait > 0:
+            step = min(_DNSSEEDS_DELAY_FEW_PEERS, wait)
+            await asyncio.sleep(step)
+            wait -= step
+            full_relay = self._full_relay_outbound(handshaken=True)
+            if full_relay >= _SEED_OUTBOUND_CONNECTION_THRESHOLD:
+                if found:
+                    self.logger.info("%d addresses found from DNS seeds", found)
+                    self.logger.info("P2P peers available. Finished DNS seeding.")
+                else:
+                    self.logger.info("P2P peers available. Skipped DNS seeding.")
+                return True
+        return False
 
     @override
     def run(self) -> None:
