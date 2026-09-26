@@ -469,6 +469,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 - **A refused inbound peer is sent nothing** (closes #1207).
 
+### A `history.log` line carries its level as `debug.log` does
+
+- **A warning is marked `[warning]` and an error `[error]`** (closes #1280),
+  with Core's `[debug]` for debug lines and nothing for info.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
