@@ -8,8 +8,9 @@ Core's `src/node/protocol_version.h` (at bitcoin/bitcoin@9be056a8a7, the
 v31.1 tag), under Core's names; `PROTOCOL_VERSION` itself is
 `btclib.p2p.limits`'. `common_version` is Core's
 `CNode::GetCommonVersion`, which every feature gate reads.
-`INVALID_CB_NO_BAN_VERSION` is left out: this node relays no compact
-block for it to gate.
+`INVALID_CB_NO_BAN_VERSION` is left out: this node announces a block as a
+`cmpctblock` only once it has connected it, and the constant gates only
+an announcement made before, in Core's `NewPoWValidBlock`.
 """
 
 from typing import TYPE_CHECKING
