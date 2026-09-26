@@ -1033,6 +1033,93 @@ def test_a_dial_that_comes_back_with_nothing_adds_no_connection(
     assert not manager.pending_connections
 
 
+_ONION = NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, 8333)
+
+
+@pytest.mark.parametrize(
+    ("held", "drawn", "dials"),
+    [
+        pytest.param(
+            a_conn(1, automatic=True, address=peer_address("1.2.3.4", 8333)),
+            peer_address("1.2.200.200", 18444),
+            False,
+            id="automatic-same-16",
+        ),
+        pytest.param(
+            a_conn(1, automatic=True, address=peer_address("1.2.3.4", 8333)),
+            peer_address("1.3.3.4", 8333),
+            True,
+            id="automatic-other-16",
+        ),
+        pytest.param(
+            a_conn(1, address=peer_address("1.2.3.4", 8333)),
+            peer_address("1.2.200.200", 18444),
+            False,
+            id="addnode-same-16",
+        ),
+        pytest.param(
+            a_conn(1, status=P2pConnStatus.Open, automatic=True),
+            peer_address("1.2.200.200", 18444),
+            False,
+            id="pending-same-16",
+        ),
+        pytest.param(
+            a_conn(1, inbound=True, address=peer_address("1.2.3.4", 8333)),
+            peer_address("1.2.200.200", 18444),
+            True,
+            id="inbound-same-16",
+        ),
+        pytest.param(
+            a_conn(1, address=peer_address("2001:db9:1::1", 8333)),
+            peer_address("2001:db9:2::2", 8333),
+            False,
+            id="ipv6-same-32",
+        ),
+        pytest.param(
+            a_conn(1, address=peer_address("::ffff:1.2.3.4", 8333)),
+            peer_address("1.2.200.200", 18444),
+            False,
+            id="mapped-ipv4-same-16",
+        ),
+        pytest.param(
+            a_conn(1, automatic=True, address=_ONION),
+            peer_address("1.2.200.200", 18444),
+            True,
+            id="onion-held",
+        ),
+    ],
+)
+def test_an_outbound_peer_s_network_group_is_not_dialled_again(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    held: Any,
+    drawn: NetworkAddressV2,
+    *,
+    dials: bool,
+) -> None:
+    """ISS 1098: one outbound peer per network group, as Core keeps them.
+
+    `CConnman::ThreadOpenConnections` skips a drawn address whose
+    `GetGroup` a manual, full-relay or block-relay-only peer already
+    holds, a pending one included, and counts no inbound peer and no
+    Tor, I2P or CJDNS one. Whether the dial is reached is the assertion.
+    """
+    dialled: list[NetworkAddressV2] = []
+
+    async def records(address: NetworkAddressV2) -> None:
+        dialled.append(address)
+
+    monkeypatch.setattr(manager_module, "dial", records)
+    peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: drawn)
+    manager = a_manager(peer_db=peer_db)
+    if held.status == P2pConnStatus.Open:
+        manager.pending_connections[held.id] = held
+    else:
+        manager.connections[held.id] = held
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert dialled == ([drawn] if dials else [])
+
+
 def refuses_to_be_asked() -> NoReturn:
     """Stand in for `random_address`/`get_active_addresses`, unreachable."""
     raise RuntimeError("no")

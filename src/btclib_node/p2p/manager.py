@@ -41,6 +41,7 @@ from btclib_node.p2p.eviction import (
     is_local,
     keyed_net_group,
     net_class,
+    net_group,
     select_node_to_evict,
 )
 
@@ -746,6 +747,18 @@ class P2pManager(threading.Thread):
                 *self.pending_connections.values(),
             )
         already_connected = {endpoint_key(conn.address) for conn in connected}
+        # One outbound peer per network group, as
+        # `CConnman::ThreadOpenConnections` keeps them: the groups of
+        # its `MANUAL`, `OUTBOUND_FULL_RELAY` and `BLOCK_RELAY` peers,
+        # which here are every connection not inbound, pending ones
+        # included. A peer off IPv4 and IPv6 adds no group, as Core
+        # adds none for Tor, I2P or CJDNS (`src/net.cpp`, at
+        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        outbound_net_groups = {
+            net_group(conn.address)
+            for conn in connected
+            if not conn.inbound and can_addrv1(conn.address)
+        }
         try:
             address = self.peer_db.random_address()
             # `is_empty` answers whether the table holds
@@ -764,6 +777,9 @@ class P2pManager(threading.Thread):
             if (
                 address is not None
                 and endpoint_key(address) not in already_connected
+                and not (
+                    can_addrv1(address) and net_group(address) in outbound_net_groups
+                )
                 and not self.is_discouraged(address)
             ):
                 sock = await dial(address)
