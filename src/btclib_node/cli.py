@@ -803,7 +803,7 @@ def _load_conf_tree(  # noqa: PLR0913
         )
         return len(values)
 
-    chain_id = _CHAIN_SECTION[_resolve_chain_name(settings)]
+    chain_id = _chain_section(settings)
     names: list[str] = []
     chain_includes = add_includes(chain_id, names)
     default_includes = add_includes("", names)
@@ -825,7 +825,7 @@ def _load_conf_tree(  # noqa: PLR0913
     names = []
     add_includes(chain_id, names, chain_includes)
     add_includes("", names, default_includes)
-    chain_id_final = _CHAIN_SECTION[_resolve_chain_name(settings)]
+    chain_id_final = _chain_section(settings)
     if chain_id_final != chain_id:
         add_includes(chain_id_final, names)
     for name in names:
@@ -999,16 +999,21 @@ def _interpret_bool(value: str) -> bool:
 
 
 class _ChainError(ValueError):
-    """A chain `GetChainArg` or `GetChainType` refuses.
+    """The combination of chain selectors `GetChainArg` refuses.
 
     Thrown rather than returned in Core (`src/common/args.cpp`, at
     bitcoin/bitcoin@9be056a8a7), so `InitConfig` shows it without the
-    prefix it puts on a `ReadConfigFiles` refusal, even where
-    `ReadConfigFiles` is what asked.
+    prefix it puts on a `ReadConfigFiles` refusal, `ReadConfigFiles`
+    being where it is first asked, through `GetChainTypeString`.
     """
 
 
-def _resolve_chain_name(settings: _Settings) -> str:
+# what `_chain_arg` puts ahead of a `-chain` Core does not know, which
+# no chain this node knows starts with
+_UNKNOWN_CHAIN = "\0"
+
+
+def _chain_arg(settings: _Settings) -> str:
     """Resolve `-chain`/`-testnet`/`-signet`/`-regtest`: `GetChainArg`.
 
     `chain`/`testnet`/`signet`/`regtest` are read from the file's
@@ -1019,7 +1024,8 @@ def _resolve_chain_name(settings: _Settings) -> str:
     the default one can mean anything; and a negated selector on the
     command line is skipped there, as Core skips it. At most one of the
     four may resolve true; more is the same "Invalid combination" Core
-    refuses.
+    refuses. A `-chain` Core does not know is returned as given, behind
+    `_UNKNOWN_CHAIN`, as `GetChainArg` returns it.
     """
 
     def get_net(name: str) -> bool:
@@ -1036,10 +1042,7 @@ def _resolve_chain_name(settings: _Settings) -> str:
         err_msg = "invalid combination of -regtest, -signet, -testnet and -chain: use at most one"
         raise _ChainError(err_msg)
     if chain_alias is not None:
-        if chain_alias not in _CHAIN_ALIASES:
-            err_msg = f"unknown chain {chain_alias!r}"
-            raise _ChainError(err_msg)
-        return _CHAIN_ALIASES[chain_alias]
+        return _CHAIN_ALIASES.get(chain_alias, _UNKNOWN_CHAIN + chain_alias)
     if regtest:
         return "regtest"
     if signet:
@@ -1047,6 +1050,34 @@ def _resolve_chain_name(settings: _Settings) -> str:
     if testnet:
         return "testnet"
     return "mainnet"
+
+
+def _resolve_chain_name(settings: _Settings) -> str:
+    """Return `_chain_arg`'s chain, refusing one Core does not know.
+
+    `GetChainType`'s refusal (`src/common/args.cpp`, at
+    bitcoin/bitcoin@9be056a8a7), asked once the files are read.
+    """
+    chain_name = _chain_arg(settings)
+    if chain_name.startswith(_UNKNOWN_CHAIN):
+        err_msg = f"unknown chain {chain_name.removeprefix(_UNKNOWN_CHAIN)!r}"
+        raise ValueError(err_msg)
+    return chain_name
+
+
+def _chain_section(settings: _Settings) -> str:
+    """Return Core's `GetChainTypeString`: the section of `_chain_arg`'s chain.
+
+    A `-chain` Core does not know is its own section name, as that
+    function returns it, so that `ReadConfigFiles` reads the
+    `includeconf` of a `[bogus]` section for `-chain=bogus`.
+    """
+    chain_name = _chain_arg(settings)
+    return (
+        chain_name.removeprefix(_UNKNOWN_CHAIN)
+        if chain_name.startswith(_UNKNOWN_CHAIN)
+        else _CHAIN_SECTION[chain_name]
+    )
 
 
 def _resolve_debug(settings: _Settings) -> bool:

@@ -2041,6 +2041,46 @@ def test_main_reads_an_include_of_the_chains_own_section(
 
 
 @pytest.mark.usefixtures("no_node")
+@pytest.mark.parametrize(
+    ("argv", "conf", "refusal"),
+    [
+        (
+            ["-chain=bogus"],
+            "includeconf=nosuch.conf\n",
+            "Failed to include configuration file nosuch.conf",
+        ),
+        ([], "chain=bogus\nincludeconf=inc.conf\n", "parse error on line 1: bad"),
+        (
+            ["-chain=bogus"],
+            "[bogus]\nincludeconf=inc.conf\n",
+            "parse error on line 1: bad",
+        ),
+    ],
+    ids=["missing include", "the file's chain", "the unknown chain's section"],
+)
+def test_main_reads_the_includes_of_a_chain_core_does_not_know(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    conf: str,
+    refusal: str,
+) -> None:
+    """ISS 1302: `GetChainTypeString` names it; `GetChainType` refuses later.
+
+    Measured on `bitcoind` v31.1.0 with these files: the include's own
+    refusal, and not "Unknown chain bogus.", which it gives with no
+    include at all.
+    """
+    (tmp_path / "bitcoin.conf").write_text(conf, encoding="utf-8")
+    (tmp_path / "inc.conf").write_text("bad\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        cli.main([f"-datadir={tmp_path}", *argv])
+    assert capsys.readouterr().err == (
+        f"Error: Error reading configuration file: {refusal}\n"
+    )
+
+
+@pytest.mark.usefixtures("no_node")
 def test_main_refuses_a_conflicting_chain_before_any_include(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
