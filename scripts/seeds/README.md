@@ -2,7 +2,8 @@
 
 `generate_seeds.py` writes `src/btclib_node/_chainparamsseeds.py` from the
 lists below, which are Bitcoin Core's, and `BITCOIN_CORE_COPYING` is the
-licence they are distributed under. Each is pinned in the shape
+licence they are distributed under, which the generator writes into the
+module's opening comment in full. Each is pinned in the shape
 `tests/_data/README.md` gives, and each is identical to its blob.
 
 The pins are to the v31.1 tag, `9be056a8a7`, and not to Core's tip:
