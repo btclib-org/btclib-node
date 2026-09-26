@@ -1003,8 +1003,8 @@ class _ChainError(ValueError):
 
     Thrown rather than returned in Core (`src/common/args.cpp`, at
     bitcoin/bitcoin@9be056a8a7), so `InitConfig` shows it without the
-    prefix it puts on a `ReadConfigFiles` refusal, `ReadConfigFiles`
-    being where it is first asked, through `GetChainTypeString`.
+    prefix it puts on a `ReadConfigFiles` refusal, even where
+    `ReadConfigFiles` asks first, through `GetChainTypeString`.
     """
 
 
