@@ -156,8 +156,9 @@ def _assert_valid_in_context(  # noqa: PLR0913, PLR0917
     The target, the median time and the version are Core's
     `bad-diffbits`, `time-too-old` and `bad-version`,
     `BLOCK_INVALID_HEADER`, which Core's `MaybePunishNodeForBlock`
-    answers with `Misbehaving`, so they raise `MisbehavingError`. `time-too-new` is `BLOCK_TIME_FUTURE`, which it
-    does not punish, so btclib's own refusal is left as it is
+    answers with `Misbehaving`, so they raise `MisbehavingError`.
+    `time-too-new` is `BLOCK_TIME_FUTURE`, which it does not punish, so
+    btclib's own refusal is left as it is
     (`src/validation.cpp` and `src/net_processing.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
     """
