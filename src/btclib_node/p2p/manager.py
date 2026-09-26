@@ -992,13 +992,15 @@ class P2pManager(threading.Thread):
     ) -> None:
         """Draw up to `_MAX_DRAWS_PER_PASS` times, and dial at most once.
 
-        The dial is of `kind`. A feeler draws from the addresses never
-        answered, Core's `Select(true, ...)` of the new table, is held to
-        no network group, and wants only `MayHaveUsefulAddressDB` of what
-        it draws. Core's `SelectTriedCollision`, asked first, has nothing
-        to answer here, this table keeping no tried buckets to collide
-        in. Split out of `_maybe_dial_more_peers` for ruff's complexity
-        ceiling; that method's own `try` guards it.
+        The dial is of `kind`. A feeler draws from the gossiped
+        addresses not in the answered table, which holds an address
+        three hours (btclib-org/btclib-node#1318), standing in for
+        Core's `Select(true, ...)` of the new table. It is held to no
+        network group, and wants only `MayHaveUsefulAddressDB` of what
+        it draws. Core's `SelectTriedCollision`, asked first, has
+        nothing to answer here, this table keeping no tried buckets to
+        collide in. Split out of `_maybe_dial_more_peers` for ruff's
+        complexity ceiling; that method's own `try` guards it.
         """
         feeler = kind is _Outbound.FEELER
         # A draw in the group of an outbound peer, or a feeler's draw of
@@ -1029,18 +1031,19 @@ class P2pManager(threading.Thread):
             # without dialling a peer already connected, discouraged
             # or banned, a discouraged one being one this node dropped
             # for cause (btclib-org/btclib-node#283).
+            if feeler:
+                # Core's "small amount of random noise before connection
+                # to avoid synchronization", ahead of the checks
+                # `OpenNetworkConnection` makes
+                await asyncio.sleep(
+                    secrets.SystemRandom().uniform(0, _FEELER_SLEEP_WINDOW)
+                )
             held = endpoint_key(address) in already_connected
             if (
                 not held
                 and not self.is_discouraged(address)
                 and not self.ban_man.is_peer_banned(address)
             ):
-                if feeler:
-                    # Core's "small amount of random noise before
-                    # connection to avoid synchronization"
-                    await asyncio.sleep(
-                        secrets.SystemRandom().uniform(0, _FEELER_SLEEP_WINDOW)
-                    )
                 sock = await dial(address)
                 if sock:
                     self.create_connection(

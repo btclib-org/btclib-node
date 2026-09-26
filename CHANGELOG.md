@@ -518,11 +518,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   blocks alone** (closes #1095), as `CConnman::ThreadOpenConnections` opens
   `BLOCK_RELAY`, and a third on its five-minute timer once the tip is recent.
 
-### Feelers test an address never answered, as in Core
+### Feelers test a gossiped address, as in Core
 
-- **Every two minutes on average an extra short-lived connection is dialled
-  to an address never answered** (closes #1096), as Core's `FEELER`: it is
-  asked for addresses, recorded as answered and dropped at its `version`.
+- **Every two minutes on average a short-lived connection is dialled to a
+  gossiped address not in the answered table** (closes #1096), as Core's
+  `FEELER`: asked for addresses, recorded as answered, then dropped.
 
 ## v2026.9.24
 
