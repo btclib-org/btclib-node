@@ -3981,7 +3981,7 @@ def test_an_anchor_comes_first_while_the_block_relay_only_target_is_unmet(
         peer_address("5.6.7.9", 18444, services=ServiceFlags.NODE_NETWORK),
         peer_address("7.7.1.1", 18444, services=FULL_NODE),
         NetworkAddressV2(0, FULL_NODE, BIP155Network.TORV3, bytes(32), 8333),
-        peer_address("0.0.0.0", 18444, services=FULL_NODE),
+        peer_address("0.0.0.0", 18444, services=FULL_NODE),  # noqa: S104
         peer_address("255.255.255.255", 18444, services=FULL_NODE),
         peer_address("::", 18444, services=FULL_NODE),
         peer_address("2001:db8::1", 18444, services=FULL_NODE),
