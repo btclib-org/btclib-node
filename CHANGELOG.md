@@ -469,10 +469,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 - **A refused inbound peer is sent nothing** (closes #1207).
 
-### What `btclib-node` creates is its owner's alone, as in Core
-
-- **`btclib-node` sets the umask to 0077 on POSIX, so its chain directory
-  is 0700 and `history.log` 0600, as `bitcoind` leaves them** (closes #1198).
 ### JSON-RPC named parameters are mapped onto positions, as in Core
 
 - **A `params` object is read as `transformNamedArguments` reads it**
@@ -489,6 +485,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A `..` comes off, and a leading `//` becomes `/`, before the file system is
   asked** (closes #1187); a missing data directory and an unreadable
   configuration file are refused in Core's words.
+
+### What `btclib-node` creates is its owner's alone, as in Core
+
+- **`btclib-node` sets the umask to 0077 on POSIX, so its chain directory
+  is 0700 and `history.log` 0600, as `bitcoind` leaves them** (closes #1198).
 
 ## v2026.9.24
 

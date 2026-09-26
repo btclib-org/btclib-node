@@ -1332,8 +1332,10 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
 
 # Core's `SetupEnvironment` (`src/common/system.cpp`, at
 # bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which `bitcoind`'s own
-# `main` calls first: the process umask becomes 0077 everywhere but
-# Windows, so every directory and file it creates is its owner's alone.
+# `main` calls right after building its `interfaces::Init`
+# (`src/bitcoind.cpp`, same sha): the process umask becomes 0077
+# everywhere but Windows, so every directory and file it creates is its
+# owner's alone.
 # Core has no option to keep the caller's: `-sysperms` is gone by v31.1.
 _PRIVATE_UMASK = 0o077
 
