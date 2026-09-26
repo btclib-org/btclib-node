@@ -3197,6 +3197,7 @@ class FakeHeaderIndex:
         self.tip = tip
         self.refuse = refuse
         self.header_index = [header_index_tip]
+        self.header_index_pos = {header_index_tip: 0}
         self.tip_status = tip_status
         self.given: list[BlockHeader] | None = None
         # what `update_block_availability` looks a hash up in: empty, so
@@ -4321,6 +4322,100 @@ def test_a_batch_reaching_the_tip_protects_a_drawn_peer(
         node.p2p_manager.connections = {peer.id: peer}
         headers(node, Headers(chain).serialize(), peer)
         assert peer.chain_sync.protect is automatic
+
+
+def _work_of(tmp_path: Path, chain: list[BlockHeader]) -> int:
+    """Return the chain work of `chain`'s last header, indexed on its own."""
+    with unstarted_node_context(tmp_path / "measure") as other:
+        other.chainstate.block_index.add_headers(chain)
+        return other.chainstate.block_index.chainwork[chain[-1].hash]
+
+
+@pytest.mark.parametrize(
+    ("on_the_active_chain", "dropped"),
+    [(True, True), (False, False)],
+    ids=["active-chain", "stale-fork"],
+)
+def test_a_known_batch_off_the_best_header_chain_is_checked_on_the_active_one(
+    tmp_path: Path, *, on_the_active_chain: bool, dropped: bool
+) -> None:
+    """ISS 1230: Core's `IsAncestorOfBestHeaderOrTip` asks two chains.
+
+    A batch ending on a fork the best header left behind is checked where
+    the active chain holds it, and is otherwise one Core's anti-DoS check
+    hands to `TryLowWorkHeadersSync`, which the insufficient-work check
+    never sees.
+    """
+    fork = generate_random_header_chain(1, RegTest().genesis.hash)
+    best = generate_random_header_chain(2, RegTest().genesis.hash)
+    with unstarted_node_context(tmp_path) as real:
+        block_index = real.chainstate.block_index
+        block_index.add_headers(fork)
+        block_index.add_headers(best)
+        assert fork[0].hash not in block_index.header_index_pos
+        if on_the_active_chain:
+            # the tip on a fork below the best header, as a block
+            # download behind a heavier headers chain leaves it
+            block_index.active_chain.append(fork[0].hash)
+        node = a_data_node(block_index=block_index, is_initial_block_download=True)
+        a_minimum_chain_work(node, _work_of(tmp_path, best) + 1)
+        peer = a_peer(automatic=True, status=P2pConnStatus.Connected)
+        node.p2p_manager.connections = {peer.id: peer}
+        headers(node, Headers(fork).serialize(), peer)
+        assert bool(peer.stopped) is dropped
+
+
+def a_minimum_chain_work(node: Any, work: int) -> None:
+    """Give `node` a regtest whose `minimum_chain_work` is `work`, not 0."""
+    consensus = replace(node.chain.consensus, minimum_chain_work=work)
+    node.chain = SimpleNamespace(consensus=consensus)
+
+
+@pytest.mark.parametrize(
+    ("ibd", "automatic", "extra_work", "known", "full", "dropped"),
+    [
+        (True, True, 1, True, False, True),
+        (False, True, 1, True, False, False),
+        (True, False, 1, True, False, False),
+        (True, True, 0, True, False, False),
+        (True, True, 1, False, False, False),
+        (True, True, 1, True, True, False),
+    ],
+    ids=["dropped", "synced", "not-drawn", "enough-work", "new", "full"],
+)
+def test_a_drawn_peer_whose_chain_lacks_the_minimum_work_is_dropped_in_ibd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    ibd: bool,
+    automatic: bool,
+    extra_work: int,
+    known: bool,
+    full: bool,
+    dropped: bool,
+) -> None:
+    """ISS 1230: Core's check for insufficient work in initial block download.
+
+    `UpdatePeerStateForReceivedHeaders` drops an outbound peer whose best
+    known block has less than the minimum chain work. It does so after a
+    batch that is not full, and one that its anti-DoS check let through,
+    which for such a chain means a batch this node already had. A dropped
+    peer is not protected.
+    """
+    chain = generate_random_header_chain(2, RegTest().genesis.hash)
+    with unstarted_node_context(tmp_path) as real:
+        block_index = real.chainstate.block_index
+        if known:
+            block_index.add_headers(chain)
+        node = a_data_node(block_index=block_index, is_initial_block_download=ibd)
+        a_minimum_chain_work(node, _work_of(tmp_path, chain) + extra_work)
+        if full:
+            monkeypatch.setattr(cb, "MAX_HEADERS_RESULTS", len(chain))
+        peer = a_peer(automatic=automatic, status=P2pConnStatus.Connected)
+        node.p2p_manager.connections = {peer.id: peer}
+        headers(node, Headers(chain).serialize(), peer)
+        assert bool(peer.stopped) is dropped
+        assert peer.chain_sync.protect is (automatic and not dropped)
 
 
 def test_every_block_announced_is_one_the_peer_has() -> None:

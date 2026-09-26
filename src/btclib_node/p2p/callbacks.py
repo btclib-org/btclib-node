@@ -93,7 +93,10 @@ from btclib_node.exceptions import (
 from btclib_node.main import verify_mempool_acceptance
 from btclib_node.p2p.address import ip_and_port
 from btclib_node.p2p.block_availability import update_block_availability
-from btclib_node.p2p.chain_sync import protect_if_caught_up
+from btclib_node.p2p.chain_sync import (
+    disconnect_if_insufficient_work,
+    protect_if_caught_up,
+)
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 from btclib_node.p2p.protocol_version import (
     BIP0031_VERSION,
@@ -1484,6 +1487,18 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     # it is not one telling us it has nothing left, and this is not the
     # ordinary end of a sync. btclib-org/btclib-node#75
     block_index = node.chainstate.block_index
+    # Core's `IsAncestorOfBestHeaderOrTip`, asked of the last header before
+    # the batch is indexed: its `ProcessHeadersMessage` hands any other
+    # batch whose chain has less than `minimum_chain_work` to
+    # `TryLowWorkHeadersSync`, and processes it no further, so the check
+    # for insufficient work below never sees it (`net_processing.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). This node stores such a
+    # batch instead (btclib-org/btclib-node#1246).
+    last = headers[-1].hash
+    known = (
+        last in block_index.header_index_pos
+        or _height_on_the_active_chain(node, last) is not None
+    )
     tip = block_index.add_headers(headers)
     # The batch's last header is a block the peer has: Core's
     # `UpdatePeerStateForReceivedHeaders` where the batch connected, and
@@ -1502,7 +1517,14 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
         conn.best_known_height = max(
             conn.best_known_height, block_index.get_block_info(tip).index
         )
-        protect_if_caught_up(node, conn)
+        # Core protects only a peer it did not just drop, and asks whether
+        # to drop it only where the batch was short of a full one
+        if not (
+            known
+            and len(headers) < MAX_HEADERS_RESULTS
+            and disconnect_if_insufficient_work(node, conn)
+        ):
+            protect_if_caught_up(node, conn)
     if tip is None:
         # a batch connecting to nothing this node knows, whatever its
         # length: get_block_locator_hashes asks from what this node
