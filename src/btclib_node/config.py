@@ -6,8 +6,8 @@
 
 Which chain to join, where its data lives, which listeners to start and
 on which interfaces, and the feerate floor its mempool accepts at and
-tells a peer about in `feefilter` -- `DEFAULT_MIN_RELAY_FEERATE` below, Core's own
-`DEFAULT_MIN_RELAY_TX_FEE`. `_resolve_chain` is what turns a chain
+tells a peer about in `feefilter` -- `DEFAULT_MIN_RELAY_FEERATE` below,
+Core's own `DEFAULT_MIN_RELAY_TX_FEE`. `_resolve_chain` is what turns a chain
 already built, or a network's name, into the `Chain` a `Config` carries.
 `split_host_port` is `cli.py`'s own splitter for `-rpcbind`'s optional
 port too, and `get_path_arg` its reader of `-datadir`, `-conf` and
