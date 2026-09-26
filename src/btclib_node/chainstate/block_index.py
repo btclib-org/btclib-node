@@ -380,6 +380,9 @@ class BlockIndex:
     def get_ancestor(self, block_hash: bytes, height: int) -> bytes | None:
         """Return `block_hash`'s ancestor at `height`: Core's `GetAncestor`.
 
+        Core's is in `src/chain.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+        v31.1 tag.
+
         The block itself at its own height, and `None` for a height
         above it or below zero, where Core answers `nullptr`. Follows
         skip pointers, so the cost grows with the logarithm of the
@@ -418,6 +421,9 @@ class BlockIndex:
 
     def last_common_ancestor(self, first: bytes, second: bytes) -> bytes:
         """Return the fork point of two blocks: Core's `LastCommonAncestor`.
+
+        Core's is in `src/chain.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+        v31.1 tag.
 
         Both are brought to the lower one's height, then walked back
         through their skip pointers while those differ, and one parent
