@@ -497,6 +497,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **Stderr names each unrecognised section with its file and line** (closes
   #1271), in Core's words and before the refusals that follow it.
 
+### An `includeconf` in the chain's own section is read, as `bitcoind` reads it
+
+- **The chain's section is read for `includeconf` before the default one**
+  (closes #1302), the chain resolved first and a conflicting one refused
+  before any include, as `ReadConfigFiles` does.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
