@@ -223,7 +223,7 @@ class Node(threading.Thread):
     def __init__(
         self, config: Config | None = None, *, allow_reimported_main: bool = False
     ) -> None:
-        """Open every database `config` names, and wire the two managers up.
+        """Lock the directories `config` names, open the log, and wire RPC up.
 
         `allow_reimported_main` opts out of the check below: pass it
         where building a `Node` off the main process, under a start
@@ -366,8 +366,8 @@ class Node(threading.Thread):
         self.rpc_manager = RpcManager(self, self.rpc_port)
         # whether `load` has opened the stores `run`'s teardown closes
         self.loaded = False
-        # the closes of what `load` has opened so far, emptied once it
-        # finishes: `_load_or_abort` runs them where a later store fails
+        # the closes of what `load` opens, in order, which
+        # `_load_or_abort` runs where a later store fails
         self._opened = ExitStack()
         # set by `run` once `load` has run or start-up has ended before
         # it, which `start` waits on
@@ -406,8 +406,8 @@ class Node(threading.Thread):
             self.block_db.add_block(self.chain.genesis_block)
         # the two halves of a filter live in different databases -- the
         # block and its reverse patch in one, the index in the other --
-        # so catching up is here, where both are built, and before
-        # anything is listening: the version message this node sends
+        # so catching up is here, where both are built, and before the
+        # P2P listener: the version message this node sends
         # says it serves filters for the whole chain
         self.chainstate.filter_index.catch_up(
             self.chainstate.block_index.active_chain, self.block_db
@@ -452,7 +452,6 @@ class Node(threading.Thread):
         # index 0. btclib-org/btclib-node#722
         self.best_height = len(self.chainstate.block_index.active_chain) - 1
         self.download_manager = DownloadManager(self, self.logger)
-        self._opened.pop_all()
         self.loaded = True
 
     @property
@@ -700,7 +699,11 @@ class Node(threading.Thread):
         # The P2P listener is waited on too, `connman` failing to bind
         # with `-listen` on ending `AppInitMain` the same way
         # (`src/init.cpp:2283-2285`, same sha).
-        started = self._start_rpc_and_load()
+        #
+        # A stop asked for while the stores load ends start-up there, as
+        # Core returns on `ShutdownRequested` after loading its block
+        # index, before step 12 (`src/init.cpp:1887-1890`, same sha).
+        started = self._start_rpc_and_load() and not self.terminate_flag.is_set()
         if started and self.p2p_port and not self.p2p_manager.start_listener():
             # the bind's own reason first, as Core's `CConnman::Bind`
             # shows it before `CConnman::Start` shows its own

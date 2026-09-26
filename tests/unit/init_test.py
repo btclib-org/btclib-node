@@ -33,6 +33,7 @@ import pytest
 import btclib_node
 from btclib_node import Node, install_signal_handlers
 from btclib_node.chains import RegTest
+from btclib_node.chainstate import Chainstate
 from btclib_node.config import Config
 from btclib_node.constants import NodeStatus
 from btclib_node.exceptions import (
@@ -1520,9 +1521,53 @@ def test_a_store_that_cannot_be_opened_ends_start_up_with_the_rest_closed(
     assert not node.loaded
     assert node.chainstate.db.closed
     assert node.p2p_manager.loop.is_closed()
+    peer_db = node.p2p_manager.peer_db.db
+    assert peer_db is not None
+    with pytest.raises(Exception, match=r"(?i)closed"):
+        peer_db.get(b"")
     reopened = Node(config=config)
     try:
         reopened.start()
         assert reopened.loaded
     finally:
         reopened.stop()
+
+
+def test_a_stop_asked_for_while_the_stores_load_starts_no_p2p_side(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1279: Core returns before step 12 on a shutdown asked during step 7.
+
+    The chainstate is held open until the stop has been asked for, so the
+    order does not depend on timing.
+    """
+    entered, release = threading.Event(), threading.Event()
+    real_chainstate = Chainstate
+
+    def held(*args: Any) -> Any:
+        entered.set()
+        release.wait(timeout=10)
+        return real_chainstate(*args)
+
+    monkeypatch.setattr(btclib_node, "Chainstate", held)
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            p2p_port=get_random_port(),
+            allow_rpc=False,
+        )
+    )
+    starting = threading.Thread(target=node.start)
+    starting.start()
+    try:
+        assert entered.wait(timeout=10)
+        node.terminate_flag.set()
+    finally:
+        release.set()
+        starting.join(timeout=10)
+    node.join(timeout=10)
+    assert not node.is_alive()
+    assert node.loaded
+    assert node.p2p_manager.ident is None
+    assert not node.init_errors

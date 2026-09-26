@@ -518,15 +518,16 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   and the log names the value** (closes #1210), refused once the RPC
   listener is bound, `-rpcauth` after the cookie, as `bitcoind` refuses it.
 
-### A failed RPC start leaves no chainstate and no address table behind
-
-- **The stores open once the RPC listener is up** (closes #1279), so a
-  refused start leaves `.lock`, `blocks/` and the log, `bitcoind` opening
-  none of them before its steps 6 and 7.
 ### An oversized `inv` costs the peer in any sync state, as in Core
 
 - **An `inv` of more than `MAX_INV_SZ` items drops and discourages its
   sender before the sync state is read** (closes #1145).
+
+### A failed RPC start leaves no chainstate and no address table behind
+
+- **The stores open once the RPC listener is up** (closes #1279), so a
+  refused start leaves `.lock`, `blocks/` and the log and no store,
+  `bitcoind` opening its stores only at its steps 6 and 7.
 
 ## v2026.9.24
 
