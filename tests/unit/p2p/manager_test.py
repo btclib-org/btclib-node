@@ -1949,6 +1949,17 @@ def test_a_name_none_of_whose_answers_connects_makes_no_connection(
             id="broadcast",
         ),
         pytest.param(
+            ["2001:db8::1"],
+            (
+                "debug",
+                (
+                    "Resolver returned invalid address [2001:db8::1]:18444 for "
+                    "seed.example"
+                ),
+            ),
+            id="documentation",
+        ),
+        pytest.param(
             ["5.6.7.8", "1.2.3.4"],
             (
                 "info",
