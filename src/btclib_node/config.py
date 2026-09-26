@@ -78,7 +78,10 @@ def split_host_port(spec: str, default_port: int) -> tuple[str, int]:
     calling `SplitHostPort`, which only overwrites it when the spec
     actually names one (`ConnectNode`, `src/net.cpp:505-507`, same sha)
     -- `-connect=1.2.3.4` and `-addnode=1.2.3.4` both dial the chain's
-    own default P2P port this way.
+    own default P2P port this way. The port is `ToIntegral<uint16_t>`'s
+    (`src/util/strencodings.h`, at bitcoin/bitcoin@9be056a8a7): ASCII
+    digits alone, so a sign, a space, a `_` or a non-ASCII digit, which
+    `int` would each accept, make the port invalid.
     """
     host = spec
     port = default_port
@@ -88,10 +91,7 @@ def split_host_port(spec: str, default_port: int) -> tuple[str, int]:
         multi_colon = spec.rfind(":", 0, colon) != -1
         if colon == 0 or bracketed or not multi_colon:
             host, port_text = spec[:colon], spec[colon + 1 :]
-            try:
-                port = int(port_text)
-            except ValueError:
-                port = -1
+            port = int(port_text) if port_text.isascii() and port_text.isdigit() else -1
             if not 0 < port <= 0xFFFF:  # noqa: PLR2004
                 err_msg = f"{spec!r} names an invalid port"
                 raise ValueError(err_msg)

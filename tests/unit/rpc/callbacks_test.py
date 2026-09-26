@@ -2750,6 +2750,22 @@ def test_addnode_refuses_a_hostname() -> None:
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
 
 
+def test_addnode_refuses_a_port_int_would_read() -> None:
+    """`127.0.0.1:+80` is refused as `127.0.0.1:0x50` is, not dialled at 80."""
+    dialled: list[object] = []
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chain=SimpleNamespace(port=18444),
+            p2p_manager=SimpleNamespace(connect=dialled.append),
+        ),
+    )
+    with pytest.raises(RpcError) as raised:
+        add_node(node, _CONN, ["127.0.0.1:+80", "onetry"])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert dialled == []
+
+
 def test_addnode_type_checks_node_and_command() -> None:
     """`node` and `command` of the wrong JSON type are named, not coerced."""
     node = cast(

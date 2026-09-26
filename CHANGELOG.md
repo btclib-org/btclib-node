@@ -469,6 +469,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 - **A refused inbound peer is sent nothing** (closes #1207).
 
+### A port is read as Core reads it: ASCII digits alone
+
+- **`-rpcbind`, `-connect`, `-addnode` and `addnode` refuse a port with a
+  sign, a space, a `_` or a non-ASCII digit** (closes #1285), as `bitcoind`
+  refuses it for `-rpcbind`; `int` read each as a number.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
