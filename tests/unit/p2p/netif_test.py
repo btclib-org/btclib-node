@@ -147,26 +147,19 @@ def test_a_c_library_without_getifaddrs_answers_nothing(
     assert local_addresses() == []
 
 
-def a_source_address() -> IPv4Address | None:
-    """Return the IPv4 address the kernel picks to reach TEST-NET-1.
+@pytest.mark.skipif(sys.platform == "win32", reason="no getifaddrs (#1310)")
+def test_this_machine_s_addresses_hold_the_one_the_kernel_routes_from() -> None:
+    """The real `getifaddrs`: IP addresses, no loopback, the source kept.
 
-    A UDP `connect` sends nothing: it chooses a route and a source.
-    `None` where there is no route.
+    The source is what the kernel picks to reach TEST-NET-1: a UDP
+    `connect` sends nothing, and chooses a route and a source.
     """
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
         try:
             probe.connect(("192.0.2.1", 9))
-        except OSError:
-            return None
-        return IPv4Address(probe.getsockname()[0])
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="no getifaddrs (#1310)")
-def test_this_machine_s_addresses_hold_the_one_the_kernel_routes_from() -> None:
-    """The real `getifaddrs`: IP addresses, no loopback, the source kept."""
-    source = a_source_address()
-    if source is None or source.is_loopback or source.is_unspecified:
-        pytest.skip("no route off this machine")
+        except OSError:  # pragma: no cover -- a machine with no route off it
+            pytest.skip("no route off this machine")
+        source = IPv4Address(probe.getsockname()[0])
     addresses = local_addresses()
     assert all(isinstance(ip, (IPv4Address, IPv6Address)) for ip in addresses)
     assert not any(ip.is_loopback for ip in addresses)
