@@ -45,7 +45,11 @@ from btclib_node.constants import (
     USER_AGENT,
     P2pConnStatus,
 )
-from btclib_node.exceptions import MissingPrevoutError, StoreCorruptionError
+from btclib_node.exceptions import (
+    MissingPrevoutError,
+    StoreCorruptionError,
+    TxRejectedError,
+)
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import peer_address
@@ -2576,6 +2580,47 @@ def test_a_transaction_whose_scripts_do_not_verify_is_answered_with_the_refusal(
     assert raised.value.message == "Invalid signatures or script"
     assert not mempool.contains_tx(tx)
     assert broadcast == []
+
+
+def a_fee_refusal(node: Any, transaction: Any) -> NoReturn:
+    """Refuse as `verify_mempool_acceptance` refuses a fee under the floor."""
+    raise TxRejectedError("min relay fee not met", "0 < 11")
+
+
+def test_a_fee_refusal_is_answered_in_core_s_words(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`sendrawtransaction` answers `-26` and Core's own reason and details.
+
+    `bitcoind` v31.1 on regtest: "min relay fee not met, 0 < 11" for a
+    zero-fee 110-vbyte spend (btclib-org/btclib-node#1245).
+    """
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", a_fee_refusal)
+    tx = a_tx()
+    mempool = Mempool(Logger(debug=True))
+    broadcast: list[Tx] = []
+    node = a_node(mempool=mempool)
+    node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: broadcast.append(tx)
+
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
+    assert raised.value.code == RPCErrorCode.VERIFY_REJECTED
+    assert raised.value.message == "min relay fee not met, 0 < 11"
+    assert not mempool.contains_tx(tx)
+    assert broadcast == []
+
+
+def test_a_fee_refusal_is_reported_with_core_s_reason_and_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`testmempoolaccept` reports Core's own `reject-reason`/`reject-details`."""
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", a_fee_refusal)
+    (result,) = mempool_accept(
+        a_node(), _CONN, [[a_tx().serialize(include_witness=True).hex()]]
+    )
+    assert result["allowed"] is False
+    assert result["reject-reason"] == "min relay fee not met"
+    assert result["reject-details"] == "min relay fee not met, 0 < 11"
 
 
 def test_a_corrupted_stored_record_is_not_answered_as_the_tx_s_own_refusal(
