@@ -469,6 +469,26 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 - **`disconnectnode` drops a connection by `getpeerinfo`'s address or id, with
   Core's errors** (closes #1193).
+### An inbound peer is sent `version` only once its own is accepted, as in Core
+
+- **A refused inbound peer is sent nothing** (closes #1207).
+
+### JSON-RPC named parameters are mapped onto positions, as in Core
+
+- **A `params` object is read as `transformNamedArguments` reads it**
+  (closes #1168), `args` holding the leading positions; a name repeated,
+  unknown or given both ways is refused with `RPC_INVALID_PARAMETER`.
+
+### `-rpcbind` is ignored without `-rpcallowip`, as `bitcoind` ignores it
+
+- **The JSON-RPC listener stays on loopback whatever `-rpcbind` names**
+  (closes #1211), and every value is checked, where the last was bound.
+
+### `-datadir`, `-conf` and `-blocksdir` are read lexically normal, as in Core
+
+- **A `..` comes off, and a leading `//` becomes `/`, before the file system is
+  asked** (closes #1187); a missing data directory and an unreadable
+  configuration file are refused in Core's words.
 
 ## v2026.9.24
 
