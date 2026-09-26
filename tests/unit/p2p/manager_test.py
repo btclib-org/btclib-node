@@ -2004,6 +2004,28 @@ def test_a_name_is_not_dialled_where_core_s_connect_node_gives_up(
     assert not manager._addr_fetches
 
 
+def test_a_connection_made_during_the_lookup_is_already_connected(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1284: `ConnectNode` asks what is connected once it has resolved."""
+    manager, calls = a_name_fetching_manager(
+        a_manager, monkeypatch, ["1.2.3.4"], answering=frozenset({"1.2.3.4"})
+    )
+
+    async def lookup_while_one_connects(name: str, max_answers: int) -> list[str]:
+        held = a_conn(9, address=peer_address("1.2.3.4", 18444))
+        manager.connections[held.id] = held
+        calls.append(("lookup", name, max_answers))
+        return ["1.2.3.4"]
+
+    monkeypatch.setattr(manager_module, "lookup_host", lookup_while_one_connects)
+    asyncio.run(manager._process_addr_fetch())
+    line = (
+        "Not opening a connection to seed.example, already connected to 1.2.3.4:18444"
+    )
+    assert calls[1:] == [("info", line)]
+
+
 def a_dns_seeding_manager(
     a_manager: AManagerFactory,
     monkeypatch: pytest.MonkeyPatch,

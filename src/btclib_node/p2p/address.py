@@ -185,8 +185,9 @@ def _resolved_ip(host: str) -> str | None:
     """Return a resolved `host` as `CNetAddr` reads it, `None` if internal.
 
     A mapped IPv4 address is IPv4, and one under the Tor v2 prefix the
-    unspecified address, as `SetLegacyIPv6` reads them; a scope id is
-    dropped.
+    unspecified address, as `SetLegacyIPv6` reads them. A scope id is
+    dropped, where `CNetAddr` keeps one: a BIP155 address, which is what
+    this node holds a peer as, cannot carry it.
     """
     ip = ip_address(host.partition("%")[0])
     if isinstance(ip, IPv6Address):
