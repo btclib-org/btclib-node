@@ -1508,7 +1508,18 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     # it is not one telling us it has nothing left, and this is not the
     # ordinary end of a sync. btclib-org/btclib-node#75
     block_index = node.chainstate.block_index
+    received_new_header = headers[-1].hash not in block_index.header_dict
     tip = block_index.add_headers(headers)
+    # Core's `m_last_block_announcement`, stamped where the batch
+    # connected, its last header was new and it has more work than the
+    # active tip
+    if (
+        tip is not None
+        and received_new_header
+        and block_index.chainwork[tip]
+        > block_index.chainwork[block_index.active_chain[-1]]
+    ):
+        conn.last_block_announcement = int(time.time())
     # The batch's last header is a block the peer has: Core's
     # `UpdatePeerStateForReceivedHeaders` where the batch connected, and
     # `HandleUnconnectingHeaders`, which keeps it as unknown until it is

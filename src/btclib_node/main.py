@@ -14,6 +14,7 @@ entered from a single transaction instead, for the RPC and p2p callbacks
 that relay one.
 """
 
+import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
@@ -326,6 +327,8 @@ def _finalize_fork(node: Node, to_add: list[Block], to_remove: list[RevBlock]) -
         block_index.add_to_active_chain(block_hash)
         block_index.stage_status(block_hash, BlockStatus.in_active_chain)
         node.logger.info("Added block %s", block_hash.hex())
+        # Core's `BlockConnected` stamping `m_last_tip_update`
+        node.download_manager.last_tip_update = time.time()
     # `Node.best_height`'s own comment (`__init__.py`) is where reading
     # this cross-thread, off `active_chain` rather than off a lock, is
     # argued -- this call is the "tip changed" moment that comment cites.

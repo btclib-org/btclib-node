@@ -483,6 +483,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   and dialled first at the next start** (closes #1097), two at most, in the
   file format bitcoind v31.1.0 reads and writes.
 
+### An extra outbound peer for a stale tip or an unreached network, as in Core
+
+- **One more full-relay peer is dialled for a stale tip, and one on a
+  network none of the eight is on** (closes #1100), each followed by the
+  eviction of a full-relay peer past the target by `EvictExtraOutboundPeers`.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

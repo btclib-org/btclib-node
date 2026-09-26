@@ -42,13 +42,14 @@ from btclib.p2p.addrv2 import (
 
 from btclib_node.db import KeyValueStore
 from btclib_node.exceptions import UnsupportedAddressTypeError
-from btclib_node.p2p.eviction import is_routable
+from btclib_node.p2p.eviction import get_network, is_routable
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
     from pathlib import Path
 
     from btclib_node.chains import Chain
+    from btclib_node.p2p.eviction import Network
 
 __all__ = [
     "PeerDB",
@@ -551,7 +552,7 @@ class PeerDB:
         return self.address_sampler()()
 
     def address_sampler(
-        self, *, new_only: bool = False
+        self, *, new_only: bool = False, network: Network | None = None
     ) -> Callable[[], NetworkAddressV2 | None]:
         """Return a draw over the dialable addresses of both tables, as of now.
 
@@ -563,9 +564,15 @@ class PeerDB:
         the new table to the tried one and `Select_` flips between two
         tables that never hold one endpoint twice. With `new_only` the
         draw is from the gossiped side alone, Core's `Select(true, ...)`
-        that a feeler makes.
+        that a feeler makes, and with `network` from both sides kept to
+        the one network, as `CNetAddr::GetNetwork` names it: Core's
+        `Select(false, {network})`, which an extra network peer makes.
         """
-        answered = [addr for addr in self.get_active_addresses() if can_connect(addr)]
+        answered = [
+            addr
+            for addr in self.get_active_addresses()
+            if can_connect(addr) and network in {None, get_network(addr)}
+        ]
         tried = {endpoint_key(addr) for addr in answered}
         # Drawn from the addresses that can be dialled, rather than from
         # the whole table with a retry on the ones that cannot: a table
@@ -583,7 +590,9 @@ class PeerDB:
             known = [
                 address
                 for address in self.addresses
-                if can_connect(address) and endpoint_key(address) not in tried
+                if can_connect(address)
+                and endpoint_key(address) not in tried
+                and network in {None, get_network(address)}
             ]
         return partial(_select, [] if new_only else answered, known)
 

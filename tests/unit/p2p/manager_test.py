@@ -40,12 +40,12 @@ from btclib_node.log import Logger
 from btclib_node.p2p import manager as manager_module
 from btclib_node.p2p.address import PeerDB, fixed_seed_addresses, peer_address
 from btclib_node.p2p.anchors import dump_anchors, read_anchors
-from btclib_node.p2p.eviction import net_group
+from btclib_node.p2p.eviction import Network, net_group
 from btclib_node.p2p.main import handle_p2p_handshake
 from btclib_node.p2p.manager import P2pManager
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator, Sequence
+    from collections.abc import Callable, Iterable, Iterator, Sequence
     from pathlib import Path
 
     from btclib.p2p.payload import Payload
@@ -140,7 +140,7 @@ def a_peer_db_stub(**attributes: Any) -> Any:
     if "random_address" in attributes or "random_new_address" in attributes:
         draw = attributes.pop("random_address", refuses_to_be_asked)
         new_draw = attributes.pop("random_new_address", refuses_to_be_asked)
-        defaults["address_sampler"] = lambda *, new_only=False: (
+        defaults["address_sampler"] = lambda *, new_only=False, network=None: (
             new_draw if new_only else draw
         )
     defaults.update(attributes)
@@ -4148,3 +4148,208 @@ def test_an_anchors_file_that_cannot_be_written_is_logged(
     wait_until(manager.loop.is_running)
     manager.stop()
     assert logged == [("Failed to write %s", "anchors.dat")]
+
+
+def test_a_stale_tip_opens_one_full_relay_peer_past_the_target(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1100: `GetTryNewOutboundPeer()`, past both targets, then the rest."""
+    manager = a_manager()
+    outbound = manager_module._Outbound
+    manager.try_new_outbound_peer = True
+    manager._next_feeler = 0
+    manager.start_extra_block_relay_peers = True
+    manager._next_extra_block_relay = 0
+    assert manager._next_outbound(8, 1) is outbound.BLOCK_RELAY
+    assert manager._next_outbound(8, 2) is outbound.FULL_RELAY
+    assert manager._next_outbound(9, 2) is outbound.FULL_RELAY
+    manager.try_new_outbound_peer = False
+    assert manager._next_outbound(9, 2) is outbound.BLOCK_RELAY
+
+
+def a_network_manager(
+    a_manager: AManagerFactory,
+    conns: Sequence[Any],
+    on: dict[Network, NetworkAddressV2],
+    max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
+) -> P2pManager:
+    """Build a manager whose table holds `on`, one address per network.
+
+    `address_sampler` draws `on`'s address for the network it is given,
+    and refuses to be asked for none.
+    """
+
+    def address_sampler(
+        *, new_only: bool = False, network: Network | None = None
+    ) -> Callable[[], NetworkAddressV2 | None]:
+        assert network is not None
+        assert not new_only
+        return lambda: on.get(network)
+
+    peer_db = a_peer_db_stub(
+        is_empty=False,
+        holds_network=lambda network_id: any(
+            address.network_id == network_id for address in on.values()
+        ),
+        address_sampler=address_sampler,
+    )
+    manager = a_manager(conns, peer_db=peer_db, max_connections=max_connections)
+    manager._next_extra_network_peer = 0
+    return manager
+
+
+V6 = peer_address("2a00::1", 18444)
+
+
+@pytest.mark.parametrize(
+    ("full_relay", "max_connections", "dials"),
+    [(8, DEFAULT_MAX_PEER_CONNECTIONS, True), (9, DEFAULT_MAX_PEER_CONNECTIONS, False)],
+)
+def test_an_extra_peer_is_dialled_for_a_network_no_peer_is_on(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    full_relay: int,
+    max_connections: int,
+    *,
+    dials: bool,
+) -> None:
+    """ISS 1100: Core's `MaybePickPreferredNetwork`, at exactly eight peers.
+
+    The eight are on IPv4 and the table holds IPv6: the timer is drawn
+    again where the network is picked, and the dial is a full-relay one
+    to the IPv6 address.
+    """
+    conns = [
+        a_conn(i, automatic=True, address=peer_address(f"5.{i}.0.1", 1))
+        for i in range(full_relay)
+    ]
+    manager = a_network_manager(a_manager, conns, {Network.IPV6: V6}, max_connections)
+    expected = manager_module._Outbound.NETWORK if dials else None
+    assert manager._next_outbound(full_relay, 2) is expected
+    assert (manager._next_extra_network_peer > time.time()) is dials
+    if dials:
+        assert network_dials(manager, monkeypatch, set()) == [(V6, FULL_RELAY)]
+
+
+FULL_RELAY = {
+    "inbound": False,
+    "automatic": True,
+    "block_relay": False,
+    "feeler": False,
+}
+
+
+def network_dials(
+    manager: P2pManager, monkeypatch: pytest.MonkeyPatch, groups: set[bytes]
+) -> list[tuple[NetworkAddressV2, dict[str, Any]]]:
+    """Run one `NETWORK` pass of `_dial_one_draw`, answering what it made."""
+    made: list[tuple[NetworkAddressV2, dict[str, Any]]] = []
+
+    async def answers(address: NetworkAddressV2) -> bool:
+        return True
+
+    monkeypatch.setattr(manager_module, "dial", answers)
+    monkeypatch.setattr(
+        manager,
+        "create_connection",
+        lambda sock, address, **kwargs: made.append((address, kwargs)),
+    )
+    asyncio.run(manager._dial_one_draw(set(), groups, manager_module._Outbound.NETWORK))
+    return made
+
+
+def test_an_extra_network_peer_draws_again_past_a_held_group(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1100: the `preferred_net` draw runs in Core's loop of 100 tries.
+
+    A draw in a group an outbound peer holds is followed by another, on
+    the same network.
+    """
+    held = peer_address("2a01::1", 18444)
+    draws = iter([held, V6])
+    manager = a_network_manager(a_manager, [], {})
+    monkeypatch.setattr(
+        manager.peer_db,
+        "address_sampler",
+        lambda *, new_only, network: (
+            lambda: next(draws) if network is Network.IPV6 else None
+        ),
+    )
+    manager._preferred_network = Network.IPV6
+    made = network_dials(manager, monkeypatch, {net_group(held)})
+    assert made == [(V6, FULL_RELAY)]
+
+
+def test_no_extra_network_peer_below_core_s_eight_full_relay_peers(
+    a_manager: AManagerFactory,
+) -> None:
+    """`m_max_outbound_full_relay == MAX_OUTBOUND_FULL_RELAY_CONNECTIONS`.
+
+    At `-maxconnections=7` seven full-relay peers meet the target, and no
+    network peer is added to them.
+    """
+    manager = a_network_manager(a_manager, [], {Network.IPV6: V6}, 7)
+    assert manager.max_outbound_full_relay == 7
+    assert manager._next_outbound(7, 0) is None
+
+
+@pytest.mark.parametrize(
+    "on", [{}, {Network.IPV4: peer_address("5.9.0.1", 1)}], ids=["empty", "held"]
+)
+def test_no_network_to_prefer_draws_no_timer(
+    a_manager: AManagerFactory, on: dict[Network, NetworkAddressV2]
+) -> None:
+    """A network with a peer on it, or none in the table, is no network.
+
+    The timer stays due, as Core draws it only in the arm it enters.
+    """
+    conns = [
+        a_conn(i, automatic=True, address=peer_address(f"5.{i}.0.1", 1))
+        for i in range(8)
+    ]
+    manager = a_network_manager(a_manager, conns, on)
+    assert manager._next_outbound(8, 2) is None
+    assert manager._next_extra_network_peer == 0
+
+
+def test_the_network_peer_waits_for_its_timer(a_manager: AManagerFactory) -> None:
+    """`now > next_extra_network_peer`, drawn as the manager runs."""
+    manager = a_network_manager(a_manager, [], {Network.IPV6: V6})
+    manager._next_extra_network_peer = math.inf
+    assert manager._next_outbound(8, 2) is None
+
+
+def test_the_network_peer_timer_is_drawn_as_the_manager_runs(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`run` draws Core's `next_extra_network_peer`, five minutes on average."""
+    monkeypatch.setattr(manager_module, "_exponential_delay", lambda mean: mean)
+    manager = a_manager(listen=False, max_connections=0)
+    before = time.time()
+    manager.start()
+    wait_until(manager.loop.is_running)
+    assert before + 300 <= manager._next_extra_network_peer <= time.time() + 300
+
+
+def test_the_network_counts_are_core_s_manual_and_full_relay_peers(
+    a_manager: AManagerFactory,
+) -> None:
+    """`m_network_conn_counts`: `IsManualOrFullOutboundConn`, by `GetNetwork`.
+
+    A pending peer counts; an inbound, block-relay-only or feeler peer
+    does not. A 6to4 address is IPv6 here, where `net_class` says IPv4.
+    """
+    manager = a_manager(
+        [
+            a_conn(1, automatic=True, address=peer_address("5.1.0.1", 1)),
+            a_conn(2, address=peer_address("2002:0102:0304::1", 1)),
+            a_conn(3, inbound=True, address=peer_address("5.3.0.1", 1)),
+            a_conn(4, automatic=True, block_relay=True),
+            a_conn(5, automatic=True, feeler=True),
+        ]
+    )
+    manager.pending_connections[6] = a_conn(
+        6, automatic=True, address=peer_address("5.6.0.1", 1)
+    )
+    assert manager.network_conn_counts() == {Network.IPV4: 2, Network.IPV6: 1}

@@ -13,8 +13,10 @@ has stopped sending blocks is let go.
 """
 
 import math
+import threading
 import time
 from datetime import UTC, datetime
+from functools import partial
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -35,6 +37,7 @@ from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.callbacks import MAX_GETDATA_INFLIGHT_BYTES
 from btclib_node.p2p.connection import PeerStats
+from btclib_node.p2p.manager import P2pManager
 from btclib_node.p2p.protocol_version import FEEFILTER_VERSION, SENDHEADERS_VERSION
 from tests import generate_random_transaction
 
@@ -71,6 +74,9 @@ def a_conn(
     block_relay: bool = False,
     connected_time: int = 0,
     last_novel_block_time: int = 0,
+    automatic: bool = False,
+    feeler: bool = False,
+    last_block_announcement: int = 0,
 ) -> Any:
     """Build a fake connection, recording every message handed to `send`.
 
@@ -101,6 +107,9 @@ def a_conn(
         block_relay=block_relay,
         connected_time=connected_time,
         last_novel_block_time=last_novel_block_time,
+        automatic=automatic,
+        feeler=feeler,
+        last_block_announcement=last_block_announcement,
         tx_announce_queue=[],
         next_inv_send_time=0.0,
         stats=PeerStats(),
@@ -1841,6 +1850,15 @@ def an_extra_peer_manager(
     p2p_manager = cast("Any", manager.node).p2p_manager
     p2p_manager.max_outbound_block_relay = max_outbound_block_relay
     p2p_manager.start_extra_block_relay_peers = False
+    p2p_manager.max_outbound_full_relay = 8
+    p2p_manager.use_addrman_outgoing = True
+    p2p_manager.try_new_outbound_peer = False
+    # `P2pManager`'s own count, over this stand-in's connections
+    p2p_manager.pending_connections = {}
+    p2p_manager._connections_lock = threading.Lock()
+    p2p_manager.network_conn_counts = partial(
+        P2pManager.network_conn_counts, p2p_manager
+    )
     manager._next_extra_peer_check = 0
     return manager
 
@@ -1992,3 +2010,181 @@ def test_a_step_runs_the_extra_peer_check(monkeypatch: pytest.MonkeyPatch) -> No
         monkeypatch.setattr(manager, name, lambda name=name: ran.append(name))
     manager.step()
     assert ran[-1] == "_check_for_stale_tip_and_evict_peers"
+
+
+@pytest.mark.parametrize(
+    ("age", "in_flight", "use_addrman", "stale"),
+    [
+        (1801, False, True, True),
+        (1800, False, True, False),
+        (1801, True, True, False),
+        (1801, False, False, False),
+    ],
+)
+def test_a_stale_tip_lets_one_more_full_relay_peer_be_dialled(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    age: int,
+    in_flight: bool,
+    use_addrman: bool,
+    stale: bool,
+) -> None:
+    """ISS 1100: `TipMayBeStale`, under no `-connect`, sets Core's flag.
+
+    More than three block intervals without a block connected and none
+    in flight; a check that finds the tip fresh clears the flag instead.
+    """
+    now = 1_000_000
+    monkeypatch.setattr(time, "time", lambda: now)
+    peer = a_conn(1, queue=[a_hash(1)] if in_flight else [])
+    manager = an_extra_peer_manager([peer])
+    p2p_manager = cast("Any", manager.node).p2p_manager
+    p2p_manager.use_addrman_outgoing = use_addrman
+    p2p_manager.try_new_outbound_peer = not stale
+    manager.last_tip_update = now - age
+    manager._check_for_stale_tip_and_evict_peers()
+    assert p2p_manager.try_new_outbound_peer is stale
+
+
+def test_the_first_stale_check_stamps_the_tip_and_the_next_waits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Core's `m_last_tip_update == 0s` arm, then `STALE_CHECK_INTERVAL`.
+
+    A tip never updated is stamped now, and so is not stale; the check
+    after the next 45-second pass waits ten minutes from this one.
+    """
+    manager = an_extra_peer_manager([])
+    p2p_manager = cast("Any", manager.node).p2p_manager
+    now = time.time()
+    monkeypatch.setattr(time, "time", lambda: now)
+    manager._check_for_stale_tip_and_evict_peers()
+    assert manager.last_tip_update == now
+    assert manager._stale_tip_check_time == now + 600
+    assert not p2p_manager.try_new_outbound_peer
+    manager.last_tip_update = now - 1801
+    later = now + 599
+    monkeypatch.setattr(time, "time", lambda: later)
+    manager._next_extra_peer_check = 0
+    manager._check_for_stale_tip_and_evict_peers()
+    assert not p2p_manager.try_new_outbound_peer
+
+
+def full_relay_peers(*announcements: int, connected_time: int = 0) -> list[Any]:
+    """Build an automatic full-relay peer per last block announcement, by id."""
+    return [
+        a_conn(
+            conn_id,
+            inbound=False,
+            automatic=True,
+            last_block_announcement=announced,
+            connected_time=connected_time,
+        )
+        for conn_id, announced in enumerate(announcements)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("announcements", "dropped"),
+    [
+        ((5, 5, 5, 5, 5, 5, 5, 5, 5), 8),
+        ((5, 3, 5, 5, 5, 5, 5, 5, 5), 1),
+        ((5, 3, 5, 5, 3, 5, 5, 5, 5), 4),
+        ((0, 9, 9, 9, 9, 9, 9, 9, 9), 0),
+    ],
+)
+def test_the_extra_full_relay_peer_to_drop_is_core_s(
+    announcements: tuple[int, ...], dropped: int
+) -> None:
+    """ISS 1100: `EvictExtraOutboundPeers`' full-relay half.
+
+    The peer that least recently announced a block, the youngest on a
+    tie; dropping it clears `try_new_outbound_peer`.
+    """
+    peers = full_relay_peers(*announcements)
+    manager = an_extra_peer_manager(peers)
+    p2p_manager = cast("Any", manager.node).p2p_manager
+    manager._stale_tip_check_time = math.inf
+    p2p_manager.try_new_outbound_peer = True
+    manager._check_for_stale_tip_and_evict_peers()
+    assert [bool(peer.stopped) for peer in peers] == [
+        conn_id == dropped for conn_id in range(len(peers))
+    ]
+    assert not p2p_manager.try_new_outbound_peer
+
+
+def test_a_full_relay_peer_alone_on_its_network_is_kept() -> None:
+    """Core's `MultipleManualOrFullOutboundConns`: the only one is protected.
+
+    The worst announcer is the one IPv6 peer, so the worst of the rest
+    goes; a manual peer on IPv6 beside it would leave it exposed.
+    """
+    peers = full_relay_peers(9, 5, 9, 9, 9, 9, 9, 9, 0)
+    peers[-1].address = peer_address("2a00::1", 8333)
+    manager = an_extra_peer_manager(peers)
+    manager._check_for_stale_tip_and_evict_peers()
+    assert [bool(peer.stopped) for peer in peers] == [
+        conn_id == 1 for conn_id in range(len(peers))
+    ]
+    manual = a_conn(20, inbound=False, address=peer_address("2a00::2", 8333))
+    peers[1].stopped.clear()
+    manager = an_extra_peer_manager([*peers, manual])
+    manager._check_for_stale_tip_and_evict_peers()
+    assert peers[-1].stopped == [True]
+
+
+@pytest.mark.parametrize(
+    ("age", "busy", "dropped"),
+    [(31, False, True), (30, False, False), (31, True, False)],
+)
+def test_an_extra_full_relay_peer_is_kept_while_young_or_busy(
+    monkeypatch: pytest.MonkeyPatch, *, age: int, busy: bool, dropped: bool
+) -> None:
+    """Longer than `MINIMUM_CONNECT_TIME`, strictly, and no block in flight.
+
+    Kept, it leaves `try_new_outbound_peer` as it was.
+    """
+    now = 1_000_000
+    monkeypatch.setattr(time, "time", lambda: now)
+    peers = full_relay_peers(*[0] * 9, connected_time=now - age)
+    peers[-1].download_queue = [a_hash(1)] if busy else []
+    manager = an_extra_peer_manager(peers)
+    p2p_manager = cast("Any", manager.node).p2p_manager
+    manager._stale_tip_check_time = math.inf
+    p2p_manager.try_new_outbound_peer = True
+    manager._check_for_stale_tip_and_evict_peers()
+    assert bool(peers[-1].stopped) is dropped
+    assert p2p_manager.try_new_outbound_peer is not dropped
+
+
+def test_only_a_connected_automatic_full_relay_peer_is_counted() -> None:
+    """Core's `GetExtraFullOutboundCount`: `IsFullOutboundConn()`, connected.
+
+    Eight such peers beside a manual, an inbound, a block-relay-only, a
+    feeler and a pending one: none of them is extra.
+    """
+    peers = [
+        *full_relay_peers(*[0] * 8),
+        a_conn(10, inbound=False),
+        a_conn(11),
+        a_conn(12, inbound=False, automatic=True, block_relay=True),
+        a_conn(13, inbound=False, automatic=True, feeler=True),
+        a_conn(14, inbound=False, automatic=True, status=P2pConnStatus.Open),
+    ]
+    manager = an_extra_peer_manager(peers)
+    manager._check_for_stale_tip_and_evict_peers()
+    assert not any(peer.stopped for peer in peers)
+
+
+def test_no_full_relay_peer_goes_where_each_is_alone_on_its_network() -> None:
+    """Core's `worst_peer == -1`: every candidate protected, none dropped.
+
+    At a target of one, the two peers are on IPv4 and IPv6.
+    """
+    peers = full_relay_peers(0, 0)
+    peers[0].address = peer_address("1.2.3.4", 8333)
+    peers[1].address = peer_address("2a00::1", 8333)
+    manager = an_extra_peer_manager(peers)
+    cast("Any", manager.node).p2p_manager.max_outbound_full_relay = 1
+    manager._check_for_stale_tip_and_evict_peers()
+    assert not any(peer.stopped for peer in peers)

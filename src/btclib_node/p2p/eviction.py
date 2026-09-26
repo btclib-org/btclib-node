@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 __all__ = [
     "EvictionCandidate",
     "Network",
+    "get_network",
     "is_local",
     "is_routable",
     "is_valid",
@@ -383,6 +384,28 @@ def net_class(address: NetworkAddressV2) -> Network:
     if _linked_ipv4(ip) is not None:
         return Network.IPV4
     return Network.IPV6
+
+
+# `CNetAddr::m_net` of each BIP155 id `is_routable` can answer for
+_NETWORK_OF_ID: dict[int, Network] = {
+    BIP155Network.IPV4: Network.IPV4,
+    BIP155Network.IPV6: Network.IPV6,
+    BIP155Network.TORV3: Network.ONION,
+    BIP155Network.I2P: Network.I2P,
+    BIP155Network.CJDNS: Network.CJDNS,
+}
+
+
+def get_network(address: NetworkAddressV2) -> Network:
+    """Core's `CNetAddr::GetNetwork`, what `m_network_conn_counts` is keyed on.
+
+    Unlike `net_class`, an IPv6 address carrying an IPv4 one is IPv6.
+    """
+    if can_addrv1(address) and _ip(address) in _INTERNAL:
+        return Network.INTERNAL
+    if not is_routable(address):
+        return Network.UNROUTABLE
+    return _NETWORK_OF_ID[address.network_id]
 
 
 def net_group(address: NetworkAddressV2) -> bytes:

@@ -33,6 +33,7 @@ from btclib_node.p2p.address import (
     ip_and_port,
     peer_address,
 )
+from btclib_node.p2p.eviction import Network
 from tests import call_within
 
 if TYPE_CHECKING:
@@ -1337,3 +1338,27 @@ def test_a_feeler_draws_what_was_never_answered() -> None:
     assert drawn == {address_module.endpoint_key(a) for a in (answered, new)}
     peer_db.add_active_address(replace(new, timestamp=int(time.time())))
     assert peer_db.address_sampler(new_only=True)() is None
+
+
+def test_an_extra_network_peer_draws_on_its_network_alone() -> None:
+    """ISS 1100: Core's `Select(false, {network})`, over both tables.
+
+    For IPv6 an IPv6 address is drawn, answered or only gossiped, the
+    coin deciding between the two tables as `_select` does; nothing is
+    drawn for a network the table holds nothing on.
+    """
+    peer_db = a_peer_db()
+    v4 = peer_address("1.2.3.4", 8333)
+    v6 = peer_address("2a00::1", 8333)
+    answered = peer_address("2a00::2", 8333, timestamp=int(time.time()))
+    peer_db.add_addresses([v4, v6, replace(answered, timestamp=1), an_onion_address()])
+
+    def draws(network: Network) -> set[bytes]:
+        draw = peer_db.address_sampler(network=network)
+        return {cast("NetworkAddressV2", draw()).address for _ in range(80)}
+
+    assert draws(Network.IPV6) == {v6.address, answered.address}
+    peer_db.add_active_address(answered)
+    assert draws(Network.IPV6) == {v6.address, answered.address}
+    assert draws(Network.IPV4) == {v4.address}
+    assert peer_db.address_sampler(network=Network.ONION)() is None

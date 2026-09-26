@@ -17,12 +17,14 @@ from ipaddress import IPv6Address
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 
 from btclib_node.p2p import eviction
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.eviction import (
     EvictionCandidate,
     Network,
+    get_network,
     is_local,
     is_valid,
     keyed_net_group,
@@ -566,3 +568,28 @@ def test_the_keyed_net_group_depends_on_the_key_alone() -> None:
     assert keyed_net_group(key, a) == keyed_net_group(key, b)
     assert keyed_net_group(key, a) != keyed_net_group(b"\x01" * 16, a)
     assert keyed_net_group(key, a) != keyed_net_group(key, peer_address("1.3.0.0", 1))
+
+
+@pytest.mark.parametrize(
+    ("address", "network"),
+    [
+        (peer_address("1.2.3.4", 1), Network.IPV4),
+        (peer_address("2a00::1", 1), Network.IPV6),
+        (peer_address("2002:0102:0304::1", 1), Network.IPV6),
+        (peer_address("fd6b:88c0:8724::1", 1), Network.INTERNAL),
+        (peer_address("127.0.0.1", 1), Network.UNROUTABLE),
+        (peer_address("10.0.0.1", 1), Network.UNROUTABLE),
+        (NetworkAddressV2(0, 0, BIP155Network.TORV3, bytes(32), 1), Network.ONION),
+        (NetworkAddressV2(0, 0, BIP155Network.I2P, bytes(32), 0), Network.I2P),
+        (
+            NetworkAddressV2(0, 0, BIP155Network.CJDNS, b"\xfc" + bytes(15), 1),
+            Network.CJDNS,
+        ),
+    ],
+)
+def test_get_network_is_core_s(address: NetworkAddressV2, network: Network) -> None:
+    """ISS 1100: `CNetAddr::GetNetwork`, internal and unroutable first.
+
+    A 6to4 address is IPv6 here, where `GetNetClass` makes it IPv4.
+    """
+    assert get_network(address) is network

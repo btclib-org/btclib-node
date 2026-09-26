@@ -16,6 +16,7 @@ import secrets
 import socket
 import threading
 import time
+from collections import defaultdict
 from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
@@ -510,6 +511,9 @@ def a_peer(**attributes: Any) -> Any:
         min_ping_time=math.inf,
         last_novel_block_time=0,
         last_novel_tx_time=0,
+        # and what `headers` writes, for the extra full-relay peer's
+        # eviction (ISS 1100)
+        last_block_announcement=0,
         has_all_wanted_services=False,
         _ping_lock=threading.Lock(),
         send_ping=lambda: sent.append("ping"),
@@ -2960,6 +2964,10 @@ class FakeHeaderIndex:
         # what `update_block_availability` looks a hash up in: empty, so
         # every hash `headers` records for the peer is kept as unknown
         self.header_dict: dict[bytes, Any] = {}
+        # every header of as much work as the tip, so that no batch here
+        # is a block announcement
+        self.active_chain = [header_index_tip]
+        self.chainwork: defaultdict[bytes, int] = defaultdict(int)
 
     def add_headers(self, headers: Iterable[BlockHeader]) -> bytes | None:
         """Record the headers given, then answer `tip` or raise if `refuse`."""
@@ -4474,3 +4482,34 @@ def test_a_feeler_short_of_desirable_services_is_not_let_go_for_it() -> None:
     version(node, a_version(services=ServiceFlags.NODE_WITNESS), peer)
     assert not peer.stopped
     assert commands(peer)[-1] == "stop_when_sent"
+
+
+def test_a_new_header_with_more_work_than_the_tip_is_a_block_announcement(
+    tmp_path: Path,
+) -> None:
+    """ISS 1100: Core's `m_last_block_announcement`, from `headers`.
+
+    Stamped where the batch's last header is new and has more work than
+    the active tip: not for a batch already known, nor for a fork of as
+    much work as the tip.
+    """
+    genesis = RegTest().genesis.hash
+    chain = generate_random_header_chain(2, genesis)
+    with unstarted_node_context(tmp_path) as real:
+        block_index = real.chainstate.block_index
+        node = a_data_node(block_index=block_index)
+        peer = a_peer()
+        headers(node, Headers(chain).serialize(), peer)
+        assert peer.last_block_announcement >= int(time.time()) - 1
+        peer.last_block_announcement = 0
+        headers(node, Headers(chain).serialize(), peer)
+        assert peer.last_block_announcement == 0
+        block_index.active_chain.extend(header.hash for header in chain)
+        headers(
+            node, Headers(generate_random_header_chain(2, genesis)).serialize(), peer
+        )
+        assert peer.last_block_announcement == 0
+        headers(
+            node, Headers(generate_random_header_chain(3, genesis)).serialize(), peer
+        )
+        assert peer.last_block_announcement > 0
