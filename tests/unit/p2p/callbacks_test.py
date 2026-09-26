@@ -555,8 +555,11 @@ def a_handshake_node(
     """Build a node double with just what handshake callbacks read or write.
 
     `is_discouraged` answers for the IPs `discouraged_hosts` names,
-    whatever the port.
+    whatever the port. `peer_db` is an empty table in memory by default,
+    which `version` records a peer this node dialled in.
     """
+    if peer_db is None:
+        peer_db = PeerDB(cast("Chain", None), cast("Path", None))
     discouraged, record = discourage_recorder()
     discouraged_keys = {host_key(peer_address(host, 0)) for host in discouraged_hosts}
     own_nonces = set(pending_outbound_nonces)
@@ -1011,7 +1014,9 @@ def test_a_verack_below_short_ids_blocks_version_sends_no_sendcmpct() -> None:
 
 
 def test_an_outbound_handshake_records_the_address_dialled() -> None:
-    """A completed outbound handshake records the address this node dialled.
+    """A `version` kept from a peer this node dialled records it as answered.
+
+    Core's `m_addrman.Good`, in its `VERSION` handler. ISS 1229.
 
     #70: evidence this node dialled it and a socket answered, not the
     peer's own unauthenticated word for its address, and the live
@@ -1021,22 +1026,18 @@ def test_an_outbound_handshake_records_the_address_dialled() -> None:
     # #70: evidence this node dialled it and a socket answered, not the
     # peer's own unauthenticated word for its address
     dialled = peer_address("1.2.3.4", 18444)
-    peer = a_peer(
-        version_message=a_parsed_version(services=ServiceFlags.NODE_NETWORK),
-        wtxidrelay_received=True,
-        inbound=False,
-        address=dialled,
-    )
+    peer = a_peer(inbound=False, address=dialled)
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
     # gossiped first: `add_active_address` records a known endpoint alone
     peer_db.add_addresses([dialled])
-    verack(a_handshake_node(peer_db=peer_db), b"", peer)
+    services = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
+    version(a_handshake_node(peer_db=peer_db), a_version(services=services), peer)
     (recorded,) = peer_db.active_addresses
     assert recorded.address == dialled.address
     assert recorded.port == dialled.port
     # the live handshake's own services, not whatever the address was
     # last recorded with
-    assert recorded.services == ServiceFlags.NODE_NETWORK
+    assert recorded.services == services
     # and the connection's own idea of its peer moves to the same
     # endpoint, or manager.py's already-connected check keeps comparing
     # against the address dialled with -- never what a later gossip of
@@ -1044,35 +1045,35 @@ def test_an_outbound_handshake_records_the_address_dialled() -> None:
     assert endpoint_key(peer.address) == endpoint_key(recorded)
 
 
-def test_an_inbound_handshake_records_the_peers_announced_port() -> None:
-    """An inbound handshake records the port the peer's own `version` names.
+@pytest.mark.parametrize("callback", ["version", "verack"])
+def test_an_inbound_handshake_is_not_recorded_as_answered(callback: str) -> None:
+    """ISS 1229: Core calls `AddrMan::Good` for a peer it dialled alone.
 
-    #70: `sock_accept`'s own port is the peer's ephemeral one, never one
-    anything could dial back on -- only the peer's own `addr_from` names
-    a listening port, and it is that port, not the ephemeral one, that
-    is recorded.
+    An inbound connection proves only that the peer reaches this node,
+    so its endpoint stays out of the answered table even where the
+    gossiped table already holds it. `conn.address` still moves to the
+    port the peer's `version` names, which manager.py's
+    `already_connected` compares a draw against.
     """
-    # #70: sock_accept's own port is the peer's ephemeral one, never one
-    # anything could dial back on -- only the peer's own version names a
-    # listening port
     accepted = peer_address("1.2.3.4", 55555)
-    peer = a_peer(
-        version_message=a_parsed_version(addr_from_port=8333),
-        wtxidrelay_received=True,
-        inbound=True,
-        address=accepted,
-    )
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
-    # gossiped first: `add_active_address` records a known endpoint alone
-    peer_db.add_addresses([replace(accepted, port=8333)])
-    verack(a_handshake_node(peer_db=peer_db), b"", peer)
-    (recorded,) = peer_db.active_addresses
-    # the accepted connection's own address, proven reachable by the TCP
-    # handshake -- and not addr_from's own "5.6.7.8", which nothing here
-    # ever connected to
-    assert recorded.address == accepted.address
-    assert recorded.port == 8333
-    assert endpoint_key(peer.address) == endpoint_key(recorded)
+    # both endpoints known, so that either would be recorded if asked
+    peer_db.add_addresses([accepted, replace(accepted, port=8333)])
+    node = a_handshake_node(peer_db=peer_db)
+    if callback == "version":
+        peer = a_peer(inbound=True, address=accepted)
+        version(node, a_version(addr_from_port=8333), peer)
+    else:
+        peer = a_peer(
+            version_message=a_parsed_version(addr_from_port=8333),
+            wtxidrelay_received=True,
+            inbound=True,
+            address=accepted,
+        )
+        verack(node, b"", peer)
+        assert peer.address.address == accepted.address
+        assert peer.address.port == 8333
+    assert peer_db.active_addresses == []
 
 
 def test_an_inbound_peer_naming_no_port_is_not_recorded() -> None:

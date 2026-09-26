@@ -368,7 +368,7 @@ class PeerDB:
         # `active_addresses` at the position it found -- two statements,
         # not one -- and `get_active_addresses` reassigns the list and
         # then rebuilds the index against it -- likewise two. The first
-        # runs on `Node`'s own thread, off `callbacks.verack`; the
+        # runs on `Node`'s own thread, off `callbacks.version`; the
         # second runs on `P2pManager`'s, off `manage_connections`, which
         # calls it every few minutes regardless of what else that loop
         # is doing (#71). Interleaved without a lock, a position read

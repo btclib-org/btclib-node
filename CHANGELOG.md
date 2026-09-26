@@ -486,6 +486,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   asked** (closes #1187); a missing data directory and an unreadable
   configuration file are refused in Core's words.
 
+### Only a peer this node dialled is recorded as answered, as in Core
+
+- **An inbound peer's endpoint no longer enters the answered table, and a
+  dialled one enters it from its `version`**, where Core calls `AddrMan::Good`
+  (closes #1229).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
