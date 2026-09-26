@@ -1106,3 +1106,62 @@ def test_a_key_this_version_does_not_know_is_left_where_it_is(tmp_path: Path) ->
     assert second.addresses == {peer_address("1.2.3.4", 8333)}
     assert second.active_addresses == []
     second.close()
+
+
+_UNSTORABLE = [
+    pytest.param(peer_address("127.0.0.1", 18444), id="loopback"),
+    pytest.param(peer_address("192.168.1.1", 8333), id="rfc1918"),
+    pytest.param(peer_address("::1", 8333), id="ipv6 loopback"),
+    pytest.param(peer_address(_AN_ONIONCAT_ADDRESS, 8333), id="embedded torv2"),
+]
+
+
+@pytest.mark.parametrize("address", _UNSTORABLE)
+def test_an_unroutable_peer_is_not_recorded_as_answered(
+    address: NetworkAddressV2,
+) -> None:
+    """ISS 1140: Core's `AddrManImpl::Good_` updates only what addrman holds.
+
+    `AddSingle` never holds an unroutable address, so an answered
+    handshake with one is not recorded, and `random_address` and
+    `getaddr` never read it back. A routable peer beside it is the
+    control.
+    """
+    peer_db = a_peer_db()
+    routable = peer_address("1.2.3.4", 8333)
+    peer_db.add_active_address(address)
+    peer_db.add_active_address(routable)
+    assert [a.address for a in peer_db.get_active_addresses()] == [routable.address]
+
+
+@pytest.mark.parametrize("prefix", [b"known-", b"answered-"])
+@pytest.mark.parametrize("address", _UNSTORABLE)
+def test_an_unroutable_row_is_dropped_from_the_store_on_load(
+    tmp_path: Path, prefix: bytes, address: NetworkAddressV2
+) -> None:
+    """ISS 1140: a row neither table would take now is deleted, not loaded.
+
+    Written directly under the prefix, as a store filled before the
+    tables refused such an address holds it. A routable row beside it
+    is loaded and kept.
+    """
+    now = int(time.time())
+    routable = peer_address("1.2.3.4", 8333, timestamp=now)
+    first = a_peer_db(data_dir=tmp_path)
+    assert first.db is not None
+    for row in (address, routable):
+        stored = NetworkAddressV2(
+            now, row.services, row.network_id, row.address, row.port
+        )
+        key = address_module.endpoint_key(stored)
+        first.db.put(prefix + key, stored.serialize(check_validity=False))
+    first.close()
+
+    second = a_peer_db(data_dir=tmp_path)
+    loaded = second.addresses if prefix == b"known-" else second.active_addresses
+    assert [a.address for a in loaded] == [routable.address]
+    assert second.db is not None
+    assert [key for key, _ in second.db] == [
+        prefix + address_module.endpoint_key(routable)
+    ]
+    second.close()
