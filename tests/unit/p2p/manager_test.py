@@ -2135,8 +2135,9 @@ def test_a_name_connected_is_not_redialled(
     (key,) = manager._redial_peers
     manager._named_endpoints[key] = endpoint_key(held)
     manager._redial_backoff[key] = manager_module._REDIAL_MAX_SECONDS
-    monkeypatch.setattr(manager, "async_connect_host", _not_dialled)
+    dialled = records_redials(manager, monkeypatch)
     asyncio.run(manager._maybe_redial_specified())
+    assert not dialled
     assert manager._redial_backoff[key] == manager_module._REDIAL_BASE_SECONDS
 
 
@@ -2495,13 +2496,21 @@ def test_connect_and_explicit_listen_binds_and_dials(
         target.join(timeout=10)
 
 
-async def _not_dialled(host: str, port: int) -> NoReturn:
-    """Stand in for `async_connect_host` where nothing may be dialled.
+def records_redials(
+    manager: P2pManager, monkeypatch: pytest.MonkeyPatch
+) -> list[tuple[str, int]]:
+    """Stand in for `async_connect_host`, answering the list it records into.
 
-    `pytest.fail` rather than an exception, which
+    A list read after the pass rather than an exception raised, which
     `_maybe_redial_specified` would log and pass over.
     """
-    pytest.fail(f"dialled {host}:{port}")
+    dialled: list[tuple[str, int]] = []
+
+    async def record_dial(host: str, port: int) -> None:
+        dialled.append((host, port))
+
+    monkeypatch.setattr(manager, "async_connect_host", record_dial)
+    return dialled
 
 
 def test_maybe_redial_specified_is_a_noop_with_nothing_specified(
@@ -2510,8 +2519,9 @@ def test_maybe_redial_specified_is_a_noop_with_nothing_specified(
     """No `-connect`/`-addnode` given: nothing is ever redialled."""
     manager = a_manager()
     assert not manager._redial_peers
-    monkeypatch.setattr(manager, "async_connect_host", _not_dialled)
+    dialled = records_redials(manager, monkeypatch)
     asyncio.run(manager._maybe_redial_specified())
+    assert not dialled
 
 
 def test_maybe_redial_specified_skips_a_peer_not_yet_due(
@@ -2521,8 +2531,9 @@ def test_maybe_redial_specified_skips_a_peer_not_yet_due(
     manager = a_manager(connect=[("1.2.3.4", 8333)])
     (key,) = manager._redial_peers
     manager._redial_next[key] = time.time() + 100
-    monkeypatch.setattr(manager, "async_connect_host", _not_dialled)
+    dialled = records_redials(manager, monkeypatch)
     asyncio.run(manager._maybe_redial_specified())
+    assert not dialled
 
 
 def test_maybe_redial_specified_dials_a_due_peer_and_doubles_the_backoff(
@@ -2535,13 +2546,8 @@ def test_maybe_redial_specified_dials_a_due_peer_and_doubles_the_backoff(
     the only place that seeds it forward (`run`'s own comment on the
     race that seeding avoids).
     """
-    dialled: list[Any] = []
-
-    async def record_dial(host: str, port: int) -> None:
-        dialled.append((host, port))
-
     manager = a_manager(connect=[("1.2.3.4", 8333)])
-    monkeypatch.setattr(manager, "async_connect_host", record_dial)
+    dialled = records_redials(manager, monkeypatch)
     (key,) = manager._redial_peers
     assert manager._redial_backoff[key] == manager_module._REDIAL_BASE_SECONDS
     asyncio.run(manager._maybe_redial_specified())
@@ -2579,8 +2585,9 @@ def test_maybe_redial_specified_resets_the_backoff_once_connected(
     manager = a_manager([conn], connect=[("1.2.3.4", 8333)])
     (key,) = manager._redial_peers
     manager._redial_backoff[key] = manager_module._REDIAL_MAX_SECONDS
-    monkeypatch.setattr(manager, "async_connect_host", _not_dialled)
+    dialled = records_redials(manager, monkeypatch)
     asyncio.run(manager._maybe_redial_specified())
+    assert not dialled
     assert manager._redial_backoff[key] == manager_module._REDIAL_BASE_SECONDS
 
 

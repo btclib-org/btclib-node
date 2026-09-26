@@ -2740,6 +2740,20 @@ def test_addnode_with_no_arguments_is_answered_with_the_usage() -> None:
     assert raised.value.message == 'addnode "node" "command" ( v2transport )'
 
 
+def test_addnode_refuses_a_malformed_port() -> None:
+    """`split_host_port`'s refusal, a divergence from Core filed as #1292."""
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chain=SimpleNamespace(port=18444),
+            p2p_manager=SimpleNamespace(connect_host=lambda _host, _port: None),
+        ),
+    )
+    with pytest.raises(RpcError) as raised:
+        add_node(node, _CONN, ["example.com:0", "onetry"])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+
+
 def test_addnode_dials_a_hostname_by_name() -> None:
     """ISS 1264: Core's `onetry` hands the name to `OpenNetworkConnection`."""
     dialed: list[Any] = []
