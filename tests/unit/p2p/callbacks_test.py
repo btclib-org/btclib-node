@@ -28,6 +28,7 @@ import pytest
 from btclib import var_int
 from btclib.amount import sats_from_btc
 from btclib.block import Block, BlockHeader
+from btclib.consensus import MAX_BLOCK_WEIGHT
 from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.hashes import hash256
 from btclib.p2p.address import Addr, NetworkAddress, ServiceFlags
@@ -141,9 +142,11 @@ from btclib_node.p2p.protocol_version import (
 )
 from tests import (
     discourage_recorder,
+    generate_coinbase,
     generate_random_chain,
     generate_random_header_chain,
     generate_random_transaction,
+    generate_segwit_block,
     log_recorder,
 )
 from tests.conftest import unstarted_node_context
@@ -2218,15 +2221,12 @@ def a_block_claiming_an_easier_target_than_the_chain_allows(block: Block) -> Blo
 
 
 def test_a_block_whose_proof_of_work_does_not_hold_up_is_refused() -> None:
-    """A block failing proof of work is invalidated, not stored, and re-raised.
+    """A block failing proof of work is refused, not stored, and not invalidated.
 
-    The raise still reaches main.handle_p2p, which drops the peer; invalidate is
-    what keeps the next one from being asked to send the same block again:
-    btclib-org/btclib-node#77.
+    The raise still reaches main.handle_p2p, which drops the peer. Core's
+    `CheckBlock` asks the proof of work, and a `CheckBlock` failure is never
+    marked (`main.is_block_failed`).
     """
-    # the raise still reaches main.handle_p2p, which drops the peer;
-    # invalidate is what keeps the next one from being asked to send the
-    # same block again: btclib-org/btclib-node#77
     added: list[Block] = []
     broken = a_block_claiming_an_easier_target_than_the_chain_allows(a_block())
     index = FakeBlockIndex({broken.header.hash: SimpleNamespace(downloaded=False)})
@@ -2240,7 +2240,7 @@ def test_a_block_whose_proof_of_work_does_not_hold_up_is_refused() -> None:
         block_callback(node, payload, a_peer())
     assert added == []
     assert index.marked == []
-    assert index.invalidated == [broken.header.hash]
+    assert index.invalidated == []
 
 
 def test_an_unsolicited_block_extending_a_known_parent_is_indexed_and_stored() -> None:
@@ -2303,6 +2303,126 @@ def test_an_unsolicited_block_with_an_unknown_parent_is_refused() -> None:
     assert added == []
     assert index.marked == []
     assert orphan.header.hash not in index.infos
+
+
+def a_block_payload(block: Block) -> bytes:
+    """Serialize `block` as a `block` message, witnesses included."""
+    return BlockMsg(block, include_witness=True, check_validity=False).serialize(
+        check_validity=False
+    )
+
+
+def a_chainstate_node(tmp_path: Path, segwit_height: int = 0) -> Any:
+    """Build a node over a real regtest `Chainstate`, its stored blocks listed.
+
+    `segwit_height` stands in for the chain's own, the one consensus
+    parameter `block` reads.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    added: list[Block] = []
+    node = a_data_node(
+        block_index=chainstate.block_index,
+        block_db=SimpleNamespace(add_block=added.append),
+    )
+    node.chainstate = chainstate
+    node.chain = SimpleNamespace(
+        pow_limit_bits=RegTest().pow_limit_bits,
+        consensus=replace(RegTest().consensus, segwit_height=segwit_height),
+    )
+    node.added = added
+    return node
+
+
+def test_a_body_its_header_does_not_commit_to_leaves_the_header_valid(
+    tmp_path: Path,
+) -> None:
+    """ISS 1242: a mutated body is refused, and the honest one still stored.
+
+    Core's `BLOCK` arm answers `IsBlockMutated` with `Misbehaving` and
+    touches no index entry, so the block is asked of another peer.
+    """
+    node = a_chainstate_node(tmp_path)
+    block_index = node.chainstate.block_index
+    (honest,) = generate_random_chain(1, RegTest().genesis.hash)
+    block_index.add_headers([honest.header])
+    forged = Block(
+        honest.header, [generate_coinbase(value=1, height=1)], check_validity=False
+    )
+    with pytest.raises(MisbehavingError, match="mutated block"):
+        block_callback(node, a_block_payload(forged), a_peer())
+    assert block_index.get_block_info(honest.header.hash).status != BlockStatus.invalid
+    assert node.added == []
+    block_callback(node, a_block_payload(honest), a_peer())
+    assert node.added == [honest]
+    assert block_index.get_block_info(honest.header.hash).downloaded
+    assert block_index.get_block_info(honest.header.hash).status != BlockStatus.invalid
+    node.chainstate.close()
+
+
+def test_a_mutated_body_is_refused_before_its_header_is_indexed(
+    tmp_path: Path,
+) -> None:
+    """ISS 1242: Core asks `IsBlockMutated` before `AcceptBlockHeader`."""
+    node = a_chainstate_node(tmp_path)
+    (honest,) = generate_random_chain(1, RegTest().genesis.hash)
+    forged = Block(
+        honest.header, [generate_coinbase(value=1, height=1)], check_validity=False
+    )
+    with pytest.raises(MisbehavingError, match="mutated block"):
+        block_callback(node, a_block_payload(forged), a_peer())
+    assert honest.header.hash not in node.chainstate.block_index.header_dict
+    node.chainstate.close()
+
+
+def test_a_committed_body_failing_check_block_leaves_the_header_valid(
+    tmp_path: Path,
+) -> None:
+    """ISS 1242: Core's `ProcessNewBlock` never marks a `CheckBlock` failure."""
+    node = a_chainstate_node(tmp_path)
+    twice = generate_segwit_block(generate_coinbase(height=1))
+    with pytest.raises(MisbehavingError, match="more than one coinbase"):
+        block_callback(node, a_block_payload(twice), a_peer())
+    block_info = node.chainstate.block_index.get_block_info(twice.header.hash)
+    assert block_info.status != BlockStatus.invalid
+    assert node.added == []
+    node.chainstate.close()
+
+
+def test_a_committed_body_over_the_weight_invalidates_the_header(
+    tmp_path: Path,
+) -> None:
+    """ISS 1242: Core's `bad-blk-weight` is contextual, and marks the block."""
+    node = a_chainstate_node(tmp_path)
+    over = generate_segwit_block(witness=bytes(MAX_BLOCK_WEIGHT))
+    with pytest.raises(MisbehavingError, match="invalid weight"):
+        block_callback(node, a_block_payload(over), a_peer())
+    block_info = node.chainstate.block_index.get_block_info(over.header.hash)
+    assert block_info.status == BlockStatus.invalid
+    assert node.added == []
+    node.chainstate.close()
+
+
+@pytest.mark.parametrize(("segwit_height", "stored"), [(1, True), (2, False)])
+def test_a_witness_is_read_against_its_commitment_once_segwit_binds(
+    tmp_path: Path,
+    segwit_height: int,
+    stored: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1242: Core's `DeploymentActiveAfter` the parent, for SEGWIT.
+
+    A block at height 1 carrying a witness it commits to: stored where
+    segwit binds from height 1, a mutated body where it binds from 2.
+    """
+    node = a_chainstate_node(tmp_path, segwit_height)
+    block = generate_segwit_block()
+    if stored:
+        block_callback(node, a_block_payload(block), a_peer())
+        assert node.added == [block]
+    else:
+        with pytest.raises(MisbehavingError, match="mutated block"):
+            block_callback(node, a_block_payload(block), a_peer())
+        assert node.added == []
+    node.chainstate.close()
 
 
 def block_inv(*hashes: bytes) -> bytes:

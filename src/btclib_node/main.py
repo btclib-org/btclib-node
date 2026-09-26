@@ -17,9 +17,13 @@ that relay one.
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
-from btclib.block import header_at_height, median_time_past
+from btclib.block import (
+    coinbase_witness_commitment,
+    header_at_height,
+    median_time_past,
+)
 from btclib.block.block_context import BlockContext
-from btclib.consensus import subsidy
+from btclib.consensus import MAX_BLOCK_WEIGHT, subsidy
 from btclib.exceptions import BTClibValueError
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
 from btclib.script.engine.flags import ScriptFlag
@@ -59,6 +63,8 @@ if TYPE_CHECKING:
     from btclib_node.p2p.block_availability import BlockAvailability
 
 __all__ = [
+    "is_block_failed",
+    "is_block_mutated",
     "parent_lookup",
     "prune_up_to_height",
     "update_chain",
@@ -547,6 +553,62 @@ def parent_lookup(node: Node) -> Callable[[BlockHeader], BlockHeader]:
 def _check_bip30(node: Node, index: int, block_hash: bytes) -> bool:
     """Whether `block_hash`, connecting at `index`, is checked for BIP30."""
     return (index, block_hash) not in node.chain.consensus.bip30_exceptions
+
+
+def is_block_mutated(block: Block, *, check_witness_root: bool) -> bool:
+    """Whether `block`'s body is not the one its header commits to.
+
+    Core's `IsBlockMutated` (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a merkle root that is not
+    the transactions', or CVE-2012-2459's duplicate; a block without a
+    coinbase holding a 64-byte transaction; a witness commitment the
+    coinbase witness does not match, read only where `check_witness_root`
+    (segwit active after the parent); and a witness in a block no
+    commitment was read for. Anyone can pair an honest header with such a
+    body, so it says nothing about the header: Core refuses the body and
+    leaves the header's status alone.
+    """
+    transactions = block.transactions
+    if not transactions:
+        # Core's merkle root of no transactions is the null hash, where
+        # btclib's refuses to compute one
+        return block.header.merkle_root != bytes(32)
+    try:
+        block.assert_valid_merkle_root()
+    except BTClibValueError:
+        return True
+    if not transactions[0].is_coinbase:
+        return any(
+            len(tx.serialize(include_witness=False, check_validity=False)) == 64
+            for tx in transactions
+        )
+    commitment = block.witness_commitment if check_witness_root else None
+    if commitment is None:
+        return any(tx.is_segwit for tx in transactions)
+    stack = transactions[0].vin[0].script_witness.stack
+    if len(stack) != 1 or len(stack[0]) != 32:
+        return True
+    return coinbase_witness_commitment(transactions, stack[0]) != commitment
+
+
+def is_block_failed(block: Block, *, check_witness_root: bool) -> bool:
+    """Whether `block`, failing `Block.assert_valid`, is marked failed.
+
+    Core's `ProcessNewBlock` (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) never marks a block failing
+    `CheckBlock`, "protective against consensus failure if there are any
+    unknown forms of block malleability", and `AcceptBlock` marks one
+    failing `ContextualCheckBlock` unless the failure is `BLOCK_MUTATED`.
+    Of what `assert_valid` asks, the weight is `ContextualCheckBlock`'s
+    only consensus rule, asked last, after the witness commitment that
+    makes the weight a property of the header. A body over the weight
+    that also fails an earlier check is marked here where Core does not:
+    `assert_valid` does not say which check failed.
+    """
+    return (
+        not is_block_mutated(block, check_witness_root=check_witness_root)
+        and block.weight > MAX_BLOCK_WEIGHT
+    )
 
 
 # update_chain's own per-block gate, once a candidate's spends and
