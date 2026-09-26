@@ -131,7 +131,7 @@ ignored, as Core warns (`ReadConfigFiles`, same file). On the command
 line `-includeconf` is refused unless negated, and `-noincludeconf`
 reads no included file, both as `ParseParameters` and `ReadConfigFiles`
 have it; `-noconf` reads no file at all. `conf=` inside a file is
-refused -- fatally, "conf cannot be set in a configuration file" -- and
+refused -- fatally, in Core's words, pointing at `includeconf=` -- and
 `datadir=` inside one is not read at all (unlike Core, which lets a file
 move the data directory read *after* the file naming it was found): this
 module needs a `-datadir` before it can know a file's own default path,
@@ -694,7 +694,9 @@ def _read_conf_file(path: Path, *, required: bool) -> _RoConfig:
         err_msg = f"configuration file {path} is a directory"
         raise ValueError(err_msg)
     try:
-        text = path.read_text(encoding="utf-8")
+        # `newline=""`: universal newlines would end a line at a lone
+        # `\r` too, where `std::getline` ends one at `\n` alone
+        text = path.read_text(encoding="utf-8", newline="")
     except FileNotFoundError:
         if required:
             err_msg = f"specified configuration file {path} could not be opened"

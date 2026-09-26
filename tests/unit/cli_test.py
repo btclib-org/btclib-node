@@ -145,6 +145,28 @@ def test_parse_conf_text_ends_a_line_at_a_newline_alone() -> None:
         cli._parse_conf_text("regtest=1\nfoo\fbar=1\nbad\n")
 
 
+@pytest.mark.parametrize(
+    ("content", "line"),
+    [
+        (b"regtest=1\rfoo\nbad\n", "line 2: bad"),
+        (b"regtest=1\r\nfoo\r\n", "line 2: foo"),
+        (b"regtest=1\n\rfoo\r\n", "line 2: foo"),
+    ],
+    ids=["lone CR", "CRLF", "CR opening a line"],
+)
+def test_read_conf_file_ends_a_line_at_a_newline_alone(
+    tmp_path: Path, content: bytes, line: str
+) -> None:
+    """ISS 1267: a lone carriage return ends no line, as `bitcoind` reads it.
+
+    Each measured on `bitcoind` v31.1.0, which names the same line.
+    """
+    path = tmp_path / "bitcoin.conf"
+    path.write_bytes(content)
+    with pytest.raises(ValueError, match=f"^parse error on {line}$"):
+        cli._read_conf_file(path, required=True)
+
+
 def test_parse_conf_text_warns_about_an_unknown_key_with_its_section(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
