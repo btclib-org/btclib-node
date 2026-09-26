@@ -386,14 +386,14 @@ def get_random_port() -> int:
 def resolvable(host: str) -> bool:
     """Whether the lookup the JSON-RPC listener binds through answers `host`.
 
-    `AI_ADDRCONFIG`, which libevent passes off Windows, can refuse `::1`
-    on a host with no IPv6 address, so what `bitcoind` binds depends on
-    the machine too. A loopback this refuses is one the tests neither
-    open nor expect bound.
+    `AI_ADDRCONFIG`, which libevent holds a literal to off Windows, can
+    refuse `::1` on a host with no IPv6 address, so what `bitcoind`
+    binds depends on the machine too. A loopback this refuses is one the
+    tests neither open nor expect bound.
     """
     # numeric alone, which changes nothing for a literal and keeps a
     # name from being looked up
-    flags = rpc_manager._ADDRESS_FLAGS | socket.AI_NUMERICHOST
+    flags = rpc_manager._address_flags(host) | socket.AI_NUMERICHOST
     try:
         socket.getaddrinfo(host, 0, type=socket.SOCK_STREAM, flags=flags)
     except OSError:

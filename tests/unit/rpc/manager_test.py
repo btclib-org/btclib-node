@@ -19,7 +19,7 @@ import threading
 from concurrent.futures import Future
 from contextlib import suppress
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast
 
 import pytest
 
@@ -317,11 +317,52 @@ def test_a_host_is_looked_up_as_its_bytes(host: str) -> None:
         manager_module._first_address(host, 0)
 
 
+PASSIVE = socket.AI_PASSIVE
+ADDRCONFIG = socket.AI_PASSIVE | socket.AI_ADDRCONFIG
+
+
+@pytest.mark.parametrize(
+    ("host", "windows", "flags"),
+    [
+        ("localhost", True, ADDRCONFIG),
+        ("localhost", False, ADDRCONFIG),
+        ("127.0.0.1", True, PASSIVE),
+        ("127.0.0.1", False, ADDRCONFIG),
+        ("::1", True, PASSIVE),
+        ("::1", False, ADDRCONFIG),
+        ("fe80::1%1", True, PASSIVE),
+        ("fe80::1% +1", True, PASSIVE),
+        ("fe80::1%", True, PASSIVE),
+        ("fe80::1%1x", True, ADDRCONFIG),
+        ("fe80::1%no-such-interface", True, ADDRCONFIG),
+        ("1.2.3", True, ADDRCONFIG),
+        ("", False, ADDRCONFIG),
+    ],
+)
+def test_the_lookup_is_held_to_addrconfig_where_libevent_holds_it(
+    monkeypatch: pytest.MonkeyPatch,
+    host: str,
+    windows: bool,  # noqa: FBT001
+    flags: int,
+) -> None:
+    """ISS 1269: a literal libevent parses itself on Windows is not held to it.
+
+    Every other lookup is the system's, asked with `make_addrinfo`'s flags.
+    """
+    monkeypatch.setattr(manager_module, "_WINDOWS", windows)
+    assert manager_module._address_flags(host) == flags
+
+
 def test_the_empty_host_is_0_0_0_0_first_on_windows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """ISS 1269: `evutil_getaddrinfo_common_`'s own answer, not the system's."""
     monkeypatch.setattr(manager_module, "_WINDOWS", True)
+
+    def not_asked(*args: object, **kwargs: object) -> NoReturn:
+        raise AssertionError((args, kwargs))
+
+    monkeypatch.setattr(socket, "getaddrinfo", not_asked)
     family, _, _, sockaddr = manager_module._first_address("", 8332)
     assert (family, sockaddr) == (socket.AF_INET, ("0.0.0.0", 8332))  # noqa: S104
 
@@ -329,12 +370,31 @@ def test_the_empty_host_is_0_0_0_0_first_on_windows(
 def test_the_empty_host_is_the_system_s_passive_answer_elsewhere(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """ISS 1269: `getaddrinfo(NULL, ...)`, as libevent asks it off Windows."""
+    """ISS 1269: `getaddrinfo(NULL, ...)`, as libevent asks it off Windows.
+
+    The system's first answer is bound, whichever family it is.
+    """
     monkeypatch.setattr(manager_module, "_WINDOWS", False)
-    expected = socket.getaddrinfo(
-        None, 8332, type=socket.SOCK_STREAM, flags=manager_module._ADDRESS_FLAGS
-    )[0][4]
-    assert manager_module._first_address("", 8332)[3] == expected
+    asked: list[tuple[object, ...]] = []
+    answers: list[tuple[object, ...]] = [
+        (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::", 8332, 0, 0)),
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("0.0.0.0", 8332)),  # noqa: S104
+    ]
+
+    def getaddrinfo(
+        host: bytes | None,
+        port: int | None,
+        *,
+        type: int,  # noqa: A002
+        flags: int,
+    ) -> list[tuple[object, ...]]:
+        asked.append((host, port, type, flags))
+        return answers
+
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    first = manager_module._first_address("", 8332)
+    assert first == (socket.AF_INET6, socket.SOCK_STREAM, 6, ("::", 8332, 0, 0))
+    assert asked == [(None, 8332, socket.SOCK_STREAM, ADDRCONFIG)]
 
 
 def test_bind_warns_of_a_host_idna_would_refuse(a_manager: AManagerFactory) -> None:
