@@ -92,6 +92,22 @@ def calculate_work(header: BlockHeader) -> int:
     return block_work(header.bits)
 
 
+def _invert_lowest_one(n: int) -> int:
+    return n & (n - 1)
+
+
+def _skip_height(height: int) -> int:
+    """Return the height a skip pointer jumps back to: Core's `GetSkipHeight`.
+
+    `src/chain.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag.
+    """
+    if height < 2:  # noqa: PLR2004
+        return 0
+    if height & 1:
+        return _invert_lowest_one(_invert_lowest_one(height - 1)) + 1
+    return _invert_lowest_one(height)
+
+
 def block_time(header: BlockHeader) -> int:
     """Return the second the header's four timestamp bytes hold.
 
@@ -218,7 +234,8 @@ class BlockIndex:
     known does not make its own block downloaded, let alone valid.
     `header_index_pos` is `header_index`'s own hash -> position, kept
     beside it the same way `chainwork` is kept beside `header_dict`
-    (issue #439).
+    (issue #439), and `skip` is each header's skip pointer, Core's
+    `pskip`, which `get_ancestor` and `last_common_ancestor` follow.
     """
 
     def __init__(self, parent_db: KeyValueStore, chain: Chain, logger: Logger) -> None:
@@ -245,6 +262,13 @@ class BlockIndex:
         # not a whole new frozen record. btclib-org/btclib-node#201
         self.chainwork: dict[bytes, int] = {}
 
+        # each header's ancestor at `_skip_height` of its own height:
+        # Core's `CBlockIndex::pskip`, which `get_ancestor` follows. Kept
+        # beside header_dict, as chainwork is, and built where chainwork
+        # is: Core does not store it either, and rebuilds it on load
+        # (`BuildSkip`). Genesis has none.
+        self.skip: dict[bytes, bytes] = {}
+
         # the actual block chain; it contains only valid blocks
         self.active_chain: list[bytes] = []
 
@@ -257,11 +281,11 @@ class BlockIndex:
         self.header_index: list[bytes] = []
 
         # header_index's own hash -> position, kept beside it rather
-        # than computed from it: `p2p.block_availability`'s ancestor walk
-        # asks whether a block is on header_index at every step, and
-        # header_index holds one entry per header this node has ever
-        # indexed -- the whole known chain -- so a membership test done
-        # against the list itself is an O(n) scan repeated at every step.
+        # than computed from it: `get_block_locator_hashes` and
+        # `p2p.block_availability`'s block download ask where a block
+        # is on header_index, which holds one entry per header this node
+        # has ever indexed -- the whole known chain -- so a membership
+        # test done against the list itself is an O(n) scan.
         # btclib-org/btclib-node#439, following chainwork (#201) and
         # children (#125) in keeping a derived index beside the primary
         # structure rather than recomputing it on every read. Maintained
@@ -342,6 +366,78 @@ class BlockIndex:
             # the stored record, so this loop touches one int per
             # header rather than replacing the record itself
             self.chainwork[block_hash] = old_work + calculate_work(block_info.header)
+            self._build_skip(block_hash, block_info)
+
+    def _build_skip(self, block_hash: bytes, block_info: BlockInfo) -> None:
+        """Set `block_hash`'s skip pointer: Core's `BuildSkip`, parent first."""
+        if block_info.index:
+            self.skip[block_hash] = self._ancestor(
+                block_info.header.previous_block_hash,
+                block_info.index - 1,
+                _skip_height(block_info.index),
+            )
+
+    def get_ancestor(self, block_hash: bytes, height: int) -> bytes | None:
+        """Return `block_hash`'s ancestor at `height`: Core's `GetAncestor`.
+
+        The block itself at its own height, and `None` for a height
+        above it or below zero, where Core answers `nullptr`. Follows
+        skip pointers, so the cost grows with the logarithm of the
+        distance rather than with the distance.
+        """
+        own_height = self.header_dict[block_hash].index
+        if height > own_height or height < 0:
+            return None
+        return self._ancestor(block_hash, own_height, height)
+
+    def _ancestor(self, block_hash: bytes, walk_height: int, height: int) -> bytes:
+        header_dict = self.header_dict
+        skip = self.skip
+        walk = block_hash
+        while walk_height > height:
+            skip_height = _skip_height(walk_height)
+            skip_height_prev = _skip_height(walk_height - 1)
+            # Core's condition: only follow the skip pointer where the
+            # parent's is not a better jump
+            if walk in skip and (
+                skip_height == height
+                or (
+                    skip_height > height
+                    and not (
+                        skip_height_prev < skip_height - 2
+                        and skip_height_prev >= height
+                    )
+                )
+            ):
+                walk = skip[walk]
+                walk_height = skip_height
+            else:
+                walk = header_dict[walk].header.previous_block_hash
+                walk_height -= 1
+        return walk
+
+    def last_common_ancestor(self, first: bytes, second: bytes) -> bytes:
+        """Return the fork point of two blocks: Core's `LastCommonAncestor`.
+
+        Both are brought to the lower one's height, then walked back
+        through their skip pointers while those differ, and one parent
+        at a time where they agree.
+        """
+        header_dict = self.header_dict
+        first_height = header_dict[first].index
+        second_height = header_dict[second].index
+        if first_height > second_height:
+            first = self._ancestor(first, first_height, second_height)
+        elif second_height > first_height:
+            second = self._ancestor(second, second_height, first_height)
+        skip = self.skip
+        while first != second:
+            while skip.get(first) != skip.get(second):
+                first = skip[first]
+                second = skip[second]
+            first = header_dict[first].header.previous_block_hash
+            second = header_dict[second].header.previous_block_hash
+        return first
 
     def generate_active_chain(self) -> None:
         """Rebuild `active_chain` from every header marked `in_active_chain`."""
@@ -724,6 +820,7 @@ class BlockIndex:
             )
             self._insert_block_info(block_info)
             self.chainwork[header_hash] = new_work
+            self._build_skip(header_hash, block_info)
 
             if not invalid and new_work > current_work:
                 self.block_candidates.append([header_hash, new_work])

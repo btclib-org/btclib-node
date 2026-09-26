@@ -98,7 +98,6 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
     from btclib_node import Node
-    from btclib_node.chainstate.block_index import BlockIndex
     from btclib_node.p2p.connection import Connection
 
 __all__ = [
@@ -1332,40 +1331,6 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
 _STALE_RELAY_AGE_LIMIT = 30 * 24 * 60 * 60
 
 
-def _descends_from_the_tip(
-    block_index: BlockIndex, block_hash: bytes, not_descending: set[bytes]
-) -> bool:
-    """Whether the active tip is an ancestor of `block_hash`, or it.
-
-    Core's `GetAncestor` at the tip's height. Parents are walked down to
-    that height, stopping at a block `header_index` holds, whose
-    ancestor there is read off that list, and at one already in
-    `not_descending`. What a walk that fails passed through is added to
-    `not_descending`, so that the entries of one locator walk a branch
-    once between them.
-    """
-    active_chain = block_index.active_chain
-    tip_height = len(active_chain) - 1
-    header_dict = block_index.header_dict
-    header_index = block_index.header_index
-    walked: list[bytes] = []
-    current = block_hash
-    height = header_dict[current].index
-    while height > tip_height and current not in not_descending:
-        if current in block_index.header_index_pos:
-            # header_index holds `current` above the tip's height, so it
-            # reaches that height too
-            current = header_index[tip_height]
-            break
-        walked.append(current)
-        current = header_dict[current].header.previous_block_hash
-        height -= 1
-    if current == active_chain[-1]:
-        return True
-    not_descending.update(walked)
-    return False
-
-
 def _find_fork_in_global_index(node: Node, locator: Sequence[bytes]) -> bytes:
     """Return the last block of the active chain the locator names.
 
@@ -1376,12 +1341,13 @@ def _find_fork_in_global_index(node: Node, locator: Sequence[bytes]) -> bytes:
     """
     block_index = node.chainstate.block_index
     active_chain = block_index.active_chain
-    not_descending: set[bytes] = set()
+    tip_height = len(active_chain) - 1
     for block_hash in locator:
         if _height_on_the_active_chain(node, block_hash) is not None:
             return block_hash
-        if block_hash in block_index.header_dict and _descends_from_the_tip(
-            block_index, block_hash, not_descending
+        if (
+            block_hash in block_index.header_dict
+            and block_index.get_ancestor(block_hash, tip_height) == active_chain[-1]
         ):
             return active_chain[-1]
     return active_chain[0]

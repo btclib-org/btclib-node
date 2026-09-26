@@ -434,6 +434,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   window and in-flight limit, and dropped after Core's timeouts** (closes
   #1179).
 
+### An ancestor is found through skip pointers, as Core's `GetAncestor`
+
+- **Block download and `getheaders` reach a block's fork point or ancestor in
+  steps that grow with the logarithm of the distance, not with the distance**
+  (closes #1200).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

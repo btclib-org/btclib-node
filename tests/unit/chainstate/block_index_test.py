@@ -13,7 +13,7 @@ locators it serves.
 import secrets
 from contextlib import ExitStack
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 import pytest
 from btclib.block import BlockHeader
@@ -22,7 +22,12 @@ from btclib.exceptions import BTClibValueError
 
 from btclib_node.chains import Main, RegTest
 from btclib_node.chainstate import Chainstate
-from btclib_node.chainstate.block_index import BlockInfo, BlockStatus, calculate_work
+from btclib_node.chainstate.block_index import (
+    BlockInfo,
+    BlockStatus,
+    _skip_height,
+    calculate_work,
+)
 from btclib_node.exceptions import ChainstateInconsistencyError
 from btclib_node.log import Logger
 from tests import brute_force_nonce, generate_random_header_chain
@@ -30,6 +35,8 @@ from tests import brute_force_nonce, generate_random_header_chain
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
     from pathlib import Path
+
+    from btclib_node.chainstate.block_index import BlockIndex
 
 
 @pytest.fixture
@@ -747,6 +754,8 @@ def test_long_init(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
     # not persisted, recomputed by calculate_chainwork on each start:
     # btclib-org/btclib-node#201
     assert block_index.chainwork == new_block_index.chainwork
+    # rebuilt on each start as well, as Core's `BuildSkip` is on load
+    assert block_index.skip == new_block_index.skip
 
 
 def test_block_locators(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
@@ -1010,3 +1019,130 @@ def test_set_downloaded_after_stage_status_is_not_undone_by_a_later_finalize(
     stored = BlockInfo.deserialize(data, check_validity=False)
     assert stored.downloaded is False
     chainstate.close()
+
+
+def _walked_ancestor(block_index: BlockIndex, block_hash: bytes, height: int) -> bytes:
+    """Return the ancestor at `height` by parent hash alone, the slow way."""
+    while block_index.header_dict[block_hash].index > height:
+        block_hash = block_index.header_dict[block_hash].header.previous_block_hash
+    return block_hash
+
+
+def test_the_skip_heights_are_core_s() -> None:
+    """`_skip_height` is Core's `GetSkipHeight`, at heights worked by hand.
+
+    Below 2 it is 0; at an even height the lowest set bit is cleared; at
+    an odd one the two lowest set bits of the height below are, plus one.
+    """
+    assert [_skip_height(h) for h in range(10)] == [0, 0, 0, 1, 0, 1, 4, 1, 0, 1]
+    assert _skip_height(20000) == 19968
+    assert _skip_height(20001) == 19457
+    assert all(0 <= _skip_height(h) < h for h in range(2, 5000))
+
+
+def test_every_skip_pointer_is_the_ancestor_at_its_skip_height(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """Core's `skiplist_test`: each pointer lands where `GetSkipHeight` says.
+
+    On a chain and on a fork off its middle, and genesis alone without one.
+    """
+    block_index = a_chainstate(None).block_index
+    chain = generate_random_header_chain(600, RegTest().genesis.hash)
+    fork = generate_random_header_chain(300, chain[299].hash, chain[299].time)
+    block_index.add_headers(chain)
+    block_index.add_headers(fork)
+    assert RegTest().genesis.hash not in block_index.skip
+    for header in (*chain, *fork):
+        block_hash = header.hash
+        height = block_index.header_dict[block_hash].index
+        skip = block_index.skip[block_hash]
+        assert block_index.header_dict[skip].index == _skip_height(height)
+        assert skip == _walked_ancestor(block_index, block_hash, _skip_height(height))
+
+
+def test_get_ancestor_answers_what_the_parent_walk_answers(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """Core's `GetAncestor`, at every height of a block and past both ends.
+
+    `None` above the block's own height and below zero.
+    """
+    block_index = a_chainstate(None).block_index
+    chain = generate_random_header_chain(1100, RegTest().genesis.hash)
+    fork = generate_random_header_chain(600, chain[499].hash, chain[499].time)
+    block_index.add_headers(chain)
+    block_index.add_headers(fork)
+    for tip in (chain[-1].hash, fork[-1].hash, fork[0].hash):
+        tip_height = block_index.header_dict[tip].index
+        for height in range(tip_height + 1):
+            assert block_index.get_ancestor(tip, height) == _walked_ancestor(
+                block_index, tip, height
+            )
+        assert block_index.get_ancestor(tip, tip_height + 1) is None
+        assert block_index.get_ancestor(tip, -1) is None
+
+
+def test_the_last_common_ancestor_is_the_fork_point(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """Core's `LastCommonAncestor`, whichever block is the higher one.
+
+    Branches off one block, a block and its own ancestor, and a block
+    with itself.
+    """
+    block_index = a_chainstate(None).block_index
+    chain = generate_random_header_chain(1000, RegTest().genesis.hash)
+    block_index.add_headers(chain)
+    for fork_at, length in ((0, 700), (345, 1), (345, 900), (998, 3)):
+        fork = generate_random_header_chain(
+            length, chain[fork_at].hash, chain[fork_at].time
+        )
+        block_index.add_headers(fork)
+        for first, second in (
+            (chain[-1].hash, fork[-1].hash),
+            (fork[-1].hash, chain[-1].hash),
+        ):
+            fork_point = block_index.last_common_ancestor(first, second)
+            assert fork_point == chain[fork_at].hash
+    ancestor, descendant = chain[10].hash, chain[700].hash
+    assert block_index.last_common_ancestor(ancestor, descendant) == ancestor
+    assert block_index.last_common_ancestor(ancestor, ancestor) == ancestor
+
+
+class _CountingDict(dict[bytes, object]):
+    """A dict counting its own item reads, for the cost of a walk."""
+
+    reads = 0
+
+    @override
+    def __getitem__(self, key: bytes) -> object:
+        _CountingDict.reads += 1
+        return super().__getitem__(key)
+
+
+def test_an_ancestor_far_below_is_reached_in_few_steps(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """The skip pointers bound the walk, as Core's `GetAncestor` has them do.
+
+    On a chain of 4000 headers, reaching any height from the tip reads
+    far fewer entries than the 4000 a walk by parent hash would, and so
+    does the fork point of two branches 2000 blocks long.
+    """
+    block_index = a_chainstate(None).block_index
+    chain = generate_random_header_chain(4000, RegTest().genesis.hash)
+    fork = generate_random_header_chain(2000, chain[1999].hash, chain[1999].time)
+    block_index.add_headers(chain)
+    block_index.add_headers(fork)
+    block_index.header_dict = _CountingDict(block_index.header_dict)  # type: ignore[assignment]
+    block_index.skip = _CountingDict(block_index.skip)  # type: ignore[assignment]
+    most = 0
+    for height in range(0, 4001, 37):
+        _CountingDict.reads = 0
+        block_index.get_ancestor(chain[-1].hash, height)
+        most = max(most, _CountingDict.reads)
+    assert most < 200
+    _CountingDict.reads = 0
+    block_index.last_common_ancestor(chain[-1].hash, fork[-1].hash)
+    assert _CountingDict.reads < 200

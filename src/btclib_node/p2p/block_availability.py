@@ -19,13 +19,10 @@ and `callbacks.block` runs `remove_block_request`. `getpeerinfo`'s
 `synced_headers` and `synced_blocks` are the heights of `best_known`
 and `last_common`.
 
-A block is a hash here where Core holds a `CBlockIndex*`. `BlockIndex`
-keeps no ancestor pointer but the parent's hash, where Core's
-`GetAncestor` has a skip list. `_Ancestry` walks a block back once, to
-where it joins `header_index` or `active_chain` -- both lists indexed
-by height -- and answers every height from there in constant time, so
-a walk over a peer's chain costs its length plus the distance of the
-peer's best block from both of this node's chains, once per call.
+A block is a hash here where Core holds a `CBlockIndex*`, and an
+ancestor is read through `BlockIndex.get_ancestor` and
+`BlockIndex.last_common_ancestor`, Core's `GetAncestor` and
+`LastCommonAncestor` over the same skip pointers.
 """
 
 from dataclasses import dataclass
@@ -35,7 +32,7 @@ from btclib_node.chainstate.block_index import BlockStatus
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Callable, Iterable, Iterator, Mapping
 
     from btclib_node.chainstate.block_index import BlockIndex
     from btclib_node.p2p.connection import Connection
@@ -55,6 +52,11 @@ __all__ = [
 # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how far past a peer's
 # `last_common` block anything is asked of it.
 BLOCK_DOWNLOAD_WINDOW = 1024
+
+# How many successors Core's `FindNextBlocks` reads at a time at least,
+# "because CBlockIndex::GetAncestor may be as expensive as iterating over
+# ~100 CBlockIndex* entries anyway"
+_FETCH_CHUNK = 128
 
 
 @dataclass
@@ -80,44 +82,6 @@ class BlockAvailability:
     downloading_since: float = 0.0
 
 
-class _Ancestry:
-    """One block's ancestors, read by height: Core's `GetAncestor`.
-
-    Built by walking the block back to the first ancestor `header_index`
-    or `active_chain` holds; every height at or below that one is read
-    off that list, every height above it off the walk.
-    """
-
-    def __init__(self, block_index: BlockIndex, block_hash: bytes) -> None:
-        """Walk `block_hash` back to where it joins one of the two lists."""
-        header_dict = block_index.header_dict
-        active_chain = block_index.active_chain
-        side: list[bytes] = []
-        current = block_hash
-        height = header_dict[current].index
-        while True:
-            if current in block_index.header_index_pos:
-                self._base = block_index.header_index
-                break
-            if height < len(active_chain) and active_chain[height] == current:
-                self._base = active_chain
-                break
-            side.append(current)
-            current = header_dict[current].header.previous_block_hash
-            height -= 1
-        self._join = height
-        self._side = side
-        self.height = height + len(side)
-
-    def at(self, height: int) -> bytes | None:
-        """Return the ancestor at `height`, `None` above the block itself."""
-        if height > self.height:
-            return None
-        if height <= self._join:
-            return self._base[height]
-        return self._side[self.height - height]
-
-
 def get_ancestor(
     block_index: BlockIndex, block_hash: bytes, height: int
 ) -> bytes | None:
@@ -125,25 +89,7 @@ def get_ancestor(
 
     `None` for a height above the block's own, as Core answers `nullptr`.
     """
-    return _Ancestry(block_index, block_hash).at(height)
-
-
-def _fork_point(block_index: BlockIndex, ancestry: _Ancestry) -> bytes:
-    """Return the highest block of `ancestry` on the active chain.
-
-    Core's `LastCommonAncestor` against the active tip. The heights at
-    which the two agree are a prefix, genesis always among them, so the
-    last of them is found by bisection.
-    """
-    active_chain = block_index.active_chain
-    agree, disagree = 0, min(ancestry.height, len(active_chain) - 1) + 1
-    while disagree - agree > 1:
-        middle = (agree + disagree) // 2
-        if ancestry.at(middle) == active_chain[middle]:
-            agree = middle
-        else:
-            disagree = middle
-    return active_chain[agree]
+    return block_index.get_ancestor(block_hash, height)
 
 
 def process_block_availability(
@@ -200,8 +146,8 @@ def peer_has_header(
 
 def _walk_start(
     block_index: BlockIndex, state: BlockAvailability, minimum_chain_work: int
-) -> _Ancestry | None:
-    """Reset `last_common` and return `best_known`'s ancestry, if any is due.
+) -> bytes | None:
+    """Reset `last_common` and return `best_known`, if a walk is due.
 
     The half of Core's `FindNextBlocksToDownload` before `FindNextBlocks`.
     """
@@ -215,16 +161,52 @@ def _walk_start(
         or chainwork[best_known] < minimum_chain_work
     ):
         return None
-    ancestry = _Ancestry(block_index, best_known)
-    fork_point = _fork_point(block_index, ancestry)
+    fork_point = block_index.last_common_ancestor(
+        best_known, block_index.active_chain[-1]
+    )
     last_common = state.last_common
     if (
         last_common is None
         or chainwork[fork_point] > chainwork[last_common]
-        or ancestry.at(block_index.header_dict[last_common].index) != last_common
+        or block_index.get_ancestor(
+            best_known, block_index.header_dict[last_common].index
+        )
+        != last_common
     ):
         state.last_common = fork_point
-    return None if state.last_common == best_known else ancestry
+    return None if state.last_common == best_known else best_known
+
+
+def _successors(
+    block_index: BlockIndex,
+    best_known: bytes,
+    start: int,
+    end: int,
+    wanted: Callable[[], int],
+) -> Iterator[bytes]:
+    """Yield `best_known`'s ancestors above height `start` up to `end`.
+
+    In chunks, as Core's `FindNextBlocks` reads them: the ancestor at the
+    top of each chunk through `get_ancestor`, the rest by parent hash,
+    each chunk as long as `wanted()` or `_FETCH_CHUNK`, whichever is
+    larger, `wanted` being asked again before each chunk. Where
+    `best_known` is on `header_index`, its ancestors are that list's
+    entries, read off it without a walk.
+    """
+    if best_known in block_index.header_index_pos:
+        yield from block_index.header_index[start + 1 : end + 1]
+        return
+    header_dict = block_index.header_dict
+    height = start
+    while height < end:
+        size = min(end - height, max(wanted(), _FETCH_CHUNK))
+        top = block_index.get_ancestor(best_known, height + size)
+        assert top is not None  # noqa: S101 -- at or below its own height
+        chunk = [top]
+        for _ in range(size - 1):
+            chunk.append(header_dict[chunk[-1]].header.previous_block_hash)
+        height += size
+        yield from reversed(chunk)
 
 
 def find_next_blocks_to_download(  # noqa: PLR0913
@@ -266,24 +248,28 @@ def find_next_blocks_to_download(  # noqa: PLR0913
     block a peer without witnesses could not serve, where
     `callbacks.version` refuses such a peer.
     """
-    ancestry = (
+    best_known = (
         None if count == 0 else _walk_start(block_index, state, minimum_chain_work)
     )
-    if ancestry is None:
+    if best_known is None:
         return [], None
     header_dict = block_index.header_dict
     assert state.last_common is not None  # noqa: S101 -- set by _walk_start
-    window_end = header_dict[state.last_common].index + BLOCK_DOWNLOAD_WINDOW
+    last_common_height = header_dict[state.last_common].index
+    best_height = header_dict[best_known].index
+    window_end = last_common_height + BLOCK_DOWNLOAD_WINDOW
     blocks: list[bytes] = []
     waiting_for: int | None = None
     all_held = True
-    for height in range(
-        header_dict[state.last_common].index + 1,
-        min(ancestry.height, window_end + 1) + 1,
+    for block_hash in _successors(
+        block_index,
+        best_known,
+        last_common_height,
+        min(best_height, window_end + 1),
+        lambda: count - len(blocks),
     ):
-        block_hash = ancestry.at(height)
-        assert block_hash is not None  # noqa: S101 -- at or below its own height
         block_info = header_dict[block_hash]
+        height = block_info.index
         if block_info.status == BlockStatus.invalid:
             break
         if block_info.downloaded:
@@ -298,7 +284,7 @@ def find_next_blocks_to_download(  # noqa: PLR0913
         if height > window_end:
             stalled = not blocks and waiting_for != peer_id
             return blocks, waiting_for if stalled else None
-        if limited and ancestry.height - height >= MIN_BLOCKS_TO_KEEP - 2:
+        if limited and best_height - height >= MIN_BLOCKS_TO_KEEP - 2:
             continue
         blocks.append(block_hash)
         if len(blocks) == count:
