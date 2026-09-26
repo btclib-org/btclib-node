@@ -97,8 +97,8 @@ under a GIL interpreter.
   and against being read from a second process while a `Node` already
   has it open.
 - The user's control over what serves the RPC port and to whom: the
-  caller-supplied `Config.rpc_host`/`-rpcbind` decides who can reach
-  it, the credentials it accepts decide who it answers, and
+  caller-supplied `Config.rpc_host` decides who can reach it, the
+  credentials it accepts decide who it answers, and
   `-rpcwhitelist` which methods each of them may call.
 
 **The adversaries.**
@@ -208,8 +208,9 @@ describes.
   actually went wrong rather than by which module raises it
   (`exceptions.py`'s own docstring argues the grouping).
 - **Fail-safe defaults.** `Config.rpc_host` defaults to loopback, and
-  widening it to another interface is an operator's explicit
-  `-rpcbind`, matching Core's own `rpcbind`/`rpcallowip` default. A
+  `-rpcbind` does not widen it: Core binds `-rpcbind` only beside
+  `-rpcallowip`, which this node does not have
+  (btclib-org/btclib-node#1268). A
   second process cannot silently share a datadir already open: RocksDB's
   own `LOCK` refuses it rather than allowing concurrent, uncoordinated
   writers.

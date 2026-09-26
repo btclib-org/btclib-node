@@ -121,7 +121,7 @@ def test_a_connecting_node_carries_its_own_real_tip_height(tmp_path: Path) -> No
     server with, so `node1.best_height` is proven driven by
     `main._finalize_fork` itself rather than written directly by this
     test -- and the peer this connects to reads it off the wire, not off
-    `node1`'s own attribute, so what is checked is what `send_version`
+    `node1`'s own attribute, so what is checked is what `own_version`
     actually put in the `version` message.
     """
     chain_length = 5
