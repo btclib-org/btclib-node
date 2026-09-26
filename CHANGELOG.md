@@ -433,6 +433,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **Its read is no longer a `sock_recv` cancelled by a timeout**, which
   dropped whatever that read had taken off the socket (closes #1212).
 
+### The JSON-RPC listener answers `Expect` as bitcoind does
+
+- **`Expect: 100-continue` gets an interim `100 Continue` and any other
+  value a 417** (closes #1194), where a request of HTTP/1.1 or later has a
+  body, ahead of the 413 and of every refusal after the header section.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

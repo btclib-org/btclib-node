@@ -30,6 +30,7 @@ from btclib_node.exceptions import (
     IncompleteRequestHeadError,
     MalformedRequestHeadError,
     OversizedRequestBodyError,
+    UnmetExpectationError,
 )
 from btclib_node.log import Logger
 from btclib_node.rpc.auth import FAILED_ATTEMPT_DELAY, RpcAuth, RpcAuthEntry
@@ -2389,3 +2390,318 @@ def test_a_refused_trailer_is_answered_by_the_fields_read_before_it(
     reply, closed = conversation(data)
     assert reply == expected
     assert closed
+
+
+def expecting(value: bytes, fields: bytes = b"", **kwargs: Any) -> bytes:
+    """Return a request head carrying `Expect: value`, and `fields`, no body."""
+    return request(b"Expect: " + value + b"\r\n" + fields, b"", **kwargs)
+
+
+LENGTH = b"Content-Length: %d\r\n" % len(BODY)
+
+
+@pytest.mark.parametrize(
+    ("data", "error"),
+    [
+        (expecting(b"foo", LENGTH), UnmetExpectationError),
+        (expecting(b"", LENGTH), UnmetExpectationError),
+        (expecting(b"foo", CHUNKED_FIELD), UnmetExpectationError),
+        (expecting(b"foo", LENGTH, version=b"HTTP/1.5"), UnmetExpectationError),
+        (
+            expecting(b"foo", LENGTH, method=b"GET", target=b"/nope"),
+            UnmetExpectationError,
+        ),
+        (
+            expecting(b"foo", b"Expect: 100-continue\r\n" + LENGTH),
+            UnmetExpectationError,
+        ),
+        (
+            expecting(b"foo", b"Content-Length: %d\r\n" % (MAX_BODY_BYTES + 1)),
+            UnmetExpectationError,
+        ),
+        (
+            expecting(
+                b"100-continue", b"Content-Length: %d\r\n" % (MAX_BODY_BYTES + 1)
+            ),
+            OversizedRequestBodyError,
+        ),
+        (expecting(b"foo", b"Content-Length: x\r\n"), MalformedRequestHeadError),
+    ],
+    ids=[
+        "other",
+        "empty",
+        "chunked",
+        "http-1.5",
+        "before-the-refusals",
+        "first-field",
+        "before-the-413",
+        "continue-then-413",
+        "after-the-400",
+    ],
+)
+def test_an_expectation_libevent_does_not_meet_is_refused(
+    data: bytes, error: type[Exception]
+) -> None:
+    """ISS 1194: `evhttp_have_expect` answers `OTHER`, and 417 follows.
+
+    Any value but `100-continue`, the first `Expect` field's, on HTTP/1.1
+    or later and a request with a body, ahead of the 413 of a length past
+    the cap but after the 400 of one libevent cannot read.
+    """
+    with pytest.raises(error):
+        parse_request_head(data)
+
+
+@pytest.mark.parametrize(
+    ("data", "expects_continue"),
+    [
+        (expecting(b"foo", LENGTH, version=b"HTTP/1.0"), False),
+        (expecting(b"foo", b"Content-Length: 0\r\n"), False),
+        (expecting(b"foo"), False),
+        (expecting(b"foo", LENGTH, method=b"HEAD"), False),
+        (request(LENGTH, b""), False),
+        (expecting(b"100-continue", LENGTH), True),
+        (expecting(b"100-CONTINUE", LENGTH), True),
+        (expecting(b"  100-continue  ", LENGTH), True),
+        (expecting(b"100-continue", CHUNKED_FIELD), True),
+        (expecting(b"100-continue", b"Expect: foo\r\n" + LENGTH), True),
+        (expecting(b"100-continue", LENGTH, version=b"HTTP/1.0"), False),
+    ],
+    ids=[
+        "http-1.0",
+        "no-body",
+        "no-length",
+        "head",
+        "no-expect",
+        "continue",
+        "any-case",
+        "trimmed",
+        "chunked",
+        "first-field",
+        "continue-http-1.0",
+    ],
+)
+def test_an_expectation_libevent_meets_or_never_reads_is_not_refused(
+    data: bytes, *, expects_continue: bool
+) -> None:
+    """ISS 1194: `NO` below HTTP/1.1 and with no body, `CONTINUE` otherwise."""
+    assert parse_request_head(data).expects_continue is expects_continue
+
+
+@pytest.mark.parametrize(
+    ("method", "target", "auth"),
+    [
+        (b"POST", b"/", b""),
+        (b"POST", b"/nope", RPCAUTH_LINE),
+        (b"GET", b"/", RPCAUTH_LINE),
+        (b"PUT", b"/", RPCAUTH_LINE),
+        (b"OPTIONS", b"/", RPCAUTH_LINE),
+    ],
+)
+def test_an_expectation_not_met_is_417_before_any_other_refusal(
+    method: bytes, target: bytes, auth: bytes
+) -> None:
+    """ISS 1194: 417 where `bitcoind` v31.1.0 would 401, 404, 405 or 501.
+
+    `evhttp_get_body` runs before Core's request handler. The body is
+    never sent: `bitcoind` answers without it.
+    """
+    data = expecting(
+        b"foo",
+        LENGTH + b"Connection: close\r\n",
+        method=method,
+        target=target,
+        auth=auth,
+    )
+    reply, closed = conversation(data)
+    page = error_page(b"417 Expectation Failed")
+    assert reply == (
+        b"HTTP/1.1 417 Expectation Failed\r\n"
+        b"Content-Length: %d\r\nConnection: close\r\n\r\n" % len(page) + page
+    )
+    assert closed
+
+
+def test_an_expectation_not_met_closes_a_kept_alive_connection() -> None:
+    """`evhttp_send_error`'s page, `Connection: close` ahead of its length."""
+    reply, closed = conversation(expecting(b"foo", LENGTH))
+    assert reply == closing(b"417 Expectation Failed")
+    assert closed
+
+
+def test_an_expectation_not_met_on_connect_leaves_the_body_as_the_next_request() -> (
+    None
+):
+    """A `CONNECT` keeps its connection, and its unread body is read next.
+
+    As `bitcoind` v31.1.0 reads a body it did not take as the next
+    request's head.
+    """
+    fields = b"Content-Length: %d\r\n" % len(THEN_CLOSE)
+    data = expecting(b"foo", fields, method=b"CONNECT", target=b"x:1") + THEN_CLOSE
+    reply, closed = conversation(data)
+    page = error_page(b"417 Expectation Failed")
+    assert reply == (
+        b"HTTP/1.1 417 Expectation Failed\r\nConnection: close\r\n\r\n"
+        + page
+        + THEN_CLOSE_ANSWER
+    )
+    assert closed
+
+
+def continued(
+    head: bytes, body: bytes, *, interim: bytes = b"", buffered: bytes = b""
+) -> tuple[bytes, bytes, bool]:
+    """Send `head`, read `interim` off the reply, then send `body`.
+
+    `buffered` is put where `run` reads it from before `run` starts, as
+    though it came with the head. Returns what came before `body` was
+    sent, what came after, to the close, and whether the connection
+    closed. A request `run` queues is answered `ANSWER`.
+    """
+
+    async def main() -> tuple[bytes, bytes, bool]:
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        theirs.setblocking(False)
+        loop = asyncio.get_running_loop()
+        manager = fake_manager(connections={0: None})
+        conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
+        conn.buffer += buffered
+        await loop.sock_sendall(theirs, head)
+        task = asyncio.ensure_future(conn.run())
+        before = b""
+        async with asyncio.timeout(5):
+            while len(before) < len(interim):
+                before += await loop.sock_recv(theirs, len(interim) - len(before))
+        await loop.sock_sendall(theirs, body)
+        await task
+        if manager.messages:
+            await conn.async_send(HttpReply(OK, ANSWER))
+        after = b""
+        async with asyncio.timeout(5):
+            while chunk := await loop.sock_recv(theirs, 4096):
+                after += chunk
+        closed = ours.fileno() == -1
+        theirs.close()
+        ours.close()
+        return before, after, closed
+
+    return asyncio.run(main())
+
+
+CLOSE = b"Connection: close\r\n"
+
+
+@pytest.mark.parametrize("version", [b"1.1", b"1.5"])
+def test_100_continue_is_answered_before_the_body_in_the_request_s_version(
+    version: bytes,
+) -> None:
+    """ISS 1194: `evhttp_send_continue`'s `HTTP/%d.%d 100 Continue`.
+
+    Then the body is read and answered as any other.
+    """
+    interim = b"HTTP/" + version + b" 100 Continue\r\n\r\n"
+    head = expecting(b"100-continue", LENGTH + CLOSE, version=b"HTTP/" + version)
+    before, after, closed = continued(head, BODY, interim=interim)
+    assert before == interim
+    assert after == framed(
+        b"HTTP/" + version + b" 200 OK",
+        b"Content-Length: {length}",
+        b"Connection: close",
+    )
+    assert closed
+
+
+def test_100_continue_is_answered_before_a_chunked_body() -> None:
+    """ISS 1194: `CONTINUE` for a chunked body too, its length unknown."""
+    interim = b"HTTP/1.1 100 Continue\r\n\r\n"
+    head = expecting(b"100-continue", CHUNKED_FIELD + CLOSE)
+    before, after, _ = continued(head, chunked(BODY), interim=interim)
+    assert before == interim
+    assert after.startswith(b"HTTP/1.1 200 OK\r\n")
+
+
+def test_100_continue_comes_before_the_credential_is_read() -> None:
+    """ISS 1194: `bitcoind` v31.1.0 sends it, and then its 401."""
+    interim = b"HTTP/1.1 100 Continue\r\n\r\n"
+    head = expecting(b"100-continue", LENGTH + CLOSE, auth=b"")
+    before, after, closed = continued(head, BODY, interim=interim)
+    assert before == interim
+    assert after == UNAUTHORIZED.replace(b"\r\n\r\n", b"\r\nConnection: close\r\n\r\n")
+    assert closed
+
+
+def test_no_100_continue_where_the_body_began_with_the_head() -> None:
+    """ISS 1194: only where `evbuffer_get_length(input)` is still 0.
+
+    What came with the head is already in `run`'s buffer when it starts.
+    """
+    head = expecting(b"100-continue", LENGTH + CLOSE)
+    before, after, closed = continued(b"", BODY[5:], buffered=head + BODY[:5])
+    assert not before
+    assert after == framed(
+        b"HTTP/1.1 200 OK", b"Content-Length: {length}", b"Connection: close"
+    )
+    assert closed
+
+
+def test_100_continue_is_answered_for_each_request_kept_alive() -> None:
+    """ISS 1194: the second request on a connection gets its own."""
+    interim = b"HTTP/1.1 100 Continue\r\n\r\n"
+    first = expecting(b"100-continue", LENGTH)
+    second = expecting(b"100-continue", LENGTH + CLOSE)
+
+    async def main() -> bytes:
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        theirs.setblocking(False)
+        loop = asyncio.get_running_loop()
+        manager = fake_manager(connections={0: None})
+        conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
+        reply = b""
+
+        async def exchange(head: bytes, reading: Any) -> None:
+            nonlocal reply
+            await loop.sock_sendall(theirs, head)
+            async with asyncio.timeout(5):
+                while not reply.endswith(interim):
+                    reply += await loop.sock_recv(theirs, 1)
+            await loop.sock_sendall(theirs, BODY)
+            # `run` for the first, and for the second the `async_send`
+            # whose keep-alive reads it
+            await reading
+            (message,) = manager.messages
+            manager.messages.clear()
+            assert message == (json.loads(BODY), 0)
+
+        # kept alive past the first answer, `async_send` goes on to read
+        # the second request, and is done once it has
+        await exchange(first, asyncio.ensure_future(conn.run()))
+        answering_first = asyncio.ensure_future(conn.async_send(HttpReply(OK, ANSWER)))
+        async with asyncio.timeout(5):
+            while not reply.endswith(b"}\n"):
+                reply += await loop.sock_recv(theirs, 4096)
+        await exchange(second, answering_first)
+        await conn.async_send(HttpReply(OK, ANSWER))
+        async with asyncio.timeout(5):
+            while chunk := await loop.sock_recv(theirs, 4096):
+                reply += chunk
+        theirs.close()
+        ours.close()
+        return reply
+
+    reply = asyncio.run(main())
+    assert reply == (
+        interim
+        + framed(b"HTTP/1.1 200 OK", b"Content-Length: {length}")
+        + interim
+        + framed(b"HTTP/1.1 200 OK", b"Content-Length: {length}", b"Connection: close")
+    )
+
+
+def test_a_content_length_at_the_cap_is_read_whatever_is_expected() -> None:
+    """`MAX_BODY_BYTES` itself is no 413, `100-continue` asked or not."""
+    at_cap = b"Content-Length: %d\r\n" % MAX_BODY_BYTES
+    for data in (request(at_cap, b""), expecting(b"100-continue", at_cap)):
+        assert parse_request_head(data).length == MAX_BODY_BYTES
