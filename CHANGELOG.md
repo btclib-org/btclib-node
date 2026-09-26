@@ -501,6 +501,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`sendcmpct` offers version 2, and a `MSG_CMPCT_BLOCK` or a `getblocktxn`
   is answered at Core's depths** (closes #1206).
 
+### Core's licence travels in the fixed seeds' module, not in `license-files`
+
+- **`_chainparamsseeds.py` opens with Core's `COPYING` in full, and
+  `license-files` drops it** (closes btclib-org/.github#1390); the file
+  stays beside the lists, and in the sdist.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
