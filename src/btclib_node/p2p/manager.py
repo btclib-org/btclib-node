@@ -1116,6 +1116,9 @@ class P2pManager(threading.Thread):
             sockets.append(self._bind_one(socket.AF_INET6, "::"))
         except OSError:
             self.logger.info("No IPv6 P2P listener on port %s", self.port)
+        # kept ahead of `listening`, which is what a waiting thread reads
+        # them after (btclib-org/btclib-node#1325)
+        self._server_sockets = sockets
         self.listening.set()
         return sockets
 
@@ -1400,7 +1403,6 @@ class P2pManager(threading.Thread):
             return
         finally:
             self._start_attempted.set()
-        self._server_sockets = server_sockets
         if self.use_dns_seed:
             asyncio.run_coroutine_threadsafe(self.peer_db.get_addr_from_dns(), loop)
         for server_socket in server_sockets:

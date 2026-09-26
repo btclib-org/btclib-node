@@ -529,6 +529,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   sign, a space, a `_` or a non-ASCII digit** (closes #1285), as `bitcoind`
   refuses it for `-rpcbind`; `int` read each as a number.
 
+### The P2P listener's sockets are kept before it says it is listening
+
+- **`_bind` records them ahead of setting `listening`** (closes #1325), so
+  a thread woken by it no longer reads an empty list.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

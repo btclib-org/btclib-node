@@ -2887,6 +2887,29 @@ def test_stop_closes_a_connection_accepted_in_its_own_race_window(
     assert ours.fileno() == -1
 
 
+def test_the_listening_sockets_are_kept_before_listening_is_set(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1325: a thread `listening` wakes finds `_server_sockets` filled."""
+    manager = a_manager(port=get_random_port())
+    seen: list[list[socket.socket]] = []
+
+    class Recording(threading.Event):
+        @override
+        def set(self) -> None:
+            seen.append(list(manager._server_sockets))
+            super().set()
+
+    manager.listening = Recording()
+    try:
+        assert manager.start_listener()
+        assert seen
+        assert seen[0]
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
+
+
 def test_stop_closes_the_listening_socket_even_if_the_accept_task_does_not(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
