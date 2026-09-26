@@ -9,9 +9,10 @@ or `P2pManager.handshake_messages` -- and dispatch it through
 `p2p.callbacks.callbacks` or `p2p.callbacks.handshake_callbacks`
 depending on the connection's own `P2pConnStatus`. An exception raised
 by a callback ends that connection's message rather than the loop: it
-goes to `P2pManager.maybe_discourage_and_disconnect` where it is a parse
-failure from the peer's own bytes, and stops the connection where it is
-a bug in the handler.
+goes to `P2pManager.maybe_discourage_and_disconnect` where it is a
+`MisbehavingError`, is logged with the peer kept where it is any other
+`BTClibException`, and stops the connection where it is a bug in the
+handler.
 
 Each also weighs its own queued item's wire size back off the
 connection it came from, `queued_recv_bytes`, resuming that connection's
@@ -32,6 +33,7 @@ from typing import TYPE_CHECKING
 from btclib.exceptions import BTClibException
 
 from btclib_node.constants import P2pConnStatus
+from btclib_node.exceptions import MisbehavingError
 from btclib_node.p2p.callbacks import (
     advance_cfilters,
     advance_getdata,
@@ -59,13 +61,14 @@ _BEFORE_VERACK = frozenset({"sendheaders"})
 def _drop(manager: P2pManager, conn: Connection, e: Exception) -> bool:
     """Punish `conn` over `e`, and answer whether its host was discouraged.
 
-    A `BTClibException` goes to `maybe_discourage_and_disconnect`, and
-    anything else stops the connection, `handle_p2p`'s own `except`
-    explaining why.
+    A `MisbehavingError` goes to `maybe_discourage_and_disconnect`, any
+    other `BTClibException` leaves the peer as it is, and anything else
+    stops the connection, `handle_p2p`'s own `except` explaining why.
     """
-    if isinstance(e, BTClibException):
+    if isinstance(e, MisbehavingError):
         return manager.maybe_discourage_and_disconnect(conn)
-    conn.stop()
+    if not isinstance(e, BTClibException):
+        conn.stop()
     return False
 
 
@@ -107,8 +110,8 @@ def handle_p2p_handshake(node: Node) -> None:
             ):
                 conn.stop()
         except Exception as e:
-            # discouraged for a parse failure, `handle_p2p`'s own
-            # `except` below explaining which exceptions count as one
+            # `handle_p2p`'s own `except` below explains which
+            # exceptions discourage the peer
             discourage = _drop(manager, conn, e)
             # `conn_id`, not `conn.address`: this line is what
             # distinguishes the two branches above on disk (#526), and
@@ -180,12 +183,19 @@ def handle_p2p(node: Node) -> None:
                 node.logger.debug("Finished p2p\n")
         except Exception as e:
             # A `BTClibException` is btclib refusing this peer's own
-            # wire content -- a malformed message, or one failing a
-            # consensus check such as `add_headers`'s or `assert_valid`'s
-            # own. Anything else caught here is this node's own code
-            # failing on content that was fine -- `get_cfilters`'s "no
-            # filter for a block on the active chain" among them -- and
-            # not cause to discourage the peer that merely triggered it.
+            # wire content. Where it is a `MisbehavingError`, a header
+            # or a block failing a consensus check or a message past
+            # Core's own size bound, the peer is discouraged, as Core
+            # calls `Misbehaving` there. Any other, a payload that does
+            # not parse among them, is logged and the peer kept, as
+            # Core's `ProcessMessages` only logs what `ProcessMessage`
+            # throws (`src/net_processing.cpp`, at
+            # bitcoin/bitcoin@9be056a8a7, the v31.1 tag;
+            # btclib-org/btclib-node#1170). Anything else caught here is
+            # this node's own code failing on content that was fine --
+            # `get_cfilters`'s "no filter for a block on the active
+            # chain" among them -- and stops the connection without
+            # discouraging the peer that merely triggered it.
             # btclib-org/btclib-node#283
             discourage = _drop(manager, conn, e)
             # `conn_id`, not `conn.address`: same reasoning as

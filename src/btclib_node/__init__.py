@@ -37,6 +37,7 @@ from btclib_node.log import Logger
 from btclib_node.main import update_chain
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import PeerDB, peer_address
+from btclib_node.p2p.banman import BanMan
 from btclib_node.p2p.main import (
     handle_p2p,
     handle_p2p_handshake,
@@ -369,20 +370,22 @@ class Node(threading.Thread):
         self._load_attempted = threading.Event()
 
     def load(self) -> None:
-        """Open the address table, the chainstate and the block store.
+        """Open the address table, the ban list, the chainstate and the blocks.
 
-        Core's `AppInitMain` loads `peers.dat` at step 6 and the
-        chainstate and block index at step 7 (`src/init.cpp`, at
+        Core's `AppInitMain` loads `peers.dat` and `banlist.json` at step
+        6 and the chainstate and block index at step 7 (`src/init.cpp`, at
         bitcoin/bitcoin@9be056a8a7, the v31.1 tag), after step 4a has
         started the RPC server, so a start that fails there has created
-        neither. `run` calls this once the RPC listener is up; a node
+        none of them. `run` calls this once the RPC listener is up; a node
         driven without `start` calls it itself. A second call does
         nothing.
         """
         if self.loaded:
             return
         peer_db = PeerDB(self.chain, self.data_dir)
-        self.p2p_manager = P2pManager(self, self.p2p_port, peer_db)
+        # Core's `banlist.json`, in the chain's own directory
+        ban_man = BanMan(self.data_dir / "banlist.json", self.logger)
+        self.p2p_manager = P2pManager(self, self.p2p_port, peer_db, ban_man)
         self.chainstate = Chainstate(self.data_dir, self.chain, self.logger)
         self.block_db = BlockDB(self.data_dir, self.logger, self.config.blocks_dir)
         # Core's own `Chainstate::LoadGenesisBlock` (`src/validation.cpp:4974`,
@@ -417,8 +420,9 @@ class Node(threading.Thread):
 
         # This node's own active-chain tip height, at the moment
         # `main._finalize_fork` last moved it -- read by
-        # `p2p.connection.Connection.send_version`, on `P2pManager`'s own
-        # asyncio loop rather than this thread, the same way Core's own
+        # `p2p.connection.Connection.own_version`, for an outbound
+        # connection on `P2pManager`'s own asyncio loop rather than this
+        # thread, the same way Core's own
         # `PushNodeVersion` (`net_processing.cpp:1673`, at
         # bitcoin/bitcoin@ca7162cde5) reads `m_best_height` from the net
         # processing thread rather than validation's. Core declares that
@@ -661,6 +665,8 @@ class Node(threading.Thread):
 
         if self.loaded:
             self.p2p_manager.peer_db.close()
+            # Core's `~BanMan` dumps the list one last time
+            self.p2p_manager.ban_man.dump()
             self.chainstate.close()
             self.block_db.close()
 

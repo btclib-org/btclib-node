@@ -455,6 +455,47 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A coin picks the answered or the gossiped table, and a pass draws up to
   a hundred times** (closes #1201), so held answered peers no longer stall it.
 
+### PeerDB records as answered only a peer it already knows
+
+- **A peer is recorded as answered only where gossip already holds its
+  endpoint** (closes #1189), as Core's `Good_` updates only what addrman holds.
+
+### A message that does not parse costs its peer nothing, as in Core
+
+- **A peer is discouraged only where Core calls `Misbehaving`** (closes
+  #1170); a payload that does not parse is logged and the peer kept.
+
+### An inbound peer is sent `version` only once its own is accepted, as in Core
+
+- **A refused inbound peer is sent nothing** (closes #1207).
+
+### JSON-RPC named parameters are mapped onto positions, as in Core
+
+- **A `params` object is read as `transformNamedArguments` reads it**
+  (closes #1168), `args` holding the leading positions; a name repeated,
+  unknown or given both ways is refused with `RPC_INVALID_PARAMETER`.
+
+### `-rpcbind` is ignored without `-rpcallowip`, as `bitcoind` ignores it
+
+- **The JSON-RPC listener stays on loopback whatever `-rpcbind` names**
+  (closes #1211), and every value is checked, where the last was bound.
+
+### `-datadir`, `-conf` and `-blocksdir` are read lexically normal, as in Core
+
+- **A `..` comes off, and a leading `//` becomes `/`, before the file system is
+  asked** (closes #1187); a missing data directory and an unreadable
+  configuration file are refused in Core's words.
+
+### A ban list, as Core's `BanMan`
+
+- **`setban`, `listbanned` and `clearbanned` keep it in `banlist.json`; a
+  banned host is refused on accept, not dialled automatically, and left out of
+  `getaddr` answers and of the gossip stored** (closes #1088).
+
+### `running_a_node.md` names every RPC method the node serves
+
+- **Its list is the method table's, with no count** (closes #1221).
+
 ### A malformed `-rpcauth` or `-rpccookieperms` is named in the log alone
 
 - **Stderr reads "Unable to start HTTP server. See debug log for details.",
@@ -465,7 +506,7 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 - **The stores open once the RPC listener is up** (closes #1279), so a
   refused start leaves `.lock`, `blocks/` and the log, `bitcoind` opening
-  neither store before its steps 6 and 7.
+  none of them before its steps 6 and 7.
 
 ## v2026.9.24
 
