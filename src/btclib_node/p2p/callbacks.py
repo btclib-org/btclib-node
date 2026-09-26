@@ -47,7 +47,13 @@ from btclib.p2p.block_filters import (
     GetCFHeaders,
     GetCFilters,
 )
-from btclib.p2p.compact_blocks import SendCmpct
+from btclib.p2p.compact_blocks import (
+    BlockTxn,
+    CmpctBlock,
+    GetBlockTxn,
+    PrefilledTransaction,
+    SendCmpct,
+)
 from btclib.p2p.data import BlockPayload as BlockMsg
 from btclib.p2p.data import TxPayload as TxMsg
 from btclib.p2p.handshake import Verack, Version
@@ -90,6 +96,7 @@ from btclib_node.p2p.block_availability import (
     remove_block_request,
     update_block_availability,
 )
+from btclib_node.p2p.chain_sync import protect_if_caught_up
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 from btclib_node.p2p.protocol_version import (
     BIP0031_VERSION,
@@ -102,11 +109,16 @@ from btclib_node.p2p.protocol_version import (
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
+    from btclib.block import Block
+
     from btclib_node import Node
     from btclib_node.p2p.connection import Connection
 
 __all__ = [
+    "CMPCTBLOCKS_VERSION",
+    "MAX_BLOCKTXN_DEPTH",
     "MAX_CFILTERS_INFLIGHT_BYTES",
+    "MAX_CMPCTBLOCK_DEPTH",
     "MAX_GETDATA_INFLIGHT_BYTES",
     "MAX_PENDING_CFILTERS_HEIGHTS",
     "MAX_PENDING_GETDATA_ITEMS",
@@ -116,11 +128,13 @@ __all__ = [
     "advance_getdata",
     "block",
     "callbacks",
+    "compact_block",
     "feefilter",
     "get_cfcheckpt",
     "get_cfheaders",
     "get_cfilters",
     "getaddr",
+    "getblocktxn",
     "getdata",
     "getheaders",
     "handshake_callbacks",
@@ -464,7 +478,7 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     # known block has the minimum chain work, as Core's
     # `MaybeSendSendHeaders` does
     if common_version(conn) >= SHORT_IDS_BLOCKS_VERSION:
-        conn.send(SendCmpct(announce=False, version=1))
+        conn.send(SendCmpct(announce=False, version=CMPCTBLOCKS_VERSION))
     # BIP133's own floor is not sent here: DownloadManager._send_due_feefilters
     # (src/btclib_node/download.py) reaches every connected connection on the
     # very next step(), Connection.next_feefilter_send_time defaulting to
@@ -648,14 +662,15 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
     now = time.time()
     if now >= peer_db.addr_sample_expiration:
         # Drawn and then filtered, as Core's `GetAddressesUnsafe` leaves
-        # every discouraged host out of what addrman drew (`src/net.cpp`,
-        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) before the cache
-        # is kept.
-        is_discouraged = node.p2p_manager.is_discouraged
+        # every discouraged or banned host out of what addrman drew
+        # (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+        # before the cache is kept.
+        manager = node.p2p_manager
         peer_db.addr_sample = [
             address
             for address in _addresses_to_send(peer_db.get_active_addresses())
-            if not is_discouraged(address)
+            if not manager.is_discouraged(address)
+            and not manager.ban_man.is_peer_banned(address)
         ]
         # The sample can go on naming an endpoint `active_addresses` has
         # since aged out or dropped, for as long as this cache is still
@@ -769,9 +784,7 @@ def _store_gossip(
             ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_NETWORK_LIMITED
         ):
             continue
-        # Core's `IsBanned` beside it has no counterpart: this node keeps
-        # no ban list (btclib-org/btclib-node#1088)
-        if manager.is_discouraged(address):
+        if manager.is_discouraged(address) or manager.ban_man.is_peer_banned(address):
             continue
         kept.append(address)
     conn.stats.addr_processed += len(kept)
@@ -1024,17 +1037,73 @@ def inv(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 # The two families `advance_getdata` below dispatches on -- everything
-# else a `getdata` may name (`MSG_FILTERED_BLOCK`, `MSG_CMPCT_BLOCK`,
-# `UNDEFINED`, an unrecognised code) is neither, and is popped off the
-# front of the pending items and otherwise ignored, the same silence
-# `_filter_range` already answers a request it declines with elsewhere
-# in this module.
+# else a `getdata` may name (`MSG_FILTERED_BLOCK`, `UNDEFINED`, an
+# unrecognised code) is neither, and is popped off the front of the
+# pending items and otherwise ignored, the same silence `_filter_range`
+# already answers a request it declines with elsewhere in this module.
 _GETDATA_TX_TYPES = (
     InventoryType.MSG_TX,
     InventoryType.MSG_WTX,
     InventoryType.MSG_WITNESS_TX,
 )
-_GETDATA_BLOCK_TYPES = (InventoryType.MSG_BLOCK, InventoryType.MSG_WITNESS_BLOCK)
+_GETDATA_BLOCK_TYPES = (
+    InventoryType.MSG_BLOCK,
+    InventoryType.MSG_WITNESS_BLOCK,
+    InventoryType.MSG_CMPCT_BLOCK,
+)
+
+# BIP152's compact blocks as Core serves them (`net_processing.cpp`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the one version Core speaks,
+# the depth past which a `MSG_CMPCT_BLOCK` is answered with the full block
+# instead, and the depth past which a `getblocktxn` is
+CMPCTBLOCKS_VERSION = 2
+MAX_CMPCTBLOCK_DEPTH = 5
+MAX_BLOCKTXN_DEPTH = 10
+# Core's `CanDirectFetch`: the tip is within this many target spacings
+# of now
+_DIRECT_FETCH_SPACINGS = 20
+
+
+def compact_block(block: Block, nonce: int) -> CmpctBlock:
+    """Return `block` as a `cmpctblock`, the coinbase alone sent whole.
+
+    Core's `CBlockHeaderAndShortTxIDs` constructor: the coinbase
+    prefilled at index 0, and every other transaction by the short id of
+    its wtxid under the key `nonce` and the header give.
+    """
+    coinbase = PrefilledTransaction(0, block.transactions[0])
+    keyed = CmpctBlock(block.header, nonce, (), (coinbase,), check_validity=False)
+    short_ids = [keyed.short_id(tx.hash) for tx in block.transactions[1:]]
+    return CmpctBlock(block.header, nonce, short_ids, (coinbase,))
+
+
+def _can_direct_fetch(node: Node) -> bool:
+    """Core's `CanDirectFetch`: whether this node's tip is recent."""
+    block_index = node.chainstate.block_index
+    tip = block_index.header_dict[block_index.active_chain[-1]].header
+    spacing = node.chain.consensus.pow_target_spacing
+    return tip.time.timestamp() > time.time() - spacing * _DIRECT_FETCH_SPACINGS
+
+
+def _block_answer(node: Node, item: Inventory, block: Block) -> BlockMsg | CmpctBlock:
+    """Answer a block item as Core's `ProcessGetBlockData` does.
+
+    A `MSG_CMPCT_BLOCK` for a block at most `MAX_CMPCTBLOCK_DEPTH` below
+    a recent tip gets a `cmpctblock` under a fresh nonce; one for an
+    older block gets the full block with witnesses, "we're almost
+    guaranteed they won't have a useful mempool to match against".
+    """
+    if item.type_code == InventoryType.MSG_CMPCT_BLOCK:
+        block_index = node.chainstate.block_index
+        height = block_index.header_dict[item.hash].index
+        tip_height = len(block_index.active_chain) - 1
+        if _can_direct_fetch(node) and height >= tip_height - MAX_CMPCTBLOCK_DEPTH:
+            return compact_block(block, secrets.randbits(64))
+        include_witness = True
+    else:
+        include_witness = item.type_code == InventoryType.MSG_WITNESS_BLOCK
+    return BlockMsg(block, include_witness=include_witness, check_validity=False)
+
 
 # Room to schedule ahead of a peer's own draining before `advance_getdata`
 # pauses and hands the rest to `node.pending_getdata`, for `resume_getdata`
@@ -1186,10 +1255,7 @@ def _serve_getdata_item(
             return not_found_bytes
         block = node.block_db.get_block(item.hash)
         if block:
-            include_witness = item.type_code == InventoryType.MSG_WITNESS_BLOCK
-            conn.send(
-                BlockMsg(block, include_witness=include_witness, check_validity=False)
-            )
+            conn.send(_block_answer(node, item, block))
     # else: neither family, popped and otherwise ignored -- see the
     # comment beside _GETDATA_TX_TYPES above.
     return not_found_bytes
@@ -1428,6 +1494,7 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     )
     if tip is not None:
         node.download_manager.last_getheaders_timestamps.pop(conn.id, None)
+        protect_if_caught_up(node, conn)
     if tip is None:
         # a batch connecting to nothing this node knows, whatever its
         # length: get_block_locator_hashes asks from what this node
@@ -1875,6 +1942,42 @@ def get_cfcheckpt(node: Node, msg: bytes, conn: Connection) -> None:
     )
 
 
+def getblocktxn(node: Node, msg: bytes, conn: Connection) -> None:
+    """Answer the transactions of a block a peer's `cmpctblock` lacked.
+
+    Core's `GETBLOCKTXN` handling (`net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): silence for a block not
+    held; a `blocktxn` for one at most `MAX_BLOCKTXN_DEPTH` below the
+    tip, an index past its last transaction being misbehaviour; and for
+    an older one the full block, queued as a `MSG_WITNESS_BLOCK` item of
+    this connection's own `getdata`, whose serving pays for the disk
+    read the request cost.
+    """
+    request = GetBlockTxn.parse(msg)
+    block_index = node.chainstate.block_index
+    block_info = block_index.header_dict.get(request.block_hash)
+    if block_info is None:
+        return
+    # Core's `!(pindex->nStatus & BLOCK_HAVE_DATA)` return, ahead of any
+    # depth: a block never downloaded or pruned away is not queued for the
+    # `getdata` below, whose prune threshold would drop the connection
+    if not node.block_db.has_block(request.block_hash):
+        return
+    if block_info.index < len(block_index.active_chain) - 1 - MAX_BLOCKTXN_DEPTH:
+        item = Inventory(InventoryType.MSG_WITNESS_BLOCK, request.block_hash)
+        getdata(node, GetData([item]).serialize(), conn)
+        return
+    block = node.block_db.get_block(request.block_hash)
+    if block is None:
+        return
+    transactions = block.transactions
+    if any(index >= len(transactions) for index in request.indexes):
+        err_msg = "getblocktxn with out-of-bounds tx indices"
+        raise MisbehavingError(err_msg)
+    answer = [transactions[index] for index in request.indexes]
+    conn.send(BlockTxn(request.block_hash, answer))
+
+
 def not_found(node: Node, msg: bytes, conn: Connection) -> None:
     """Clear the in-flight record for a transaction the peer could not answer.
 
@@ -1935,6 +2038,7 @@ callbacks = {
     "tx": tx,
     "block": block,
     "getdata": getdata,
+    "getblocktxn": getblocktxn,
     "getheaders": getheaders,
     "headers": headers,
     "addr": addr,
