@@ -2352,7 +2352,7 @@ def a_block_at(node: Any, height: int, *, fork: int | None = None) -> Block:
 
 
 def deliver(node: Any, block: Block, peer: Any = None) -> None:
-    """Hand `block` to the `block` callback from `peer`, a fresh one by default."""
+    """Hand `block` to the `block` callback from `peer`, or a fresh one."""
     payload = BlockMsg(block, include_witness=True, check_validity=False).serialize(
         check_validity=False
     )
@@ -2372,7 +2372,9 @@ def test_an_unrequested_block_too_far_ahead_is_not_stored(
     block = a_block_at(node, 1 + ahead)
     deliver(node, block)
     assert (node.added == [block]) is stored
-    downloaded = node.chainstate.block_index.get_block_info(block.header.hash).downloaded
+    downloaded = node.chainstate.block_index.get_block_info(
+        block.header.hash
+    ).downloaded
     assert downloaded is stored
     node.chainstate.close()
 
