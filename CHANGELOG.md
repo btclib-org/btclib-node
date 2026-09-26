@@ -540,6 +540,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `getaddr`, a peer this node dialled `true` from its `version`**, where the
   `getaddr` to it goes too (closes #1178).
 
+### An integer option is read as `bitcoind` reads it
+
+- **The digits a value starts with, saturated at the `int64_t` range** (closes
+  #1313, closes #1324), where a value that is not an integer was refused;
+  `-maxconnections` and `-prune` then narrow and wrap as they do in Core.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
