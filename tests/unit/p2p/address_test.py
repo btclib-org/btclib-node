@@ -944,6 +944,17 @@ def test_set_services_replaces_what_gossip_had_added(
     assert {row.services for row in rows} == {ServiceFlags.NODE_NETWORK_LIMITED}
 
 
+def test_set_services_writes_an_answered_row_held_in_memory_alone() -> None:
+    """ISS 1276: a table with no store updates its answered row all the same."""
+    peer_db = a_peer_db()
+    endpoint = peer_address("1.2.3.4", 8333, services=_FULL)
+    peer_db.add_addresses([endpoint])
+    peer_db.add_active_address(endpoint)
+    peer_db.set_services(endpoint, ServiceFlags.NODE_WITNESS)
+    (answered,) = peer_db.active_addresses
+    assert answered.services == ServiceFlags.NODE_WITNESS
+
+
 def test_set_services_records_no_endpoint_the_table_does_not_hold() -> None:
     """ISS 1276: `SetServices_` bails out where `Find` finds nothing."""
     peer_db = a_peer_db()
