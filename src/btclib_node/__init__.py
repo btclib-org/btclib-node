@@ -623,13 +623,6 @@ class Node(threading.Thread):
             self._abort_start(
                 [P2P_INIT_ERROR] if bind_error is None else [bind_error, P2P_INIT_ERROR]
             )
-        elif self.p2p_port:
-            # `config.connect` and `config.addnode` together, once the
-            # listener is bound, or skipped under `-listen=0`, each by
-            # the name given. A one-shot dial: a peer that drops is
-            # redialled by `P2pManager._maybe_redial_specified`.
-            for host, port in (*self.config.connect, *self.config.addnode):
-                self.p2p_manager.connect_host(host, port)
         while not self.terminate_flag.is_set():
             if self._drain_message_queues():
                 time.sleep(IDLE_SLEEP_SECONDS)

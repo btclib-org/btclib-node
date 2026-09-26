@@ -951,13 +951,13 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
 # persistent added-node list, which this node has no counterpart to --
 # `Config.addnode`, its own equivalent of `-addnode`, is a tuple
 # split once at startup (`config.py`'s `_split_peers`) and dialled
-# through `P2pManager`'s own redial set, never grown or shrunk at
-# runtime. `connect_nodes`, the one caller this node's own tf2 census
-# names for this method (`test_framework.py:568-594`, same sha), only
+# by `P2pManager._open_added_peers`, never grown or shrunk at runtime.
+# `connect_nodes`, the one caller this node's own tf2 census names for
+# this method (`test_framework.py:568-594`, same sha), only
 # ever calls `onetry`, which is the one command below with a real
 # effect: it schedules the identical one-shot dial `onetry` gets in
-# Core (`OpenNetworkConnection`, `conn_type=MANUAL`, no persistence, no
-# dedup). `add` is accepted and scheduled the same way rather than
+# Core (`OpenNetworkConnection`, `conn_type=MANUAL`, no persistence).
+# `add` is accepted and scheduled the same way rather than
 # raising, since refusing an otherwise-valid command would be less
 # faithful to Core than dialling once and not persisting; `remove`
 # answers Core's own `RPC_CLIENT_NODE_NOT_ADDED` every time, there being

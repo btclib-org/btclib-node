@@ -94,11 +94,6 @@ class AManager:
         # shutdown path reads it off whichever manager it holds without
         # checking which, so the stand-in carries it too (#263)
         self.peer_db = SimpleNamespace(close=lambda: None)
-        # what `run`'s own `config.connect`/`config.addnode` dial loop
-        # calls, in order -- only P2pManager's own attribute has a real
-        # `connect`, and this stand-in is asked for both managers, so
-        # both carry it the same way `peer_db` above does
-        self.connect_calls: list[Any] = []
 
     def start(self) -> None:
         """Record that `run`'s own start branch reached this stand-in."""
@@ -112,10 +107,6 @@ class AManager:
     def stop(self) -> None:
         """Record that `run`'s own teardown reached this stand-in."""
         self.stopped = True
-
-    def connect_host(self, host: str, port: int) -> None:
-        """Record `host` and `port`, in the order `run` dialled them."""
-        self.connect_calls.append((host, port))
 
 
 @pytest.fixture
@@ -853,50 +844,6 @@ def test_a_port_configured_is_a_manager_started_and_stopped(
     # anything
     assert not quiet.p2p_manager.is_alive()
     assert not quiet.rpc_manager.is_alive()
-
-
-def test_run_dials_every_connect_and_addnode_peer_at_startup(tmp_path: Path) -> None:
-    """`run` calls `p2p_manager.connect_host` once per `connect`/`addnode` peer.
-
-    Built by hand rather than through `a_networked_node`, which carries
-    no `connect`/`addnode` of its own: the real `P2pManager` this
-    `Config` builds is torn down and replaced with the same `AManager`
-    stand-in that fixture swaps in, for the same reason (#263's own
-    `peer_db` needs closing before the only reference to it drops).
-    """
-    node = Node(
-        config=Config(
-            chain="regtest",
-            data_dir=tmp_path,
-            p2p_port=18444,
-            allow_rpc=False,
-            connect=["10.0.0.1:1"],
-            addnode=["example.com:2"],
-            debug=True,
-        )
-    )
-    node.p2p_manager.loop.close()
-    node.p2p_manager.peer_db.close()
-    node.p2p_manager = AManager()  # type: ignore[assignment]
-    p2p_manager = cast("AManager", node.p2p_manager)
-    try:
-        node.start()
-        wait_until(lambda: len(p2p_manager.connect_calls) == 2)
-        assert p2p_manager.connect_calls == [("10.0.0.1", 1), ("example.com", 2)]
-    finally:
-        node.stop()
-
-
-def test_run_dials_nothing_extra_without_connect_or_addnode(
-    a_networked_node: Node,
-) -> None:
-    """`connect`/`addnode` empty, the ordinary case: no `connect_host` call."""
-    node = a_networked_node
-    p2p_manager = cast("AManager", node.p2p_manager)
-    node.start()
-    wait_until(lambda: p2p_manager.started)
-    node.stop()
-    assert p2p_manager.connect_calls == []
 
 
 def test_a_node_whose_rpc_port_is_taken_stops_before_its_p2p_side_starts(

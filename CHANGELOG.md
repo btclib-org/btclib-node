@@ -487,6 +487,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   connects** (closes #1264), where it stopped the node at start; the `addnode`
   RPC takes one too.
 
+### `-connect` and `-addnode` peers are dialled by Core's two loops
+
+- **Each `-connect` peer is dialled every pass, and each `-addnode` peer not
+  connected every 60 seconds** (closes #1316), each on a loop of its own,
+  where both shared one doubling backoff inside the housekeeping loop.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
