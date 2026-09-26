@@ -496,6 +496,50 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 - **Its list is the method table's, with no count** (closes #1221).
 
+### Compact blocks are served, and offered at version 2, as in Core
+
+- **`sendcmpct` offers version 2, and a `MSG_CMPCT_BLOCK` or a `getblocktxn`
+  is answered at Core's depths** (closes #1206).
+
+### Core's licence travels in the fixed seeds' module, not in `license-files`
+
+- **`_chainparamsseeds.py` opens with Core's `COPYING` in full, and
+  `license-files` drops it** (closes btclib-org/.github#1390); the file
+  stays beside the lists, and in the sdist.
+
+### An outbound peer behind this node's tip is dropped, as in Core
+
+- **Core's `ConsiderEviction`: `CHAIN_SYNC_TIMEOUT`, one `getheaders`, then
+  a disconnect, with up to four peers at the tip protected** (closes #1154).
+
+### A malformed `-rpcauth` or `-rpccookieperms` is named in the log alone
+
+- **Stderr reads "Unable to start HTTP server. See debug log for details.",
+  and the log names the value** (closes #1210), refused once the RPC
+  listener is bound, `-rpcauth` after the cookie, as `bitcoind` refuses it.
+
+### An oversized `inv` costs the peer in any sync state, as in Core
+
+- **An `inv` of more than `MAX_INV_SZ` items drops and discourages its
+  sender before the sync state is read** (closes #1145).
+
+### A port is read as Core reads it: ASCII digits alone
+
+- **`-rpcbind`, `-connect`, `-addnode` and `addnode` refuse a port with a
+  sign, a space, a `_` or a non-ASCII digit** (closes #1285), as `bitcoind`
+  refuses it for `-rpcbind`; `int` read each as a number.
+
+### What `btclib-node` creates is its owner's alone, as in Core
+
+- **`btclib-node` sets the umask to 0077 on POSIX, so its chain directory
+  is 0700 and `history.log` 0600, as `bitcoind` leaves them** (closes #1198).
+
+### `getpeerinfo`'s `addr_relay_enabled` is Core's
+
+- **An inbound peer answers `false` until its first `addr`, `addrv2` or
+  `getaddr`, a peer this node dialled `true` from its `version`**, where the
+  `getaddr` to it goes too (closes #1178).
+
 ### Only a peer this node dialled is recorded as answered, as in Core
 
 - **An inbound peer's endpoint no longer enters the answered table, and a

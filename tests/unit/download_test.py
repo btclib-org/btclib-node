@@ -34,6 +34,7 @@ from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.callbacks import MAX_GETDATA_INFLIGHT_BYTES
+from btclib_node.p2p.chain_sync import ChainSyncTimeoutState
 from btclib_node.p2p.connection import PeerStats
 from btclib_node.p2p.protocol_version import FEEFILTER_VERSION, SENDHEADERS_VERSION
 from tests import generate_random_transaction
@@ -109,6 +110,8 @@ def a_conn(
         best_known_height=best_known_height,
         wtxidrelay_received=wtxidrelay_received,
         sent_sendheaders=False,
+        automatic=False,
+        chain_sync=ChainSyncTimeoutState(),
         # what a real `Connection` starts every fresh connection at
         # (`p2p/connection.py`), and what `_send_due_announcements` now
         # paces an `Inv` chunk against the same way `advance_getdata`
@@ -930,6 +933,25 @@ def test_a_step_sends_sendheaders_to_a_peer_past_the_minimum_work() -> None:
     )
     manager.step()
     assert only(conn, SendHeaders)
+
+
+def test_a_step_gives_an_outbound_peer_behind_the_tip_a_deadline() -> None:
+    """ISS 1154: `step` is where Core's `ConsiderEviction` runs, per peer."""
+    conn = a_conn(1, version_message=a_version(ServiceFlags.NODE_WITNESS))
+    conn.automatic = True
+    block_index = HeaderIndex(age=_OLD)
+    cast("Any", block_index).chainwork = {a_hash(7): 1}
+    cast("Any", block_index).active_chain = [a_hash(7)]
+    manager = make_manager(
+        [conn],
+        status=NodeStatus.SyncingHeaders,
+        is_initial_block_download=True,
+        block_index=block_index,
+    )
+    manager.headers_sync_timeouts[conn.id] = math.inf
+    manager.step()
+    assert conn.chain_sync.work_header == a_hash(7)
+    assert conn.chain_sync.timeout > time.time()
 
 
 def test_a_fresh_connections_first_feefilter_is_sent_immediately() -> None:
