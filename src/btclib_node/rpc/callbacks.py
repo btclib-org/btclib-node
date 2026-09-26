@@ -26,7 +26,7 @@ from btclib.tx import Tx
 
 from btclib_node.chainstate.block_index import block_time
 from btclib_node.config import split_host_port
-from btclib_node.constants import MIN_BLOCKS_TO_KEEP, USER_AGENT, P2pConnStatus
+from btclib_node.constants import MIN_BLOCKS_TO_KEEP, USER_AGENT
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.main import (
     parent_lookup,
@@ -812,10 +812,9 @@ def _peer_entry(
         block_index.get_block_info(block_hash).index
         for block_hash in p2p_conn.download_queue
     ]
-    # True for every handshake-complete peer, where Core waits on an
-    # inbound one's first `addr`, `addrv2` or `getaddr`
-    # (btclib-org/btclib-node#1178).
-    entry["addr_relay_enabled"] = p2p_conn.status == P2pConnStatus.Connected
+    # Core's `m_addr_relay_enabled`: false for an inbound peer until its
+    # first `addr`, `addrv2` or `getaddr` (btclib-org/btclib-node#1178).
+    entry["addr_relay_enabled"] = p2p_conn.addr_relay_enabled
     entry["addr_processed"] = p2p_conn.stats.addr_processed
     entry["addr_rate_limited"] = p2p_conn.stats.addr_rate_limited
     # No `-whitelist`/`-whitebind`: no peer holds a permission.

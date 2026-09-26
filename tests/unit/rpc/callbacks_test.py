@@ -82,7 +82,7 @@ from tests import generate_coinbase, generate_random_chain, generate_random_head
 from tests.unit.main_test import connect
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
     from btclib_node import Node
     from btclib_node.rpc.connection import RpcConnection
@@ -194,6 +194,8 @@ def a_peer(
         tx_announce_queue=[],
         download_queue=[],
         feefilter=0,
+        # what `Connection` starts every connection at
+        addr_relay_enabled=False,
     )
 
 
@@ -496,6 +498,7 @@ def test_the_fields_this_node_keeps_state_for_read_that_state() -> None:
     peer.tx_announce_queue = [b"\x01" * 32, b"\x02" * 32]
     peer.download_queue = [b"\x0b" * 32, b"\x0a" * 32]
     peer.feefilter = 1234
+    peer.addr_relay_enabled = True
     node = a_node({7: peer}, heights={b"\x0a" * 32: 10, b"\x0b" * 32: 11})
     (info,) = get_peer_info(node, _CONN, [])
     assert info["relaytxes"] is True
@@ -609,29 +612,24 @@ def test_a_connection_removed_mid_loop_does_not_raise() -> None:
     """
     connections: dict[int, Any] = {}
 
-    class PoppingOnCompare:
-        """`p2p_conn.status == P2pConnStatus.Connected`'s own left side.
+    class PoppingOnIter(list[bytes]):
+        """`p2p_conn.download_queue`, which `inflight` iterates.
 
         Standing in for whatever this node's loop is doing when
         `remove_connection` reaches in: the pop happens as a side
-        effect of evaluating peer 7's status, between the iterator's
+        effect of building peer 7's entry, between the iterator's
         own `next()` for peer 7 and its `next()` for peer 8 -- mid-loop
         on a live dict, and not reachable at all from a loop over a list
         built before it started.
         """
 
         @override
-        def __eq__(self, other: object) -> bool:
+        def __iter__(self) -> Iterator[bytes]:
             connections.pop(8, None)
-            return False
+            return super().__iter__()
 
-        # never put in a dict or a set, only compared -- explicit
-        # rather than the implicit None a bare `__eq__` override
-        # already gets, which the object being unhashable does not
-        # itself demonstrate
-        __hash__ = None  # type: ignore[assignment]
-
-    connections[7] = a_peer(status=cast("P2pConnStatus", PoppingOnCompare()))
+    connections[7] = a_peer()
+    connections[7].download_queue = PoppingOnIter()
     connections[8] = a_peer()
     node = a_node(connections)
     # peer 8 is popped from the live `connections` above, not from the

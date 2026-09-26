@@ -161,6 +161,10 @@ def test_the_fields_are_bitcoind_s_and_so_is_a_loopback_peer_s_network(
     assert ours["bytessent"] > 0
     assert ours["bytesrecv"] > 0
     assert set(ours["bytesrecv_per_msg"]) >= {"version", "verack", "pong"}
+    # this node dialled, and its `getaddr` reached bitcoind ahead of the
+    # ping both answers wait on: Core's `SetupAddressRelay` on either side
+    # (btclib-org/btclib-node#1178)
+    assert ours["addr_relay_enabled"] is theirs["addr_relay_enabled"] is True
 
 
 def test_the_synced_heights_are_what_a_bitcoind_peer_answers(
