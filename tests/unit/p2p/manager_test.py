@@ -39,6 +39,8 @@ from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.log import Logger
 from btclib_node.p2p import manager as manager_module
 from btclib_node.p2p.address import PeerDB, fixed_seed_addresses, peer_address
+from btclib_node.p2p.anchors import dump_anchors, read_anchors
+from btclib_node.p2p.eviction import net_group
 from btclib_node.p2p.main import handle_p2p_handshake
 from btclib_node.p2p.manager import P2pManager
 
@@ -165,9 +167,15 @@ class AManagerFactory(Protocol):
 
 
 @pytest.fixture
-def a_manager() -> Iterator[AManagerFactory]:
-    """Build managers, and close their event loops however the test ends."""
+def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
+    """Build managers, and close their event loops however the test ends.
+
+    Their data directory is one of the test's own, where `anchors.dat` is
+    read and written.
+    """
     made: list[P2pManager] = []
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
 
     def make(
         conns: Sequence[Any] = (),
@@ -224,6 +232,7 @@ def a_manager() -> Iterator[AManagerFactory]:
             # (btclib-org/btclib-node#722), 0 matching a fresh `Node`'s
             # own initial value (`__init__.py`).
             best_height=0,
+            data_dir=data_dir,
         )
         # a peer db that refuses to be asked by default: a test that
         # should not reach for a peer proves it by the log staying quiet
@@ -3934,3 +3943,208 @@ def test_create_connection_marks_a_feeler(a_manager: AManagerFactory) -> None:
 
     with ours, theirs:
         manager.loop.run_until_complete(create())
+
+
+ANCHOR = peer_address("5.6.7.8", 18444, services=FULL_NODE)
+
+
+def test_an_anchor_comes_first_while_the_block_relay_only_target_is_unmet(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1097: Core's `anchor` arm, ahead of the full-relay target."""
+    manager = a_manager()
+    outbound = manager_module._Outbound
+    manager.anchors = [ANCHOR]
+    assert manager._next_outbound(0, 1) is outbound.ANCHOR
+    assert manager._next_outbound(0, 2) is outbound.FULL_RELAY
+    manager.anchors = []
+    assert manager._next_outbound(8, 1) is outbound.BLOCK_RELAY
+
+
+@pytest.mark.parametrize(
+    "refused",
+    [
+        peer_address("5.6.7.9", 18444, services=ServiceFlags.NODE_NETWORK),
+        peer_address("7.7.1.1", 18444, services=FULL_NODE),
+        NetworkAddressV2(0, FULL_NODE, BIP155Network.TORV3, bytes(32), 8333),
+    ],
+    ids=["services", "network-group", "undialable"],
+)
+def test_an_anchor_is_popped_off_the_back_past_those_refused(
+    a_manager: AManagerFactory, refused: NetworkAddressV2
+) -> None:
+    """Core's anchor loop: the back first, each refusal dropped for good.
+
+    Short of `HasAllDesirableServiceFlags`, in a network group an outbound
+    peer holds, or on a network this node cannot dial.
+    """
+    manager = a_manager()
+    manager.anchors = [ANCHOR, refused]
+    assert manager._pop_anchor({net_group(peer_address("7.7.2.2", 1))}) == ANCHOR
+    assert manager.anchors == []
+
+
+def test_an_anchor_short_of_any_left_draws_from_the_table(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's loop goes on to `addrman` with the anchors spent.
+
+    The dial is still block-relay-only, and the refused anchor is gone.
+    """
+    drawn = peer_address("9.9.9.9", 18444)
+    manager = a_manager(peer_db=a_peer_db_stub(random_address=lambda: drawn))
+    refused = peer_address("5.6.7.9", 18444)
+    manager.anchors = [refused]
+    made: list[tuple[NetworkAddressV2, dict[str, Any]]] = []
+
+    async def answers(address: NetworkAddressV2) -> bool:
+        return True
+
+    monkeypatch.setattr(manager_module, "dial", answers)
+    monkeypatch.setattr(
+        manager,
+        "create_connection",
+        lambda sock, address, **kwargs: made.append((address, kwargs)),
+    )
+    asyncio.run(manager._dial_one_draw(set(), set(), manager_module._Outbound.ANCHOR))
+    assert made == [
+        (
+            drawn,
+            {"inbound": False, "automatic": True, "block_relay": True, "feeler": False},
+        )
+    ]
+    assert manager.anchors == []
+
+
+def test_an_anchor_is_dialled_block_relay_only_with_the_table_empty(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core tries its anchors ahead of `addrman`, whatever that holds."""
+    ours, theirs = socket.socketpair()
+    ours.close()
+    theirs.close()
+
+    async def answers(address: NetworkAddressV2) -> socket.socket:
+        return ours
+
+    made: list[tuple[NetworkAddressV2, dict[str, Any]]] = []
+    monkeypatch.setattr(manager_module, "dial", answers)
+    manager = a_manager()
+    manager.anchors = [ANCHOR]
+    monkeypatch.setattr(
+        manager,
+        "create_connection",
+        lambda sock, address, **kwargs: made.append((address, kwargs)),
+    )
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert made == [
+        (
+            ANCHOR,
+            {"inbound": False, "automatic": True, "block_relay": True, "feeler": False},
+        )
+    ]
+
+
+def an_anchors_file(manager: P2pManager, anchors: list[NetworkAddressV2]) -> Path:
+    """Write `anchors` where `manager` reads them, and return the path."""
+    path = manager._anchors_path
+    dump_anchors(path, RegTest().magic, anchors)
+    return path
+
+
+@pytest.mark.parametrize("connect", [(), (("1.2.3.4", 18444),)])
+def test_the_anchors_are_read_as_the_manager_runs_and_the_file_goes(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    connect: Sequence[tuple[str, int]],
+) -> None:
+    """`CConnman::Start` reads two at most, and none under `-connect`.
+
+    The read logs `ReadAnchors`' line, of the three the file holds.
+    """
+    anchors = [peer_address(f"5.6.{i}.1", 18444, services=FULL_NODE) for i in range(3)]
+    manager = a_manager(listen=False, max_connections=0, connect=connect)
+    logged: list[str] = []
+    monkeypatch.setattr(
+        manager,
+        "logger",
+        SimpleNamespace(
+            info=lambda fmt, *args: logged.append(fmt % args),
+            debug=lambda *a: None,
+            exception=lambda *a: None,
+        ),
+    )
+    path = an_anchors_file(manager, anchors)
+    manager.start()
+    wait_until(manager.loop.is_running)
+    assert manager.anchors == ([] if connect else anchors[:2])
+    assert path.exists() is bool(connect)
+    loaded = 'Loaded 3 addresses from "anchors.dat"'
+    assert (loaded in logged) is not bool(connect)
+
+
+def test_the_block_relay_only_peers_are_the_anchors_written_at_stop(
+    a_manager: AManagerFactory,
+) -> None:
+    """`StopNodes`: the first two opened, pending ones included, as dialled."""
+    conns = [
+        a_conn(3, block_relay=True, address=peer_address("5.6.3.1", 1)),
+        a_conn(1, address=peer_address("5.6.1.1", 1)),
+        a_conn(2, block_relay=True, address=peer_address("5.6.2.1", 1)),
+        a_conn(4, block_relay=True, address=peer_address("5.6.4.1", 1)),
+    ]
+    manager = a_manager(conns[:2], listen=False, max_connections=0)
+    for conn in conns[2:]:
+        manager.pending_connections[conn.id] = conn
+    manager.start()
+    wait_until(manager.loop.is_running)
+    manager.stop()
+    path = manager._anchors_path
+    assert read_anchors(path, RegTest().magic) == [
+        conns[2].address,
+        conns[0].address,
+    ]
+    # once, as `StopNodes` clears `fAddressesInitialized` as it dumps
+    manager._dump_anchors()
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("started", [True, False])
+def test_no_anchor_is_written_under_connect_or_short_of_the_start(
+    a_manager: AManagerFactory, *, started: bool
+) -> None:
+    """`fAddressesInitialized` and `m_use_addrman_outgoing` both guard it."""
+    conn = a_conn(1, block_relay=True, address=peer_address("5.6.1.1", 1))
+    connect = (("1.2.3.4", 18444),) if started else ()
+    manager = a_manager([conn], listen=False, max_connections=0, connect=connect)
+    if started:
+        manager.start()
+        wait_until(manager.loop.is_running)
+    manager.stop()
+    assert not manager._anchors_path.exists()
+
+
+def test_an_anchors_file_that_cannot_be_written_is_logged(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`SerializeFileDB` logs its failure, and the stop goes on."""
+    logged: list[object] = []
+    manager = a_manager(listen=False, max_connections=0)
+    monkeypatch.setattr(
+        manager,
+        "logger",
+        SimpleNamespace(
+            info=lambda *a: None,
+            debug=lambda *a: None,
+            exception=lambda *a: logged.append(a),
+        ),
+    )
+
+    def fails(*args: object) -> NoReturn:
+        raise OSError
+
+    monkeypatch.setattr(manager_module, "dump_anchors", fails)
+    manager.start()
+    wait_until(manager.loop.is_running)
+    manager.stop()
+    assert logged == [("Failed to write %s", "anchors.dat")]
