@@ -1953,8 +1953,10 @@ def test_a_name_none_of_whose_answers_connects_makes_no_connection(
             ["255.255.255.255"],
             (
                 "debug",
-                "Resolver returned invalid address 255.255.255.255:18444 for "
-                "seed.example",
+                (
+                    "Resolver returned invalid address 255.255.255.255:18444 "
+                    "for seed.example"
+                ),
             ),
             id="broadcast",
         ),
