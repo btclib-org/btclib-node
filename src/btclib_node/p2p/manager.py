@@ -933,13 +933,15 @@ class P2pManager(threading.Thread):
         host, port = self._addr_fetches.popleft()
         if self._automatic_outbound() >= self.max_automatic_outbound:
             return
+        ips = await lookup_host(host, _MAX_NAME_ANSWERS)
+        # read after the lookup, as `ConnectNode` asks
+        # `AlreadyConnectedToAddressPort` of each answer once resolved
         with self._connections_lock:
             connected = (
                 *self.connections.values(),
                 *self.pending_connections.values(),
             )
         held = {endpoint_key(c.address) for c in connected}
-        ips = await lookup_host(host, _MAX_NAME_ANSWERS)
         secrets.SystemRandom().shuffle(ips)
         addresses = [peer_address(ip, port) for ip in ips]
         for ip, address in zip(ips, addresses, strict=True):
