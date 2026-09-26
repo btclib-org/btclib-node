@@ -59,6 +59,11 @@ a `bitcoin.conf` refuses to start, as `bitcoind` refuses, that file's
 settings going unread; `-allowignoredconf` starts it anyway, the refusal
 written to stderr as a warning.
 
+On POSIX, `btclib-node` sets its umask to 0077 before anything else, as
+`bitcoind` does. Every directory it creates is then 0700 and every file
+0600, the chain directory and `history.log` included. A `Node` built in
+another program keeps that program's umask.
+
 ## Pruning
 
 `-prune=<n>` matches Core's own three-way split. `<n>` of `1` is manual

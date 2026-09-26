@@ -8,8 +8,10 @@ import functools
 import os
 import re
 import runpy
+import stat
+import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -26,6 +28,22 @@ from tests import (
     lock_from_another_process,
     wait_until_listening,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Sequence
+
+
+@pytest.fixture(autouse=True)
+def caller_umask() -> Iterator[None]:
+    """Give back, after each test, the umask `cli.main` makes owner-only.
+
+    The umask is the process's, so a test calling `main` would otherwise
+    leave it on every test after it in the same worker.
+    """
+    umask = os.umask(0o022)
+    os.umask(umask)
+    yield
+    os.umask(umask)
 
 
 def test_parse_conf_text_reads_a_key_value_pair_in_the_default_section() -> None:
@@ -1888,3 +1906,39 @@ def test_rpcwhitelistdefault_is_read_as_core_s_interpret_bool(
     """
     argv = [f"-datadir={tmp_path}", f"-rpcwhitelistdefault={value}"]
     assert cli.build_config(argv).rpc_whitelist_default == expected
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX modes")
+def test_main_makes_what_the_node_creates_owner_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1198: Core's `SetupEnvironment` umask, set by `main` first.
+
+    Under a group- and world-readable umask, what is created after `main`
+    is 0700 for a directory and 0600 for a file, as `bitcoind` v31.1.0
+    leaves its own chain directory and `debug.log`.
+    """
+    os.umask(0o022)
+    monkeypatch.setattr(cli, "_before_lock", _refused)
+    with pytest.raises(SystemExit):
+        cli.main([])
+    directory = tmp_path / "chain"
+    directory.mkdir()
+    (directory / "history.log").write_text("")
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+    assert stat.S_IMODE((directory / "history.log").stat().st_mode) == 0o600
+
+
+def _refused(argv: Sequence[str]) -> Any:
+    """Stand in for `_before_lock`, refusing whatever it is given."""
+    raise ValueError(argv)
+
+
+def test_setup_environment_leaves_the_umask_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1198: Core's `SetupEnvironment` sets no umask under `WIN32`."""
+    os.umask(0o022)
+    monkeypatch.setattr(sys, "platform", "win32")
+    cli.setup_environment()
+    assert os.umask(0o022) == 0o022
