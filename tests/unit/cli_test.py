@@ -31,36 +31,36 @@ from tests import (
 
 def test_parse_conf_text_reads_a_key_value_pair_in_the_default_section() -> None:
     """A bare `key=value` line lands in the `""` (default) section."""
-    assert cli._parse_conf_text("port=9000\n") == {"": {"port": ["9000"]}}
+    assert cli._parse_conf_text("port=9000\n", warnings=[]) == {"": {"port": ["9000"]}}
 
 
 def test_parse_conf_text_reads_a_section() -> None:
     """A `[section]` line switches which section later lines belong to."""
-    tree = cli._parse_conf_text("[regtest]\nport=9000\n")
+    tree = cli._parse_conf_text("[regtest]\nport=9000\n", warnings=[])
     assert tree == {"regtest": {"port": ["9000"]}}
 
 
 def test_parse_conf_text_reads_a_section_prefix_in_the_key() -> None:
     """`regtest.port=` in the default section is `port=` in `[regtest]`."""
-    tree = cli._parse_conf_text("regtest.port=9000\n")
+    tree = cli._parse_conf_text("regtest.port=9000\n", warnings=[])
     assert tree == {"regtest": {"port": ["9000"]}}
 
 
 def test_parse_conf_text_strips_a_trailing_comment() -> None:
     """`#` starts a comment that runs to the end of the line."""
-    tree = cli._parse_conf_text("port=9000 # the p2p port\n")
+    tree = cli._parse_conf_text("port=9000 # the p2p port\n", warnings=[])
     assert tree == {"": {"port": ["9000"]}}
 
 
 def test_parse_conf_text_skips_blank_and_comment_only_lines() -> None:
     """A blank line and a comment-only line contribute nothing."""
-    tree = cli._parse_conf_text("\n# a comment\n   \nport=9000\n")
+    tree = cli._parse_conf_text("\n# a comment\n   \nport=9000\n", warnings=[])
     assert tree == {"": {"port": ["9000"]}}
 
 
 def test_parse_conf_text_collects_repeated_keys_in_order() -> None:
     """Every occurrence of one key is kept, in the order it was read."""
-    tree = cli._parse_conf_text("addnode=1.2.3.4\naddnode=5.6.7.8\n")
+    tree = cli._parse_conf_text("addnode=1.2.3.4\naddnode=5.6.7.8\n", warnings=[])
     assert tree[""]["addnode"] == ["1.2.3.4", "5.6.7.8"]
 
 
@@ -72,7 +72,7 @@ def test_parse_conf_text_reads_a_no_prefix_as_a_negation(
     text: str, *, value: bool
 ) -> None:
     """`no<key>` is `<key>` negated, `False`; a double negative is `True`."""
-    assert cli._parse_conf_text(text) == {"": {"listen": [value]}}
+    assert cli._parse_conf_text(text, warnings=[]) == {"": {"listen": [value]}}
 
 
 # `GetConfigOptions`, `IsConfSupported` and `InterpretValue`'s words
@@ -133,7 +133,7 @@ def test_parse_conf_text_refuses_a_line_in_core_s_words(
 ) -> None:
     """ISS 1267: Core's message, numbered as Core numbers it, naming no path."""
     with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
-        cli._parse_conf_text(f"regtest=1\n{line}\n")
+        cli._parse_conf_text(f"regtest=1\n{line}\n", warnings=[])
 
 
 def test_parse_conf_text_ends_a_line_at_a_newline_alone() -> None:
@@ -143,7 +143,7 @@ def test_parse_conf_text_ends_a_line_at_a_newline_alone() -> None:
     line 2 are one line, and `bad` below it is refused as line 3.
     """
     with pytest.raises(ValueError, match=r"^parse error on line 3: bad$"):
-        cli._parse_conf_text("regtest=1\nfoo\fbar=1\nbad\n")
+        cli._parse_conf_text("regtest=1\nfoo\fbar=1\nbad\n", warnings=[])
 
 
 @pytest.mark.parametrize(
@@ -165,7 +165,7 @@ def test_read_conf_file_ends_a_line_at_a_newline_alone(
     path = tmp_path / "bitcoin.conf"
     path.write_bytes(content)
     with pytest.raises(ValueError, match=f"^parse error on {line}$"):
-        cli._read_conf_file(path, required=True)
+        cli._read_conf_file(path, required=True, warnings=[])
 
 
 def test_parse_conf_text_warns_about_an_unknown_key_with_its_section(
@@ -183,14 +183,6 @@ def test_parse_conf_text_warns_about_an_unknown_key_with_its_section(
     assert capsys.readouterr().err == ""
 
 
-def test_parse_conf_text_drops_an_unknown_key_with_no_warnings_list(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """ISS 1295: with nowhere to keep the warning, the key is dropped alone."""
-    assert cli._parse_conf_text("walletnotify=x\n") == {}
-    assert capsys.readouterr().err == ""
-
-
 def test_parse_conf_text_warns_specifically_about_datadir(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -201,7 +193,7 @@ def test_parse_conf_text_warns_specifically_about_datadir(
     it gets says why it is never read from a file rather than implying
     it is a typo.
     """
-    assert cli._parse_conf_text("datadir=/x\n") == {}
+    assert cli._parse_conf_text("datadir=/x\n", warnings=[]) == {}
     err = capsys.readouterr().err
     assert "cannot be set in a configuration file" in err
     assert "unknown configuration value" not in err
@@ -209,32 +201,41 @@ def test_parse_conf_text_warns_specifically_about_datadir(
 
 def test_read_conf_file_missing_and_not_required_is_empty(tmp_path: Path) -> None:
     """A missing default-named file is not an error: an empty tree."""
-    assert cli._read_conf_file(tmp_path / "bitcoin.conf", required=False) == {}
+    assert (
+        cli._read_conf_file(tmp_path / "bitcoin.conf", required=False, warnings=[])
+        == {}
+    )
 
 
 def test_read_conf_file_missing_and_required_raises(tmp_path: Path) -> None:
     """A missing file explicitly named by `-conf` is fatal."""
     with pytest.raises(ValueError, match="could not be opened"):
-        cli._read_conf_file(tmp_path / "nope.conf", required=True)
+        cli._read_conf_file(tmp_path / "nope.conf", required=True, warnings=[])
 
 
 def test_read_conf_file_a_directory_raises(tmp_path: Path) -> None:
     """`-conf` naming a directory is refused rather than read."""
     with pytest.raises(ValueError, match="is a directory"):
-        cli._read_conf_file(tmp_path, required=False)
+        cli._read_conf_file(tmp_path, required=False, warnings=[])
 
 
 def test_read_conf_file_parses_an_existing_file(tmp_path: Path) -> None:
     """An existing file is read and parsed."""
     conf = tmp_path / "bitcoin.conf"
     conf.write_text("port=9000\n", encoding="utf-8")
-    assert cli._read_conf_file(conf, required=False) == {"": {"port": ["9000"]}}
+    assert cli._read_conf_file(conf, required=False, warnings=[]) == {
+        "": {"port": ["9000"]}
+    }
 
 
 def _load(conf: Path, *, use_includes: bool = True) -> cli._RoConfig:
     """Call `_load_conf_tree` on `conf`, not explicit, beside `conf` itself."""
     return cli._load_conf_tree(
-        conf, conf_explicit=False, base_dir=conf.parent, use_includes=use_includes
+        conf,
+        conf_explicit=False,
+        base_dir=conf.parent,
+        use_includes=use_includes,
+        warnings=[],
     )
 
 
@@ -402,7 +403,7 @@ def test_parse_parameters_takes_a_value_only_after_the_equals_sign(
     argv: list[str], options: dict[str, list[object]], token: str | None
 ) -> None:
     """`ParseParameters`: after `=` only; the first non-option ends them."""
-    assert cli._parse_parameters(argv) == (options, token)
+    assert cli._parse_parameters(argv, []) == (options, token)
 
 
 @pytest.mark.parametrize(
@@ -439,7 +440,7 @@ def test_parse_parameters_refuses_as_core_does(argv: list[str], message: str) ->
     """Each message as `bitcoind` v31.1.0 printed it for the same argument."""
     full = f"Error parsing command line arguments: {message}"
     with pytest.raises(ValueError, match=f"^{re.escape(full)}$"):
-        cli._parse_parameters(argv)
+        cli._parse_parameters(argv, [])
 
 
 @pytest.mark.parametrize(
@@ -498,8 +499,10 @@ def test_build_config_orders_the_log_warnings_as_bitcoind_logs_them(
     """ISS 1295: the command line's, the file's in its order, then the sections.
 
     Measured on `bitcoind` v31.1.0 with this file and `-nolisten=0`: its
-    `debug.log` opens on these five warnings, in this order, and its
-    stderr holds the last alone.
+    `debug.log` opens, after five blank lines, on the first four, then
+    its version line and its "parameter interaction" lines, then the
+    section warning, which its stderr holds alone. The version line is
+    one history.log does not have (#1309).
     """
     conf = "regtest=1\nfoo=1\nnoserver=0\n[x]\n[y]\nbar=2\n"
     config = _build(tmp_path, "-nolisten=0", conf=conf)

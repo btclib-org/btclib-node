@@ -1423,8 +1423,9 @@ def test_a_node_logs_the_configuration_warnings_first(tmp_path: Path) -> None:
     """ISS 1295: what Core logs while reading its settings opens the log.
 
     Each as one record, a section warning's lines and all, ahead of
-    anything the node logs of its own, as `bitcoind`'s `debug.log`
-    carries them ahead of its version line.
+    anything the node logs of its own. `bitcoind`'s `debug.log` carries
+    the settings' warnings ahead of its version line and the section
+    warning after it, a line history.log does not have (#1309).
     """
     sections = (
         "a.conf:1 Section [x] is not recognized.\nb:2 Section [y] is not recognized.\n"

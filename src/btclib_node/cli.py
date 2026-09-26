@@ -514,8 +514,10 @@ class _Settings:
     network: str = ""
     # Core's `m_config_sections`: every section the files read named
     config_sections: list[_SectionInfo] = field(default_factory=list)
-    # the warnings Core logs while it reads its settings, before its log
-    # is open, for `Node` to log once its own is
+    # what Core logs of its settings: the warnings it buffers while
+    # reading them, then the unrecognised-section warning, which it logs
+    # after its version line (a line history.log does not have, #1309).
+    # `Node` logs them in that order once its own log is open
     log_warnings: list[str] = field(default_factory=list)
 
 
@@ -532,13 +534,13 @@ def _interpret_value(
     info: _KeyInfo,
     value: str | None,
     option: _Option,
-    warnings: list[str] | None = None,
+    warnings: list[str],
 ) -> _Value:
     """Return Core's `InterpretValue`: `False` negated, `True` doubly so.
 
     Raises `ValueError` on a negation `option` forbids. A double
     negative, `-nofoo=0`, is `True`, and its warning is appended to
-    `warnings`, where given, for the log alone, as Core's `LogWarning`
+    `warnings`, for the log alone, as Core's `LogWarning`
     (`src/common/args.cpp`, at bitcoin/bitcoin@9be056a8a7).
     """
     if info.negated:
@@ -549,10 +551,9 @@ def _interpret_value(
             # Core's warning writes a `SENSITIVE` option's value in clear:
             # this one writes the `****` Core's `LogArgs` writes instead.
             shown = "****" if option.sensitive else value
-            if warnings is not None:
-                warnings.append(
-                    f"Parsed potentially confusing double-negative -{info.name}={shown}"
-                )
+            warnings.append(
+                f"Parsed potentially confusing double-negative -{info.name}={shown}"
+            )
             return True
         return False
     return "" if value is None else value
@@ -567,7 +568,7 @@ def _negated(values: list[_Value]) -> int:
 
 
 def _parse_parameters(
-    argv: Sequence[str], warnings: list[str] | None = None
+    argv: Sequence[str], warnings: list[str]
 ) -> tuple[dict[str, list[_Value]], str | None]:
     """Return the options `argv` sets, and its first argument not an option.
 
@@ -682,7 +683,8 @@ def _parse_conf_text(
     text: str,
     sections: list[_SectionInfo] | None = None,
     filepath: str = "",
-    warnings: list[str] | None = None,
+    *,
+    warnings: list[str],
 ) -> _RoConfig:
     """Parse `text` into `{section: {name: [values]}}`, in file order.
 
@@ -709,8 +711,7 @@ def _parse_conf_text(
             raise ValueError(err_msg)
         option = _OPTIONS.get(info.name)
         if option is None:
-            if warnings is not None:
-                warnings.append(f"Ignoring unknown configuration value {name}")
+            warnings.append(f"Ignoring unknown configuration value {name}")
             continue
         setting = _interpret_value(info, value, option, warnings)
         if info.name == "datadir":
@@ -730,7 +731,7 @@ def _read_conf_file(  # noqa: PLR0913
     include: str | None = None,
     sections: list[_SectionInfo] | None = None,
     filepath: str = "",
-    warnings: list[str] | None = None,
+    warnings: list[str],
 ) -> _RoConfig:
     """Read and parse `path`; `{}` if it cannot be read and is not `required`.
 
@@ -775,7 +776,7 @@ def _read_conf_file(  # noqa: PLR0913
             err_msg = f'specified config file "{path}" could not be opened.'
             raise ValueError(err_msg) from None
         return {}
-    return _parse_conf_text(text, sections, filepath, warnings)
+    return _parse_conf_text(text, sections, filepath, warnings=warnings)
 
 
 def _load_conf_tree(  # noqa: PLR0913
@@ -785,7 +786,7 @@ def _load_conf_tree(  # noqa: PLR0913
     base_dir: Path,
     use_includes: bool,
     sections: list[_SectionInfo] | None = None,
-    warnings: list[str] | None = None,
+    warnings: list[str],
 ) -> _RoConfig:
     """Read `conf_path`, then every `includeconf` its default section names.
 

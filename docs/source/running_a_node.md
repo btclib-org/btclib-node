@@ -57,7 +57,7 @@ and `## Pruning` below is what any nonzero value actually does.
 `-conf=<file>` naming another file while the data directory still holds
 a `bitcoin.conf` refuses to start, as `bitcoind` refuses, that file's
 settings going unread; `-allowignoredconf` starts it anyway, the refusal
-written to stderr as a warning.
+written to the log as a warning.
 
 ## Pruning
 

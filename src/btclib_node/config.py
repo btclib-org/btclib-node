@@ -277,8 +277,10 @@ class Config:
     # and `rpc.callbacks.get_blockchain_info` both check `pruned` first.
     prune_target_mib: int | None
     debug: bool
-    # the warnings Core logs while it reads its settings, before its
-    # log is open: `Node` logs them once its own is
+    # what Core logs of its settings: the warnings it buffers while
+    # reading them, then the unrecognised-section warning, which it logs
+    # after its version line (a line history.log does not have, #1309).
+    # `Node` logs them in that order once its own log is open
     log_warnings: tuple[str, ...]
     min_relay_feerate: FeeRate
     # (ip, port) pairs, resolved by `_resolve_peers` above: Core's own
