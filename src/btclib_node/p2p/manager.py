@@ -81,8 +81,9 @@ _PEER_CONNECT_TIMEOUT = 60
 # a connection quiet this long is sent a `ping`, and one still quiet
 # this long again after that is dropped. A pending connection is held
 # to `_PEER_CONNECT_TIMEOUT` above instead. A peer at `BIP0031_VERSION`
-# or below is sent no `ping` (`Connection.send_ping`) and is dropped once
-# quiet twice this long.
+# or below answers its `ping` with no `pong` (`Connection.send_ping`), so
+# it is sent one whenever nothing has gone to it this long, and is
+# dropped once quiet twice this long.
 _IDLE_TIMEOUT = 120
 
 # `_maybe_redial_specified`'s own backoff for a `-connect`/`-addnode`
@@ -677,23 +678,7 @@ class P2pManager(threading.Thread):
                 self.remove_connection(conn.id)
                 continue
             if now - conn.last_receive > _IDLE_TIMEOUT:
-                # One read, not `conn.ping_sent` re-read in the `elif`
-                # below: `callbacks.pong`, on the other thread, clears
-                # it the moment a pong answers this connection's own
-                # ping, and a second read landing right after that
-                # clear turned `now - 0 > _IDLE_TIMEOUT` true for every
-                # `now`, dropping a peer for having just answered.
-                # btclib-org/btclib-node#357
-                ping_sent = conn.ping_sent
-                if common_version(conn) <= BIP0031_VERSION:
-                    # no `ping` to wait on (`Connection.send_ping`), so
-                    # the whole quiet span is waited out here instead
-                    if now - conn.last_receive > 2 * _IDLE_TIMEOUT:
-                        self.remove_connection(conn.id)
-                elif not ping_sent:
-                    conn.send_ping()
-                elif now - ping_sent > _IDLE_TIMEOUT:
-                    self.remove_connection(conn.id)
+                self._ping_or_drop_idle(conn, now)
         for conn in self.pending_connections.copy().values():
             # Dropped `_PEER_CONNECT_TIMEOUT` after connecting, quiet or
             # not, as Core's `InactivityCheck` drops a connection short
@@ -707,6 +692,27 @@ class P2pManager(threading.Thread):
                 or conn.connected_time + _PEER_CONNECT_TIMEOUT < now
             ):
                 self.remove_connection(conn.id)
+
+    def _ping_or_drop_idle(self, conn: Connection, now: float) -> None:
+        """Ping or drop `conn`, quiet for `_IDLE_TIMEOUT`, as argued there."""
+        # One read, not `conn.ping_sent` re-read in the `elif` below:
+        # `callbacks.pong`, on the other thread, clears it the moment a
+        # pong answers this connection's own ping, and a second read
+        # landing right after that clear turned `now - 0 > _IDLE_TIMEOUT`
+        # true for every `now`, dropping a peer for having just answered.
+        # btclib-org/btclib-node#357
+        ping_sent = conn.ping_sent
+        if common_version(conn) <= BIP0031_VERSION:
+            # no `pong` to wait on (`Connection.send_ping`), so the whole
+            # quiet span is waited out here instead
+            if now - conn.last_receive > 2 * _IDLE_TIMEOUT:
+                self.remove_connection(conn.id)
+            elif now - conn.last_send > _IDLE_TIMEOUT:
+                conn.send_ping()
+        elif not ping_sent:
+            conn.send_ping()
+        elif now - ping_sent > _IDLE_TIMEOUT:
+            self.remove_connection(conn.id)
 
     def _maybe_prune_active_addresses(self, now: float) -> None:
         if now - self._last_active_prune < _ACTIVE_PRUNE_INTERVAL:
@@ -1551,9 +1557,9 @@ class P2pManager(threading.Thread):
         self.node.download_manager.received_txs.append((None, tx.hash))
 
     def ping_all(self) -> None:
-        """Send every connected peer a fresh `ping`, as `send_ping` allows.
+        """Send every connected peer a fresh `ping`, through `send_ping`.
 
-        A peer at `BIP0031_VERSION` or below is sent none.
+        A peer at `BIP0031_VERSION` or below is sent one with no nonce.
         btclib-org/btclib-node#1204
         """
         for conn in self.connections.copy().values():

@@ -2,11 +2,12 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""The dispatch tables' own keys, and what Connection does with a message.
+"""This package's two payloads, the dispatch tables' keys, and the framing.
 
 The framing itself is btclib.p2p.message.Message's and is tested there,
-and every payload's own command is btclib.p2p's, this package holding
-none of its own. What is this node's is `callbacks` and
+and every payload received is btclib.p2p's, this package's own two
+being sent and never received. What is this node's is those two, the
+octets Core sends a peer too old for the rest; `callbacks` and
 `handshake_callbacks`, two hand-written tables of string literals,
 checked here against every command a real payload carries; which queue
 a command lands in; how much of the buffer survives a partial message;
@@ -36,6 +37,7 @@ from btclib_node.constants import P2pConnStatus
 from btclib_node.exceptions import WrongNetworkMagicError
 from btclib_node.p2p.callbacks import callbacks, handshake_callbacks
 from btclib_node.p2p.connection import Connection, PeerStats
+from btclib_node.p2p.messages import FinalAlert, NoncelessPing
 
 if TYPE_CHECKING:
     from btclib.p2p.handshake import Version
@@ -44,8 +46,8 @@ if TYPE_CHECKING:
 
 MAGIC = RegTest().magic
 
-# where every payload the node speaks is defined: this package holds
-# none of its own, `btclib_node.p2p.messages`'s own docstring is why
+# where every payload the node receives is defined: this package's own
+# two are only sent, `btclib_node.p2p.messages`'s own docstring is why
 _BTCLIB_P2P_MODULES = (
     "btclib.p2p.address",
     "btclib.p2p.addrv2",
@@ -90,8 +92,8 @@ def test_the_dispatch_tables_key_on_real_commands() -> None:
     derived from a `Payload` class, so a misspelled key is a handler
     that is registered and never called -- exactly how "sendcmpt" went
     unreached on the way out. This checks each key against every
-    command a `btclib.p2p` payload actually carries, this package
-    holding none of its own.
+    command a `btclib.p2p` payload actually carries, this package's
+    own two being only sent.
     """
     unknown = (set(callbacks) | set(handshake_callbacks)) - known_commands()
     assert not unknown
@@ -435,3 +437,29 @@ def test_a_drawn_ping_nonce_is_never_the_sentinel() -> None:
     # a 48-bit draw satisfies everything above. Fifty draws all landing
     # under 2**48 has probability about 2**-800.
     assert max(ping.nonce for ping in sent) > 2**48
+
+
+def test_the_final_alert_is_core_s_octets_under_alert() -> None:
+    """ISS 1205: Core's `finalAlert`, verbatim, framed under "alert".
+
+    The hex is copied from `src/net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag.
+    """
+    core = bytes.fromhex(
+        "60010000000000000000000000ffffff7f00000000ffffff7ffeffff7f01ffffff7f"
+        "00000000ffffff7f00ffffff7f002f555247454e543a20416c657274206b65792063"
+        "6f6d70726f6d697365642c2075706772616465207265717569726564004630440220"
+        "653febd6410f470f6bae11cad19c48413becb1ac2c17f908fd0fd53bdc3abd520220"
+        "6d0e9c96fe88d4a0f01ed9dedae2b6f9e00da94cad0fecaae66ecf689bf71b50"
+    )
+    message = FinalAlert().to_message(MAGIC)
+    assert message.command == "alert"
+    assert message.payload == core
+    assert b"URGENT: Alert key compromised, upgrade required" in core
+
+
+def test_a_nonceless_ping_is_an_empty_ping() -> None:
+    """ISS 1204: a `ping` with no payload, as Core sends a peer before BIP31."""
+    message = NoncelessPing().to_message(MAGIC)
+    assert message.command == Ping.command
+    assert message.payload == b""

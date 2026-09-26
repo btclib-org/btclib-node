@@ -653,22 +653,28 @@ def test_a_peer_speaking_an_older_protocol_is_let_go() -> None:
 
 
 @pytest.mark.parametrize(
-    "protocol",
-    [MIN_PEER_PROTO_VERSION, WTXID_RELAY_VERSION - 1],
+    ("protocol", "sent"),
+    [
+        (MIN_PEER_PROTO_VERSION, ["Verack", "FinalAlert"]),
+        (70012, ["Verack", "FinalAlert"]),
+        (70013, ["Verack"]),
+        (WTXID_RELAY_VERSION - 1, ["Verack"]),
+    ],
 )
 def test_a_peer_at_or_above_the_floor_is_kept_without_wtxid_relay(
-    protocol: int,
+    protocol: int, sent: list[str]
 ) -> None:
     """ISS 1180: kept from `MIN_PEER_PROTO_VERSION`, as Core keeps it.
 
     Below `WTXID_RELAY_VERSION` it is sent neither `wtxidrelay` nor
-    `sendaddrv2`, which Core too sends only from 70016 up.
+    `sendaddrv2`, which Core too sends only from 70016 up. At 70012 or
+    below it is sent Core's final `alert` last (ISS 1205).
     """
     node = a_handshake_node()
     peer = a_peer()
     version(node, a_version(protocol=protocol), peer)
     assert not peer.stopped
-    assert commands(peer) == ["Verack"]
+    assert commands(peer) == sent
 
 
 def test_a_peer_without_the_witness_service_is_let_go() -> None:

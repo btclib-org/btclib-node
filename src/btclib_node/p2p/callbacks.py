@@ -83,6 +83,7 @@ from btclib_node.main import verify_mempool_acceptance
 from btclib_node.p2p.address import ip_and_port
 from btclib_node.p2p.block_availability import update_block_availability
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
+from btclib_node.p2p.messages import FinalAlert
 from btclib_node.p2p.protocol_version import (
     BIP0031_VERSION,
     MIN_PEER_PROTO_VERSION,
@@ -166,6 +167,12 @@ def maybe_send_getheaders(node: Node, conn: Connection, locator: list[bytes]) ->
         timestamps[conn.id] = now
         return True
     return False
+
+
+# The common version at or below which `version` sends the final
+# `alert`: Core's literal 70012 (`src/net_processing.cpp`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag), named for nothing else.
+_FINAL_ALERT_VERSION = 70012
 
 
 def version(node: Node, msg: bytes, conn: Connection) -> None:
@@ -269,8 +276,7 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
         return
 
     # Core sends `sendaddrv2` from 70016 up too, "as a courtesy" to
-    # software that rejects a message it does not know. The final `alert`
-    # Core sends at 70012 or below is not: btclib-org/btclib-node#1205
+    # software that rejects a message it does not know.
     if common_version(conn) >= WTXID_RELAY_VERSION:
         conn.send(WtxidRelay())
         conn.send(SendAddrV2())
@@ -286,6 +292,10 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     # where Core's `ProcessMessage` sets `m_time_offset`, once every
     # refusal above is behind it
     conn.stats.time_offset = version_msg.timestamp - int(time.time())
+    # and where it sends the final `alert` to a peer "old enough to have
+    # the old alert system". btclib-org/btclib-node#1205
+    if common_version(conn) <= _FINAL_ALERT_VERSION:
+        conn.send(FinalAlert())
 
 
 def verack(node: Node, msg: bytes, conn: Connection) -> None:

@@ -45,6 +45,7 @@ from btclib_node.p2p.callbacks import (
     handshake_callbacks,
 )
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
+from btclib_node.p2p.messages import NoncelessPing
 from btclib_node.p2p.protocol_version import BIP0031_VERSION, common_version
 
 if TYPE_CHECKING:
@@ -1180,11 +1181,14 @@ class Connection:
         (`manage_connections`); `_ping_lock` is what keeps its own two
         writes one step against `callbacks.pong`'s read and clear.
 
-        Nothing is sent at a common version of `BIP0031_VERSION` or
-        below, where Core sends a `ping` with no nonce: btclib's `Ping`
-        has no such form. btclib-org/btclib-node#1204
+        At a common version of `BIP0031_VERSION` or below it is a
+        `NoncelessPing`, as in Core's `MaybeSendPing`
+        (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+        v31.1 tag): no `pong` answers it, so nothing is recorded as
+        outstanding. btclib-org/btclib-node#1204
         """
         if common_version(self) <= BIP0031_VERSION:
+            self.send(NoncelessPing())
             return
         # The nonce is the sender's to choose, and btclib's Ping defaults
         # it to zero rather than drawing one. Zero is also what

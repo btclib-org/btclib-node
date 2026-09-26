@@ -62,6 +62,7 @@ def a_conn(
     *,
     status: P2pConnStatus = P2pConnStatus.Connected,
     last_receive: float | None = None,
+    last_send: float | None = None,
     connected_time: int | None = None,
     address: NetworkAddressV2 | None = None,
     relay_tx: bool = True,
@@ -85,6 +86,7 @@ def a_conn(
         status=status,
         address=address or peer_address("1.2.3.4", 18444),
         last_receive=time.time() if last_receive is None else last_receive,
+        last_send=time.time() if last_send is None else last_send,
         connected_time=int(time.time()) if connected_time is None else connected_time,
         ping_sent=0,
         relay_tx=relay_tx,
@@ -622,21 +624,30 @@ def test_a_peer_that_has_gone_quiet_is_pinged_and_then_dropped(
     assert not manager.connections
 
 
-def test_a_quiet_peer_at_bip31_or_below_is_dropped_unpinged(
+def test_a_quiet_peer_at_bip31_or_below_is_pinged_and_dropped_on_quiet(
     a_manager: AManagerFactory,
 ) -> None:
-    """ISS 1180: no `ping` to wait on, so twice the idle bound is waited.
+    """ISS 1180: no `pong` to wait on, so twice the idle bound is waited.
 
-    `Connection.send_ping` sends it none, as btclib has no `ping` without
-    a nonce; the same quiet span a pinged peer gets drops it.
+    ISS 1204: meanwhile it is sent a `ping`, with no nonce, where nothing
+    has gone to it for the idle bound; the same quiet span a pinged peer
+    gets drops it.
     """
     bound = manager_module._IDLE_TIMEOUT
-    quiet = a_conn(1, last_receive=time.time() - bound - 10, protocol=60000)
-    quieter = a_conn(2, last_receive=time.time() - 2 * bound - 10, protocol=60000)
-    manager = a_manager([quiet, quieter])
+    long_ago = time.time() - bound - 10
+    quiet = a_conn(1, last_receive=long_ago, last_send=long_ago, protocol=60000)
+    sent_to = a_conn(2, last_receive=long_ago, protocol=60000)
+    quieter = a_conn(
+        3,
+        last_receive=time.time() - 2 * bound - 10,
+        last_send=long_ago,
+        protocol=60000,
+    )
+    manager = a_manager([quiet, sent_to, quieter])
     asyncio.run(one_pass(manager))
-    assert quiet.sent == quieter.sent == []
-    assert list(manager.connections) == [1]
+    assert quiet.sent == ["ping"]
+    assert sent_to.sent == quieter.sent == []
+    assert list(manager.connections) == [1, 2]
 
 
 def test_a_peer_that_answered_recently_is_left_alone(
