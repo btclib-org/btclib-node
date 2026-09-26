@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING
 
 from btclib.fee import FeeRate, fee_from_vsize
 
+from btclib_node.exceptions import TxRejectedError
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
@@ -56,6 +58,20 @@ _INCREMENTAL_RELAY_FEE_RATE = FeeRate(sats_per_kvbyte=100)
 # seconds for the rolling minimum to decay by half once it is decaying at
 # all, shortened as this mempool empties -- `get_min_fee_rate` below.
 _ROLLING_FEE_HALFLIFE = 60 * 60 * 12
+
+_COIN = 100_000_000
+
+
+def _format_money(amount: int) -> str:
+    """Core's own `FormatMoney` for an amount never negative here.
+
+    Eight decimals, right-trimmed of zeros down to two
+    (`src/util/moneystr.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag): 5000 satoshi is "0.00005", one bitcoin "1.00".
+    """
+    whole, fraction = divmod(amount, _COIN)
+    decimals = f"{fraction:08d}".rstrip("0").ljust(2, "0")
+    return f"{whole}.{decimals}"
 
 
 class Mempool:
@@ -97,6 +113,13 @@ class Mempool:
         # leaves rather than leaving an empty set behind for every
         # confirmed parent a mempool transaction ever spent.
         self.spent_by: dict[bytes, set[bytes]] = {}
+        # (txid, vout) -> the wtxid, held in this mempool, spending that
+        # outpoint: Core's own `mapNextTx` (`src/txmempool.h`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), what
+        # `check_replacement` and `remove_conflicts` below read. `add_tx`
+        # refusing a second spender is what keeps one wtxid per outpoint.
+        # btclib-org/btclib-node#1244
+        self.outpoint_spender: dict[tuple[bytes, int], bytes] = {}
         # (individual feerate, insertion order, wtxid), a min-heap
         # `add_tx` pushes one entry onto and `_pop_worst_wtxid` below
         # reads from instead of `_evict_to_limit` scanning `transactions`
@@ -263,7 +286,8 @@ class Mempool:
     def add_tx(self, tx: Tx, fee: int = 0) -> bool:
         """Add `tx`, evict past the limit, and say whether it stuck.
 
-        A no-op, returning `False`, for a txid already held. Otherwise
+        A no-op, returning `False`, for a txid already held or a
+        transaction spending an outpoint one held already spends. Otherwise
         added provisionally and run through `_evict_to_limit`, which
         takes it right back out if it is itself the worst entry left
         once trimming is done -- so the return value is `False` there
@@ -298,6 +322,13 @@ class Mempool:
         wtxid, txid = tx.hash, tx.id
         if txid in self.txid_index:
             return False
+        outpoints = [(vin.prev_out.tx_id, vin.prev_out.vout) for vin in tx.vin]
+        if any(outpoint in self.outpoint_spender for outpoint in outpoints):
+            # a caller that skipped `main.verify_mempool_acceptance`, whose
+            # `check_replacement` call refuses this first
+            return False
+        for outpoint in outpoints:
+            self.outpoint_spender[outpoint] = wtxid
         self.transactions[wtxid] = tx
         self.txid_index[txid] = wtxid
         self.fees[wtxid] = fee
@@ -332,6 +363,67 @@ class Mempool:
     def contains_tx(self, tx: Tx) -> bool:
         """Whether `tx`'s own wtxid is currently held."""
         return tx.hash in self.transactions
+
+    def _replaced(self, tx: Tx) -> set[bytes]:
+        """Return what spends an outpoint `tx` spends, with its descendants.
+
+        Core's own `all_conflicts`, `GetEntriesForConflicts`' union of
+        `CalculateDescendants` over the direct conflicts
+        (`src/policy/rbf.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        tag).
+        """
+        outpoints = ((vin.prev_out.tx_id, vin.prev_out.vout) for vin in tx.vin)
+        conflicts = {self.outpoint_spender.get(outpoint) for outpoint in outpoints}
+        conflicts.discard(None)
+        return set().union(*(self._descendants(wtxid) for wtxid in conflicts))
+
+    def check_replacement(self, tx: Tx, fee: int) -> None:
+        """Refuse `tx` if it spends an outpoint a held transaction spends.
+
+        Core replaces the held transactions where the candidate pays for
+        them (`ReplacementChecks`, `src/validation.cpp`,
+        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag); this mempool has
+        no replacement, so every conflicting candidate is refused. Where
+        Core's `PaysForRBF` (`src/policy/rbf.cpp`, same commit) would
+        refuse it too, it is refused in the same words: "insufficient
+        fee", with a fee under the conflicts' and their descendants', or
+        an increase under the incremental relay fee for its vsize. A
+        candidate that pays for them, which Core may accept, is refused
+        "bip125-replacement-disallowed", Core's reason where it allows no
+        replacement. btclib-org/btclib-node#1244
+        """
+        replaced = self._replaced(tx)
+        if not replaced:
+            return
+        original = sum(self.fees[wtxid] for wtxid in replaced)
+        txid = tx.id.hex()
+        if fee < original:
+            details = (
+                f"rejecting replacement {txid}, less fees than conflicting txs; "
+                f"{_format_money(fee)} < {_format_money(original)}"
+            )
+            raise TxRejectedError("insufficient fee", details)
+        relay_fee = fee_from_vsize(tx.vsize, _INCREMENTAL_RELAY_FEE_RATE)
+        if fee - original < relay_fee:
+            details = (
+                f"rejecting replacement {txid}, not enough additional fees to "
+                f"relay; {_format_money(fee - original)} < {_format_money(relay_fee)}"
+            )
+            raise TxRejectedError("insufficient fee", details)
+        raise TxRejectedError("bip125-replacement-disallowed")
+
+    def remove_conflicts(self, tx: Tx) -> None:
+        """Remove what spends an outpoint `tx` spends, with its descendants.
+
+        Core's own `removeConflicts`, which `removeForBlock` calls for
+        every transaction of a connected block (`src/txmempool.cpp`,
+        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a held spend of a
+        coin the block spent can never confirm. Called after `remove_tx`
+        has taken `tx` itself out, so every spender left is a conflict.
+        btclib-org/btclib-node#1244
+        """
+        for victim in self._replaced(tx):
+            self._pop(victim)
 
     def meets_fee_rate(self, wtxid: bytes, min_fee_rate: int) -> bool:
         """Whether the entry's own fee clears a rate quoted in sat/kvB.
@@ -386,6 +478,8 @@ class Mempool:
         # twice here would `del` an already-deleted `spent_by` entry on
         # the second `vin` and raise `KeyError` on a transaction that
         # never did anything wrong.
+        for vin in tx.vin:
+            del self.outpoint_spender[vin.prev_out.tx_id, vin.prev_out.vout]
         for spent_txid in {vin.prev_out.tx_id for vin in tx.vin}:
             spenders = self.spent_by[spent_txid]
             spenders.discard(wtxid)

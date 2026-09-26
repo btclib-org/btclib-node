@@ -112,7 +112,8 @@ class TxRejectedError(BTClibValueError):
     """A mempool candidate refused with one of Core's own reject reasons.
 
     `reason` is `ValidationState::GetRejectReason` and `details` its
-    debug message; `str()` is `ToString`, the two joined by ", "
+    debug message; `str()` is `ToString`, the two joined by ", ", or the
+    reason alone where there is no debug message
     (`src/consensus/validation.h`, at bitcoin/bitcoin@9be056a8a7, the
     v31.1 tag). `rpc.callbacks` answers `testmempoolaccept`'s
     `reject-reason` and `reject-details` with them, and
@@ -120,8 +121,8 @@ class TxRejectedError(BTClibValueError):
     `p2p.callbacks.tx` records it as it records any other refusal.
     """
 
-    def __init__(self, reason: str, details: str) -> None:
-        super().__init__(f"{reason}, {details}")
+    def __init__(self, reason: str, details: str = "") -> None:
+        super().__init__(f"{reason}, {details}" if details else reason)
         self.reason = reason
         self.details = details
 

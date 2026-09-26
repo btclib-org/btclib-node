@@ -274,6 +274,7 @@ def _reconcile_mempool_for_reorg(
         if node.mempool.size:
             for tx in block.transactions[1:]:
                 node.mempool.remove_tx(tx)
+                node.mempool.remove_conflicts(tx)
         # Core's own `removeForBlock` (`src/txmempool.cpp:405-427`,
         # at bitcoin/bitcoin@58a7869f86): once per block connected,
         # whether or not it held anything this mempool was also
@@ -882,6 +883,8 @@ def verify_mempool_acceptance(
     does not ask either. `interpreter.check_transaction` reads the
     scripts the same way, against a flag set that consults no height.
 
+    Refuses a candidate spending an outpoint a mempool transaction
+    already spends, `Mempool.check_replacement` saying in whose words.
     Refuses a fee below the mempool's own rolling minimum or
     `Config.min_relay_feerate` for the transaction's vsize, Core's own
     `CheckFeeRate`, unless `bypass_limits` -- Core's own flag, set where
@@ -972,6 +975,9 @@ def verify_mempool_acceptance(
     fee = sum(x.value for x in prev_outputs) - sum(x.value for x in tx.vout)
     if not bypass_limits:
         _check_fee_rate(node, tx.vsize, fee)
+    # Core's own `ReplacementChecks`, after `PreChecks` and before the
+    # scripts, `bypass_limits` or not. btclib-org/btclib-node#1244
+    mempool.check_replacement(tx, fee)
 
     # Checked last, after the cheap finality and sequence-lock checks
     # above: Core defers its own script checks the same way, to spend no
