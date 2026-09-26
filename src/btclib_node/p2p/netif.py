@@ -19,7 +19,7 @@ import socket
 import sys
 from ipaddress import IPv4Address, IPv6Address
 
-__all__ = ["from_sockaddr", "interface_addresses", "local_addresses"]
+__all__ = ["local_addresses"]
 
 # `<net/if.h>`'s flags, the same on Linux and on the BSDs
 _IFF_UP = 0x1
@@ -52,7 +52,7 @@ def _family(sockaddr: int) -> int:
     )
 
 
-def from_sockaddr(sockaddr: int) -> IPv4Address | IPv6Address | None:
+def _from_sockaddr(sockaddr: int) -> IPv4Address | IPv6Address | None:
     """Return the IP of the `sockaddr` at `sockaddr`, Core's `FromSockAddr`.
 
     `None` for any family but `AF_INET` and `AF_INET6`.
@@ -65,13 +65,13 @@ def from_sockaddr(sockaddr: int) -> IPv4Address | IPv6Address | None:
     return None
 
 
-def interface_addresses(
+def _interface_addresses(
     first: ctypes._Pointer[_IfAddrs],
 ) -> list[IPv4Address | IPv6Address]:
     """Walk a `getifaddrs` list, keeping what Core's loop keeps.
 
     An entry with no address, of an interface down or of a loopback one
-    is skipped, and so is one `from_sockaddr` answers `None` for.
+    is skipped, and so is one `_from_sockaddr` answers `None` for.
     """
     addresses: list[IPv4Address | IPv6Address] = []
     entry = first
@@ -80,7 +80,7 @@ def interface_addresses(
         ifa = entry.contents
         flags = ifa.ifa_flags
         if ifa.ifa_addr and flags & _IFF_UP and not flags & _IFF_LOOPBACK:
-            address = from_sockaddr(ifa.ifa_addr)
+            address = _from_sockaddr(ifa.ifa_addr)
             if address is not None:
                 addresses.append(address)
         entry = ifa.ifa_next
@@ -99,6 +99,6 @@ def local_addresses() -> list[IPv4Address | IPv6Address]:
     if libc.getifaddrs(ctypes.byref(first)) != 0:
         return []
     try:
-        return interface_addresses(first)
+        return _interface_addresses(first)
     finally:
         libc.freeifaddrs(first)

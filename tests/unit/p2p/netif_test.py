@@ -19,9 +19,9 @@ from btclib_node.p2p import netif
 from btclib_node.p2p.netif import (
     _IFF_LOOPBACK,
     _IFF_UP,
+    _from_sockaddr,
     _IfAddrs,
-    from_sockaddr,
-    interface_addresses,
+    _interface_addresses,
     local_addresses,
 )
 
@@ -63,9 +63,9 @@ def test_from_sockaddr_reads_an_ipv4_and_an_ipv6_address_and_nothing_else() -> N
     ipv4 = an_inet("1.2.3.4")
     ipv6 = an_inet6("2001:db8::1")
     other = a_sockaddr(socket.AF_UNIX, bytes(8))
-    assert from_sockaddr(ctypes.addressof(ipv4)) == IPv4Address("1.2.3.4")
-    assert from_sockaddr(ctypes.addressof(ipv6)) == IPv6Address("2001:db8::1")
-    assert from_sockaddr(ctypes.addressof(other)) is None
+    assert _from_sockaddr(ctypes.addressof(ipv4)) == IPv4Address("1.2.3.4")
+    assert _from_sockaddr(ctypes.addressof(ipv6)) == IPv6Address("2001:db8::1")
+    assert _from_sockaddr(ctypes.addressof(other)) is None
 
 
 def test_the_walk_keeps_what_core_s_loop_keeps() -> None:
@@ -89,7 +89,7 @@ def test_the_walk_keeps_what_core_s_loop_keeps() -> None:
         struct.ifa_addr = None if sockaddr is None else ctypes.addressof(sockaddr)
         if following is not None:
             struct.ifa_next = ctypes.pointer(following)
-    assert interface_addresses(ctypes.pointer(structs[0])) == [IPv4Address("1.2.3.4")]
+    assert _interface_addresses(ctypes.pointer(structs[0])) == [IPv4Address("1.2.3.4")]
 
 
 def test_a_failing_getifaddrs_answers_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
