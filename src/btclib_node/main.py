@@ -100,7 +100,7 @@ _MAX_BLOCKS_TO_ANNOUNCE = 8
 # way whether or not the peer asked for headers. A peer that announced
 # the blocks to this node therefore hears nothing back. Core's
 # `NewPoWValidBlock` also sends that `cmpctblock` before the block is
-# connected, and this node does not.
+# connected, and this node does not (btclib-org/btclib-node#1315).
 # btclib-org/btclib-node#202, btclib-org/btclib-node#1160,
 # btclib-org/btclib-node#1223
 def _announce_added_blocks(node: Node, blocks: list[Block]) -> None:
