@@ -2584,7 +2584,8 @@ def test_a_transaction_whose_scripts_do_not_verify_is_answered_with_the_refusal(
 
 def a_fee_refusal(node: Any, transaction: Any) -> NoReturn:
     """Refuse as `verify_mempool_acceptance` refuses a fee under the floor."""
-    raise TxRejectedError("min relay fee not met", "0 < 11")
+    reason, details = "min relay fee not met", "0 < 11"
+    raise TxRejectedError(reason, details)
 
 
 def test_a_fee_refusal_is_answered_in_core_s_words(
@@ -2613,7 +2614,7 @@ def test_a_fee_refusal_is_answered_in_core_s_words(
 def test_a_fee_refusal_is_reported_with_core_s_reason_and_details(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`testmempoolaccept` reports Core's own `reject-reason`/`reject-details`."""
+    """`testmempoolaccept` reports the reason and details, as Core does."""
     monkeypatch.setattr(cb, "verify_mempool_acceptance", a_fee_refusal)
     (result,) = mempool_accept(
         a_node(), _CONN, [[a_tx().serialize(include_witness=True).hex()]]

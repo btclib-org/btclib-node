@@ -996,8 +996,9 @@ def _check_fee_rate(node: Node, vsize: int, fee: int) -> None:
     """
     mempool_reject_fee = fee_from_vsize(vsize, node.mempool.get_min_fee_rate())
     if fee < mempool_reject_fee:
-        details = f"{fee} < {mempool_reject_fee}"
-        raise TxRejectedError("mempool min fee not met", details)
+        reason, details = "mempool min fee not met", f"{fee} < {mempool_reject_fee}"
+        raise TxRejectedError(reason, details)
     min_relay_fee = fee_from_vsize(vsize, node.config.min_relay_feerate)
     if fee < min_relay_fee:
-        raise TxRejectedError("min relay fee not met", f"{fee} < {min_relay_fee}")
+        reason, details = "min relay fee not met", f"{fee} < {min_relay_fee}"
+        raise TxRejectedError(reason, details)
