@@ -3326,7 +3326,9 @@ def test_submit_block_leaves_valid_a_committed_body_failing_check_block(
     """ISS 1242: Core's `ProcessNewBlock` never marks a `CheckBlock` failure.
 
     Measured against bitcoind v31.1: `bad-cb-multiple`, and the header
-    stays `headers-only` in `getchaintips`.
+    absent from `getchaintips`; `headers-only` there where `submitheader`
+    indexed it first. This node indexes the header before `assert_valid`
+    (btclib-org/btclib-node#1339), so the status is what is asserted.
     """
     node = regtest_node()
     twice = generate_segwit_block(generate_coinbase(height=1))

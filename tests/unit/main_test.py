@@ -2417,16 +2417,19 @@ def test_a_witness_the_commitment_does_not_match_is_mutated() -> None:
     assert main.is_block_mutated(block, check_witness_root=True)
 
 
-def a_block_of_weight(weight: int) -> Block:
+def a_block_of_weight(weight: int, *extra: Tx) -> Block:
     """Build a segwit block whose weight is exactly `weight`, near the bound.
 
-    The spend's witness takes up the difference: a witness byte weighs
-    one, and the length prefix of an element this long is five bytes
-    either side of the adjustment.
+    `generate_segwit_block`'s own, `extra` after the spend. The spend's
+    witness takes up the difference: a witness byte weighs one, and the
+    length prefix of an element this long is five bytes either side of
+    the adjustment.
     """
     witness = bytes(weight)
-    block = generate_segwit_block(witness=witness)
-    block = generate_segwit_block(witness=bytes(len(witness) + weight - block.weight))
+    block = generate_segwit_block(*extra, witness=witness)
+    block = generate_segwit_block(
+        *extra, witness=bytes(len(witness) + weight - block.weight)
+    )
     assert block.weight == weight
     return block
 
@@ -2454,9 +2457,60 @@ def test_a_body_over_the_weight_on_a_witness_it_does_not_commit_to_is_not_failed
     assert not main.is_block_failed(over, check_witness_root=True)
 
 
-def test_a_committed_body_failing_check_block_is_not_marked_failed() -> None:
-    """ISS 1242: Core's `ProcessNewBlock` never marks a `CheckBlock` failure."""
-    twice = generate_segwit_block(generate_coinbase(height=1))
-    with pytest.raises(BTClibValueError, match="more than one coinbase"):
-        twice.assert_valid(RegTest().pow_limit_bits)
-    assert not main.is_block_failed(twice, check_witness_root=True)
+def a_spend_paying(script_pub_key: bytes) -> Tx:
+    """Build a valid transaction whose one output is `script_pub_key`."""
+    tx = generate_random_transaction()
+    tx.vout[0] = TxOut(tx.vout[0].value, script_pub_key)
+    return tx
+
+
+def a_spend_twice_of_one_outpoint() -> Tx:
+    """Build a spend of one outpoint twice, `bad-txns-inputs-duplicate`."""
+    tx = generate_random_transaction()
+    tx.vin = [tx.vin[0], tx.vin[0]]
+    return tx
+
+
+@pytest.mark.parametrize(
+    ("extra", "error"),
+    [
+        # three outputs of 400,000 bytes: 1.2 MB stripped, each transaction
+        # well under the bound on its own
+        (
+            lambda: [a_spend_paying(bytes(400_000)) for _ in range(3)],
+            "invalid stripped size",
+        ),
+        (lambda: [generate_coinbase(height=1)], "more than one coinbase"),
+        (lambda: [a_spend_twice_of_one_outpoint()], "spent twice"),
+        # OP_CHECKSIG, one legacy sigop a byte
+        (lambda: [a_spend_paying(b"\xac" * 20_001)], "invalid sigop cost"),
+    ],
+    ids=["bad-blk-length", "bad-cb-multiple", "tx", "bad-blk-sigops"],
+)
+def test_a_committed_body_over_the_weight_failing_check_block_is_not_failed(
+    extra: Callable[[], list[Tx]], error: str
+) -> None:
+    """ISS 1333: Core's `ProcessNewBlock` never marks a `CheckBlock` failure.
+
+    Each body is over the weight too, which alone would mark it.
+    """
+    over = a_block_of_weight(MAX_BLOCK_WEIGHT + 1_000_000, *extra())
+    assert over.weight > MAX_BLOCK_WEIGHT
+    with pytest.raises(BTClibValueError, match=error):
+        over.assert_valid(RegTest().pow_limit_bits)
+    assert not main.is_block_mutated(over, check_witness_root=True)
+    assert not main.is_block_failed(over, check_witness_root=True)
+
+
+def test_a_body_over_the_weight_with_no_coinbase_is_not_failed() -> None:
+    """ISS 1333: Core's `bad-cb-missing`, the body not mutated.
+
+    Core's `IsBlockMutated` reads no witness of a block without a
+    coinbase, so a witness is what puts this one over the weight.
+    """
+    spend = generate_random_transaction()
+    spend.vin[0].script_witness = Witness([bytes(MAX_BLOCK_WEIGHT)])
+    block = a_block_over([spend])
+    assert block.weight > MAX_BLOCK_WEIGHT
+    assert not main.is_block_mutated(block, check_witness_root=True)
+    assert not main.is_block_failed(block, check_witness_root=True)

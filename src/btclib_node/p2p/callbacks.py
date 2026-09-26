@@ -907,11 +907,13 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
 def block(node: Node, msg: bytes, conn: Connection) -> None:
     """Store a requested block once its proof of work checks out.
 
-    A no-op if this block is already marked downloaded. A body failing
-    a check is refused, and the block asked of another peer, with the
-    index left alone except where Core marks the block failed
-    (`main.is_block_failed`): a body its header does not commit to
-    (`main.is_block_mutated`) says nothing about the header.
+    A body its header does not commit to (`main.is_block_mutated`), on
+    a parent this node knows, is refused first, whatever is already
+    stored under that hash: it says nothing about the header. Past
+    that, a no-op if this block is already marked downloaded. A body
+    failing a check is refused, and the block asked of another peer,
+    with the index left alone except where Core marks the block failed
+    (`main.is_block_failed`).
 
     An unsolicited block whose own header this node has never indexed
     is not read as though `getdata` or `headers` already vouched for
@@ -919,7 +921,7 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
     (`net_processing.cpp`, at bitcoin/bitcoin@ca7162cde5) runs every
     block through `ChainstateManager::AcceptBlock`, which calls
     `AcceptBlockHeader` (`validation.cpp`, same sha) on the block's own
-    header before anything else -- a header already known is accepted
+    header before the body's own checks -- a header already known is accepted
     outright, and one that is not has its own parent looked up, refused
     with `BLOCK_MISSING_PREV` where that parent is unknown too. Core
     punishes that refusal: `MaybePunishNodeForBlock`'s own switch
@@ -982,7 +984,8 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
         # main.handle_p2p, which drops the peer that sent it. Invalidated
         # first where Core marks it failed (`main.is_block_failed`), so the
         # next peer offering it is refused before it is asked to send it.
-        # A `MisbehavingError`: this is Core's `CheckBlock`, whose
+        # A `MisbehavingError`: this is Core's `CheckBlock` and
+        # `ContextualCheckBlock`'s `bad-blk-weight`, whose
         # `BLOCK_CONSENSUS` `MaybePunishNodeForBlock` punishes
         # (btclib-org/btclib-node#1170).
         try:

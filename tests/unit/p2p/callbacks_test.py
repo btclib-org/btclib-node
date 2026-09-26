@@ -2369,6 +2369,31 @@ def test_a_mutated_body_is_refused_before_its_header_is_indexed(
     node.chainstate.close()
 
 
+def test_a_mutated_body_of_a_downloaded_block_is_refused_all_the_same(
+    tmp_path: Path,
+) -> None:
+    """ISS 1242: Core's `BLOCK` arm asks `IsBlockMutated` of every body.
+
+    The block under that hash is stored already, which makes an honest
+    body a no-op here; a body its header does not commit to still costs
+    the peer, and leaves the stored block as it was.
+    """
+    node = a_chainstate_node(tmp_path)
+    (honest,) = generate_random_chain(1, RegTest().genesis.hash)
+    block_callback(node, a_block_payload(honest), a_peer())
+    assert node.added == [honest]
+    forged = Block(
+        honest.header, [generate_coinbase(value=1, height=1)], check_validity=False
+    )
+    with pytest.raises(MisbehavingError, match="mutated block"):
+        block_callback(node, a_block_payload(forged), a_peer())
+    block_info = node.chainstate.block_index.get_block_info(honest.header.hash)
+    assert block_info.downloaded
+    assert block_info.status != BlockStatus.invalid
+    assert node.added == [honest]
+    node.chainstate.close()
+
+
 def test_a_committed_body_failing_check_block_leaves_the_header_valid(
     tmp_path: Path,
 ) -> None:

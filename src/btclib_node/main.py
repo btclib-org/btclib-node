@@ -24,7 +24,7 @@ from btclib.block import (
 )
 from btclib.block.block_context import BlockContext
 from btclib.consensus import MAX_BLOCK_WEIGHT, subsidy
-from btclib.exceptions import BTClibValueError
+from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
 from btclib.script.engine.flags import ScriptFlag
 from btclib.tx.tx_context import (
@@ -599,6 +599,31 @@ def is_block_mutated(block: Block, *, check_witness_root: bool) -> bool:
     return coinbase_witness_commitment(transactions, stack[0]) != commitment
 
 
+def _passes_check_block(block: Block) -> bool:
+    """Whether `block` passes what Core's `CheckBlock` asks of a body.
+
+    `bad-blk-length`, `bad-cb-missing`, `bad-cb-multiple`, each
+    transaction's `CheckTransaction` and `bad-blk-sigops`, in Core's
+    order (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag). The header and the merkle root are asked elsewhere:
+    the header is indexed before its body is read, and the root is
+    `is_block_mutated`'s.
+    """
+    transactions = block.transactions
+    try:
+        block.assert_valid_length()
+        if not transactions or not transactions[0].is_coinbase:
+            return False
+        if any(tx.is_coinbase for tx in transactions[1:]):
+            return False
+        for tx in transactions:
+            tx.assert_valid()
+        block.assert_valid_sig_op_count()
+    except BTClibException:
+        return False
+    return True
+
+
 def is_block_failed(block: Block, *, check_witness_root: bool) -> bool:
     """Whether `block`, failing `Block.assert_valid`, is marked failed.
 
@@ -608,12 +633,12 @@ def is_block_failed(block: Block, *, check_witness_root: bool) -> bool:
     unknown forms of block malleability", and `AcceptBlock` marks one
     failing `ContextualCheckBlock` unless the failure is `BLOCK_MUTATED`.
     Of what `assert_valid` asks, that leaves the weight, which Core asks
-    after the witness commitment that makes it a property of the header.
-    A body over the weight that also fails an earlier check is marked here
-    where Core does not: `assert_valid` does not say which check failed.
+    after the witness commitment that makes it a property of the header:
+    a body that is not mutated, passes `CheckBlock` and is over the weight.
     """
     return (
         not is_block_mutated(block, check_witness_root=check_witness_root)
+        and _passes_check_block(block)
         and block.weight > MAX_BLOCK_WEIGHT
     )
 
