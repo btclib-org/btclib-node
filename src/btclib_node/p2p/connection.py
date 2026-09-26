@@ -44,6 +44,7 @@ from btclib_node.p2p.callbacks import (
     MAX_GETDATA_INFLIGHT_BYTES,
     handshake_callbacks,
 )
+from btclib_node.p2p.chain_sync import ChainSyncTimeoutState
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 from btclib_node.p2p.protocol_version import BIP0031_VERSION, common_version
 
@@ -463,7 +464,7 @@ class Connection:
     # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how many gossiped
     # addresses this peer may still have taken in, one to start with so
     # that it can announce itself. Written and read on `Node`'s thread
-    # alone, by `callbacks.verack`, `addr` and `addrv2`; a class default
+    # alone, by `callbacks.version`, `addr` and `addrv2`; a class default
     # for the same reason as `time_received`.
     addr_token_bucket: float = 1.0
     # Core's `Peer::m_sent_sendheaders`: set by
@@ -471,6 +472,14 @@ class Connection:
     # peer for headers announcements, which is asked once. A class
     # default for the same reason as `time_received`.
     sent_sendheaders: bool = False
+    # Core's `Peer::m_addr_relay_enabled` (`net_processing.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7): whether this peer takes part in
+    # address relay. Set where Core calls `SetupAddressRelay`: by
+    # `callbacks.version` for a peer this node dialled, and by `addr`,
+    # `addrv2` and `getaddr` for one that dialled in. Read by
+    # `getpeerinfo`; a class default for the same reason as
+    # `time_received`.
+    addr_relay_enabled: bool = False
 
     # Core's `CNodeState` block fields (`p2p/block_availability.py`),
     # here rather than in a `DownloadManager` table keyed by connection
@@ -490,6 +499,13 @@ class Connection:
     # class default for the reason `time_received` gives.
     # btclib-org/btclib-node#1164
     _writing: asyncio.Task[object] | None = None
+
+    # Core's `CNodeState::m_chain_sync` (`p2p/chain_sync.py`), here for
+    # the same reasons as `block_availability` above.
+    @cached_property
+    def chain_sync(self) -> ChainSyncTimeoutState:
+        """Whether this peer is behind this node's tip, and since when."""
+        return ChainSyncTimeoutState()
 
     def __init__(
         self,
@@ -528,7 +544,7 @@ class Connection:
         # `P2pManager.create_connection` sets it; nothing changes it after.
         self.prefer_evict: bool = False
 
-        # Set by `send_version`, below, to what it drew: `None` until
+        # Set by `own_version`, below, to what it drew: `None` until
         # then, and afterwards this connection's own share of
         # `P2pManager.pending_outbound_nonces` (`manager.py`), which is
         # what `promote_connection` and `remove_connection` read it back
@@ -620,7 +636,7 @@ class Connection:
         # height off what this peer has itself sent stands in for it
         # there. `start_height` is the useful seed Core's own
         # field is in practice between two btclib-node peers, once
-        # `Connection.send_version` carries this node's own real tip
+        # `Connection.own_version` carries this node's own real tip
         # (`Node.best_height`) rather than the literal `0` it used to
         # send unconditionally (btclib-org/btclib-node#722): the peer on
         # the other end of a fresh handshake seeds `best_known_height`
@@ -872,7 +888,10 @@ class Connection:
         self.client.close()
 
     async def run(self) -> None:
-        """Send `version`, then read and dispatch messages until `stop`.
+        """Send `version` if outbound, then dispatch messages until `stop`.
+
+        An inbound connection is sent this node's `version` by
+        `callbacks.version`, once the peer's own has been accepted.
 
         Always ends in `stop`, whether by a graceful `return`, a caught
         exception, or the `finally` below catching a cancellation from
@@ -892,7 +911,8 @@ class Connection:
         # stop() is idempotent on an already-closed connection, so this
         # costs nothing on every other path, which already called it.
         try:
-            await self.send_version()
+            if not self.inbound:
+                await self.async_send(self.own_version())
             while self.status < P2pConnStatus.Closed:
                 # Cleared by `parse_messages` once `queued_recv_bytes`
                 # crosses `MAX_QUEUED_RECV_BYTES`, so a connection whose
@@ -1064,9 +1084,9 @@ class Connection:
     async def async_send(self, payload: Payload) -> None:
         """Frame `payload` and send it, dropping the connection past the bound.
 
-        What `send_version` awaits: it runs on the loop already, and
-        wants this node's own `version` on the wire before `run` reads
-        anything back. Every other sender in this tree reaches `send`
+        What `run` awaits for an outbound connection's `version`: it
+        runs on the loop already, and wants that on the wire before it
+        reads anything back. Every other sender in this tree reaches `send`
         below instead.
         """
         data = self._queue(payload)
@@ -1097,8 +1117,15 @@ class Connection:
         if data is not None:
             asyncio.run_coroutine_threadsafe(self._deliver(data), self.loop)
 
-    async def send_version(self) -> None:
-        """Build and send this node's own `version` message."""
+    def own_version(self) -> Version:
+        """Build this node's own `version` message, recording its nonce.
+
+        Sent by `run` as soon as an outbound connection opens, and by
+        `callbacks.version` to an inbound peer whose own `version` it
+        has accepted, which is where Core's `ProcessMessage` calls
+        `PushNodeVersion` for each (`src/net_processing.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        """
         # compact_filters is BIP157's NODE_COMPACT_FILTERS, and saying
         # it promises an answer to getcfilters, getcfheaders and
         # getcfcheckpt for every block of the chain. The filter index is
@@ -1136,7 +1163,7 @@ class Connection:
         # so this is a cast rather than a check that would be dead code
         # on every path that reaches here.
         port = cast("int", self.manager.port)
-        version = Version(
+        return Version(
             version=PROTOCOL_VERSION,
             services=services,
             timestamp=int(time.time()),
@@ -1169,7 +1196,6 @@ class Connection:
             # `p2p/callbacks.tx`. btclib-org/btclib-node#129
             relay=True,
         )
-        await self.async_send(version)
 
     def send_ping(self) -> None:
         """Send a `ping` with a fresh nonzero nonce, recording it under lock.

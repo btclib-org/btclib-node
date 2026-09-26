@@ -38,6 +38,7 @@ __all__ = [
     "InvalidBlockInputError",
     "InvalidChainTypeError",
     "MalformedRequestHeadError",
+    "MisbehavingError",
     "MissingPrevoutError",
     "NodeShutdownTimeoutError",
     "NonStandardTxError",
@@ -45,6 +46,7 @@ __all__ = [
     "PrevoutCountMismatchError",
     "ReimportedMainProcessError",
     "RejectedMessageError",
+    "RpcCredentialRefusedError",
     "StoreClosedError",
     "StoreCorruptionError",
     "UnknownChainError",
@@ -52,6 +54,21 @@ __all__ = [
     "UnsupportedAddressTypeError",
     "WrongNetworkMagicError",
 ]
+
+
+class MisbehavingError(BTClibValueError):
+    """A peer's message of the kind Core answers with `Misbehaving`.
+
+    `p2p.main` discourages the peer for this class alone. Any other
+    `BTClibException` out of a callback, a payload btclib cannot parse
+    among them, is logged and the peer kept, as Core's
+    `PeerManagerImpl::ProcessMessages` catches an exception out of
+    `ProcessMessage` and only logs it (`src/net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Raised where Core calls
+    `Misbehaving`, directly or through `MaybePunishNodeForBlock`.
+    `BTClibValueError`, so that a caller refusing a header or a block
+    for any reason still catches it as one.
+    """
 
 
 class MissingPrevoutError(ValueError):
@@ -83,10 +100,10 @@ class NonStandardTxError(BTClibValueError):
     `BTClibValueError`, so that both RPC paths answer this through the
     clause they already answer a refused candidate with:
     `rpc.callbacks.test_mempool_accept` reports the entry not allowed
-    and `send_raw_transaction` answers `VERIFY_REJECTED`. The cost of
-    that base is that `p2p.main.handle_p2p`'s own `isinstance(e,
-    BTClibException)` would discourage the peer for it, which is why
-    `tx`'s catch is what keeps the peer and has a test of its own.
+    and `send_raw_transaction` answers `VERIFY_REJECTED`. Not a
+    `MisbehavingError`, so `p2p.main.handle_p2p` would not discourage
+    the peer for it either, and `tx`'s catch is what records the
+    refusal.
     """
 
 
@@ -329,6 +346,19 @@ class DirectoryLockError(RuntimeError):
     Raised by `dirlock.DirectoryLock`, with Core's own message for each
     of its two refusals, and printed by `cli.main` the way Core's
     `InitError` is.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class RpcCredentialRefusedError(ValueError):
+    """`InitRPCAuthentication` refuses a `-rpcauth` or `-rpccookieperms` value.
+
+    Raised by `rpc.auth.RpcAuth.start` once it has logged Core's line for
+    the value, and read by `rpc.manager.RpcManager` as a listener that
+    did not come up, which `Node` answers with Core's "Unable to start
+    HTTP server. See debug log for details."
     """
 
     def __init__(self, message: str) -> None:

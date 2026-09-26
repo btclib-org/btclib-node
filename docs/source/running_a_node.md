@@ -59,6 +59,12 @@ a `bitcoin.conf` refuses to start, as `bitcoind` refuses, that file's
 settings going unread; `-allowignoredconf` starts it anyway, the refusal
 written to stderr as a warning.
 
+On POSIX, `btclib-node` sets its umask to 0077 before it reads its
+options, as `bitcoind` does. Every directory it creates is then 0700 and
+every file 0600, the chain directory and `history.log` included, the
+cookie aside where `-rpccookieperms` names another mode. A `Node` built
+in another program keeps that program's umask.
+
 ## Pruning
 
 `-prune=<n>` matches Core's own three-way split. `<n>` of `1` is manual
@@ -159,11 +165,14 @@ without a whitelist even where none is set.
 
 ## RPC methods
 
-Fourteen, each mirroring the Core method of the same name:
-`getbestblockhash`, `getblockcount`, `getblockchaininfo`,
-`getblockhash`, `getblockheader`, `getpeerinfo`, `getconnectioncount`,
-`getmempoolinfo`, `getrawmempool`, `getrawtransaction`,
-`testmempoolaccept`, `sendrawtransaction`, `ping`, `stop`.
+Each mirrors the Core method of the same name: `getbestblockhash`,
+`getblockcount`, `getblockchaininfo`, `pruneblockchain`, `getblockhash`,
+`getblockheader`, `getblock`, `submitblock`, `getpeerinfo`,
+`getconnectioncount`, `getnetworkinfo`, `addnode`, `setban`, `listbanned`,
+`clearbanned`, `getmempoolinfo`, `getrawmempool`, `getrawtransaction`,
+`gettxoutsetinfo`, `testmempoolaccept`, `sendrawtransaction`, `ping`,
+`stop`. The `callbacks` table in `src/btclib_node/rpc/callbacks.py` is
+the list the node serves.
 
 ## What is validated, and what is not
 

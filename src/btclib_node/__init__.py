@@ -37,6 +37,7 @@ from btclib_node.log import Logger
 from btclib_node.main import update_chain
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import PeerDB, peer_address
+from btclib_node.p2p.banman import BanMan
 from btclib_node.p2p.main import (
     handle_p2p,
     handle_p2p_handshake,
@@ -383,8 +384,9 @@ class Node(threading.Thread):
 
         # This node's own active-chain tip height, at the moment
         # `main._finalize_fork` last moved it -- read by
-        # `p2p.connection.Connection.send_version`, on `P2pManager`'s own
-        # asyncio loop rather than this thread, the same way Core's own
+        # `p2p.connection.Connection.own_version`, for an outbound
+        # connection on `P2pManager`'s own asyncio loop rather than this
+        # thread, the same way Core's own
         # `PushNodeVersion` (`net_processing.cpp:1673`, at
         # bitcoin/bitcoin@ca7162cde5) reads `m_best_height` from the net
         # processing thread rather than validation's. Core declares that
@@ -414,7 +416,9 @@ class Node(threading.Thread):
         else:
             self.p2p_port = None
         peer_db = PeerDB(self.chain, self.data_dir)
-        self.p2p_manager = P2pManager(self, self.p2p_port, peer_db)
+        # Core's `banlist.json`, in the chain's own directory
+        ban_man = BanMan(self.data_dir / "banlist.json", self.logger)
+        self.p2p_manager = P2pManager(self, self.p2p_port, peer_db, ban_man)
 
         self.rpc_port: int | None
         if config.rpc_port:
@@ -649,6 +653,8 @@ class Node(threading.Thread):
         self.rpc_manager.stop()
 
         self.p2p_manager.peer_db.close()
+        # Core's `~BanMan` dumps the list one last time
+        self.p2p_manager.ban_man.dump()
         self.chainstate.close()
         self.block_db.close()
 

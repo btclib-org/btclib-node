@@ -18,9 +18,11 @@ import pytest
 from btclib.exceptions import BTClibValueError
 from btclib.p2p.addrv2 import NetworkAddressV2
 from btclib.p2p.data import TxPayload as TxMsg
+from btclib.p2p.limits import MAX_INV_SZ
 
 import btclib_node.p2p.callbacks as cb
-from btclib_node.constants import P2pConnStatus
+from btclib_node.constants import NodeStatus, P2pConnStatus
+from btclib_node.exceptions import MisbehavingError
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from btclib_node.p2p import main as main_module
@@ -186,15 +188,14 @@ def test_a_handshake_callback_that_raises_drops_the_peer(
 def test_a_handshake_callback_that_raises_a_btclib_exception_costs_the_peer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A handshake callback raising a btclib exception drops and discourages.
+    """A handshake callback raising `MisbehavingError` drops and discourages.
 
-    Unlike the bare `RuntimeError` above, `BTClibValueError` is what
-    btclib itself raises over content it refused, so #283 counts this
-    one against the peer.
+    Unlike the bare `RuntimeError` above, it is raised where Core calls
+    `Misbehaving`, so #283 counts this one against the peer.
     """
 
     def boom(node: Node, msg: bytes, conn: Connection) -> None:
-        raise BTClibValueError("no")
+        raise MisbehavingError("no")
 
     monkeypatch.setitem(handshake_callbacks, "verack", boom)
     node, stopped = make_node(
@@ -448,10 +449,10 @@ def test_a_callback_that_raises_drops_the_peer(monkeypatch: pytest.MonkeyPatch) 
 def test_a_callback_that_raises_a_btclib_exception_costs_the_peer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A btclib exception out of a callback drops the peer, discouraged."""
+    """A `MisbehavingError` out of a callback drops the peer, discouraged."""
 
     def boom(node: Node, msg: bytes, conn: Connection) -> None:
-        raise BTClibValueError("no")
+        raise MisbehavingError("no")
 
     monkeypatch.setitem(callbacks, "ping", boom)
     node, stopped = make_node(
@@ -462,17 +463,81 @@ def test_a_callback_that_raises_a_btclib_exception_costs_the_peer(
     assert node.p2p_manager.discouraged == [_AN_ADDRESS]  # #283
 
 
+@pytest.mark.parametrize("handshake", [True, False])
+def test_a_message_that_does_not_parse_costs_the_peer_nothing(
+    monkeypatch: pytest.MonkeyPatch, *, handshake: bool
+) -> None:
+    """ISS 1170: Core only logs what `ProcessMessage` throws.
+
+    A `BTClibValueError` that is not a `MisbehavingError` is what
+    btclib raises over a payload it cannot parse. The peer is neither
+    dropped nor discouraged, and the line says so.
+    """
+
+    def boom(node: Node, msg: bytes, conn: Connection) -> None:
+        raise BTClibValueError("no")
+
+    logged, record = log_recorder()
+    logger = SimpleNamespace(
+        info=lambda *a: None, debug=lambda *a: None, exception=record
+    )
+    if handshake:
+        monkeypatch.setitem(handshake_callbacks, "version", boom)
+        item: tuple[Any, ...] = ("version", b"", 0, 1)
+        node, stopped = make_node(
+            "handshake_messages", item, status=P2pConnStatus.Open, logger=logger
+        )
+        handle_p2p_handshake(node)
+    else:
+        monkeypatch.setitem(callbacks, "ping", boom)
+        item = ("ping", b"", 0, 1, 0.0)
+        node, stopped = make_node(
+            "messages", item, status=P2pConnStatus.Connected, logger=logger
+        )
+        handle_p2p(node)
+    assert stopped == []
+    assert not node.p2p_manager.discouraged
+    (line,) = logged
+    assert line.endswith("peer not discouraged")
+
+
+@pytest.mark.parametrize("status", list(NodeStatus))
+def test_an_oversized_inv_costs_the_peer_whatever_the_sync_state(
+    status: NodeStatus,
+) -> None:
+    """More than `MAX_INV_SZ` items drops the peer, discouraged.
+
+    Core's `INV` branch calls `Misbehaving` for it before reading the
+    node's own state (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag): `callbacks.inv` refuses the count first, with a
+    `MisbehavingError`. The count is a canonical CompactSize, three
+    octets: a longer one is a parse error to btclib, as to Core's
+    `ReadCompactSize`, which costs the peer nothing.
+    btclib-org/btclib-node#1145
+    """
+    count = MAX_INV_SZ + 1
+    item = (2).to_bytes(4, "little") + bytes(32)
+    payload = b"\xfd" + count.to_bytes(2, "little") + item * count
+    node, stopped = make_node(
+        "messages", ("inv", payload, 0, 1, 0.0), status=P2pConnStatus.Connected
+    )
+    node.status = status
+    handle_p2p(node)
+    assert stopped == [True]
+    assert node.p2p_manager.discouraged == [_AN_ADDRESS]
+
+
 def test_a_peer_the_manager_spares_is_logged_as_not_discouraged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """ISS 1090: the verdict logged is the one the manager answered.
 
-    A btclib exception from a manual or a local peer drops it without
+    A `MisbehavingError` from a manual or a local peer drops it without
     discouraging it, and the line says so.
     """
 
     def boom(node: Node, msg: bytes, conn: Connection) -> None:
-        raise BTClibValueError("no")
+        raise MisbehavingError("no")
 
     def spare(conn: Any) -> bool:
         conn.stop()
@@ -747,7 +812,7 @@ def test_resume_cfilters_discourages_the_peer_on_a_btclib_exception(
     node, discouraged, logged = a_pending_node(conn, heights)
 
     def boom(*_a: Any) -> bool:
-        raise BTClibValueError("no")
+        raise MisbehavingError("no")
 
     monkeypatch.setattr(main_module, "advance_cfilters", boom)
     assert resume_cfilters(node) is True
@@ -901,7 +966,7 @@ def test_resume_getdata_discourages_the_peer_on_a_btclib_exception(
     node, discouraged, logged = a_pending_getdata_node(conn, items)
 
     def boom(*_a: Any) -> bool:
-        raise BTClibValueError("no")
+        raise MisbehavingError("no")
 
     monkeypatch.setattr(main_module, "advance_getdata", boom)
     assert resume_getdata(node) is True
@@ -938,7 +1003,7 @@ def test_handle_p2p_handshake_log_line_distinguishes_the_verdict(
     """
     log_path = tmp_path / "debug.log"
     logger = Logger(log_path, debug=True)
-    for exc in (RuntimeError("no"), BTClibValueError("no")):
+    for exc in (RuntimeError("no"), MisbehavingError("no")):
 
         def raiser(*_a: Any, exc: Exception = exc) -> None:
             raise exc
@@ -971,7 +1036,7 @@ def test_handle_p2p_log_line_distinguishes_the_verdict(
     """Same proof as `handle_p2p_handshake`'s, for `handle_p2p`."""
     log_path = tmp_path / "debug.log"
     logger = Logger(log_path, debug=True)
-    for exc in (RuntimeError("no"), BTClibValueError("no")):
+    for exc in (RuntimeError("no"), MisbehavingError("no")):
 
         def raiser(*_a: Any, exc: Exception = exc) -> None:
             raise exc
@@ -1004,7 +1069,7 @@ def test_resume_cfilters_log_line_distinguishes_the_verdict(
     """Same proof as `handle_p2p_handshake`'s, for `resume_cfilters`."""
     log_path = tmp_path / "debug.log"
     logger = Logger(log_path, debug=True)
-    for conn_id, exc in ((1, RuntimeError("no")), (2, BTClibValueError("no"))):
+    for conn_id, exc in ((1, RuntimeError("no")), (2, MisbehavingError("no"))):
         conn = SimpleNamespace(
             id=conn_id,
             status=P2pConnStatus.Open,
@@ -1041,7 +1106,7 @@ def test_resume_getdata_log_line_distinguishes_the_verdict(
     """Same proof as `handle_p2p_handshake`'s, for `resume_getdata`."""
     log_path = tmp_path / "debug.log"
     logger = Logger(log_path, debug=True)
-    for conn_id, exc in ((1, RuntimeError("no")), (2, BTClibValueError("no"))):
+    for conn_id, exc in ((1, RuntimeError("no")), (2, MisbehavingError("no"))):
         conn = SimpleNamespace(
             id=conn_id,
             status=P2pConnStatus.Open,

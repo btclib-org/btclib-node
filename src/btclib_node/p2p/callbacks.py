@@ -25,11 +25,13 @@ from dataclasses import replace
 from io import BytesIO
 from typing import TYPE_CHECKING
 
+from btclib import var_int
 from btclib.amount import valid_sats_amount
 from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.p2p.address import Addr, ServiceFlags
 from btclib.p2p.addrv2 import (
     AddrV2,
+    BIP155Network,
     NetworkAddressV2,
     SendAddrV2,
     addr_entry,
@@ -45,7 +47,13 @@ from btclib.p2p.block_filters import (
     GetCFHeaders,
     GetCFilters,
 )
-from btclib.p2p.compact_blocks import SendCmpct
+from btclib.p2p.compact_blocks import (
+    BlockTxn,
+    CmpctBlock,
+    GetBlockTxn,
+    PrefilledTransaction,
+    SendCmpct,
+)
 from btclib.p2p.data import BlockPayload as BlockMsg
 from btclib.p2p.data import TxPayload as TxMsg
 from btclib.p2p.handshake import Verack, Version
@@ -62,10 +70,12 @@ from btclib.p2p.keepalive import Ping, Pong
 from btclib.p2p.limits import (
     CFCHECKPT_INTERVAL,
     MAX_ADDR_TO_SEND,
+    MAX_ADDRV2_SIZE,
     MAX_GETCFHEADERS_SIZE,
     MAX_GETCFILTERS_SIZE,
     MAX_HEADERS_RESULTS,
     MAX_INV_SZ,
+    MAX_LOCATOR_SZ,
     MAX_PROTOCOL_MESSAGE_LENGTH,
     PROTOCOL_VERSION,
 )
@@ -77,11 +87,13 @@ from btclib_node.chainstate.filter_index import NO_PREVIOUS_FILTER_HEADER
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, NodeStatus, P2pConnStatus
 from btclib_node.exceptions import (
     ChainstateInconsistencyError,
+    MisbehavingError,
     MissingPrevoutError,
 )
 from btclib_node.main import verify_mempool_acceptance
 from btclib_node.p2p.address import ip_and_port
 from btclib_node.p2p.block_availability import update_block_availability
+from btclib_node.p2p.chain_sync import protect_if_caught_up
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 from btclib_node.p2p.protocol_version import (
     BIP0031_VERSION,
@@ -94,12 +106,17 @@ from btclib_node.p2p.protocol_version import (
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
+    from btclib.block import Block
+
     from btclib_node import Node
     from btclib_node.chainstate.block_index import BlockIndex
     from btclib_node.p2p.connection import Connection
 
 __all__ = [
+    "CMPCTBLOCKS_VERSION",
+    "MAX_BLOCKTXN_DEPTH",
     "MAX_CFILTERS_INFLIGHT_BYTES",
+    "MAX_CMPCTBLOCK_DEPTH",
     "MAX_GETDATA_INFLIGHT_BYTES",
     "MAX_PENDING_CFILTERS_HEIGHTS",
     "MAX_PENDING_GETDATA_ITEMS",
@@ -109,11 +126,13 @@ __all__ = [
     "advance_getdata",
     "block",
     "callbacks",
+    "compact_block",
     "feefilter",
     "get_cfcheckpt",
     "get_cfheaders",
     "get_cfilters",
     "getaddr",
+    "getblocktxn",
     "getdata",
     "getheaders",
     "handshake_callbacks",
@@ -131,6 +150,125 @@ __all__ = [
     "version",
     "wtxidrelay",
 ]
+
+
+# The octets one entry takes on the wire, where every entry takes the same
+# and Core reads any octets there: an `inv`/`getdata` item's four-octet
+# type and 32-octet hash, an `addr` entry's time, services, sixteen-octet
+# address and port, and a locator's hash.
+_INV_ENTRY_SIZE = 36
+_ADDR_ENTRY_SIZE = 30
+_HASH_SIZE = 32
+
+# An `addrv2` entry's octets vary: a four-octet time, a CompactSize of
+# services, a one-octet network id, the address behind a CompactSize
+# length, and a two-octet port. The fewest it takes is nine, and the
+# length a network id fixes is BIP155's table, which btclib keeps private.
+_ADDRV2_MIN_ENTRY_SIZE = 9
+_BIP155_ADDRESS_SIZE: dict[int, int] = {
+    BIP155Network.IPV4: 4,
+    BIP155Network.IPV6: 16,
+    BIP155Network.TORV2: 10,
+    BIP155Network.TORV3: 32,
+    BIP155Network.I2P: 32,
+    BIP155Network.CJDNS: 16,
+    BIP155Network.YGGDRASIL: 16,
+}
+# A CompactSize's marker octet, the width of the number behind it, and
+# the smallest number that width may carry, below which the encoding is
+# not the canonical one and is refused, as `var_int.parse` refuses it.
+_COMPACT_SIZE_WIDTHS = {0xFD: (2, 0xFD), 0xFE: (4, 0x1_0000), 0xFF: (8, 0x1_0000_0000)}
+
+
+def _compact_size(msg: bytes, pos: int) -> tuple[int, int]:
+    """Return the CompactSize at `pos` and the offset after it.
+
+    The offset is -1 where no octet is at `pos` or the encoding is not
+    the canonical one. A number cut short by the end of `msg` answers an
+    offset past that end, which every caller compares with `len(msg)`.
+    """
+    if pos >= len(msg):
+        return 0, -1
+    marker = msg[pos]
+    if marker not in _COMPACT_SIZE_WIDTHS:
+        return marker, pos + 1
+    width, least = _COMPACT_SIZE_WIDTHS[marker]
+    end = pos + 1 + width
+    value = int.from_bytes(msg[pos + 1 : end], "little")
+    return value, end if value >= least else -1
+
+
+def _skip_addrv2_entry(msg: bytes, pos: int) -> int:
+    """Return the offset after the `addrv2` entry at `pos`, or -1.
+
+    -1 where `NetworkAddressV2.parse` would refuse the entry: short, a
+    CompactSize not canonical, an address past `MAX_ADDRV2_SIZE`, or one
+    whose length is not the one its network fixes. Nothing is built,
+    only the length fields read.
+    """
+    _, pos = _compact_size(msg, pos + 4)
+    if pos < 0 or pos >= len(msg):
+        return -1
+    network = msg[pos]
+    size, pos = _compact_size(msg, pos + 1)
+    fixed = _BIP155_ADDRESS_SIZE.get(network)
+    if pos < 0 or size > MAX_ADDRV2_SIZE or fixed not in (None, size):
+        return -1
+    pos += size + 2
+    return pos if pos <= len(msg) else -1
+
+
+def _count_past(msg: bytes, bound: int, entry_size: int, offset: int = 0) -> int:
+    """Return the count of the vector at `offset`, where it passes `bound`.
+
+    Zero where it does not, or where the rest of `msg` does not hold
+    that many entries of `entry_size` octets: Core reads the whole
+    vector before comparing its size with the bound
+    (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag), so such a payload throws first and is only logged, and it is
+    left to btclib's own parse here too. btclib's parsers refuse a count
+    past the bound as they refuse a truncated payload, which is why the
+    count is read ahead of them.
+    """
+    stream = BytesIO(msg)
+    stream.seek(offset)
+    count = var_int.parse(stream)
+    if count > bound and len(msg) - stream.tell() >= count * entry_size:
+        return count
+    return 0
+
+
+def _addrv2_count_past(msg: bytes, bound: int) -> int:
+    """Return an `addrv2` count past `bound`, as `_count_past` does.
+
+    The count decides first where it can: within the bound, or past
+    what the rest of `msg` could hold at the fewest octets an entry
+    takes. Only then are the entries walked, by their length fields,
+    each one read as `NetworkAddressV2.parse` would refuse it.
+    """
+    count, pos = _compact_size(msg, 0)
+    if pos < 0 or count <= bound:
+        return 0
+    if len(msg) - pos < count * _ADDRV2_MIN_ENTRY_SIZE:
+        return 0
+    for _ in range(count):
+        pos = _skip_addrv2_entry(msg, pos)
+        if pos < 0:
+            return 0
+    return count
+
+
+def _refuse_past_bound(msg_type: str, count: int) -> None:
+    """Raise `MisbehavingError` for a vector counting `count` past its bound.
+
+    Core's `ProcessMessage` calls `Misbehaving` for an `addr`, `addrv2`,
+    `inv`, `getdata` or `headers` holding more entries than its bound
+    allows, with the message this raises. A `count` of zero raises
+    nothing, `_count_past` answering zero within the bound.
+    """
+    if count:
+        err_msg = f"{msg_type} message size = {count}"
+        raise MisbehavingError(err_msg)
 
 
 def _has_all_desirable_services(node: Node, services: int) -> bool:
@@ -182,8 +320,10 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
 
     Continuing means answering `verack`, with `wtxidrelay` and
     `sendaddrv2` ahead of it where the common version reaches
-    `WTXID_RELAY_VERSION`, and recording whether the peer asked to have
-    transactions relayed.
+    `WTXID_RELAY_VERSION` and, to an inbound peer, this node's own
+    `version` ahead of all three; setting up address relay with a peer
+    this node dialled, and asking it for addresses; and recording whether
+    the peer asked to have transactions relayed.
     """
     if conn.version_message is not None:
         return
@@ -191,7 +331,7 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
 
     conn.version_message = version_msg
     # `Connection.best_known_height`'s own docstring (connection.py) is
-    # where reading `start_height` here is argued: `send_version`
+    # where reading `start_height` here is argued: `own_version`
     # (connection.py) carries this node's own real tip as of
     # btclib-org/btclib-node#722, so between two btclib-node peers this
     # already seeds at the peer's own real height, and a taller value
@@ -268,6 +408,11 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
         conn.stop()
         return
 
+    # Core's `PushNodeVersion` for an inbound peer: its `version` is
+    # answered only once every check above has kept it
+    if conn.inbound:
+        conn.send(conn.own_version())
+
     # Core sends `sendaddrv2` from 70016 up too, "as a courtesy" to
     # software that rejects a message it does not know. The final `alert`
     # Core sends at 70012 or below is not: btclib-org/btclib-node#1205
@@ -275,6 +420,20 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
         conn.send(WtxidRelay())
         conn.send(SendAddrV2())
     conn.send(Verack())
+
+    # Core's `VERSION` handler, right after `VERACK`, calls
+    # `SetupAddressRelay` for a peer this node dialled, and sends it a
+    # `getaddr` with room for the answer past
+    # `_MAX_ADDR_PROCESSING_TOKEN_BUCKET` (`net_processing.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). An inbound peer keeps
+    # the one token it started with, and waits for its own first `addr`,
+    # `addrv2` or `getaddr`. `SetupAddressRelay` answers false, and so
+    # sends no `getaddr`, for a block-relay-only peer, which this node
+    # does not open.
+    if not conn.inbound:
+        conn.addr_relay_enabled = True
+        conn.send(GetAddr())
+        conn.addr_token_bucket += MAX_ADDR_TO_SEND
 
     # relay_tx, which is the attribute Connection defines: the name this
     # wrote before was one letter different, so what the peer asked for
@@ -340,7 +499,7 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     # known block has the minimum chain work, as Core's
     # `MaybeSendSendHeaders` does
     if common_version(conn) >= SHORT_IDS_BLOCKS_VERSION:
-        conn.send(SendCmpct(announce=False, version=1))
+        conn.send(SendCmpct(announce=False, version=CMPCTBLOCKS_VERSION))
     # BIP133's own floor is not sent here: DownloadManager._send_due_feefilters
     # (src/btclib_node/download.py) reaches every connected connection on the
     # very next step(), Connection.next_feefilter_send_time defaulting to
@@ -353,14 +512,7 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     # fSuccessfullyConnected, not from a one-time handshake action.
     # btclib-org/btclib-node#275
     conn.send_ping()
-    # Core's `VERACK` handler (`net_processing.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) asks an outbound peer
-    # alone, and makes room for its answer past
-    # `_MAX_ADDR_PROCESSING_TOKEN_BUCKET`; an inbound peer keeps the one
-    # token it started with.
-    if not conn.inbound:
-        conn.send(GetAddr())
-        conn.addr_token_bucket += MAX_ADDR_TO_SEND
+    # No `getaddr` here either: `version` sends it, as Core's does.
     # No `getheaders` here: whether this peer is asked for headers is
     # `DownloadManager.sync_headers`'s decision, made on the next pass
     # of `Node`'s own loop, as Core makes it in `SendMessages` rather
@@ -513,6 +665,7 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
     # addresses and read them back from a node that only dials out.
     if not conn.inbound:
         return
+    conn.addr_relay_enabled = True
     # Once per connection, matching the flag's own docstring
     # (connection.py): a peer asking in a loop is served the table once
     # rather than once per ask. btclib-org/btclib-node#71
@@ -524,14 +677,15 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
     now = time.time()
     if now >= peer_db.addr_sample_expiration:
         # Drawn and then filtered, as Core's `GetAddressesUnsafe` leaves
-        # every discouraged host out of what addrman drew (`src/net.cpp`,
-        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) before the cache
-        # is kept.
-        is_discouraged = node.p2p_manager.is_discouraged
+        # every discouraged or banned host out of what addrman drew
+        # (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+        # before the cache is kept.
+        manager = node.p2p_manager
         peer_db.addr_sample = [
             address
             for address in _addresses_to_send(peer_db.get_active_addresses())
-            if not is_discouraged(address)
+            if not manager.is_discouraged(address)
+            and not manager.ban_man.is_peer_banned(address)
         ]
         # The sample can go on naming an endpoint `active_addresses` has
         # since aged out or dropped, for as long as this cache is still
@@ -568,17 +722,19 @@ def addr(node: Node, msg: bytes, conn: Connection) -> None:
     # Addr.parse(msg) would refuse an octet past the last address
     # (btclib's own assert_no_trailing, a malleability guard that holds
     # across the library) by raising out of this callback, which
-    # main.handle_p2p turns into conn.stop(): a peer dropped for gossip
-    # this node could simply not fully read. Core does not: ProcessMessage
-    # reads AddrMan-worth of entries out of vRecv and never checks for
-    # anything left. Wrapping the payload in a stream is btclib's own
-    # answer for exactly this -- assert_no_trailing's docstring calls a
-    # stream "the caller's", the same shape a transaction inside a block
-    # is read through, with nothing after it checked -- so this reads
-    # every address BIP155 defines and silently drops whatever else the
-    # peer appended, matching Core's leniency without a second copy of
-    # Addr's codec. btclib-org/btclib-node#149
+    # main.handle_p2p logs, keeping the peer: gossip this node could
+    # read in full would be thrown away for one octet after it. Core does
+    # not: ProcessMessage reads AddrMan-worth of entries out of vRecv and
+    # never checks for anything left. Wrapping the payload in a stream is
+    # btclib's own answer for exactly this -- assert_no_trailing's
+    # docstring calls a stream "the caller's", the same shape a
+    # transaction inside a block is read through, with nothing after it
+    # checked -- so this reads every address BIP155 defines and silently
+    # drops whatever else the peer appended, matching Core's leniency
+    # without a second copy of Addr's codec. btclib-org/btclib-node#149
+    _refuse_past_bound("addr", _count_past(msg, MAX_ADDR_TO_SEND, _ADDR_ENTRY_SIZE))
     entries = Addr.parse(BytesIO(msg)).addresses
+    conn.addr_relay_enabled = True
     # BIP155's record is what the table holds, an addr version 1 entry
     # having no room for the networks a peer may yet gossip
     _store_gossip(node, conn, (peer_from_addr_entry(entry) for entry in entries))
@@ -588,14 +744,17 @@ def addrv2(node: Node, msg: bytes, conn: Connection) -> None:
     """Merge the BIP155 entries a peer gossiped into the address table."""
     # the same leniency as addr above, and the same reason: BIP155
     # entries fully read, anything past them left unchecked rather than
-    # costing the peer its connection. btclib-org/btclib-node#149
-    _store_gossip(node, conn, AddrV2.parse(BytesIO(msg)).addresses)
+    # costing this node the gossip. btclib-org/btclib-node#149
+    _refuse_past_bound("addrv2", _addrv2_count_past(msg, MAX_ADDR_TO_SEND))
+    addresses = AddrV2.parse(BytesIO(msg)).addresses
+    conn.addr_relay_enabled = True
+    _store_gossip(node, conn, addresses)
 
 
 # Core's `MAX_ADDR_RATE_PER_SECOND` and `MAX_ADDR_PROCESSING_TOKEN_BUCKET`
 # (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
 # tag): the rate a peer's address tokens refill at, and the ceiling that
-# refill stops at, which the `MAX_ADDR_TO_SEND` added by `verack`'s own
+# refill stops at, which the `MAX_ADDR_TO_SEND` added by `version`'s own
 # `getaddr` may exceed.
 _MAX_ADDR_RATE_PER_SECOND = 0.1
 _MAX_ADDR_PROCESSING_TOKEN_BUCKET = MAX_ADDR_TO_SEND
@@ -643,9 +802,7 @@ def _store_gossip(
             ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_NETWORK_LIMITED
         ):
             continue
-        # Core's `IsBanned` beside it has no counterpart: this node keeps
-        # no ban list (btclib-org/btclib-node#1088)
-        if manager.is_discouraged(address):
+        if manager.is_discouraged(address) or manager.ban_man.is_peer_banned(address):
             continue
         kept.append(address)
     conn.stats.addr_processed += len(kept)
@@ -730,10 +887,10 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
         # bitcoin/bitcoin@4519933391), and `PeerManagerImpl::ProcessInvalidTx`
         # (`src/net_processing.cpp`, same commit) calls nothing punitive
         # for a transaction failure -- there is no `MaybePunishNodeForTx`,
-        # where `MaybePunishNodeForBlock` exists and is called. Caught
-        # here rather than left to `p2p.main.handle_p2p`, whose own
-        # `isinstance(e, BTClibException)` answers yes to every one of
-        # these. btclib-org/btclib-node#843
+        # where `MaybePunishNodeForBlock` exists and is called. None of
+        # these is a `MisbehavingError`, so `p2p.main.handle_p2p` would
+        # not discourage the peer either; caught here for the record
+        # below. btclib-org/btclib-node#843
         #
         # Recorded in `Mempool`'s own reject cache, whose docstring
         # argues the resubmission cost this answers and the gap it
@@ -781,14 +938,13 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
     (btclib-org/btclib-node#233), and this function, which does.
     `block_index.add_headers([block.header])` is `AcceptBlockHeader`'s
     own shape: it indexes the header where the parent is known, raises
-    a `BTClibException` where the header itself is invalid -- `main.
-    handle_p2p`'s own `except` already drops and discourages the peer
-    for either, the same way it already does for a block failing its
-    own proof of work below -- and, for a single header whose parent is
-    missing, returns `None` rather than raising, which is `headers`'s
-    own "ask again" case and not this one's: `BTClibValueError` is
-    raised here instead, for `main.handle_p2p`'s same `except` to
-    discourage the peer over, matching `Misbehaving`.
+    where the header itself is invalid -- a `MisbehavingError` where
+    Core's `MaybePunishNodeForBlock` punishes, which `main.handle_p2p`'s
+    own `except` answers by dropping and discouraging the peer, as it
+    does for a block failing its own checks below -- and, for a single
+    header whose parent is missing, returns `None` rather than raising,
+    which is `headers`'s own "ask again" case and not this one's: a
+    `MisbehavingError` is raised here instead, matching `Misbehaving`.
     btclib-org/btclib-node#711
     """
     # btclib's BlockPayload validates against mainnet's pow limit by
@@ -813,7 +969,7 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
             f"block {block_hash.hex()} has prev block not found: "
             f"{block.header.previous_block_hash.hex()}"
         )
-        raise BTClibValueError(err_msg)
+        raise MisbehavingError(err_msg)
 
     block_info = block_index.get_block_info(block_hash)
 
@@ -822,11 +978,14 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
         # main.handle_p2p, which drops the peer that sent it. Invalidate
         # first and re-raise, so the next peer offering the same block
         # is refused before it is asked to send it: btclib-org/btclib-node#77
+        # A `MisbehavingError`: this is Core's `CheckBlock`, whose
+        # `BLOCK_CONSENSUS` and `BLOCK_MUTATED` `MaybePunishNodeForBlock`
+        # punishes (btclib-org/btclib-node#1170).
         try:
             block.assert_valid(node.chain.pow_limit_bits)
-        except BTClibException:
+        except BTClibException as e:
             block_index.invalidate(block_hash)
-            raise
+            raise MisbehavingError(str(e)) from e
         node.block_db.add_block(block)
         # novel, past its own checks and on disk: what Core's own
         # `m_last_block_time` records for eviction, whether or not the
@@ -851,6 +1010,7 @@ def inv(node: Node, msg: bytes, conn: Connection) -> None:
     spent all the same, as in Core. Transactions are queued only out of
     initial block download, where Core calls `AddTxAnnouncement`.
     """
+    _refuse_past_bound("inv", _count_past(msg, MAX_INV_SZ, _INV_ENTRY_SIZE))
     inv = Inv.parse(msg)
 
     block_index = node.chainstate.block_index
@@ -890,17 +1050,73 @@ def inv(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 # The two families `advance_getdata` below dispatches on -- everything
-# else a `getdata` may name (`MSG_FILTERED_BLOCK`, `MSG_CMPCT_BLOCK`,
-# `UNDEFINED`, an unrecognised code) is neither, and is popped off the
-# front of the pending items and otherwise ignored, the same silence
-# `_filter_range` already answers a request it declines with elsewhere
-# in this module.
+# else a `getdata` may name (`MSG_FILTERED_BLOCK`, `UNDEFINED`, an
+# unrecognised code) is neither, and is popped off the front of the
+# pending items and otherwise ignored, the same silence `_filter_range`
+# already answers a request it declines with elsewhere in this module.
 _GETDATA_TX_TYPES = (
     InventoryType.MSG_TX,
     InventoryType.MSG_WTX,
     InventoryType.MSG_WITNESS_TX,
 )
-_GETDATA_BLOCK_TYPES = (InventoryType.MSG_BLOCK, InventoryType.MSG_WITNESS_BLOCK)
+_GETDATA_BLOCK_TYPES = (
+    InventoryType.MSG_BLOCK,
+    InventoryType.MSG_WITNESS_BLOCK,
+    InventoryType.MSG_CMPCT_BLOCK,
+)
+
+# BIP152's compact blocks as Core serves them (`net_processing.cpp`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the one version Core speaks,
+# the depth past which a `MSG_CMPCT_BLOCK` is answered with the full block
+# instead, and the depth past which a `getblocktxn` is
+CMPCTBLOCKS_VERSION = 2
+MAX_CMPCTBLOCK_DEPTH = 5
+MAX_BLOCKTXN_DEPTH = 10
+# Core's `CanDirectFetch`: the tip is within this many target spacings
+# of now
+_DIRECT_FETCH_SPACINGS = 20
+
+
+def compact_block(block: Block, nonce: int) -> CmpctBlock:
+    """Return `block` as a `cmpctblock`, the coinbase alone sent whole.
+
+    Core's `CBlockHeaderAndShortTxIDs` constructor: the coinbase
+    prefilled at index 0, and every other transaction by the short id of
+    its wtxid under the key `nonce` and the header give.
+    """
+    coinbase = PrefilledTransaction(0, block.transactions[0])
+    keyed = CmpctBlock(block.header, nonce, (), (coinbase,), check_validity=False)
+    short_ids = [keyed.short_id(tx.hash) for tx in block.transactions[1:]]
+    return CmpctBlock(block.header, nonce, short_ids, (coinbase,))
+
+
+def _can_direct_fetch(node: Node) -> bool:
+    """Core's `CanDirectFetch`: whether this node's tip is recent."""
+    block_index = node.chainstate.block_index
+    tip = block_index.header_dict[block_index.active_chain[-1]].header
+    spacing = node.chain.consensus.pow_target_spacing
+    return tip.time.timestamp() > time.time() - spacing * _DIRECT_FETCH_SPACINGS
+
+
+def _block_answer(node: Node, item: Inventory, block: Block) -> BlockMsg | CmpctBlock:
+    """Answer a block item as Core's `ProcessGetBlockData` does.
+
+    A `MSG_CMPCT_BLOCK` for a block at most `MAX_CMPCTBLOCK_DEPTH` below
+    a recent tip gets a `cmpctblock` under a fresh nonce; one for an
+    older block gets the full block with witnesses, "we're almost
+    guaranteed they won't have a useful mempool to match against".
+    """
+    if item.type_code == InventoryType.MSG_CMPCT_BLOCK:
+        block_index = node.chainstate.block_index
+        height = block_index.header_dict[item.hash].index
+        tip_height = len(block_index.active_chain) - 1
+        if _can_direct_fetch(node) and height >= tip_height - MAX_CMPCTBLOCK_DEPTH:
+            return compact_block(block, secrets.randbits(64))
+        include_witness = True
+    else:
+        include_witness = item.type_code == InventoryType.MSG_WITNESS_BLOCK
+    return BlockMsg(block, include_witness=include_witness, check_validity=False)
+
 
 # Room to schedule ahead of a peer's own draining before `advance_getdata`
 # pauses and hands the rest to `node.pending_getdata`, for `resume_getdata`
@@ -997,7 +1213,7 @@ def _below_prune_threshold(node: Node, block_hash: bytes) -> bool:
     still be there: a pruned node that still holds it this once is not
     to be relied on for it the next time either. Every connection of a
     pruned node is told the same `NODE_NETWORK_LIMITED`-only services
-    (`connection.py`'s own `send_version`, gated on `Config.pruned`
+    (`connection.py`'s own `own_version`, gated on `Config.pruned`
     the identical way), so this reads `node.config.pruned` directly
     rather than a per-connection record of what was sent. `+ 2` is
     Core's own buffer, "for possible races". Answers `False` for a hash
@@ -1052,10 +1268,7 @@ def _serve_getdata_item(
             return not_found_bytes
         block = node.block_db.get_block(item.hash)
         if block:
-            include_witness = item.type_code == InventoryType.MSG_WITNESS_BLOCK
-            conn.send(
-                BlockMsg(block, include_witness=include_witness, check_validity=False)
-            )
+            conn.send(_block_answer(node, item, block))
     # else: neither family, popped and otherwise ignored -- see the
     # comment beside _GETDATA_TX_TYPES above.
     return not_found_bytes
@@ -1238,6 +1451,7 @@ def getdata(node: Node, msg: bytes, conn: Connection) -> None:
     each connection a backlog of its own. `MAX_PENDING_GETDATA_ITEMS`
     above is this tree's own bound in place of that redesign.
     """
+    _refuse_past_bound("getdata", _count_past(msg, MAX_INV_SZ, _INV_ENTRY_SIZE))
     getdata = GetData.parse(msg)
     existing = node.pending_getdata.get(conn.id)
     if existing is None:
@@ -1264,6 +1478,9 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     flight to this peer, as Core's `ProcessHeadersMessage` takes it: one
     connecting to nothing may be an announcement, and answers nothing.
     """
+    # Core reads the count alone before it compares, so no entry is
+    # needed in the payload for it to call `Misbehaving`
+    _refuse_past_bound("headers", _count_past(msg, MAX_HEADERS_RESULTS, 0))
     headers = Headers.parse(msg).headers
     if not headers:
         # Core's own `ProcessHeadersMessage` returns on the same batch,
@@ -1274,10 +1491,10 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
         return
     # add_headers raises on a batch it refuses -- a header failing its
     # own proof of work or context check -- and the raise is left to
-    # reach handle_p2p, which drops the connection the same way block's
-    # own does: a peer that sent it is not one telling us it has
-    # nothing left, and this is not the ordinary end of a sync.
-    # btclib-org/btclib-node#75
+    # reach handle_p2p, which drops and discourages the peer for a
+    # `MisbehavingError` the same way block's own does: a peer that sent
+    # it is not one telling us it has nothing left, and this is not the
+    # ordinary end of a sync. btclib-org/btclib-node#75
     block_index = node.chainstate.block_index
     tip = block_index.add_headers(headers)
     # The batch's last header is a block the peer has: Core's
@@ -1297,6 +1514,7 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
         conn.best_known_height = max(
             conn.best_known_height, block_index.get_block_info(tip).index
         )
+        protect_if_caught_up(node, conn)
     if tip is None:
         # a batch connecting to nothing this node knows, whatever its
         # length: get_block_locator_hashes asks from what this node
@@ -1439,6 +1657,12 @@ def getheaders(node: Node, msg: bytes, conn: Connection) -> None:
     The peer's `best_header_sent` becomes the last header sent, or the
     tip where none is.
     """
+    # Core drops a peer whose locator passes `MAX_LOCATOR_SZ`, and does
+    # not discourage it. The locator follows a four-octet version, and
+    # `hash_stop` follows the locator.
+    if _count_past(msg[:-_HASH_SIZE], MAX_LOCATOR_SZ, _HASH_SIZE, offset=4):
+        conn.stop()
+        return
     getheaders = GetHeaders.parse(msg)
     block_index = node.chainstate.block_index
     active_chain = block_index.active_chain
@@ -1771,6 +1995,42 @@ def get_cfcheckpt(node: Node, msg: bytes, conn: Connection) -> None:
     )
 
 
+def getblocktxn(node: Node, msg: bytes, conn: Connection) -> None:
+    """Answer the transactions of a block a peer's `cmpctblock` lacked.
+
+    Core's `GETBLOCKTXN` handling (`net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): silence for a block not
+    held; a `blocktxn` for one at most `MAX_BLOCKTXN_DEPTH` below the
+    tip, an index past its last transaction being misbehaviour; and for
+    an older one the full block, queued as a `MSG_WITNESS_BLOCK` item of
+    this connection's own `getdata`, whose serving pays for the disk
+    read the request cost.
+    """
+    request = GetBlockTxn.parse(msg)
+    block_index = node.chainstate.block_index
+    block_info = block_index.header_dict.get(request.block_hash)
+    if block_info is None:
+        return
+    # Core's `!(pindex->nStatus & BLOCK_HAVE_DATA)` return, ahead of any
+    # depth: a block never downloaded or pruned away is not queued for the
+    # `getdata` below, whose prune threshold would drop the connection
+    if not node.block_db.has_block(request.block_hash):
+        return
+    if block_info.index < len(block_index.active_chain) - 1 - MAX_BLOCKTXN_DEPTH:
+        item = Inventory(InventoryType.MSG_WITNESS_BLOCK, request.block_hash)
+        getdata(node, GetData([item]).serialize(), conn)
+        return
+    block = node.block_db.get_block(request.block_hash)
+    if block is None:
+        return
+    transactions = block.transactions
+    if any(index >= len(transactions) for index in request.indexes):
+        err_msg = "getblocktxn with out-of-bounds tx indices"
+        raise MisbehavingError(err_msg)
+    answer = [transactions[index] for index in request.indexes]
+    conn.send(BlockTxn(request.block_hash, answer))
+
+
 def not_found(node: Node, msg: bytes, conn: Connection) -> None:
     """Clear the in-flight record for a transaction the peer could not answer.
 
@@ -1831,6 +2091,7 @@ callbacks = {
     "tx": tx,
     "block": block,
     "getdata": getdata,
+    "getblocktxn": getblocktxn,
     "getheaders": getheaders,
     "headers": headers,
     "addr": addr,
