@@ -554,9 +554,9 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 ### Three peer refusals are answered as Core answers them
 
-- **A header on an invalid parent and a non-continuous `headers` batch cost
-  their sender, as does a header already invalid from an outbound peer, and a
-  non-btclib exception keeps the peer** (closes #1233), as in Core.
+- **A header on an invalid parent (`bad-prevblk`, in `submitblock` too) and a
+  non-continuous batch cost the sender, as does one already invalid from an
+  outbound peer; other exceptions keep the peer** (closes #1233).
 
 ## v2026.9.24
 

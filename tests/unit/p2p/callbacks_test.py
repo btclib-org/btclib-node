@@ -3234,9 +3234,13 @@ class FakeHeaderIndex:
         self.header_index_pos = {header_index_tip: 0}
         self.given: list[BlockHeader] | None = None
         self.punish_cached_invalid: bool | None = None
-        # what `update_block_availability` looks a hash up in: empty, so
-        # every hash `headers` records for the peer is kept as unknown
-        self.header_dict: dict[bytes, Any] = {}
+        # what `update_block_availability` looks a hash up in, and what
+        # `headers` asks whether a batch connects: regtest's genesis, the
+        # parent of every batch here, where `tip` says the batch connected,
+        # so every hash `headers` records for the peer is kept as unknown
+        self.header_dict: dict[bytes, Any] = (
+            {} if tip is None else {RegTest().genesis.hash: None}
+        )
 
     def add_headers(
         self, headers: Iterable[BlockHeader], *, punish_cached_invalid: bool = False
@@ -3390,6 +3394,50 @@ def test_headers_punishes_a_cached_invalid_header_from_an_outbound_peer_alone(
     node.chainstate.block_index = index
     headers(node, Headers(chain).serialize(), a_peer(inbound=inbound))
     assert index.punish_cached_invalid is not inbound
+
+
+def test_a_connecting_batch_refused_from_a_kept_peer_answers_the_getheaders(
+    tmp_path: Path,
+) -> None:
+    """ISS 1233: Core clears the request in flight before accepting a header.
+
+    The batch's first header connects and passes `CheckHeadersPoW`, and the
+    batch is refused after that, `duplicate-invalid` from an inbound peer,
+    who is kept: the `getheaders` in flight is answered all the same.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    chain = generate_random_header_chain(1, RegTest().genesis.hash)
+    block_index.add_headers(chain)
+    block_index.invalidate(chain[0].hash)
+    node = a_data_node(block_index=block_index, status=NodeStatus.SyncingHeaders)
+    peer = a_peer(inbound=True)
+    node.download_manager.last_getheaders_timestamps[peer.id] = time.time()
+    with pytest.raises(BTClibValueError, match="duplicate-invalid"):
+        headers(node, Headers(chain).serialize(), peer)
+    assert peer.id not in node.download_manager.last_getheaders_timestamps
+    chainstate.close()
+
+
+def test_a_batch_failing_check_headers_pow_leaves_the_getheaders_in_flight(
+    tmp_path: Path,
+) -> None:
+    """ISS 1233: Core's `CheckHeadersPoW` refuses before the request is cleared.
+
+    The first header connects; the second does not build on it.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    first = generate_random_header_chain(1, RegTest().genesis.hash)
+    other = generate_random_header_chain(1, RegTest().genesis.hash)
+    node = a_data_node(block_index=block_index, status=NodeStatus.SyncingHeaders)
+    peer = a_peer()
+    in_flight = time.time()
+    node.download_manager.last_getheaders_timestamps[peer.id] = in_flight
+    with pytest.raises(MisbehavingError, match="non-continuous headers sequence"):
+        headers(node, Headers([*first, *other]).serialize(), peer)
+    assert node.download_manager.last_getheaders_timestamps[peer.id] == in_flight
+    chainstate.close()
 
 
 def test_a_refused_batch_is_not_the_end_of_a_sync() -> None:
@@ -4369,7 +4417,9 @@ def test_a_known_batch_off_the_best_header_chain_is_checked_on_the_active_one(
 def a_minimum_chain_work(node: Any, work: int) -> None:
     """Give `node` a regtest whose `minimum_chain_work` is `work`, not 0."""
     consensus = replace(node.chain.consensus, minimum_chain_work=work)
-    node.chain = SimpleNamespace(consensus=consensus)
+    node.chain = SimpleNamespace(
+        consensus=consensus, pow_limit_bits=node.chain.pow_limit_bits
+    )
 
 
 @pytest.mark.parametrize(

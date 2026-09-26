@@ -661,9 +661,10 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
             if block_index.add_headers([block.header]) is None:
                 return "prev-blk-not-found"
         except BTClibException as error:
-            # the header itself fails a range/proof-of-work check
-            # `_validate_header_batch` makes before anything is indexed
-            # -- caught here rather than left to propagate the way
+            # the header fails a check `_validate_header_batch` makes
+            # before anything is indexed -- its own proof of work or
+            # context, or its parent marked invalid, `bad-prevblk` --
+            # caught here rather than left to propagate the way
             # `p2p.callbacks.block` lets it, because that callback's own
             # caller punishes the peer for it and `submitblock` has no
             # peer to punish, only a reason to answer

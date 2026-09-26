@@ -82,7 +82,12 @@ from btclib.p2p.limits import (
 from btclib.p2p.negotiation import FeeFilter, GetAddr, WtxidRelay
 from btclib.p2p.reject import Reject, RejectCode
 
-from btclib_node.chainstate.block_index import BlockStatus, block_time, calculate_work
+from btclib_node.chainstate.block_index import (
+    BlockStatus,
+    block_time,
+    calculate_work,
+    check_headers_pow,
+)
 from btclib_node.chainstate.filter_index import NO_PREVIOUS_FILTER_HEADER
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, NodeStatus, P2pConnStatus
 from btclib_node.exceptions import (
@@ -1492,14 +1497,15 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
         # again, from this node's own tip, would draw the same empty answer.
         node.download_manager.last_getheaders_timestamps.pop(conn.id, None)
         return
-    # add_headers raises on a batch it refuses, and the raise is left to
-    # reach handle_p2p, which discourages the peer for a
-    # `MisbehavingError` the same way block's own does: a peer that sent
-    # it is not one telling us it has nothing left, and this is not the
-    # ordinary end of a sync. btclib-org/btclib-node#75
-    # A header already marked invalid costs an outbound peer alone, as
-    # Core's `MaybePunishNodeForBlock` has it for `BLOCK_CACHED_INVALID`.
     block_index = node.chainstate.block_index
+    # Core's `CheckHeadersPoW`, then the getheaders in flight answered once
+    # the batch's first header connects, before any header is accepted, so
+    # a batch refused past this point still answers it
+    # (`ProcessHeadersMessage`, `net_processing.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+    check_headers_pow(headers, node.chain.pow_limit_bits)
+    if headers[0].previous_block_hash in block_index.header_dict:
+        node.download_manager.last_getheaders_timestamps.pop(conn.id, None)
     # Core's `IsAncestorOfBestHeaderOrTip`, asked of the last header before
     # the batch is indexed: its `ProcessHeadersMessage` hands any other
     # batch whose chain has less than `minimum_chain_work` to
@@ -1512,6 +1518,13 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
         last in block_index.header_index_pos
         or _height_on_the_active_chain(node, last) is not None
     )
+    # add_headers raises on a batch it refuses, and the raise is left to
+    # reach handle_p2p, which discourages the peer for a
+    # `MisbehavingError` the same way block's own does: a peer that sent
+    # it is not one telling us it has nothing left, and this is not the
+    # ordinary end of a sync. btclib-org/btclib-node#75
+    # A header already marked invalid costs an outbound peer alone, as
+    # Core's `MaybePunishNodeForBlock` has it for `BLOCK_CACHED_INVALID`.
     tip = block_index.add_headers(headers, punish_cached_invalid=not conn.inbound)
     # The batch's last header is a block the peer has: Core's
     # `UpdatePeerStateForReceivedHeaders` where the batch connected, and
@@ -1522,7 +1535,6 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
         block_index, conn.block_availability, headers[-1].hash if tip is None else tip
     )
     if tip is not None:
-        node.download_manager.last_getheaders_timestamps.pop(conn.id, None)
         # This batch connected, so its own tip is a taller header this
         # connection has sent than any before it. `download.py`'s own
         # citation is where a connection's `best_known_height` is read

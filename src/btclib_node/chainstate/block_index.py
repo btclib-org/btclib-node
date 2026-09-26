@@ -127,6 +127,19 @@ def _assert_valid_pow(header: BlockHeader, pow_limit_bits: bytes) -> None:
         raise MisbehavingError(str(e)) from e
 
 
+def check_headers_pow(headers: list[BlockHeader], pow_limit_bits: bytes) -> None:
+    """Core's `CheckHeadersPoW`: each header's proof of work, then continuity.
+
+    Both are `Misbehaving` in Core (`src/net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so both refusals are a
+    `MisbehavingError`. `BlockIndex.add_headers` asks it too, of every
+    batch it is given.
+    """
+    for header in headers:
+        _assert_valid_pow(header, pow_limit_bits)
+    _assert_continuous(headers)
+
+
 def _assert_continuous(headers: list[BlockHeader]) -> None:
     """Assert each header builds on the one before it in `headers`.
 
@@ -679,9 +692,9 @@ class BlockIndex:
     # (`validation.cpp`) header by header, where a known header marked
     # invalid is `duplicate-invalid`, `Misbehaving` for an outbound peer
     # alone (`MaybePunishNodeForBlock`), and one whose parent is marked
-    # invalid is `bad-prevblk`, `Misbehaving` for any peer. Core keeps the
-    # headers before a refused one; the batch here is taken or refused
-    # whole, `add_headers` arguing why.
+    # invalid is `bad-prevblk`, `Misbehaving` for any peer. Where a header
+    # fails the contextual check, Core keeps the headers before it and
+    # this batch is refused whole (btclib-org/btclib-node#1348).
     #
     # A refusal raises rather than answers False: it is a peer that
     # sent a header failing on its own terms, not the ordinary end
@@ -701,9 +714,7 @@ class BlockIndex:
             return self.header_dict[previous].header
 
         try:
-            for header in headers:
-                _assert_valid_pow(header, pow_limit_bits)
-            _assert_continuous(headers)
+            check_headers_pow(headers, pow_limit_bits)
             for header in headers:
                 if self._is_indexed(
                     header, punish_cached_invalid=punish_cached_invalid
