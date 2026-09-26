@@ -27,6 +27,7 @@ from btclib.p2p.negotiation import FeeFilter, SendHeaders
 
 import btclib_node.download as download_module
 from btclib_node.chains import RegTest
+from btclib_node.chainstate.block_index import block_time
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.download import MAX_BLOCKS_IN_TRANSIT_PER_PEER, DownloadManager
@@ -1666,3 +1667,132 @@ def test_in_initial_block_download_only_a_peer_synced_from_is_asked(
     )
     expected = [preferred] if in_flight else [preferred, inbound]
     assert asked_for_blocks(manager, monkeypatch) == expected
+
+
+def an_active_chain(block_index: BlockIndex, length: int) -> list[bytes]:
+    """Index `length` headers on genesis, held and connected as the chain."""
+    chain = extend(block_index, length)
+    for block_hash in chain:
+        block_index.set_downloaded(block_hash)
+        block_index.add_to_active_chain(block_hash)
+    return chain
+
+
+def a_clock_at(
+    monkeypatch: pytest.MonkeyPatch, block_index: BlockIndex, age: float
+) -> float:
+    """Stop `download`'s clock `age` seconds after the active tip's time."""
+    tip = block_index.get_block_info(block_index.active_chain[-1]).header
+    now = block_time(tip) + age
+    monkeypatch.setattr(download_module, "time", SimpleNamespace(time=lambda: now))
+    return now
+
+
+def test_headers_near_the_tip_are_fetched_at_once(
+    index: BlockIndex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `HeadersDirectFetchBlocks`: the blocks up to the header, in order.
+
+    What is asked for is in flight from the peer from now on.
+    """
+    an_active_chain(index, 2)
+    now = a_clock_at(monkeypatch, index, 60)
+    announced = extend(index, 3, index.active_chain[-1])
+    conn = a_conn(1)
+    manager = make_manager([conn], block_index=index)
+    manager.headers_direct_fetch(conn, announced[-1])
+    (getdata,) = only(conn, GetData)
+    assert hashes_of(getdata) == announced
+    assert {item.type_code for item in getdata.items} == {
+        InventoryType.MSG_WITNESS_BLOCK
+    }
+    assert conn.download_queue == announced
+    assert conn.block_availability.downloading_since == now
+
+
+def test_headers_are_not_fetched_at_once_behind_a_stale_tip(
+    index: BlockIndex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `CanDirectFetch`: the tip under twenty block intervals old."""
+    an_active_chain(index, 2)
+    a_clock_at(monkeypatch, index, 20 * 10 * 60)
+    announced = extend(index, 1, index.active_chain[-1])
+    conn = a_conn(1)
+    manager = make_manager([conn], block_index=index)
+    manager.headers_direct_fetch(conn, announced[-1])
+    assert not conn.sent
+    a_clock_at(monkeypatch, index, 20 * 10 * 60 - 1)
+    manager.headers_direct_fetch(conn, announced[-1])
+    assert conn.download_queue == announced
+
+
+def test_a_header_with_less_work_or_invalid_is_not_fetched_at_once(
+    index: BlockIndex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The header has at least the tip's work, and is not invalid."""
+    an_active_chain(index, 3)
+    a_clock_at(monkeypatch, index, 60)
+    shorter = extend(index, 2)
+    invalid = extend(index, 4, index.active_chain[-1])
+    index.invalidate(invalid[-1])
+    conn = a_conn(1)
+    manager = make_manager([conn], block_index=index)
+    manager.headers_direct_fetch(conn, shorter[-1])
+    manager.headers_direct_fetch(conn, invalid[-1])
+    assert not conn.sent
+    # a sibling of the tip carries the same work, which is enough
+    sibling = extend(index, 1, index.active_chain[-2])
+    manager.headers_direct_fetch(conn, sibling[-1])
+    assert conn.download_queue == sibling
+
+
+def test_what_is_held_or_in_flight_is_not_fetched_at_once_again(
+    index: BlockIndex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A block held, or asked of any peer, is passed over."""
+    an_active_chain(index, 1)
+    a_clock_at(monkeypatch, index, 60)
+    announced = extend(index, 4, index.active_chain[-1])
+    index.set_downloaded(announced[0])
+    other = a_conn(2, queue=[announced[2]])
+    conn = a_conn(1)
+    manager = make_manager([conn, other], block_index=index)
+    manager.headers_direct_fetch(conn, announced[-1])
+    assert conn.download_queue == [announced[1], announced[3]]
+
+
+def test_a_direct_fetch_stops_at_the_peer_s_room_in_flight(
+    index: BlockIndex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Earliest first, up to `MAX_BLOCKS_IN_TRANSIT_PER_PEER` in flight."""
+    an_active_chain(index, 1)
+    a_clock_at(monkeypatch, index, 60)
+    announced = extend(index, 3, index.active_chain[-1])
+    queued = [a_hash(n) for n in range(MAX_BLOCKS_IN_TRANSIT_PER_PEER - 1)]
+    conn = a_conn(1, queue=list(queued))
+    manager = make_manager([conn], block_index=index)
+    manager.headers_direct_fetch(conn, announced[-1])
+    assert conn.download_queue == [*queued, announced[0]]
+    full = a_conn(3, queue=[a_hash(n) for n in range(MAX_BLOCKS_IN_TRANSIT_PER_PEER)])
+    manager = make_manager([full], block_index=index)
+    manager.headers_direct_fetch(full, announced[-1])
+    assert not full.sent
+
+
+def test_a_reorg_deeper_than_the_limit_is_left_to_block_download(
+    index: BlockIndex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's "Large reorg, won't direct fetch", past the in-flight limit + 1.
+
+    A branch one block shorter than that is fetched.
+    """
+    an_active_chain(index, 1)
+    a_clock_at(monkeypatch, index, 60)
+    deep = extend(index, MAX_BLOCKS_IN_TRANSIT_PER_PEER + 2)
+    conn = a_conn(1)
+    manager = make_manager([conn], block_index=index)
+    manager.headers_direct_fetch(conn, deep[-1])
+    assert not conn.sent
+    shallow = extend(index, MAX_BLOCKS_IN_TRANSIT_PER_PEER + 1)
+    manager.headers_direct_fetch(conn, shallow[-1])
+    assert conn.download_queue == shallow[:MAX_BLOCKS_IN_TRANSIT_PER_PEER]

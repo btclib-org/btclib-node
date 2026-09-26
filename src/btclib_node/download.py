@@ -25,6 +25,7 @@ from btclib.p2p.inventory import GetData, Inv, Inventory, InventoryType
 from btclib.p2p.limits import MAX_INV_SZ
 from btclib.p2p.negotiation import FeeFilter, SendHeaders
 
+from btclib_node.chainstate.block_index import BlockStatus, block_time
 from btclib_node.constants import P2pConnStatus
 from btclib_node.p2p.block_availability import find_next_blocks_to_download
 from btclib_node.p2p.callbacks import (
@@ -959,6 +960,77 @@ class DownloadManager:
             elif not conn.download_queue and staller in by_id:
                 stalling = by_id[staller].block_availability
                 stalling.stalling_since = stalling.stalling_since or now
+
+    def headers_direct_fetch(self, conn: Connection, last_header: bytes) -> None:
+        """Ask `conn` at once for the blocks up to a header it just sent.
+
+        Core's `HeadersDirectFetchBlocks` (`net_processing.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which its `headers`
+        handler calls for a batch that connected: only where the active
+        tip is less than twenty block intervals old (`CanDirectFetch`),
+        and `last_header` is not invalid and has at least the tip's work.
+        The blocks from the active chain up to `last_header` that are
+        neither held nor in flight from any peer are asked for, earliest
+        first, up to `conn`'s room in flight. Where the active chain is
+        not reached within `MAX_BLOCKS_IN_TRANSIT_PER_PEER` + 1 blocks,
+        nothing is asked, and `block_download` is left to it.
+
+        Core also leaves out a block `conn` could not serve without
+        witnesses, where `callbacks.version` refuses such a peer, and
+        asks for a single block as a compact block, which this node does
+        not download.
+        """
+        node = self.node
+        block_index = node.chainstate.block_index
+        active_chain = block_index.active_chain
+        header_dict = block_index.header_dict
+        chainwork = block_index.chainwork
+        tip = active_chain[-1]
+        if (
+            block_time(header_dict[tip].header)
+            <= time.time() - _POW_TARGET_SPACING * 20
+            or header_dict[last_header].status == BlockStatus.invalid
+            or chainwork[tip] > chainwork[last_header]
+        ):
+            return
+
+        def on_the_active_chain(block_hash: bytes) -> bool:
+            height = header_dict[block_hash].index
+            return height < len(active_chain) and active_chain[height] == block_hash
+
+        in_flight = {
+            block_hash
+            for peer in node.p2p_manager.connections.values()
+            for block_hash in peer.download_queue
+        }
+        to_fetch: list[bytes] = []
+        walk = last_header
+        while (
+            not on_the_active_chain(walk)
+            and len(to_fetch) <= MAX_BLOCKS_IN_TRANSIT_PER_PEER
+        ):
+            block_info = header_dict[walk]
+            if not block_info.downloaded and walk not in in_flight:
+                to_fetch.append(walk)
+            walk = block_info.header.previous_block_hash
+        if not on_the_active_chain(walk):
+            self.logger.debug(
+                "Large reorg, won't direct fetch to %s (%d)",
+                last_header.hex(),
+                header_dict[last_header].index,
+            )
+            return
+        room = MAX_BLOCKS_IN_TRANSIT_PER_PEER - len(conn.download_queue)
+        blocks = to_fetch[::-1][: max(room, 0)]
+        if not blocks:
+            return
+        self._request_blocks(conn, blocks, time.time())
+        if len(blocks) > 1:
+            self.logger.debug(
+                "Downloading blocks toward %s (%d) via headers direct fetch",
+                last_header.hex(),
+                header_dict[last_header].index,
+            )
 
     def _stalling_or_timed_out(
         self, conn: Connection, now: float, downloading_from: int

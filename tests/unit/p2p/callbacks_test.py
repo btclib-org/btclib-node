@@ -1683,6 +1683,11 @@ def a_data_node(
         inv_triggered_getheaders=set(),
         last_block_inv_triggering_headers_sync=None,
         last_getheaders_timestamps={},
+        # every (peer, header) `headers` asked to direct-fetch towards
+        direct_fetches=[],
+    )
+    node.download_manager.headers_direct_fetch = lambda conn, last_header: (
+        node.download_manager.direct_fetches.append((conn.id, last_header))
     )
     # written by `getdata` only where `advance_getdata` pauses; empty
     # here for every test that never trips that pacing bound
@@ -3496,6 +3501,26 @@ def test_a_short_batch_that_connects_answers_the_getheaders_in_flight() -> None:
     node.download_manager.last_getheaders_timestamps[peer.id] = time.time()
     headers(node, Headers(chain).serialize(), peer)
     assert peer.id not in node.download_manager.last_getheaders_timestamps
+
+
+def test_a_batch_that_connects_is_direct_fetched_towards_its_tip() -> None:
+    """Core's `ProcessHeadersMessage` ends in `HeadersDirectFetchBlocks`.
+
+    For the highest header of a batch that connected, full or short, and
+    not for one that connected to nothing.
+    """
+    short = generate_random_header_chain(2, RegTest().genesis.hash)
+    full = generate_random_header_chain(MAX_HEADERS_RESULTS, RegTest().genesis.hash)
+    for chain in (short, full):
+        node = a_data_node(status=NodeStatus.SyncingHeaders)
+        node.chainstate.block_index = FakeHeaderIndex(tip=chain[-1].hash)
+        peer = a_peer()
+        headers(node, Headers(chain).serialize(), peer)
+        assert node.download_manager.direct_fetches == [(peer.id, chain[-1].hash)]
+    node = a_data_node(status=NodeStatus.SyncingHeaders)
+    node.chainstate.block_index = FakeHeaderIndex(tip=None)
+    headers(node, Headers(short).serialize(), a_peer())
+    assert node.download_manager.direct_fetches == []
 
 
 def test_a_batch_connecting_to_nothing_answers_nothing_in_flight() -> None:
