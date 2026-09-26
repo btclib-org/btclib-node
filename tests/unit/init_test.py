@@ -977,6 +977,54 @@ def test_a_node_that_cannot_write_its_cookie_stops_and_frees_its_rpc_port(
         probe.bind(("127.0.0.1", port))
 
 
+@pytest.mark.parametrize(
+    ("rpcauth", "rpccookieperms", "line"),
+    [
+        (["bogus"], None, "Invalid -rpcauth argument."),
+        (
+            [],
+            "bogus",
+            "Invalid -rpccookieperms=bogus; must be one of 'owner', 'group', or 'all'.",
+        ),
+    ],
+    ids=["rpcauth", "rpccookieperms"],
+)
+def test_a_node_refusing_an_rpc_credential_names_it_in_the_log_alone(
+    tmp_path: Path, rpcauth: list[str], rpccookieperms: str | None, line: str
+) -> None:
+    """Core's `InitError` where `InitRPCAuthentication` refuses a value.
+
+    `init_errors`, which `cli.main` prints, holds "Unable to start HTTP
+    server" alone, and the value's own line is in the log ahead of it,
+    as `bitcoind` v31.1.0 shows them. The cookie `-rpcauth` is refused
+    after is deleted, and the port is free again.
+    """
+    port = get_random_port()
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            rpc_port=port,
+            debug=True,
+            rpcauth=rpcauth,
+            rpccookieperms=rpccookieperms,
+        )
+    )
+    try:
+        node.start()
+        wait_until(lambda: not node.is_alive())
+    finally:
+        node.stop()
+    assert node.init_errors == [btclib_node.RPC_INIT_ERROR]
+    assert not cookie_path(node.data_dir).exists()
+    log_text = (node.data_dir / "history.log").read_text(encoding="utf-8")
+    assert f"{line}\n" in log_text
+    assert log_text.index(line) < log_text.index(btclib_node.RPC_INIT_ERROR)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", port))
+
+
 def test_a_node_whose_rpc_listener_starts_has_no_init_errors(tmp_path: Path) -> None:
     """`init_errors` stays empty, and the node runs, once its listener is up."""
     with node_context(tmp_path, allow_p2p=False) as node:
@@ -1425,3 +1473,23 @@ def test_worker_count_falls_back_to_eight_split_if_the_core_count_is_unknown(
     monkeypatch.setattr(os, "cpu_count", lambda: None)
     monkeypatch.setenv("PYTEST_XDIST_WORKER_COUNT", "4")
     assert btclib_node._default_worker_count() == 2
+
+
+def test_a_nodes_ban_list_takes_its_default_length_from_the_config(
+    tmp_path: Path,
+) -> None:
+    """ISS 1219: `Config.ban_time` reaches `BanMan`, as `-bantime` does."""
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            allow_rpc=False,
+            ban_time=100,
+        )
+    )
+    try:
+        node.start()
+        assert node.p2p_manager.ban_man.default_ban_time == 100
+    finally:
+        node.stop()
