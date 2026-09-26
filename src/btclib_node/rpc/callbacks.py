@@ -1579,7 +1579,7 @@ def send_raw_transaction(node: Node, conn: RpcConnection, params: list[Any]) -> 
         # the invariant: `get_tx` cannot answer `None` once `txid_index`
         # holds `tx.id`, checked on this very branch, so this is a cast
         # rather than a check dead on every path that reaches it,
-        # matching `Connection.send_version`'s own `self.manager.port`.
+        # matching `Connection.own_version`'s own `self.manager.port`.
         # btclib-org/btclib-node#293
         to_announce = cast("Tx", node.mempool.get_tx(tx.id))
     else:

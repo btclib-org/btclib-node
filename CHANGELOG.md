@@ -455,6 +455,20 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A coin picks the answered or the gossiped table, and a pass draws up to
   a hundred times** (closes #1201), so held answered peers no longer stall it.
 
+### PeerDB records as answered only a peer it already knows
+
+- **A peer is recorded as answered only where gossip already holds its
+  endpoint** (closes #1189), as Core's `Good_` updates only what addrman holds.
+
+### A message that does not parse costs its peer nothing, as in Core
+
+- **A peer is discouraged only where Core calls `Misbehaving`** (closes
+  #1170); a payload that does not parse is logged and the peer kept.
+
+### An inbound peer is sent `version` only once its own is accepted, as in Core
+
+- **A refused inbound peer is sent nothing** (closes #1207).
+
 ### `-dnsseed`, `-fixedseeds` and `-seednode` steer the bootstrap, as in Core
 
 - **Each option is read with Core's default and log lines, and a `-seednode` is
