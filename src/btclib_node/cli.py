@@ -29,9 +29,8 @@ default is the pinned release's rather than Core `master`'s,
 that cannot start stops the node, `main` below exiting `1`, as Core's
 init aborts. Three `Config` fields have no option here: `min_relay_feerate`
 (Core's own `-minrelaytxfee` is BTC/kvB and this field is priced in
-sat/kvB already, `config.py`'s own comment on `DEFAULT_MIN_RELAY_FEERATE`
-argues why nothing enforces it yet; the unit translation is deferred
-rather than done half-heartedly), `log_path` (this command always takes
+sat/kvB already; the unit translation is deferred rather than done
+half-heartedly), `log_path` (this command always takes
 `Config`'s own default -- a file under the data directory -- an operator
 who wants console output can read it from there), and `allow_p2p` (the
 P2P listener is always requested; `-listen=0` is what keeps it from

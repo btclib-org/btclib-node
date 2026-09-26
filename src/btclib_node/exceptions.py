@@ -49,6 +49,7 @@ __all__ = [
     "RpcCredentialRefusedError",
     "StoreClosedError",
     "StoreCorruptionError",
+    "TxRejectedError",
     "UnknownChainError",
     "UnmetExpectationError",
     "UnsupportedAddressTypeError",
@@ -105,6 +106,24 @@ class NonStandardTxError(BTClibValueError):
     the peer for it either, and `tx`'s catch is what records the
     refusal.
     """
+
+
+class TxRejectedError(BTClibValueError):
+    """A mempool candidate refused with one of Core's own reject reasons.
+
+    `reason` is `ValidationState::GetRejectReason` and `details` its
+    debug message; `str()` is `ToString`, the two joined by ", "
+    (`src/consensus/validation.h`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag). `rpc.callbacks` answers `testmempoolaccept`'s
+    `reject-reason` and `reject-details` with them, and
+    `sendrawtransaction`'s `-26` with `str()`. `BTClibValueError`, so
+    `p2p.callbacks.tx` records it as it records any other refusal.
+    """
+
+    def __init__(self, reason: str, details: str) -> None:
+        super().__init__(f"{reason}, {details}")
+        self.reason = reason
+        self.details = details
 
 
 class ChainstateInconsistencyError(RuntimeError):
