@@ -36,7 +36,7 @@ from btclib_node.main import (
 from btclib_node.p2p.address import ip_and_port, peer_address
 from btclib_node.p2p.eviction import Network, is_valid, net_class
 from btclib_node.rpc.connection import RawJSON
-from btclib_node.rpc.errors import RpcError, bool_param, type_error
+from btclib_node.rpc.errors import RpcError, bool_param, type_error, type_errors
 
 if TYPE_CHECKING:
     from btclib_node import Node
@@ -879,31 +879,34 @@ def get_peer_info(
     peers = {**manager.pending_connections, **manager.connections}
     out: list[dict[str, Any]] = []
     for connection_id, p2p_conn in sorted(peers.items()):
-        try:
-            addr = p2p_conn.client.getpeername()
-            addrbind = p2p_conn.client.getsockname()
-        # A peer disconnecting mid-lookup is not worth logging a
-        # second time; its own connection state already reports it.
-        # Deliberately blind (BLE001) alongside S112: a disconnect
-        # racing this call can surface as more than one socket
-        # error depending on timing and platform, and every one of
-        # them means the same "skip this peer, ask the next".
-        except Exception:  # noqa: S112, BLE001
+        addresses = _socket_addresses(p2p_conn)
+        if addresses is None:
             continue
-        # Core writes addrbind with `CService::ToStringAddrPort`, and
-        # addrlocal from the string `CopyStats` builds with it; its addr
-        # is `m_addr_name`, which is that same string only where the peer
-        # was not dialled by name. Here addr is `getpeername`'s and never
-        # a name, so one formatter serves them all.
-        entry = _peer_entry(
-            node,
-            connection_id,
-            p2p_conn,
-            ip_and_port(addr[0], addr[1]),
-            ip_and_port(addrbind[0], addrbind[1]),
-        )
-        out.append(entry)
+        addr, addrbind = addresses
+        out.append(_peer_entry(node, connection_id, p2p_conn, addr, addrbind))
     return out
+
+
+def _socket_addresses(p2p_conn: Connection) -> tuple[str, str] | None:
+    """Return `getpeerinfo`'s `addr` and `addrbind`, or `None` for a gone peer.
+
+    Core writes addrbind with `CService::ToStringAddrPort`, and its addr
+    is `m_addr_name`, which is that same string only where the peer was
+    not dialled by name. Here addr is `getpeername`'s and never a name,
+    so one formatter serves both. `disconnectnode` matches its `address`
+    against the same `addr`, as Core's matches `m_addr_name`.
+    """
+    try:
+        addr = p2p_conn.client.getpeername()
+        addrbind = p2p_conn.client.getsockname()
+    # A peer disconnecting mid-lookup is not worth logging a second
+    # time; its own connection state already reports it. Deliberately
+    # blind (BLE001): a disconnect racing this call can surface as more
+    # than one socket error depending on timing and platform, and every
+    # one of them means the same "skip this peer, ask the next".
+    except Exception:  # noqa: BLE001
+        return None
+    return ip_and_port(addr[0], addr[1]), ip_and_port(addrbind[0], addrbind[1])
 
 
 def get_connection_count(node: Node, conn: RpcConnection, _: list[Any]) -> int:
@@ -1033,6 +1036,103 @@ def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
         raise RpcError(RPCErrorCode.INVALID_PARAMETER, str(error)) from error
 
     node.p2p_manager.connect(address)
+
+
+# Core's own `disconnectnode` help (`src/rpc/net.cpp`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag), what `RPCHelpMan::ToString`
+# answers a call with more arguments than it declares -- read back from a
+# regtest bitcoind v31.1.0, whose examples name mainnet's port whatever
+# the chain.
+_DISCONNECTNODE_HELP = (
+    'disconnectnode ( "address" nodeid )\n'
+    "\n"
+    "Immediately disconnects from the specified peer node.\n"
+    "\n"
+    "Strictly one out of 'address' and 'nodeid' can be provided to identify"
+    " the node.\n"
+    "\n"
+    "To disconnect by nodeid, either set 'address' to the empty string, or"
+    " call using the named 'nodeid' argument only.\n"
+    "\n"
+    "Arguments:\n"
+    "1. address    (string, optional, default=fallback to nodeid) The IP"
+    " address/port of the node\n"
+    "2. nodeid     (numeric, optional, default=fallback to address) The node"
+    " ID (see getpeerinfo for node IDs)\n"
+    "\n"
+    "Result:\n"
+    "null    (json null)\n"
+    "\n"
+    "Examples:\n"
+    '> bitcoin-cli disconnectnode "192.168.0.6:8333"\n'
+    '> bitcoin-cli disconnectnode "" 1\n'
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0",'
+    ' "id": "curltest", "method": "disconnectnode", "params":'
+    " [\"192.168.0.6:8333\"]}' -H 'content-type: application/json'"
+    " http://127.0.0.1:8332/\n"
+    '> curl --user myusername --data-binary \'{"jsonrpc": "2.0",'
+    ' "id": "curltest", "method": "disconnectnode", "params": ["", 1]}\''
+    " -H 'content-type: application/json' http://127.0.0.1:8332/\n"
+)
+
+# `UniValue::getInt<int64_t>`'s own range, past which it throws "JSON
+# integer out of range"
+_INT64_BOUND = 2**63
+
+
+def disconnect_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
+    """Answer `disconnectnode`: drop one connection, by address or by id.
+
+    Core's own (`src/rpc/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag): `address` alone, or an empty or null `address` with
+    `nodeid`, and anything else `RPC_INVALID_PARAMS`. A connection still
+    short of `verack` is found too, as Core's `m_nodes` holds it. The
+    address is matched against `getpeerinfo`'s own `addr`, the id against
+    its `id`, and neither found is `RPC_CLIENT_NODE_NOT_CONNECTED`. Named
+    arguments are btclib-org/btclib-node#1168's.
+    """
+    if len(params) > 2:  # noqa: PLR2004
+        raise RpcError(RPCErrorCode.MISC_ERROR, _DISCONNECTNODE_HELP)
+    address = params[0] if params else None
+    node_id = params[1] if len(params) > 1 else None
+    # both arguments' types are checked before either is read, and every
+    # mismatch is named in one refusal, as `HandleRequest` does
+    mismatches: list[tuple[int, str, object, str]] = []
+    if address is not None and not isinstance(address, str):
+        mismatches.append((1, "address", address, "string"))
+    if node_id is not None and (
+        isinstance(node_id, bool) or not isinstance(node_id, int | float)
+    ):
+        mismatches.append((2, "nodeid", node_id, "number"))
+    if mismatches:
+        raise type_errors(*mismatches)
+    if node_id is not None and (
+        isinstance(node_id, float) or not -_INT64_BOUND <= node_id < _INT64_BOUND
+    ):
+        raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
+
+    manager = node.p2p_manager
+    peers = {**manager.pending_connections, **manager.connections}
+    if address is not None and node_id is None:
+        found = [
+            connection_id
+            for connection_id, p2p_conn in sorted(peers.items())
+            if (addresses := _socket_addresses(p2p_conn)) is not None
+            and addresses[0] == address
+        ][:1]
+    elif node_id is not None and not address:
+        found = [node_id] if node_id in peers else []
+    else:
+        raise RpcError(
+            RPCErrorCode.INVALID_PARAMS,
+            "Only one of address and nodeid should be provided.",
+        )
+    if not found:
+        raise RpcError(
+            RPCErrorCode.CLIENT_NODE_NOT_CONNECTED,
+            "Node not found in connected nodes",
+        )
+    manager.remove_connection(found[0])
 
 
 def _btc_amount(sats: int) -> RawJSON:
@@ -1623,6 +1723,7 @@ callbacks = {
     "getconnectioncount": get_connection_count,
     "getnetworkinfo": get_network_info,
     "addnode": add_node,
+    "disconnectnode": disconnect_node,
     "getmempoolinfo": get_mempool_info,
     "getrawmempool": get_raw_mempool,
     "getrawtransaction": get_raw_transaction,

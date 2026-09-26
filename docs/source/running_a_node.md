@@ -159,10 +159,11 @@ without a whitelist even where none is set.
 
 ## RPC methods
 
-Fourteen, each mirroring the Core method of the same name:
+Each mirrors the Core method of the same name, and the list is not yet
+all of them ([#1221](https://github.com/btclib-org/btclib-node/issues/1221)):
 `getbestblockhash`, `getblockcount`, `getblockchaininfo`,
 `getblockhash`, `getblockheader`, `getpeerinfo`, `getconnectioncount`,
-`getmempoolinfo`, `getrawmempool`, `getrawtransaction`,
+`disconnectnode`, `getmempoolinfo`, `getrawmempool`, `getrawtransaction`,
 `testmempoolaccept`, `sendrawtransaction`, `ping`, `stop`.
 
 ## What is validated, and what is not

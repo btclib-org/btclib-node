@@ -465,6 +465,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A peer is discouraged only where Core calls `Misbehaving`** (closes
   #1170); a payload that does not parse is logged and the peer kept.
 
+### `disconnectnode` drops a connection, as Core's does
+
+- **`disconnectnode` drops a connection by `getpeerinfo`'s address or id, with
+  Core's errors** (closes #1193).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
