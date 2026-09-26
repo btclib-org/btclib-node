@@ -80,7 +80,6 @@ from btclib.p2p.limits import (
     PROTOCOL_VERSION,
 )
 from btclib.p2p.negotiation import FeeFilter, GetAddr, WtxidRelay
-from btclib.p2p.reject import Reject, RejectCode
 
 from btclib_node.chainstate.block_index import BlockStatus, block_time, calculate_work
 from btclib_node.chainstate.filter_index import NO_PREVIOUS_FILTER_HEADER
@@ -142,7 +141,6 @@ __all__ = [
     "not_found",
     "ping",
     "pong",
-    "reject",
     "sendaddrv2",
     "sendheaders",
     "tx",
@@ -2044,25 +2042,11 @@ def not_found(node: Node, msg: bytes, conn: Connection) -> None:
             InventoryType.MSG_WITNESS_TX,
         ):
             conn.tx_requested.pop(item.hash, None)
-    node.logger.warning("Missing objects:%s", missing)
-
-
-def reject(node: Node, msg: bytes, conn: Connection) -> None:
-    """Log a peer's `reject` message.
-
-    `reject.code` is a `RejectCode` where BIP61 names the value and a
-    plain `int` where it does not -- `btclib.p2p.reject`'s own module
-    docstring is why -- so the code logged is the member's name where
-    there is one and the bare number otherwise, rather than a `.name`
-    that only the named half of the range has.
-    """
-    reject = Reject.parse(msg)
-    if isinstance(reject.code, RejectCode):
-        code: str | int = reject.code.name
-    else:
-        code = reject.code
-    err_msg = f"Reject received: {code}, {reject.reason}, {reject.data.hex()}"
-    node.logger.warning(err_msg)
+    # A count at debug rather than the items: Core's one line for a
+    # `notfound` is ProcessMessage's own `received: notfound (N bytes)`,
+    # under `-debug=net` (net_processing.cpp, at bitcoin/bitcoin@9be056a8a7),
+    # and the items are the peer's to size.
+    node.logger.debug("notfound of %d items", len(missing.items))
 
 
 handshake_callbacks = {
@@ -2090,6 +2074,5 @@ callbacks = {
     "getcfheaders": get_cfheaders,
     "getcfcheckpt": get_cfcheckpt,
     "notfound": not_found,
-    "reject": reject,
     "feefilter": feefilter,
 }

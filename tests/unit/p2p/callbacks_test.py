@@ -78,7 +78,6 @@ from btclib.p2p.limits import (
     PROTOCOL_VERSION,
 )
 from btclib.p2p.negotiation import FeeFilter, GetAddr, WtxidRelay
-from btclib.p2p.reject import Reject, RejectCode
 from btclib.script.witness import Witness
 
 import btclib_node.p2p.callbacks as cb
@@ -122,7 +121,6 @@ from btclib_node.p2p.callbacks import (
     not_found,
     ping,
     pong,
-    reject,
     sendaddrv2,
     sendheaders,
     tx,
@@ -1663,18 +1661,22 @@ def test_an_address_of_a_network_nobody_here_has_heard_of_costs_nothing() -> Non
     assert not peer.stopped
 
 
-def test_a_notfound_is_logged_rather_than_held_against_the_peer() -> None:
-    """A `notfound` is logged as a warning, costing the peer nothing."""
-    logged, warning = log_recorder()
+def test_a_notfound_is_logged_at_debug_as_a_count_of_its_items() -> None:
+    """A `notfound` logs how many items it names, at debug, and not the items.
+
+    Core logs one only under `-debug=net`; the items are the peer's to size,
+    so a line carrying them is a line the peer sizes.
+    """
+    logged, debug = log_recorder()
+    warned, warning = log_recorder()
     node = a_handshake_node()
+    node.logger.debug = debug
     node.logger.warning = warning
     peer = a_peer()
-    not_found(
-        node,
-        NotFound([Inventory(InventoryType.MSG_TX, b"\x11" * 32)]).serialize(),
-        peer,
-    )
-    assert logged
+    items = [Inventory(InventoryType.MSG_TX, bytes([i]) * 32) for i in range(3)]
+    not_found(node, NotFound(items).serialize(), peer)
+    assert logged == ["notfound of 3 items"]
+    assert not warned
     assert not peer.stopped
 
 
@@ -1703,43 +1705,6 @@ def test_a_notfound_frees_the_transaction_it_names_to_be_asked_of_someone_else()
         peer,
     )
     assert peer.tx_requested == {b"\x22" * 32: 0.0}
-
-
-def test_a_reject_names_the_transaction_it_is_about() -> None:
-    """A `reject` is logged with its code, reason and the txid it is about."""
-    logged: list[str] = []
-    node = a_handshake_node()
-    node.logger.warning = logged.append
-    peer = a_peer()
-    txid = bytes(range(32))
-    message = Reject("tx", RejectCode.insufficientfee, "min relay fee not met", txid)
-    reject(node, message.serialize(), peer)
-    (line,) = logged
-    assert "insufficientfee" in line
-    assert "min relay fee not met" in line
-    assert txid.hex() in line
-    assert not peer.stopped
-
-
-def test_a_reject_names_a_reserved_code_by_number() -> None:
-    """A code BIP61 reserves without naming logs as the bare number.
-
-    `Reject.code` is a `RejectCode` where a member names the value and
-    a plain `int` where none does (`btclib.p2p.reject`'s own module
-    docstring): 0x44 falls in the 0x40-0x4f "Server policy rule" range
-    BIP61 reserves beside `nonstandard`, `dust`, `insufficientfee` and
-    `checkpoint`, and no member of `RejectCode` answers to it.
-    """
-    logged: list[str] = []
-    node = a_handshake_node()
-    node.logger.warning = logged.append
-    peer = a_peer()
-    txid = bytes(range(32))
-    message = Reject("tx", 0x44, "reserved code", txid)
-    reject(node, message.serialize(), peer)
-    (line,) = logged
-    assert line == f"Reject received: 68, reserved code, {txid.hex()}"
-    assert not peer.stopped
 
 
 def a_transaction() -> Tx:

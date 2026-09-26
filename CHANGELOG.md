@@ -518,6 +518,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   and the log names the value** (closes #1210), refused once the RPC
   listener is bound, `-rpcauth` after the cookie, as `bitcoind` refuses it.
 
+### A `notfound` is logged at debug as a count, and a `reject` is ignored
+
+- **Neither puts what the peer wrote into the log** (closes #1255): `notfound`
+  logs how many items it names, and `reject` reaches no handler, as Core's
+  `ProcessMessage` has none.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

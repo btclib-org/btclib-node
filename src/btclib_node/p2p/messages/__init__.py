@@ -5,9 +5,10 @@
 """The p2p payloads this node carries itself: none.
 
 Every wire message this node speaks is `btclib.p2p`'s, imported where
-it is used -- BIP61's `reject` included, `Reject` and `RejectCode`
-being `btclib.p2p.reject`'s. This package holds no payload of its own,
-and `p2p.callbacks` is where every command is dispatched to a handler.
+it is used. This package holds no payload of its own, and
+`p2p.callbacks` is where every command is dispatched to a handler.
+BIP61's `reject` has none: Core's `ProcessMessage` ignores it as an
+unknown type (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7).
 """
 
 __all__ = []
