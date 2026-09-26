@@ -533,8 +533,7 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 - **A mutated body, Core's `IsBlockMutated`, is refused before its header is
   read, and a failing block is marked invalid only where Core marks it, over
-  the weight, on the wire and through `submitblock`** (closes #1242, closes
-  #1333).
+  the weight, on the wire and in `submitblock`** (closes #1242, closes #1333).
 
 ## v2026.9.24
 
