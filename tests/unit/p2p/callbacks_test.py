@@ -1118,11 +1118,29 @@ def test_an_outbound_handshake_records_the_address_dialled() -> None:
     # the live handshake's own services, not whatever the address was
     # last recorded with
     assert recorded.services == services
-    # and the connection's own idea of its peer moves to the same
-    # endpoint, or manager.py's already-connected check keeps comparing
-    # against the address dialled with -- never what a later gossip of
-    # this same peer draws back
-    assert endpoint_key(peer.address) == endpoint_key(recorded)
+    # and the connection's own address takes the same services, at the
+    # endpoint it was dialled at
+    assert peer.address.services == services
+    assert endpoint_key(peer.address) == endpoint_key(dialled)
+
+
+@pytest.mark.parametrize(
+    "refused",
+    [
+        a_version(protocol=MIN_PEER_PROTO_VERSION - 1),
+        a_version(services=ServiceFlags.NODE_NETWORK),
+    ],
+    ids=["too old", "no witness"],
+)
+def test_a_dialled_peer_refused_is_not_recorded_as_answered(refused: bytes) -> None:
+    """ISS 1229: Core's refusals return ahead of `AddrMan::Good`."""
+    dialled = peer_address("1.2.3.4", 18444)
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+    # known, so that it would be recorded if asked
+    peer_db.add_addresses([dialled])
+    peer = a_peer(inbound=False, address=dialled)
+    version(a_handshake_node(peer_db=peer_db), refused, peer)
+    assert peer_db.active_addresses == []
 
 
 @pytest.mark.parametrize("callback", ["version", "verack"])
