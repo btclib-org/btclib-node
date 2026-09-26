@@ -884,6 +884,71 @@ def test_a_spend_of_more_than_its_inputs_is_refused_for_that_not_its_fee(
     assert not isinstance(refused.value, TxRejectedError)
 
 
+def test_a_second_spend_of_a_held_outpoint_is_refused_as_core_refuses_it(
+    node: Node,
+) -> None:
+    """The issue's double spend: each candidate answered in Core's words.
+
+    `bitcoind` v31.1 on regtest, a spend paying 10000 held: a fee-free
+    conflict "min relay fee not met", a 5000-sat one "insufficient fee
+    ... less fees than conflicting txs; 0.00005 < 0.0001". One paying for
+    the held spend and its own relay, which Core accepts as a
+    replacement, is refused here (btclib-org/btclib-node#1244).
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+    funding = chain[0].transactions[0]
+    value = funding.vout[0].value
+    held = generate_random_transaction(funding.id, value=value - 10_000)
+    node.mempool.add_tx(held, verify_mempool_acceptance(node, held))
+
+    refusals = {
+        0: "min relay fee not met",
+        5_000: "insufficient fee",
+        20_000: "bip125-replacement-disallowed",
+    }
+    for fee, reason in refusals.items():
+        conflict = generate_random_transaction(funding.id, value=value - fee)
+        with pytest.raises(TxRejectedError) as refused:
+            verify_mempool_acceptance(node, conflict)
+        assert refused.value.reason == reason
+        if fee == 5_000:
+            assert str(refused.value).endswith("; 0.00005 < 0.0001")
+    assert node.mempool.size == 1
+    assert node.mempool.contains_tx(held)
+
+
+def test_a_confirmed_double_spend_evicts_the_held_spend_and_its_child(
+    node: Node,
+) -> None:
+    """A block spending a held spend's coin evicts it and what spends it.
+
+    `bitcoind` v31.1 on regtest: `generateblock` with a conflicting spend
+    leaves the held one out of `getrawmempool`. Core's `removeForBlock`
+    calls `removeConflicts` for every transaction of the block.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+    funding = chain[0].transactions[0]
+    value = funding.vout[0].value
+    held = generate_random_transaction(funding.id, value=value - FEE)
+    node.mempool.add_tx(held, verify_mempool_acceptance(node, held))
+    child = generate_random_transaction(held.id, value=held.vout[0].value - FEE)
+    node.mempool.add_tx(child, verify_mempool_acceptance(node, child))
+    assert node.mempool.size == 2
+
+    double_spend = generate_random_transaction(funding.id, value=value - 2 * FEE)
+    block = build_block(
+        chain[-1].header.hash,
+        [generate_coinbase(height=len(chain) + 1), double_spend],
+        len(chain),
+    )
+    connect(node, [block])
+    assert node.chainstate.block_index.active_chain[-1] == block.header.hash
+    assert node.mempool.size == 0
+    assert node.mempool.outpoint_spender == {}
+
+
 def test_a_stored_coin_that_wont_parse_looks_missing_to_the_mempool(
     node: Node,
 ) -> None:

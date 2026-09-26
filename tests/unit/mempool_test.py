@@ -7,8 +7,8 @@
 import secrets
 import time
 from fractions import Fraction
-from typing import TYPE_CHECKING
 
+import pytest
 from btclib.fee import FeeRate, fee_from_vsize
 from btclib.script import script
 from btclib.script.witness import Witness
@@ -18,12 +18,10 @@ from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
 from btclib_node import mempool as mempool_module
+from btclib_node.exceptions import TxRejectedError
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from tests import generate_random_transaction
-
-if TYPE_CHECKING:
-    import pytest
 
 
 def a_witness_transaction() -> Tx:
@@ -758,3 +756,137 @@ def test_get_min_fee_rate_zeroes_out_below_half_the_incremental_fee() -> None:
     mempool._last_rolling_fee_update = time.time() - 60 * 60 * 12 * 20  # 20 halvings
     assert mempool.get_min_fee_rate() == FeeRate(sats_per_kvbyte=0)
     assert mempool._rolling_min_fee_rate == 0.0
+
+
+def a_spend_of(outpoints: list[tuple[bytes, int]], value: int = 1) -> Tx:
+    """Return a transaction spending exactly `outpoints`."""
+    return Tx(
+        version=1,
+        lock_time=0,
+        vin=[
+            TxIn(
+                prev_out=OutPoint(txid, vout),
+                script_sig=script.serialize([secrets.token_bytes(32)]),
+                sequence=0xFFFFFFFF,
+            )
+            for txid, vout in outpoints
+        ],
+        vout=[
+            TxOut(value=value, script_pub_key=script.serialize([secrets.token_bytes(32)]))
+        ],
+    )
+
+
+def test_a_second_spend_of_one_outpoint_is_not_added() -> None:
+    """`add_tx` keeps one spender per outpoint, and forgets it once gone.
+
+    btclib-org/btclib-node#1244: two spends of one outpoint were both kept.
+    """
+    mempool = Mempool(Logger(debug=True))
+    coin = (secrets.token_bytes(32), 3)
+    first = a_spend_of([coin, (secrets.token_bytes(32), 0)])
+    second = a_spend_of([coin])
+    assert mempool.add_tx(first, 1000)
+    assert not mempool.add_tx(second, 5000)
+    assert mempool.outpoint_spender[coin] == first.hash
+    assert not mempool.contains_tx(second)
+    assert mempool.size == 1
+
+    mempool.remove_tx(first)
+    assert mempool.outpoint_spender == {}
+    assert mempool.add_tx(second, 5000)
+
+
+def test_format_money_is_core_s_own() -> None:
+    """Eight decimals, right-trimmed to no fewer than two."""
+    fmt = mempool_module._format_money
+    assert fmt(0) == "0.00"
+    assert fmt(5000) == "0.00005"
+    assert fmt(10000) == "0.0001"
+    assert fmt(10**8) == "1.00"
+    assert fmt(123_456_789) == "1.23456789"
+    assert fmt(2_150_000_000) == "21.50"
+
+
+def a_mempool_with_a_conflict() -> tuple[Mempool, tuple[bytes, int], Tx, Tx]:
+    """Hold a spend of one coin paying 10000, and its child paying 2000."""
+    mempool = Mempool(Logger(debug=True))
+    coin = (secrets.token_bytes(32), 0)
+    held = a_spend_of([coin])
+    child = a_spend_of([(held.id, 0)])
+    assert mempool.add_tx(held, 10_000)
+    assert mempool.add_tx(child, 2_000)
+    return mempool, coin, held, child
+
+
+def test_a_conflict_paying_less_than_what_it_replaces_is_insufficient() -> None:
+    """Core's rule 3, over the conflict and its descendants, in its words.
+
+    `bitcoind` v31.1 on regtest answers a 5000-sat conflict with a
+    10000-sat spend "insufficient fee, rejecting replacement <txid>, less
+    fees than conflicting txs; 0.00005 < 0.0001". Here the held spend's
+    child counts too, so 11999 is still short of 12000.
+    """
+    mempool, coin, _, _ = a_mempool_with_a_conflict()
+    candidate = a_spend_of([coin])
+    with pytest.raises(TxRejectedError) as refused:
+        mempool.check_replacement(candidate, 11_999)
+    assert refused.value.reason == "insufficient fee"
+    assert str(refused.value) == (
+        f"insufficient fee, rejecting replacement {candidate.id.hex()}, less fees "
+        "than conflicting txs; 0.00011999 < 0.00012"
+    )
+
+
+def test_a_conflict_not_paying_its_own_relay_is_insufficient() -> None:
+    """Core's rule 4: the increase has to cover the incremental relay fee."""
+    mempool, coin, _, _ = a_mempool_with_a_conflict()
+    candidate = a_spend_of([coin])
+    relay = fee_from_vsize(candidate.vsize, mempool_module._INCREMENTAL_RELAY_FEE_RATE)
+    assert relay > 0
+    for fee in (12_000, 12_000 + relay - 1):
+        with pytest.raises(TxRejectedError) as refused:
+            mempool.check_replacement(candidate, fee)
+        increase = mempool_module._format_money(fee - 12_000)
+        assert str(refused.value) == (
+            f"insufficient fee, rejecting replacement {candidate.id.hex()}, not "
+            f"enough additional fees to relay; {increase} < "
+            f"{mempool_module._format_money(relay)}"
+        )
+
+
+def test_a_conflict_paying_for_what_it_replaces_is_still_refused() -> None:
+    """This mempool replaces nothing: Core's reason where it allows none.
+
+    `bitcoind` v31.1 accepts this replacement; the divergence is argued
+    at `Mempool.check_replacement`.
+    """
+    mempool, coin, held, child = a_mempool_with_a_conflict()
+    candidate = a_spend_of([coin])
+    relay = fee_from_vsize(candidate.vsize, mempool_module._INCREMENTAL_RELAY_FEE_RATE)
+    with pytest.raises(TxRejectedError) as refused:
+        mempool.check_replacement(candidate, 12_000 + relay)
+    assert refused.value.reason == "bip125-replacement-disallowed"
+    assert str(refused.value) == "bip125-replacement-disallowed"
+    assert mempool.contains_tx(held)
+    assert mempool.contains_tx(child)
+
+
+def test_a_candidate_with_no_conflict_passes_the_replacement_check() -> None:
+    """Spending another output of a held transaction is no conflict."""
+    mempool, _, held, _ = a_mempool_with_a_conflict()
+    assert mempool.check_replacement(a_spend_of([(held.id, 1)]), 0) is None
+
+
+def test_a_confirmed_spend_evicts_its_conflicts_and_their_descendants() -> None:
+    """Core's `removeConflicts`: what spends a spent coin goes, with children."""
+    mempool, coin, held, child = a_mempool_with_a_conflict()
+    unrelated = a_spend_of([(secrets.token_bytes(32), 0)])
+    assert mempool.add_tx(unrelated, 1000)
+    confirmed = a_spend_of([coin])
+    mempool.remove_tx(confirmed)
+    mempool.remove_conflicts(confirmed)
+    assert not mempool.contains_tx(held)
+    assert not mempool.contains_tx(child)
+    assert mempool.contains_tx(unrelated)
+    assert set(mempool.outpoint_spender) == {(unrelated.vin[0].prev_out.tx_id, 0)}
