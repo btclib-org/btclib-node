@@ -134,6 +134,7 @@ def test_a_connecting_node_carries_its_own_real_tip_height(tmp_path: Path) -> No
             allow_rpc=False,
         )
     )
+    node1.load()
     block_index = node1.chainstate.block_index
     block_index.add_headers([block.header for block in chain])
     node1.status = NodeStatus.HeaderSynced
@@ -188,6 +189,7 @@ def test_connection_to_ourselves(tmp_path: Path) -> None:
             allow_rpc=False,
         )
     )
+    node.load()
     recording = _RecordingPendingConnections()
     node.p2p_manager.pending_connections = recording
     node.start()

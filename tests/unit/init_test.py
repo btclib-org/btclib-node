@@ -66,8 +66,11 @@ _STOP_TIMEOUT = btclib_node.STOP_TIMEOUT
 
 
 def a_node(tmp_path: Path) -> Node:
-    """Return a regtest `Node`, neither p2p nor RPC enabled, never started."""
-    return Node(
+    """Return a regtest `Node`, neither p2p nor RPC enabled, never started.
+
+    Its stores are open, `load` being what `run` would have called.
+    """
+    node = Node(
         config=Config(
             chain="regtest",
             data_dir=tmp_path,
@@ -76,6 +79,8 @@ def a_node(tmp_path: Path) -> Node:
             debug=True,
         )
     )
+    node.load()
+    return node
 
 
 class AManager:
@@ -143,6 +148,9 @@ def a_networked_node(tmp_path: Path) -> Iterator[Node]:
             debug=True,
         )
     )
+    # the stores `run` opens once its RPC listener is up, opened here so
+    # that `run`'s own `load` finds them and keeps the stand-ins below
+    node.load()
     node.p2p_manager.loop.close()
     node.rpc_manager.loop.close()
     # the real P2pManager built above opened a real PeerDB, a database
@@ -352,6 +360,7 @@ def test_a_config_omitted_is_constructed_rather_than_shared(
     # writing under this session's real home directory.
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     node = Node()
+    node.load()
     try:
         assert node.config == Config()
     finally:
@@ -548,6 +557,7 @@ def test_node_allows_a_deliberate_reimported_main_opt_in(
         ),
         allow_reimported_main=True,
     )
+    node.load()
     node._close_worker_pool()
     node.p2p_manager.peer_db.close()
     node.chainstate.close()
@@ -876,6 +886,7 @@ def test_run_dials_every_connect_and_addnode_peer_at_startup(tmp_path: Path) -> 
             debug=True,
         )
     )
+    node.load()
     node.p2p_manager.loop.close()
     node.p2p_manager.peer_db.close()
     node.p2p_manager = AManager()  # type: ignore[assignment]
@@ -909,9 +920,11 @@ def test_a_node_whose_rpc_port_is_taken_stops_before_its_p2p_side_starts(
     """Core's `InitError` where `AppInitServers` cannot bind: the node ends.
 
     RPC starts first, as in Core's `AppInitMain`, so the peer-to-peer
-    manager is never started; the bind comes before the cookie, so none
-    is left in the data directory; and `run`'s own teardown still closes
-    the databases.
+    manager is never built; the bind comes before the cookie, so none
+    is left in the data directory; and no store is opened, so the chain
+    directory holds what `bitcoind` v31.1.0's holds over a taken RPC
+    port but its own files: the lock, `blocks/` holding its lock alone,
+    and the log (ISS 1279).
     """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
         taken.bind(("127.0.0.1", 0))
@@ -931,9 +944,15 @@ def test_a_node_whose_rpc_port_is_taken_stops_before_its_p2p_side_starts(
         finally:
             node.stop()
     assert node.init_errors == [btclib_node.RPC_INIT_ERROR]
-    assert node.p2p_manager.ident is None
+    assert not node.loaded
+    assert not hasattr(node, "p2p_manager")
     assert not cookie_path(node.data_dir).exists()
-    assert node.chainstate.db.closed
+    assert sorted(path.name for path in node.data_dir.iterdir()) == [
+        ".lock",
+        "blocks",
+        "history.log",
+    ]
+    assert [path.name for path in (node.data_dir / "blocks").iterdir()] == [".lock"]
     log_text = (node.data_dir / "history.log").read_text(encoding="utf-8")
     assert btclib_node.RPC_INIT_ERROR in log_text
 
