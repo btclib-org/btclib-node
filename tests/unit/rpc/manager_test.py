@@ -309,6 +309,47 @@ def test_a_socket_refusing_tcp_nodelay_is_kept(
     assert logged.count(refusal) == len(LOOPBACKS)
 
 
+@pytest.mark.parametrize("host", ["a..b", "\uff11\uff12\uff17.0.0.1"])
+def test_a_host_is_looked_up_as_its_bytes(host: str) -> None:
+    """ISS 1269: no IDNA, as libevent hands `getaddrinfo` the bytes.
+
+    `a..b` fails as a lookup rather than as a `UnicodeError`, and
+    fullwidth digits are not read as `127.0.0.1`.
+    """
+    with pytest.raises(socket.gaierror):
+        manager_module._first_address(host, 0)
+
+
+def test_the_empty_host_is_0_0_0_0_first_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1269: `evutil_getaddrinfo_common_`'s own answer, not the system's."""
+    monkeypatch.setattr(manager_module, "_WINDOWS", True)
+    family, _, _, sockaddr = manager_module._first_address("", 8332)
+    assert (family, sockaddr) == (socket.AF_INET, ("0.0.0.0", 8332))  # noqa: S104
+
+
+def test_the_empty_host_is_the_system_s_passive_answer_elsewhere(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1269: `getaddrinfo(NULL, ...)`, as libevent asks it off Windows."""
+    monkeypatch.setattr(manager_module, "_WINDOWS", False)
+    expected = socket.getaddrinfo(
+        None, 8332, type=socket.SOCK_STREAM, flags=manager_module._ADDRESS_FLAGS
+    )[0][4]
+    assert manager_module._first_address("", 8332)[3] == expected
+
+
+def test_bind_warns_of_a_host_idna_would_refuse(a_manager: AManagerFactory) -> None:
+    """ISS 1269: `a..b` is a bind that failed, not an exception out of it."""
+    port = get_random_port()
+    manager = a_manager(port, rpc_host="a..b")
+    logged: list[tuple[object, ...]] = []
+    manager.logger.warning = lambda *args: logged.append(args)  # type: ignore[method-assign]
+    assert manager._bind() == []
+    assert logged == [("Binding RPC on address %s port %s failed.", "a..b", port)]
+
+
 def test_bind_honors_a_different_rpc_host(a_manager: AManagerFactory) -> None:
     """_bind binds whatever rpc_host the node's own config carries, alone."""
     all_interfaces = "0.0.0.0"  # noqa: S104
