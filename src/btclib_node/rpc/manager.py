@@ -31,6 +31,7 @@ from contextlib import ExitStack, suppress
 from ipaddress import ip_address
 from typing import TYPE_CHECKING, override
 
+from btclib_node.exceptions import RpcCredentialRefusedError
 from btclib_node.rpc.auth import RpcAuth
 from btclib_node.rpc.connection import REQUEST_TIMEOUT, RpcConnection
 
@@ -265,7 +266,9 @@ class RpcManager(threading.Thread):
         closed the sockets: Core's "Unable to bind any endpoint for RPC
         server" and `InitRPCAuthentication`'s refusal of a cookie that
         cannot be written, logged as the warning `GenerateAuthCookie`
-        logs.
+        logs. Raises `RpcCredentialRefusedError` where `auth.start`
+        refuses a value, having closed the sockets, `start` having logged
+        it.
         """
         self._server_sockets = self._bind()
         if not self._server_sockets:
@@ -278,6 +281,10 @@ class RpcManager(threading.Thread):
             for server_socket in self._server_sockets:
                 server_socket.close()
             self.logger.warning("%s", err)
+            raise
+        except RpcCredentialRefusedError:
+            for server_socket in self._server_sockets:
+                server_socket.close()
             raise
         self.listening.set()
         return self._server_sockets
@@ -466,7 +473,7 @@ class RpcManager(threading.Thread):
             self.logger.info("Starting RPC manager")
             asyncio.set_event_loop(loop)
             server_sockets = self._listen()
-        except OSError:
+        except OSError, RpcCredentialRefusedError:
             # logged by `_listen`; `start_listener` reads the failure
             # off `listening`, so it is not raised into
             # `threading.excepthook` as well
