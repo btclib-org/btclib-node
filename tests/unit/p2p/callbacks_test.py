@@ -11,13 +11,14 @@ losing the peer. The functional tests drive two cooperating nodes, which
 is the path where every message is welcome; these are the rest.
 """
 
+import logging
 import math
 import secrets
 import socket
 import threading
 import time
 from dataclasses import replace
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from io import BytesIO
 from types import SimpleNamespace
@@ -46,7 +47,13 @@ from btclib.p2p.block_filters import (
     GetCFHeaders,
     GetCFilters,
 )
-from btclib.p2p.compact_blocks import SendCmpct
+from btclib.p2p.compact_blocks import (
+    BlockTxn,
+    CmpctBlock,
+    GetBlockTxn,
+    SendCmpct,
+    reconstruct,
+)
 from btclib.p2p.data import BlockPayload as BlockMsg
 from btclib.p2p.data import TxPayload as TxMsg
 from btclib.p2p.handshake import Verack, Version
@@ -89,20 +96,25 @@ from btclib_node.exceptions import (
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import PeerDB, endpoint_key, host_key, peer_address
+from btclib_node.p2p.banman import BanMan, lookup_subnet
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.callbacks import (
+    MAX_BLOCKTXN_DEPTH,
     MAX_CFILTERS_INFLIGHT_BYTES,
+    MAX_CMPCTBLOCK_DEPTH,
     MAX_GETDATA_INFLIGHT_BYTES,
     MAX_PENDING_CFILTERS_HEIGHTS,
     addr,
     addrv2,
     advance_cfilters,
     advance_getdata,
+    compact_block,
     feefilter,
     get_cfcheckpt,
     get_cfheaders,
     get_cfilters,
     getaddr,
+    getblocktxn,
     getdata,
     getheaders,
     headers,
@@ -180,17 +192,29 @@ def a_version_address(services: int = 0) -> NetworkAddress:
     return NetworkAddress(services, "0.0.0.0", 18444)  # noqa: S104
 
 
+def a_ban_man(*subnets: str) -> BanMan:
+    """Build a ban list, in memory, banning each of `subnets` for a day."""
+    ban_man = BanMan(None, logging.getLogger(__name__))
+    for text in subnets:
+        subnet = lookup_subnet(text)
+        assert subnet is not None
+        ban_man.ban(subnet)
+    return ban_man
+
+
 def make_node(
     addresses: Sequence[NetworkAddressV2],
     *,
     prefer_addressv2: bool = False,
     discouraged: Sequence[NetworkAddressV2] = (),
+    banned: Sequence[str] = (),
     inbound: bool = True,
 ) -> tuple[Any, Any, list[Any]]:
     """Build a node with `peer_db` addresses active, and a peer stand-in.
 
-    `is_discouraged` answers for the hosts of `discouraged`. The peer is
-    inbound by default, the only kind whose `getaddr` is answered.
+    `is_discouraged` answers for the hosts of `discouraged`, and the ban
+    list holds the subnets of `banned`. The peer is inbound by default,
+    the only kind whose `getaddr` is answered.
     """
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
     for address in addresses:
@@ -208,6 +232,7 @@ def make_node(
         p2p_manager=SimpleNamespace(
             peer_db=peer_db,
             is_discouraged=lambda address: host_key(address) in keys,
+            ban_man=a_ban_man(*banned),
         )
     )
     return node, conn, sent
@@ -423,6 +448,22 @@ def test_a_discouraged_host_is_left_out_of_a_getaddr_answer(
     assert answer.addresses == (kept,)
 
 
+def test_a_banned_host_is_left_out_of_a_getaddr_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Core's `GetAddressesUnsafe` leaves a banned host out, by subnet."""
+    monkeypatch.setattr(cb, "_addresses_to_send", list)
+    now = int(time.time())
+    kept = peer_address("1.2.3.4", 18444, timestamp=now)
+    banned = peer_address("5.6.7.8", 18444, timestamp=now)
+    node, conn, sent = make_node(
+        [kept, banned], prefer_addressv2=True, banned=["5.6.0.0/16"]
+    )
+    getaddr(node, b"", conn)
+    (answer,) = sent
+    assert answer.addresses == (kept,)
+
+
 def a_version(
     *,
     protocol: int = PROTOCOL_VERSION,
@@ -557,11 +598,12 @@ def a_handshake_node(
     promote_connection: Any = None,
     min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
     discouraged_hosts: Sequence[str] = (),
+    banned: Sequence[str] = (),
 ) -> Any:
     """Build a node double with just what handshake callbacks read or write.
 
     `is_discouraged` answers for the IPs `discouraged_hosts` names,
-    whatever the port.
+    whatever the port, and the ban list holds the subnets of `banned`.
     """
     discouraged, record = discourage_recorder()
     discouraged_keys = {host_key(peer_address(host, 0)) for host in discouraged_hosts}
@@ -577,6 +619,7 @@ def a_handshake_node(
             maybe_discourage_and_disconnect=record,
             discouraged=discouraged,
             is_discouraged=lambda address: host_key(address) in discouraged_keys,
+            ban_man=a_ban_man(*banned),
         ),
         chainstate=SimpleNamespace(
             block_index=SimpleNamespace(get_block_locator_hashes=lambda: [b"\x00" * 32])
@@ -977,7 +1020,8 @@ def test_a_verack_completes_the_handshake() -> None:
     # no `sendheaders`: DownloadManager._send_due_sendheaders sends it,
     # and no `getaddr`: `version` sent it (ISS 1178)
     assert commands(peer) == ["SendCmpct", "ping"]
-    assert isinstance(peer.sent[0], SendCmpct)
+    # ISS 1206: Core's CMPCTBLOCKS_VERSION, low bandwidth
+    assert peer.sent[0] == SendCmpct(announce=False, version=2)
     assert not peer.stopped
     # out of P2pManager.pending_connections and into connections, right
     # where P2pConnStatus.Connected is set: btclib-org/btclib-node#131
@@ -1430,6 +1474,20 @@ def test_a_discouraged_host_gossiped_is_not_stored() -> None:
     ):
         peer_db = PeerDB(cast("Chain", None), cast("Path", None))
         node = a_handshake_node(peer_db=peer_db, discouraged_hosts=["1.2.3.5"])
+        callback(node, message.serialize(), a_gossiping_peer())
+        assert peer_db.addresses == {replace(kept, timestamp=0)}
+
+
+def test_a_banned_host_gossiped_is_not_stored() -> None:
+    """Core's `ADDR`/`ADDRV2` loop skips a banned host, by subnet."""
+    kept = a_gossiped_address("1.2.3.4")
+    banned = a_gossiped_address("5.6.7.8")
+    for callback, message in (
+        (addr, Addr([addr_entry(address) for address in (kept, banned)])),
+        (addrv2, AddrV2([kept, banned])),
+    ):
+        peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+        node = a_handshake_node(peer_db=peer_db, banned=["5.6.7.0/24"])
         callback(node, message.serialize(), a_gossiping_peer())
         assert peer_db.addresses == {replace(kept, timestamp=0)}
 
@@ -2813,6 +2871,165 @@ def test_a_pruned_node_s_own_threshold_is_strictly_greater_than_the_buffer() -> 
     )
     assert not peer.sent
     assert peer.stopped == [True]
+
+
+def a_block_with_transactions(count: int) -> Block:
+    """Build a block of a coinbase and `count` more transactions.
+
+    Each carries a witness, so that its wtxid is not its txid. The merkle
+    root is not recomputed: what is under test is how the transactions
+    are carried, not whether the block is valid.
+    """
+    block = a_block()
+    extra = [generate_random_transaction() for _ in range(count)]
+    for transaction in extra:
+        transaction.vin[0].script_witness = Witness([b"\x01" * 3])
+    return Block(block.header, [block.transactions[0], *extra], check_validity=False)
+
+
+def test_a_compact_block_reconstructs_from_a_pool_holding_the_rest() -> None:
+    """ISS 1206: Core's `CBlockHeaderAndShortTxIDs`, coinbase prefilled."""
+    block = a_block_with_transactions(3)
+    compact = compact_block(block, 7)
+    assert [p.index for p in compact.prefilled_txns] == [0]
+    assert compact.tx_count == 4
+    assert reconstruct(compact).missing_indexes == [1, 2, 3]
+    partial = reconstruct(compact, block.transactions[1:])
+    assert not partial.missing_indexes
+    filled = partial.fill(check_validity=False)
+    assert filled.transactions == block.transactions
+
+
+def a_recent_block_index(length: int, *, age: float = 0) -> Any:
+    """Build a `block_index` double whose tip is `age` seconds old."""
+    block_index = a_tall_block_index(length)
+    tip = block_index.header_dict[block_index.active_chain[-1]]
+    tip.header = SimpleNamespace(time=datetime.fromtimestamp(time.time() - age, UTC))
+    return block_index
+
+
+@pytest.mark.parametrize(
+    ("depth", "age", "compact"),
+    [
+        (MAX_CMPCTBLOCK_DEPTH, 0, True),
+        (MAX_CMPCTBLOCK_DEPTH + 1, 0, False),
+        (0, 20 * 600 + 60, False),
+        (0, 20 * 600 - 60, True),
+    ],
+    ids=["at-depth", "past-depth", "stale-tip", "recent-tip"],
+)
+def test_a_cmpct_block_item_is_answered_as_core_answers_it(
+    *, depth: int, age: float, compact: bool
+) -> None:
+    """ISS 1206: `cmpctblock` near a recent tip, the witness block otherwise."""
+    length = MAX_CMPCTBLOCK_DEPTH + 10
+    block_index = a_recent_block_index(length, age=age)
+    block = a_block_with_transactions(2)
+    node = a_data_node(
+        block_index=block_index, block_db=SimpleNamespace(get_block=lambda h: block)
+    )
+    peer = a_peer()
+    wanted = block_index.active_chain[length - 1 - depth]
+    items = [Inventory(InventoryType.MSG_CMPCT_BLOCK, wanted)]
+    getdata(node, GetData(items).serialize(), peer)
+    (answer,) = peer.sent
+    if compact:
+        assert isinstance(answer, CmpctBlock)
+        assert answer.header == block.header
+    else:
+        assert answer == BlockMsg(block, include_witness=True, check_validity=False)
+
+
+def a_block_store(block: Block | None) -> Any:
+    """Build a `block_db` holding `block` under every hash, or nothing."""
+    return SimpleNamespace(
+        get_block=lambda h: block, has_block=lambda h: block is not None
+    )
+
+
+def test_getblocktxn_is_answered_with_the_transactions_asked_for() -> None:
+    """ISS 1206: Core's `SendBlockTransactions`, in the order requested."""
+    length = MAX_BLOCKTXN_DEPTH + 10
+    block_index = a_tall_block_index(length)
+    block = a_block_with_transactions(3)
+    node = a_data_node(block_index=block_index, block_db=a_block_store(block))
+    peer = a_peer()
+    wanted = block_index.active_chain[length - 1 - MAX_BLOCKTXN_DEPTH]
+    getblocktxn(node, GetBlockTxn(wanted, [1, 3]).serialize(), peer)
+    (answer,) = peer.sent
+    assert answer == BlockTxn(wanted, [block.transactions[1], block.transactions[3]])
+
+
+def test_getblocktxn_past_the_last_transaction_is_misbehaviour() -> None:
+    """ISS 1206: "getblocktxn with out-of-bounds tx indices".
+
+    Core calls `Misbehaving`, so this is the `MisbehavingError` that
+    `p2p.main` discourages the peer for, not a bare `BTClibValueError`.
+    """
+    block_index = a_tall_block_index(3)
+    block = a_block_with_transactions(1)
+    node = a_data_node(block_index=block_index, block_db=a_block_store(block))
+    peer = a_peer()
+    request = GetBlockTxn(block_index.active_chain[-1], [2])
+    with pytest.raises(MisbehavingError, match="out-of-bounds"):
+        getblocktxn(node, request.serialize(), peer)
+    assert not peer.sent
+
+
+def test_getblocktxn_for_an_older_block_is_answered_with_the_block() -> None:
+    """ISS 1206: past `MAX_BLOCKTXN_DEPTH` Core serves the witness block."""
+    length = MAX_BLOCKTXN_DEPTH + 10
+    block_index = a_tall_block_index(length)
+    block = a_block_with_transactions(2)
+    node = a_data_node(block_index=block_index, block_db=a_block_store(block))
+    peer = a_peer()
+    wanted = block_index.active_chain[length - 2 - MAX_BLOCKTXN_DEPTH]
+    getblocktxn(node, GetBlockTxn(wanted, [1]).serialize(), peer)
+    assert peer.sent == [BlockMsg(block, include_witness=True, check_validity=False)]
+
+
+@pytest.mark.parametrize(
+    ("indexed", "has_block"),
+    [(True, False), (False, False), (True, True)],
+    ids=["not-stored", "unindexed", "pruned-meanwhile"],
+)
+def test_getblocktxn_for_a_block_not_held_is_silent(
+    *, indexed: bool, has_block: bool
+) -> None:
+    """ISS 1206: "a getblocktxn for a block we don't have" gets nothing.
+
+    `pruned-meanwhile` is a block pruned between `has_block` and the read.
+    """
+    block_index = a_tall_block_index(3)
+    block_db = SimpleNamespace(get_block=lambda h: None, has_block=lambda h: has_block)
+    node = a_data_node(block_index=block_index, block_db=block_db)
+    peer = a_peer()
+    wanted = block_index.active_chain[-1] if indexed else b"\xee" * 32
+    getblocktxn(node, GetBlockTxn(wanted, [0]).serialize(), peer)
+    assert not peer.sent
+    assert not peer.stopped
+
+
+@pytest.mark.parametrize("held", [False, True], ids=["not-held", "held"])
+def test_getblocktxn_on_a_pruned_node_is_silent_for_a_block_it_lacks(
+    *, held: bool
+) -> None:
+    """ISS 1206: Core's `BLOCK_HAVE_DATA` return comes ahead of the depth.
+
+    A block indexed but not held, whether never downloaded or pruned away,
+    is not queued for the `getdata` whose prune threshold would drop the
+    peer; one still held that deep is, and does, as Core's
+    `ProcessGetBlockData` does.
+    """
+    block_index = a_tall_block_index(MIN_BLOCKS_TO_KEEP + 10)
+    node = a_data_node(
+        block_index=block_index, block_db=a_block_store(a_block() if held else None)
+    )
+    node.config.pruned = True
+    peer = a_peer()
+    getblocktxn(node, GetBlockTxn(block_index.active_chain[0], [0]).serialize(), peer)
+    assert not peer.sent
+    assert peer.stopped == ([True] if held else [])
 
 
 def test_an_inventory_of_neither_kind_is_skipped() -> None:
