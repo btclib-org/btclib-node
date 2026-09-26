@@ -4,11 +4,11 @@
 
 """What this node answers a peer with, message by message.
 
-`main.handle_p2p` turns a callback that raises into a disconnect, and
-`handle_p2p_handshake` does the same, so what a callback does with a
-message it dislikes is the difference between refusing the message and
-losing the peer. The functional tests drive two cooperating nodes, which
-is the path where every message is welcome; these are the rest.
+`main.handle_p2p` turns a callback that raises a `MisbehavingError` into a
+disconnect, and `handle_p2p_handshake` does the same, so what a callback
+raises over a message it dislikes is the difference between refusing the
+message and losing the peer. The functional tests drive two cooperating
+nodes, which is the path where every message is welcome; these are the rest.
 """
 
 import logging
@@ -3183,7 +3183,7 @@ def test_a_getdata_past_the_pending_cap_is_silent(
 
 
 class FakeHeaderIndex:
-    """A block index stand-in with fixed `add_headers` answer and tip status."""
+    """A block index stand-in with a fixed `add_headers` answer."""
 
     def __init__(
         self,
@@ -3191,13 +3191,11 @@ class FakeHeaderIndex:
         *,
         refuse: bool = False,
         header_index_tip: bytes = b"\xff" * 32,
-        tip_status: BlockStatus = BlockStatus.valid_header,
     ) -> None:
         """Fix `add_headers`'s return, whether it raises, and the tip."""
         self.tip = tip
         self.refuse = refuse
         self.header_index = [header_index_tip]
-        self.tip_status = tip_status
         self.given: list[BlockHeader] | None = None
         self.punish_cached_invalid: bool | None = None
         # what `update_block_availability` looks a hash up in: empty, so
@@ -3216,7 +3214,7 @@ class FakeHeaderIndex:
         return self.tip
 
     def get_block_info(self, block_hash: bytes) -> SimpleNamespace:
-        """Answer every hash with the same fixed `tip_status`, and index 0.
+        """Answer every hash with index 0.
 
         `index` is never asserted against by a test built on this double
         -- `headers`'s own `conn.best_known_height` update
@@ -3224,7 +3222,7 @@ class FakeHeaderIndex:
         here only checks `Connection.sent`/`node.status`, not the height
         that update leaves behind.
         """
-        return SimpleNamespace(status=self.tip_status, index=0)
+        return SimpleNamespace(index=0)
 
     def get_block_locator_hashes(self) -> list[bytes]:
         """Return the one fixed locator hash this stand-in ever answers with."""
@@ -3272,6 +3270,51 @@ def test_a_full_batch_on_a_live_fork_asks_from_the_fork_s_own_tip() -> None:
     (answer,) = peer.sent
     assert isinstance(answer, GetHeaders)
     assert answer.locator == (chain[-1].hash,)
+    assert node.status == NodeStatus.SyncingHeaders
+
+
+def test_a_full_batch_from_nowhere_known_asks_from_what_this_node_knows() -> None:
+    """A full batch connecting to nothing known asks from what this node has.
+
+    `add_headers` answers `tip=None` for a batch with no known ancestor, which
+    asks with the ordinary locator rather than one built from a tip that was
+    never reached.
+    """
+    chain = generate_random_header_chain(2000, RegTest().genesis.hash)
+    node = a_data_node(status=NodeStatus.SyncingHeaders)
+    index = FakeHeaderIndex(tip=None)
+    node.chainstate.block_index = index
+    peer = a_peer()
+    headers(node, Headers(chain).serialize(), peer)
+    (answer,) = peer.sent
+    assert isinstance(answer, GetHeaders)
+    assert answer.locator == (b"\x00" * 32,)
+    assert node.status == NodeStatus.SyncingHeaders
+
+
+def test_a_short_batch_from_nowhere_known_asks_from_what_this_node_knows() -> None:
+    """A short, unconnecting batch still gets a `getheaders`, not silence.
+
+    A short batch is the ordinary shape of a BIP130 announcement, and unlike the
+    full-batch case above the pre-existing code never sent anything for it: the
+    `len(headers) == 2000` guard was the only place a follow-up GetHeaders was
+    built. btclib-org/btclib-node#233
+    """
+    # a short batch is the ordinary shape of a BIP130 announcement, and
+    # unlike the full-batch case above the pre-existing code never sent
+    # anything for it: the `len(headers) == 2000` guard was the only
+    # place a follow-up GetHeaders was built. btclib-org/btclib-node#233
+    chain = generate_random_header_chain(4, RegTest().genesis.hash)
+    node = a_data_node(status=NodeStatus.SyncingHeaders)
+    index = FakeHeaderIndex(tip=None)
+    node.chainstate.block_index = index
+    peer = a_peer()
+    headers(node, Headers(chain).serialize(), peer)
+    (answer,) = peer.sent
+    assert isinstance(answer, GetHeaders)
+    assert answer.locator == (b"\x00" * 32,)
+    # not the ordinary end of a sync either: nothing of this batch
+    # connected, so there is nothing to have caught up to
     assert node.status == NodeStatus.SyncingHeaders
 
 
