@@ -490,6 +490,12 @@ class Connection:
     # class default for the reason `time_received` gives.
     # btclib-org/btclib-node#1164
     _writing: asyncio.Task[object] | None = None
+    # Whether the dial `automatic` records (set in `__init__` below) was
+    # to a `-seednode`, Core's `ADDR_FETCH`, rather than a draw from the
+    # table, Core's `OUTBOUND_FULL_RELAY`: dropped once it answers
+    # `getaddr`, and never synced from. `P2pManager.create_connection`
+    # sets it. A class default for the same reason as `time_received`.
+    addr_fetch: bool = False
 
     def __init__(
         self,
@@ -516,11 +522,10 @@ class Connection:
 
         self.status: P2pConnStatus = P2pConnStatus.Open
         self.inbound: bool = inbound
-        # Whether `P2pManager._maybe_dial_more_peers` dialled this off its
-        # own draw -- Core's `OUTBOUND_FULL_RELAY`, the kind that method's
-        # target counts, where an inbound peer and a `-connect`/`-addnode`
-        # one (Core's `MANUAL`) are not. `P2pManager.create_connection`
-        # sets it.
+        # Whether `P2pManager._maybe_dial_more_peers` dialled this on its
+        # own, holding what Core's `semOutbound` grants, where an inbound
+        # peer and a `-connect`/`-addnode` one (Core's `MANUAL`) are not.
+        # `P2pManager.create_connection` sets it.
         self.automatic: bool = False
         # Core's `CNode::m_prefer_evict`: whether this peer was accepted
         # from a discouraged host, which `select_node_to_evict` reads.

@@ -71,6 +71,7 @@ def a_conn(
     nonce: int | None = None,
     inbound: bool = False,
     automatic: bool = False,
+    addr_fetch: bool = False,
     protocol: int = PROTOCOL_VERSION,
 ) -> Any:
     """Build a `Connection` double: no socket, its own `sent`/`stopped` logs.
@@ -94,6 +95,7 @@ def a_conn(
         nonce=nonce,
         inbound=inbound,
         automatic=automatic,
+        addr_fetch=addr_fetch,
         version_message=SimpleNamespace(version=protocol),
         sent=[],
         stopped=[],
@@ -148,6 +150,9 @@ class AManagerFactory(Protocol):
         addnode: Sequence[tuple[str, int]] = (),
         listen: bool = True,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
+        dnsseed: bool | None = None,
+        fixedseeds: bool = True,
+        seednode: Sequence[tuple[str, int]] = (),
     ) -> P2pManager:
         """Build a `P2pManager` seeded with `conns`, `peer_db` and `status`."""
         ...
@@ -168,6 +173,9 @@ def a_manager() -> Iterator[AManagerFactory]:
         addnode: Sequence[tuple[str, int]] = (),
         listen: bool = True,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
+        dnsseed: bool | None = None,
+        fixedseeds: bool = True,
+        seednode: Sequence[tuple[str, int]] = (),
     ) -> P2pManager:
         # `18444` is regtest's own well-known port -- binding it for
         # real, as a plain default would, collides with a second suite
@@ -190,23 +198,27 @@ def a_manager() -> Iterator[AManagerFactory]:
             # own: it hands the transaction to this, the same queue a
             # relayed transaction goes through. btclib-org/btclib-node#141
             download_manager=SimpleNamespace(received_txs=[]),
-            # `P2pManager.__init__` reads `node.config.connect_given`,
-            # `node.config.listen`, `node.config.connect`,
-            # `node.config.addnode` and `node.config.max_connections`
-            # directly, not through `Config` itself: a plain namespace
-            # is enough. `connect_given` mirrors what `Config.__init__`
-            # itself derives from `connect` -- true whenever the
+            # `P2pManager.__init__` reads `node.config` directly, not
+            # through `Config` itself: a plain namespace is enough.
+            # `connect_given` mirrors what `Config.__init__` itself
+            # derives from `connect` -- true whenever the
             # sequence is non-empty, `["0"]` included, which nothing
             # here constructs -- and `listen` defaults to `True` so every
             # existing caller here keeps binding and accepting.
             # `max_connections` defaults to `Config`'s own default for
-            # the same reason.
+            # the same reason, and `dnsseed`, `fixedseeds` and `seednode`
+            # to what `Config.__init__` makes of none given.
             config=SimpleNamespace(
                 connect=connect,
                 connect_given=bool(connect),
                 addnode=addnode,
                 listen=listen,
                 max_connections=max_connections,
+                dnsseed=(
+                    not connect and max_connections > 0 if dnsseed is None else dnsseed
+                ),
+                fixedseeds=fixedseeds,
+                seednode=seednode,
                 pruned=False,
             ),
             # `Connection.send_version`'s own `start_height`
@@ -683,6 +695,7 @@ def test_a_pong_landing_between_the_idle_check_and_its_reread_does_not_drop_the_
         relay_tx = True
         feefilter = 0
         automatic = False
+        addr_fetch = False
         version_message = SimpleNamespace(version=PROTOCOL_VERSION)
 
         @property
@@ -997,11 +1010,12 @@ def test_a_promote_racing_the_snapshot_still_counts_as_already_connected(
     class HookedPending(dict[int, Any]):
         @override
         def values(self) -> Any:
-            # called twice, first from the count and then from the
-            # snapshot below: the second call is the one to race
+            # called three times, from the grant's count, the
+            # full-relay count and then the snapshot below: the third
+            # call is the one to race
             result = dict.values(self)
             values_calls.append(None)
-            if len(values_calls) < 2:
+            if len(values_calls) < 3:
                 return result
             promote_thread.start()
             # A bound only against a hang: on the unfixed tree
@@ -1472,6 +1486,491 @@ def test_a_pass_dials_once_and_draws_no_more(
     assert len(dialled) == 1
 
 
+def an_ipv4(i: int) -> NetworkAddressV2:
+    """Build the `i`-th of a run of distinct IPv4 peers, none a seed node's."""
+    return peer_address(f"10.0.0.{i}", 18444)
+
+
+def a_seed_node_manager(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    seednode: Sequence[tuple[str, int]] = (("1.2.3.4", 18444),),
+    holds_nothing: bool = True,
+    conns: Sequence[Any] = (),
+    max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
+) -> tuple[P2pManager, list[tuple[Any, ...]], list[str]]:
+    """Build a manager given `-seednode`, over a table holding every network.
+
+    What `dial` is asked for and what `create_connection` is handed are
+    returned beside it as one record, and every `info` line as another.
+    `dial` answers with a socket stand-in for every address.
+    """
+    calls: list[tuple[Any, ...]] = []
+
+    async def dial(address: NetworkAddressV2) -> object:
+        calls.append(("dial", address))
+        return "a socket"
+
+    monkeypatch.setattr(manager_module, "dial", dial)
+    peer_db = a_peer_db_stub(
+        is_empty=True, holds_nothing=holds_nothing, random_address=refuses_to_be_asked
+    )
+    manager = a_manager(
+        conns, peer_db=peer_db, seednode=seednode, max_connections=max_connections
+    )
+
+    def create_connection(sock: object, address: object, **kwargs: Any) -> None:
+        calls.append(("create", sock, address, kwargs))
+
+    monkeypatch.setattr(manager, "create_connection", create_connection)
+    logged: list[str] = []
+    monkeypatch.setattr(
+        manager.logger, "info", lambda msg, *args: logged.append(msg % args)
+    )
+    return manager, calls, logged
+
+
+@pytest.mark.parametrize(
+    ("holds_nothing", "queued"), [(True, True), (False, False)], ids=["empty", "held"]
+)
+def test_a_seed_node_is_dialled_at_once_for_an_empty_table(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    holds_nothing: bool,
+    queued: bool,
+) -> None:
+    """ISS 1192: Core's `ADDR_FETCH`, dialled on the first pass where empty.
+
+    `ThreadOpenConnections` queues one `-seednode` at once only where
+    `addrman` holds nothing, and dials it as an `ADDR_FETCH` connection.
+    """
+    manager, calls, logged = a_seed_node_manager(
+        a_manager, monkeypatch, holds_nothing=holds_nothing
+    )
+    assert asyncio.run(one_pass(manager)) is True
+    address = peer_address("1.2.3.4", 18444)
+    expected = [
+        ("dial", address),
+        (
+            "create",
+            "a socket",
+            address,
+            {"inbound": False, "automatic": True, "addr_fetch": True},
+        ),
+    ]
+    assert calls == (expected if queued else [])
+    line = "Empty addrman, adding seednode (1.2.3.4:18444) to addrfetch"
+    assert (line in logged) is queued
+
+
+def test_the_next_seed_node_is_queued_every_ten_seconds(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1192: below two full-relay peers, one more seed node per interval.
+
+    Core pops the shuffled list from its end, so each `-seednode` is
+    dialled once, and a pass inside the interval queues nothing.
+    """
+    seeds = (("1.2.3.4", 18444), ("5.6.7.8", 18444))
+    manager, calls, logged = a_seed_node_manager(
+        a_manager, monkeypatch, seednode=seeds, holds_nothing=False
+    )
+    manager._seed_node_timer = time.time() - 11
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert calls == []
+    assert manager._add_addr_fetch
+    asyncio.run(manager._maybe_dial_more_peers())
+    asyncio.run(manager._maybe_dial_more_peers())
+    named = {peer_address(host, port): f"{host}:{port}" for host, port in seeds}
+    (first,) = [call[1] for call in calls if call[0] == "dial"]
+    line = (
+        "Couldn't connect to peers from addrman after 10 seconds. Adding "
+        f"seednode ({named[first]}) to addrfetch"
+    )
+    assert logged == [line]
+    manager._seed_node_timer = time.time() - 11
+    asyncio.run(manager._maybe_dial_more_peers())
+    asyncio.run(manager._maybe_dial_more_peers())
+    dialled = [call[1] for call in calls if call[0] == "dial"]
+    assert sorted(named[address] for address in dialled) == sorted(named.values())
+    manager._seed_node_timer = time.time() - 11
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert not manager._add_addr_fetch
+
+
+@pytest.mark.parametrize(("full_relay", "queues"), [(1, True), (2, False)])
+def test_no_seed_node_is_queued_past_two_full_relay_peers(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    full_relay: int,
+    *,
+    queues: bool,
+) -> None:
+    """ISS 1192: Core's `SEED_OUTBOUND_CONNECTION_THRESHOLD`, pending peers in.
+
+    A `-seednode` connection is no full-relay peer, so it does not count.
+    """
+    conns = [
+        a_conn(i, status=P2pConnStatus.Open, automatic=True) for i in range(full_relay)
+    ]
+    conns.append(a_conn(9, automatic=True, addr_fetch=True))
+    manager, _, _ = a_seed_node_manager(a_manager, monkeypatch, holds_nothing=False)
+    manager.pending_connections.update({conn.id: conn for conn in conns})
+    manager._seed_node_timer = time.time() - 11
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert manager._add_addr_fetch is queues
+
+
+@pytest.mark.parametrize(
+    ("held", "same_endpoint"),
+    [
+        pytest.param(11, False, id="no-grant"),
+        pytest.param(0, True, id="already-connected"),
+    ],
+)
+def test_a_queued_seed_node_is_dropped_where_it_cannot_be_dialled(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    held: int,
+    *,
+    same_endpoint: bool,
+) -> None:
+    """ISS 1192: Core's `ProcessAddrFetch` pops the seed, dialled or not.
+
+    With every `semOutbound` grant held, or a connection to the same
+    endpoint already held, the seed leaves the queue undialled.
+    """
+    conns = [a_conn(i, automatic=True, address=an_ipv4(i)) for i in range(held)]
+    if same_endpoint:
+        conns.append(a_conn(99, address=peer_address("1.2.3.4", 18444)))
+    manager, calls, _ = a_seed_node_manager(a_manager, monkeypatch, conns=conns)
+    manager._add_addr_fetch = True
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert calls == []
+    assert not manager._addr_fetches
+
+
+def test_a_seed_node_is_dialled_where_a_grant_is_free(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1192: the positive control of the test above, ten grants held."""
+    conns = [a_conn(i, automatic=True, address=an_ipv4(i)) for i in range(10)]
+    manager, calls, _ = a_seed_node_manager(a_manager, monkeypatch, conns=conns)
+    manager._add_addr_fetch = True
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert [call[0] for call in calls] == ["dial", "create"]
+
+
+def test_a_seed_node_that_does_not_answer_makes_no_connection(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1192: `dial` answering nothing leaves nothing to register."""
+    manager, calls, _ = a_seed_node_manager(a_manager, monkeypatch)
+
+    async def dial(address: NetworkAddressV2) -> None:
+        calls.append(("dial", address))
+
+    monkeypatch.setattr(manager_module, "dial", dial)
+    manager._add_addr_fetch = True
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert [call[0] for call in calls] == ["dial"]
+
+
+def test_a_seed_node_step_that_raises_is_logged(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1192: a dial that raises does not end the housekeeping loop."""
+    manager, _, _ = a_seed_node_manager(a_manager, monkeypatch)
+    monkeypatch.setattr(manager_module, "dial", refuses_to_be_asked)
+    logged: list[str] = []
+    monkeypatch.setattr(manager.logger, "exception", logged.append)
+    assert asyncio.run(one_pass(manager)) is True
+    assert logged
+
+
+def test_a_seed_node_connection_takes_no_network_group(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1192: Core leaves `ADDR_FETCH` out of the groups it keeps apart.
+
+    A draw in the same group as a `-seednode` peer is still dialled.
+    """
+    dialled: list[NetworkAddressV2] = []
+
+    async def records(address: NetworkAddressV2) -> None:
+        dialled.append(address)
+
+    monkeypatch.setattr(manager_module, "dial", records)
+    drawn = peer_address("1.2.9.9", 18444)
+    peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: drawn)
+    held = a_conn(1, automatic=True, addr_fetch=True)
+    manager = a_manager([held], peer_db=peer_db)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert dialled == [drawn]
+
+
+@pytest.mark.parametrize(("age", "dropped"), [(299, False), (301, True)])
+def test_a_seed_node_connection_is_dropped_after_five_minutes(
+    a_manager: AManagerFactory, age: int, *, dropped: bool
+) -> None:
+    """ISS 1192: Core's `10 * AVG_ADDRESS_BROADCAST_INTERVAL`, seeds alone."""
+    conn = a_conn(
+        1, automatic=True, addr_fetch=True, connected_time=int(time.time()) - age
+    )
+    other = a_conn(2, automatic=True, connected_time=int(time.time()) - 3600)
+    manager = a_manager([conn, other])
+    assert asyncio.run(one_pass(manager)) is True
+    assert (1 not in manager.connections) is dropped
+    assert 2 in manager.connections
+
+
+def test_fixed_seeds_disabled_are_never_added(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1192: `-fixedseeds=0`, logged in Core's words, adds none."""
+    added: list[list[NetworkAddressV2]] = []
+    peer_db = a_peer_db_stub(
+        is_empty=True,
+        holds_network=lambda network_id: False,
+        add_addresses=lambda addresses: added.append(list(addresses)),
+    )
+    manager = a_manager(peer_db=peer_db, fixedseeds=False)
+    manager.node.chain = Main()
+    logged: list[str] = []
+    monkeypatch.setattr(manager.logger, "info", lambda msg, *a: logged.append(msg))
+    assert asyncio.run(one_pass(manager)) is True
+    manager._dial_start = time.time() - 61
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert added == []
+    assert logged == ["Fixed seeds are disabled"]
+
+
+def test_fixed_seeds_are_not_said_disabled_under_connect(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1192: Core says so on the table's own arm alone."""
+    manager = a_manager(fixedseeds=False, connect=[("1.2.3.4", 8333)])
+    logged: list[str] = []
+    monkeypatch.setattr(manager.logger, "info", lambda msg, *a: logged.append(msg))
+    assert asyncio.run(one_pass(manager)) is True
+    assert logged == []
+
+
+def test_a_seed_node_given_holds_the_fixed_seeds_back(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1192: with `-seednode` given, Core gives it the minute too."""
+    added: list[list[NetworkAddressV2]] = []
+    peer_db = a_peer_db_stub(
+        is_empty=True,
+        holds_nothing=False,
+        holds_network=lambda network_id: False,
+        add_addresses=lambda addresses: added.append(list(addresses)),
+    )
+    manager = a_manager(peer_db=peer_db, dnsseed=False, seednode=[("1.2.3.4", 18444)])
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert added == []
+
+
+def test_fixed_seeds_enabled_are_not_said_disabled(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1192: the control of the two tests above, `-fixedseeds` left on."""
+    manager = a_manager()
+    logged: list[str] = []
+    monkeypatch.setattr(manager.logger, "info", lambda msg, *a: logged.append(msg))
+    assert asyncio.run(one_pass(manager)) is True
+    assert logged == []
+
+
+def a_dns_seeding_manager(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    seednode: Sequence[tuple[str, int]] = (),
+    holds_nothing: bool = False,
+    connected: int = 0,
+    pending: int = 0,
+    timeout: float = 30,
+) -> tuple[P2pManager, list[int], list[str]]:
+    """Build a manager whose `get_addr_from_dns` and `info` lines are recorded.
+
+    `connected` and `pending` automatic peers are held past and short of
+    the handshake, and `_SEEDNODE_TIMEOUT` is `timeout`, looked at every
+    hundredth of a second.
+    """
+    calls: list[int] = []
+    peer_db = a_peer_db_stub(
+        is_empty=True,
+        holds_nothing=holds_nothing,
+        get_addr_from_dns=partial(_record_dns_lookup, calls),
+    )
+    conns = [a_conn(i, automatic=True) for i in range(connected)]
+    manager = a_manager(conns, peer_db=peer_db, seednode=seednode)
+    for i in range(pending):
+        conn = a_conn(100 + i, status=P2pConnStatus.Open, automatic=True)
+        manager.pending_connections[conn.id] = conn
+    monkeypatch.setattr(manager_module, "_SEEDNODE_TIMEOUT", timeout)
+    monkeypatch.setattr(manager_module, "_SEEDNODE_CHECK_INTERVAL", 0.01)
+    logged: list[str] = []
+    monkeypatch.setattr(
+        manager.logger, "info", lambda msg, *args: logged.append(msg % args)
+    )
+    return manager, calls, logged
+
+
+_SEEDNODE = [("1.2.3.4", 18444)]
+_SEEDNODE_ENABLED = (
+    "-seednode enabled. Trying the provided seeds for 30 seconds before "
+    "defaulting to the dnsseeds."
+)
+
+
+def test_dns_seeding_waits_on_no_seed_node_where_none_is_given(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1192: without `-seednode`, Core's DNS thread asks at once."""
+    manager, calls, logged = a_dns_seeding_manager(a_manager, monkeypatch, connected=2)
+    asyncio.run(manager._dns_address_seed())
+    assert calls == [1]
+    assert logged == []
+
+
+def test_dns_seeding_skips_the_seeds_once_seed_nodes_brought_peers(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1192: two full-relay peers past the handshake end the wait.
+
+    A table holding something is then not asked for more, in Core's
+    words.
+    """
+    manager, calls, logged = a_dns_seeding_manager(
+        a_manager, monkeypatch, seednode=_SEEDNODE, connected=2
+    )
+    asyncio.run(manager._dns_address_seed())
+    assert calls == []
+    assert logged == [
+        _SEEDNODE_ENABLED,
+        "P2P peers available. Finished fetching data from seed nodes.",
+        "Skipping DNS seeds. Enough peers have been found",
+    ]
+
+
+def test_dns_seeding_still_asks_for_an_empty_table(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1192: Core's `seeds_right_now`, set where `addrman` is empty."""
+    manager, calls, _ = a_dns_seeding_manager(
+        a_manager, monkeypatch, seednode=_SEEDNODE, connected=2, holds_nothing=True
+    )
+    asyncio.run(manager._dns_address_seed())
+    assert calls == [1]
+
+
+@pytest.mark.parametrize(
+    ("connected", "pending"),
+    [pytest.param(1, 0, id="one-peer"), pytest.param(1, 1, id="one-handshaking")],
+)
+def test_dns_seeding_takes_over_once_the_seed_nodes_time_out(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    connected: int,
+    pending: int,
+) -> None:
+    """ISS 1192: Core's `SEEDNODE_TIMEOUT`, counting handshaken peers alone.
+
+    `GetFullOutboundConnCount` counts `fSuccessfullyConnected` peers, so
+    a peer still short of `verack` does not end the wait.
+    """
+    manager, calls, logged = a_dns_seeding_manager(
+        a_manager,
+        monkeypatch,
+        seednode=_SEEDNODE,
+        connected=connected,
+        pending=pending,
+        timeout=0.05,
+    )
+    asyncio.run(manager._dns_address_seed())
+    assert calls == [1]
+    line = (
+        "Couldn't connect to enough peers via seed nodes. Handing fetch logic "
+        "to the DNS seeds."
+    )
+    assert logged[1:] == [line]
+
+
+def test_a_seed_node_connection_does_not_end_the_dns_wait(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1192: an `ADDR_FETCH` peer is no full-relay one to Core."""
+    manager, calls, _ = a_dns_seeding_manager(
+        a_manager, monkeypatch, seednode=_SEEDNODE, connected=1, timeout=0.05
+    )
+    fetch = a_conn(50, automatic=True, addr_fetch=True)
+    manager.connections[fetch.id] = fetch
+    asyncio.run(manager._dns_address_seed())
+    assert calls == [1]
+
+
+@pytest.mark.parametrize(
+    ("connect", "seednode", "dnsseed", "lines", "asked"),
+    [
+        pytest.param((), (), False, ["DNS seeding disabled"], False, id="off"),
+        pytest.param([("1.2.3.4", 8333)], (), True, [], True, id="connect-dnsseed"),
+        pytest.param(
+            [("1.2.3.4", 8333)],
+            _SEEDNODE,
+            False,
+            ["-seednode is ignored when -connect is used", "DNS seeding disabled"],
+            False,
+            id="connect-seednode",
+        ),
+        pytest.param(
+            (), _SEEDNODE, False, ["DNS seeding disabled"], False, id="seednode"
+        ),
+    ],
+)
+def test_run_reads_dnsseed_whatever_the_arm(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    connect: Sequence[tuple[str, int]],
+    seednode: Sequence[tuple[str, int]],
+    lines: list[str],
+    *,
+    dnsseed: bool,
+    asked: bool,
+) -> None:
+    """ISS 1192: `-dnsseed` decides the lookup, `-connect` only its default.
+
+    Core starts `ThreadDNSAddressSeed` wherever `-dnsseed` is true, an
+    explicit `-dnsseed=1` beside `-connect` included, and says so where
+    it is not.
+    """
+    calls: list[int] = []
+    peer_db = a_peer_db_stub(
+        is_empty=True,
+        holds_nothing=False,
+        random_address=refuses_to_be_asked,
+        get_addr_from_dns=partial(_record_dns_lookup, calls),
+    )
+    manager = a_manager(
+        peer_db=peer_db,
+        connect=connect,
+        seednode=seednode,
+        dnsseed=dnsseed,
+        listen=False,
+    )
+    logged: list[str] = []
+    monkeypatch.setattr(manager.logger, "info", lambda msg, *a: logged.append(msg))
+    manager.start()
+    wait_until(manager.loop.is_running)
+    _let_runs_own_coroutines_start(manager)
+    assert [line for line in logged if line != "Starting P2P manager"] == lines
+    assert bool(calls) is asked
+
+
 def refuses_to_be_asked() -> NoReturn:
     """Stand in for `random_address`/`get_active_addresses`, unreachable."""
     raise RuntimeError("no")
@@ -1537,7 +2036,7 @@ def _let_runs_own_coroutines_start(manager: P2pManager) -> None:
 
 
 def test_run_skips_the_dns_lookup_under_connect(a_manager: AManagerFactory) -> None:
-    """`-connect` also stops `run` from ever scheduling `get_addr_from_dns`.
+    """`-connect`'s default `-dnsseed` keeps `run` off `get_addr_from_dns`.
 
     `listen=False` alongside `connect`, matching what `-connect` alone
     resolves to without an explicit `-listen=1` (`cli.py`'s own
@@ -1588,19 +2087,22 @@ def test_run_schedules_the_dns_lookup_without_connect(
     wait_until(lambda: calls)
 
 
-def test_zero_max_connections_turns_off_the_dns_lookup(
-    a_manager: AManagerFactory,
-) -> None:
-    """ISS 1066: `max_connections=0` seeds nothing, as `-connect` does not."""
-    assert a_manager(max_connections=0).use_dns_seed is False
-    assert a_manager().use_dns_seed is True
-    assert a_manager(connect=[("1.2.3.4", 8333)]).use_dns_seed is False
+def test_the_dns_lookup_is_config_s_dnsseed(a_manager: AManagerFactory) -> None:
+    """ISS 1192: `Config.dnsseed` decides, `-connect` and zero peers aside.
+
+    `Config.__init__` is where its default is soft-set, as Core's
+    `InitParameterInteraction` soft-sets `-dnsseed`.
+    """
+    assert a_manager(dnsseed=False).use_dns_seed is False
+    connect = [("1.2.3.4", 8333)]
+    manager = a_manager(dnsseed=True, connect=connect, max_connections=0)
+    assert manager.use_dns_seed is True
 
 
 def test_run_skips_the_dns_lookup_at_zero_max_connections(
     a_manager: AManagerFactory,
 ) -> None:
-    """ISS 1066: `run` never schedules `get_addr_from_dns` at zero.
+    """ISS 1066: `run` schedules no `get_addr_from_dns` at zero by default.
 
     `listen=False` beside it, what `-maxconnections=0` alone resolves to
     (`cli.py`'s own `build_config`);

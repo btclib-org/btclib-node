@@ -153,10 +153,8 @@ intersphinx_cache_limit = 0
 #   unresolved regardless of BlockHeader already being granted its own
 #   entry above. The numbering restarts in each signature, and
 #   config.py's own Config.__init__ takes one number per parameter
-#   typed `Sequence[str]` -- `connect`, `addnode`, `rpcauth` and
-#   `rpcwhitelist` -- Sequence being what that file imports under
-#   TYPE_CHECKING, which is what __annotationlib_name_3__ and
-#   __annotationlib_name_4__ are
+#   typed `Sequence[str]`, Sequence being what that file imports under
+#   TYPE_CHECKING, which is why the numbers run past 2
 # - asyncio.AbstractEventLoop, spelled that way everywhere this tree
 #   uses it (p2p/manager.py, rpc/manager.py, rpc/connection.py):
 #   autodoc reads the qualified name back off the class itself once
@@ -180,6 +178,7 @@ nitpick_ignore = [
     ("py:class", "__annotationlib_name_2__"),
     ("py:class", "__annotationlib_name_3__"),
     ("py:class", "__annotationlib_name_4__"),
+    ("py:class", "__annotationlib_name_5__"),
     ("py:class", "asyncio.events.AbstractEventLoop"),
     ("py:class", "BinaryData"),
     ("py:class", "ScriptFlag"),

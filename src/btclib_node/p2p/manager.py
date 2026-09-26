@@ -132,6 +132,24 @@ _FIXED_SEEDS_DELAY = 60
 # often for nothing.
 _FIXED_SEEDS_CHECK_INTERVAL = 0.5
 
+# Core's `SEED_OUTBOUND_CONNECTION_THRESHOLD` (`src/net.cpp`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the full-relay peers below
+# which another `-seednode` is queued, and which DNS seeding waits for
+# the `-seednode` peers to bring.
+_SEED_OUTBOUND_CONNECTION_THRESHOLD = 2
+# `ThreadOpenConnections`'s `ADD_NEXT_SEEDNODE` (same file and sha): how
+# long one `-seednode` is given before the next one is queued.
+_ADD_NEXT_SEEDNODE = 10
+# `ThreadDNSAddressSeed`'s `SEEDNODE_TIMEOUT` (same file and sha): how
+# long DNS seeding waits on the `-seednode` peers, looking every
+# `_SEEDNODE_CHECK_INTERVAL`, its `sleep_for(500ms)`.
+_SEEDNODE_TIMEOUT = 30
+_SEEDNODE_CHECK_INTERVAL = 0.5
+# How long a `-seednode` connection is held waiting for its `addr`:
+# Core's `10 * AVG_ADDRESS_BROADCAST_INTERVAL` (`src/net_processing.cpp`,
+# same sha), 30 seconds being the interval.
+_ADDR_FETCH_TIMEOUT = 10 * 30
+
 # The networks Core reaches by default, which are this node's two:
 # `g_reachable_nets` loses Tor, I2P and CJDNS in `AppInitMain` where no
 # proxy, SAM bridge or `-cjdnsreachable` is given (`src/init.cpp`, same
@@ -191,10 +209,11 @@ class P2pManager(threading.Thread):
         self.logger = node.logger
         self.port = port
         self.peer_db = peer_db
-        # Core's own `-connect`: dial only the peers it names, with DNS
-        # seeding and every automatically-drawn outbound connection off
-        # (`connOptions.m_use_addrman_outgoing = false`, `src/init.cpp`
-        # `InitParameterInteraction`, at bitcoin/bitcoin@ca7162cde5).
+        # Core's own `-connect`: dial only the peers it names, with every
+        # automatically-drawn outbound connection off
+        # (`connOptions.m_use_addrman_outgoing = false`, `src/init.cpp`,
+        # at bitcoin/bitcoin@ca7162cde5); `Config.dnsseed` is where its
+        # soft-set of DNS seeding is read.
         # `node.config.connect_given`, not `node.config.connect`'s own
         # truthiness: the two disagree under `-connect=0`, which is
         # still the `-connect` arm even though it dials nobody
@@ -234,16 +253,28 @@ class P2pManager(threading.Thread):
         # outbound connection counts against it, `_automatic_outbound`
         # below being the one count of them.
         self.max_automatic_outbound = min(automatic_outbound, max_connections)
-        # Core's own `-dnsseed`, which `InitParameterInteraction` soft-sets
-        # off under `-connect` and under `-maxconnections=0` alike
-        # (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
-        # This node has no `-dnsseed` for an operator to set, so the
-        # soft-set is the whole of it: whether `run` schedules the lookup.
-        self.use_dns_seed = self.use_addrman_outgoing and max_connections > 0
-        # Core's `-fixedseeds`, `DEFAULT_FIXEDSEEDS` being true, which
-        # this node has no option to turn off; cleared once the seeds
-        # are added, as `ThreadOpenConnections` clears `add_fixed_seeds`.
-        self.add_fixed_seeds = True
+        # Core's own `-dnsseed`, `Config.dnsseed` having taken its
+        # soft-set: whether `run` schedules the lookup.
+        self.use_dns_seed = node.config.dnsseed
+        # Core's `-fixedseeds`, cleared once the seeds are added, as
+        # `ThreadOpenConnections` clears `add_fixed_seeds`.
+        self.add_fixed_seeds = node.config.fixedseeds
+        # Core's `vSeedNodes`, shuffled as `CConnman::Start` shuffles it
+        # (`src/net.cpp`, same sha), and popped from the end by
+        # `_maybe_queue_seed_node` into `_addr_fetches`, Core's
+        # `m_addr_fetches`, which `_process_addr_fetch` dials from the
+        # front. Only the table's own arm reads it, as only
+        # `ThreadOpenConnections`'s does, while `_seednode_given` is
+        # Core's `!gArgs.GetArgs("-seednode").empty()`, read whatever
+        # the arm.
+        self._seed_nodes = list(node.config.seednode)
+        secrets.SystemRandom().shuffle(self._seed_nodes)
+        self._seednode_given = bool(node.config.seednode)
+        self._addr_fetches: deque[tuple[str, int]] = deque()
+        # Core's `add_addr_fetch` and `seed_node_timer`, set when
+        # `manage_connections` begins.
+        self._add_addr_fetch = False
+        self._seed_node_timer = 0.0
         # Core's `m_added_node_params` being non-empty, which only
         # `-addnode` fills here: the `addnode` RPC's `add` dials once and
         # keeps no list (`rpc.callbacks.add_node`), so it does not count
@@ -434,13 +465,16 @@ class P2pManager(threading.Thread):
             ],
         ] = {}
 
-    def create_connection(
+    # Every keyword is one field the connection holds before its task
+    # starts, so none can be set after this returns.
+    def create_connection(  # noqa: PLR0913
         self,
         client: socket.socket,
         address: NetworkAddressV2,
         *,
         inbound: bool,
         automatic: bool = False,
+        addr_fetch: bool = False,
         prefer_evict: bool = False,
     ) -> None:
         """Build a `Connection` for `client`, hold it pending, and start it.
@@ -492,6 +526,7 @@ class P2pManager(threading.Thread):
             self, client, address, self.last_connection_id, inbound=inbound
         )
         conn.automatic = automatic
+        conn.addr_fetch = addr_fetch
         conn.prefer_evict = prefer_evict
         conn.keyed_net_group = keyed_net_group(self._net_group_key, address)
         self.pending_connections[self.last_connection_id] = conn
@@ -713,6 +748,21 @@ class P2pManager(threading.Thread):
             ):
                 self.remove_connection(conn.id)
 
+    def _drop_expired_addr_fetches(self, now: float) -> None:
+        """Drop a `-seednode` connection held past `_ADDR_FETCH_TIMEOUT`.
+
+        Core's `SendMessages` drops an `ADDR_FETCH` peer past its
+        handshake once that long has passed since it connected
+        (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+        v31.1 tag).
+        """
+        for conn in self.connections.copy().values():
+            if conn.addr_fetch and now - conn.connected_time > _ADDR_FETCH_TIMEOUT:
+                self.logger.debug(
+                    "addrfetch connection timeout, connection %s", conn.id
+                )
+                self.remove_connection(conn.id)
+
     def _maybe_prune_active_addresses(self, now: float) -> None:
         if now - self._last_active_prune < _ACTIVE_PRUNE_INTERVAL:
             return
@@ -745,8 +795,8 @@ class P2pManager(threading.Thread):
         `CConnman::ThreadOpenConnections`'s own step ahead of its draw
         (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
         once `_FIXED_SEEDS_DELAY` has passed, or at once where DNS
-        seeding is off and no `-addnode` was given, and once only. Core's
-        `-seednode` has no counterpart here.
+        seeding is off and neither `-seednode` nor `-addnode` was given,
+        and once only.
         """
         now = time.time()
         if not self.add_fixed_seeds or now < self._next_fixed_seeds_check:
@@ -764,7 +814,11 @@ class P2pManager(threading.Thread):
                 "Adding fixed seeds as 60 seconds have passed and addrman is "
                 "empty for at least one reachable network"
             )
-        elif not self.use_dns_seed and not self._addnode_given:
+        elif (
+            not self.use_dns_seed
+            and not self._seednode_given
+            and not self._addnode_given
+        ):
             self.logger.info(
                 "Adding fixed seeds as -dnsseed=0 (or IPv4/IPv6 connections are "
                 "disabled via -onlynet) and neither -addnode nor -seednode are "
@@ -797,14 +851,89 @@ class P2pManager(threading.Thread):
                 )
             )
 
+    def _full_relay_outbound(self, *, handshaken: bool = False) -> int:
+        """Count the automatic connections that are not `-seednode` ones.
+
+        Core's `IsFullOutboundConn()` peers: `ThreadOpenConnections`
+        counts them handshake finished or not, and
+        `GetFullOutboundConnCount` only where `fSuccessfullyConnected`,
+        which `handshaken` asks for. Locked for the reason
+        `_maybe_dial_more_peers` gives.
+        """
+        with self._connections_lock:
+            held = [*self.connections.values()]
+            if not handshaken:
+                held.extend(self.pending_connections.values())
+        return sum(conn.automatic and not conn.addr_fetch for conn in held)
+
+    def _maybe_queue_seed_node(self) -> None:
+        """Queue the next `-seednode` where `_add_addr_fetch` asks for one.
+
+        `ThreadOpenConnections`'s first step (`src/net.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), logged in its words.
+        """
+        if not self._add_addr_fetch:
+            return
+        self._add_addr_fetch = False
+        host, port = seed = self._seed_nodes.pop()
+        self._addr_fetches.append(seed)
+        if self.peer_db.holds_nothing:
+            self.logger.info(
+                "Empty addrman, adding seednode (%s) to addrfetch",
+                ip_and_port(host, port),
+            )
+        else:
+            self.logger.info(
+                "Couldn't connect to peers from addrman after %d seconds. "
+                "Adding seednode (%s) to addrfetch",
+                _ADD_NEXT_SEEDNODE,
+                ip_and_port(host, port),
+            )
+
+    async def _process_addr_fetch(self) -> None:
+        """Dial the `-seednode` queued first, where an outbound slot is free.
+
+        Core's `ProcessAddrFetch` (`src/net.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the seed leaves the
+        queue whether or not it is dialled, as it does there where no
+        `semOutbound` grant is free, and `OpenNetworkConnection` refuses
+        one this node already holds a connection with.
+        """
+        if not self._addr_fetches:
+            return
+        host, port = self._addr_fetches.popleft()
+        if self._automatic_outbound() >= self.max_automatic_outbound:
+            return
+        address = peer_address(host, port)
+        with self._connections_lock:
+            connected = (
+                *self.connections.values(),
+                *self.pending_connections.values(),
+            )
+        if endpoint_key(address) in {endpoint_key(c.address) for c in connected}:
+            return
+        sock = await dial(address)
+        if sock:
+            self.create_connection(
+                sock, address, inbound=False, automatic=True, addr_fetch=True
+            )
+
     async def _maybe_dial_more_peers(self) -> None:
         # `-connect`'s own other half: `peer_db`'s table is never drawn
-        # from at all, on top of `run` below never scheduling the DNS
-        # lookup that would otherwise fill it. `Node.run` dials
-        # `node.config.connect` directly through `connect()`, which does
-        # not pass through here.
+        # from at all, on top of `run` below not scheduling the DNS
+        # lookup that would otherwise fill it unless `-dnsseed` is
+        # given. `Node.run` dials `node.config.connect` directly through
+        # `connect()`, which does not pass through here.
         if not self.use_addrman_outgoing:
             return
+        # `ThreadOpenConnections`'s own order: a `-seednode` is queued
+        # and dialled ahead of the grant below, and whether the next one
+        # is due is decided past it. Guarded as the draw below is.
+        try:
+            self._maybe_queue_seed_node()
+            await self._process_addr_fetch()
+        except Exception:
+            self.logger.exception("Exception occurred")
         # The target does not depend on how far this node has synced:
         # `ThreadOpenConnections` opens a full-relay connection whenever
         # `nOutboundFullRelay < m_max_outbound_full_relay`, from its first
@@ -854,7 +983,18 @@ class P2pManager(threading.Thread):
             self._maybe_add_fixed_seeds()
         except Exception:
             self.logger.exception("Exception occurred")
-        if live >= self.max_outbound_full_relay or self.peer_db.is_empty:
+        # A `-seednode` connection holds a grant and is no full-relay
+        # peer, so the target counts without it.
+        full_relay = self._full_relay_outbound()
+        now = time.time()
+        if (
+            self._seed_nodes
+            and full_relay < _SEED_OUTBOUND_CONNECTION_THRESHOLD
+            and now > self._seed_node_timer + _ADD_NEXT_SEEDNODE
+        ):
+            self._seed_node_timer = now
+            self._add_addr_fetch = True
+        if full_relay >= self.max_outbound_full_relay or self.peer_db.is_empty:
             return
         # By endpoint_key, not raw equality: a drawn address
         # carries whatever timestamp and services callbacks.verack
@@ -875,14 +1015,14 @@ class P2pManager(threading.Thread):
         # One outbound peer per network group, as
         # `CConnman::ThreadOpenConnections` keeps them: the groups of
         # its `MANUAL`, `OUTBOUND_FULL_RELAY` and `BLOCK_RELAY` peers,
-        # which here are every connection not inbound, pending ones
-        # included. A peer off IPv4 and IPv6 adds no group, as Core
-        # adds none for Tor, I2P or CJDNS (`src/net.cpp`, at
-        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        # which here are every connection neither inbound nor a
+        # `-seednode` one, pending ones included. A peer off IPv4 and
+        # IPv6 adds no group, as Core adds none for Tor, I2P or CJDNS
+        # (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
         outbound_net_groups = {
             net_group(conn.address)
             for conn in connected
-            if not conn.inbound and can_addrv1(conn.address)
+            if not conn.inbound and not conn.addr_fetch and can_addrv1(conn.address)
         }
         try:
             await self._dial_one_draw(already_connected, outbound_net_groups)
@@ -978,9 +1118,14 @@ class P2pManager(threading.Thread):
         redial issue #651 asked for, for `-connect`/`-addnode` alone.
         """
         self._dial_start = time.time()
+        self._seed_node_timer = self._dial_start
+        self._add_addr_fetch = bool(self._seed_nodes) and self.peer_db.holds_nothing
+        if self.use_addrman_outgoing and not self.add_fixed_seeds:
+            self.logger.info("Fixed seeds are disabled")
         while True:
             now = time.time()
             self._prune_stale_connections(now)
+            self._drop_expired_addr_fetches(now)
             self._maybe_prune_active_addresses(now)
             await self._maybe_dial_more_peers()
             await self._maybe_redial_specified()
@@ -1326,6 +1471,47 @@ class P2pManager(threading.Thread):
             if exc is not None and not isinstance(exc, asyncio.CancelledError):
                 self.logger.error("P2P listener's accept loop ended", exc_info=exc)
 
+    async def _dns_address_seed(self) -> None:
+        """Wait on the `-seednode` peers, then ask the DNS seeds if still owed.
+
+        Core's `ThreadDNSAddressSeed` (`src/net.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), as far as its
+        `-seednode` wait and the decision after it, logged in its words.
+        Whether the seeds are then asked is `PeerDB.get_addr_from_dns`'s
+        own `ask_dns_nodes`.
+        """
+        outbound = 0
+        if self._seednode_given:
+            start = time.time()
+            self.logger.info(
+                "-seednode enabled. Trying the provided seeds for %d seconds "
+                "before defaulting to the dnsseeds.",
+                _SEEDNODE_TIMEOUT,
+            )
+            while True:
+                await asyncio.sleep(_SEEDNODE_CHECK_INTERVAL)
+                if time.time() > start + _SEEDNODE_TIMEOUT:
+                    self.logger.info(
+                        "Couldn't connect to enough peers via seed nodes. "
+                        "Handing fetch logic to the DNS seeds."
+                    )
+                    break
+                outbound = self._full_relay_outbound(handshaken=True)
+                if outbound >= _SEED_OUTBOUND_CONNECTION_THRESHOLD:
+                    self.logger.info(
+                        "P2P peers available. Finished fetching data from seed nodes."
+                    )
+                    break
+        # Core's `seeds_right_now`, which only an empty table sets here,
+        # this node having no `-forcednsseed`
+        if (
+            outbound >= _SEED_OUTBOUND_CONNECTION_THRESHOLD
+            and not self.peer_db.holds_nothing
+        ):
+            self.logger.info("Skipping DNS seeds. Enough peers have been found")
+            return
+        await self.peer_db.get_addr_from_dns()
+
     @override
     def run(self) -> None:
         loop = self.loop
@@ -1351,8 +1537,14 @@ class P2pManager(threading.Thread):
         finally:
             self._start_attempted.set()
         self._server_sockets = server_sockets
+        # `AppInitMain`'s and `CConnman::Start`'s own lines (`src/init.cpp`,
+        # `src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+        if self.node.config.connect and self._seednode_given:
+            self.logger.info("-seednode is ignored when -connect is used")
         if self.use_dns_seed:
-            asyncio.run_coroutine_threadsafe(self.peer_db.get_addr_from_dns(), loop)
+            asyncio.run_coroutine_threadsafe(self._dns_address_seed(), loop)
+        else:
+            self.logger.info("DNS seeding disabled")
         for server_socket in server_sockets:
             asyncio.run_coroutine_threadsafe(
                 self.server(loop, server_socket), loop

@@ -709,13 +709,15 @@ def _network_name(network: Network) -> str:
 
 
 def _connection_type(p2p_conn: Connection) -> str:
-    """Core's `ConnectionTypeAsString` for the three types this node opens.
+    """Core's `ConnectionTypeAsString` for the types this node opens.
 
-    An outbound connection `P2pManager` did not draw itself is a
+    An outbound connection `P2pManager` did not open on its own is a
     `-connect`, `-addnode` or `addnode` peer, Core's `MANUAL`.
     """
     if p2p_conn.inbound:
         return "inbound"
+    if p2p_conn.addr_fetch:
+        return "addr-fetch"
     return "outbound-full-relay" if p2p_conn.automatic else "manual"
 
 

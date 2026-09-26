@@ -510,6 +510,15 @@ class PeerDB:
         # not, and nothing here promised otherwise).
         return not len(self.addresses)
 
+    @property
+    def holds_nothing(self) -> bool:
+        """Whether both tables are empty, Core's `addrman.Size() == 0`.
+
+        Read without a lock, for the reason `is_empty` gives, a list's
+        length being one step as a set's is.
+        """
+        return not len(self.addresses) and not len(self.active_addresses)
+
     def holds_network(self, network_id: int) -> bool:
         """Whether either table holds an address on `network_id`.
 

@@ -105,21 +105,14 @@ def _resolve_peers(
 ) -> tuple[tuple[str, int], ...]:
     """Split every spec in `specs` and check its host is a literal IP.
 
-    A hostname is not resolved here, unlike Core's own `-connect`/
-    `-addnode`, which dial through `CConnman::ConnectNode` and resolve
-    one via `Resolve` (`src/net.cpp`) same as any other peer. This
-    node's own dial route -- `p2p_manager.connect(peer_address(...))`,
-    the one ISS 573 (btclib-org/btclib-node#573) asks these two fields
-    to use -- takes a `NetworkAddressV2` built straight off a parsed IP
-    (`p2p/address.py`'s `peer_address`), and nothing in this node's
-    synchronous startup path resolves a name into one: the only DNS
-    lookup here is `PeerDB.get_addr_from_dns`'s own coroutine, on
-    `P2pManager`'s asyncio loop, which is not reachable before that
-    manager's thread exists. Widening `peer_address` or plumbing an
-    async resolve into `Node.run` for two config fields is a larger
-    change than this branch's scope; a hostname is refused up front,
-    at `Config` construction, rather than dialled wrong or silently
-    dropped later.
+    A hostname is not resolved here, unlike Core's own `-connect`,
+    `-addnode` and `-seednode`, which dial through `CConnman::ConnectNode`
+    and resolve one via `Resolve` (`src/net.cpp`) same as any other peer.
+    This node dials a `NetworkAddressV2` built straight off a parsed IP
+    (`p2p/address.py`'s `peer_address`), and the only DNS lookup here is
+    `PeerDB.get_addr_from_dns`'s own coroutine, on `P2pManager`'s asyncio
+    loop. A hostname is refused up front, at `Config` construction,
+    rather than dialled wrong or silently dropped later.
     """
     peers: list[tuple[str, int]] = []
     for spec in specs:
@@ -261,8 +254,8 @@ class Config:
     debug: bool
     min_relay_feerate: FeeRate
     # (ip, port) pairs, resolved by `_resolve_peers` above: Core's own
-    # `-connect`, which dials these alone and turns off DNS seeding and
-    # every automatically-drawn outbound connection
+    # `-connect`, which dials these alone, soft-sets DNS seeding off and
+    # turns off every automatically-drawn outbound connection
     # (`InitParameterInteraction`, `src/init.cpp:814-819`, and
     # `connOptions.m_use_addrman_outgoing = false`, `src/init.cpp:2337`,
     # both at bitcoin/bitcoin@ca7162cde5). Empty for `-connect=0` too --
@@ -297,6 +290,19 @@ class Config:
     # connection outside it too. `P2pManager.__init__` divides it into
     # inbound and outbound slots.
     max_connections: int
+    # Core's own `-dnsseed`, `DEFAULT_DNSSEED` (`src/net.h`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) true unless `-connect` or
+    # `-maxconnections=0` is given, in which case `InitParameterInteraction`
+    # soft-sets it false: `__init__` below computes that default where it
+    # is given `None`, an explicit value winning over it.
+    dnsseed: bool
+    # Core's own `-fixedseeds`, `DEFAULT_FIXEDSEEDS` (same file) true:
+    # whether `P2pManager` may fall back on the chain's fixed seeds.
+    fixedseeds: bool
+    # (ip, port) pairs, resolved by `_resolve_peers` above: Core's own
+    # `-seednode`, each dialled to fetch addresses and then dropped
+    # (`connOptions.vSeedNodes`, `src/init.cpp`, same sha).
+    seednode: tuple[tuple[str, int], ...]
 
     # every parameter here is one independent setting, not a group of
     # related ones this signature happens to expose together: `chain` is
@@ -335,6 +341,9 @@ class Config:
         addnode: Sequence[str] = (),
         listen: bool = True,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
+        dnsseed: bool | None = None,
+        fixedseeds: bool = True,
+        seednode: Sequence[str] = (),
         rpcauth: Sequence[str] = (),
         rpcuser: str = "",
         rpcpassword: str = "",
@@ -382,6 +391,13 @@ class Config:
             err_msg = "-maxconnections must be greater or equal than zero"
             raise ValueError(err_msg)
         self.max_connections = max_connections
+        self.dnsseed = (
+            not self.connect_given and max_connections > 0
+            if dnsseed is None
+            else dnsseed
+        )
+        self.fixedseeds = fixedseeds
+        self.seednode = _resolve_peers(seednode, self.chain.port)
 
         self.p2p_port = None
         if allow_p2p:

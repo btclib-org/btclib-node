@@ -155,6 +155,7 @@ def a_peer(
     relay: bool = True,
     inbound: bool = True,
     automatic: bool = False,
+    addr_fetch: bool = False,
     versioned: bool = True,
 ) -> Any:
     """Build a `P2pManager.connections` entry `get_peer_info` can read.
@@ -189,6 +190,7 @@ def a_peer(
         ping_sent=ping_sent,
         inbound=inbound,
         automatic=automatic,
+        addr_fetch=addr_fetch,
         stats=PeerStats(),
         block_availability=BlockAvailability(),
         tx_announce_queue=[],
@@ -529,20 +531,22 @@ def test_a_peer_that_asked_for_no_relay_has_no_tx_relay() -> None:
 
 
 @pytest.mark.parametrize(
-    ("inbound", "automatic", "connection_type"),
+    ("inbound", "automatic", "addr_fetch", "connection_type"),
     [
-        (True, False, "inbound"),
-        (False, True, "outbound-full-relay"),
-        (False, False, "manual"),
+        (True, False, False, "inbound"),
+        (False, True, False, "outbound-full-relay"),
+        (False, True, True, "addr-fetch"),
+        (False, False, False, "manual"),
     ],
 )
 def test_the_connection_type_is_core_s(
     inbound: bool,  # noqa: FBT001
     automatic: bool,  # noqa: FBT001
+    addr_fetch: bool,  # noqa: FBT001
     connection_type: str,
 ) -> None:
-    """Inbound, drawn by this node, or named by an operator."""
-    peer = a_peer(inbound=inbound, automatic=automatic)
+    """Inbound, drawn by this node, a `-seednode`, or named by an operator."""
+    peer = a_peer(inbound=inbound, automatic=automatic, addr_fetch=addr_fetch)
     (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
     assert info["connection_type"] == connection_type
 

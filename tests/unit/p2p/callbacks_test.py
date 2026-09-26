@@ -511,6 +511,9 @@ def a_peer(**attributes: Any) -> Any:
         # what `Connection` starts every connection at, and what
         # `P2pManager.create_connection` sets for a peer it drew itself
         automatic=False,
+        # what `Connection` starts every connection at, and what
+        # `P2pManager.create_connection` sets for a `-seednode` peer
+        addr_fetch=False,
         address=peer_address("1.2.3.4", 18444),
         stats=PeerStats(),
         # what `Connection` starts every connection at, and what
@@ -1340,6 +1343,35 @@ def test_the_addresses_a_peer_sends_are_kept() -> None:
         # BIP155's record either way, the addr version 1 entry being
         # translated back into one; and without the timestamp the peer
         # quoted, which is PeerDB.add_addresses' doing
+        assert peer_db.addresses == {replace(address, timestamp=0) for address in given}
+
+
+@pytest.mark.parametrize(
+    ("addr_fetch", "count", "stopped"),
+    [
+        pytest.param(True, 2, True, id="seed-node-two"),
+        pytest.param(True, 1, False, id="seed-node-one"),
+        pytest.param(False, 2, False, id="full-relay-two"),
+    ],
+)
+def test_a_seed_node_is_dropped_once_it_sends_addresses(
+    count: int, *, addr_fetch: bool, stopped: bool
+) -> None:
+    """ISS 1192: Core drops an `ADDR_FETCH` peer past one address, kept.
+
+    Through `addr` and `addrv2` alike: one address alone is what a peer
+    announcing itself sends.
+    """
+    given = [a_gossiped_address(f"1.2.3.{i}") for i in range(count)]
+    for callback, message in (
+        (addr, Addr([addr_entry(address) for address in given])),
+        (addrv2, AddrV2(given)),
+    ):
+        peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+        node = a_handshake_node(peer_db=peer_db)
+        peer = a_gossiping_peer(addr_fetch=addr_fetch)
+        callback(node, message.serialize(), peer)
+        assert bool(peer.stopped) is stopped
         assert peer_db.addresses == {replace(address, timestamp=0) for address in given}
 
 

@@ -6,6 +6,7 @@
 
 import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 from bitcoin_core_rpc import rpc_port_from_chain
@@ -237,6 +238,43 @@ def test_connect_rejects_a_hostname() -> None:
         ValueError, match="does not appear to be an IPv4 or IPv6 address"
     ):
         Config(chain="regtest", connect=["example.com"])
+
+
+def test_seednode_is_the_same_shape_as_addnode() -> None:
+    """ISS 1192: `seednode` resolves as `addnode` does, a hostname refused."""
+    config = Config(chain="regtest", seednode=["10.0.0.1:1", "[::1]"])
+    assert config.seednode == (("10.0.0.1", 1), ("::1", RegTest().port))
+    assert config.addnode == ()
+    with pytest.raises(ValueError, match="does not appear to be an IPv4 or IPv6"):
+        Config(chain="regtest", seednode=["example.com"])
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "dnsseed"),
+    [
+        pytest.param({}, True, id="default"),
+        pytest.param({"connect": ["10.0.0.1"]}, False, id="connect"),
+        pytest.param({"connect": ["0"]}, False, id="noconnect"),
+        pytest.param({"max_connections": 0}, False, id="maxconnections-0"),
+        pytest.param({"connect": ["10.0.0.1"], "dnsseed": True}, True, id="explicit"),
+        pytest.param({"dnsseed": False}, False, id="off"),
+    ],
+)
+def test_dnsseed_is_soft_set_off_as_core_s(
+    kwargs: dict[str, Any], *, dnsseed: bool
+) -> None:
+    """ISS 1192: `InitParameterInteraction`'s soft-set, which a value overrides.
+
+    Measured on `bitcoind` v31.1.0: `-connect` logs "setting -dnsseed=0"
+    and `-dnsseed=1` beside it starts the DNS seed thread all the same.
+    """
+    assert Config(chain="regtest", **kwargs).dnsseed is dnsseed
+
+
+def test_fixedseeds_is_on_unless_turned_off() -> None:
+    """ISS 1192: Core's `DEFAULT_FIXEDSEEDS`."""
+    assert Config(chain="regtest").fixedseeds is True
+    assert Config(chain="regtest", fixedseeds=False).fixedseeds is False
 
 
 def test_split_host_port_bare_host_takes_the_default_port() -> None:

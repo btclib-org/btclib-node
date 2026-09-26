@@ -582,6 +582,7 @@ def addr(node: Node, msg: bytes, conn: Connection) -> None:
     # BIP155's record is what the table holds, an addr version 1 entry
     # having no room for the networks a peer may yet gossip
     _store_gossip(node, conn, (peer_from_addr_entry(entry) for entry in entries))
+    _maybe_finish_addr_fetch(node, conn, len(entries))
 
 
 def addrv2(node: Node, msg: bytes, conn: Connection) -> None:
@@ -589,7 +590,22 @@ def addrv2(node: Node, msg: bytes, conn: Connection) -> None:
     # the same leniency as addr above, and the same reason: BIP155
     # entries fully read, anything past them left unchecked rather than
     # costing the peer its connection. btclib-org/btclib-node#149
-    _store_gossip(node, conn, AddrV2.parse(BytesIO(msg)).addresses)
+    entries = AddrV2.parse(BytesIO(msg)).addresses
+    _store_gossip(node, conn, entries)
+    _maybe_finish_addr_fetch(node, conn, len(entries))
+
+
+def _maybe_finish_addr_fetch(node: Node, conn: Connection, received: int) -> None:
+    """Drop a `-seednode` connection once it has answered with addresses.
+
+    Core's `ADDR`/`ADDRV2` handler (`src/net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) drops an `ADDR_FETCH`
+    peer whose message carried more than one address, one alone being
+    what a peer announcing itself sends.
+    """
+    if conn.addr_fetch and received > 1:
+        node.logger.debug("addrfetch connection completed, connection %s", conn.id)
+        conn.stop()
 
 
 # Core's `MAX_ADDR_RATE_PER_SECOND` and `MAX_ADDR_PROCESSING_TOKEN_BUCKET`

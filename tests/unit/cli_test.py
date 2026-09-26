@@ -1389,6 +1389,38 @@ def test_build_config_connect_and_addnode_reach_config() -> None:
     assert config.addnode == (("10.0.0.2", 2),)
 
 
+@pytest.mark.parametrize(
+    ("argv", "dnsseed", "fixedseeds"),
+    [
+        pytest.param([], True, True, id="default"),
+        pytest.param(["-nodnsseed", "-fixedseeds=0"], False, False, id="off"),
+        pytest.param(["-connect=10.0.0.1"], False, True, id="connect"),
+        pytest.param(["-noconnect"], False, True, id="noconnect"),
+        pytest.param(["-maxconnections=0"], False, True, id="maxconnections-0"),
+        pytest.param(["-connect=10.0.0.1", "-dnsseed"], True, True, id="explicit"),
+    ],
+)
+def test_build_config_reads_dnsseed_and_fixedseeds(
+    tmp_path: Path, argv: list[str], *, dnsseed: bool, fixedseeds: bool
+) -> None:
+    """ISS 1192: `-dnsseed`'s default is soft-set off, `-fixedseeds`' is not."""
+    config = cli.build_config([f"-datadir={tmp_path}", "-regtest", *argv])
+    assert config.dnsseed is dnsseed
+    assert config.fixedseeds is fixedseeds
+
+
+def test_build_config_seednode_is_a_list_from_every_level(tmp_path: Path) -> None:
+    """ISS 1192: `-seednode`, not `NETWORK_ONLY`, read from the default section.
+
+    Every value applies, the file's before the command line's.
+    """
+    (tmp_path / "bitcoin.conf").write_text(
+        "regtest=1\nseednode=10.0.0.1\n", encoding="utf-8"
+    )
+    config = cli.build_config([f"-datadir={tmp_path}", "-seednode=10.0.0.2:2"])
+    assert config.seednode == (("10.0.0.2", 2), ("10.0.0.1", RegTest().port))
+
+
 def test_build_config_connect_alone_defaults_listen_to_false() -> None:
     """`-connect` alone: not listening, `config.connect` still carries the peer.
 

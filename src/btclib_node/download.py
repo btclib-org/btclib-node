@@ -277,12 +277,23 @@ def _is_preferred_download(conn: Connection) -> bool:
 
     Core's own `fPreferredDownload` (`net_processing.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag): an outbound peer that
-    can serve blocks. Core's other two terms have nothing to read here:
-    a `NoBan` inbound peer counts as preferred, and an `ADDR_FETCH`
-    connection never does, and this tree grants no permission and opens
-    no such connection.
+    can serve blocks and is no `-seednode` one, Core's `ADDR_FETCH`.
+    Core's other term has nothing to read here: a `NoBan` inbound peer
+    counts as preferred, and this tree grants no permission.
     """
-    return not conn.inbound and _can_serve_blocks(conn)
+    return not conn.inbound and not conn.addr_fetch and _can_serve_blocks(conn)
+
+
+def _syncs_from(conn: Connection, *, preferred: int, blocks_in_flight: bool) -> bool:
+    """Core's `sync_blocks_and_headers_from_peer` (`SendMessages`, same sha).
+
+    A preferred peer, or any but a `-seednode` one where there is no
+    preferred peer, or no block in flight from anybody. Core's own
+    `CanServeBlocks` term is asked by each caller before this.
+    """
+    if _is_preferred_download(conn):
+        return True
+    return not conn.addr_fetch and (not preferred or not blocks_in_flight)
 
 
 def _tx_fetch_type(conn: Connection) -> InventoryType:
@@ -878,11 +889,8 @@ class DownloadManager:
         for conn in connections:
             if conn.id in timeouts or not _can_serve_blocks(conn):
                 continue
-            # Core's `sync_blocks_and_headers_from_peer`: a peer that is
-            # not preferred is still one to sync from where there is no
-            # preferred peer, or no block in flight from anybody.
-            from_peer = (
-                _is_preferred_download(conn) or not preferred or not blocks_in_flight
+            from_peer = _syncs_from(
+                conn, preferred=preferred, blocks_in_flight=blocks_in_flight
             )
             if (sync_started == 0 and from_peer) or recent:
                 locator = block_index.get_block_locator_hashes(start)
@@ -938,8 +946,8 @@ class DownloadManager:
         block_index = node.chainstate.block_index
         minimum_chain_work = node.chain.consensus.minimum_chain_work
         for conn in connections:
-            from_peer = (
-                _is_preferred_download(conn) or not preferred or not blocks_in_flight
+            from_peer = _syncs_from(
+                conn, preferred=preferred, blocks_in_flight=blocks_in_flight
             )
             if (
                 _can_serve_blocks(conn)

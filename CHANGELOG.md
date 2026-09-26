@@ -455,6 +455,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A coin picks the answered or the gossiped table, and a pass draws up to
   a hundred times** (closes #1201), so held answered peers no longer stall it.
 
+### `-dnsseed`, `-fixedseeds` and `-seednode` steer the bootstrap, as in Core
+
+- **Each option is read with Core's default and log lines, and a `-seednode` is
+  dialled to fetch addresses and then dropped** (closes #1192); `getpeerinfo`
+  names that connection `addr-fetch`.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

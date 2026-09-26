@@ -68,6 +68,7 @@ def a_conn(
     version_message: Any = ...,
     best_known_height: int = 0,
     wtxidrelay_received: bool = True,
+    addr_fetch: bool = False,
 ) -> Any:
     """Build a fake connection, recording every message handed to `send`.
 
@@ -88,6 +89,7 @@ def a_conn(
         relay_tx=relay_tx,
         feefilter=feefilter,
         inbound=inbound,
+        addr_fetch=addr_fetch,
         address=address if address is not None else peer_address("10.0.0.1", 8333),
         download_queue=queue if queue is not None else [],
         pending_eviction=pending_eviction,
@@ -1802,3 +1804,38 @@ def test_in_initial_block_download_only_a_peer_synced_from_moves(
     )
     expected = [preferred] if in_flight else [preferred, inbound]
     assert moved(manager, monkeypatch) == expected
+
+
+def test_a_seed_node_is_never_asked_for_headers_while_the_tip_is_old() -> None:
+    """ISS 1192: Core syncs from no `ADDR_FETCH` peer, preferred one or not.
+
+    Outbound, and ahead of an inbound peer with no preferred peer left
+    to wait on, the `-seednode` connection is still passed over.
+    """
+    seed_node = an_outbound(1, addr_fetch=True)
+    inbound = a_conn(2)
+    manager = make_manager([seed_node, inbound], block_index=HeaderIndex(age=_OLD))
+    manager.sync_headers()
+    assert not asked(seed_node)
+    assert asked(inbound)
+
+
+def test_a_seed_node_is_asked_for_headers_once_the_tip_is_recent() -> None:
+    """ISS 1192: Core asks every peer that serves blocks near the tip."""
+    seed_node = an_outbound(1, addr_fetch=True)
+    manager = make_manager([seed_node], block_index=HeaderIndex(age=_RECENT))
+    manager.sync_headers()
+    assert asked(seed_node)
+
+
+def test_in_initial_block_download_a_seed_node_s_last_common_block_stays(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1192: the same `sync_blocks_and_headers_from_peer` term.
+
+    Nothing in flight would let an inbound peer move, and not this one.
+    """
+    seed_node = an_outbound(1, addr_fetch=True)
+    inbound = a_conn(2)
+    manager = make_manager([seed_node, inbound], is_initial_block_download=True)
+    assert moved(manager, monkeypatch) == [inbound]

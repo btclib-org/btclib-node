@@ -1237,3 +1237,16 @@ def test_either_table_holding_a_network_holds_it(table: str) -> None:
         peer_db.add_active_address(held)
     assert peer_db.holds_network(BIP155Network.IPV6)
     assert not peer_db.holds_network(BIP155Network.IPV4)
+
+
+@pytest.mark.parametrize("table", ["addresses", "active_addresses"])
+def test_either_table_holding_an_address_holds_something(table: str) -> None:
+    """ISS 1192: Core's `addrman.Size() == 0`, new and tried alike."""
+    peer_db = a_peer_db()
+    assert peer_db.holds_nothing
+    held = peer_address("1.2.3.4", 8333)
+    if table == "addresses":
+        peer_db.add_addresses([held])
+    else:
+        peer_db.add_active_address(held)
+    assert not peer_db.holds_nothing
