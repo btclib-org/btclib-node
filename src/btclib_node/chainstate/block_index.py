@@ -86,6 +86,7 @@ __all__ = [
     "BlockStatus",
     "block_time",
     "calculate_work",
+    "check_headers_pow",
 ]
 
 # `get_download_candidates`'s own cap on how many hashes it hands back
