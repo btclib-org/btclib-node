@@ -22,6 +22,7 @@ import time
 from collections import deque
 from concurrent.futures import CancelledError
 from contextlib import suppress
+from ipaddress import IPv6Address, ip_address
 from typing import TYPE_CHECKING, override
 
 from btclib.p2p.addrv2 import BIP155Network, can_addrv1, network_address
@@ -34,12 +35,14 @@ from btclib_node.p2p.address import (
     fixed_seed_addresses,
     host_key,
     ip_and_port,
+    lookup_host,
     peer_address,
 )
 from btclib_node.p2p.connection import Connection
 from btclib_node.p2p.eviction import (
     EvictionCandidate,
     is_local,
+    is_valid,
     keyed_net_group,
     net_class,
     net_group,
@@ -150,6 +153,10 @@ _SEEDNODE_CHECK_INTERVAL = 0.5
 # Core's `10 * AVG_ADDRESS_BROADCAST_INTERVAL` (`src/net_processing.cpp`,
 # same sha), 30 seconds being the interval.
 _ADDR_FETCH_TIMEOUT = 10 * 30
+# How many addresses a name dialled by `_process_addr_fetch` is resolved
+# to at most: `ConnectNode`'s `Lookup(pszDest, ..., 256)` (`src/net.cpp`,
+# same sha).
+_MAX_NAME_ANSWERS = 256
 
 # The networks Core reaches by default, which are this node's two:
 # `g_reachable_nets` loses Tor, I2P and CJDNS in `AppInitMain` where no
@@ -173,6 +180,14 @@ _MAX_DRAWS_PER_PASS = 100
 # generations of 25,000 holding two or three at a time, and this
 # forgets it once 50,000 other hosts have been discouraged since.
 _DISCOURAGED_CAPACITY = 50_000
+
+
+def _legacy_ipv6(ip: str) -> IPv6Address:
+    """Return the sixteen octets Core's `CNetAddr` compares `ip` by."""
+    parsed = ip_address(ip)
+    if isinstance(parsed, IPv6Address):
+        return parsed
+    return IPv6Address(b"\0" * 10 + b"\xff\xff" + parsed.packed)
 
 
 def _network_error_string(error: OSError) -> str:
@@ -892,32 +907,53 @@ class P2pManager(threading.Thread):
             )
 
     async def _process_addr_fetch(self) -> None:
-        """Dial the `-seednode` queued first, where an outbound slot is free.
+        """Dial the addr-fetch peer queued first, where an outbound slot is free.
 
         Core's `ProcessAddrFetch` (`src/net.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the seed leaves the
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the entry leaves the
         queue whether or not it is dialled, as it does there where no
-        `semOutbound` grant is free, and `OpenNetworkConnection` refuses
-        one this node already holds a connection with.
+        `semOutbound` grant is free. An entry is a `-seednode` or a DNS
+        seed `get_addr_from_dns` returned, and is resolved as
+        `ConnectNode` resolves its `pszDest`: every answer shuffled, none
+        dialled where one is invalid or already connected, and the first
+        that connects kept.
         """
         if not self._addr_fetches:
             return
         host, port = self._addr_fetches.popleft()
         if self._automatic_outbound() >= self.max_automatic_outbound:
             return
-        address = peer_address(host, port)
         with self._connections_lock:
             connected = (
                 *self.connections.values(),
                 *self.pending_connections.values(),
             )
-        if endpoint_key(address) in {endpoint_key(c.address) for c in connected}:
-            return
-        sock = await dial(address)
-        if sock:
-            self.create_connection(
-                sock, address, inbound=False, automatic=True, addr_fetch=True
-            )
+        held = {endpoint_key(c.address) for c in connected}
+        ips = await lookup_host(host, _MAX_NAME_ANSWERS)
+        secrets.SystemRandom().shuffle(ips)
+        addresses = [peer_address(ip, port) for ip in ips]
+        for ip, address in zip(ips, addresses, strict=True):
+            if not is_valid(_legacy_ipv6(ip)):
+                self.logger.debug(
+                    "Resolver returned invalid address %s for %s",
+                    ip_and_port(ip, port),
+                    host,
+                )
+                return
+            if endpoint_key(address) in held:
+                self.logger.info(
+                    "Not opening a connection to %s, already connected to %s",
+                    host,
+                    ip_and_port(ip, port),
+                )
+                return
+        for address in addresses:
+            sock = await dial(address)
+            if sock:
+                self.create_connection(
+                    sock, address, inbound=False, automatic=True, addr_fetch=True
+                )
+                return
 
     async def _maybe_dial_more_peers(self) -> None:
         # `-connect`'s own other half: `peer_db`'s table is never drawn
@@ -1511,7 +1547,12 @@ class P2pManager(threading.Thread):
         ):
             self.logger.info("Skipping DNS seeds. Enough peers have been found")
             return
-        await self.peer_db.get_addr_from_dns()
+        # a seed whose `x9.` subdomain answered nothing is dialled for
+        # its `addr` instead, Core's `AddAddrFetch(seed)`, on the port
+        # `GetDefaultPort` gives a name
+        port = self.node.chain.port
+        for seed in await self.peer_db.get_addr_from_dns():
+            self._addr_fetches.append((seed, port))
 
     @override
     def run(self) -> None:

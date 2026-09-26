@@ -2005,9 +2005,9 @@ def refuses_to_be_asked() -> NoReturn:
     raise RuntimeError("no")
 
 
-async def asks_no_dns_server() -> None:
+async def asks_no_dns_server() -> list[str]:
     """Stand in for a `get_addr_from_dns` that never touches a real server."""
-    return
+    return []
 
 
 def test_connect_turns_off_addrman_outgoing(a_manager: AManagerFactory) -> None:
@@ -2039,7 +2039,7 @@ def test_maybe_dial_more_peers_is_a_noop_under_connect(
     assert not manager.pending_connections
 
 
-async def _record_dns_lookup(calls: list[int]) -> None:
+async def _record_dns_lookup(calls: list[int]) -> list[str]:
     """Stand in for `get_addr_from_dns`, recording that it was awaited.
 
     One shared function rather than a `spy` nested in each of the two
@@ -2049,6 +2049,7 @@ async def _record_dns_lookup(calls: list[int]) -> None:
     while the skip test's own `calls` stays empty.
     """
     calls.append(1)
+    return []
 
 
 def _let_runs_own_coroutines_start(manager: P2pManager) -> None:

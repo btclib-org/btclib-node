@@ -30,6 +30,7 @@ from btclib_node.p2p.address import (
     dial,
     fixed_seed_addresses,
     ip_and_port,
+    lookup_host,
     peer_address,
 )
 from tests import call_within
@@ -530,20 +531,42 @@ def test_a_refused_dial_does_not_cost_the_full_timeout() -> None:
 
 
 class FakeLoop:
-    """A `getaddrinfo` stand-in answering fixed hosts, no real DNS query."""
+    """A `getaddrinfo` stand-in answering fixed hosts, no real DNS query.
 
-    def __init__(self, answers: dict[str, Exception | list[str]]) -> None:
+    A host it holds no answer for fails as an unknown name does, and
+    every call is recorded as the host and the flags it was asked with.
+    A host in `addrconfig_fails` fails where `AI_ADDRCONFIG` is asked.
+    """
+
+    def __init__(
+        self,
+        answers: dict[str, Exception | list[Any]],
+        addrconfig_fails: frozenset[str] = frozenset(),
+    ) -> None:
         """Record what each host name should answer with, or raise."""
         self.answers = answers
+        self.addrconfig_fails = addrconfig_fails
+        self.asked: list[tuple[str, int]] = []
 
     async def getaddrinfo(
-        self, host: str, port: int
-    ) -> list[tuple[None, None, None, None, tuple[str, int]]]:
+        self, host: str, port: None, *, type: int, proto: int, flags: int = 0
+    ) -> list[tuple[Any, ...]]:
         """Answer `host` from `self.answers`, in `getaddrinfo`'s own shape."""
-        answer = self.answers[host]
+        assert (port, type, proto) == (None, socket.SOCK_STREAM, socket.IPPROTO_TCP)
+        self.asked.append((host, flags))
+        if flags & socket.AI_ADDRCONFIG and host in self.addrconfig_fails:
+            raise socket.gaierror("no address of that family")
+        answer = self.answers.get(host, socket.gaierror("no such host"))
         if isinstance(answer, Exception):
             raise answer
-        return [(None, None, None, None, (ip, port)) for ip in answer]
+        return [_an_answer(ip) if isinstance(ip, str) else ip for ip in answer]
+
+
+def _an_answer(ip: str) -> tuple[Any, ...]:
+    """Build one `getaddrinfo` answer for `ip`, with no port asked for."""
+    if ":" in ip:
+        return (socket.AF_INET6, socket.SOCK_STREAM, 6, "", (ip, 0, 0, 0))
+    return (socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))
 
 
 def a_chain(seeds: list[str]) -> Any:
@@ -555,52 +578,27 @@ def a_chain(seeds: list[str]) -> Any:
     return SimpleNamespace(addresses=list(seeds), port=18444)
 
 
-def test_the_seeds_that_answer_fill_the_table_and_the_rest_are_passed_over(
+def test_each_seed_is_asked_for_its_x9_subdomain_and_answers_on_the_chain_port(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A seed lookup that fails is skipped; one that answers fills the table.
+    """ISS 1284: Core's `x%x.` of `SeedsServiceFlags`, never the bare name.
 
-    `down.example` raises `gaierror` and contributes nothing; every
-    address `up.example` answers with lands in `peer_db.addresses`, on
-    the chain's own port, `18444`, and not `8333`.
+    The table is the union of what every seed answers, on the chain's
+    own port, and a seed that answered is not handed back.
     """
-    peer_db = a_peer_db(a_chain(["down.example", "up.example"]))
-    loop = FakeLoop(
-        {
-            "down.example": socket.gaierror("no such host"),
-            "up.example": ["1.2.3.4", "5.6.7.8"],
-        }
-    )
-    monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
-    asyncio.run(peer_db.get_addr_from_dns())
-    assert peer_db.addresses == {
-        peer_address("1.2.3.4", 18444),
-        peer_address("5.6.7.8", 18444),
-    }
-
-
-def test_every_seed_that_answers_is_taken_and_a_host_two_of_them_share_is_one(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The table after a DNS lookup is the union of every seed's answer.
-
-    Two seeds share one address here: the table is the union over all
-    of them and not the last one queried, since a lookup that started
-    over per seed would leave a node with whatever the seed at the end
-    of the list happened to know.
-    """
-    # the table is the union over the seeds and not the last answer:
-    # a lookup that starts over per seed leaves a node with whatever
-    # the seed at the end of the list happened to know
     peer_db = a_peer_db(a_chain(["one.example", "two.example"]))
     loop = FakeLoop(
         {
-            "one.example": ["1.2.3.4", "5.6.7.8"],
-            "two.example": ["5.6.7.8", "9.10.11.12"],
+            "x9.one.example": ["1.2.3.4", "5.6.7.8"],
+            "x9.two.example": ["5.6.7.8", "9.10.11.12"],
         }
     )
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
-    asyncio.run(peer_db.get_addr_from_dns())
+    assert asyncio.run(peer_db.get_addr_from_dns()) == []
+    assert loop.asked == [
+        ("x9.one.example", socket.AI_ADDRCONFIG),
+        ("x9.two.example", socket.AI_ADDRCONFIG),
+    ]
     assert peer_db.addresses == {
         peer_address("1.2.3.4", 18444),
         peer_address("5.6.7.8", 18444),
@@ -608,35 +606,131 @@ def test_every_seed_that_answers_is_taken_and_a_host_two_of_them_share_is_one(
     }
 
 
-class FakeIpv6Loop:
-    """A `getaddrinfo` stand-in answering the real shape a AAAA record gives."""
+@pytest.mark.parametrize(
+    "answer",
+    [socket.gaierror("no such host"), []],
+    ids=["failed", "empty"],
+)
+def test_a_seed_whose_subdomain_answers_nothing_is_handed_back(
+    monkeypatch: pytest.MonkeyPatch, answer: Exception | list[str]
+) -> None:
+    """ISS 1284: Core's `AddAddrFetch(seed)`, for the name as the chain gives it.
 
-    async def getaddrinfo(
-        self, host: str, port: int
-    ) -> list[tuple[int, int, int, str, tuple[str, int, int, int]]]:
-        """Answer with a sockaddr of four fields, as a real AAAA lookup does."""
-        # what a AAAA record resolves to: a sockaddr of four fields
-        # rather than two, the flow info and the scope id being the two
-        # a peer table has nowhere to put
-        return [
-            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2a01:4f8::1", port, 0, 8))
-        ]
+    The bare name is not resolved here: `P2pManager` dials it.
+    """
+    peer_db = a_peer_db(a_chain(["down.example", "up.example"]))
+    loop = FakeLoop({"x9.down.example": answer, "x9.up.example": ["1.2.3.4"]})
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
+    assert asyncio.run(peer_db.get_addr_from_dns()) == ["down.example"]
+    assert "down.example" not in {host for host, _ in loop.asked}
+    assert peer_db.addresses == {peer_address("1.2.3.4", 18444)}
 
 
-def test_a_seed_answering_with_ipv6_gives_up_its_host_and_its_port(
+def test_a_seed_adds_at_most_32_answers_in_the_resolver_s_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A four-field IPv6 sockaddr still yields a usable host and port.
+    """ISS 1284: Core's `nMaxIPs`, what one seed may add to the table.
 
-    `FakeIpv6Loop` answers the real, wider tuple `getaddrinfo` gives
-    for an AAAA record, with flow info and scope id fields a peer entry
-    has no room for -- this checks that only the host and the port are
-    kept out of it.
+    An answer under the internal prefix is dropped without spending the
+    cap, as `LookupIntern` counts only what it keeps.
     """
-    peer_db = a_peer_db(a_chain(["v6.example"]))
-    monkeypatch.setattr(asyncio, "get_running_loop", FakeIpv6Loop)
+    ips = [f"1.2.3.{i}" for i in range(1, 41)]
+    peer_db = a_peer_db(a_chain(["many.example"]))
+    loop = FakeLoop({"x9.many.example": ["fd6b:88c0:8724::1", *ips]})
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
     asyncio.run(peer_db.get_addr_from_dns())
-    assert peer_db.addresses == {peer_address("2a01:4f8::1", 18444)}
+    assert peer_db.addresses == {peer_address(ip, 18444) for ip in ips[:32]}
+
+
+@pytest.mark.parametrize(
+    ("answer", "ip"),
+    [
+        pytest.param("2a01:4f8::1", "2a01:4f8::1", id="ipv6"),
+        pytest.param(
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fe80::1%lo0", 0, 0, 1)),
+            "fe80::1",
+            id="scope-id",
+        ),
+        pytest.param("::ffff:1.2.3.4", "1.2.3.4", id="mapped"),
+        pytest.param("fd87:d87e:eb43::1", "::", id="torv2"),
+    ],
+)
+def test_an_answer_is_read_as_core_s_cnetaddr_reads_it(
+    monkeypatch: pytest.MonkeyPatch, answer: Any, ip: str
+) -> None:
+    """ISS 1284: `SetLegacyIPv6`'s reading, and no scope id.
+
+    A mapped IPv4 answer is IPv4, one under the Tor v2 prefix is the
+    unspecified address, and the sockaddr's own flow info and scope id
+    are dropped.
+    """
+    loop = FakeLoop({"host.example": [answer]})
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
+    assert asyncio.run(lookup_host("host.example", 32)) == [ip]
+
+
+def test_a_lookup_that_fails_under_addrconfig_is_asked_again_without(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1284: `WrappedGetAddrInfo`'s second `getaddrinfo`, flags cleared."""
+    loop = FakeLoop(
+        {"host.example": ["::1"]}, addrconfig_fails=frozenset({"host.example"})
+    )
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
+    assert asyncio.run(lookup_host("host.example", 32)) == ["::1"]
+    assert loop.asked == [
+        ("host.example", socket.AI_ADDRCONFIG),
+        ("host.example", 0),
+    ]
+
+
+@pytest.mark.parametrize(
+    "error", [socket.gaierror("no such host"), UnicodeError("label too long")]
+)
+def test_a_lookup_failing_twice_answers_nothing(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    """ISS 1284: an empty answer, never the resolver's exception."""
+    loop = FakeLoop({"host.example": error})
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
+    assert asyncio.run(lookup_host("host.example", 32)) == []
+    assert len(loop.asked) == 2
+
+
+@pytest.mark.parametrize(
+    ("name", "asked"),
+    [
+        pytest.param("", [], id="empty"),
+        pytest.param("host\0.example", [], id="nul"),
+        pytest.param("[::1]", [("::1", socket.AI_ADDRCONFIG)], id="brackets"),
+    ],
+)
+def test_a_name_is_read_as_core_s_lookup_host_reads_it(
+    monkeypatch: pytest.MonkeyPatch, name: str, asked: list[tuple[str, int]]
+) -> None:
+    """ISS 1284: no lookup for an empty name or one holding a NUL.
+
+    Brackets around an IPv6 address are stripped before it is looked up.
+    """
+    loop = FakeLoop({"::1": ["::1"]})
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
+    asyncio.run(lookup_host(name, 32))
+    assert loop.asked == asked
+
+
+def test_an_answer_of_another_family_is_passed_over(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1284: `WrappedGetAddrInfo` reads `AF_INET` and `AF_INET6` alone."""
+    other = (socket.AF_UNIX, socket.SOCK_STREAM, 0, "", "/a/path")
+    loop = FakeLoop({"host.example": [other, "1.2.3.4"]})
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
+    assert asyncio.run(lookup_host("host.example", 32)) == ["1.2.3.4"]
+
+
+def test_a_numeric_host_resolves_to_itself() -> None:
+    """ISS 1284: the real resolver, asked for a literal, answers the literal."""
+    assert asyncio.run(lookup_host("127.0.0.1", 256)) == ["127.0.0.1"]
 
 
 def test_a_node_that_already_knows_peers_does_not_ask_the_seeds(
@@ -654,15 +748,10 @@ def test_a_node_that_already_knows_peers_does_not_ask_the_seeds(
     peer_db = a_peer_db(a_chain(["up.example"]))
     peer_db.addresses.add(peer_address("1.2.3.4", 8333))
     peer_db.ask_dns_nodes = False
-    # the seed lookup fails where it happens rather than being recorded
-    # and asserted about afterwards: `asked.append(True) or FakeLoop({})`
-    # said the same thing through the right-hand side of an `or` whose
-    # left one is `None` every time -- `list.append` returns nothing,
-    # so the fallback was the whole of it.
     monkeypatch.setattr(
         asyncio, "get_running_loop", lambda: pytest.fail("asked the seeds")
     )
-    asyncio.run(peer_db.get_addr_from_dns())
+    assert asyncio.run(peer_db.get_addr_from_dns()) == []
 
 
 def test_an_address_is_drawn_from_the_ones_that_can_be_dialled() -> None:

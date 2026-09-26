@@ -27,8 +27,8 @@ from contextlib import contextmanager
 from dataclasses import replace
 from functools import partial
 from io import BytesIO
-from ipaddress import IPv4Address, IPv6Address, ip_address
-from typing import TYPE_CHECKING, cast
+from ipaddress import IPv4Address, IPv6Address, IPv6Network, ip_address
+from typing import TYPE_CHECKING
 
 from btclib import var_int
 from btclib.p2p.address import ServiceFlags
@@ -58,6 +58,7 @@ __all__ = [
     "fixed_seed_addresses",
     "host_key",
     "ip_and_port",
+    "lookup_host",
     "peer_address",
 ]
 
@@ -165,6 +166,64 @@ def ip_and_port(ip: str, port: int) -> str:
 # needs, only this one: a real timeout wrapped around a wait that is
 # otherwise event-driven.
 _DIAL_TIMEOUT = 5.0
+
+# `INTERNAL_IN_IPV6_PREFIX` and `TORV2_IN_IPV6_PREFIX`, which Core's
+# `CNetAddr::SetLegacyIPv6` reads as `NET_INTERNAL` and as the
+# unspecified address (`src/netaddress.cpp`, at bitcoin/bitcoin@9be056a8a7,
+# the v31.1 tag)
+_INTERNAL = IPv6Network("fd6b:88c0:8724::/48")
+_TORV2 = IPv6Network("fd87:d87e:eb43::/48")
+# `ThreadDNSAddressSeed`'s `requiredServiceBits`, `SeedsServiceFlags()`
+# (`src/net.cpp`, `src/protocol.h`, same sha): the service bits whose
+# `x%x.` subdomain of a seed is asked, `x9.` for these
+_SEED_SERVICE_BITS = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
+# `ThreadDNSAddressSeed`'s `nMaxIPs`: how many answers one seed may add
+_MAX_SEED_ANSWERS = 32
+
+
+async def lookup_host(name: str, max_answers: int) -> list[str]:
+    """Return the IPs `name` resolves to, as Core's `LookupHost` does.
+
+    `LookupHost(name, max_answers, fAllowLookup=true)` over
+    `WrappedGetAddrInfo` (`src/netbase.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag): `getaddrinfo` asked for a TCP stream socket with
+    `AI_ADDRCONFIG`, asked again without it where that fails, and read in
+    the resolver's order. Its first `max_answers` addresses are kept,
+    none under the internal prefix. A mapped IPv4 answer is IPv4, and one
+    under the Tor v2 prefix the unspecified address, as `SetLegacyIPv6`
+    reads them. Core's Tor and I2P names are not read here, this node
+    having no dial for either.
+    """
+    if not name or "\0" in name:
+        return []
+    if name.startswith("[") and name.endswith("]"):
+        name = name[1:-1]
+    loop = asyncio.get_running_loop()
+    lookup = partial(
+        loop.getaddrinfo, name, None, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP
+    )
+    try:
+        answers = await lookup(flags=socket.AI_ADDRCONFIG)
+    except OSError, UnicodeError:
+        try:
+            answers = await lookup()
+        except OSError, UnicodeError:
+            return []
+    ips: list[str] = []
+    for family, *_, sockaddr in answers:
+        if family not in {socket.AF_INET, socket.AF_INET6}:
+            continue
+        if len(ips) >= max_answers:
+            break
+        ip = ip_address(str(sockaddr[0]).partition("%")[0])
+        if isinstance(ip, IPv6Address):
+            if ip in _INTERNAL:
+                continue
+            if ip in _TORV2:
+                ip = IPv6Address(0)
+            ip = ip.ipv4_mapped or ip
+        ips.append(str(ip))
+    return ips
 
 
 async def dial(address: NetworkAddressV2) -> socket.socket | None:
@@ -483,39 +542,35 @@ class PeerDB:
         if self.db is not None:
             self.db.close()
 
-    async def get_addr_from_dns(self) -> None:
-        """Resolve every chain DNS seed and feed the answers to `add_addresses`.
+    async def get_addr_from_dns(self) -> list[str]:
+        """Ask every chain DNS seed for peers, and return the ones to addr-fetch.
+
+        Core's `ThreadDNSAddressSeed` asks a seed's `x9.` subdomain
+        (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),
+        on which the seed answers with peers offering `NODE_NETWORK` and
+        `NODE_WITNESS`, and adds at most `_MAX_SEED_ANSWERS` of them on
+        the chain's port. A seed whose subdomain answers nothing is
+        returned, for `P2pManager` to queue as Core's `AddAddrFetch(seed)`.
 
         A no-op unless `ask_dns_nodes` said, at construction time, that
         the durable table came back with nothing dialable.
         """
         if not self.ask_dns_nodes:
-            return
+            return []
         chain = self.chain
-        loop = asyncio.get_running_loop()
-        # what a seed answers with, deduplicated: seeds overlap, and one
-        # of them answers with the same host over several records.
-        endpoints: set[tuple[str, int]] = set()
-        for dns_server in chain.addresses:
-            try:
-                answers = await loop.getaddrinfo(dns_server, chain.port)
-            except socket.gaierror:
+        unanswered: list[str] = []
+        for seed in chain.addresses:
+            host = f"x{_SEED_SERVICE_BITS:x}.{seed}"
+            ips = await lookup_host(host, _MAX_SEED_ANSWERS)
+            if not ips:
+                unanswered.append(seed)
                 continue
-            # (family, type, proto, canonname, sockaddr), and the
-            # sockaddr is the only part a peer table wants. It opens
-            # with the host and the port -- two fields for AF_INET,
-            # four for AF_INET6, whose flow info and scope id say
-            # nothing a BIP155 record holds. The stub also admits
-            # AF_PACKET's (protocol, address) pair, which resolving an
-            # internet host and a port cannot answer with, so the cast
-            # is what that fact is written as rather than a check no
-            # test could reach.
-            for *_, sockaddr in answers:
-                endpoints.add(cast("tuple[str, int]", sockaddr[:2]))
-        # through add_addresses, and not a bare add to the set: a seed
-        # is gossip like a peer's is, and belongs in the durable table
-        # the same way, so a later restart has it without asking again
-        self.add_addresses(peer_address(ip, port) for ip, port in endpoints)
+            # through add_addresses, and not a bare add to the set: a
+            # seed is gossip like a peer's is, and belongs in the durable
+            # table the same way, so a later restart has it without
+            # asking again
+            self.add_addresses(peer_address(ip, chain.port) for ip in ips)
+        return unanswered
 
     @property
     def is_empty(self) -> bool:
