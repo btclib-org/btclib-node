@@ -138,6 +138,11 @@ _FIXED_SEEDS_CHECK_INTERVAL = 0.5
 # sha), and `dial` opens a socket for IPv4 and IPv6 alone.
 _REACHABLE_NETWORKS = (BIP155Network.IPV4, BIP155Network.IPV6)
 
+# How many addresses `_maybe_dial_more_peers` draws in one pass before
+# giving up until the next: `ThreadOpenConnections`'s `nTries > 100`
+# (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+_MAX_DRAWS_PER_PASS = 100
+
 # How many hosts `P2pManager.discourage` remembers. Core keeps them in
 # `BanMan::m_discouraged`, a `CRollingBloomFilter{50000, 0.000001}`
 # (`src/banman.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). This
@@ -458,7 +463,7 @@ class P2pManager(threading.Thread):
         `network_address` accepts, and an outbound one only reaches
         this method once `dial` (`p2p/address.py`) has already returned
         a live socket for it, which `dial` itself never does for
-        anything else (`UnsupportedAddressTypeError`) -- `random_address`
+        anything else (`UnsupportedAddressTypeError`) -- `address_sampler`
         (`p2p/address.py`) filtering `_maybe_dial_more_peers`'s own draw
         to the same two networks first is belt on top of that braces,
         not what does the guarding.
@@ -544,7 +549,7 @@ class P2pManager(threading.Thread):
     def add_pending_outbound_nonce(self, nonce: int) -> None:
         """Record `nonce` as this outbound, still-unhandshaken connection's own.
 
-        The only caller is `Connection.send_version`, for an outbound
+        The only caller is `Connection.own_version`, for an outbound
         connection. `_connections_lock` (`__init__`) is what every
         access to `pending_outbound_nonces` goes through -- this write
         included -- so it can never land between `is_self_connect_nonce`
@@ -712,7 +717,7 @@ class P2pManager(threading.Thread):
         if now - self._last_active_prune < _ACTIVE_PRUNE_INTERVAL:
             return
         # The only other callers of `get_active_addresses` are
-        # `random_address`, which this loop stops reaching for
+        # `address_sampler`, which this loop stops reaching for
         # once it has enough connections, and `getaddr`, answered
         # once per connection and never again -- so a node with
         # enough peers that nobody asks a `getaddr` would
@@ -880,33 +885,48 @@ class P2pManager(threading.Thread):
             if not conn.inbound and can_addrv1(conn.address)
         }
         try:
-            address = self.peer_db.random_address()
-            # `is_empty` answers whether the table holds
-            # anything, not whether it holds anything this node
-            # can dial, so the guard above lets a table of ipv6
-            # and onion addresses through. The draw is what
-            # knows, and it answers with nothing: this pass has
-            # nothing to do, and the sleep below is what keeps
-            # that from being a spin. A discouraged host is the
-            # same kind of refusal as `already_connected`, against a
-            # peer this node has already dialled or accepted and
-            # dropped for cause rather than one it already holds,
-            # and Core's `OpenNetworkConnection` (`src/net.cpp`, at
-            # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) refuses it
-            # the same way. btclib-org/btclib-node#283
-            if (
-                address is not None
-                and endpoint_key(address) not in already_connected
-                and not (
-                    can_addrv1(address) and net_group(address) in outbound_net_groups
-                )
-                and not self.is_discouraged(address)
-            ):
+            await self._dial_one_draw(already_connected, outbound_net_groups)
+        except Exception:
+            self.logger.exception("Exception occurred")
+
+    async def _dial_one_draw(
+        self, already_connected: set[bytes], outbound_net_groups: set[bytes]
+    ) -> None:
+        """Draw up to `_MAX_DRAWS_PER_PASS` times, and dial at most once.
+
+        Split out of `_maybe_dial_more_peers` for ruff's complexity
+        ceiling; that method's own `try` guards it.
+        """
+        # A draw in the group of an outbound peer is followed by
+        # another, up to `_MAX_DRAWS_PER_PASS`, as Core's loop
+        # `continue`s on it: one draw a pass would stall wherever
+        # the table is mostly such peers (btclib-org/btclib-node#1201).
+        draw = self.peer_db.address_sampler()
+        for _ in range(_MAX_DRAWS_PER_PASS):
+            address = draw()
+            # `is_empty` answers whether the table holds anything,
+            # not whether it holds anything this node can dial, so
+            # `_maybe_dial_more_peers`'s guard lets a table of ipv6
+            # and onion addresses through. The draw is what knows,
+            # and it answers with nothing: this pass has nothing to
+            # do, and `manage_connections`'s sleep is what keeps that
+            # from being a spin.
+            if address is None:
+                break
+            if can_addrv1(address) and net_group(address) in outbound_net_groups:
+                continue
+            # Any other draw ends the pass, as Core's loop breaks
+            # with it and `OpenNetworkConnection` (`src/net.cpp`, at
+            # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) returns
+            # without dialling a peer already connected or
+            # discouraged, the latter being one this node dropped
+            # for cause (btclib-org/btclib-node#283).
+            held = endpoint_key(address) in already_connected
+            if not held and not self.is_discouraged(address):
                 sock = await dial(address)
                 if sock:
                     self.create_connection(sock, address, inbound=False, automatic=True)
-        except Exception:
-            self.logger.exception("Exception occurred")
+            break
 
     async def _maybe_redial_specified(self) -> None:
         """Redial a `-connect`/`-addnode` peer not connected, on backoff.
