@@ -131,7 +131,7 @@ ignored, as Core warns (`ReadConfigFiles`, same file). On the command
 line `-includeconf` is refused unless negated, and `-noincludeconf`
 reads no included file, both as `ParseParameters` and `ReadConfigFiles`
 have it; `-noconf` reads no file at all. `conf=` inside a file is
-refused -- fatally, "conf cannot be set in a configuration file" -- and
+refused -- fatally, in Core's words, pointing at `includeconf=` -- and
 `datadir=` inside one is not read at all (unlike Core, which lets a file
 move the data directory read *after* the file naming it was found): this
 module needs a `-datadir` before it can know a file's own default path,
@@ -180,6 +180,7 @@ from btclib_node.config import (
 from btclib_node.constants import MIN_PRUNE_TARGET_MIB
 from btclib_node.dirlock import DirectoryLock, lock_directories
 from btclib_node.exceptions import DirectoryLockError
+from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -311,6 +312,12 @@ _OPTIONS: dict[str, _Option] = {
         f"For backwards compatibility, treat an unused {_DEFAULT_CONF_FILENAME} "
         "file in the datadir as a warning, not an error.",
         _OPTIONS_TITLE,
+    ),
+    "bantime": _Option(
+        "=<n>",
+        "Default duration (in seconds) of manually configured bans (default: "
+        f"{DEFAULT_MISBEHAVING_BANTIME})",
+        _CONNECTION_TITLE,
     ),
     "blocksdir": _Option(
         "=<dir>",
@@ -594,20 +601,22 @@ def _parse_parameters(
     return options, token
 
 
-def _config_options(text: str, path: str) -> list[tuple[int, str, str]]:
-    """Return every `key=value` of `text`, its line and section prefix with it.
+def _config_options(text: str) -> list[tuple[str, str]]:
+    """Return every `key=value` of `text`, with its section prefix.
 
     Core's own config-file grammar (`GetConfigOptions`,
     `src/common/config.cpp`, at bitcoin/bitcoin@9be056a8a7): a key under
     a `[section]` line is returned as `section.key`. Raises `ValueError`
-    on a line that is neither `key=value` nor `[section]`, on one
-    starting with `-` (an option is named without it in a file), and on
-    a key naming `rpcpassword` on a line holding a `#` anywhere, the
-    last because a `#` may be part of the password or start a comment.
+    in Core's words on a line that is neither `key=value` nor
+    `[section]`, on one starting with `-` (an option is named without it
+    in a file), and on a key naming `rpcpassword` on a line holding a `#`
+    anywhere, the last because a `#` may be part of the password or start
+    a comment. A line ends at a newline alone, as `std::getline` ends
+    one, so that the number in a refusal is the one Core counts.
     """
-    options: list[tuple[int, str, str]] = []
+    options: list[tuple[str, str]] = []
     prefix = ""
-    for lineno, raw in enumerate(text.splitlines(), start=1):
+    for lineno, raw in enumerate(text.split("\n"), start=1):
         line, used_hash, _ = raw.partition("#")
         line = line.strip(" \t\r\n")
         if not line:
@@ -617,12 +626,12 @@ def _config_options(text: str, path: str) -> list[tuple[int, str, str]]:
             continue
         if line[0] == "-":
             err_msg = (
-                f"{path}:{lineno}: options in a configuration file are "
-                "given without a leading -"
+                f"parse error on line {lineno}: {line}, options in "
+                "configuration file must be specified without leading -"
             )
             raise ValueError(err_msg)
         if "=" not in line:
-            err_msg = f"{path}:{lineno}: not a key=value line: {line!r}"
+            err_msg = f"parse error on line {lineno}: {line}"
             if line.startswith("no"):
                 err_msg += (
                     ", if you intended to specify a negated option, use "
@@ -633,39 +642,39 @@ def _config_options(text: str, path: str) -> list[tuple[int, str, str]]:
         name = prefix + key.strip(" \t\r\n")
         if used_hash and "rpcpassword" in name:
             err_msg = (
-                f"{path}:{lineno}: using # in rpcpassword can be ambiguous and "
-                "should be avoided"
+                f"parse error on line {lineno}, using # in rpcpassword can be "
+                "ambiguous and should be avoided"
             )
             raise ValueError(err_msg)
-        options.append((lineno, name, value.strip(" \t\r\n")))
+        options.append((name, value.strip(" \t\r\n")))
     return options
 
 
-def _parse_conf_text(text: str, path: str) -> _RoConfig:
+def _parse_conf_text(text: str) -> _RoConfig:
     """Parse `text` into `{section: {name: [values]}}`, in file order.
 
     `ReadConfigStream` (`src/common/config.cpp`, at
     bitcoin/bitcoin@9be056a8a7) over `_config_options`: `InterpretKey`
     and `InterpretValue` on each key. Raises `ValueError` where
     `_config_options` does, on a `conf=` key, and on a negation an
-    option forbids. An unknown key, and `datadir`, are warned about on
-    stderr and left out.
+    option forbids, each in `IsConfSupported`'s and `InterpretValue`'s
+    words, which name no line. An unknown key, and `datadir`, are warned
+    about on stderr and left out.
     """
     config: _RoConfig = {}
-    for lineno, name, value in _config_options(text, path):
+    for name, value in _config_options(text):
         info = _interpret_key(name)
         if info.name == "conf":
-            err_msg = f"{path}:{lineno}: conf cannot be set in a configuration file"
+            err_msg = (
+                "conf cannot be set in the configuration file; use includeconf= "
+                "if you want to include additional config files"
+            )
             raise ValueError(err_msg)
         option = _OPTIONS.get(info.name)
         if option is None:
             sys.stderr.write(f"warning: ignoring unknown configuration value {name}\n")
             continue
-        try:
-            setting = _interpret_value(info, value, option)
-        except ValueError as error:
-            err_msg = f"{path}:{lineno}: {error}"
-            raise ValueError(err_msg) from None
+        setting = _interpret_value(info, value, option)
         if info.name == "datadir":
             sys.stderr.write(
                 "warning: -datadir cannot be set in a configuration file, "
@@ -707,7 +716,9 @@ def _read_conf_file(
         err_msg = f'{kind} file "{path}" is a directory.'
         raise ValueError(err_msg)
     try:
-        text = path.read_text(encoding="utf-8")
+        # `newline=""`: universal newlines would end a line at a lone
+        # `\r` too, where `std::getline` ends one at `\n` alone
+        text = path.read_text(encoding="utf-8", newline="")
     except OSError:
         if include is not None:
             err_msg = f"Failed to include configuration file {include}"
@@ -716,7 +727,7 @@ def _read_conf_file(
             err_msg = f'specified config file "{path}" could not be opened.'
             raise ValueError(err_msg) from None
         return {}
-    return _parse_conf_text(text, str(path))
+    return _parse_conf_text(text)
 
 
 def _load_conf_tree(
@@ -1256,9 +1267,9 @@ def _after_lock(before: _BeforeLock) -> Config:
     """Refuse what Core refuses after its lock, and return the `Config`.
 
     `AppInitMain` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7) in its
-    order: `CheckHostPortOptions`'s `-port`, `-rpcport` and `-rpcbind`,
-    then `Config.__init__`'s `-rpccookieperms` and `-rpcauth`, which
-    `StartHTTPRPC` reads in that order.
+    order: `CheckHostPortOptions`'s `-port`, `-rpcport` and `-rpcbind`.
+    `-rpccookieperms` and `-rpcauth` are refused later, by
+    `RpcAuth.start`, as `StartHTTPRPC` refuses them.
     """
     settings = before.settings
     p2p_port = _get_port(settings, "port")
@@ -1292,6 +1303,11 @@ def _after_lock(before: _BeforeLock) -> Config:
         else _get_arg(settings, "rpccookiefile") or ""
     )
     server = _get_bool(settings, "server")
+    # `-bantime`, which `AppInitMain` hands to `BanMan` at step 6
+    # (`src/init.cpp:1644`, same sha)
+    ban_time = _get_int(settings, "bantime")
+    if ban_time is None:
+        ban_time = DEFAULT_MISBEHAVING_BANTIME
     prune = before.prune
 
     return Config(
@@ -1309,6 +1325,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         addnode=_get_args(settings, "addnode"),
         listen=listen,
         max_connections=before.max_connections,
+        ban_time=ban_time,
         rpcauth=_get_args(settings, "rpcauth"),
         rpcuser=_get_arg(settings, "rpcuser") or "",
         rpcpassword=_get_arg(settings, "rpcpassword") or "",
@@ -1330,6 +1347,27 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
     return _after_lock(_before_lock(sys.argv[1:] if argv is None else argv))
 
 
+# Core's `SetupEnvironment` (`src/common/system.cpp`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which `bitcoind`'s own
+# `main` calls right after building its `interfaces::Init`
+# (`src/bitcoind.cpp`, same sha): the process umask becomes 0077
+# everywhere but Windows, so every directory and file it creates is its
+# owner's alone.
+# Core has no option to keep the caller's: `-sysperms` is gone by v31.1.
+_PRIVATE_UMASK = 0o077
+
+
+def _setup_environment() -> None:
+    """Make the process umask owner-only, as Core's `SetupEnvironment` does.
+
+    Called by `main` alone: a caller building a `Node` in its own
+    process keeps its own umask, the reason `RpcAuth.generate_cookie`
+    sets the cookie's mode on the file.
+    """
+    if sys.platform != "win32":
+        os.umask(_PRIVATE_UMASK)
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     """Build a `Config` from the command line and `bitcoin.conf`, and run it.
 
@@ -1344,6 +1382,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     `noui_ThreadSafeMessageBox` with that caption (`src/noui.cpp:22-46`, at
     bitcoin/bitcoin@9be056a8a7), and `bitcoind` exits `EXIT_FAILURE`.
     """
+    _setup_environment()
     try:
         before = _before_lock(sys.argv[1:] if argv is None else argv)
         locks = _lock(before.directories)
