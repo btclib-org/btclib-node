@@ -8,15 +8,16 @@ Parses the header section off the wire, bounded by `MAX_HEADER_BYTES`
 and `MAX_BODY_BYTES` since both are read before any credential is
 checked, answers a request line, a request-target, a header field or
 a `Content-Length` Core's listener cannot frame, and a chunked body it
-cannot read, with 400 or 413 (`_HeadReader`, `_ChunkedReader`), refuses
-a method
-or a path Core's listener refuses before Core checks a credential
-(`_refusal`), answers a request whose `Authorization` header
-`rpc.auth.RpcAuth` does not accept with 401, and decodes the body of
-one it does accept, which `rpc.manager.RpcManager.messages` queues for
-`rpc.main.handle_rpc`. `RawJSON` is a JSON number written
-back out exactly as given, the way Core's own `UniValue` writes one
-built from a string rather than from a `float`.
+cannot read, with 400 or 413 (`_HeadReader`, `_ChunkedReader`), answers
+an `Expect` it does not meet with 417 and `100-continue` with an interim
+`100 Continue`, refuses a method or a path Core's listener refuses
+before Core checks a credential (`_refusal`), answers a request whose
+`Authorization` header `rpc.auth.RpcAuth` does not accept with 401, and
+decodes the body of one it does accept, which
+`rpc.manager.RpcManager.messages` queues for `rpc.main.handle_rpc`.
+`RawJSON` is a JSON number written back out exactly as given, the way
+Core's own `UniValue` writes one built from a string rather than from a
+`float`.
 
 Each answer is framed as libevent frames it (`_frame`), in the version
 of the request it answers, and the socket is kept open across answers
@@ -44,6 +45,7 @@ from btclib_node.exceptions import (
     IncompleteRequestHeadError,
     MalformedRequestHeadError,
     OversizedRequestBodyError,
+    UnmetExpectationError,
 )
 from btclib_node.p2p.address import ip_and_port
 from btclib_node.rpc.auth import FAILED_ATTEMPT_DELAY, WWW_AUTHENTICATE, Refusal
@@ -199,6 +201,7 @@ def _error_page(status: str) -> str:
 
 _BAD_REQUEST = "400 Bad Request"
 _ENTITY_TOO_LARGE = "413 Request Entity Too Large"
+_EXPECTATION_FAILED = "417 Expectation Failed"
 _NOT_IMPLEMENTED = "501 Not Implemented"
 # The methods Core's listener lets through to `http_request_cb`: every
 # other one is answered 501 before that callback runs. Core's source has
@@ -382,9 +385,11 @@ def _content_length(value: str | None) -> int:
     """Return the body length `value` declares, as libevent reads it.
 
     Raises `MalformedRequestHeadError` where `evhttp_get_body_length`
-    refuses it and `OversizedRequestBodyError` past `MAX_BODY_BYTES`,
-    the `MAX_SIZE` Core passes to `evhttp_set_max_body_size`; a value
-    past `strtoll`'s range, which clamps it, is refused the same way.
+    refuses it. A length past `MAX_BODY_BYTES`, the `MAX_SIZE` Core
+    passes to `evhttp_set_max_body_size`, is returned as
+    `MAX_BODY_BYTES + 1`, for `_expectation` to refuse once the
+    `Expect` field has been read; so is a value past `strtoll`'s range,
+    which clamps it.
     """
     if value is None:
         return 0
@@ -400,10 +405,9 @@ def _content_length(value: str | None) -> int:
     if sign == "-" and (too_long or int(digits) > 0):
         detail = f"Content-Length {value!r}"
         raise MalformedRequestHeadError(detail)
-    if too_long or int(digits) > MAX_BODY_BYTES:
-        detail = f"Content-Length {value}"
-        raise OversizedRequestBodyError(detail)
-    return int(digits)
+    if too_long:
+        return MAX_BODY_BYTES + 1
+    return min(int(digits), MAX_BODY_BYTES + 1)
 
 
 def _refusal(method: bytes, target: bytes) -> tuple[str, str] | None:
@@ -570,6 +574,9 @@ class RequestHead:
     appended once read, and `size` the octets it counted. `chunked` is
     `evhttp_get_body`'s own test, a `Transfer-Encoding` of `chunked`,
     and `length` the body's `Content-Length` where it is not.
+    `expects_continue` is its `Expect: 100-continue`, which
+    `RpcConnection._read_body` answers `100 Continue` where nothing of
+    the body has arrived yet.
 
     `error` is what libevent refuses the request for, answered with its
     error page, `fields` then holding what was read before it; `method`
@@ -587,7 +594,13 @@ class RequestHead:
     size: int
     chunked: bool
     length: int
-    error: MalformedRequestHeadError | OversizedRequestBodyError | None
+    expects_continue: bool
+    error: (
+        MalformedRequestHeadError
+        | OversizedRequestBodyError
+        | UnmetExpectationError
+        | None
+    )
 
     @property
     def consumed(self) -> int:
@@ -660,11 +673,16 @@ class _HeadReader:
             return head
         encoding = head.field(b"Transfer-Encoding")
         if encoding is not None and encoding.lower() == "chunked":
-            return replace(head, chunked=True)
-        try:
-            return replace(head, length=_content_length(head.field(b"Content-Length")))
-        except (MalformedRequestHeadError, OversizedRequestBodyError) as e:
-            return replace(head, error=e)
+            head = replace(head, chunked=True)
+        else:
+            try:
+                length = _content_length(head.field(b"Content-Length"))
+            except MalformedRequestHeadError as e:
+                return replace(head, error=e)
+            if length < 1:
+                return head
+            head = replace(head, length=length)
+        return _expectation(head)
 
     def _read_section(self) -> bool:
         """Read the request line, then fields; `True` once the section ends.
@@ -699,8 +717,30 @@ class _HeadReader:
             size=0 if fields is None else fields.size,
             chunked=False,
             length=0,
+            expects_continue=False,
             error=error,
         )
+
+
+def _expectation(head: RequestHead) -> RequestHead:
+    """Read `head`'s `Expect` field, then refuse a body past the limit.
+
+    `evhttp_get_body`, once it knows there is a body: `evhttp_have_expect`
+    reads the first `Expect` field of a request of HTTP/1.1 or later,
+    compared whole and ASCII case-insensitively to `100-continue`. Any
+    other value is refused 417, ahead of the 413 a `Content-Length` past
+    `MAX_BODY_BYTES` gets either way.
+    """
+    expect = head.field(b"Expect")
+    if expect is not None and (head.version or (0, 0)) >= (1, 1):
+        if expect.lower() != "100-continue":
+            detail = f"Expect {expect!r}"
+            return replace(head, error=UnmetExpectationError(detail))
+        head = replace(head, expects_continue=True)
+    if not head.chunked and head.length > MAX_BODY_BYTES:
+        detail = f"Content-Length past {MAX_BODY_BYTES}"
+        return replace(head, error=OversizedRequestBodyError(detail))
+    return head
 
 
 # `evutil_strtoll(p, &endp, 16)`, the C library's `strtoll` in base 16:
@@ -819,9 +859,9 @@ def parse_request_head(data: bytes) -> RequestHead:
     libevent would wait for more -- `run`'s own call site never hits
     this, since it reads more instead, but a fuzzed byte string has no
     such guarantee. Raises `MalformedRequestHeadError`, answered 400,
-    for a section libevent refuses, and `OversizedRequestBodyError` for
-    a `Content-Length` past `MAX_BODY_BYTES`, which libevent answers
-    413.
+    for a section libevent refuses, `UnmetExpectationError` for an
+    `Expect` it answers 417, and `OversizedRequestBodyError` for a
+    `Content-Length` past `MAX_BODY_BYTES`, which libevent answers 413.
     """
     head = _HeadReader(bytearray(data)).read()
     if head is None:
@@ -955,10 +995,18 @@ class RpcConnection:
         simply not sent yet -- and is left in `self.buffer` for it. A
         chunked body's trailer fields are the request's too, returned with
         the body in the head, which is `self.head` from then on.
+
+        An `Expect: 100-continue` is answered `100 Continue` first, in the
+        request's own version, as `evhttp_send_continue` answers it, where
+        nothing of the body came with the head.
         """
         if head.error is not None:
             self._send_framing_error(head.error)
             return None
+        if head.expects_continue and not self.buffer:
+            major, minor = head.version or (0, 0)
+            interim = f"HTTP/{major}.{minor} 100 Continue\r\n\r\n"
+            await self.loop.sock_sendall(self.client, interim.encode())
         if not head.chunked:
             length = head.length
             await self._recv_until(lambda: len(self.buffer) >= length)
@@ -997,9 +1045,10 @@ class RpcConnection:
         this task runs under.
 
         In the order Core answers them, and none of them queued: a
-        header section `_HeadReader` refuses, or a chunked body
-        `_ChunkedReader` does, is answered 400 or 413 by
-        `_send_framing_error`, as soon as it is refused; a
+        header section `_HeadReader` refuses, an `Expect` it does not
+        meet, or a chunked body `_ChunkedReader` refuses, is answered
+        400, 417 or 413 by `_send_framing_error`, as soon as it is
+        refused; a
         method or a target `_refusal` refuses is answered by
         `_send_refusal`, whatever the credential; a request whose
         `Authorization` header `manager.auth` does not accept is
@@ -1271,17 +1320,24 @@ class RpcConnection:
         await self._write(self._frame(reply.status, body, fields))
 
     def _send_framing_error(
-        self, error: MalformedRequestHeadError | OversizedRequestBodyError
+        self,
+        error: MalformedRequestHeadError
+        | OversizedRequestBodyError
+        | UnmetExpectationError,
     ) -> None:
         """Schedule libevent's answer to a request it cannot frame.
 
         `evhttp_connection_incoming_fail`: 413 for a body libevent
         refuses and 400 for the rest, as `evhttp_send_error`'s own page,
-        which `_frame` closes after unless the request is a `CONNECT`.
+        which `_frame` closes after unless the request is a `CONNECT`;
+        and `evhttp_get_body`'s own `evhttp_send_error` of 417 for an
+        `Expect` it does not meet, the body left unread.
         """
         status = _BAD_REQUEST
         if isinstance(error, OversizedRequestBodyError):
             status = _ENTITY_TOO_LARGE
+        elif isinstance(error, UnmetExpectationError):
+            status = _EXPECTATION_FAILED
         self._refusal_reply = self.loop.create_task(
             self._send_refusal(status, _error_page(status), page=True)
         )

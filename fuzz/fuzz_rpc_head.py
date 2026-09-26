@@ -24,8 +24,9 @@ upstream by the interpreter's own test suite and not this tree's code.
 
 `BTClibException` is the whole family `parse_request_head` refuses an
 input with -- `IncompleteRequestHeadError` where no whole header
-section is present yet, and `MalformedRequestHeadError` and
-`OversizedRequestBodyError` for what libevent answers 400 and 413 -- and
+section is present yet, and `MalformedRequestHeadError`,
+`UnmetExpectationError` and `OversizedRequestBodyError` for what libevent
+answers 400, 417 and 413 -- and
 it is also what `RpcConnection.run`'s own catch is a strict superset
 of: that catch is a bare `except Exception` (`run`'s own docstring is
 where that breadth is argued, against `RpcManager.stop`'s own sweep),
