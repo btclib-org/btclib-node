@@ -44,6 +44,7 @@ __all__ = [
     "DUMP_BANS_INTERVAL",
     "BanEntry",
     "BanMan",
+    "Host",
     "SpecialAddress",
     "Subnet",
     "is_valid_host",
@@ -172,6 +173,7 @@ class SpecialAddress:
 
 
 type Host = IPv4Address | IPv6Address | SpecialAddress
+"""An address `lookup_host` reads: an IP one, or an onion or I2P host."""
 
 
 def lookup_host(text: str) -> Host | None:
