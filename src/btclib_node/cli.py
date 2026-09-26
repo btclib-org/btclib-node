@@ -467,6 +467,15 @@ _OPTIONS: dict[str, _Option] = {
     ),
 }
 
+# The sections `GetUnrecognizedSections` (`src/common/args.cpp`, same
+# sha) does not warn about: every `ChainTypeToString`, `testnet4`
+# included though this node runs no such chain.
+_RECOGNIZED_SECTIONS = frozenset({"main", "test", "testnet4", "signet", "regtest"})
+
+# Where a section of a file was named: Core's `SectionInfo`, its name,
+# the file as `ReadConfigFiles` names it, and the line.
+_SectionInfo = tuple[str, str, int]
+
 # A setting's value once read: a string, `False` for a negation, and
 # `True` for a double negative -- Core's `SettingsValue` as
 # `InterpretValue` fills it.
@@ -496,6 +505,8 @@ class _Settings:
     command_line: dict[str, list[_Value]]
     ro_config: _RoConfig = field(default_factory=dict)
     network: str = ""
+    # Core's `m_config_sections`: every section the files read named
+    config_sections: list[_SectionInfo] = field(default_factory=list)
 
 
 def _interpret_key(key: str) -> _KeyInfo:
@@ -587,8 +598,16 @@ def _parse_parameters(
     return options, token
 
 
-def _config_options(text: str) -> list[tuple[str, str]]:
+def _config_options(
+    text: str, sections: list[_SectionInfo] | None = None, filepath: str = ""
+) -> list[tuple[str, str]]:
     """Return every `key=value` of `text`, with its section prefix.
+
+    Every section named is appended to `sections`, where given, with
+    `filepath` and its line: a `[section]` line, and the part of a key
+    before its last `.` where that `.` sits at or past the length of the
+    `[section]` prefix, as `GetConfigOptions` appends to Core's
+    `sections`.
 
     Core's own config-file grammar (`GetConfigOptions`,
     `src/common/config.cpp`, at bitcoin/bitcoin@9be056a8a7): a key under
@@ -609,6 +628,8 @@ def _config_options(text: str) -> list[tuple[str, str]]:
             continue
         if line[0] == "[" and line[-1] == "]":
             prefix = line[1:-1] + "."
+            if sections is not None:
+                sections.append((line[1:-1], filepath, lineno))
             continue
         if line[0] == "-":
             err_msg = (
@@ -633,11 +654,18 @@ def _config_options(text: str) -> list[tuple[str, str]]:
             )
             raise ValueError(err_msg)
         options.append((name, value.strip(" \t\r\n")))
+        dot = name.rfind(".")
+        if sections is not None and dot != -1 and len(prefix) <= dot:
+            sections.append((name[:dot], filepath, lineno))
     return options
 
 
-def _parse_conf_text(text: str) -> _RoConfig:
+def _parse_conf_text(
+    text: str, sections: list[_SectionInfo] | None = None, filepath: str = ""
+) -> _RoConfig:
     """Parse `text` into `{section: {name: [values]}}`, in file order.
+
+    `sections` and `filepath` are `_config_options`'.
 
     `ReadConfigStream` (`src/common/config.cpp`, at
     bitcoin/bitcoin@9be056a8a7) over `_config_options`: `InterpretKey`
@@ -648,7 +676,7 @@ def _parse_conf_text(text: str) -> _RoConfig:
     about on stderr and left out.
     """
     config: _RoConfig = {}
-    for name, value in _config_options(text):
+    for name, value in _config_options(text, sections, filepath):
         info = _interpret_key(name)
         if info.name == "conf":
             err_msg = (
@@ -671,8 +699,17 @@ def _parse_conf_text(text: str) -> _RoConfig:
     return config
 
 
-def _read_conf_file(path: Path, *, required: bool) -> _RoConfig:
+def _read_conf_file(
+    path: Path,
+    *,
+    required: bool,
+    sections: list[_SectionInfo] | None = None,
+    filepath: str = "",
+) -> _RoConfig:
     """Read and parse `path`; `{}` if it is missing and not `required`.
+
+    `sections` and `filepath` are `_config_options`', `filepath` being
+    the name `path` is given in a warning.
 
     Core's own "ok to not have a config file" (`ReadConfigFiles`,
     `src/common/config.cpp`) for the default filename, which is what
@@ -702,11 +739,16 @@ def _read_conf_file(path: Path, *, required: bool) -> _RoConfig:
             err_msg = f"specified configuration file {path} could not be opened"
             raise ValueError(err_msg) from None
         return {}
-    return _parse_conf_text(text)
+    return _parse_conf_text(text, sections, filepath)
 
 
 def _load_conf_tree(
-    conf_path: Path, *, conf_explicit: bool, base_dir: Path, use_includes: bool
+    conf_path: Path,
+    *,
+    conf_explicit: bool,
+    base_dir: Path,
+    use_includes: bool,
+    sections: list[_SectionInfo] | None = None,
 ) -> _RoConfig:
     """Read `conf_path`, then every `includeconf` its default section names.
 
@@ -718,8 +760,14 @@ def _load_conf_tree(
     bitcoin/bitcoin@9be056a8a7). A negated `includeconf` discards the
     names before it, as that function's own `SettingsSpan` does, and
     `use_includes=False`, for `-noincludeconf`, reads none.
+
+    Every section named is appended to `sections`, where given: the root
+    file under its path, an included one under its name as written, as
+    `ReadConfigFiles` passes each to `ReadConfigStream`.
     """
-    tree = _read_conf_file(conf_path, required=conf_explicit)
+    tree = _read_conf_file(
+        conf_path, required=conf_explicit, sections=sections, filepath=str(conf_path)
+    )
     if not use_includes:
         return tree
     includes = tree.get("", {}).get("includeconf", [])
@@ -727,7 +775,12 @@ def _load_conf_tree(
         include_path = Path(_setting_to_str(name))
         if not include_path.is_absolute():
             include_path = base_dir / include_path
-        included = _read_conf_file(include_path, required=True)
+        included = _read_conf_file(
+            include_path,
+            required=True,
+            sections=sections,
+            filepath=_setting_to_str(name),
+        )
         for section, keys in included.items():
             dest = tree.setdefault(section, {})
             for key, values in keys.items():
@@ -1129,6 +1182,7 @@ def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
             conf_explicit=_is_set(settings, "conf"),
             base_dir=base_dir,
             use_includes="includeconf" not in settings.command_line,
+            sections=settings.config_sections,
         )
     chain_name = _resolve_chain_name(settings)
     settings.network = _CHAIN_SECTION[chain_name]
@@ -1168,14 +1222,34 @@ class _BeforeLock:
     directories: Config
 
 
+def _warn_unrecognized_sections(sections: Sequence[_SectionInfo]) -> None:
+    """Warn on stderr of every section that names no chain, as Core does.
+
+    `AppInitParameterInteraction`'s one `InitWarning` over
+    `GetUnrecognizedSections` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7):
+    a line per section, each ending in a newline, printed after
+    `Warning: ` with a newline of its own, as `noui_ThreadSafeMessageBox`
+    prints it.
+    """
+    lines = "".join(
+        f"{filepath}:{lineno} Section [{name}] is not recognized.\n"
+        for name, filepath, lineno in sections
+        if name not in _RECOGNIZED_SECTIONS
+    )
+    if lines:
+        sys.stderr.write(f"Warning: {lines}\n")
+
+
 def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     """Read `argv` and its file, and refuse what Core refuses before its lock.
 
     `InitConfig`, then `AppInitParameterInteraction` (`src/init.cpp`, at
-    bitcoin/bitcoin@9be056a8a7) in its order: a missing blocks directory,
-    a negative `-maxconnections`, `-debug`'s categories, `-prune`.
+    bitcoin/bitcoin@9be056a8a7) in its order: the warning about a section
+    naming no chain, a missing blocks directory, a negative
+    `-maxconnections`, `-debug`'s categories, `-prune`.
     """
     settings, base_dir, chain_name = _read_settings(argv)
+    _warn_unrecognized_sections(settings.config_sections)
     # `GetBlocksDirPath`: a negated `-blocksdir` is an empty path, which
     # `fs::absolute` reads as the working directory
     blocksdir = _get_arg(settings, "blocksdir")

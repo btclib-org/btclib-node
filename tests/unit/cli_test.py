@@ -1735,6 +1735,67 @@ def no_node(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delattr(cli, "Node")
 
 
+def test_config_options_records_every_section_as_core_does() -> None:
+    """ISS 1271: `GetConfigOptions`' `sections`, a dotted key's included.
+
+    A `[section]` line, and a key's part before its last `.` where that
+    `.` sits at or past the `[section]` prefix's length: `regtest.x`
+    under `[regtest]`, `regtest` for a top-level `regtest.port`, and
+    `x.` for `.foo` under `[x]`, as `bitcoind` v31.1.0 names it, but not
+    `x` again for `foo` under `[x]`.
+    """
+    sections: list[tuple[str, str, int]] = []
+    text = "regtest.port=1\n[x]\nfoo=1\n.foo=1\n[regtest]\nx.bar=1\nbar=2\n"
+    cli._config_options(text, sections, "f.conf")
+    assert sections == [
+        ("regtest", "f.conf", 1),
+        ("x", "f.conf", 2),
+        ("x.", "f.conf", 4),
+        ("regtest", "f.conf", 5),
+        ("regtest.x", "f.conf", 6),
+    ]
+
+
+def test_warn_unrecognized_sections_is_one_core_warning(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ISS 1271: `InitWarning`'s lines, a chain's own section left out.
+
+    `testnet4` is one of Core's chains, and so is not warned about.
+    """
+    sections = [("x", "a.conf", 2), ("testnet4", "a.conf", 3), ("y", "b", 1)]
+    cli._warn_unrecognized_sections(sections)
+    assert capsys.readouterr().err == (
+        "Warning: a.conf:2 Section [x] is not recognized.\n"
+        "b:1 Section [y] is not recognized.\n\n"
+    )
+    cli._warn_unrecognized_sections([("main", "a.conf", 1)])
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.usefixtures("no_node")
+def test_main_warns_of_an_unrecognized_section_before_refusing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 1271: the warning, then the blocks directory, as `bitcoind` prints.
+
+    Measured on `bitcoind` v31.1.0 with this file and include: the root
+    file is named by its path, the included one as `includeconf=` names
+    it.
+    """
+    (tmp_path / "bitcoin.conf").write_text(
+        "regtest=1\nincludeconf=inc.conf\n[x]\n", encoding="utf-8"
+    )
+    (tmp_path / "inc.conf").write_text("[z]\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        cli.main([f"-datadir={tmp_path}", f"-blocksdir={tmp_path}/nosuch"])
+    assert capsys.readouterr().err == (
+        f"Warning: {tmp_path / 'bitcoin.conf'}:3 Section [x] is not recognized.\n"
+        "inc.conf:1 Section [z] is not recognized.\n\n"
+        f'Error: Specified blocks directory "{tmp_path}/nosuch" does not exist.\n'
+    )
+
+
 @pytest.mark.usefixtures("no_node")
 def test_main_a_bad_argument_exits_one_with_a_message(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]

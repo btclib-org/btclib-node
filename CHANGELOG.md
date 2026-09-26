@@ -456,6 +456,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `bitcoind` words them** (closes #1267), with no path; a line ends at a
   newline alone, as Core counts it.
 
+### A `[section]` naming no chain is warned about as `bitcoind` warns
+
+- **Stderr names each unrecognised section with its file and line** (closes
+  #1271), in Core's words and before the refusals that follow it.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
