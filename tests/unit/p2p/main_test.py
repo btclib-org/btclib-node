@@ -434,7 +434,10 @@ def test_a_reject_is_ignored_as_core_ignores_it() -> None:
     warned, warning = log_recorder()
     failed, exception = log_recorder()
     logger = SimpleNamespace(
-        info=lambda *a: None, debug=lambda *a: None, warning=warning, exception=exception
+        info=lambda *a: None,
+        debug=lambda *a: None,
+        warning=warning,
+        exception=exception,
     )
     forged = "line one\nFAKE - Connected to 1.2.3.4:8333, connection 9"
     msg = Reject("tx", RejectCode.invalid, forged, b"\x11" * 32).serialize()
