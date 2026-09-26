@@ -455,6 +455,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A coin picks the answered or the gossiped table, and a pass draws up to
   a hundred times** (closes #1201), so held answered peers no longer stall it.
 
+### PeerDB records as answered only a peer it already knows
+
+- **A peer is recorded as answered only where gossip already holds its
+  endpoint** (closes #1189), as Core's `Good_` updates only what addrman holds.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

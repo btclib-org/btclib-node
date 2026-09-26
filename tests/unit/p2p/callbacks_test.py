@@ -991,6 +991,8 @@ def test_an_outbound_handshake_records_the_address_dialled() -> None:
         address=dialled,
     )
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+    # gossiped first: `add_active_address` records a known endpoint alone
+    peer_db.add_addresses([dialled])
     verack(a_handshake_node(peer_db=peer_db), b"", peer)
     (recorded,) = peer_db.active_addresses
     assert recorded.address == dialled.address
@@ -1024,6 +1026,8 @@ def test_an_inbound_handshake_records_the_peers_announced_port() -> None:
         address=accepted,
     )
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+    # gossiped first: `add_active_address` records a known endpoint alone
+    peer_db.add_addresses([replace(accepted, port=8333)])
     verack(a_handshake_node(peer_db=peer_db), b"", peer)
     (recorded,) = peer_db.active_addresses
     # the accepted connection's own address, proven reachable by the TCP
