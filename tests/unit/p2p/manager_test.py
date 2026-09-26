@@ -1690,6 +1690,35 @@ def test_a_seed_node_step_that_raises_is_logged(
     assert logged
 
 
+def test_a_seed_node_connection_leaves_the_full_relay_target_short(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1192: seven full-relay peers and a `-seednode` one still draw.
+
+    Core's `ThreadOpenConnections` counts `IsFullOutboundConn()` peers
+    against `m_max_outbound_full_relay`, and an `ADDR_FETCH` peer is not
+    one, so eight automatic connections are seven towards the eight.
+    """
+    dialled: list[NetworkAddressV2] = []
+
+    async def records(address: NetworkAddressV2) -> None:
+        dialled.append(address)
+
+    monkeypatch.setattr(manager_module, "dial", records)
+    drawn = peer_address("5.6.7.8", 8333)
+    peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: drawn)
+    conns = [
+        a_conn(i, automatic=True, address=peer_address(f"10.{i}.0.1", 8333))
+        for i in range(7)
+    ]
+    seed = a_conn(
+        7, automatic=True, addr_fetch=True, address=peer_address("10.7.0.1", 8333)
+    )
+    manager = a_manager([*conns, seed], peer_db=peer_db)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert dialled == [drawn]
+
+
 def test_a_seed_node_connection_takes_no_network_group(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

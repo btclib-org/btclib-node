@@ -119,10 +119,11 @@ _MAX_OUTBOUND_FULL_RELAY_CONNECTIONS = 8
 _MAX_BLOCK_RELAY_ONLY_CONNECTIONS = 2
 _MAX_FEELER_CONNECTIONS = 1
 
-# How long `_maybe_add_fixed_seeds` gives DNS seeding and `-addnode` to
-# fill the table before falling back on the chain's fixed seeds: Core's
-# `start + std::chrono::minutes{1}` in `ThreadOpenConnections`
-# (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+# How long `_maybe_add_fixed_seeds` gives DNS seeding, `-seednode` and
+# `-addnode` to fill the table before falling back on the chain's fixed
+# seeds: Core's `start + std::chrono::minutes{1}` in
+# `ThreadOpenConnections` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
+# the v31.1 tag).
 _FIXED_SEEDS_DELAY = 60
 
 # How often `_maybe_add_fixed_seeds` looks, at most: once per pass of
