@@ -486,6 +486,16 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   asked** (closes #1187); a missing data directory and an unreadable
   configuration file are refused in Core's words.
 
+### A ban list, as Core's `BanMan`
+
+- **`setban`, `listbanned` and `clearbanned` keep it in `banlist.json`; a
+  banned host is refused on accept, not dialled automatically, and left out of
+  `getaddr` answers and of the gossip stored** (closes #1088).
+
+### `running_a_node.md` names every RPC method the node serves
+
+- **Its list is the method table's, with no count** (closes #1221).
+
 ### Compact blocks are served, and offered at version 2, as in Core
 
 - **`sendcmpct` offers version 2, and a `MSG_CMPCT_BLOCK` or a `getblocktxn`

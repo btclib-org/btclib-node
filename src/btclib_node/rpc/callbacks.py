@@ -34,6 +34,7 @@ from btclib_node.main import (
     verify_mempool_acceptance,
 )
 from btclib_node.p2p.address import ip_and_port, peer_address
+from btclib_node.p2p.banman import Subnet, is_valid_host, lookup_host, lookup_subnet
 from btclib_node.p2p.eviction import Network, is_valid, net_class
 from btclib_node.rpc.connection import RawJSON
 from btclib_node.rpc.errors import RpcError, bool_param, type_error
@@ -49,6 +50,7 @@ __all__ = [
     "add_node",
     "arg_names",
     "callbacks",
+    "clear_banned",
     "get_best_block_hash",
     "get_block",
     "get_block_count",
@@ -62,10 +64,12 @@ __all__ = [
     "get_raw_mempool",
     "get_raw_transaction",
     "get_tx_out_set_info",
+    "list_banned",
     "ping",
     "prune_blockchain",
     "send_raw_transaction",
     "service_names",
+    "set_ban",
     "stop",
     "submit_block",
     "test_mempool_accept",
@@ -1036,6 +1040,107 @@ def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     node.p2p_manager.connect(address)
 
 
+_SETBAN_USAGE = 'setban "subnet" "command" ( bantime absolute )'
+
+
+def _setban_params(params: list[Any]) -> tuple[str, str, int | float | None, bool]:
+    """Check `setban`'s arguments as `HandleRequest` does, then `command`."""
+    if not 2 <= len(params) <= 4:  # noqa: PLR2004
+        raise RpcError(RPCErrorCode.MISC_ERROR, _SETBAN_USAGE)
+    if not isinstance(params[0], str):
+        raise type_error(1, "subnet", params[0], "string")
+    if not isinstance(params[1], str):
+        raise type_error(2, "command", params[1], "string")
+    bantime = params[2] if len(params) > 2 else None  # noqa: PLR2004
+    if bantime is not None and (
+        isinstance(bantime, bool) or not isinstance(bantime, (int, float))
+    ):
+        raise type_error(3, "bantime", bantime, "number")
+    absolute = bool_param(params, 3, name="absolute", default=False)
+    if params[1] not in ("add", "remove"):
+        raise RpcError(RPCErrorCode.MISC_ERROR, _SETBAN_USAGE)
+    return params[0], params[1], bantime, absolute
+
+
+def _setban_subnet(subnet_arg: str) -> Subnet:
+    """Parse `setban`'s `subnet`: a subnet with a slash, else a valid host."""
+    subnet: Subnet | None
+    if "/" in subnet_arg:
+        subnet = lookup_subnet(subnet_arg)
+    else:
+        ip = lookup_host(subnet_arg)
+        subnet = Subnet.of(ip) if ip is not None and is_valid_host(ip) else None
+    if subnet is None:
+        raise RpcError(
+            RPCErrorCode.CLIENT_INVALID_IP_OR_SUBNET, "Error: Invalid IP/Subnet"
+        )
+    return subnet
+
+
+def set_ban(node: Node, conn: RpcConnection, params: list[Any]) -> None:
+    """Answer `setban`, Core's own checks in Core's own order.
+
+    Core's `setban` (`src/rpc/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag). A `subnet` holding a slash is a subnet, and is
+    otherwise one address, which has to be a valid one. Adding a ban
+    drops every peer it matches.
+    """
+    subnet_arg, command, bantime, absolute = _setban_params(params)
+    subnet = _setban_subnet(subnet_arg)
+    ban_man = node.p2p_manager.ban_man
+    if command == "remove":
+        if not ban_man.unban(subnet):
+            raise RpcError(
+                RPCErrorCode.CLIENT_INVALID_IP_OR_SUBNET,
+                "Error: Unban failed. Requested address/subnet was not"
+                " previously manually banned.",
+            )
+        return
+    # a single address is banned already where any ban covers it, a
+    # subnet only where that very subnet is banned
+    banned = (
+        ban_man.is_subnet_banned(subnet)
+        if "/" in subnet_arg
+        else ban_man.is_banned(subnet.network)
+    )
+    if banned:
+        raise RpcError(
+            RPCErrorCode.CLIENT_NODE_ALREADY_ADDED, "Error: IP/Subnet already banned"
+        )
+    # UniValue's `getInt<int64_t>`, which only `add` calls
+    if isinstance(bantime, float) or (
+        bantime is not None and not -(1 << 63) <= bantime < 1 << 63
+    ):
+        raise RpcError(RPCErrorCode.MISC_ERROR, "JSON integer out of range")
+    bantime = bantime or 0
+    if absolute and bantime < int(time.time()):
+        raise RpcError(
+            RPCErrorCode.INVALID_PARAMETER, "Error: Absolute timestamp is in the past"
+        )
+    ban_man.ban(subnet, bantime, absolute=absolute)
+    node.p2p_manager.disconnect_subnet(subnet)
+
+
+def list_banned(node: Node, conn: RpcConnection, _: list[Any]) -> list[dict[str, Any]]:
+    """Answer `listbanned`, every unexpired ban in the list's own order."""
+    now = int(time.time())
+    return [
+        {
+            "address": str(subnet),
+            "ban_created": entry.create_time,
+            "banned_until": entry.ban_until,
+            "ban_duration": entry.ban_until - entry.create_time,
+            "time_remaining": entry.ban_until - now,
+        }
+        for subnet, entry in node.p2p_manager.ban_man.banned()
+    ]
+
+
+def clear_banned(node: Node, conn: RpcConnection, _: list[Any]) -> None:
+    """Answer `clearbanned`."""
+    node.p2p_manager.ban_man.clear()
+
+
 def _btc_amount(sats: int) -> RawJSON:
     """Format a non-negative satoshi amount as Core's own exact BTC string.
 
@@ -1624,6 +1729,9 @@ callbacks = {
     "getconnectioncount": get_connection_count,
     "getnetworkinfo": get_network_info,
     "addnode": add_node,
+    "setban": set_ban,
+    "listbanned": list_banned,
+    "clearbanned": clear_banned,
     "getmempoolinfo": get_mempool_info,
     "getrawmempool": get_raw_mempool,
     "getrawtransaction": get_raw_transaction,
@@ -1655,6 +1763,9 @@ arg_names: dict[str, tuple[str, ...]] = {
     "getconnectioncount": (),
     "getnetworkinfo": (),
     "addnode": ("node", "command", "v2transport"),
+    "setban": ("subnet", "command", "bantime", "absolute"),
+    "listbanned": (),
+    "clearbanned": (),
     "getmempoolinfo": (),
     "getrawmempool": ("verbose", "mempool_sequence"),
     "getrawtransaction": ("txid", "verbosity|verbose", "blockhash"),

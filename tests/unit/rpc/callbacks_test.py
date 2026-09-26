@@ -32,6 +32,7 @@ from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
+import btclib_node.p2p.banman as banman_module
 import btclib_node.rpc.callbacks as cb
 from btclib_node.block_db import Coin
 from btclib_node.chains import Chain, Main, RegTest
@@ -48,10 +49,13 @@ from btclib_node.exceptions import MissingPrevoutError, StoreCorruptionError
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import peer_address
+from btclib_node.p2p.banman import BanEntry, BanMan, lookup_subnet
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.connection import PeerStats
 from btclib_node.rpc.callbacks import (
     add_node,
+    callbacks,
+    clear_banned,
     get_best_block_hash,
     get_block,
     get_block_count,
@@ -65,10 +69,12 @@ from btclib_node.rpc.callbacks import (
     get_raw_mempool,
     get_raw_transaction,
     get_tx_out_set_info,
+    list_banned,
     ping,
     prune_blockchain,
     send_raw_transaction,
     service_names,
+    set_ban,
     stop,
     submit_block,
 )
@@ -2765,6 +2771,219 @@ def test_addnode_type_checks_node_and_command() -> None:
     with pytest.raises(RpcError) as raised2:
         add_node(node, _CONN, ["127.0.0.1", 1])
     assert raised2.value.code == RPCErrorCode.TYPE_ERROR
+
+
+_BAN_NOW = 1_700_000_000
+_SETBAN_USAGE = 'setban "subnet" "command" ( bantime absolute )'
+
+
+def a_banning_node(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, list[str]]:
+    """Build a node double with a ban list, its clock stopped at `_BAN_NOW`.
+
+    The list is the second element's record of every subnet
+    `disconnect_subnet` was asked to drop, as `str`.
+    """
+    monkeypatch.setattr(banman_module, "_now", lambda: _BAN_NOW)
+    monkeypatch.setattr(time, "time", lambda: _BAN_NOW + 0.5)
+    dropped: list[str] = []
+    node = SimpleNamespace(
+        p2p_manager=SimpleNamespace(
+            ban_man=BanMan(None, Logger(debug=True)),
+            disconnect_subnet=lambda subnet: dropped.append(str(subnet)),
+        )
+    )
+    return node, dropped
+
+
+def refusal(node: Any, params: list[Any]) -> RpcError:
+    """Return what `setban` raised for `params`, asserting it raised."""
+    with pytest.raises(RpcError) as raised:
+        set_ban(node, _CONN, params)
+    return raised.value
+
+
+def test_setban_is_in_the_method_table() -> None:
+    """`setban`, `listbanned` and `clearbanned` are Core's names."""
+    assert callbacks["setban"] is set_ban
+    assert callbacks["listbanned"] is list_banned
+    assert callbacks["clearbanned"] is clear_banned
+
+
+def test_setban_add_bans_and_drops_the_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Core's `setban add`: the ban, then `DisconnectNode` of what it bans.
+
+    `listbanned` answers it with Core's five fields, a day long by
+    default.
+    """
+    node, dropped = a_banning_node(monkeypatch)
+    set_ban(node, _CONN, ["1.2.3.4", "add"])
+    set_ban(node, _CONN, ["5.6.0.0/16", "add", 100, None])
+    assert dropped == ["1.2.3.4/32", "5.6.0.0/16"]
+    assert list_banned(node, _CONN, []) == [
+        {
+            "address": "1.2.3.4/32",
+            "ban_created": _BAN_NOW,
+            "banned_until": _BAN_NOW + 86400,
+            "ban_duration": 86400,
+            "time_remaining": 86400,
+        },
+        {
+            "address": "5.6.0.0/16",
+            "ban_created": _BAN_NOW,
+            "banned_until": _BAN_NOW + 100,
+            "ban_duration": 100,
+            "time_remaining": 100,
+        },
+    ]
+
+
+def test_setban_add_refuses_what_is_already_banned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An address inside any ban is banned already, a subnet only by its key."""
+    node, dropped = a_banning_node(monkeypatch)
+    set_ban(node, _CONN, ["1.2.3.0/24", "add"])
+    for params in (["1.2.3.4", "add"], ["1.2.3.0/255.255.255.0", "add"]):
+        error = refusal(node, params)
+        assert error.code == RPCErrorCode.CLIENT_NODE_ALREADY_ADDED
+        assert error.message == "Error: IP/Subnet already banned"
+    set_ban(node, _CONN, ["1.2.3.0/25", "add"])
+    assert dropped == ["1.2.3.0/24", "1.2.3.0/25"]
+
+
+@pytest.mark.parametrize(
+    "subnet",
+    [
+        "bloop",
+        "1.2.3.0/33",
+        # without a slash the address has to be a valid one
+        "0.0.0.0",  # noqa: S104
+        "2001:db8::1",
+        "fd87:d87e:eb43::1",
+    ],
+)
+def test_setban_refuses_what_is_no_ip_nor_subnet(
+    monkeypatch: pytest.MonkeyPatch, subnet: str
+) -> None:
+    """Core's `RPC_CLIENT_INVALID_IP_OR_SUBNET`, for add and remove alike."""
+    node, _ = a_banning_node(monkeypatch)
+    for command in ("add", "remove"):
+        error = refusal(node, [subnet, command])
+        assert error.code == RPCErrorCode.CLIENT_INVALID_IP_OR_SUBNET
+        assert error.message == "Error: Invalid IP/Subnet"
+
+
+def test_setban_takes_an_invalid_address_as_a_subnet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With a slash, `CSubNet` is valid of any IPv4 or IPv6 address."""
+    node, _ = a_banning_node(monkeypatch)
+    set_ban(node, _CONN, ["0.0.0.0/32", "add"])
+    assert [entry["address"] for entry in list_banned(node, _CONN, [])] == [
+        "0.0.0.0/32"
+    ]
+
+
+def test_setban_remove_answers_whether_there_was_a_ban(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Core's `Unban failed` for a subnet not on the list, by its exact key."""
+    node, _ = a_banning_node(monkeypatch)
+    set_ban(node, _CONN, ["1.2.3.0/24", "add"])
+    error = refusal(node, ["1.2.3.4", "remove"])
+    assert error.code == RPCErrorCode.CLIENT_INVALID_IP_OR_SUBNET
+    assert error.message == (
+        "Error: Unban failed. Requested address/subnet was not previously"
+        " manually banned."
+    )
+    # the bantime is read by `add` alone
+    set_ban(node, _CONN, ["1.2.3.0/24", "remove", 1.5])
+    assert list_banned(node, _CONN, []) == []
+
+
+def test_setban_absolute_bans_until_the_time_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An absolute bantime is when the ban ends, and never in the past."""
+    node, _ = a_banning_node(monkeypatch)
+    error = refusal(node, ["1.2.3.4", "add", _BAN_NOW - 1, True])
+    assert error.code == RPCErrorCode.INVALID_PARAMETER
+    assert error.message == "Error: Absolute timestamp is in the past"
+    set_ban(node, _CONN, ["1.2.3.4", "add", _BAN_NOW, True])
+    (entry,) = node.p2p_manager.ban_man.banned()
+    assert entry[1] == BanEntry(_BAN_NOW, _BAN_NOW)
+
+
+def test_setban_add_past_int64_succeeds_and_bans_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bantime past `int64_t` succeeds and bans nothing, as in Core v31.1.0.
+
+    The host is dropped all the same, `DisconnectNode` following `Ban`
+    whatever `Ban` did.
+    """
+    node, dropped = a_banning_node(monkeypatch)
+    set_ban(node, _CONN, ["11.0.0.1", "add", (1 << 63) - 1])
+    assert list_banned(node, _CONN, []) == []
+    assert dropped == ["11.0.0.1/32"]
+
+
+@pytest.mark.parametrize(
+    "params",
+    [[], ["1.2.3.4"], ["1.2.3.4", "ban"], ["1.2.3.4", "add", 1, True, None]],
+)
+def test_setban_answers_the_usage(
+    monkeypatch: pytest.MonkeyPatch, params: list[Any]
+) -> None:
+    """Too few or too many arguments, or a command Core has no case for."""
+    node, _ = a_banning_node(monkeypatch)
+    error = refusal(node, params)
+    assert error.code == RPCErrorCode.MISC_ERROR
+    assert error.message == _SETBAN_USAGE
+
+
+@pytest.mark.parametrize(
+    ("params", "expected"),
+    [
+        ([1, "add"], "Position 1 (subnet)"),
+        (["1.2.3.4", 1], "Position 2 (command)"),
+        (["1.2.3.4", "add", "1"], "Position 3 (bantime)"),
+        (["1.2.3.4", "add", True], "Position 3 (bantime)"),
+        (["1.2.3.4", "add", 1, "yes"], "Position 4 (absolute)"),
+        # the types are checked ahead of the command
+        (["1.2.3.4", "ban", "1"], "Position 3 (bantime)"),
+    ],
+)
+def test_setban_type_checks_every_argument(
+    monkeypatch: pytest.MonkeyPatch, params: list[Any], expected: str
+) -> None:
+    """Core's `HandleRequest` names the argument of the wrong JSON type."""
+    node, _ = a_banning_node(monkeypatch)
+    error = refusal(node, params)
+    assert error.code == RPCErrorCode.TYPE_ERROR
+    assert expected in error.message
+
+
+@pytest.mark.parametrize("bantime", [1.5, 1 << 63])
+def test_setban_add_refuses_a_bantime_out_of_range(
+    monkeypatch: pytest.MonkeyPatch, bantime: float
+) -> None:
+    """UniValue's `getInt<int64_t>`: no fraction, and within 64 bits."""
+    node, _ = a_banning_node(monkeypatch)
+    error = refusal(node, ["1.2.3.4", "add", bantime])
+    assert error.code == RPCErrorCode.MISC_ERROR
+    assert error.message == "JSON integer out of range"
+
+
+def test_clearbanned_empties_the_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Core's `clearbanned`."""
+    node, _ = a_banning_node(monkeypatch)
+    set_ban(node, _CONN, ["1.2.3.4", "add"])
+    subnet = lookup_subnet("1.2.3.4")
+    assert subnet is not None
+    assert node.p2p_manager.ban_man.is_subnet_banned(subnet)
+    clear_banned(node, _CONN, [])
+    assert list_banned(node, _CONN, []) == []
 
 
 def test_get_block_answers_the_hex_serialization_of_a_stored_block(
