@@ -52,6 +52,7 @@ from btclib_node.p2p.connection import Connection
 from btclib_node.p2p.eviction import (
     EvictionCandidate,
     is_local,
+    is_valid,
     keyed_net_group,
     net_class,
     net_group,
@@ -1054,9 +1055,10 @@ class P2pManager(threading.Thread):
         """Pop an anchor off the back of `anchors`, `None` once none is left.
 
         Passed over, as Core's loop `continue`s ahead of counting a try:
-        one this node cannot dial, one short of the desirable services,
-        and one in a network group an outbound peer already holds. Core's
-        `IsLocal` refusal has no table of local addresses here to ask
+        one this node cannot dial, one `CNetAddr::IsValid` refuses, one
+        short of the desirable services, and one in a network group an
+        outbound peer already holds. Core's `IsLocal` refusal has no
+        table of local addresses here to ask
         (btclib-org/btclib-node#1238).
         """
         # The services are those the address was dialled with, which for
@@ -1065,6 +1067,7 @@ class P2pManager(threading.Thread):
             anchor = self.anchors.pop()
             if (
                 can_connect(anchor)
+                and is_valid(network_address(anchor).ip)
                 and has_all_desirable_services(self.node, anchor.services)
                 and not (
                     can_addrv1(anchor) and net_group(anchor) in outbound_net_groups
