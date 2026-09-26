@@ -182,8 +182,9 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
 
     Continuing means answering `verack`, with `wtxidrelay` and
     `sendaddrv2` ahead of it where the common version reaches
-    `WTXID_RELAY_VERSION`, and recording whether the peer asked to have
-    transactions relayed.
+    `WTXID_RELAY_VERSION` and, to an inbound peer, this node's own
+    `version` ahead of all three; and recording whether the peer asked to
+    have transactions relayed.
     """
     if conn.version_message is not None:
         return
@@ -191,7 +192,7 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
 
     conn.version_message = version_msg
     # `Connection.best_known_height`'s own docstring (connection.py) is
-    # where reading `start_height` here is argued: `send_version`
+    # where reading `start_height` here is argued: `own_version`
     # (connection.py) carries this node's own real tip as of
     # btclib-org/btclib-node#722, so between two btclib-node peers this
     # already seeds at the peer's own real height, and a taller value
@@ -267,6 +268,11 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     ):
         conn.stop()
         return
+
+    # Core's `PushNodeVersion` for an inbound peer: its `version` is
+    # answered only once every check above has kept it
+    if conn.inbound:
+        conn.send(conn.own_version())
 
     # Core sends `sendaddrv2` from 70016 up too, "as a courtesy" to
     # software that rejects a message it does not know. The final `alert`
@@ -997,7 +1003,7 @@ def _below_prune_threshold(node: Node, block_hash: bytes) -> bool:
     still be there: a pruned node that still holds it this once is not
     to be relied on for it the next time either. Every connection of a
     pruned node is told the same `NODE_NETWORK_LIMITED`-only services
-    (`connection.py`'s own `send_version`, gated on `Config.pruned`
+    (`connection.py`'s own `own_version`, gated on `Config.pruned`
     the identical way), so this reads `node.config.pruned` directly
     rather than a per-connection record of what was sent. `+ 2` is
     Core's own buffer, "for possible races". Answers `False` for a hash

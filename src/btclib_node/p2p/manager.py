@@ -536,7 +536,7 @@ class P2pManager(threading.Thread):
     def add_pending_outbound_nonce(self, nonce: int) -> None:
         """Record `nonce` as this outbound, still-unhandshaken connection's own.
 
-        The only caller is `Connection.send_version`, for an outbound
+        The only caller is `Connection.own_version`, for an outbound
         connection. `_connections_lock` (`__init__`) is what every
         access to `pending_outbound_nonces` goes through -- this write
         included -- so it can never land between `is_self_connect_nonce`

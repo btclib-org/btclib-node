@@ -428,6 +428,10 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   after sixty seconds** (closes #1099); `scripts/seeds/` holds Core's lists,
   its licence, which the wheel carries too, and the generator.
 
+### An inbound peer is sent `version` only once its own is accepted, as in Core
+
+- **A refused inbound peer is sent nothing** (closes #1207).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

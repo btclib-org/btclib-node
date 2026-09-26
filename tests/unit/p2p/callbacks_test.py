@@ -506,6 +506,7 @@ def a_peer(**attributes: Any) -> Any:
         has_all_wanted_services=False,
         _ping_lock=threading.Lock(),
         send_ping=lambda: sent.append("ping"),
+        own_version=lambda: "version",
         client=SimpleNamespace(getpeername=lambda: ("1.2.3.4", 18444)),
         inbound=False,
         # what `Connection` starts every connection at, and what
@@ -638,6 +639,35 @@ def test_a_version_carrying_our_own_nonce_is_this_node_calling_itself() -> None:
     assert peer.stopped == [True]
     assert not peer.sent
     assert not node.p2p_manager.discouraged
+
+
+@pytest.mark.parametrize("inbound", [True, False], ids=["inbound", "outbound"])
+def test_an_inbound_peer_is_answered_with_this_node_s_version(*, inbound: bool) -> None:
+    """ISS 1207: Core's `PushNodeVersion`, ahead of the rest, inbound only.
+
+    An outbound connection sent its own `version` on opening.
+    """
+    node = a_handshake_node()
+    peer = a_peer(inbound=inbound)
+    version(node, a_version(), peer)
+    expected = ["WtxidRelay", "SendAddrV2", "Verack"]
+    assert commands(peer) == (["version", *expected] if inbound else expected)
+
+
+@pytest.mark.parametrize(
+    ("protocol", "nonce"),
+    [(MIN_PEER_PROTO_VERSION - 1, 8), (PROTOCOL_VERSION, 7)],
+    ids=["obsolete", "self-connect"],
+)
+def test_an_inbound_peer_refused_is_sent_no_version(
+    *, protocol: int, nonce: int
+) -> None:
+    """ISS 1207: a refused inbound peer learns nothing of this node."""
+    node = a_handshake_node(pending_outbound_nonces=[7])
+    peer = a_peer(inbound=True)
+    version(node, a_version(protocol=protocol, nonce=nonce), peer)
+    assert peer.stopped == [True]
+    assert not peer.sent
 
 
 def test_a_peer_speaking_an_older_protocol_is_let_go() -> None:
