@@ -443,9 +443,6 @@ def a_parsed_version(
     services: ServiceFlags = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS,
     nonce: int = 7,
     relay: bool | None = True,
-    # a different host than "1.2.3.4", a_peer()'s own address: proof
-    # that verack takes only the port from here, for an inbound peer,
-    # and not the address -- btclib-org/btclib-node#70
     addr_from_port: int = 18444,
 ) -> Version:
     """Return the parsed `Version` `a_version` serializes, for field reads."""
@@ -1051,9 +1048,8 @@ def test_an_inbound_handshake_is_not_recorded_as_answered(callback: str) -> None
 
     An inbound connection proves only that the peer reaches this node,
     so its endpoint stays out of the answered table even where the
-    gossiped table already holds it. `conn.address` still moves to the
-    port the peer's `version` names, which manager.py's
-    `already_connected` compares a draw against.
+    gossiped table already holds it. Its `conn.address` stays the
+    socket's, the ephemeral port included, as Core's `CNode::addr` does.
     """
     accepted = peer_address("1.2.3.4", 55555)
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
@@ -1071,21 +1067,7 @@ def test_an_inbound_handshake_is_not_recorded_as_answered(callback: str) -> None
             address=accepted,
         )
         verack(node, b"", peer)
-        assert peer.address.address == accepted.address
-        assert peer.address.port == 8333
-    assert peer_db.active_addresses == []
-
-
-def test_an_inbound_peer_naming_no_port_is_not_recorded() -> None:
-    """#70: a `version` naming port zero is not evidence of a listening one."""
-    # #70: a port of zero is not evidence of a listening one
-    peer = a_peer(
-        version_message=a_parsed_version(addr_from_port=0),
-        wtxidrelay_received=True,
-        inbound=True,
-    )
-    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
-    verack(a_handshake_node(peer_db=peer_db), b"", peer)
+    assert peer.address == accepted
     assert peer_db.active_addresses == []
 
 

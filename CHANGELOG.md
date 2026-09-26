@@ -492,6 +492,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   dialled one enters it from its `version`**, where Core calls `AddrMan::Good`
   (closes #1229).
 
+### The automatic dial passes over a connected host, as in Core
+
+- **A host held on any port is not dialled again** (closes #1304), and an
+  inbound peer's address keeps the port it connected from.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

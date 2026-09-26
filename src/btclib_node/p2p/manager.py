@@ -856,13 +856,11 @@ class P2pManager(threading.Thread):
             self.logger.exception("Exception occurred")
         if live >= self.max_outbound_full_relay or self.peer_db.is_empty:
             return
-        # By endpoint_key, not raw equality: a drawn address
-        # carries whatever timestamp and services callbacks.verack
-        # or a gossiping peer last recorded it with, which is
-        # never the pair an existing Connection's own address was
-        # constructed with, so comparing the dataclasses
-        # themselves never matches the peer this node is already
-        # holding a connection with and dials it a second time.
+        # By host, as Core's `AlreadyConnectedToAddress(const CNetAddr&)`
+        # compares each node's address with no port (`src/net.cpp`, at
+        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a host this node
+        # holds any connection with, an inbound one on its ephemeral port
+        # included, is not dialled again on another port.
         #
         # Locked for the same reason the count above is
         # (btclib-org/btclib-node#355).
@@ -871,7 +869,7 @@ class P2pManager(threading.Thread):
                 *self.connections.values(),
                 *self.pending_connections.values(),
             )
-        already_connected = {endpoint_key(conn.address) for conn in connected}
+        already_connected = {host_key(conn.address) for conn in connected}
         # One outbound peer per network group, as
         # `CConnman::ThreadOpenConnections` keeps them: the groups of
         # its `MANUAL`, `OUTBOUND_FULL_RELAY` and `BLOCK_RELAY` peers,
@@ -921,7 +919,7 @@ class P2pManager(threading.Thread):
             # without dialling a peer already connected or
             # discouraged, the latter being one this node dropped
             # for cause (btclib-org/btclib-node#283).
-            held = endpoint_key(address) in already_connected
+            held = host_key(address) in already_connected
             if not held and not self.is_discouraged(address):
                 sock = await dial(address)
                 if sock:
