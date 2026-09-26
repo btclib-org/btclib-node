@@ -1423,10 +1423,8 @@ class P2pManager(threading.Thread):
                 while True:
                     sock, sockaddr = await accepted.get()
                     # two fields for an AF_INET peer, four for an
-                    # AF_INET6 one -- the flow info and the scope id
-                    # BIP155 has nowhere to carry either,
-                    # `get_addr_from_dns`'s own sockaddr comment being
-                    # where that is argued
+                    # AF_INET6 one -- the flow info and the scope id,
+                    # which BIP155 has nowhere to carry
                     address = peer_address(*sockaddr[:2])
                     # Core's `CreateNodeFromAcceptedSocket` (`src/net.cpp`,
                     # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), on one
