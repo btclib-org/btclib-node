@@ -537,6 +537,19 @@ def test_prune_up_to_deletes_every_block_and_rev_patch_through_the_target(
     assert block_db.pruned_up_to == 4
 
 
+def test_has_block_answers_as_get_block_does_without_reading_it(
+    a_db: Callable[[Path | None], BlockDB],
+) -> None:
+    """`has_block` is false for a block never added and for one pruned away."""
+    block_db = a_db(None)
+    chain = generate_random_chain(3, RegTest().genesis.hash)
+    hashes, hash_at_height = _hashes_and_rev_blocks(block_db, chain)
+    block_db.prune_up_to(1, hash_at_height)
+    assert not block_db.has_block(hashes[1])
+    assert block_db.has_block(hashes[2])
+    assert not block_db.has_block(b"\xee" * 32)
+
+
 def test_prune_up_to_is_a_no_op_at_or_behind_what_it_already_reached(
     a_db: Callable[[Path | None], BlockDB],
 ) -> None:

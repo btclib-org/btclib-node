@@ -469,6 +469,95 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 - **A refused inbound peer is sent nothing** (closes #1207).
 
+### JSON-RPC named parameters are mapped onto positions, as in Core
+
+- **A `params` object is read as `transformNamedArguments` reads it**
+  (closes #1168), `args` holding the leading positions; a name repeated,
+  unknown or given both ways is refused with `RPC_INVALID_PARAMETER`.
+
+### `-rpcbind` is ignored without `-rpcallowip`, as `bitcoind` ignores it
+
+- **The JSON-RPC listener stays on loopback whatever `-rpcbind` names**
+  (closes #1211), and every value is checked, where the last was bound.
+
+### `-datadir`, `-conf` and `-blocksdir` are read lexically normal, as in Core
+
+- **A `..` comes off, and a leading `//` becomes `/`, before the file system is
+  asked** (closes #1187); a missing data directory and an unreadable
+  configuration file are refused in Core's words.
+
+### A ban list, as Core's `BanMan`
+
+- **`setban`, `listbanned` and `clearbanned` keep it in `banlist.json`; a
+  banned host is refused on accept, not dialled automatically, and left out of
+  `getaddr` answers and of the gossip stored** (closes #1088).
+
+### `running_a_node.md` names every RPC method the node serves
+
+- **Its list is the method table's, with no count** (closes #1221).
+
+### Compact blocks are served, and offered at version 2, as in Core
+
+- **`sendcmpct` offers version 2, and a `MSG_CMPCT_BLOCK` or a `getblocktxn`
+  is answered at Core's depths** (closes #1206).
+
+### Core's licence travels in the fixed seeds' module, not in `license-files`
+
+- **`_chainparamsseeds.py` opens with Core's `COPYING` in full, and
+  `license-files` drops it** (closes btclib-org/.github#1390); the file
+  stays beside the lists, and in the sdist.
+
+### An outbound peer behind this node's tip is dropped, as in Core
+
+- **Core's `ConsiderEviction`: `CHAIN_SYNC_TIMEOUT`, one `getheaders`, then
+  a disconnect, with up to four peers at the tip protected** (closes #1154).
+
+### A malformed `-rpcauth` or `-rpccookieperms` is named in the log alone
+
+- **Stderr reads "Unable to start HTTP server. See debug log for details.",
+  and the log names the value** (closes #1210), refused once the RPC
+  listener is bound, `-rpcauth` after the cookie, as `bitcoind` refuses it.
+
+### An oversized `inv` costs the peer in any sync state, as in Core
+
+- **An `inv` of more than `MAX_INV_SZ` items drops and discourages its
+  sender before the sync state is read** (closes #1145).
+
+### A port is read as Core reads it: ASCII digits alone
+
+- **`-rpcbind`, `-connect`, `-addnode` and `addnode` refuse a port with a
+  sign, a space, a `_` or a non-ASCII digit** (closes #1285), as `bitcoind`
+  refuses it for `-rpcbind`; `int` read each as a number.
+
+### What `btclib-node` creates is its owner's alone, as in Core
+
+- **`btclib-node` sets the umask to 0077 on POSIX, so its chain directory
+  is 0700 and `history.log` 0600, as `bitcoind` leaves them** (closes #1198).
+
+### `getpeerinfo`'s `addr_relay_enabled` is Core's
+
+- **An inbound peer answers `false` until its first `addr`, `addrv2` or
+  `getaddr`, a peer this node dialled `true` from its `version`**, where the
+  `getaddr` to it goes too (closes #1178).
+
+### The dialler passes over the draws Core's loop passes over
+
+- **A draw is passed over for an `-addnode` peer or missing services, and
+  early in a pass for a recent try or a bad port** (closes #1224), as in Core;
+  a DNS seed's answer carries Core's `SeedsServiceFlags` (closes #1236).
+
+### An outbound peer with too little work is dropped in IBD, as in Core
+
+- **During initial block download, a peer this node drew whose headers chain
+  has less than the minimum chain work is disconnected, after a batch this
+  node already had** (closes #1230).
+
+### A malformed `bitcoin.conf` line is refused in Core's words
+
+- **`parse error on line N`, and `conf=` and a forbidden negation as
+  `bitcoind` words them** (closes #1267), with no path; a line ends at a
+  newline alone, as Core counts it.
+
 ### A `history.log` line carries its level as `debug.log` does
 
 - **A warning is marked `[warning]` and an error `[error]`** (closes #1280),

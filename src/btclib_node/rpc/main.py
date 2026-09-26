@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode
 
-from btclib_node.rpc.callbacks import callbacks
+from btclib_node.rpc.callbacks import arg_names, callbacks
 from btclib_node.rpc.errors import RpcError
 from btclib_node.rpc.jsonrpc import (
     NO_CONTENT,
@@ -25,6 +25,7 @@ from btclib_node.rpc.jsonrpc import (
     JsonRpcRequest,
     error_reply,
     error_status,
+    transform_named_arguments,
 )
 
 if TYPE_CHECKING:
@@ -52,12 +53,18 @@ def _execute(node: Node, conn: RpcConnection, request: JsonRpcRequest) -> object
     catches it (`src/rpc/server.cpp`), for a 2.0 request and a batch
     member, and `RPC_PARSE_ERROR` from `HTTPReq_JSONRPC`'s last catch
     for a lone legacy one.
+
+    Named parameters are mapped onto positions once the method is found,
+    as `ExecuteCommand` maps them.
     """
     callback = callbacks.get(request.method)
     if callback is None:
         raise RpcError(RPCErrorCode.METHOD_NOT_FOUND, "Method not found")
+    params = request.params
+    if isinstance(params, dict):
+        params = transform_named_arguments(params, arg_names[request.method])
     try:
-        return callback(node, conn, request.params)  # type: ignore[arg-type]
+        return callback(node, conn, params)
     except RpcError:
         raise
     except Exception as e:
