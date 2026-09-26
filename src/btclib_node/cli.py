@@ -587,20 +587,22 @@ def _parse_parameters(
     return options, token
 
 
-def _config_options(text: str, path: str) -> list[tuple[int, str, str]]:
-    """Return every `key=value` of `text`, its line and section prefix with it.
+def _config_options(text: str) -> list[tuple[str, str]]:
+    """Return every `key=value` of `text`, with its section prefix.
 
     Core's own config-file grammar (`GetConfigOptions`,
     `src/common/config.cpp`, at bitcoin/bitcoin@9be056a8a7): a key under
     a `[section]` line is returned as `section.key`. Raises `ValueError`
-    on a line that is neither `key=value` nor `[section]`, on one
-    starting with `-` (an option is named without it in a file), and on
-    a key naming `rpcpassword` on a line holding a `#` anywhere, the
-    last because a `#` may be part of the password or start a comment.
+    in Core's words on a line that is neither `key=value` nor
+    `[section]`, on one starting with `-` (an option is named without it
+    in a file), and on a key naming `rpcpassword` on a line holding a `#`
+    anywhere, the last because a `#` may be part of the password or start
+    a comment. A line ends at a newline alone, as `std::getline` ends
+    one, so that the number in a refusal is the one Core counts.
     """
-    options: list[tuple[int, str, str]] = []
+    options: list[tuple[str, str]] = []
     prefix = ""
-    for lineno, raw in enumerate(text.splitlines(), start=1):
+    for lineno, raw in enumerate(text.split("\n"), start=1):
         line, used_hash, _ = raw.partition("#")
         line = line.strip(" \t\r\n")
         if not line:
@@ -610,12 +612,12 @@ def _config_options(text: str, path: str) -> list[tuple[int, str, str]]:
             continue
         if line[0] == "-":
             err_msg = (
-                f"{path}:{lineno}: options in a configuration file are "
-                "given without a leading -"
+                f"parse error on line {lineno}: {line}, options in "
+                "configuration file must be specified without leading -"
             )
             raise ValueError(err_msg)
         if "=" not in line:
-            err_msg = f"{path}:{lineno}: not a key=value line: {line!r}"
+            err_msg = f"parse error on line {lineno}: {line}"
             if line.startswith("no"):
                 err_msg += (
                     ", if you intended to specify a negated option, use "
@@ -626,39 +628,39 @@ def _config_options(text: str, path: str) -> list[tuple[int, str, str]]:
         name = prefix + key.strip(" \t\r\n")
         if used_hash and "rpcpassword" in name:
             err_msg = (
-                f"{path}:{lineno}: using # in rpcpassword can be ambiguous and "
-                "should be avoided"
+                f"parse error on line {lineno}, using # in rpcpassword can be "
+                "ambiguous and should be avoided"
             )
             raise ValueError(err_msg)
-        options.append((lineno, name, value.strip(" \t\r\n")))
+        options.append((name, value.strip(" \t\r\n")))
     return options
 
 
-def _parse_conf_text(text: str, path: str) -> _RoConfig:
+def _parse_conf_text(text: str) -> _RoConfig:
     """Parse `text` into `{section: {name: [values]}}`, in file order.
 
     `ReadConfigStream` (`src/common/config.cpp`, at
     bitcoin/bitcoin@9be056a8a7) over `_config_options`: `InterpretKey`
     and `InterpretValue` on each key. Raises `ValueError` where
     `_config_options` does, on a `conf=` key, and on a negation an
-    option forbids. An unknown key, and `datadir`, are warned about on
-    stderr and left out.
+    option forbids, each in `IsConfSupported`'s and `InterpretValue`'s
+    words, which name no line. An unknown key, and `datadir`, are warned
+    about on stderr and left out.
     """
     config: _RoConfig = {}
-    for lineno, name, value in _config_options(text, path):
+    for name, value in _config_options(text):
         info = _interpret_key(name)
         if info.name == "conf":
-            err_msg = f"{path}:{lineno}: conf cannot be set in a configuration file"
+            err_msg = (
+                "conf cannot be set in the configuration file; use includeconf= "
+                "if you want to include additional config files"
+            )
             raise ValueError(err_msg)
         option = _OPTIONS.get(info.name)
         if option is None:
             sys.stderr.write(f"warning: ignoring unknown configuration value {name}\n")
             continue
-        try:
-            setting = _interpret_value(info, value, option)
-        except ValueError as error:
-            err_msg = f"{path}:{lineno}: {error}"
-            raise ValueError(err_msg) from None
+        setting = _interpret_value(info, value, option)
         if info.name == "datadir":
             sys.stderr.write(
                 "warning: -datadir cannot be set in a configuration file, "
@@ -698,7 +700,7 @@ def _read_conf_file(path: Path, *, required: bool) -> _RoConfig:
             err_msg = f"specified configuration file {path} could not be opened"
             raise ValueError(err_msg) from None
         return {}
-    return _parse_conf_text(text, str(path))
+    return _parse_conf_text(text)
 
 
 def _load_conf_tree(

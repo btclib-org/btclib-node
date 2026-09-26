@@ -450,6 +450,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   refused after the lock, the others before it, as in Core** (closes #1191);
   `-blocksdir` and `-rpcbind` are refused in Core's words.
 
+### A malformed `bitcoin.conf` line is refused in Core's words
+
+- **`parse error on line N`, and `conf=` and a forbidden negation as
+  `bitcoind` words them** (closes #1267), with no path; a line ends at a
+  newline alone, as Core counts it.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
