@@ -62,7 +62,7 @@ def test_from_sockaddr_reads_an_ipv4_and_an_ipv6_address_and_nothing_else() -> N
     """Core's `FromSockAddr`: `AF_INET` and `AF_INET6` alone."""
     ipv4 = an_inet("1.2.3.4")
     ipv6 = an_inet6("2001:db8::1")
-    other = a_sockaddr(socket.AF_UNIX, bytes(8))
+    other = a_sockaddr(socket.AF_UNSPEC, bytes(8))
     assert _from_sockaddr(ctypes.addressof(ipv4)) == IPv4Address("1.2.3.4")
     assert _from_sockaddr(ctypes.addressof(ipv6)) == IPv6Address("2001:db8::1")
     assert _from_sockaddr(ctypes.addressof(other)) is None
@@ -73,7 +73,7 @@ def test_the_walk_keeps_what_core_s_loop_keeps() -> None:
     kept = an_inet("1.2.3.4")
     down = an_inet("5.6.7.8")
     loopback = an_inet("127.0.0.1")
-    other = a_sockaddr(socket.AF_UNIX, bytes(8))
+    other = a_sockaddr(socket.AF_UNSPEC, bytes(8))
     entries = [
         (_IFF_UP, None),
         (0, down),
