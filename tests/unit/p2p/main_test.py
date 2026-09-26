@@ -509,12 +509,15 @@ def test_an_oversized_inv_costs_the_peer_whatever_the_sync_state(
 
     Core's `INV` branch calls `Misbehaving` for it before reading the
     node's own state (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    the v31.1 tag): `callbacks.inv` parses first, and `Inv.parse` refuses
-    the count. btclib-org/btclib-node#1145
+    the v31.1 tag): `callbacks.inv` refuses the count first, with a
+    `MisbehavingError`. The count is a canonical CompactSize, three
+    octets: a longer one is a parse error to btclib, as to Core's
+    `ReadCompactSize`, which costs the peer nothing.
+    btclib-org/btclib-node#1145
     """
     count = MAX_INV_SZ + 1
     item = (2).to_bytes(4, "little") + bytes(32)
-    payload = b"\xfe" + count.to_bytes(4, "little") + item * count
+    payload = b"\xfd" + count.to_bytes(2, "little") + item * count
     node, stopped = make_node(
         "messages", ("inv", payload, 0, 1, 0.0), status=P2pConnStatus.Connected
     )
