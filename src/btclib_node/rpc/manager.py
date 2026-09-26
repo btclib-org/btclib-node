@@ -26,8 +26,10 @@ import threading
 from collections import deque
 from concurrent.futures import CancelledError
 from contextlib import suppress
+from ipaddress import ip_address
 from typing import TYPE_CHECKING, override
 
+from btclib_node.exceptions import RpcCredentialRefusedError
 from btclib_node.rpc.auth import RpcAuth
 from btclib_node.rpc.connection import REQUEST_TIMEOUT, RpcConnection
 
@@ -37,6 +39,18 @@ if TYPE_CHECKING:
     from btclib_node import Node
 
 __all__ = ["RpcManager"]
+
+
+def _is_bind_any(host: str) -> bool:
+    """Whether `host` is an IP literal naming every interface.
+
+    Core's `CNetAddr::IsBindAny`, over `LookupHost(host, false)`: a
+    name that is no IP literal is not looked up, and is not one.
+    """
+    try:
+        return ip_address(host.strip("[]")).is_unspecified
+    except ValueError:
+        return False
 
 
 class RpcManager(threading.Thread):
@@ -127,6 +141,18 @@ class RpcManager(threading.Thread):
         that one, this does not set `listening`: `_listen` does, once the
         cookie is written too.
         """
+        config = self.node.config
+        # `HTTPBindAddresses`'s warning and log lines (`src/httpserver.cpp`,
+        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `-rpcbind` is
+        # ignored without `-rpcallowip`, which this node does not have
+        if config.rpcbind:
+            self.logger.warning(
+                "Option -rpcbind was ignored because -rpcallowip was not "
+                "specified, refusing to allow everyone to connect"
+            )
+        self.logger.info(
+            "Binding RPC on address %s port %s", config.rpc_host, self.port
+        )
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -140,6 +166,13 @@ class RpcManager(threading.Thread):
         except OSError:
             server_socket.close()
             raise
+        # once bound, as Core warns: an empty host or one `LookupHost`
+        # reads, without a DNS lookup, as the any address
+        if not config.rpc_host or _is_bind_any(config.rpc_host):
+            self.logger.warning(
+                "The RPC server is not safe to expose to untrusted networks "
+                "such as the public internet"
+            )
         return server_socket
 
     def _listen(self) -> socket.socket:
@@ -149,7 +182,9 @@ class RpcManager(threading.Thread):
         closed the socket: Core's "Unable to bind any endpoint for RPC
         server" and `InitRPCAuthentication`'s refusal of a cookie that
         cannot be written, logged as the warning `GenerateAuthCookie`
-        logs.
+        logs. Raises `RpcCredentialRefusedError` where `auth.start`
+        refuses a value, having closed the socket, `start` having logged
+        it.
         """
         try:
             self._server_socket = self._bind()
@@ -161,6 +196,9 @@ class RpcManager(threading.Thread):
         except OSError as err:
             self._server_socket.close()
             self.logger.warning("%s", err)
+            raise
+        except RpcCredentialRefusedError:
+            self._server_socket.close()
             raise
         self.listening.set()
         return self._server_socket
@@ -340,7 +378,7 @@ class RpcManager(threading.Thread):
             self.logger.info("Starting RPC manager")
             asyncio.set_event_loop(loop)
             server_socket = self._listen()
-        except OSError:
+        except OSError, RpcCredentialRefusedError:
             # logged by `_listen`; `start_listener` reads the failure
             # off `listening`, so it is not raised into
             # `threading.excepthook` as well
