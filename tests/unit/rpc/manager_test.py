@@ -457,6 +457,25 @@ def test_rpcbind_beside_rpcallowip_binds_each_endpoint(
     ]
 
 
+def test_an_rpcbind_idna_would_refuse_is_warned_over_beside_a_good_one(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1268: `a..b` fails as a bind, and `127.0.0.1` still listens.
+
+    Measured on bitcoind v31.1.0 with `-rpcbind=127.0.0.1 -rpcbind=a..b
+    -rpcallowip=127.0.0.1`: it starts, and warns "Binding RPC on address
+    a..b port <port> failed.".
+    """
+    port = get_random_port()
+    manager = a_manager(port, rpcbind=("127.0.0.1", "a..b"), rpcallowip=("127.0.0.1",))
+    warnings: list[tuple[object, ...]] = []
+    # every warning, `warnings_into` passing over a host it cannot bind
+    monkeypatch.setattr(manager.logger, "warning", lambda *args: warnings.append(args))
+    server_sockets = manager._bind()
+    assert bound_hosts(server_sockets) == ["127.0.0.1"]
+    assert ("Binding RPC on address %s port %s failed.", "a..b", port) in warnings
+
+
 def test_an_rpcbind_port_core_refuses_binds_nothing(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

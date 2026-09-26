@@ -1044,6 +1044,41 @@ def test_a_source_rpcallowip_does_not_name_is_refused_403_first(
     )
 
 
+def test_a_refused_source_s_next_request_is_refused_403_too() -> None:
+    """ISS 1268: the connection kept, the request after it refused the same way.
+
+    Measured on bitcoind v31.1.0, as the test above: a second request on
+    the same connection is a second bare 403.
+    """
+    forbidden = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n"
+    one = request(b"Content-Length: %d\r\n" % len(BODY), auth=RPCAUTH_LINE)
+
+    async def main() -> tuple[bytes, list[Any]]:
+        ours, theirs = socket.socketpair()
+        ours.setblocking(False)
+        theirs.setblocking(False)
+        loop = asyncio.get_running_loop()
+        manager = fake_manager(connections={0: None})
+        manager.logger = SimpleNamespace(
+            warning=lambda *_args: None, debug=lambda *_args: None
+        )
+        manager.client_allowed = lambda _client: False
+        conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
+        await loop.sock_sendall(theirs, one + one)
+        await conn.run()
+        reply = b""
+        async with asyncio.timeout(5):
+            while len(reply) < 2 * len(forbidden):
+                reply += await loop.sock_recv(theirs, 4096)
+        theirs.close()
+        ours.close()
+        return reply, manager.messages
+
+    reply, messages = asyncio.run(main())
+    assert reply == forbidden + forbidden
+    assert not messages
+
+
 @pytest.mark.parametrize("method", [b"OPTIONS", b"PATCH", b"TRACE", b"FOO"])
 def test_a_method_libevent_refuses_is_501_from_a_refused_source_too(
     method: bytes,

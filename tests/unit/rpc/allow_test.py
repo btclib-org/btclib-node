@@ -60,6 +60,10 @@ def test_a_value_names_the_subnet_core_s_lookup_subnet_does(
         "::1/255.255.255.0",
         "localhost",
         "1.2.3.4/+8",
+        # fullwidth digits, which IDNA would read as ASCII ones
+        "\uff11\uff12\uff17.0.0.1",
+        "\uff11.\uff12.\uff13.\uff14",
+        "\uff11.\uff12.\uff13.\uff14/24",
         # read from Core's sources
         "",
         "1.2.3.4/",

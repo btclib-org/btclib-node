@@ -11,6 +11,7 @@ same sha. A value is an IP, a network and its netmask, or a network and
 its prefix length; loopback is always allowed.
 """
 
+import os
 import re
 import socket
 from ipaddress import (
@@ -73,7 +74,9 @@ def _lookup_host(name: str) -> _IP | None:
 
     `getaddrinfo` with `AI_NUMERICHOST`, as `WrappedGetAddrInfo` asks it,
     so the forms the platform's resolver reads as an address are read so
-    here too, `127.1` among them, and a name is not looked up. The
+    here too, `127.1` among them, and a name is not looked up. `name`
+    reaches it as its bytes, as Core's `c_str()` does: a `str` would be
+    IDNA-encoded first, reading fullwidth digits as ASCII ones. The
     first answer is taken. `SetSpecial`'s Tor and I2P names are not
     read (btclib-org/btclib-node#1288).
     """
@@ -83,7 +86,7 @@ def _lookup_host(name: str) -> _IP | None:
         name = name[1:-1]
     try:
         answers = socket.getaddrinfo(
-            name,
+            os.fsencode(name),
             None,
             type=socket.SOCK_STREAM,
             proto=socket.IPPROTO_TCP,

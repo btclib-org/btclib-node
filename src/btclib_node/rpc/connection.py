@@ -10,8 +10,9 @@ checked, answers a request line, a request-target, a header field or
 a `Content-Length` Core's listener cannot frame, and a chunked body it
 cannot read, with 400 or 413 (`_HeadReader`, `_ChunkedReader`), answers
 an `Expect` it does not meet with 417 and `100-continue` with an interim
-`100 Continue`, refuses a method or a path Core's listener refuses
-before Core checks a credential (`_refusal`), answers a request whose
+`100 Continue`, answers a source `-rpcallowip` does not name with a
+bare 403, refuses a method or a path Core's listener refuses before
+Core checks a credential (`_refusal`), answers a request whose
 `Authorization` header `rpc.auth.RpcAuth` does not accept with 401, and
 decodes the body of one it does accept, which
 `rpc.manager.RpcManager.messages` queues for `rpc.main.handle_rpc`.
