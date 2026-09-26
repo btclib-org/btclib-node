@@ -73,7 +73,7 @@ from btclib.utils import bytesio_from_binarydata
 from btclib_node.exceptions import ChainstateInconsistencyError, MisbehavingError
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
 
     from btclib_node.chains import Chain
     from btclib_node.db import KeyValueStore
@@ -127,7 +127,7 @@ def _assert_valid_pow(header: BlockHeader, pow_limit_bits: bytes) -> None:
         raise MisbehavingError(str(e)) from e
 
 
-def check_headers_pow(headers: list[BlockHeader], pow_limit_bits: bytes) -> None:
+def check_headers_pow(headers: Sequence[BlockHeader], pow_limit_bits: bytes) -> None:
     """Core's `CheckHeadersPoW`: each header's proof of work, then continuity.
 
     Both are `Misbehaving` in Core (`src/net_processing.cpp`, at
@@ -140,7 +140,7 @@ def check_headers_pow(headers: list[BlockHeader], pow_limit_bits: bytes) -> None
     _assert_continuous(headers)
 
 
-def _assert_continuous(headers: list[BlockHeader]) -> None:
+def _assert_continuous(headers: Sequence[BlockHeader]) -> None:
     """Assert each header builds on the one before it in `headers`.
 
     Core's `CheckHeadersAreContinuous`, which `CheckHeadersPoW` answers
