@@ -1946,7 +1946,7 @@ def test_setup_environment_leaves_the_umask_on_windows(
     calls: list[int] = []
     monkeypatch.setattr(os, "umask", calls.append)
     monkeypatch.setattr(sys, "platform", "win32")
-    cli.setup_environment()
+    cli._setup_environment()
     monkeypatch.setattr(sys, "platform", "linux")
-    cli.setup_environment()
+    cli._setup_environment()
     assert calls == [0o077]

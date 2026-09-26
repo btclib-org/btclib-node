@@ -1308,7 +1308,7 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
 _PRIVATE_UMASK = 0o077
 
 
-def setup_environment() -> None:
+def _setup_environment() -> None:
     """Make the process umask owner-only, as Core's `SetupEnvironment` does.
 
     Called by `main` alone: a caller building a `Node` in its own
@@ -1333,7 +1333,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     `noui_ThreadSafeMessageBox` with that caption (`src/noui.cpp:22-46`, at
     bitcoin/bitcoin@9be056a8a7), and `bitcoind` exits `EXIT_FAILURE`.
     """
-    setup_environment()
+    _setup_environment()
     try:
         before = _before_lock(sys.argv[1:] if argv is None else argv)
         locks = _lock(before.directories)
