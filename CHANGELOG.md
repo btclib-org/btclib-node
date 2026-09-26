@@ -518,6 +518,17 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   and the log names the value** (closes #1210), refused once the RPC
   listener is bound, `-rpcauth` after the cookie, as `bitcoind` refuses it.
 
+### An oversized `inv` costs the peer in any sync state, as in Core
+
+- **An `inv` of more than `MAX_INV_SZ` items drops and discourages its
+  sender before the sync state is read** (closes #1145).
+
+### A port is read as Core reads it: ASCII digits alone
+
+- **`-rpcbind`, `-connect`, `-addnode` and `addnode` refuse a port with a
+  sign, a space, a `_` or a non-ASCII digit** (closes #1285), as `bitcoind`
+  refuses it for `-rpcbind`; `int` read each as a number.
+
 ### `testmempoolaccept` names a `rawtx` that is not a string, as Core
 
 - **`-3` "JSON value of type number is not of expected type string", before
