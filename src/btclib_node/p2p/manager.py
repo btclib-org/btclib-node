@@ -857,7 +857,7 @@ class P2pManager(threading.Thread):
         if live >= self.max_outbound_full_relay or self.peer_db.is_empty:
             return
         # By endpoint_key, not raw equality: a drawn address
-        # carries whatever timestamp and services callbacks.verack
+        # carries whatever timestamp and services callbacks.version
         # or a gossiping peer last recorded it with, which is
         # never the pair an existing Connection's own address was
         # constructed with, so comparing the dataclasses

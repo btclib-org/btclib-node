@@ -1076,17 +1076,17 @@ def test_an_inbound_handshake_is_not_recorded_as_answered(callback: str) -> None
     assert peer_db.active_addresses == []
 
 
-def test_an_inbound_peer_naming_no_port_is_not_recorded() -> None:
-    """#70: a `version` naming port zero is not evidence of a listening one."""
-    # #70: a port of zero is not evidence of a listening one
+def test_an_inbound_peer_naming_no_port_keeps_its_own() -> None:
+    """#70: a `version` naming port zero leaves `conn.address` as accepted."""
+    accepted = peer_address("1.2.3.4", 55555)
     peer = a_peer(
         version_message=a_parsed_version(addr_from_port=0),
         wtxidrelay_received=True,
         inbound=True,
+        address=accepted,
     )
-    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
-    verack(a_handshake_node(peer_db=peer_db), b"", peer)
-    assert peer_db.active_addresses == []
+    verack(a_handshake_node(), b"", peer)
+    assert peer.address == accepted
 
 
 @pytest.mark.parametrize(
