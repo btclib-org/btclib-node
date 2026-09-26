@@ -1475,6 +1475,26 @@ def test_discover_keeps_each_routable_interface_address_at_the_port(
     }
 
 
+@pytest.mark.parametrize("listen", [True, False])
+def test_run_discovers_where_it_listens_and_nowhere_else(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, *, listen: bool
+) -> None:
+    """ISS 1238: `Discover` at start-up, and `-listen=0` turns it off."""
+    monkeypatch.setattr(
+        manager_module, "local_addresses", lambda: [ip_address("1.2.3.4")]
+    )
+    port = get_random_port()
+    manager = a_manager(port=port, listen=listen)
+    try:
+        assert manager.start_listener()
+        wait_until(manager.loop.is_running)
+        expected = {endpoint_key(peer_address("1.2.3.4", port))} if listen else set()
+        assert manager.local_addresses == expected
+    finally:
+        manager.stop()
+        manager.join(timeout=10)
+
+
 def test_a_pass_draws_a_hundred_times_at_most(a_manager: AManagerFactory) -> None:
     """ISS 1201: `ThreadOpenConnections` gives up after its hundredth draw."""
     held = peer_address("1.2.3.4", 8333)

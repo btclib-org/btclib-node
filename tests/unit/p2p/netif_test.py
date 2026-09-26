@@ -13,9 +13,10 @@ import socket
 import sys
 from ipaddress import IPv4Address, IPv6Address
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-from btclib_node.p2p import netif
+import pytest
+
 from btclib_node.p2p.netif import (
     _IFF_LOOPBACK,
     _IFF_UP,
@@ -26,7 +27,11 @@ from btclib_node.p2p.netif import (
 )
 
 if TYPE_CHECKING:
-    import pytest
+    from collections.abc import Callable
+
+# the platforms whose `struct sockaddr` has no `sa_len`, named apart from
+# the flag `netif` reads so that a wrong flag reads these wrong
+_NATIVE_FAMILY = sys.platform.startswith(("linux", "win32", "cygwin"))
 
 
 def a_sockaddr(family: int, body: bytes) -> ctypes.Array[ctypes.c_char]:
@@ -35,11 +40,7 @@ def a_sockaddr(family: int, body: bytes) -> ctypes.Array[ctypes.c_char]:
     `body` starts at offset 2, the port, as in `sockaddr_in` and
     `sockaddr_in6`.
     """
-    head = (
-        bytes([16, family])
-        if netif._BSD_SOCKADDR
-        else family.to_bytes(2, sys.byteorder)
-    )
+    head = family.to_bytes(2, sys.byteorder) if _NATIVE_FAMILY else bytes([16, family])
     return ctypes.create_string_buffer(head + body + bytes(32))
 
 
@@ -92,15 +93,81 @@ def test_the_walk_keeps_what_core_s_loop_keeps() -> None:
     assert _interface_addresses(ctypes.pointer(structs[0])) == [IPv4Address("1.2.3.4")]
 
 
+def a_libc(getifaddrs: Callable[[object], int]) -> SimpleNamespace:
+    """Return a C library stand-in, recording each list it is asked to free."""
+    freed: list[object] = []
+    return SimpleNamespace(getifaddrs=getifaddrs, freeifaddrs=freed.append, freed=freed)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no getifaddrs (#1310)")
 def test_a_failing_getifaddrs_answers_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     """Core returns its empty vector where `getifaddrs` fails."""
-    no_interfaces = SimpleNamespace(getifaddrs=lambda _: -1)
-    monkeypatch.setattr(ctypes, "CDLL", lambda _: no_interfaces)
+    libc = a_libc(lambda _: -1)
+    monkeypatch.setattr(ctypes, "CDLL", lambda _: libc)
+    assert local_addresses() == []
+    assert libc.freed == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no getifaddrs (#1310)")
+def test_the_list_getifaddrs_gives_is_freed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`freeifaddrs` of the very list the walk read."""
+    kept = an_inet("1.2.3.4")
+    entry = _IfAddrs(ifa_flags=_IFF_UP, ifa_addr=ctypes.addressof(kept))
+    listed: list[int | None] = []
+
+    def getifaddrs(first: object) -> int:
+        pointer = cast("ctypes._Pointer[_IfAddrs]", first._obj)  # type: ignore[attr-defined]
+        pointer.contents = entry
+        listed.append(ctypes.addressof(entry))
+        return 0
+
+    libc = a_libc(getifaddrs)
+    monkeypatch.setattr(ctypes, "CDLL", lambda _: libc)
+    assert local_addresses() == [IPv4Address("1.2.3.4")]
+    freed = [ctypes.cast(first, ctypes.c_void_p).value for first in libc.freed]
+    assert freed == listed
+
+
+def no_c_library(_: object) -> object:
+    """Fail to load the library, as `ctypes.CDLL` can."""
+    raise OSError
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no getifaddrs (#1310)")
+@pytest.mark.parametrize(
+    "cdll",
+    [no_c_library, lambda _: SimpleNamespace(freeifaddrs=None)],
+    ids=["no library", "no getifaddrs"],
+)
+def test_a_c_library_without_getifaddrs_answers_nothing(
+    monkeypatch: pytest.MonkeyPatch, cdll: Callable[[object], object]
+) -> None:
+    """Discovery does not stop the node, as it cannot stop Core's."""
+    monkeypatch.setattr(ctypes, "CDLL", cdll)
     assert local_addresses() == []
 
 
-def test_this_machine_s_addresses_are_ip_addresses() -> None:
-    """The real `getifaddrs`, freed after the walk; no loopback address."""
+def a_source_address() -> IPv4Address | None:
+    """Return the IPv4 address the kernel picks to reach TEST-NET-1.
+
+    A UDP `connect` sends nothing: it chooses a route and a source.
+    `None` where there is no route.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        try:
+            probe.connect(("192.0.2.1", 9))
+        except OSError:
+            return None
+        return IPv4Address(probe.getsockname()[0])
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no getifaddrs (#1310)")
+def test_this_machine_s_addresses_hold_the_one_the_kernel_routes_from() -> None:
+    """The real `getifaddrs`: IP addresses, no loopback, the source kept."""
+    source = a_source_address()
+    if source is None or source.is_loopback or source.is_unspecified:
+        pytest.skip("no route off this machine")
     addresses = local_addresses()
     assert all(isinstance(ip, (IPv4Address, IPv6Address)) for ip in addresses)
     assert not any(ip.is_loopback for ip in addresses)
+    assert source in addresses

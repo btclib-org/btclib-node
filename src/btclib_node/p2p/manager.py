@@ -1119,7 +1119,9 @@ class P2pManager(threading.Thread):
         does, and `-discover` is on. Core's parameter interaction turns
         `-discover` off under `-listen=0`, `-proxy` or `-externalip`, and
         this node has neither of the last two, so `run` calls this
-        wherever it is about to bind. Each address goes to `AddLocal` at
+        wherever it is about to bind. This node has no `-discover` of its
+        own to override that either way (btclib-org/btclib-node#1330).
+        Each address goes to `AddLocal` at
         the listening port, which keeps a routable one on a reachable
         network; IPv4 and IPv6 are both reachable here.
         """

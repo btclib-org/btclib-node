@@ -40,7 +40,11 @@ _IfAddrs._fields_ = [
 # A BSD `struct sockaddr` opens with `sa_len` and a one-octet
 # `sa_family`, Linux's with a native `unsigned short` `sa_family`. Both
 # lay a `sockaddr_in`'s address at offset 4 and a `sockaddr_in6`'s at 8.
-_BSD_SOCKADDR = sys.platform == "darwin" or "bsd" in sys.platform
+# iOS and DragonFly are BSD-derived too, and no "bsd" in their
+# `sys.platform` names them.
+_BSD_SOCKADDR = sys.platform.startswith(
+    ("darwin", "ios", "freebsd", "openbsd", "netbsd", "dragonfly")
+)
 
 
 def _family(sockaddr: int) -> int:
@@ -90,15 +94,23 @@ def _interface_addresses(
 def local_addresses() -> list[IPv4Address | IPv6Address]:
     """Return this machine's interface addresses, as Core's `GetLocalAddresses`.
 
-    Nothing where `getifaddrs` fails, as Core returns its empty vector.
+    Nothing where `getifaddrs` fails, as Core returns its empty vector,
+    and nothing where the C library cannot be loaded or has no
+    `getifaddrs`: Core's own call cannot fail that way, and discovery
+    never stops its start-up.
     """
     if sys.platform == "win32":  # pragma: no cover -- no getifaddrs (#1310)
         return []
-    libc = ctypes.CDLL(None)
+    try:
+        libc = ctypes.CDLL(None)
+        getifaddrs = libc.getifaddrs
+        freeifaddrs = libc.freeifaddrs
+    except OSError, AttributeError:
+        return []
     first = ctypes.POINTER(_IfAddrs)()
-    if libc.getifaddrs(ctypes.byref(first)) != 0:
+    if getifaddrs(ctypes.byref(first)) != 0:
         return []
     try:
         return _interface_addresses(first)
     finally:
-        libc.freeifaddrs(first)
+        freeifaddrs(first)
