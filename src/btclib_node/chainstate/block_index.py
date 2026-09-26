@@ -69,7 +69,7 @@ from btclib.block.proof_of_work import block_work
 from btclib.exceptions import BTClibValueError
 from btclib.utils import bytesio_from_binarydata
 
-from btclib_node.exceptions import ChainstateInconsistencyError
+from btclib_node.exceptions import ChainstateInconsistencyError, MisbehavingError
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -113,6 +113,19 @@ def block_time(header: BlockHeader) -> int:
     return int(header.time.timestamp())
 
 
+def _assert_valid_pow(header: BlockHeader, pow_limit_bits: bytes) -> None:
+    """Assert `header`'s own proof of work, as Core's `CheckHeadersPoW`.
+
+    Core calls `Misbehaving` for a header failing it
+    (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag), so the refusal is a `MisbehavingError`.
+    """
+    try:
+        header.assert_valid_pow(pow_limit_bits)
+    except BTClibValueError as e:
+        raise MisbehavingError(str(e)) from e
+
+
 def _assert_valid_in_context(  # noqa: PLR0913, PLR0917
     chain: Chain,
     header: BlockHeader,
@@ -135,6 +148,14 @@ def _assert_valid_in_context(  # noqa: PLR0913, PLR0917
     of the proof-of-work question -- whether the hash meets the target
     the header itself claims -- and `_validate_header_batch`'s own loop
     has already asked it of `header`, ahead of this.
+
+    The target and the median time are Core's `bad-diffbits` and
+    `time-too-old`, `BLOCK_INVALID_HEADER`, which Core's
+    `MaybePunishNodeForBlock` answers with `Misbehaving`, so they raise
+    `MisbehavingError`. `time-too-new` is `BLOCK_TIME_FUTURE`, which it
+    does not punish, so btclib's own refusal is left as it is
+    (`src/validation.cpp` and `src/net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
     """
     required = next_bits_required(
         header, parent, parent_height, parent_of, chain.consensus
@@ -142,14 +163,14 @@ def _assert_valid_in_context(  # noqa: PLR0913, PLR0917
     if header.bits != required:
         err_msg = f"proof-of-work target not the required one: {header.bits.hex()}"
         err_msg += f" instead of {required.hex()}"
-        raise BTClibValueError(err_msg)
+        raise MisbehavingError(err_msg)
 
     median = median_time_past(parent, parent_height, parent_of)
     time = block_time(header)
     if time <= median:
         err_msg = f"invalid timestamp (not after the median past): {time}"
         err_msg += f" <= {median}"
-        raise BTClibValueError(err_msg)
+        raise MisbehavingError(err_msg)
 
     header.assert_valid_time(now)
 
@@ -674,7 +695,7 @@ class BlockIndex:
             header_hash = header.hash
             not_yet_visited.discard(header_hash)
             try:
-                header.assert_valid_pow(pow_limit_bits)
+                _assert_valid_pow(header, pow_limit_bits)
                 if header_hash in self.header_dict or header_hash in pending:
                     continue
                 found = pending.get(header.previous_block_hash)
@@ -682,15 +703,13 @@ class BlockIndex:
                     block_info = self.header_dict.get(header.previous_block_hash)
                     if block_info is None:
                         if header.previous_block_hash in not_yet_visited:
-                            # kept inside the try, against TRY301: the
-                            # except right below logs every refusal this
-                            # loop finds the same way, whether it is
-                            # this raise or _assert_valid_in_context's
-                            # own, and abstracting this one out would
-                            # split that one log line into two shapes
-                            # for no reader's benefit.
+                            # inside the try: the except right below
+                            # logs every refusal this loop finds the
+                            # same way, whether it is this raise or
+                            # _assert_valid_in_context's own. Core's
+                            # "non-continuous headers sequence".
                             err_msg = "a header's parent is later in the same batch"
-                            raise BTClibValueError(err_msg)  # noqa: TRY301
+                            raise MisbehavingError(err_msg)
                         continue
                     found = (block_info.header, block_info.index)
                 parent, parent_height = found
