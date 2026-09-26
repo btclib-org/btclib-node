@@ -200,6 +200,7 @@ def a_peer(
         tx_announce_queue=[],
         download_queue=[],
         feefilter=0,
+        requested_hb_cmpctblocks=False,
     )
 
 
@@ -582,14 +583,28 @@ def test_the_synced_heights_are_the_peer_s_best_known_and_last_common_blocks(
 
 
 def test_the_fields_this_node_has_no_state_for_answer_core_s_value() -> None:
-    """No `cmpctblock` announcing, presync, permissions or BIP324 here."""
+    """No high-bandwidth peer chosen, presync, permissions or BIP324 here."""
     (info,) = get_peer_info(a_node({7: a_peer()}), _CONN, [])
     assert info["bip152_hb_to"] is False
-    assert info["bip152_hb_from"] is False
     assert info["presynced_headers"] == -1
     assert info["permissions"] == []
     assert info["transport_protocol_type"] == "v1"
     assert info["session_id"] == ""
+
+
+@pytest.mark.parametrize("requested", [True, False])
+def test_bip152_hb_from_is_what_the_peer_s_sendcmpct_asked(
+    requested: bool,  # noqa: FBT001
+) -> None:
+    """Whether the peer chose this node as a high-bandwidth peer.
+
+    Core's `m_bip152_highbandwidth_from`, which its `sendcmpct` sets
+    (btclib-org/btclib-node#1223).
+    """
+    peer = a_peer()
+    peer.requested_hb_cmpctblocks = requested
+    (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
+    assert info["bip152_hb_from"] is requested
 
 
 def test_a_peer_that_goes_away_mid_lookup_is_skipped() -> None:

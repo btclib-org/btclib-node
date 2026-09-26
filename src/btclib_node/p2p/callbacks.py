@@ -51,7 +51,6 @@ from btclib.p2p.compact_blocks import (
     BlockTxn,
     CmpctBlock,
     GetBlockTxn,
-    PrefilledTransaction,
     SendCmpct,
 )
 from btclib.p2p.data import BlockPayload as BlockMsg
@@ -93,6 +92,7 @@ from btclib_node.exceptions import (
 from btclib_node.main import verify_mempool_acceptance
 from btclib_node.p2p.address import ip_and_port
 from btclib_node.p2p.block_availability import update_block_availability
+from btclib_node.p2p.compact_block import compact_block
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 from btclib_node.p2p.protocol_version import (
     BIP0031_VERSION,
@@ -125,7 +125,6 @@ __all__ = [
     "advance_getdata",
     "block",
     "callbacks",
-    "compact_block",
     "feefilter",
     "get_cfcheckpt",
     "get_cfheaders",
@@ -143,6 +142,7 @@ __all__ = [
     "pong",
     "reject",
     "sendaddrv2",
+    "sendcmpct",
     "sendheaders",
     "tx",
     "verack",
@@ -549,6 +549,32 @@ def sendheaders(node: Node, msg: bytes, conn: Connection) -> None:
     # itself is the request. Core's own handler does the same one
     # thing and nothing else (net_processing.cpp). btclib-org/btclib-node#202
     conn.prefers_headers = True
+
+
+# `sendcmpct`'s payload: the announce octet and the eight of the version
+_SENDCMPCT_SIZE = 9
+
+
+def sendcmpct(node: Node, msg: bytes, conn: Connection) -> None:
+    """Record whether the peer wants new blocks announced as `cmpctblock`.
+
+    Core's `SENDCMPCT` handler (`src/net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a version other than
+    `CMPCTBLOCKS_VERSION` is ignored, and otherwise the announce octet is
+    the peer's choice of this node as a BIP152 high-bandwidth peer, which
+    a later `sendcmpct` can take back.
+    """
+    # read as Core's `vRecv >> sendcmpct_hb >> sendcmpct_version` reads
+    # it, where btclib's `SendCmpct.parse` refuses more: any non-zero
+    # octet is true, as Core's `Unserialize` of a `bool` makes it
+    # (`src/serialize.h`, same tag), and bytes past the ninth are left
+    # unread
+    if len(msg) < _SENDCMPCT_SIZE:
+        err_msg = f"sendcmpct payload of {len(msg)} bytes"
+        raise BTClibValueError(err_msg)
+    if int.from_bytes(msg[1:_SENDCMPCT_SIZE], "little") != CMPCTBLOCKS_VERSION:
+        return
+    conn.requested_hb_cmpctblocks = msg[0] != 0
 
 
 def ping(node: Node, msg: bytes, conn: Connection) -> None:
@@ -1062,19 +1088,6 @@ MAX_BLOCKTXN_DEPTH = 10
 # Core's `CanDirectFetch`: the tip is within this many target spacings
 # of now
 _DIRECT_FETCH_SPACINGS = 20
-
-
-def compact_block(block: Block, nonce: int) -> CmpctBlock:
-    """Return `block` as a `cmpctblock`, the coinbase alone sent whole.
-
-    Core's `CBlockHeaderAndShortTxIDs` constructor: the coinbase
-    prefilled at index 0, and every other transaction by the short id of
-    its wtxid under the key `nonce` and the header give.
-    """
-    coinbase = PrefilledTransaction(0, block.transactions[0])
-    keyed = CmpctBlock(block.header, nonce, (), (coinbase,), check_validity=False)
-    short_ids = [keyed.short_id(tx.hash) for tx in block.transactions[1:]]
-    return CmpctBlock(block.header, nonce, short_ids, (coinbase,))
 
 
 def _can_direct_fetch(node: Node) -> bool:
@@ -2084,6 +2097,7 @@ callbacks = {
     "addrv2": addrv2,
     "getaddr": getaddr,
     "sendheaders": sendheaders,
+    "sendcmpct": sendcmpct,
     "getcfilters": get_cfilters,
     "getcfheaders": get_cfheaders,
     "getcfcheckpt": get_cfcheckpt,

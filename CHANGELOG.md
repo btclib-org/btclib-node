@@ -501,6 +501,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`sendcmpct` offers version 2, and a `MSG_CMPCT_BLOCK` or a `getblocktxn`
   is answered at Core's depths** (closes #1206).
 
+### A high-bandwidth peer is announced a new block as `cmpctblock`, as in Core
+
+- **A peer's `sendcmpct` of version 2 is recorded, and a peer that chose this
+  node as high-bandwidth is sent a lone new block as a `cmpctblock` and reported
+  in `getpeerinfo`'s `bip152_hb_from`** (closes #1223).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from btclib.exceptions import BTClibValueError
+from btclib.p2p.compact_blocks import CmpctBlock
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
 from btclib.script import script
 from btclib.script.engine.flags import ScriptFlag
@@ -39,6 +40,7 @@ from btclib_node.exceptions import (
 from btclib_node.interpreter import check_transactions, get_flags
 from btclib_node.main import update_chain, verify_mempool_acceptance
 from btclib_node.p2p.block_availability import BlockAvailability
+from btclib_node.p2p.compact_block import compact_block
 from tests import (
     build_block,
     generate_coinbase,
@@ -1325,12 +1327,14 @@ def a_peer(
     availability: BlockAvailability | None = None,
     *,
     prefers_headers: bool = True,
+    high_bandwidth: bool = False,
 ) -> Connection:
     """Build a connection double that records what it is sent."""
     return cast(
         "Connection",
         SimpleNamespace(
             prefers_headers=prefers_headers,
+            requested_hb_cmpctblocks=high_bandwidth,
             send=sent.append,
             block_availability=availability or BlockAvailability(),
         ),
@@ -1444,6 +1448,72 @@ def test_a_peer_that_has_no_header_to_connect_to_is_sent_the_tip_s_inv(
     assert message.items == (Inventory(InventoryType.MSG_BLOCK, chain[-1].header.hash),)
     peer = node.p2p_manager.connections[1]
     assert peer.block_availability.best_header_sent is None
+
+
+@pytest.mark.parametrize("prefers_headers", [True, False])
+def test_a_high_bandwidth_peer_is_sent_a_lone_new_block_as_a_cmpctblock(
+    node: Node, *, prefers_headers: bool
+) -> None:
+    """One new block whose parent the peer has goes as a `cmpctblock`.
+
+    Core's `SendMessages` sends a peer that asked for high bandwidth a
+    single header as the block's `cmpctblock`, whether or not it asked
+    for headers, and caches one compact block for every peer
+    (btclib-org/btclib-node#1223).
+    """
+    chain = generate_random_chain(2, RegTest().genesis.hash, tip_time=datetime.now(UTC))
+    connect(node, chain[:1])
+    sent: dict[int, list[Any]] = {1: [], 2: []}
+    for conn_id, messages in sent.items():
+        node.p2p_manager.connections[conn_id] = a_peer(
+            messages,
+            BlockAvailability(best_known=chain[0].header.hash),
+            prefers_headers=prefers_headers,
+            high_bandwidth=True,
+        )
+
+    connect(node, chain[1:])
+    (first,) = sent[1]
+    assert isinstance(first, CmpctBlock)
+    # serialized: `tip_time` carries microseconds the stored header drops
+    assert first.serialize() == compact_block(chain[1], first.nonce).serialize()
+    assert sent[2] == [first]
+    peer = node.p2p_manager.connections[1]
+    assert peer.block_availability.best_header_sent == chain[1].header.hash
+
+
+@pytest.mark.parametrize(
+    ("prefers_headers", "known", "expected"),
+    [(False, None, Inv), (True, None, Headers), (True, 0, CmpctBlock)],
+    ids=["inv", "headers", "cmpctblock"],
+)
+def test_a_high_bandwidth_peer_announced_two_blocks_gets_a_cmpctblock_for_one(
+    node: Node, *, prefers_headers: bool, known: int | None, expected: type
+) -> None:
+    """Two new blocks go as a `cmpctblock` only where one header is to send.
+
+    Core's `SendMessages` reverts to an `inv` for more than one block to
+    a peer that did not ask for headers, and otherwise sends a
+    `cmpctblock` only where the peer lacks the tip alone. `known` is the
+    fork block the peer has, genesis where `None`.
+    """
+    connect(node, generate_random_chain(1, RegTest().genesis.hash))
+    fork = generate_random_chain(2, RegTest().genesis.hash, tip_time=datetime.now(UTC))
+    node.chainstate.block_index.add_headers([block.header for block in fork])
+    best_known = RegTest().genesis.hash if known is None else fork[known].header.hash
+    sent: list[Any] = []
+    node.p2p_manager.connections[1] = a_peer(
+        sent,
+        BlockAvailability(best_known=best_known),
+        prefers_headers=prefers_headers,
+        high_bandwidth=True,
+    )
+
+    connect(node, fork)
+    assert node.chainstate.block_index.active_chain[1:] == hashes(fork)
+
+    (message,) = sent
+    assert isinstance(message, expected)
 
 
 @pytest.mark.parametrize(

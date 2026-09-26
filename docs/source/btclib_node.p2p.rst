@@ -40,6 +40,13 @@ btclib\_node.p2p.callbacks module
    :members:
    :show-inheritance:
 
+btclib\_node.p2p.compact\_block module
+-----------------------------------------
+
+.. automodule:: btclib_node.p2p.compact_block
+   :members:
+   :show-inheritance:
+
 btclib\_node.p2p.connection module
 -------------------------------------
 

@@ -471,6 +471,13 @@ class Connection:
     # peer for headers announcements, which is asked once. A class
     # default for the same reason as `time_received`.
     sent_sendheaders: bool = False
+    # Set by callbacks.sendcmpct, the peer's own request to be announced
+    # a new block as a `cmpctblock`, BIP152's high-bandwidth mode: Core's
+    # `m_requested_hb_cmpctblocks`, false until asked. Read by `main`'s
+    # block announcement and by `getpeerinfo`'s `bip152_hb_from`, all on
+    # `Node`'s thread; a class default for the same reason as
+    # `time_received`. btclib-org/btclib-node#1223
+    requested_hb_cmpctblocks: bool = False
 
     # Core's `CNodeState` block fields (`p2p/block_availability.py`),
     # here rather than in a `DownloadManager` table keyed by connection

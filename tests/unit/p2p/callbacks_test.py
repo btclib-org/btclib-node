@@ -108,7 +108,6 @@ from btclib_node.p2p.callbacks import (
     addrv2,
     advance_cfilters,
     advance_getdata,
-    compact_block,
     feefilter,
     get_cfcheckpt,
     get_cfheaders,
@@ -124,6 +123,7 @@ from btclib_node.p2p.callbacks import (
     pong,
     reject,
     sendaddrv2,
+    sendcmpct,
     sendheaders,
     tx,
     verack,
@@ -131,6 +131,7 @@ from btclib_node.p2p.callbacks import (
     wtxidrelay,
 )
 from btclib_node.p2p.callbacks import block as block_callback
+from btclib_node.p2p.compact_block import compact_block
 from btclib_node.p2p.connection import Connection, PeerStats
 from btclib_node.p2p.protocol_version import (
     BIP0031_VERSION,
@@ -533,6 +534,7 @@ def a_peer(**attributes: Any) -> Any:
         wtxidrelay_received=False,
         prefer_addressv2=False,
         prefers_headers=False,
+        requested_hb_cmpctblocks=False,
         # what Connection sets, and what the version callback overwrites
         relay_tx=True,
         download_queue=[],
@@ -1230,6 +1232,52 @@ def test_the_flags_a_peer_sets_on_this_connection() -> None:
     assert peer.wtxidrelay_received
     assert peer.prefer_addressv2
     assert peer.prefers_headers
+
+
+@pytest.mark.parametrize(
+    ("payload", "requested"),
+    [
+        (SendCmpct(announce=True, version=2).serialize(), True),
+        (SendCmpct(announce=False, version=2).serialize(), False),
+        # Core's `bool` is any non-zero octet, and it reads no further
+        # than the version
+        (b"\x02" + (2).to_bytes(8, "little"), True),
+        (SendCmpct(announce=True, version=2).serialize() + b"\x00", True),
+    ],
+    ids=["high", "low", "octet-two", "trailing"],
+)
+def test_a_sendcmpct_of_version_two_records_the_peer_s_choice(
+    payload: bytes,
+    requested: bool,  # noqa: FBT001
+) -> None:
+    """The announce octet is whether this node was chosen high-bandwidth.
+
+    Core's `SENDCMPCT` handler sets `m_requested_hb_cmpctblocks` from it
+    (btclib-org/btclib-node#1223).
+    """
+    peer = a_peer(requested_hb_cmpctblocks=not requested)
+    sendcmpct(a_handshake_node(), payload, peer)
+    assert peer.requested_hb_cmpctblocks is requested
+
+
+def test_a_sendcmpct_of_another_version_is_ignored() -> None:
+    """Core returns before recording anything for a version other than 2."""
+    peer = a_peer(requested_hb_cmpctblocks=True)
+    sendcmpct(
+        a_handshake_node(), SendCmpct(announce=False, version=1).serialize(), peer
+    )
+    assert peer.requested_hb_cmpctblocks
+    peer = a_peer()
+    sendcmpct(a_handshake_node(), SendCmpct(announce=True, version=1).serialize(), peer)
+    assert not peer.requested_hb_cmpctblocks
+
+
+def test_a_short_sendcmpct_is_refused() -> None:
+    """A payload short of its nine octets raises, as Core's read throws."""
+    peer = a_peer()
+    with pytest.raises(BTClibValueError, match="sendcmpct payload of 8 bytes"):
+        sendcmpct(a_handshake_node(), b"\x01" + bytes(7), peer)
+    assert not peer.requested_hb_cmpctblocks
 
 
 def test_a_feefilter_lands_on_the_connection() -> None:

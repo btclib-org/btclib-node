@@ -14,6 +14,7 @@ entered from a single transaction instead, for the RPC and p2p callbacks
 that relay one.
 """
 
+import secrets
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
@@ -44,11 +45,13 @@ from btclib_node.p2p.block_availability import (
     peer_has_header,
     process_block_availability,
 )
+from btclib_node.p2p.compact_block import compact_block
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from btclib.block import Block, BlockHeader
+    from btclib.p2p.compact_blocks import CmpctBlock
     from btclib.tx.tx import Tx
     from btclib.tx.tx_out import TxOut
 
@@ -91,26 +94,38 @@ _MAX_BLOCKS_TO_ANNOUNCE = 8
 # asked for headers (callbacks.sendheaders), every header from the
 # first one it does not have, where that one's parent is a header it
 # has; to any other peer, or where nothing connects, an `inv` of the
-# tip, unless the peer has it. A peer that announced the blocks to this
-# node therefore hears nothing back. This node announces no block as a
-# `cmpctblock`, Core's way to a high-bandwidth peer, though it serves one
-# asked for. btclib-org/btclib-node#202, btclib-org/btclib-node#1160,
+# tip, unless the peer has it. To a peer that chose this node as a
+# high-bandwidth peer (callbacks.sendcmpct), a single header to send goes
+# as the tip's `cmpctblock` instead, and a single new block is sent that
+# way whether or not the peer asked for headers. A peer that announced
+# the blocks to this node therefore hears nothing back. Core's
+# `NewPoWValidBlock` also sends that `cmpctblock` before the block is
+# connected, and this node does not.
+# btclib-org/btclib-node#202, btclib-org/btclib-node#1160,
 # btclib-org/btclib-node#1223
 def _announce_added_blocks(node: Node, blocks: list[Block]) -> None:
     block_index = node.chainstate.block_index
     headers = [block.header for block in blocks[-_MAX_BLOCKS_TO_ANNOUNCE:]]
     tip_hash = headers[-1].hash
+    # one nonce for every peer, as Core's `m_most_recent_compact_block`
+    compact: CmpctBlock | None = None
     for conn in node.p2p_manager.connections.copy().values():
         state = conn.block_availability
         process_block_availability(block_index, state)
+        high_bandwidth = conn.requested_hb_cmpctblocks
         to_send = (
             _headers_to_announce(block_index, state, headers)
-            if conn.prefers_headers
+            if conn.prefers_headers or (high_bandwidth and len(headers) == 1)
             else None
         )
         if to_send is None:
             if not peer_has_header(block_index, state, tip_hash):
                 conn.send(Inv([Inventory(InventoryType.MSG_BLOCK, tip_hash)]))
+        elif len(to_send) == 1 and high_bandwidth:
+            if compact is None:
+                compact = compact_block(blocks[-1], secrets.randbits(64))
+            conn.send(compact)
+            state.best_header_sent = tip_hash
         elif to_send:
             conn.send(Headers(to_send))
             state.best_header_sent = to_send[-1].hash
