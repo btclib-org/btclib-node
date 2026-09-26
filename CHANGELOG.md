@@ -400,6 +400,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`verack` keeps a peer that sent no `wtxidrelay`, whose transactions are
   announced and asked for by txid** (closes #1183).
 
+### Transactions are taken in out of IBD and relayed at any sync state
+
+- **A `tx` and a transaction `inv` are gated on initial block download, and
+  announcing and asking on nothing, as in Core** (closes #1157).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

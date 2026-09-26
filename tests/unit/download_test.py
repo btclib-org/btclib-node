@@ -191,7 +191,6 @@ def test_a_step_asks_for_neither_kind_while_the_headers_are_syncing() -> None:
         is_initial_block_download=True,
         block_index=HeaderIndex(age=_OLD),
     )
-    manager.inv_txs = [(1, a_hash(1))]
     manager.step()
     assert not only(conn, GetData)
     assert not only(conn, Inv)
@@ -265,6 +264,31 @@ def test_a_transaction_received_answers_an_announcement_by_txid() -> None:
     manager.tx_download()
     assert not announcer.sent
     assert txid not in announcer.tx_requested
+
+
+def test_transactions_are_relayed_at_any_sync_state() -> None:
+    """ISS 1157: Core's `SendMessages` gates neither announcing nor asking.
+
+    In IBD and below `BlockSynced`, what `received_txs` holds is still
+    announced and what `inv_txs` holds still asked for.
+    """
+    asker, other = a_conn(1), a_conn(2)
+    manager = make_manager(
+        [asker, other],
+        status=NodeStatus.SyncingHeaders,
+        is_initial_block_download=True,
+    )
+    wtxid = a_hash(7)
+    hold(manager, wtxid)
+    manager.received_txs = [(None, wtxid)]
+    manager.inv_txs = [(1, a_hash(8))]
+    manager.tx_download()
+    (getdata,) = only(asker, GetData)
+    assert hashes_of(getdata) == [a_hash(8)]
+    (announced,) = only(other, Inv)
+    assert hashes_of(announced) == [wtxid]
+    assert manager.received_txs == []
+    assert manager.inv_txs == []
 
 
 def test_a_transaction_a_peer_announced_is_asked_of_that_peer() -> None:

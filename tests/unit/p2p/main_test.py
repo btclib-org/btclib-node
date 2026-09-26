@@ -20,7 +20,7 @@ from btclib.p2p.addrv2 import NetworkAddressV2
 from btclib.p2p.data import TxPayload as TxMsg
 
 import btclib_node.p2p.callbacks as cb
-from btclib_node.constants import NodeStatus, P2pConnStatus
+from btclib_node.constants import P2pConnStatus
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from btclib_node.p2p import main as main_module
@@ -524,7 +524,7 @@ def test_a_consensus_invalid_transaction_costs_the_peer_nothing(
         ("tx", payload, 0, len(payload), 0.0),
         status=P2pConnStatus.Connected,
     )
-    node.status = NodeStatus.BlockSynced
+    node.is_initial_block_download = False
     node.mempool = Mempool(Logger(debug=True))
     handle_p2p(node)
     assert not stopped
