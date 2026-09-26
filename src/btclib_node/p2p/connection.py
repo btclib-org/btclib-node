@@ -44,6 +44,7 @@ from btclib_node.p2p.callbacks import (
     MAX_GETDATA_INFLIGHT_BYTES,
     handshake_callbacks,
 )
+from btclib_node.p2p.chain_sync import ChainSyncTimeoutState
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 from btclib_node.p2p.protocol_version import BIP0031_VERSION, common_version
 
@@ -463,7 +464,7 @@ class Connection:
     # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): how many gossiped
     # addresses this peer may still have taken in, one to start with so
     # that it can announce itself. Written and read on `Node`'s thread
-    # alone, by `callbacks.verack`, `addr` and `addrv2`; a class default
+    # alone, by `callbacks.version`, `addr` and `addrv2`; a class default
     # for the same reason as `time_received`.
     addr_token_bucket: float = 1.0
     # Core's `Peer::m_sent_sendheaders`: set by
@@ -471,6 +472,14 @@ class Connection:
     # peer for headers announcements, which is asked once. A class
     # default for the same reason as `time_received`.
     sent_sendheaders: bool = False
+    # Core's `Peer::m_addr_relay_enabled` (`net_processing.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7): whether this peer takes part in
+    # address relay. Set where Core calls `SetupAddressRelay`: by
+    # `callbacks.version` for a peer this node dialled, and by `addr`,
+    # `addrv2` and `getaddr` for one that dialled in. Read by
+    # `getpeerinfo`; a class default for the same reason as
+    # `time_received`.
+    addr_relay_enabled: bool = False
 
     # Core's `CNodeState` block fields (`p2p/block_availability.py`),
     # here rather than in a `DownloadManager` table keyed by connection
@@ -490,6 +499,13 @@ class Connection:
     # class default for the reason `time_received` gives.
     # btclib-org/btclib-node#1164
     _writing: asyncio.Task[object] | None = None
+
+    # Core's `CNodeState::m_chain_sync` (`p2p/chain_sync.py`), here for
+    # the same reasons as `block_availability` above.
+    @cached_property
+    def chain_sync(self) -> ChainSyncTimeoutState:
+        """Whether this peer is behind this node's tip, and since when."""
+        return ChainSyncTimeoutState()
 
     def __init__(
         self,
