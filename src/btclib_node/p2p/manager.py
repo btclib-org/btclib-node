@@ -540,9 +540,9 @@ class P2pManager(threading.Thread):
 
         `info`, matching `verack`'s own line: this runs once per
         connection actually made, dialled or accepted, never once per
-        attempt -- every dial below
-        only call this once `dial` has already returned a socket, so a
-        dial that goes nowhere never reaches here to begin with.
+        attempt -- every dial below calls this only once `dial` has
+        returned a socket, so a dial that goes nowhere never reaches
+        here.
 
         Unconditional on the address, like `verack`'s own line and for
         the same reason -- argued there rather than twice here: Core's

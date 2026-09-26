@@ -2761,7 +2761,7 @@ def test_a_connection_not_dialled_automatically_leaves_the_target_open(
 
     Eight of either are the target: counted, they would stop the draw,
     so the draw being asked for is the assertion. An `a_conn` that is
-    neither inbound nor `automatic` is what `async_connect`, the
+    neither inbound nor `automatic` is what `async_connect_host`, the
     `-connect`/`-addnode` route, builds.
     """
     drawn: list[None] = []
