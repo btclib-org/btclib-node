@@ -19,9 +19,9 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, cast, override
 
 import pytest
-from btclib.consensus import MAX_BLOCK_WEIGHT
 from bitcoin_core_rpc import RPCErrorCode
 from btclib.block import Block, BlockHeader
+from btclib.consensus import MAX_BLOCK_WEIGHT
 from btclib.exceptions import BTClibValueError
 from btclib.fee import FeeRate
 from btclib.p2p.address import NetworkAddress, ServiceFlags
@@ -3275,7 +3275,7 @@ def test_submit_block_answers_a_reason_for_a_header_that_never_gets_indexed(
 def test_submit_block_leaves_valid_a_header_its_body_does_not_match(
     regtest_node: Callable[..., Node],
 ) -> None:
-    """ISS 1242: a body the merkle root does not match says nothing of the header.
+    """ISS 1242: a body the merkle root does not match says nothing of it.
 
     Core's `AcceptBlock` marks a block failed unless the failure is
     `BLOCK_MUTATED`, so the honest body is still accepted afterwards.
@@ -3325,18 +3325,21 @@ def test_submit_block_leaves_valid_a_committed_body_failing_check_block(
 @pytest.mark.parametrize(("segwit_height", "invalid"), [(1, True), (2, False)])
 def test_submit_block_invalidates_a_committed_body_over_the_weight(
     regtest_node: Callable[..., Node],
+    monkeypatch: pytest.MonkeyPatch,
     segwit_height: int,
     invalid: bool,  # noqa: FBT001
 ) -> None:
-    """ISS 1242: `bad-blk-weight` marks the block, where the witness is committed.
+    """ISS 1242: `bad-blk-weight` marks the block, its witness committed to.
 
     Where segwit binds only after the block's own height, its witness makes
     the body mutated and the header is left alone.
     """
     node = regtest_node()
-    node.chain = SimpleNamespace(
-        pow_limit_bits=node.chain.pow_limit_bits,
-        consensus=replace(node.chain.consensus, segwit_height=segwit_height),
+    consensus = replace(node.chain.consensus, segwit_height=segwit_height)
+    monkeypatch.setattr(
+        node,
+        "chain",
+        SimpleNamespace(pow_limit_bits=node.chain.pow_limit_bits, consensus=consensus),
     )
     over = generate_segwit_block(witness=bytes(MAX_BLOCK_WEIGHT))
 

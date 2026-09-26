@@ -2221,7 +2221,7 @@ def a_block_claiming_an_easier_target_than_the_chain_allows(block: Block) -> Blo
 
 
 def test_a_block_whose_proof_of_work_does_not_hold_up_is_refused() -> None:
-    """A block failing proof of work is refused, not stored, and not invalidated.
+    """A block failing proof of work is refused, not stored, nor invalidated.
 
     The raise still reaches main.handle_p2p, which drops the peer. Core's
     `CheckBlock` asks the proof of work, and a `CheckBlock` failure is never

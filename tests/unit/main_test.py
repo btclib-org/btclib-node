@@ -2329,7 +2329,7 @@ def a_64_byte_transaction() -> Tx:
 
 @pytest.mark.parametrize("check_witness_root", [True, False])
 def test_a_block_as_mined_is_not_mutated(check_witness_root: bool) -> None:  # noqa: FBT001
-    """ISS 1242: a body its header commits to, with no witness, is not mutated."""
+    """ISS 1242: a body its header commits to, no witness, is not mutated."""
     (block,) = generate_random_chain(1, RegTest().genesis.hash)
     assert not main.is_block_mutated(block, check_witness_root=check_witness_root)
 
@@ -2342,8 +2342,11 @@ def test_a_body_the_merkle_root_does_not_match_is_mutated() -> None:
 
 
 def test_a_body_repeating_its_last_transaction_is_mutated() -> None:
-    """ISS 1242: CVE-2012-2459, the same merkle root over one more transaction."""
-    txs = [generate_coinbase(height=1), *(generate_random_transaction() for _ in range(2))]
+    """ISS 1242: CVE-2012-2459, one merkle root over one more transaction."""
+    txs = [
+        generate_coinbase(height=1),
+        *(generate_random_transaction() for _ in range(2)),
+    ]
     repeated = a_block_over([*txs, txs[-1]], txs)
     assert repeated.header.merkle_root == a_block_over(txs).header.merkle_root
     assert main.is_block_mutated(repeated, check_witness_root=True)
@@ -2402,7 +2405,7 @@ def test_a_witness_nonce_not_of_one_element_is_mutated(stack: list[bytes]) -> No
 
 
 def test_a_witness_nonce_not_of_32_bytes_is_mutated_though_it_matches() -> None:
-    """ISS 1242: Core's `bad-witness-nonce-size`, the commitment over it holding."""
+    """ISS 1242: Core's `bad-witness-nonce-size`, its commitment holding."""
     block = generate_segwit_block(nonce=bytes(31))
     assert main.is_block_mutated(block, check_witness_root=True)
 

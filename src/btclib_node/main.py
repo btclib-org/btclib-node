@@ -555,6 +555,13 @@ def _check_bip30(node: Node, index: int, block_hash: bytes) -> bool:
     return (index, block_hash) not in node.chain.consensus.bip30_exceptions
 
 
+# the non-witness size of a transaction that could pass for an inner merkle
+# node, and the size of the witness reserved value, in `IsBlockMutated` and
+# `CheckWitnessMalleation` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7)
+_INNER_NODE_SIZE = 64
+_WITNESS_NONCE_SIZE = 32
+
+
 def is_block_mutated(block: Block, *, check_witness_root: bool) -> bool:
     """Whether `block`'s body is not the one its header commits to.
 
@@ -579,14 +586,15 @@ def is_block_mutated(block: Block, *, check_witness_root: bool) -> bool:
         return True
     if not transactions[0].is_coinbase:
         return any(
-            len(tx.serialize(include_witness=False, check_validity=False)) == 64
+            len(tx.serialize(include_witness=False, check_validity=False))
+            == _INNER_NODE_SIZE
             for tx in transactions
         )
     commitment = block.witness_commitment if check_witness_root else None
     if commitment is None:
         return any(tx.is_segwit for tx in transactions)
     stack = transactions[0].vin[0].script_witness.stack
-    if len(stack) != 1 or len(stack[0]) != 32:
+    if len(stack) != 1 or len(stack[0]) != _WITNESS_NONCE_SIZE:
         return True
     return coinbase_witness_commitment(transactions, stack[0]) != commitment
 
