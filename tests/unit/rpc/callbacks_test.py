@@ -1376,8 +1376,14 @@ def test_test_mempool_accept_rawtxs_of_the_wrong_json_type_is_named() -> None:
 
 @pytest.mark.parametrize(
     ("rawtx", "json_type"),
-    [(5, "number"), (1.5, "number"), (None, "null"), ([], "array"), ({}, "object"),
-     (True, "bool")],
+    [
+        (5, "number"),
+        (1.5, "number"),
+        (None, "null"),
+        ([], "array"),
+        ({}, "object"),
+        (True, "bool"),
+    ],
 )
 def test_test_mempool_accept_a_rawtx_of_the_wrong_json_type_is_named(
     monkeypatch: pytest.MonkeyPatch, rawtx: object, json_type: str
