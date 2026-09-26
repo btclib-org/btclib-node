@@ -1935,7 +1935,8 @@ def test_a_fee_refusal_is_recorded_and_the_peer_kept(
 
     def fee_refusal(node: Any, transaction: Any) -> NoReturn:
         calls.append(transaction.hash)
-        raise TxRejectedError("min relay fee not met", "0 < 11")
+        reason, details = "min relay fee not met", "0 < 11"
+        raise TxRejectedError(reason, details)
 
     monkeypatch.setattr(cb, "verify_mempool_acceptance", fee_refusal)
     transaction = a_transaction()
