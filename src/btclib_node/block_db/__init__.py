@@ -485,6 +485,15 @@ class BlockDB:
         with self._lock:
             self.pending_rev_blocks = {}
 
+    def has_block(self, block_hash: bytes) -> bool:
+        """Return whether `block_hash`'s block is held, with no disk read.
+
+        Core's `BLOCK_HAVE_DATA` status bit: false for a header whose block
+        never arrived and for a block pruned away.
+        """
+        with self._lock:
+            return block_hash in self.blocks
+
     def get_block(self, block_hash: bytes) -> Block | None:
         """Return the block stored under `block_hash`, or `None` if not held."""
         with self._lock:

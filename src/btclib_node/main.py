@@ -92,9 +92,10 @@ _MAX_BLOCKS_TO_ANNOUNCE = 8
 # first one it does not have, where that one's parent is a header it
 # has; to any other peer, or where nothing connects, an `inv` of the
 # tip, unless the peer has it. A peer that announced the blocks to this
-# node therefore hears nothing back. This node sends no compact blocks, which
-# is Core's other way to announce. btclib-org/btclib-node#202,
-# btclib-org/btclib-node#1160
+# node therefore hears nothing back. This node announces no block as a
+# `cmpctblock`, Core's way to a high-bandwidth peer, though it serves one
+# asked for. btclib-org/btclib-node#202, btclib-org/btclib-node#1160,
+# btclib-org/btclib-node#1223
 def _announce_added_blocks(node: Node, blocks: list[Block]) -> None:
     block_index = node.chainstate.block_index
     headers = [block.header for block in blocks[-_MAX_BLOCKS_TO_ANNOUNCE:]]

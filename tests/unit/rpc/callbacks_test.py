@@ -576,7 +576,7 @@ def test_the_synced_heights_are_the_peer_s_best_known_and_last_common_blocks(
 
 
 def test_the_fields_this_node_has_no_state_for_answer_core_s_value() -> None:
-    """No compact blocks, presync, permissions or BIP324 here."""
+    """No `cmpctblock` announcing, presync, permissions or BIP324 here."""
     (info,) = get_peer_info(a_node({7: a_peer()}), _CONN, [])
     assert info["bip152_hb_to"] is False
     assert info["bip152_hb_from"] is False
