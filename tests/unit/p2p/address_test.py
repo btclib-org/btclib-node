@@ -739,8 +739,12 @@ def test_a_name_is_read_as_core_s_lookup_host_reads_it(
 def test_an_answer_of_another_family_is_passed_over(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """ISS 1284: `WrappedGetAddrInfo` reads `AF_INET` and `AF_INET6` alone."""
-    other = (socket.AF_UNIX, socket.SOCK_STREAM, 0, "", "/a/path")
+    """ISS 1284: `WrappedGetAddrInfo` reads `AF_INET` and `AF_INET6` alone.
+
+    `AF_UNSPEC` stands for any other family, being on every platform,
+    where `AF_UNIX` is not on Windows.
+    """
+    other = (socket.AF_UNSPEC, socket.SOCK_STREAM, 0, "", "/a/path")
     loop = FakeLoop({"host.example": [other, "1.2.3.4"]})
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
     assert asyncio.run(lookup_host("host.example", 32)) == ["1.2.3.4"]
