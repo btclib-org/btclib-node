@@ -922,7 +922,11 @@ def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
             prevout_coins.append(coin)
         else:
             previous_tx = mempool.get_tx(tx_in.prev_out.tx_id)
-            if previous_tx:
+            # an output the parent does not have is a missing input, as
+            # Core's own `CCoinsViewMemPool::GetCoin` answers it
+            # (`src/txmempool.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+            # v31.1 tag), not an index error. btclib-org/btclib-node#1252
+            if previous_tx and tx_in.prev_out.vout < len(previous_tx.vout):
                 tx_out = previous_tx.vout[tx_in.prev_out.vout]
                 prev_outputs.append(tx_out)
                 prevout_coins.append(Coin(tx_out, spend_height, is_coinbase=False))

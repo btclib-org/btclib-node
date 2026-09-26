@@ -518,6 +518,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   and the log names the value** (closes #1210), refused once the RPC
   listener is bound, `-rpcauth` after the cookie, as `bitcoind` refuses it.
 
+### A spend of an output a mempool parent lacks is a missing input, as in Core
+
+- **It raised `IndexError`: the relaying peer was dropped and the RPC answered
+  `-32603`** (closes #1252).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
