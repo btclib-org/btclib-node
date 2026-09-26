@@ -119,6 +119,7 @@ from btclib_node.p2p.callbacks import (
     wtxidrelay,
 )
 from btclib_node.p2p.callbacks import block as block_callback
+from btclib_node.p2p.chain_sync import ChainSyncTimeoutState
 from btclib_node.p2p.connection import Connection, PeerStats
 from btclib_node.p2p.protocol_version import (
     BIP0031_VERSION,
@@ -489,6 +490,7 @@ def a_peer(**attributes: Any) -> Any:
         # btclib-org/btclib-node#706
         best_known_height=0,
         block_availability=BlockAvailability(),
+        chain_sync=ChainSyncTimeoutState(),
         wtxidrelay_received=False,
         prefer_addressv2=False,
         prefers_headers=False,
@@ -4088,6 +4090,20 @@ def test_a_headers_batch_is_a_block_the_peer_has(tmp_path: Path) -> None:
         )
         headers(node, Headers(chain[1:]).serialize(), peer)
         assert peer.block_availability == BlockAvailability(best_known=chain[-1].hash)
+
+
+@pytest.mark.parametrize("automatic", [True, False], ids=["drawn", "not-drawn"])
+def test_a_batch_reaching_the_tip_protects_a_drawn_peer(
+    tmp_path: Path, *, automatic: bool
+) -> None:
+    """ISS 1154: Core's `UpdatePeerStateForReceivedHeaders` protection."""
+    chain = generate_random_header_chain(2, RegTest().genesis.hash)
+    with unstarted_node_context(tmp_path) as real:
+        node = a_data_node(block_index=real.chainstate.block_index)
+        peer = a_peer(automatic=automatic, status=P2pConnStatus.Connected)
+        node.p2p_manager.connections = {peer.id: peer}
+        headers(node, Headers(chain).serialize(), peer)
+        assert peer.chain_sync.protect is automatic
 
 
 def test_every_block_announced_is_one_the_peer_has() -> None:

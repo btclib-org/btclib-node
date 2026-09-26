@@ -475,6 +475,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   (closes #1168), `args` holding the leading positions; a name repeated,
   unknown or given both ways is refused with `RPC_INVALID_PARAMETER`.
 
+### An outbound peer behind this node's tip is dropped, as in Core
+
+- **Core's `ConsiderEviction`: `CHAIN_SYNC_TIMEOUT`, one `getheaders`, then
+  a disconnect, with up to four peers at the tip protected** (closes #1154).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

@@ -33,6 +33,13 @@ btclib\_node.p2p.callbacks module
    :members:
    :show-inheritance:
 
+btclib\_node.p2p.chain\_sync module
+-------------------------------------
+
+.. automodule:: btclib_node.p2p.chain_sync
+   :members:
+   :show-inheritance:
+
 btclib\_node.p2p.connection module
 -------------------------------------
 

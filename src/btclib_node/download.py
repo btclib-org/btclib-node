@@ -32,6 +32,7 @@ from btclib_node.p2p.callbacks import (
     MAX_GETDATA_INFLIGHT_BYTES,
     maybe_send_getheaders,
 )
+from btclib_node.p2p.chain_sync import consider_eviction
 from btclib_node.p2p.protocol_version import (
     FEEFILTER_VERSION,
     SENDHEADERS_VERSION,
@@ -406,8 +407,8 @@ class DownloadManager:
     def step(self) -> None:
         """Run one pass.
 
-        Headers, blocks and txs are asked for, and sendheaders and
-        feefilters sent.
+        Headers, blocks and txs are asked for, sendheaders and feefilters
+        sent, and outbound peers behind this node's tip given a deadline.
         """
         self.sync_headers()
         self.update_last_common_blocks()
@@ -415,6 +416,7 @@ class DownloadManager:
         self.tx_download()
         self._send_due_sendheaders()
         self._send_due_feefilters()
+        self._consider_evictions()
 
     def tx_download(self) -> None:
         """Announce what this node received, and request what it still wants.
@@ -670,6 +672,17 @@ class DownloadManager:
             return Inventory(InventoryType.MSG_WTX, wtxid)
         txid = self.node.mempool.transactions[wtxid].id
         return Inventory(InventoryType.MSG_TX, txid)
+
+    def _consider_evictions(self) -> None:
+        """Run Core's `ConsiderEviction` for every connected peer.
+
+        `p2p/chain_sync.py` is where it is argued; Core runs it from
+        `SendMessages`, once per peer past its handshake.
+        """
+        now = time.time()
+        for conn in list(self.node.p2p_manager.connections.values()):
+            if conn.status == P2pConnStatus.Connected:
+                consider_eviction(self.node, conn, now, maybe_send_getheaders)
 
     def _send_due_sendheaders(self) -> None:
         """Ask a peer, once, for new blocks as headers (BIP130).
