@@ -108,10 +108,9 @@ Precedence is Core's `GetSetting` and `GetSettingsList`
 section over the default section; within the command line the last
 value, within a file the first, the chain selectors aside; and a
 negation discarding every value named before it at its own level.
-`-connect`, `-addnode`, `-rpcauth`, `-rpcwhitelist` and `-debug` are
-lists, every value from every level applying. `-rpcbind` is a list in
-Core too, every value checked and none bound without `-rpcallowip`,
-which this node does not have.
+`-connect`, `-addnode`, `-rpcauth`, `-rpcwhitelist`, `-rpcbind`,
+`-rpcallowip` and `-debug` are lists, every value from every level
+applying.
 
 Not every option answers to the file the same way once the chain is
 not `main`: `-port`, `-rpcport`, `-rpcbind`, `-connect` and `-addnode`
@@ -398,6 +397,15 @@ _OPTIONS: dict[str, _Option] = {
         _CHAINPARAMS_TITLE,
         debug_only=True,
     ),
+    "rpcallowip": _Option(
+        "=<ip>",
+        "Allow JSON-RPC connections from specified source. Valid values for "
+        "<ip> are a single IP (e.g. 1.2.3.4), a network/netmask (e.g. "
+        "1.2.3.4/255.255.255.0), a network/CIDR (e.g. 1.2.3.4/24), all ipv4 "
+        "(0.0.0.0/0), or all ipv6 (::/0). RFC4193 is allowed only if "
+        "-cjdnsreachable=0. This option can be specified multiple times",
+        _RPC_TITLE,
+    ),
     "rpcauth": _Option(
         "=<userpw>",
         "Username and HMAC-SHA-256 hashed password for JSON-RPC connections. "
@@ -409,10 +417,12 @@ _OPTIONS: dict[str, _Option] = {
     ),
     "rpcbind": _Option(
         "=<addr>[:port]",
-        "Bind to given address to listen for JSON-RPC connections. This "
-        "option is ignored unless -rpcallowip is also passed, which this node "
-        "does not accept, so the listener stays on localhost. Use [host]:port "
-        "notation for IPv6. This option can be specified multiple times",
+        "Bind to given address to listen for JSON-RPC connections. Do not "
+        "expose the RPC server to untrusted networks such as the public "
+        "internet! This option is ignored unless -rpcallowip is also passed. "
+        "Port is optional and overrides -rpcport. Use [host]:port notation "
+        "for IPv6. This option can be specified multiple times (default: "
+        "127.0.0.1 and ::1 i.e., localhost)",
         _RPC_TITLE,
         network_only=True,
     ),
@@ -1230,10 +1240,8 @@ def _after_lock(before: _BeforeLock) -> Config:
     p2p_port = _get_port(settings, "port")
     rpc_port = _get_port(settings, "rpcport")
     # Every `-rpcbind` value is checked, as `CheckHostPortOptions` checks
-    # it, and none is bound: `HTTPBindAddresses` (`src/httpserver.cpp`,
-    # same sha) binds them only beside `-rpcallowip`, which this node
-    # does not have, so the listener stays on loopback and `RpcManager`
-    # logs Core's warning over the values (btclib-org/btclib-node#1211)
+    # it; `RpcManager` binds them beside `-rpcallowip`, as
+    # `HTTPBindAddresses` (`src/httpserver.cpp`, same sha) does
     rpcbind = _get_args(settings, "rpcbind")
     for value in rpcbind:
         try:
@@ -1267,6 +1275,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         p2p_port=p2p_port,
         rpc_port=rpc_port,
         rpcbind=tuple(rpcbind),
+        rpcallowip=_get_args(settings, "rpcallowip"),
         allow_rpc=server is None or server,
         pruned=bool(prune),
         prune_target_mib=prune if prune >= MIN_PRUNE_TARGET_MIB else None,

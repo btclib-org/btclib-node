@@ -305,8 +305,10 @@ def exchange(auth: RpcAuth, requests: list[Any]) -> tuple[bytes, list[Any], list
         theirs.settimeout(0.0)
         loop = asyncio.get_running_loop()
         messages: list[Any] = []
+        # every source allowed: a socketpair's peer has no IP address
         manager = SimpleNamespace(
             auth=auth,
+            client_allowed=lambda client: True,
             logger=SimpleNamespace(warning=lambda *args: warnings.append(args)),
             messages=messages,
             connections={0: None},

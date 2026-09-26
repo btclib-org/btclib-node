@@ -611,7 +611,12 @@ class Node(threading.Thread):
         # with `-listen` on ending `AppInitMain` the same way
         # (`src/init.cpp:2283-2285`, same sha).
         if self.rpc_port and not self.rpc_manager.start_listener():
-            self._abort_start([RPC_INIT_ERROR])
+            # a `-rpcallowip` value's own refusal first, as Core shows
+            # `InitHTTPAllowList`'s message before `InitError`'s
+            init_error = self.rpc_manager.init_error
+            self._abort_start(
+                [RPC_INIT_ERROR] if init_error is None else [init_error, RPC_INIT_ERROR]
+            )
         elif self.p2p_port and not self.p2p_manager.start_listener():
             # the bind's own reason first, as Core's `CConnman::Bind`
             # shows it before `CConnman::Start` shows its own

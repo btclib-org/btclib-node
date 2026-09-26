@@ -56,9 +56,14 @@ BODY = b'{"jsonrpc":"2.0","id":"x","method":"getbestblockhash"}'
 
 
 def fake_manager(connections: dict[int, Any]) -> SimpleNamespace:
-    """Stand in for the `RpcManager` a connection reads, accepting `RPCAUTH`."""
+    """Stand in for the `RpcManager` a connection reads, accepting `RPCAUTH`.
+
+    Every source is allowed: a socketpair's peer has no IP address for
+    `RpcManager.client_allowed` to read.
+    """
     return SimpleNamespace(
         auth=RpcAuth((RpcAuthEntry.parse(RPCAUTH),)),
+        client_allowed=lambda client: True,
         logger=Logger(debug=True),
         messages=[],
         connections=connections,
@@ -882,15 +887,22 @@ def test_send_and_wait_gives_up_rather_than_blocking_forever() -> None:
     theirs.close()
 
 
-def refused(data: bytes) -> tuple[bytes, float, bool, list[Any], list[tuple[Any, ...]]]:
+def refused(
+    data: bytes,
+    *,
+    allowed: bool = True,
+    debugs: list[tuple[Any, ...]] | None = None,
+) -> tuple[bytes, float, bool, list[Any], list[tuple[Any, ...]]]:
     """Send `data` to a `RpcConnection.run` expecting a refusal, and read it.
 
     Returns the reply, up to the end of the body its own
     `Content-Length` counts, the seconds from `run` starting to the
     reply arriving, whether the connection closed after it, what was
-    queued for `handle_rpc`, and every warning logged.
+    queued for `handle_rpc`, and every warning logged. `allowed` is
+    what `client_allowed` answers, and `debugs` takes every debug line.
     """
     warnings: list[tuple[Any, ...]] = []
+    debug_lines: list[tuple[Any, ...]] = [] if debugs is None else debugs
 
     def whole(reply: bytes) -> bool:
         """Return whether `reply` holds its header section and its body."""
@@ -905,7 +917,11 @@ def refused(data: bytes) -> tuple[bytes, float, bool, list[Any], list[tuple[Any,
         theirs.setblocking(False)
         loop = asyncio.get_running_loop()
         manager = fake_manager(connections={0: None})
-        manager.logger = SimpleNamespace(warning=lambda *args: warnings.append(args))
+        manager.logger = SimpleNamespace(
+            warning=lambda *args: warnings.append(args),
+            debug=lambda *args: debug_lines.append(args),
+        )
+        manager.client_allowed = lambda client: allowed
         conn = RpcConnection(loop, ours, cast("RpcManager", manager), 0)
         await loop.sock_sendall(theirs, data)
         # before `run`, so the delay it schedules is inside what is measured
@@ -989,6 +1005,36 @@ def test_a_body_that_is_not_json_is_not_parsed_without_a_credential() -> None:
         request(b"Content-Length: %d\r\n" % len(body), body, auth=b"")
     )
     assert reply == UNAUTHORIZED
+
+
+@pytest.mark.parametrize(
+    ("method", "auth"),
+    [(b"POST", RPCAUTH_LINE), (b"POST", b""), (b"GET", b""), (b"DELETE", b"")],
+)
+def test_a_source_rpcallowip_does_not_name_is_refused_403_first(
+    method: bytes, auth: bytes
+) -> None:
+    """ISS 1268: `ClientAllowed` is the first check of `http_request_cb`.
+
+    Measured on bitcoind v31.1.0 with `-rpcbind=0.0.0.0
+    -rpcallowip=127.0.0.1`, from another address of the same machine: a
+    bare 403 whatever the method and the credential, and the connection
+    kept, each further request refused the same way.
+    """
+    debugs: list[tuple[Any, ...]] = []
+    reply, _, closed, messages, warnings = refused(
+        request(b"Content-Length: %d\r\n" % len(BODY), auth=auth, method=method),
+        allowed=False,
+        debugs=debugs,
+    )
+    assert reply == b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n"
+    assert not closed
+    assert not messages
+    assert not warnings
+    ((message, _),) = debugs
+    assert message == (
+        "HTTP request from %s rejected: Client network is not allowed RPC access"
+    )
 
 
 ONLY_POST = b"JSONRPC server handles only POST requests"

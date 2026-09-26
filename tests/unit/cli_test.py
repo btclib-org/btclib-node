@@ -743,7 +743,7 @@ def test_build_config_help_prints_the_options_and_exits_zero(
     assert excinfo.value.code == 0
     out = capsys.readouterr().out
     assert out.startswith("Run a bitcoin full node over btclib.\n\nUsage: btclib-node")
-    assert "\nRPC server options:\n\n  -rpcauth=<userpw>\n       Username" in out
+    assert "\nRPC server options:\n\n  -rpcallowip=<ip>\n       Allow JSON-RPC" in out
     assert "  -server\n" in out
     assert "  -regtest\n" not in out
 
@@ -1251,9 +1251,8 @@ def test_build_config_rpcbind_is_ignored_without_rpcallowip(argv: list[str]) -> 
     """ISS 1211: Core binds `-rpcbind` only beside `-rpcallowip`.
 
     bitcoind v31.1.0 given each of these and no `-rpcallowip` listens on
-    loopback at `-rpcport`, and logs a warning; this node has no
-    `-rpcallowip`, so the listener stays on loopback at `-rpcport`, the
-    values kept for `RpcManager` to warn over.
+    loopback at `-rpcport`, and logs a warning. The values are kept, for
+    `RpcManager` to warn over.
     """
     config = cli.build_config(["-regtest", *argv, "-rpcport=9999"])
     assert config.rpc_host is None
@@ -1275,6 +1274,28 @@ def test_build_config_rpcbind_is_read_as_a_list(
 ) -> None:
     """ISS 1211: Core's `GetArgs("-rpcbind")`, every value from every level."""
     assert _build(tmp_path, *argv, conf=conf).rpcbind == values
+
+
+@pytest.mark.parametrize(
+    ("argv", "conf", "values"),
+    [
+        (
+            ["-rpcallowip=10.0.0.0/8"],
+            "rpcallowip=10.1.0.0/16\n",
+            ("10.0.0.0/8", "10.1.0.0/16"),
+        ),
+        (["-norpcallowip"], "rpcallowip=10.1.0.0/16\n", ()),
+    ],
+    ids=["the command line then the file", "negated"],
+)
+def test_build_config_rpcallowip_is_read_as_a_list(
+    tmp_path: Path, argv: list[str], conf: str, values: tuple[str, ...]
+) -> None:
+    """ISS 1268: Core's `GetArgs("-rpcallowip")`, not `NETWORK_ONLY`.
+
+    So on regtest the file's default section still reaches it.
+    """
+    assert _build(tmp_path, "-regtest", *argv, conf=conf).rpcallowip == values
 
 
 def test_build_config_every_rpcbind_value_is_checked() -> None:

@@ -461,6 +461,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   over and passed** (closes #1269, closes #1281), and only a node that binds
   neither refuses to start, with Core's message.
 
+### `-rpcallowip` decides which sources the JSON-RPC listener answers
+
+- **A source no `-rpcallowip` subnet or loopback names gets a bare 403,
+  and `-rpcbind` binds beside it** (closes #1268), as in `bitcoind`, a value
+  naming no subnet refusing to start with Core's message.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

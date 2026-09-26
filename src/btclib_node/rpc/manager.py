@@ -30,12 +30,15 @@ from contextlib import ExitStack, suppress
 from ipaddress import ip_address
 from typing import TYPE_CHECKING, override
 
+from btclib_node.config import split_host_port
+from btclib_node.rpc.allow import allowed_subnets, client_allowed
 from btclib_node.rpc.auth import RpcAuth
 from btclib_node.rpc.connection import REQUEST_TIMEOUT, RpcConnection
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from concurrent.futures import Future
+    from ipaddress import IPv4Network, IPv6Network
 
     from btclib_node import Node
 
@@ -126,6 +129,14 @@ class RpcManager(threading.Thread):
         # `Config`'s users and whitelists, and the cookie's once `run`
         # writes it: what `RpcConnection.run` checks every request against
         self.auth = RpcAuth.from_config(node.config)
+        # loopback and `-rpcallowip`'s subnets, as `_listen` parses them
+        self.allowed_subnets: tuple[IPv4Network | IPv6Network, ...] = allowed_subnets(
+            ()
+        )
+        # what `Node` shows ahead of Core's "Unable to start HTTP
+        # server" where `_listen` refused a `-rpcallowip` value, as
+        # `InitHTTPAllowList` shows its own message ahead of that one
+        self.init_error: str | None = None
 
         # see P2pManager.listening: `is_alive()` is true before `run`
         # has bound anything, and a client that posts on the strength of
@@ -188,26 +199,14 @@ class RpcManager(threading.Thread):
         one, this does not set `listening`: `_listen` does, once the
         cookie is written too.
         """
-        config = self.node.config
-        # `-rpcbind` is ignored without `-rpcallowip`, which this node
-        # does not have
-        if config.rpcbind:
-            self.logger.warning(
-                "Option -rpcbind was ignored because -rpcallowip was not "
-                "specified, refusing to allow everyone to connect"
-            )
-        # Config.rpc_host, loopback unless a Python caller names a host
-        # -- see its own comment for why the RPC control plane's default
-        # is not every interface, unlike P2pManager's
-        hosts = _LOOPBACK_HOSTS if config.rpc_host is None else (config.rpc_host,)
         bound: list[socket.socket] = []
-        for host in hosts:
-            self.logger.info("Binding RPC on address %s port %s", host, self.port)
+        for host, port in self._endpoints():
+            self.logger.info("Binding RPC on address %s port %s", host, port)
             try:
-                bound.append(_bind_endpoint(host, self.port))
+                bound.append(_bind_endpoint(host, port))
             except OSError:
                 self.logger.warning(
-                    "Binding RPC on address %s port %s failed.", host, self.port
+                    "Binding RPC on address %s port %s failed.", host, port
                 )
                 continue
             # once bound, as Core warns: an empty host or one `LookupHost`
@@ -219,15 +218,66 @@ class RpcManager(threading.Thread):
                 )
         return bound
 
+    def _endpoints(self) -> list[tuple[str, int]]:
+        """Return what `HTTPBindAddresses` binds, logging its warnings.
+
+        Loopback, where `-rpcbind` and `-rpcallowip` are not both given;
+        every `-rpcbind` endpoint otherwise, its port defaulting to
+        `-rpcport`. Empty, the error logged, for a value naming an
+        invalid port, which `cli` has already refused.
+        """
+        config = self.node.config
+        port = self.port or 0
+        if not config.rpcallowip or not config.rpcbind:
+            if config.rpcallowip:
+                self.logger.warning(
+                    "Option -rpcallowip was specified without -rpcbind; this "
+                    "doesn't usually make sense"
+                )
+            if config.rpcbind:
+                self.logger.warning(
+                    "Option -rpcbind was ignored because -rpcallowip was not "
+                    "specified, refusing to allow everyone to connect"
+                )
+            # Config.rpc_host, loopback unless a Python caller names a
+            # host -- see its own comment for why the RPC control plane's
+            # default is not every interface, unlike P2pManager's
+            if config.rpc_host is None:
+                return [(host, port) for host in _LOOPBACK_HOSTS]
+            return [(config.rpc_host, port)]
+        endpoints: list[tuple[str, int]] = []
+        for value in config.rpcbind:
+            try:
+                endpoint: tuple[str, int] | None = split_host_port(value, port)
+            except ValueError:
+                endpoint = None
+            if endpoint is None:
+                self.logger.error("Invalid port specified in -rpcbind: '%s'", value)
+                return []
+            endpoints.append(endpoint)
+        return endpoints
+
     def _listen(self) -> list[socket.socket]:
         """Bind, write the cookie where one is written, then set `listening`.
 
-        Raises `OSError` where either step fails, having logged it and
-        closed the sockets: Core's "Unable to bind any endpoint for RPC
-        server" and `InitRPCAuthentication`'s refusal of a cookie that
-        cannot be written, logged as the warning `GenerateAuthCookie`
-        logs.
+        `-rpcallowip` is parsed first, as `InitHTTPServer` parses it
+        before it binds. Raises `OSError` where any step fails: a value
+        naming no subnet, kept in `init_error` for `Node`; Core's "Unable
+        to bind any endpoint for RPC server", logged; and
+        `InitRPCAuthentication`'s refusal of a cookie that cannot be
+        written, logged as the warning `GenerateAuthCookie` logs, the
+        sockets closed.
         """
+        try:
+            self.allowed_subnets = allowed_subnets(self.node.config.rpcallowip)
+        except ValueError as err:
+            self.init_error = str(err)
+            raise OSError(self.init_error) from None
+        # `InitHTTPAllowList`'s own line, each subnet followed by a space
+        self.logger.debug(
+            "Allowing HTTP connections from: %s",
+            "".join(f"{subnet} " for subnet in self.allowed_subnets),
+        )
         self._server_sockets = self._bind()
         if not self._server_sockets:
             msg = "Unable to bind any endpoint for RPC server"
@@ -242,6 +292,14 @@ class RpcManager(threading.Thread):
             raise
         self.listening.set()
         return self._server_sockets
+
+    def client_allowed(self, client: socket.socket) -> bool:
+        """Core's `ClientAllowed` of the peer `client` is connected to."""
+        try:
+            host = client.getpeername()[0]
+        except OSError:
+            return False
+        return client_allowed(str(host), self.allowed_subnets)
 
     def start_listener(self) -> bool:
         """Start this thread, and answer whether it came up listening.

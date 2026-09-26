@@ -48,7 +48,12 @@ from btclib_node.exceptions import (
     UnmetExpectationError,
 )
 from btclib_node.p2p.address import ip_and_port
-from btclib_node.rpc.auth import FAILED_ATTEMPT_DELAY, WWW_AUTHENTICATE, Refusal
+from btclib_node.rpc.auth import (
+    FAILED_ATTEMPT_DELAY,
+    FORBIDDEN,
+    WWW_AUTHENTICATE,
+    Refusal,
+)
 from btclib_node.rpc.jsonrpc import NO_CONTENT, HttpReply, decode, error_reply
 
 if TYPE_CHECKING:
@@ -1080,14 +1085,7 @@ class RpcConnection:
             # Ahead of the credential check below, as in Core, and once
             # the body is read, so that a connection `_frame` keeps goes
             # on to its next request after the refusal.
-            refusal = _refusal(head.method, head.target)
-            if refusal is not None:
-                status, refusal_body = refusal
-                self._refusal_reply = self.loop.create_task(
-                    self._send_refusal(
-                        status, refusal_body, page=status == _NOT_IMPLEMENTED
-                    )
-                )
+            if self._refused_early(head):
                 return
             # Core's `HTTPReq_JSONRPC`: no `Authorization` at all is a
             # 401 at once, one it does not accept a 401 after
@@ -1215,6 +1213,34 @@ class RpcConnection:
         except Exception:  # noqa: BLE001
             self.client.close()
             self.manager.connections.pop(self.id, None)
+
+    def _refused_early(self, head: RequestHead) -> bool:
+        """Schedule the reply to what Core refuses ahead of the credential.
+
+        `http_request_cb`'s order (`src/httpserver.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a source
+        `ClientAllowed` refuses is a bare 403, whatever the method; then
+        a method or a target `_refusal` refuses. Answers whether a reply
+        was scheduled.
+        """
+        if not self.manager.client_allowed(self.client):
+            self.manager.logger.debug(
+                "HTTP request from %s rejected: Client network is not "
+                "allowed RPC access",
+                self._peer_address(),
+            )
+            self._refusal_reply = self.loop.create_task(
+                self._send_refusal(FORBIDDEN, "")
+            )
+            return True
+        refusal = _refusal(head.method, head.target)
+        if refusal is None:
+            return False
+        status, refusal_body = refusal
+        self._refusal_reply = self.loop.create_task(
+            self._send_refusal(status, refusal_body, page=status == _NOT_IMPLEMENTED)
+        )
+        return True
 
     def _frame(
         self,

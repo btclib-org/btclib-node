@@ -969,6 +969,34 @@ def test_a_node_that_cannot_write_its_cookie_stops_and_frees_its_rpc_port(
     assert_loopbacks_free(port)
 
 
+def test_a_node_given_an_rpcallowip_naming_no_subnet_says_so_first(
+    tmp_path: Path,
+) -> None:
+    """ISS 1268: `InitHTTPAllowList`'s message, then `InitError`'s.
+
+    Measured on bitcoind v31.1.0 given `-rpcallowip=bogus`: both are in
+    `debug.log`, in that order, and it exits 1.
+    """
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            rpc_port=get_random_port(),
+            rpcallowip=["bogus"],
+            debug=True,
+        )
+    )
+    try:
+        node.start()
+        wait_until(lambda: not node.is_alive())
+    finally:
+        node.stop()
+    first, second = node.init_errors
+    assert first.startswith("Invalid -rpcallowip subnet specification: bogus. ")
+    assert second == btclib_node.RPC_INIT_ERROR
+
+
 def test_a_node_whose_rpc_listener_starts_has_no_init_errors(tmp_path: Path) -> None:
     """`init_errors` stays empty, and the node runs, once its listener is up."""
     with node_context(tmp_path, allow_p2p=False) as node:

@@ -215,14 +215,19 @@ class Config:
     # interface this names. `None` is Core's own default, `::1` and
     # `127.0.0.1` both (`HTTPBindAddresses`, `src/httpserver.cpp`, at
     # bitcoin/bitcoin@9be056a8a7, the v31.1 tag); a host a Python caller
-    # names is bound alone. P2pManager.server binds every interface
+    # names is bound alone, where `-rpcbind` and `-rpcallowip` are not
+    # both given. P2pManager.server binds every interface
     # unconditionally, and is right to, since a peer listener is
     # supposed to accept a stranger.
     rpc_host: str | None
-    # Core's `-rpcbind` values, checked by `cli` and bound nowhere: Core
-    # binds them only beside `-rpcallowip`, which this node does not
-    # have, and `RpcManager` logs the warning Core logs over them.
+    # Core's `-rpcbind` values, checked by `cli`: `RpcManager` binds
+    # them where `rpcallowip` below names something, and warns over them
+    # where it does not, as `HTTPBindAddresses` does.
     rpcbind: tuple[str, ...]
+    # Core's `-rpcallowip` values, which `RpcManager` parses when it
+    # starts, as `InitHTTPServer` parses them, and answers a request
+    # from no source they or loopback name with a 403.
+    rpcallowip: tuple[str, ...]
     # Core's own `-rpcauth`, one entry per value: users the RPC listener
     # accepts beside the cookie and `rpc_password_entry`.
     rpc_auth: tuple[RpcAuthEntry, ...]
@@ -331,6 +336,7 @@ class Config:
         rpc_port: int | None = None,
         rpc_host: str | None = None,
         rpcbind: Sequence[str] = (),
+        rpcallowip: Sequence[str] = (),
         allow_p2p: bool = True,
         allow_rpc: bool = True,
         pruned: bool = False,
@@ -404,6 +410,7 @@ class Config:
 
         self.rpc_host = rpc_host
         self.rpcbind = tuple(rpcbind)
+        self.rpcallowip = tuple(rpcallowip)
         # Core reads the RPC options below in `StartHTTPRPC` and its
         # `InitRPCAuthentication` (`src/httprpc.cpp`), which `AppInitMain`
         # runs under `-server` alone (`src/init.cpp`, both at
