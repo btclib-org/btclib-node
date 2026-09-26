@@ -1053,9 +1053,10 @@ class RpcConnection:
         header section `_HeadReader` refuses, an `Expect` it does not
         meet, or a chunked body `_ChunkedReader` refuses, is answered
         400, 417 or 413 by `_send_framing_error`, as soon as it is
-        refused; a
-        method or a target `_refusal` refuses is answered by
-        `_send_refusal`, whatever the credential; a request whose
+        refused; a method outside `_LIBEVENT_METHODS` is answered 501,
+        from any source; a source `manager.client_allowed` refuses is
+        answered a bare 403; a method or a target `_refusal` refuses is
+        answered by `_send_refusal`, whatever the credential; a request whose
         `Authorization` header `manager.auth` does not accept is
         answered 401 by `_send_unauthorized`, its body read off the
         socket and never decoded; and one whose decoded body
@@ -1217,13 +1218,16 @@ class RpcConnection:
     def _refused_early(self, head: RequestHead) -> bool:
         """Schedule the reply to what Core refuses ahead of the credential.
 
-        `http_request_cb`'s order (`src/httpserver.cpp`, at
-        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a source
-        `ClientAllowed` refuses is a bare 403, whatever the method; then
-        a method or a target `_refusal` refuses. Answers whether a reply
-        was scheduled.
+        A method outside `_LIBEVENT_METHODS` is libevent's 501, answered
+        before Core's `http_request_cb` runs; then, in that callback's
+        order (`src/httpserver.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+        v31.1 tag), a source `ClientAllowed` refuses is a bare 403, and
+        a method or a target `_refusal` refuses is answered as it says.
+        Answers whether a reply was scheduled.
         """
-        if not self.manager.client_allowed(self.client):
+        if head.method in _LIBEVENT_METHODS and not self.manager.client_allowed(
+            self.client
+        ):
             self.manager.logger.debug(
                 "HTTP request from %s rejected: Client network is not "
                 "allowed RPC access",

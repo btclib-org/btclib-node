@@ -1009,7 +1009,13 @@ def test_a_body_that_is_not_json_is_not_parsed_without_a_credential() -> None:
 
 @pytest.mark.parametrize(
     ("method", "auth"),
-    [(b"POST", RPCAUTH_LINE), (b"POST", b""), (b"GET", b""), (b"DELETE", b"")],
+    [
+        (b"POST", RPCAUTH_LINE),
+        (b"POST", b""),
+        (b"GET", b""),
+        (b"HEAD", b""),
+        (b"DELETE", b""),
+    ],
 )
 def test_a_source_rpcallowip_does_not_name_is_refused_403_first(
     method: bytes, auth: bytes
@@ -1018,8 +1024,9 @@ def test_a_source_rpcallowip_does_not_name_is_refused_403_first(
 
     Measured on bitcoind v31.1.0 with `-rpcbind=0.0.0.0
     -rpcallowip=127.0.0.1`, from another address of the same machine: a
-    bare 403 whatever the method and the credential, and the connection
-    kept, each further request refused the same way.
+    bare 403 for every method libevent passes to that callback, whatever
+    the credential, and the connection kept, each further request refused
+    the same way.
     """
     debugs: list[tuple[Any, ...]] = []
     reply, _, closed, messages, warnings = refused(
@@ -1035,6 +1042,27 @@ def test_a_source_rpcallowip_does_not_name_is_refused_403_first(
     assert message == (
         "HTTP request from %s rejected: Client network is not allowed RPC access"
     )
+
+
+@pytest.mark.parametrize("method", [b"OPTIONS", b"PATCH", b"TRACE", b"FOO"])
+def test_a_method_libevent_refuses_is_501_from_a_refused_source_too(
+    method: bytes,
+) -> None:
+    """ISS 1268: libevent's `allowed_methods` check runs before `ClientAllowed`.
+
+    Measured on bitcoind v31.1.0 from a source `-rpcallowip` does not
+    name: these four answer 501, as from an allowed one.
+    """
+    debugs: list[tuple[Any, ...]] = []
+    reply, _, closed, messages, _ = refused(
+        request(b"Content-Length: %d\r\n" % len(BODY), auth=b"", method=method),
+        allowed=False,
+        debugs=debugs,
+    )
+    assert reply.startswith(b"HTTP/1.1 501 Not Implemented\r\n")
+    assert closed
+    assert not messages
+    assert not debugs
 
 
 ONLY_POST = b"JSONRPC server handles only POST requests"
