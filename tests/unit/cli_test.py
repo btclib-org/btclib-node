@@ -183,6 +183,14 @@ def test_parse_conf_text_warns_about_an_unknown_key_with_its_section(
     assert capsys.readouterr().err == ""
 
 
+def test_parse_conf_text_drops_an_unknown_key_with_no_warnings_list(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ISS 1295: with nowhere to keep the warning, the key is dropped alone."""
+    assert cli._parse_conf_text("walletnotify=x\n") == {}
+    assert capsys.readouterr().err == ""
+
+
 def test_parse_conf_text_warns_specifically_about_datadir(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
