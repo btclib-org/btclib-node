@@ -1460,8 +1460,11 @@ def test_a_high_bandwidth_peer_is_sent_a_lone_new_block_as_a_cmpctblock(
 
     Core's `SendMessages` sends a peer that asked for high bandwidth a
     single header as the block's `cmpctblock`, whether or not it asked
-    for headers, and caches one compact block for every peer
-    (btclib-org/btclib-node#1223).
+    for headers (btclib-org/btclib-node#1223). Every peer gets the same
+    one here, as in Core where `NewPoWValidBlock` left the block in
+    `m_most_recent_compact_block`; where it did not, Core builds one per
+    peer under a fresh nonce (`src/net_processing.cpp:5900-5911`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
     """
     chain = generate_random_chain(2, RegTest().genesis.hash, tip_time=datetime.now(UTC))
     connect(node, chain[:1])
