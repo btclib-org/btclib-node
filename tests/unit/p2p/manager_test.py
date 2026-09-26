@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast, override
 import pytest
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
 from btclib.p2p.keepalive import Ping
+from btclib.p2p.limits import PROTOCOL_VERSION
 
 from btclib_node.chains import RegTest
 from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS
@@ -67,6 +68,7 @@ def a_conn(
     nonce: int | None = None,
     inbound: bool = False,
     automatic: bool = False,
+    protocol: int = PROTOCOL_VERSION,
 ) -> Any:
     """Build a `Connection` double: no socket, its own `sent`/`stopped` logs.
 
@@ -88,6 +90,7 @@ def a_conn(
         nonce=nonce,
         inbound=inbound,
         automatic=automatic,
+        version_message=SimpleNamespace(version=protocol),
         sent=[],
         stopped=[],
     )
@@ -613,6 +616,23 @@ def test_a_peer_that_has_gone_quiet_is_pinged_and_then_dropped(
     assert not manager.connections
 
 
+def test_a_quiet_peer_at_bip31_or_below_is_dropped_unpinged(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1180: no `ping` to wait on, so twice the idle bound is waited.
+
+    `Connection.send_ping` sends it none, as btclib has no `ping` without
+    a nonce; the same quiet span a pinged peer gets drops it.
+    """
+    bound = manager_module._IDLE_TIMEOUT
+    quiet = a_conn(1, last_receive=time.time() - bound - 10, protocol=60000)
+    quieter = a_conn(2, last_receive=time.time() - 2 * bound - 10, protocol=60000)
+    manager = a_manager([quiet, quieter])
+    asyncio.run(one_pass(manager))
+    assert quiet.sent == quieter.sent == []
+    assert list(manager.connections) == [1]
+
+
 def test_a_peer_that_answered_recently_is_left_alone(
     a_manager: AManagerFactory,
 ) -> None:
@@ -650,6 +670,7 @@ def test_a_pong_landing_between_the_idle_check_and_its_reread_does_not_drop_the_
         relay_tx = True
         feefilter = 0
         automatic = False
+        version_message = SimpleNamespace(version=PROTOCOL_VERSION)
 
         @property
         def ping_sent(self) -> float:

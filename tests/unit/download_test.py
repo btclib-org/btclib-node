@@ -22,8 +22,8 @@ import pytest
 from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.inventory import GetData, GetHeaders, Inv, InventoryType
-from btclib.p2p.limits import MAX_INV_SZ
-from btclib.p2p.negotiation import FeeFilter
+from btclib.p2p.limits import MAX_INV_SZ, PROTOCOL_VERSION
+from btclib.p2p.negotiation import FeeFilter, SendHeaders
 
 import btclib_node.download as download_module
 from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
@@ -35,6 +35,7 @@ from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.callbacks import MAX_GETDATA_INFLIGHT_BYTES
 from btclib_node.p2p.connection import PeerStats
+from btclib_node.p2p.protocol_version import FEEFILTER_VERSION, SENDHEADERS_VERSION
 from tests import generate_random_transaction
 
 if TYPE_CHECKING:
@@ -64,15 +65,21 @@ def a_conn(
     feefilter_sent: int = 0,
     next_feefilter_send_time: float = 0.0,
     queued_send_bytes: int = 0,
-    version_message: Any = None,
+    version_message: Any = ...,
     best_known_height: int = 0,
     wtxidrelay_received: bool = True,
 ) -> Any:
     """Build a fake connection, recording every message handed to `send`.
 
     A wtxid-relay peer by default; `wtxidrelay_received=False` is one
-    relayed to by txid (ISS 1183).
+    relayed to by txid (ISS 1183). Its `version_message` is a full node's
+    at this node's own protocol version unless one is given, `None`
+    included.
     """
+    if version_message is ...:
+        version_message = a_version(
+            ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
+        )
     sent: list[Any] = []
     return SimpleNamespace(
         id=conn_id,
@@ -94,14 +101,14 @@ def a_conn(
         status=status,
         feefilter_sent=feefilter_sent,
         next_feefilter_send_time=next_feefilter_send_time,
-        # `None` until `callbacks.version` writes it, matching a real
-        # `Connection` (`p2p/connection.py`); `_is_limited_peer`
-        # (download.py) reads only `.services` off it, so a
-        # `SimpleNamespace(services=...)` stands in for the real `Version`
-        # payload. btclib-org/btclib-node#706
+        # `_is_limited_peer` (download.py) reads only `.services` off it
+        # and `common_version` only `.version`, so a `SimpleNamespace`
+        # of the two stands in for the real `Version` payload.
+        # btclib-org/btclib-node#706
         version_message=version_message,
         best_known_height=best_known_height,
         wtxidrelay_received=wtxidrelay_received,
+        sent_sendheaders=False,
         # what a real `Connection` starts every fresh connection at
         # (`p2p/connection.py`), and what `_send_due_announcements` now
         # paces an `Inv` chunk against the same way `advance_getdata`
@@ -233,7 +240,7 @@ def test_a_peer_without_wtxid_relay_is_asked_by_txid(
     peer = a_conn(
         1,
         wtxidrelay_received=False,
-        version_message=SimpleNamespace(services=services),
+        version_message=a_version(ServiceFlags(services)),
     )
     manager = make_manager([peer])
     txid = a_hash(9)
@@ -852,6 +859,79 @@ def test_a_connection_still_mid_handshake_is_sent_no_feefilter() -> None:
     assert not only(conn, FeeFilter)
 
 
+def test_a_peer_below_feefilter_version_is_sent_no_feefilter() -> None:
+    """ISS 1180: Core's `MaybeSendFeefilter` returns below 70013."""
+    old = a_conn(1, version_message=a_version(_FULL, FEEFILTER_VERSION - 1))
+    manager = make_manager([old])
+    manager._send_due_feefilters()
+    assert not only(old, FeeFilter)
+
+
+def a_worked_manager(conn: Any, *, work: int) -> DownloadManager:
+    """Build a manager whose one indexed block, `a_hash(1)`, has `work`.
+
+    `conn` is made to know that block; the minimum chain work is 10.
+    """
+    conn.block_availability.best_known = a_hash(1)
+    manager = make_manager(
+        [conn], block_index=SimpleNamespace(chainwork={a_hash(1): work})
+    )
+    cast("Any", manager.node).chain.consensus.minimum_chain_work = 10
+    return manager
+
+
+def test_sendheaders_is_sent_once_the_peer_has_the_minimum_work() -> None:
+    """ISS 1180: Core's `MaybeSendSendHeaders`, sent once and only once."""
+    conn = a_conn(1)
+    manager = a_worked_manager(conn, work=11)
+    manager._send_due_sendheaders()
+    manager._send_due_sendheaders()
+    assert len(only(conn, SendHeaders)) == 1
+    assert conn.sent_sendheaders
+
+
+@pytest.mark.parametrize(
+    ("work", "protocol", "status", "best_known"),
+    [
+        (10, PROTOCOL_VERSION, P2pConnStatus.Connected, True),
+        (11, SENDHEADERS_VERSION - 1, P2pConnStatus.Connected, True),
+        (11, PROTOCOL_VERSION, P2pConnStatus.Open, True),
+        (11, PROTOCOL_VERSION, P2pConnStatus.Connected, False),
+    ],
+    ids=["minimum-work", "old-version", "mid-handshake", "nothing-known"],
+)
+def test_sendheaders_waits_for_version_work_and_handshake(
+    *, work: int, protocol: int, status: P2pConnStatus, best_known: bool
+) -> None:
+    """ISS 1180: none below 70012, at the minimum work, or before verack."""
+    conn = a_conn(1, version_message=a_version(_FULL, protocol), status=status)
+    manager = a_worked_manager(conn, work=work)
+    if not best_known:
+        conn.block_availability.best_known = None
+    manager._send_due_sendheaders()
+    assert not only(conn, SendHeaders)
+    assert not conn.sent_sendheaders
+
+
+def test_a_step_sends_sendheaders_to_a_peer_past_the_minimum_work() -> None:
+    """ISS 1180: `step` is where `MaybeSendSendHeaders` runs, per peer.
+
+    A peer serving no blocks, so that the block half of `step` leaves it be.
+    """
+    conn = a_conn(1, version_message=a_version(ServiceFlags.NODE_WITNESS))
+    block_index = HeaderIndex(age=_OLD)
+    cast("Any", block_index).chainwork = {a_hash(7): 1}
+    conn.block_availability.best_known = a_hash(7)
+    manager = make_manager(
+        [conn],
+        status=NodeStatus.SyncingHeaders,
+        is_initial_block_download=True,
+        block_index=block_index,
+    )
+    manager.step()
+    assert only(conn, SendHeaders)
+
+
 def test_a_fresh_connections_first_feefilter_is_sent_immediately() -> None:
     """A never-scheduled connection is sent `feefilter` on the first pass."""
     # next_feefilter_send_time defaults to 0.0, "never scheduled", the
@@ -1192,12 +1272,13 @@ def test_a_peer_that_is_already_pending_eviction_is_left_alone() -> None:
     assert not quiet.sent
 
 
-def a_version(services: ServiceFlags) -> Any:
-    """Build a fake `version_message` carrying only `services`.
+def a_version(services: ServiceFlags, protocol: int = PROTOCOL_VERSION) -> Any:
+    """Build a fake `version_message` carrying `services` and `protocol`.
 
-    `_is_limited_peer` (download.py) reads nothing else off it.
+    `_is_limited_peer` (download.py) reads nothing else off it, and
+    `common_version` nothing but the protocol version.
     """
-    return SimpleNamespace(services=services)
+    return SimpleNamespace(services=services, version=protocol)
 
 
 _LIMITED = ServiceFlags.NODE_NETWORK_LIMITED | ServiceFlags.NODE_WITNESS

@@ -69,7 +69,7 @@ from btclib.p2p.limits import (
     MAX_PROTOCOL_MESSAGE_LENGTH,
     PROTOCOL_VERSION,
 )
-from btclib.p2p.negotiation import FeeFilter, GetAddr, SendHeaders, WtxidRelay
+from btclib.p2p.negotiation import FeeFilter, GetAddr, WtxidRelay
 from btclib.p2p.reject import Reject, RejectCode
 
 from btclib_node.chainstate.block_index import BlockStatus, block_time, calculate_work
@@ -83,6 +83,13 @@ from btclib_node.main import verify_mempool_acceptance
 from btclib_node.p2p.address import ip_and_port
 from btclib_node.p2p.block_availability import update_block_availability
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
+from btclib_node.p2p.protocol_version import (
+    BIP0031_VERSION,
+    MIN_PEER_PROTO_VERSION,
+    SHORT_IDS_BLOCKS_VERSION,
+    WTXID_RELAY_VERSION,
+    common_version,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -173,8 +180,10 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     `WtxidRelay`, `SendAddrV2` and `Verack` in answer.
     btclib-org/btclib-node#482
 
-    Continuing means answering `wtxidrelay`, `sendaddrv2` and `verack`,
-    and recording whether the peer asked to have transactions relayed.
+    Continuing means answering `verack`, with `wtxidrelay` and
+    `sendaddrv2` ahead of it where the common version reaches
+    `WTXID_RELAY_VERSION`, and recording whether the peer asked to have
+    transactions relayed.
     """
     if conn.version_message is not None:
         return
@@ -203,8 +212,10 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
         conn.stop()
         return
 
-    # For simplicity we only allow current protocol version
-    if version_msg.version < PROTOCOL_VERSION:
+    # Core's floor: a peer older than `MIN_PEER_PROTO_VERSION` is
+    # dropped, and every feature newer than that is gated per peer on
+    # `common_version` (`p2p/protocol_version.py`)
+    if version_msg.version < MIN_PEER_PROTO_VERSION:
         conn.stop()
         return
     # we only connect to witness nodes
@@ -257,8 +268,12 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
         conn.stop()
         return
 
-    conn.send(WtxidRelay())
-    conn.send(SendAddrV2())
+    # Core sends `sendaddrv2` from 70016 up too, "as a courtesy" to
+    # software that rejects a message it does not know. The final `alert`
+    # Core sends at 70012 or below is not: btclib-org/btclib-node#1205
+    if common_version(conn) >= WTXID_RELAY_VERSION:
+        conn.send(WtxidRelay())
+        conn.send(SendAddrV2())
     conn.send(Verack())
 
     # relay_tx, which is the attribute Connection defines: the name this
@@ -321,8 +336,11 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
         conn.address = address
         node.p2p_manager.peer_db.add_active_address(address)
 
-    conn.send(SendHeaders())
-    conn.send(SendCmpct(announce=False, version=1))
+    # `sendheaders` is `DownloadManager`'s to send, once this peer's best
+    # known block has the minimum chain work, as Core's
+    # `MaybeSendSendHeaders` does
+    if common_version(conn) >= SHORT_IDS_BLOCKS_VERSION:
+        conn.send(SendCmpct(announce=False, version=1))
     # BIP133's own floor is not sent here: DownloadManager._send_due_feefilters
     # (src/btclib_node/download.py) reaches every connected connection on the
     # very next step(), Connection.next_feefilter_send_time defaulting to
@@ -368,8 +386,13 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 def wtxidrelay(node: Node, msg: bytes, conn: Connection) -> None:
-    """Record that the peer relays transactions by wtxid (BIP339)."""
-    conn.wtxidrelay_received = True
+    """Record that the peer relays transactions by wtxid (BIP339).
+
+    Ignored from a peer whose common version is below
+    `WTXID_RELAY_VERSION`, as Core ignores it.
+    """
+    if common_version(conn) >= WTXID_RELAY_VERSION:
+        conn.wtxidrelay_received = True
 
 
 def sendaddrv2(node: Node, msg: bytes, conn: Connection) -> None:
@@ -386,7 +409,13 @@ def sendheaders(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 def ping(node: Node, msg: bytes, conn: Connection) -> None:
-    """Answer a `ping` with a `pong` carrying the same nonce."""
+    """Answer a `ping` with a `pong` carrying the same nonce.
+
+    Unanswered at a common version of `BIP0031_VERSION` or below, whose
+    `ping` carries no nonce and which Core does not answer either.
+    """
+    if common_version(conn) <= BIP0031_VERSION:
+        return
     nonce = Ping.parse(msg).nonce
     conn.send(Pong(nonce))
 

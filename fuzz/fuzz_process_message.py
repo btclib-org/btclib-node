@@ -165,6 +165,9 @@ from socket import socket
 from typing import TYPE_CHECKING
 
 from btclib.exceptions import BTClibException, BTClibValueError
+from btclib.p2p.address import NetworkAddress, ServiceFlags
+from btclib.p2p.handshake import Version
+from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.p2p.message import Message
 
 from btclib_node import Node
@@ -194,6 +197,22 @@ ENTRY_POINTS = ("fuzz.fuzz_process_message:dispatch",)
 _TYPES: tuple[str, ...] = tuple(sorted({**handshake_callbacks, **callbacks}))
 
 _connection_ids = count()
+
+# What `callbacks.version` leaves on a connection by the time it is
+# `Connected`: a peer at this node's own protocol version, so that every
+# message `p2p/protocol_version.py` gates is dispatched as it would be.
+_SERVICES = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
+_PEER_VERSION = Version(
+    version=PROTOCOL_VERSION,
+    services=_SERVICES,
+    timestamp=1,
+    addr_recv=NetworkAddress(0, "0.0.0.0", 0),  # noqa: S104
+    addr_from=NetworkAddress(_SERVICES, "0.0.0.0", 18444),  # noqa: S104
+    nonce=7,
+    user_agent=b"/fuzz/",
+    start_height=0,
+    relay=True,
+)
 _node: Node | None = None
 
 
@@ -308,6 +327,7 @@ def _connection_for(node: Node, command: str) -> Connection:
         manager.pending_connections[conn.id] = conn
     else:
         conn.status = P2pConnStatus.Connected
+        conn.version_message = _PEER_VERSION
         manager.connections[conn.id] = conn
     return conn
 

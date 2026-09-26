@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.inventory import GetData, Inv, Inventory, InventoryType
 from btclib.p2p.limits import MAX_INV_SZ
-from btclib.p2p.negotiation import FeeFilter
+from btclib.p2p.negotiation import FeeFilter, SendHeaders
 
 from btclib_node.chainstate.block_index import MAX_DOWNLOAD_WINDOW
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, NodeStatus, P2pConnStatus
@@ -31,6 +31,11 @@ from btclib_node.p2p.block_availability import update_last_common_block
 from btclib_node.p2p.callbacks import (
     MAX_GETDATA_INFLIGHT_BYTES,
     maybe_send_getheaders,
+)
+from btclib_node.p2p.protocol_version import (
+    FEEFILTER_VERSION,
+    SENDHEADERS_VERSION,
+    common_version,
 )
 
 if TYPE_CHECKING:
@@ -399,11 +404,16 @@ class DownloadManager:
         self.last_getheaders_timestamps: dict[int, float] = {}
 
     def step(self) -> None:
-        """Run one pass: headers, blocks and txs asked for, feefilters sent."""
+        """Run one pass.
+
+        Headers, blocks and txs are asked for, and sendheaders and
+        feefilters sent.
+        """
         self.sync_headers()
         self.update_last_common_blocks()
         self.block_download()
         self.tx_download()
+        self._send_due_sendheaders()
         self._send_due_feefilters()
 
     def tx_download(self) -> None:
@@ -661,6 +671,32 @@ class DownloadManager:
         txid = self.node.mempool.transactions[wtxid].id
         return Inventory(InventoryType.MSG_TX, txid)
 
+    def _send_due_sendheaders(self) -> None:
+        """Ask a peer, once, for new blocks as headers (BIP130).
+
+        Core's `MaybeSendSendHeaders` (`net_processing.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), reached from its
+        per-peer message loop: not before the common version reaches
+        `SENDHEADERS_VERSION`, and not before the best block the peer is
+        known to have carries more than the minimum chain work, so that
+        an initial header sync is not interleaved with announcements.
+        """
+        node = self.node
+        minimum_chain_work = node.chain.consensus.minimum_chain_work
+        for conn in node.p2p_manager.connections.copy().values():
+            if conn.status != P2pConnStatus.Connected or conn.sent_sendheaders:
+                continue
+            if common_version(conn) < SENDHEADERS_VERSION:
+                continue
+            best_known = conn.block_availability.best_known
+            if best_known is None:
+                continue
+            chainwork = node.chainstate.block_index.chainwork[best_known]
+            if chainwork <= minimum_chain_work:
+                continue
+            conn.send(SendHeaders())
+            conn.sent_sendheaders = True
+
     def _send_due_feefilters(self) -> None:
         """Tell every connected peer this node's own current relay floor.
 
@@ -684,12 +720,8 @@ class DownloadManager:
         same absence already, for the identical set of Core concepts
         read against `RejectIncomingTxs`.
 
-        Core's `GetCommonVersion() < FEEFILTER_VERSION` return is absent
-        on different grounds, this tree having a peer version where it
-        has none of the above: the `version` handshake callback
-        stops a peer below `PROTOCOL_VERSION`, which
-        sits above Core's `FEEFILTER_VERSION`, so a connection reached
-        here has cleared that floor already.
+        Core's `GetCommonVersion() < FEEFILTER_VERSION` return is kept:
+        a peer that old is sent none.
         """
         now = time.time()
         # Core's own `MaybeSendFeefilter` (`net_processing.cpp`, at
@@ -717,6 +749,8 @@ class DownloadManager:
 
         for conn in self.node.p2p_manager.connections.copy().values():
             if conn.status != P2pConnStatus.Connected:
+                continue
+            if common_version(conn) < FEEFILTER_VERSION:
                 continue
             # Once this node is done with IBD, a peer sitting on the
             # `_max_feefilter` this branch sent it during IBD is not
