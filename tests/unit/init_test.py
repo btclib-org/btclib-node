@@ -1492,3 +1492,37 @@ def test_worker_count_falls_back_to_eight_split_if_the_core_count_is_unknown(
     monkeypatch.setattr(os, "cpu_count", lambda: None)
     monkeypatch.setenv("PYTEST_XDIST_WORKER_COUNT", "4")
     assert btclib_node._default_worker_count() == 2
+
+
+def test_a_store_that_cannot_be_opened_ends_start_up_with_the_rest_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1279: the store's error is the init error, as Core's step 7 has it.
+
+    What `load` opened before it is closed again, so the same directory
+    opens whole once the store can be.
+    """
+    message = "the block store cannot be opened"
+
+    def refuse(*_args: object) -> None:
+        raise OSError(message)
+
+    config = Config(
+        chain="regtest", data_dir=tmp_path, allow_p2p=False, allow_rpc=False
+    )
+    with monkeypatch.context() as patch:
+        patch.setattr(btclib_node, "BlockDB", refuse)
+        node = Node(config=config)
+        node.start()
+        wait_until(lambda: not node.is_alive())
+        node.stop()
+    assert node.init_errors == [message]
+    assert not node.loaded
+    assert node.chainstate.db.closed
+    assert node.p2p_manager.loop.is_closed()
+    reopened = Node(config=config)
+    try:
+        reopened.start()
+        assert reopened.loaded
+    finally:
+        reopened.stop()

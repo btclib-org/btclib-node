@@ -21,6 +21,7 @@ import signal
 import sys
 import threading
 import time
+from contextlib import ExitStack
 from math import log2
 from multiprocessing.pool import Pool, ThreadPool
 from typing import TYPE_CHECKING, override
@@ -365,6 +366,9 @@ class Node(threading.Thread):
         self.rpc_manager = RpcManager(self, self.rpc_port)
         # whether `load` has opened the stores `run`'s teardown closes
         self.loaded = False
+        # the closes of what `load` has opened so far, emptied once it
+        # finishes: `_load_or_abort` runs them where a later store fails
+        self._opened = ExitStack()
         # set by `run` once `load` has run or start-up has ended before
         # it, which `start` waits on
         self._load_attempted = threading.Event()
@@ -383,11 +387,15 @@ class Node(threading.Thread):
         if self.loaded:
             return
         peer_db = PeerDB(self.chain, self.data_dir)
+        self._opened.callback(peer_db.close)
         # Core's `banlist.json`, in the chain's own directory
         ban_man = BanMan(self.data_dir / "banlist.json", self.logger)
         self.p2p_manager = P2pManager(self, self.p2p_port, peer_db, ban_man)
+        self._opened.callback(self.p2p_manager.loop.close)
         self.chainstate = Chainstate(self.data_dir, self.chain, self.logger)
+        self._opened.callback(self.chainstate.close)
         self.block_db = BlockDB(self.data_dir, self.logger, self.config.blocks_dir)
+        self._opened.callback(self.block_db.close)
         # Core's own `Chainstate::LoadGenesisBlock` (`src/validation.cpp:4974`,
         # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) writes the genesis
         # block to disk at start, so `getblock` and a peer's `getdata` are
@@ -444,6 +452,7 @@ class Node(threading.Thread):
         # index 0. btclib-org/btclib-node#722
         self.best_height = len(self.chainstate.block_index.active_chain) - 1
         self.download_manager = DownloadManager(self, self.logger)
+        self._opened.pop_all()
         self.loaded = True
 
     @property
@@ -613,12 +622,15 @@ class Node(threading.Thread):
 
         A store that cannot be opened ends start-up as Core's step 7
         does where it cannot load the block index: its exception's text
-        is the init error `cli.main` prints.
+        is the init error `cli.main` prints, and what `load` opened before
+        it is closed again, `run`'s teardown closing only what a finished
+        `load` opened.
         """
         try:
             self.load()
         except Exception as error:
             self.logger.exception("Could not open the node's stores")
+            self._opened.close()
             self._abort_start([str(error)])
             return False
         return True
