@@ -49,7 +49,12 @@ REQUEST = {"jsonrpc": "2.0", "id": "a", "method": "getbestblockhash"}
 class AManagerFactory(Protocol):
     """The type `a_manager` yields: one `RpcManager`, closed at teardown."""
 
-    def __call__(self, port: int | None, rpc_host: str = "127.0.0.1") -> RpcManager:
+    def __call__(
+        self,
+        port: int | None,
+        rpc_host: str = "127.0.0.1",
+        rpcbind: tuple[str, ...] = (),
+    ) -> RpcManager:
         """Build an `RpcManager` bound to `port` and `rpc_host` once started."""
         ...
 
@@ -63,9 +68,15 @@ def a_manager(tmp_path: Path) -> Iterator[AManagerFactory]:
     """
     made: list[RpcManager] = []
 
-    def make(port: int | None, rpc_host: str = "127.0.0.1") -> RpcManager:
+    def make(
+        port: int | None, rpc_host: str = "127.0.0.1", rpcbind: tuple[str, ...] = ()
+    ) -> RpcManager:
         config = Config(
-            chain="regtest", data_dir=tmp_path, rpc_host=rpc_host, rpcauth=[RPCAUTH]
+            chain="regtest",
+            data_dir=tmp_path,
+            rpc_host=rpc_host,
+            rpcbind=rpcbind,
+            rpcauth=[RPCAUTH],
         )
         config.data_dir.mkdir(exist_ok=True)
         manager = RpcManager(
@@ -180,6 +191,51 @@ def test_bind_honors_a_different_rpc_host(a_manager: AManagerFactory) -> None:
         assert server_socket.getsockname()[0] == all_interfaces
     finally:
         server_socket.close()
+
+
+_IGNORED = (
+    "Option -rpcbind was ignored because -rpcallowip was not specified, "
+    "refusing to allow everyone to connect"
+)
+_EXPOSED = (
+    "The RPC server is not safe to expose to untrusted networks such as the "
+    "public internet"
+)
+# the any address, named here to be refused or warned over, not bound
+_EVERY_INTERFACE = "0.0.0.0"  # noqa: S104
+
+
+@pytest.mark.parametrize(
+    ("rpc_host", "rpcbind", "warned"),
+    [
+        pytest.param("127.0.0.1", (), [], id="loopback"),
+        pytest.param("127.0.0.1", (_EVERY_INTERFACE,), [_IGNORED], id="ignored"),
+        pytest.param(_EVERY_INTERFACE, (), [_EXPOSED], id="every interface"),
+        pytest.param("localhost", (), [], id="a name, not looked up"),
+    ],
+)
+def test_bind_warns_as_cores_http_bind_addresses(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    rpc_host: str,
+    rpcbind: tuple[str, ...],
+    warned: list[str],
+) -> None:
+    """ISS 1211: `HTTPBindAddresses`'s warnings, and its "Binding RPC" line.
+
+    Measured on bitcoind v31.1.0: `-rpcbind=0.0.0.0` without
+    `-rpcallowip` logs the first warning and binds loopback. The second
+    is logged for an address that binds every interface, once bound.
+    """
+    manager = a_manager(get_random_port(), rpc_host=rpc_host, rpcbind=rpcbind)
+    warnings: list[str] = []
+    infos: list[tuple[object, ...]] = []
+    monkeypatch.setattr(manager.logger, "warning", warnings.append)
+    monkeypatch.setattr(manager.logger, "info", lambda *args: infos.append(args))
+    server_socket = manager._bind()
+    server_socket.close()
+    assert warnings == warned
+    assert infos == [("Binding RPC on address %s port %s", rpc_host, manager.port)]
 
 
 def test_a_body_that_is_not_json_answers_parse_error_and_forgets_the_client(
