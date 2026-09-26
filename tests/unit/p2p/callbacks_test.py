@@ -2879,13 +2879,17 @@ def test_getblocktxn_is_answered_with_the_transactions_asked_for() -> None:
 
 
 def test_getblocktxn_past_the_last_transaction_is_misbehaviour() -> None:
-    """ISS 1206: "getblocktxn with out-of-bounds tx indices"."""
+    """ISS 1206: "getblocktxn with out-of-bounds tx indices".
+
+    Core calls `Misbehaving`, so this is the `MisbehavingError` that
+    `p2p.main` discourages the peer for, not a bare `BTClibValueError`.
+    """
     block_index = a_tall_block_index(3)
     block = a_block_with_transactions(1)
     node = a_data_node(block_index=block_index, block_db=a_block_store(block))
     peer = a_peer()
     request = GetBlockTxn(block_index.active_chain[-1], [2])
-    with pytest.raises(BTClibValueError, match="out-of-bounds"):
+    with pytest.raises(MisbehavingError, match="out-of-bounds"):
         getblocktxn(node, request.serialize(), peer)
     assert not peer.sent
 

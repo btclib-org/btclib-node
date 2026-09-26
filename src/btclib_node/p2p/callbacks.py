@@ -2013,7 +2013,7 @@ def getblocktxn(node: Node, msg: bytes, conn: Connection) -> None:
     transactions = block.transactions
     if any(index >= len(transactions) for index in request.indexes):
         err_msg = "getblocktxn with out-of-bounds tx indices"
-        raise BTClibValueError(err_msg)
+        raise MisbehavingError(err_msg)
     answer = [transactions[index] for index in request.indexes]
     conn.send(BlockTxn(request.block_hash, answer))
 

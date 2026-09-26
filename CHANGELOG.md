@@ -439,10 +439,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   value a 417** (closes #1194), where a request of HTTP/1.1 or later has a
   body, ahead of the 413 and of every refusal after the header section.
 
-### Compact blocks are served, and offered at version 2, as in Core
-
-- **`sendcmpct` offers version 2, and a `MSG_CMPCT_BLOCK` or a `getblocktxn`
-  is answered at Core's depths** (closes #1206).
 ### A connection short of verack is dropped a minute after connecting
 
 - **A pending connection is dropped sixty seconds after it connected,
@@ -472,6 +468,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 ### An inbound peer is sent `version` only once its own is accepted, as in Core
 
 - **A refused inbound peer is sent nothing** (closes #1207).
+
+### Compact blocks are served, and offered at version 2, as in Core
+
+- **`sendcmpct` offers version 2, and a `MSG_CMPCT_BLOCK` or a `getblocktxn`
+  is answered at Core's depths** (closes #1206).
 
 ## v2026.9.24
 
