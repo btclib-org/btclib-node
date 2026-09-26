@@ -165,7 +165,7 @@ def test_a_pruned_server_advertises_node_network_limited_only(
 
     `NODE_NETWORK_LIMITED` set, `NODE_NETWORK` dropped -- what the
     client actually received over the wire, not what the server's own
-    `send_version` was asked to build.
+    `own_version` was asked to build.
     """
     _server, client = pruned_server_and_client
     version = client.p2p_manager.connections[0].version_message
