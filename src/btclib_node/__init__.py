@@ -301,6 +301,10 @@ class Node(threading.Thread):
         self.terminate_flag = threading.Event()
         log_path = self.data_dir / config.log_path if config.log_path else None
         self.logger = Logger(log_path, debug=config.debug)
+        # what Core logs while reading its settings reaches its log once
+        # that is open, ahead of anything the node logs
+        for warning in config.log_warnings:
+            self.logger.warning(warning)
 
         self.chainstate = Chainstate(self.data_dir, self.chain, self.logger)
         self.block_db = BlockDB(self.data_dir, self.logger, config.blocks_dir)

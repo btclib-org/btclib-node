@@ -171,11 +171,16 @@ def test_read_conf_file_ends_a_line_at_a_newline_alone(
 def test_parse_conf_text_warns_about_an_unknown_key_with_its_section(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """An unknown key is warned about, as written, and dropped."""
-    assert cli._parse_conf_text("[regtest]\nwalletnotify=x\n") == {}
-    assert capsys.readouterr().err == (
-        "warning: ignoring unknown configuration value regtest.walletnotify\n"
-    )
+    """ISS 1295: an unknown key is dropped, and warned about for the log alone.
+
+    As written, section and all: `bitcoind` v31.1.0 logs `[y]`'s `bar=2`
+    as "Ignoring unknown configuration value y.bar", and writes nothing
+    on stderr.
+    """
+    warnings: list[str] = []
+    assert cli._parse_conf_text("[regtest]\nwalletnotify=x\n", warnings=warnings) == {}
+    assert warnings == ["Ignoring unknown configuration value regtest.walletnotify"]
+    assert capsys.readouterr().err == ""
 
 
 def test_parse_conf_text_warns_specifically_about_datadir(
@@ -455,33 +460,63 @@ def test_build_config_reads_a_double_dash_option(tmp_path: Path) -> None:
 def test_build_config_warns_about_a_double_negative(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """`-nolisten=0` is `-listen=1`, warned about as Core warns about it."""
-    assert _build(tmp_path, "-connect=0", "-nolisten=0").listen is True
-    assert capsys.readouterr().err == (
-        "warning: parsed potentially confusing double-negative -listen=0\n"
+    """`-nolisten=0` is `-listen=1`, warned about in the log alone, as in Core.
+
+    ISS 1295.
+    """
+    config = _build(tmp_path, "-connect=0", "-nolisten=0")
+    assert config.listen is True
+    assert config.log_warnings == (
+        "Parsed potentially confusing double-negative -listen=0",
     )
+    assert capsys.readouterr().err == ""
 
 
 def test_build_config_echoes_a_double_negative_value(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The warning echoes the value of an option that is not `SENSITIVE`."""
-    assert _build(tmp_path, "-connect=0", "-nolisten=garbage").listen is True
-    assert capsys.readouterr().err == (
-        "warning: parsed potentially confusing double-negative -listen=garbage\n"
+    config = _build(tmp_path, "-connect=0", "-nolisten=garbage")
+    assert config.listen is True
+    assert config.log_warnings == (
+        "Parsed potentially confusing double-negative -listen=garbage",
     )
+    assert capsys.readouterr().err == ""
+
+
+def test_build_config_orders_the_log_warnings_as_bitcoind_logs_them(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 1295: the command line's, the file's in its order, then the sections.
+
+    Measured on `bitcoind` v31.1.0 with this file and `-nolisten=0`: its
+    `debug.log` opens on these five warnings, in this order, and its
+    stderr holds the last alone.
+    """
+    conf = "regtest=1\nfoo=1\nnoserver=0\n[x]\n[y]\nbar=2\n"
+    config = _build(tmp_path, "-nolisten=0", conf=conf)
+    path = tmp_path / "bitcoin.conf"
+    sections = (
+        f"{path}:4 Section [x] is not recognized.\n"
+        f"{path}:5 Section [y] is not recognized.\n"
+    )
+    assert config.log_warnings == (
+        "Parsed potentially confusing double-negative -listen=0",
+        "Ignoring unknown configuration value foo",
+        "Parsed potentially confusing double-negative -server=0",
+        "Ignoring unknown configuration value y.bar",
+        sections,
+    )
+    assert capsys.readouterr().err == f"Warning: {sections}\n"
 
 
 @pytest.mark.parametrize("name", ["rpcauth", "rpcpassword", "rpcuser"])
-def test_interpret_value_masks_a_sensitive_double_negative(
-    name: str, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_interpret_value_masks_a_sensitive_double_negative(name: str) -> None:
     """A `SENSITIVE` option's value is `****` in the warning, unlike Core."""
     info = cli._interpret_key(f"no{name}")
-    assert cli._interpret_value(info, "hunter2", cli._OPTIONS[name]) is True
-    assert capsys.readouterr().err == (
-        f"warning: parsed potentially confusing double-negative -{name}=****\n"
-    )
+    warnings: list[str] = []
+    assert cli._interpret_value(info, "hunter2", cli._OPTIONS[name], warnings) is True
+    assert warnings == [f"Parsed potentially confusing double-negative -{name}=****"]
 
 
 @pytest.mark.parametrize(
@@ -495,10 +530,10 @@ def test_build_config_masks_a_double_negative_password(
     conf: str,
 ) -> None:
     """`-norpcpassword=hunter2` never writes `hunter2`, on either path."""
-    _build(tmp_path, "-connect=0", *argv, conf=conf)
-    err = capsys.readouterr().err
-    assert "hunter2" not in err
-    assert "-rpcpassword=****" in err
+    config = _build(tmp_path, "-connect=0", *argv, conf=conf)
+    written = capsys.readouterr().err + "".join(config.log_warnings)
+    assert "hunter2" not in written
+    assert "-rpcpassword=****" in written
 
 
 @pytest.mark.parametrize(
@@ -1177,8 +1212,9 @@ def test_build_config_allowignoredconf_warns_instead(
     assert config.p2p_port == 9123
     other_conf = str(tmp_path / "other.conf")
     expected = _ignored_conf(str(tmp_path), other_conf, "other.conf")
-    warning = expected.rpartition("\n")[0]
-    assert capsys.readouterr().err == f"warning: {warning}\n"
+    # ISS 1295: for the log alone, as Core's `LogWarning` there
+    assert config.log_warnings == (expected.rpartition("\n")[0],)
+    assert capsys.readouterr().err == ""
 
 
 @pytest.mark.parametrize("argv", [["-allowignoredconf=0"], ["-noallowignoredconf"]])
@@ -1974,14 +2010,24 @@ def test_warn_unrecognized_sections_is_one_core_warning(
 
     `testnet4` is one of Core's chains, and so is not warned about.
     """
-    sections = [("x", "a.conf", 2), ("testnet4", "a.conf", 3), ("y", "b", 1)]
-    cli._warn_unrecognized_sections(sections)
-    assert capsys.readouterr().err == (
-        "Warning: a.conf:2 Section [x] is not recognized.\n"
-        "b:1 Section [y] is not recognized.\n\n"
+    settings = cli._Settings({})
+    settings.config_sections = [
+        ("x", "a.conf", 2),
+        ("testnet4", "a.conf", 3),
+        ("y", "b", 1),
+    ]
+    cli._warn_unrecognized_sections(settings)
+    lines = (
+        "a.conf:2 Section [x] is not recognized.\nb:1 Section [y] is not recognized.\n"
     )
-    cli._warn_unrecognized_sections([("main", "a.conf", 1)])
+    assert capsys.readouterr().err == f"Warning: {lines}\n"
+    # ISS 1295: logged too, as `noui_ThreadSafeMessageBox` logs a warning
+    assert settings.log_warnings == [lines]
+    settings = cli._Settings({})
+    settings.config_sections = [("main", "a.conf", 1)]
+    cli._warn_unrecognized_sections(settings)
     assert capsys.readouterr().err == ""
+    assert settings.log_warnings == []
 
 
 @pytest.mark.usefixtures("no_node")

@@ -147,8 +147,8 @@ naming another file, is refused as `InitConfig` (`src/common/init.cpp`,
 same sha) refuses it, and `-allowignoredconf` makes that a warning:
 `_check_ignored_conf` below.
 
-An unrecognised key in the file is warned about, on stderr, and
-ignored -- Core's own default (`ReadConfigFiles(error,
+An unrecognised key in the file is warned about, in the log alone as
+Core logs it, and ignored -- Core's own default (`ReadConfigFiles(error,
 /*ignore_invalid_keys=*/true)`, called this way from `bitcoin.cpp`,
 `common/init.cpp` and `bitcoin-cli.cpp` alike, same sha) rather than
 the fatal alternative that flag also allows. An unrecognised option on
@@ -514,6 +514,9 @@ class _Settings:
     network: str = ""
     # Core's `m_config_sections`: every section the files read named
     config_sections: list[_SectionInfo] = field(default_factory=list)
+    # the warnings Core logs while it reads its settings, before its log
+    # is open, for `Node` to log once its own is
+    log_warnings: list[str] = field(default_factory=list)
 
 
 def _interpret_key(key: str) -> _KeyInfo:
@@ -525,12 +528,18 @@ def _interpret_key(key: str) -> _KeyInfo:
     return _KeyInfo(name[2:] if negated else name, section, negated)
 
 
-def _interpret_value(info: _KeyInfo, value: str | None, option: _Option) -> _Value:
+def _interpret_value(
+    info: _KeyInfo,
+    value: str | None,
+    option: _Option,
+    warnings: list[str] | None = None,
+) -> _Value:
     """Return Core's `InterpretValue`: `False` negated, `True` doubly so.
 
     Raises `ValueError` on a negation `option` forbids. A double
-    negative, `-nofoo=0`, is warned about on stderr as Core warns about
-    it, and is `True`.
+    negative, `-nofoo=0`, is `True`, and its warning is appended to
+    `warnings`, where given, for the log alone, as Core's `LogWarning`
+    (`src/common/args.cpp`, at bitcoin/bitcoin@9be056a8a7).
     """
     if info.negated:
         if option.disallow_negation:
@@ -540,10 +549,10 @@ def _interpret_value(info: _KeyInfo, value: str | None, option: _Option) -> _Val
             # Core's warning writes a `SENSITIVE` option's value in clear:
             # this one writes the `****` Core's `LogArgs` writes instead.
             shown = "****" if option.sensitive else value
-            sys.stderr.write(
-                "warning: parsed potentially confusing double-negative "
-                f"-{info.name}={shown}\n"
-            )
+            if warnings is not None:
+                warnings.append(
+                    f"Parsed potentially confusing double-negative -{info.name}={shown}"
+                )
             return True
         return False
     return "" if value is None else value
@@ -558,9 +567,11 @@ def _negated(values: list[_Value]) -> int:
 
 
 def _parse_parameters(
-    argv: Sequence[str],
+    argv: Sequence[str], warnings: list[str] | None = None
 ) -> tuple[dict[str, list[_Value]], str | None]:
     """Return the options `argv` sets, and its first argument not an option.
+
+    `warnings` is `_interpret_value`'s.
 
     `ArgsManager::ParseParameters` (`src/common/args.cpp`, at
     bitcoin/bitcoin@9be056a8a7): a lone `-` or the first argument not
@@ -587,7 +598,7 @@ def _parse_parameters(
             err_msg = f"{_PARSE_ERROR}Invalid parameter {arg}"
             raise ValueError(err_msg)
         try:
-            value = _interpret_value(info, text if equals else None, option)
+            value = _interpret_value(info, text if equals else None, option, warnings)
         except ValueError as error:
             err_msg = f"{_PARSE_ERROR}{error}"
             raise ValueError(err_msg) from None
@@ -668,19 +679,24 @@ def _config_options(
 
 
 def _parse_conf_text(
-    text: str, sections: list[_SectionInfo] | None = None, filepath: str = ""
+    text: str,
+    sections: list[_SectionInfo] | None = None,
+    filepath: str = "",
+    warnings: list[str] | None = None,
 ) -> _RoConfig:
     """Parse `text` into `{section: {name: [values]}}`, in file order.
 
-    `sections` and `filepath` are `_config_options`'.
+    `sections` and `filepath` are `_config_options`', `warnings`
+    `_interpret_value`'s.
 
     `ReadConfigStream` (`src/common/config.cpp`, at
     bitcoin/bitcoin@9be056a8a7) over `_config_options`: `InterpretKey`
     and `InterpretValue` on each key. Raises `ValueError` where
     `_config_options` does, on a `conf=` key, and on a negation an
     option forbids, each in `IsConfSupported`'s and `InterpretValue`'s
-    words, which name no line. An unknown key, and `datadir`, are warned
-    about on stderr and left out.
+    words, which name no line. An unknown key is left out, and its
+    warning appended to `warnings` for the log alone, as Core's
+    `LogWarning` there; `datadir` is left out, and warned about on stderr.
     """
     config: _RoConfig = {}
     for name, value in _config_options(text, sections, filepath):
@@ -693,9 +709,10 @@ def _parse_conf_text(
             raise ValueError(err_msg)
         option = _OPTIONS.get(info.name)
         if option is None:
-            sys.stderr.write(f"warning: ignoring unknown configuration value {name}\n")
+            if warnings is not None:
+                warnings.append(f"Ignoring unknown configuration value {name}")
             continue
-        setting = _interpret_value(info, value, option)
+        setting = _interpret_value(info, value, option, warnings)
         if info.name == "datadir":
             sys.stderr.write(
                 "warning: -datadir cannot be set in a configuration file, "
@@ -706,18 +723,20 @@ def _parse_conf_text(
     return config
 
 
-def _read_conf_file(
+def _read_conf_file(  # noqa: PLR0913
     path: Path,
     *,
     required: bool,
     include: str | None = None,
     sections: list[_SectionInfo] | None = None,
     filepath: str = "",
+    warnings: list[str] | None = None,
 ) -> _RoConfig:
     """Read and parse `path`; `{}` if it cannot be read and is not `required`.
 
     `sections` and `filepath` are `_config_options`', `filepath` being
-    the name `path` is given in a warning.
+    the name `path` is given in a warning, and `warnings`
+    `_interpret_value`'s.
 
     Core's own "ok to not have a config file" (`ReadConfigFiles`,
     `src/common/config.cpp`) for the default filename, which is what
@@ -756,16 +775,17 @@ def _read_conf_file(
             err_msg = f'specified config file "{path}" could not be opened.'
             raise ValueError(err_msg) from None
         return {}
-    return _parse_conf_text(text, sections, filepath)
+    return _parse_conf_text(text, sections, filepath, warnings)
 
 
-def _load_conf_tree(
+def _load_conf_tree(  # noqa: PLR0913
     conf_path: Path,
     *,
     conf_explicit: bool,
     base_dir: Path,
     use_includes: bool,
     sections: list[_SectionInfo] | None = None,
+    warnings: list[str] | None = None,
 ) -> _RoConfig:
     """Read `conf_path`, then every `includeconf` its default section names.
 
@@ -780,10 +800,15 @@ def _load_conf_tree(
 
     Every section named is appended to `sections`, where given: the root
     file under its path, an included one under its name as written, as
-    `ReadConfigFiles` passes each to `ReadConfigStream`.
+    `ReadConfigFiles` passes each to `ReadConfigStream`. `warnings` is
+    `_interpret_value`'s.
     """
     tree = _read_conf_file(
-        conf_path, required=conf_explicit, sections=sections, filepath=str(conf_path)
+        conf_path,
+        required=conf_explicit,
+        sections=sections,
+        filepath=str(conf_path),
+        warnings=warnings,
     )
     if not use_includes:
         return tree
@@ -799,6 +824,7 @@ def _load_conf_tree(
             include=include,
             sections=sections,
             filepath=include,
+            warnings=warnings,
         )
         for section, keys in included.items():
             dest = tree.setdefault(section, {})
@@ -1107,8 +1133,8 @@ def _check_ignored_conf(
     Core's: `-datadir` and `-conf` lexically normal (`GetPathArg`), the
     first made absolute and a relative `-conf` joined to it
     (`AbsPathForConfigVal`), as `_read_settings` reads them.
-    `-allowignoredconf` makes the refusal a warning on stderr, as this
-    module's other warnings are, where Core logs it. Core's other source,
+    `-allowignoredconf` makes the refusal a warning for the log alone,
+    appended to `settings.log_warnings`, as Core logs it. Core's other source,
     "data directory", is a `datadir=` line that moved the data directory,
     which `_parse_conf_text` drops; and the line Core logs under `-noconf`
     is not written.
@@ -1143,7 +1169,7 @@ def _check_ignored_conf(
         "two, and use includeconf= to include any other configuration files."
     )
     if _get_bool(settings, "allowignoredconf"):
-        sys.stderr.write(f"warning: {error}\n")
+        settings.log_warnings.append(error)
         return
     error += (
         "\n- Set allowignoredconf=1 option to treat this condition as a warning, "
@@ -1185,8 +1211,9 @@ def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
     then the refusal of an argument that is not an option; and after it
     `ProcessInitCommands`'s help, printed to stdout with exit `0`.
     """
-    options, token = _parse_parameters(argv)
-    settings = _Settings(options)
+    warnings: list[str] = []
+    options, token = _parse_parameters(argv, warnings)
+    settings = _Settings(options, log_warnings=warnings)
 
     # `-datadir` and `-conf` are read by `get_path_arg`, lexically normal
     # before the file system is asked anything: `missing/..` and
@@ -1215,6 +1242,7 @@ def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
                 base_dir=base_dir,
                 use_includes="includeconf" not in settings.command_line,
                 sections=settings.config_sections,
+                warnings=settings.log_warnings,
             )
         except ValueError as error:
             # `InitConfig`'s own prefix on a `ReadConfigFiles` refusal
@@ -1258,22 +1286,24 @@ class _BeforeLock:
     directories: Config
 
 
-def _warn_unrecognized_sections(sections: Sequence[_SectionInfo]) -> None:
-    """Warn on stderr of every section that names no chain, as Core does.
+def _warn_unrecognized_sections(settings: _Settings) -> None:
+    """Warn of every section that names no chain, as Core does.
 
     `AppInitParameterInteraction`'s one `InitWarning` over
     `GetUnrecognizedSections` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7):
     a line per section, each ending in a newline, printed after
     `Warning: ` with a newline of its own, as `noui_ThreadSafeMessageBox`
-    prints it.
+    prints it, and appended to `settings.log_warnings` too, that
+    function logging it as well.
     """
     lines = "".join(
         f"{filepath}:{lineno} Section [{name}] is not recognized.\n"
-        for name, filepath, lineno in sections
+        for name, filepath, lineno in settings.config_sections
         if name not in _RECOGNIZED_SECTIONS
     )
     if lines:
         sys.stderr.write(f"Warning: {lines}\n")
+        settings.log_warnings.append(lines)
 
 
 def _before_lock(argv: Sequence[str]) -> _BeforeLock:
@@ -1285,7 +1315,7 @@ def _before_lock(argv: Sequence[str]) -> _BeforeLock:
     `-maxconnections`, `-debug`'s categories, `-prune`.
     """
     settings, base_dir, chain_name = _read_settings(argv)
-    _warn_unrecognized_sections(settings.config_sections)
+    _warn_unrecognized_sections(settings)
     # `GetBlocksDirPath`: a negated `-blocksdir` is an empty path, which
     # `fs::absolute` reads as the working directory
     blocksdir = _get_arg(settings, "blocksdir")
@@ -1394,6 +1424,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         rpccookieperms=_get_arg(settings, "rpccookieperms"),
         rpcwhitelist=_get_args(settings, "rpcwhitelist"),
         rpcwhitelistdefault=_get_bool(settings, "rpcwhitelistdefault"),
+        log_warnings=settings.log_warnings,
     )
 
 

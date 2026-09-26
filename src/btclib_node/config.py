@@ -277,6 +277,9 @@ class Config:
     # and `rpc.callbacks.get_blockchain_info` both check `pruned` first.
     prune_target_mib: int | None
     debug: bool
+    # the warnings Core logs while it reads its settings, before its
+    # log is open: `Node` logs them once its own is
+    log_warnings: tuple[str, ...]
     min_relay_feerate: FeeRate
     # (ip, port) pairs, resolved by `_resolve_peers` above: Core's own
     # `-connect`, which dials these alone and turns off DNS seeding and
@@ -361,6 +364,7 @@ class Config:
         rpccookieperms: str | None = None,
         rpcwhitelist: Sequence[str] = (),
         rpcwhitelistdefault: bool | None = None,
+        log_warnings: Sequence[str] = (),
     ) -> None:
         """Resolve `chain` and ports."""
         self.chain = _resolve_chain(chain)
@@ -453,4 +457,5 @@ class Config:
 
         self.debug = debug
         self.log_path = log_path
+        self.log_warnings = tuple(log_warnings)
         self.min_relay_feerate = min_relay_feerate

@@ -497,6 +497,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **Stderr names each unrecognised section with its file and line** (closes
   #1271), in Core's words and before the refusals that follow it.
 
+### The configuration's warnings are logged, as `bitcoind` logs them
+
+- **An unknown key, a double negative and `-allowignoredconf`'s warning reach
+  `history.log` alone, and an unrecognised section's reaches it too**
+  (closes #1295), ahead of anything else the node logs.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

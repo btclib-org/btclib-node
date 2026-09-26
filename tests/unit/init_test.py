@@ -1417,3 +1417,32 @@ def test_worker_count_falls_back_to_eight_split_if_the_core_count_is_unknown(
     monkeypatch.setattr(os, "cpu_count", lambda: None)
     monkeypatch.setenv("PYTEST_XDIST_WORKER_COUNT", "4")
     assert btclib_node._default_worker_count() == 2
+
+
+def test_a_node_logs_the_configuration_warnings_first(tmp_path: Path) -> None:
+    """ISS 1295: what Core logs while reading its settings opens the log.
+
+    Each as one record, a section warning's lines and all, ahead of
+    anything the node logs of its own, as `bitcoind`'s `debug.log`
+    carries them ahead of its version line.
+    """
+    sections = (
+        "a.conf:1 Section [x] is not recognized.\nb:2 Section [y] is not recognized.\n"
+    )
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            allow_rpc=False,
+            log_warnings=["Ignoring unknown configuration value foo", sections],
+        )
+    )
+    try:
+        node.start()
+    finally:
+        node.stop()
+    log_text = (node.data_dir / "history.log").read_text(encoding="utf-8")
+    first, _, rest = log_text.partition("\n")
+    assert first.endswith(" Ignoring unknown configuration value foo")
+    assert rest.index(f" {sections}\n") < rest.index("Starting main loop")
