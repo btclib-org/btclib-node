@@ -2094,7 +2094,10 @@ class FakeBlockIndex:
     def __init__(
         self, infos: dict[bytes, Any], *, accepts_headers: bool = True
     ) -> None:
-        """Answer `get_block_info`, record `marked`/`invalidated` calls.
+        """Answer `get_block_info`, record `marked` calls.
+
+        No `invalidate`: a call to it raises, which is what the tests over
+        this stand-in assert against.
 
         `accepts_headers` is what `add_headers` answers with for a
         header naming a hash `infos` does not already carry: `True`
@@ -2106,7 +2109,6 @@ class FakeBlockIndex:
         self.infos = infos
         self.header_dict = infos
         self.marked: list[bytes] = []
-        self.invalidated: list[bytes] = []
         self.accepts_headers = accepts_headers
         self.added_headers: list[BlockHeader] = []
 
@@ -2117,10 +2119,6 @@ class FakeBlockIndex:
     def set_downloaded(self, block_hash: bytes) -> None:
         """Record that this block hash was marked downloaded."""
         self.marked.append(block_hash)
-
-    def invalidate(self, block_hash: bytes) -> None:
-        """Record that this block hash was invalidated."""
-        self.invalidated.append(block_hash)
 
     def add_headers(self, headers: list[BlockHeader]) -> bytes | None:
         """Index the one header `block` ever calls this with, or refuse it.
@@ -2176,7 +2174,6 @@ def test_a_block_that_was_asked_for_is_stored_and_marked_downloaded() -> None:
     assert peer.last_novel_block_time > 0
     assert added == [block]
     assert index.marked == [block.header.hash]
-    assert index.invalidated == []
 
 
 def test_a_block_already_stored_is_not_stored_again() -> None:
@@ -2240,7 +2237,6 @@ def test_a_block_whose_proof_of_work_does_not_hold_up_is_refused() -> None:
         block_callback(node, payload, a_peer())
     assert added == []
     assert index.marked == []
-    assert index.invalidated == []
 
 
 def test_an_unsolicited_block_extending_a_known_parent_is_indexed_and_stored() -> None:
@@ -2271,7 +2267,6 @@ def test_an_unsolicited_block_extending_a_known_parent_is_indexed_and_stored() -
     block_callback(node, payload, a_peer())
     assert added == [block]
     assert index.marked == [block.header.hash]
-    assert index.invalidated == []
     assert [header.hash for header in index.added_headers] == [block.header.hash]
 
 
