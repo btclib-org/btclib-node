@@ -780,9 +780,7 @@ def test_a_spend_of_an_output_a_mempool_parent_lacks_is_a_missing_prevout(
     assert len(parent.vout) == 1
 
     child = generate_random_transaction(parent.id, value=1)
-    child.vin[0] = dataclasses.replace(
-        child.vin[0], prev_out=OutPoint(parent.id, vout)
-    )
+    child.vin[0] = dataclasses.replace(child.vin[0], prev_out=OutPoint(parent.id, vout))
     with pytest.raises(MissingPrevoutError):
         verify_mempool_acceptance(node, child)
 
