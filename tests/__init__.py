@@ -382,6 +382,31 @@ def get_random_port() -> int:
         return port
 
 
+def assert_loopbacks_free(port: int) -> None:
+    """Bind `port` on `127.0.0.1` and `::1`, raising where either is held."""
+    for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.bind((host, port))
+
+
+@contextmanager
+def taken_loopbacks() -> Iterator[int]:
+    """Hold `127.0.0.1` and `::1` at one port, answering the port.
+
+    What the JSON-RPC listener binds by default, as `bitcoind` binds
+    both, so a test that needs its bind to fail holds the two.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as v4:
+        v4.bind(("127.0.0.1", 0))
+        v4.listen()
+        port = v4.getsockname()[1]
+        assert isinstance(port, int)
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as v6:
+            v6.bind(("::1", port))
+            v6.listen()
+            yield port
+
+
 def taken_port_bind_error(port: int) -> re.Pattern[str]:
     """Match what `P2pManager` says of its "0.0.0.0" bind on a taken `port`.
 

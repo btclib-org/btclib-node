@@ -212,11 +212,13 @@ class Config:
     # what RpcManager binds instead of every interface: an RPC server is
     # this node's control plane, not a peer-to-peer listener, so a
     # caller holding a credential still has to reach it from an
-    # interface this names. Bitcoin Core's own `rpcbind`/`rpcallowip`
-    # default to localhost for the same reason; P2pManager.server binds
-    # every interface unconditionally, and is right to, since a peer
-    # listener is supposed to accept a stranger.
-    rpc_host: str
+    # interface this names. `None` is Core's own default, `::1` and
+    # `127.0.0.1` both (`HTTPBindAddresses`, `src/httpserver.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag); a host a Python caller
+    # names is bound alone. P2pManager.server binds every interface
+    # unconditionally, and is right to, since a peer listener is
+    # supposed to accept a stranger.
+    rpc_host: str | None
     # Core's `-rpcbind` values, checked by `cli` and bound nowhere: Core
     # binds them only beside `-rpcallowip`, which this node does not
     # have, and `RpcManager` logs the warning Core logs over them.
@@ -327,7 +329,7 @@ class Config:
         blocks_dir: str | Path | None = None,
         p2p_port: int | None = None,
         rpc_port: int | None = None,
-        rpc_host: str = "127.0.0.1",
+        rpc_host: str | None = None,
         rpcbind: Sequence[str] = (),
         allow_p2p: bool = True,
         allow_rpc: bool = True,

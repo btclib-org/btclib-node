@@ -105,7 +105,7 @@ def test_rpc_host_defaults_to_localhost_not_every_interface() -> None:
     """`rpc_host` defaults to loopback; an explicit host still wins."""
     # #27: the rpc listener is a control plane, not a peer-to-peer
     # one, so its default is not the P2P listener's
-    assert Config(chain="regtest").rpc_host == "127.0.0.1"
+    assert Config(chain="regtest").rpc_host is None
     assert (
         Config(chain="regtest", rpc_host="0.0.0.0").rpc_host  # noqa: S104
         == "0.0.0.0"  # noqa: S104

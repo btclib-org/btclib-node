@@ -806,7 +806,7 @@ def test_build_config_with_nothing_given_uses_every_default(tmp_path: Path) -> N
     """No flags, no file: every `Config` field takes its own default."""
     config = cli.build_config([f"-datadir={tmp_path}"])
     assert config.chain.name == "mainnet"
-    assert config.rpc_host == "127.0.0.1"
+    assert config.rpc_host is None
     assert config.pruned is False
     assert config.connect == ()
     assert config.addnode == ()
@@ -1252,11 +1252,11 @@ def test_build_config_rpcbind_is_ignored_without_rpcallowip(argv: list[str]) -> 
 
     bitcoind v31.1.0 given each of these and no `-rpcallowip` listens on
     loopback at `-rpcport`, and logs a warning; this node has no
-    `-rpcallowip`, so the listener stays on `127.0.0.1` at `-rpcport`,
-    the values kept for `RpcManager` to warn over.
+    `-rpcallowip`, so the listener stays on loopback at `-rpcport`, the
+    values kept for `RpcManager` to warn over.
     """
     config = cli.build_config(["-regtest", *argv, "-rpcport=9999"])
-    assert config.rpc_host == "127.0.0.1"
+    assert config.rpc_host is None
     assert config.rpc_port == 9999
     assert config.rpcbind == tuple(value.removeprefix("-rpcbind=") for value in argv)
 

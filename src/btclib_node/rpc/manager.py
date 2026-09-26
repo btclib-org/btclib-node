@@ -22,10 +22,11 @@ either step failed, which Core turns into an `InitError`.
 
 import asyncio
 import socket
+import sys
 import threading
 from collections import deque
 from concurrent.futures import CancelledError
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from ipaddress import ip_address
 from typing import TYPE_CHECKING, override
 
@@ -33,11 +34,17 @@ from btclib_node.rpc.auth import RpcAuth
 from btclib_node.rpc.connection import REQUEST_TIMEOUT, RpcConnection
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from concurrent.futures import Future
 
     from btclib_node import Node
 
 __all__ = ["RpcManager"]
+
+# What `HTTPBindAddresses` binds without `-rpcbind` and `-rpcallowip`
+# both given, in its order (`src/httpserver.cpp`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+_LOOPBACK_HOSTS = ("::1", "127.0.0.1")
 
 
 def _is_bind_any(host: str) -> bool:
@@ -50,6 +57,43 @@ def _is_bind_any(host: str) -> bool:
         return ip_address(host.strip("[]")).is_unspecified
     except ValueError:
         return False
+
+
+# libevent resolves an IP literal itself on Windows, where it is never
+# held to `AI_ADDRCONFIG`, and hands every other lookup to the system's
+# `getaddrinfo` with that flag (`evutil_getaddrinfo`, `evutil.c`, same
+# version as below). A host a Python caller names by a name is the one
+# case this leaves apart, on Windows alone.
+_WINDOWS = sys.platform == "win32"
+_ADDRESS_FLAGS = socket.AI_PASSIVE | (0 if _WINDOWS else socket.AI_ADDRCONFIG)
+
+
+def _bind_endpoint(host: str, port: int | None) -> socket.socket:
+    """Return a socket listening at `host` and `port`, non-blocking.
+
+    What libevent's `evhttp_bind_socket_with_handle` does for Core
+    (`http.c`, at libevent 2.1.12-stable, the version Core's `depends`
+    builds): the first address a passive lookup answers, an empty host
+    being every interface, then `SO_KEEPALIVE`, and `SO_REUSEADDR` off
+    Windows alone, where it would let another process bind the port
+    this one holds. Raises `OSError` where any step fails, the socket
+    closed.
+    """
+    family, kind, proto, _, sockaddr = socket.getaddrinfo(
+        host or None, port, type=socket.SOCK_STREAM, flags=_ADDRESS_FLAGS
+    )[0]
+    server_socket = socket.socket(family, kind, proto)
+    try:
+        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        # 0 is the option's default, so Windows is left as libevent leaves it
+        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, not _WINDOWS)
+        server_socket.bind(sockaddr)
+        server_socket.listen()
+        server_socket.settimeout(0.0)
+    except OSError:
+        server_socket.close()
+        raise
+    return server_socket
 
 
 class RpcManager(threading.Thread):
@@ -91,17 +135,17 @@ class RpcManager(threading.Thread):
         # it, which is what `start_listener` waits on
         self._start_attempted = threading.Event()
         # What `run` binds and `stop` closes. `server`'s own
-        # `with server_socket:` ordinarily closes this once `stop`'s
+        # `ExitStack` ordinarily closes these once `stop`'s
         # cancellation reaches that task -- except where `stop` arrives
         # before `run_forever` has stepped that task even once: a
         # coroutine `cancel()` reaches with no frame yet raises
         # `CancelledError` at its own definition point rather than
-        # inside the running body, so `with server_socket:` is never
+        # inside the running body, so that `ExitStack` is never
         # entered at all (btclib-org/btclib-node#323). Read only by
         # `run` and `stop`, both on this manager's own object and never
         # concurrently -- `run` sets it once, from this thread, before
         # `stop` could possibly be reached by another.
-        self._server_socket: socket.socket | None = None
+        self._server_sockets: list[socket.socket] = []
         # `server`'s own accept queue, kept here rather than only local
         # to `server`'s own frame so the two `manager_test.py` tests
         # naming btclib-org/btclib-node#391 can land a connection into
@@ -132,70 +176,72 @@ class RpcManager(threading.Thread):
         self.connections[self.last_connection_id] = new_connection
         return new_connection
 
-    def _bind(self) -> socket.socket:
-        """Bind and listen, synchronously, before anything is scheduled.
+    def _bind(self) -> list[socket.socket]:
+        """Bind and listen on every endpoint, before anything is scheduled.
 
-        See `P2pManager._bind`: the same shape of bug (#88) and the same
-        fix, applied to the RPC listener instead of the P2P one. Unlike
-        that one, this does not set `listening`: `_listen` does, once the
+        Core's `HTTPBindAddresses` (`src/httpserver.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag): each endpoint is
+        logged before it is tried, and one that cannot be bound is warned
+        about and passed over, so a host without IPv6 still listens on
+        `127.0.0.1`. Empty where none binds. See
+        `P2pManager._bind` for why this is synchronous (#88). Unlike that
+        one, this does not set `listening`: `_listen` does, once the
         cookie is written too.
         """
         config = self.node.config
-        # `HTTPBindAddresses`'s warning and log lines (`src/httpserver.cpp`,
-        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `-rpcbind` is
-        # ignored without `-rpcallowip`, which this node does not have
+        # `-rpcbind` is ignored without `-rpcallowip`, which this node
+        # does not have
         if config.rpcbind:
             self.logger.warning(
                 "Option -rpcbind was ignored because -rpcallowip was not "
                 "specified, refusing to allow everyone to connect"
             )
-        self.logger.info(
-            "Binding RPC on address %s port %s", config.rpc_host, self.port
-        )
-        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            # Config.rpc_host, "127.0.0.1" unless a caller asks
-            # otherwise -- see its own docstring for why the RPC
-            # control plane's default is not every interface, unlike
-            # P2pManager's
-            server_socket.bind((self.node.config.rpc_host, self.port))
-            server_socket.listen()
-            server_socket.settimeout(0.0)
-        except OSError:
-            server_socket.close()
-            raise
-        # once bound, as Core warns: an empty host or one `LookupHost`
-        # reads, without a DNS lookup, as the any address
-        if not config.rpc_host or _is_bind_any(config.rpc_host):
-            self.logger.warning(
-                "The RPC server is not safe to expose to untrusted networks "
-                "such as the public internet"
-            )
-        return server_socket
+        # Config.rpc_host, loopback unless a Python caller names a host
+        # -- see its own comment for why the RPC control plane's default
+        # is not every interface, unlike P2pManager's
+        hosts = _LOOPBACK_HOSTS if config.rpc_host is None else (config.rpc_host,)
+        bound: list[socket.socket] = []
+        for host in hosts:
+            self.logger.info("Binding RPC on address %s port %s", host, self.port)
+            try:
+                bound.append(_bind_endpoint(host, self.port))
+            except OSError:
+                self.logger.warning(
+                    "Binding RPC on address %s port %s failed.", host, self.port
+                )
+                continue
+            # once bound, as Core warns: an empty host or one `LookupHost`
+            # reads, without a DNS lookup, as the any address
+            if not host or _is_bind_any(host):
+                self.logger.warning(
+                    "The RPC server is not safe to expose to untrusted networks "
+                    "such as the public internet"
+                )
+        return bound
 
-    def _listen(self) -> socket.socket:
+    def _listen(self) -> list[socket.socket]:
         """Bind, write the cookie where one is written, then set `listening`.
 
         Raises `OSError` where either step fails, having logged it and
-        closed the socket: Core's "Unable to bind any endpoint for RPC
+        closed the sockets: Core's "Unable to bind any endpoint for RPC
         server" and `InitRPCAuthentication`'s refusal of a cookie that
         cannot be written, logged as the warning `GenerateAuthCookie`
         logs.
         """
-        try:
-            self._server_socket = self._bind()
-        except OSError:
-            self.logger.exception("Could not bind the RPC listener")
-            raise
+        self._server_sockets = self._bind()
+        if not self._server_sockets:
+            msg = "Unable to bind any endpoint for RPC server"
+            self.logger.error(msg)
+            raise OSError(msg)
         try:
             self.auth.start(self.logger)
         except OSError as err:
-            self._server_socket.close()
+            for server_socket in self._server_sockets:
+                server_socket.close()
             self.logger.warning("%s", err)
             raise
         self.listening.set()
-        return self._server_socket
+        return self._server_sockets
 
     def start_listener(self) -> bool:
         """Start this thread, and answer whether it came up listening.
@@ -253,17 +299,21 @@ class RpcManager(threading.Thread):
             accepted.put_nowait((sock, sockaddr))
 
     async def server(
-        self, loop: asyncio.AbstractEventLoop, server_socket: socket.socket
+        self,
+        loop: asyncio.AbstractEventLoop,
+        server_sockets: Sequence[socket.socket],
     ) -> None:
-        """Accept connections off `server_socket` until cancelled by `stop`.
+        """Accept connections off `server_sockets` until cancelled by `stop`.
 
-        Awaits `_accept_queue` for what `_accept_loop`, a task of its
-        own, fills, one `RpcConnection` and one `conn.run` task per
-        socket -- rather than a bare `await loop.sock_accept(server_socket)`
-        right here, which does not have the property the comment below
-        argues for.
+        Awaits `_accept_queue` for what `_accept_loop` fills, a task of
+        its own per listening socket, one `RpcConnection` and one
+        `conn.run` task per accepted socket -- rather than a bare
+        `await loop.sock_accept(...)` right here, which does not have the
+        property the comment below argues for.
         """
-        with server_socket:
+        with ExitStack() as listeners:
+            for server_socket in server_sockets:
+                listeners.enter_context(server_socket)
             # The queue is what keeps a shutdown from discarding an
             # already-accepted socket reaching `server`'s own consumption
             # below: an item lands in its deque through `put_nowait`, a
@@ -303,7 +353,10 @@ class RpcManager(threading.Thread):
                 asyncio.Queue()
             )
             self._accept_queue = accepted
-            accept_task = loop.create_task(self._accept_loop(server_socket, accepted))
+            accept_tasks = [
+                loop.create_task(self._accept_loop(server_socket, accepted))
+                for server_socket in server_sockets
+            ]
             try:
                 while True:
                     client, _ = await accepted.get()
@@ -323,9 +376,11 @@ class RpcManager(threading.Thread):
                 # the caller that cancels `server` alone, such as a test
                 # exercising it outside `stop`, where nothing else would
                 # ever join this task.
-                accept_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await accept_task
+                for accept_task in accept_tasks:
+                    accept_task.cancel()
+                for accept_task in accept_tasks:
+                    with suppress(asyncio.CancelledError):
+                        await accept_task
                 self._accept_queue = None
                 while not accepted.empty():
                     accepted.get_nowait()[0].close()
@@ -371,7 +426,7 @@ class RpcManager(threading.Thread):
         try:
             self.logger.info("Starting RPC manager")
             asyncio.set_event_loop(loop)
-            server_socket = self._listen()
+            server_sockets = self._listen()
         except OSError:
             # logged by `_listen`; `start_listener` reads the failure
             # off `listening`, so it is not raised into
@@ -380,7 +435,7 @@ class RpcManager(threading.Thread):
         finally:
             self._start_attempted.set()
         asyncio.run_coroutine_threadsafe(
-            self.server(loop, server_socket), loop
+            self.server(loop, server_sockets), loop
         ).add_done_callback(self._report_server_failure)
         loop.run_forever()
 
@@ -391,8 +446,8 @@ class RpcManager(threading.Thread):
         thread at all; the long comments below argue why the handle
         this schedules is cancelled unconditionally afterward, why the
         pending-task sweep runs as its own pass rather than folded into
-        one combined loop, and why closing `_server_socket` here does
-        not race `server`'s own `with server_socket:`.
+        one combined loop, and why closing `_server_sockets` here does
+        not race `server`'s own `ExitStack`.
         """
         stop_handle = self.loop.call_soon_threadsafe(self.loop.stop)
         # `join` blocks this thread without spinning it, the way
@@ -494,17 +549,17 @@ class RpcManager(threading.Thread):
         for conn in self.connections.values():
             conn.close()
         # Closed explicitly and unconditionally, after the loop above
-        # rather than instead of it: `server`'s own `with server_socket:`
-        # is what ordinarily closes this, once that task's own
+        # rather than instead of it: `server`'s own `ExitStack` is what
+        # ordinarily closes these, once that task's own
         # cancellation is delivered and the exception propagates through
         # the `with`. Measured to be skipped entirely where `stop()`
         # arrives before `run_forever` has stepped that task even once
-        # -- `_server_socket`'s own comment has the mechanism, and this
+        # -- `_server_sockets`'s own comment has the mechanism, and this
         # is what closes what that path does not reach; a `with` block
         # already run leaves nothing here for `close()` to do, since a
         # socket is closed only once, whichever call reaches it first.
-        if self._server_socket is not None:
-            self._server_socket.close()
+        for server_socket in self._server_sockets:
+            server_socket.close()
         self.loop.close()
         # so that the flag says what its name says: a socket
         # closed here is not one anything should wait for

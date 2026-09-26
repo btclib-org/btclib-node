@@ -455,6 +455,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **The JSON-RPC listener stays on loopback whatever `-rpcbind` names**
   (closes #1211), and every value is checked, where the last was bound.
 
+### The JSON-RPC listener binds `::1` and `127.0.0.1`, as `bitcoind` does
+
+- **Each loopback is bound and logged in turn, one that fails is warned
+  over and passed** (closes #1269, closes #1281), and only a node that binds
+  neither refuses to start, with Core's message.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
