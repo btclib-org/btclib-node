@@ -276,13 +276,14 @@ def test_a_header_version_regtest_made_obsolete_is_refused_bad_version(
 ) -> None:
     """ISS 1262: regtest binds BIP34, BIP66 and BIP65 from height 1.
 
-    Core's `bad-version`, the version printed as its 32 bits; version 4
-    is taken.
+    Core's `bad-version`, the version printed as its 32 bits, a
+    `MisbehavingError` since `MaybePunishNodeForBlock` punishes it;
+    version 4 is taken.
     """
     block_index = a_chainstate(None).block_index
     genesis = RegTest().genesis
     header = a_mined_header(genesis, version)
-    with pytest.raises(BTClibValueError) as refusal:
+    with pytest.raises(MisbehavingError) as refusal:
         block_index.add_headers([header])
     assert str(refusal.value) == f"bad-version(0x{version & 0xFFFFFFFF:08x})"
     assert header.hash not in block_index.header_dict
@@ -315,6 +316,27 @@ def test_each_bip_refuses_its_obsolete_version_from_its_own_height(
         assert block_index.add_headers([header]) == header.hash
         assert block_index.get_block_info(header.hash).index == height
         parent = header
+
+
+def test_a_version_zero_header_below_bip34_is_indexed_and_reloaded(
+    a_chainstate: Callable[[Path | None], Chainstate],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1262: below BIP34's height Core takes a version of zero.
+
+    btclib's `BlockHeader.assert_valid` refuses one, so the index stores
+    and reads it back unchecked.
+    """
+    params = replace(
+        RegTest().consensus, bip34_height=2, bip66_height=2, bip65_height=2
+    )
+    monkeypatch.setattr(RegTest, "consensus", property(lambda _: params))
+    chainstate = a_chainstate(None)
+    header = a_mined_header(RegTest().genesis, 0)
+    assert chainstate.block_index.add_headers([header]) == header.hash
+    chainstate.close()
+    reloaded = a_chainstate(None).block_index
+    assert reloaded.get_block_info(header.hash).header.version == 0
 
 
 def test_a_header_too_far_in_the_future_is_refused_without_misbehaving(

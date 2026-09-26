@@ -612,15 +612,18 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     bitcoin/bitcoin@bb529657) decodes, indexes the header if it is new,
     and hands the block to `ProcessNewBlock`: `None` for one accepted,
     `"duplicate"` for one already held, and a reject reason for one
-    refused -- `BlockValidationResult::BLOCK_MISSING_PREV`'s own
-    `"prev-blk-not-found"` (`validation.cpp:4225`, same sha) is the one
-    reason this tree reproduces literally, being the one this node's own
-    `block_index.add_headers` answers the identical way `p2p.callbacks
-    .block` already reads it (missing rather than invalid). A
-    structurally invalid block is answered with btclib's own exception
-    message instead of one of Core's: `BlockValidationResult` names
-    dozens of distinct single-word reasons across `validation.cpp`, and
-    this tree does not reproduce that vocabulary.
+    refused. Two reasons are Core's literally:
+    `BlockValidationResult::BLOCK_MISSING_PREV`'s own
+    `"prev-blk-not-found"` (`validation.cpp:4225`, same sha), which this
+    node's own `block_index.add_headers` answers the identical way
+    `p2p.callbacks.block` already reads it (missing rather than invalid),
+    and `ContextualCheckBlockHeader`'s `"bad-version(0x%08x)"`, which
+    `add_headers` raises in Core's words (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Any other invalid block
+    is answered with btclib's own exception message instead of one of
+    Core's: `BlockValidationResult` names dozens of distinct single-word
+    reasons across `validation.cpp`, and this tree does not reproduce
+    that vocabulary.
 
     Stores through the same `block_index`/`block_db` calls
     `p2p.callbacks.block` makes for a block delivered over the wire,

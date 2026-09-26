@@ -153,10 +153,10 @@ def _assert_valid_in_context(  # noqa: PLR0913, PLR0917
     the header itself claims -- and `_validate_header_batch`'s own loop
     has already asked it of `header`, ahead of this.
 
-    The target and the median time are Core's `bad-diffbits` and
-    `time-too-old`, `BLOCK_INVALID_HEADER`, which Core's
-    `MaybePunishNodeForBlock` answers with `Misbehaving`, so they raise
-    `MisbehavingError`. `time-too-new` is `BLOCK_TIME_FUTURE`, which it
+    The target, the median time and the version are Core's
+    `bad-diffbits`, `time-too-old` and `bad-version`,
+    `BLOCK_INVALID_HEADER`, which Core's `MaybePunishNodeForBlock`
+    answers with `Misbehaving`, so they raise `MisbehavingError`. `time-too-new` is `BLOCK_TIME_FUTURE`, which it
     does not punish, so btclib's own refusal is left as it is
     (`src/validation.cpp` and `src/net_processing.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
@@ -188,7 +188,7 @@ def _assert_valid_in_context(  # noqa: PLR0913, PLR0917
     ):
         if header.version < least and parent_height + 1 >= binds_at:
             err_msg = f"bad-version(0x{header.version & 0xFFFFFFFF:08x})"
-            raise BTClibValueError(err_msg)
+            raise MisbehavingError(err_msg)
 
 
 class BlockStatus(enum.IntEnum):
@@ -243,8 +243,13 @@ class BlockInfo:
         return cls(header, index, status, downloaded)
 
     def serialize(self) -> bytes:
-        """Serialize this record to the bytes stored under `blkinfo-<hash>`."""
-        out = self.header.serialize()
+        """Serialize this record to the bytes stored under `blkinfo-<hash>`.
+
+        The header unchecked, as `deserialize`'s caller reads it back: a
+        header of a version zero or below is Core's to take below BIP34's
+        height, and btclib's `BlockHeader.assert_valid` refuses it.
+        """
+        out = self.header.serialize(check_validity=False)
         out += var_int.serialize(self.index)
         out += self.status.to_bytes(1, "little")
         out += int(self.downloaded).to_bytes(1, "little")

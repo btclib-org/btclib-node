@@ -16,6 +16,7 @@ import secrets
 import socket
 import threading
 import time
+from contextlib import suppress
 from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
@@ -4257,3 +4258,32 @@ def test_an_addrv2_count_past_what_the_payload_could_hold_decides_alone(
     assert skipped == []
     assert cb._addrv2_count_past(var_int.serialize(1001) + payload, 1000) == 1001
     assert len(skipped) == 1001
+
+
+@pytest.mark.parametrize("version", [0, -1])
+def test_a_header_version_btclib_refuses_is_misbehaving_bad_version(
+    an_index: BlockIndex, version: int
+) -> None:
+    """ISS 1262: a version of zero or below reaches Core's `bad-version`.
+
+    btclib's own parse would refuse it first as "invalid version", which
+    is no `MisbehavingError`; `headers` reads it unchecked instead.
+    """
+    genesis = RegTest().genesis
+    header = BlockHeader(
+        version=version,
+        previous_block_hash=genesis.hash,
+        merkle_root=secrets.token_bytes(32),
+        time=genesis.time + timedelta(seconds=1),
+        bits=genesis.bits,
+        nonce=0,
+        check_validity=False,
+    )
+    while True:
+        with suppress(BTClibValueError):
+            header.assert_valid_pow(genesis.bits)
+            break
+        header.nonce += 1
+    payload = Headers([header], check_validity=False).serialize(check_validity=False)
+    with pytest.raises(MisbehavingError, match=r"bad-version\(0x"):
+        headers(a_data_node(block_index=an_index), payload, a_peer())

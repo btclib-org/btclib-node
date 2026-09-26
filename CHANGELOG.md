@@ -460,6 +460,7 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A header whose version BIP34, BIP66 or BIP65 made obsolete is refused
   `bad-version` from that BIP's height, and its sender discouraged, as in
   Core** (closes #1262).
+
 ### PeerDB records as answered only a peer it already knows
 
 - **A peer is recorded as answered only where gossip already holds its

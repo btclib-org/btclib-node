@@ -1397,7 +1397,13 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     # Core reads the count alone before it compares, so no entry is
     # needed in the payload for it to call `Misbehaving`
     _refuse_past_bound("headers", _count_past(msg, MAX_HEADERS_RESULTS, 0))
-    headers = Headers.parse(msg).headers
+    # Unchecked, as Core's own `CBlockHeader` read checks nothing: btclib's
+    # `BlockHeader.assert_valid` would refuse a version of zero or below
+    # and a time before genesis (btclib-org/btclib#2309), which Core
+    # leaves to `ContextualCheckBlockHeader`'s `bad-version` and
+    # `time-too-old`, both `Misbehaving`. The count and the transaction
+    # counts are bounded either way, and `add_headers` checks the work.
+    headers = Headers.parse(msg, check_validity=False).headers
     if not headers:
         # Core's own `ProcessHeadersMessage` returns on the same batch,
         # "Nothing interesting. Stop asking this peers for more headers."
