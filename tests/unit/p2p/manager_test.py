@@ -62,6 +62,7 @@ def a_conn(
     *,
     status: P2pConnStatus = P2pConnStatus.Connected,
     last_receive: float | None = None,
+    connected_time: int | None = None,
     address: NetworkAddressV2 | None = None,
     relay_tx: bool = True,
     feefilter: int = 0,
@@ -84,6 +85,7 @@ def a_conn(
         status=status,
         address=address or peer_address("1.2.3.4", 18444),
         last_receive=time.time() if last_receive is None else last_receive,
+        connected_time=int(time.time()) if connected_time is None else connected_time,
         ping_sent=0,
         relay_tx=relay_tx,
         feefilter=feefilter,
@@ -708,14 +710,47 @@ def test_a_pending_connection_gone_quiet_is_dropped_without_a_ping(
 
     `ping` is as much a message the handshake has to clear before it
     is sent as `inv`/`tx` is, so a connection stuck short of `verack`
-    is dropped once idle rather than pinged and given a second window.
+    is dropped rather than pinged and given a second window.
     """
-    conn = a_conn(1, status=P2pConnStatus.Open, last_receive=time.time() - 200)
+    conn = a_conn(
+        1,
+        status=P2pConnStatus.Open,
+        last_receive=time.time() - 200,
+        connected_time=int(time.time()) - 200,
+    )
     manager = a_manager()
     manager.pending_connections[conn.id] = conn
     asyncio.run(one_pass(manager))
     assert not manager.pending_connections
     assert conn.sent == []
+
+
+@pytest.mark.parametrize(("age", "dropped"), [(62, True), (58, False)])
+def test_a_pending_connection_is_dropped_a_minute_after_connecting(
+    a_manager: AManagerFactory, age: int, *, dropped: bool
+) -> None:
+    """ISS 1169: Core's `InactivityCheck`, past `DEFAULT_PEER_CONNECT_TIMEOUT`.
+
+    Core drops a connection not yet `fSuccessfullyConnected` once sixty
+    seconds have passed since it connected, whatever it has sent: the
+    peer here sent something just now. Two seconds short is the control.
+    """
+    conn = a_conn(1, status=P2pConnStatus.Open, connected_time=int(time.time()) - age)
+    manager = a_manager()
+    manager.pending_connections[conn.id] = conn
+    asyncio.run(one_pass(manager))
+    assert (conn.id not in manager.pending_connections) is dropped
+    assert conn.sent == []
+
+
+def test_a_connected_peer_outlives_the_handshake_timeout(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1169: the timeout is the handshake's, not the connection's."""
+    conn = a_conn(1, connected_time=int(time.time()) - 600)
+    manager = a_manager([conn])
+    asyncio.run(one_pass(manager))
+    assert conn.id in manager.connections
 
 
 def a_counting_prune() -> tuple[list[None], Any]:

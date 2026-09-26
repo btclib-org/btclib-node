@@ -68,13 +68,21 @@ __all__ = ["P2pManager"]
 # btclib-org/btclib-node#71
 _ACTIVE_PRUNE_INTERVAL = 300
 
+# How long a connection has from connecting to finishing its handshake:
+# Core's `DEFAULT_PEER_CONNECT_TIMEOUT` (`src/net.h`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag), past which
+# `CConnman::InactivityCheck` drops a connection not yet
+# `fSuccessfullyConnected`, whatever it has sent. This node has no
+# `-peertimeout` to set it.
+_PEER_CONNECT_TIMEOUT = 60
+
 # `manage_connections`'s own idle bound, not Core's `TIMEOUT_INTERVAL`
 # (20 minutes, `net.h`, aed80c7395) -- a shorter one of this tree's own:
 # a connection quiet this long is sent a `ping`, and one still quiet
-# this long again after that, or a pending connection stuck short of
-# `verack` this long with no `ping` to wait on at all, is dropped. A
-# peer at `BIP0031_VERSION` or below is sent no `ping`
-# (`Connection.send_ping`) and is dropped once quiet twice this long.
+# this long again after that is dropped. A pending connection is held
+# to `_PEER_CONNECT_TIMEOUT` above instead. A peer at `BIP0031_VERSION`
+# or below is sent no `ping` (`Connection.send_ping`) and is dropped once
+# quiet twice this long.
 _IDLE_TIMEOUT = 120
 
 # `_maybe_redial_specified`'s own backoff for a `-connect`/`-addnode`
@@ -687,15 +695,16 @@ class P2pManager(threading.Thread):
                 elif now - ping_sent > _IDLE_TIMEOUT:
                     self.remove_connection(conn.id)
         for conn in self.pending_connections.copy().values():
-            # The same idle bound, but no ping in between: `ping` is
-            # as much a message the handshake has to clear before it
-            # is sent as `inv` or `tx` is, so a connection stuck
-            # short of `verack` is dropped once it goes quiet rather
-            # than kept a second `_IDLE_TIMEOUT` waiting on an answer
-            # to something #131 forbids sending it.
+            # Dropped `_PEER_CONNECT_TIMEOUT` after connecting, quiet or
+            # not, as Core's `InactivityCheck` drops a connection short
+            # of `fSuccessfullyConnected` (btclib-org/btclib-node#1169).
+            # No ping in between: `ping` is as much a message the
+            # handshake has to clear before it is sent as `inv` or `tx`
+            # is (#131). The idle bound above is not asked here, being
+            # longer: a connection quiet that long is past this one.
             if (
                 conn.status == P2pConnStatus.Closed
-                or now - conn.last_receive > _IDLE_TIMEOUT
+                or conn.connected_time + _PEER_CONNECT_TIMEOUT < now
             ):
                 self.remove_connection(conn.id)
 

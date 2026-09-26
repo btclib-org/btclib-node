@@ -439,6 +439,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   value a 417** (closes #1194), where a request of HTTP/1.1 or later has a
   body, ahead of the 413 and of every refusal after the header section.
 
+### A connection short of verack is dropped a minute after connecting
+
+- **A pending connection is dropped sixty seconds after it connected,
+  whatever it sends** (closes #1169), as Core's `InactivityCheck` drops it.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
