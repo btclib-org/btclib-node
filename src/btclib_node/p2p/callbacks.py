@@ -799,7 +799,7 @@ def _store_gossip(
 
 
 def feefilter(node: Node, msg: bytes, conn: Connection) -> None:
-    """Record the peer's own BIP133 minimum feerate, or none if invalid."""
+    """Record the peer's own BIP133 minimum feerate, ignoring an invalid one."""
     # BIP133: a peer asking not to be told about a transaction paying
     # less. Stored on the connection, the same shape relay_tx above
     # already is; read by DownloadManager.tx_download, through
@@ -807,18 +807,17 @@ def feefilter(node: Node, msg: bytes, conn: Connection) -> None:
     # main.verify_mempool_acceptance now hands back and Mempool keeps
     # per transaction. btclib-org/btclib-node#260
     #
-    # Core acts on a received rate only within MoneyRange -- 0 to
+    # Core assigns a received rate only within MoneyRange -- 0 to
     # MAX_MONEY inclusive (net_processing.cpp's NetMsgType::FEEFILTER,
-    # consensus/amount.h's MoneyRange) -- and leaves a rate outside it
-    # parsed but unused. valid_sats_amount is that same range with its
-    # upper bound un-exported by name (btclib.amount's own _MAX_SATOSHI),
-    # so it is what stands in for MoneyRange here; a rate it refuses
-    # is read as no filter, BIP133's and Core's own answer for one that
-    # would fail a comparison against any real, non-negative fee anyway.
+    # consensus/amount.h's MoneyRange, at bitcoin/bitcoin@9be056a8a7) --
+    # and leaves the filter it already holds in place for a rate outside
+    # it. valid_sats_amount is that same range with its upper bound
+    # un-exported by name (btclib.amount's own _MAX_SATOSHI), so it is
+    # what stands in for MoneyRange here.
     try:
         conn.feefilter = valid_sats_amount(FeeFilter.parse(msg).feerate)
     except BTClibValueError:
-        conn.feefilter = 0
+        return
 
 
 def tx(node: Node, msg: bytes, conn: Connection) -> None:

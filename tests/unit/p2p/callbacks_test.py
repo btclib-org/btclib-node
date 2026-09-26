@@ -1246,25 +1246,19 @@ def test_a_feefilter_lands_on_the_connection() -> None:
     [-500, sats_from_btc(Decimal(21_000_000)) + 1],
     ids=["negative", "above-max-money"],
 )
-def test_a_feefilter_outside_the_money_range_is_read_as_no_filter(
+def test_a_feefilter_outside_the_money_range_leaves_the_filter_in_place(
     feerate: int,
 ) -> None:
-    """A `feefilter` naming a rate outside MoneyRange reads as no filter.
+    """A `feefilter` outside MoneyRange keeps the peer's earlier filter.
 
-    Core acts on a received rate only within MoneyRange -- 0 to MAX_MONEY
-    inclusive (net_processing.cpp's NetMsgType::FEEFILTER, consensus/amount.h's
-    MoneyRange) -- and leaves either side of it parsed but unused, rather than
-    turning it into a filter nothing a real, non-negative fee rate could ever
-    fail.
+    Core assigns a received rate only within MoneyRange (net_processing.cpp's
+    NetMsgType::FEEFILTER, at bitcoin/bitcoin@9be056a8a7), so a rate outside it
+    neither sets a filter nor clears the one the peer sent before.
     """
-    # Core acts on a received rate only within MoneyRange -- 0 to
-    # MAX_MONEY inclusive (net_processing.cpp's NetMsgType::FEEFILTER,
-    # consensus/amount.h's MoneyRange) -- and leaves either side of it
-    # parsed but unused, rather than turning it into a filter nothing
-    # a real, non-negative fee rate could ever fail
     peer = a_peer()
+    feefilter(a_handshake_node(), FeeFilter(1000).serialize(), peer)
     feefilter(a_handshake_node(), FeeFilter(feerate).serialize(), peer)
-    assert peer.feefilter == 0
+    assert peer.feefilter == 1000
 
 
 def test_a_feefilter_at_the_edge_of_the_money_range_is_kept() -> None:
