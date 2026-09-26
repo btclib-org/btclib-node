@@ -455,6 +455,24 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A peer at protocol version 60000 or below is sent a `ping` with no nonce,
   and one at 70012 or below the final `alert`, as in Core** (closes #1204,
   closes #1205).
+### The dialler draws from both tables, as Core's `Select_` does
+
+- **A coin picks the answered or the gossiped table, and a pass draws up to
+  a hundred times** (closes #1201), so held answered peers no longer stall it.
+
+### PeerDB records as answered only a peer it already knows
+
+- **A peer is recorded as answered only where gossip already holds its
+  endpoint** (closes #1189), as Core's `Good_` updates only what addrman holds.
+
+### A message that does not parse costs its peer nothing, as in Core
+
+- **A peer is discouraged only where Core calls `Misbehaving`** (closes
+  #1170); a payload that does not parse is logged and the peer kept.
+
+### An inbound peer is sent `version` only once its own is accepted, as in Core
+
+- **A refused inbound peer is sent nothing** (closes #1207).
 
 ## v2026.9.24
 

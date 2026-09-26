@@ -78,7 +78,7 @@ def a_connection(
     node = SimpleNamespace(
         chain=RegTest(),
         config=SimpleNamespace(pruned=False),
-        # what `send_version` now carries as `start_height`: 0, matching
+        # what `own_version` now carries as `start_height`: 0, matching
         # a fresh `Node`'s own initial value before `main._finalize_fork`
         # ever writes it (`__init__.py`). btclib-org/btclib-node#722
         best_height=0,
@@ -125,12 +125,12 @@ def test_a_message_that_will_not_serialize_is_logged_and_dropped() -> None:
     assert "error in serializing message" in line
 
 
-def test_send_version_records_this_connections_own_nonce() -> None:
-    """`send_version` sets `self.nonce` to what it drew, on either side.
+def test_own_version_records_this_connections_own_nonce() -> None:
+    """`own_version` sets `self.nonce` to what it drew, on either side.
 
     #448: `callbacks.version` reads this connection's own nonce back off
     it rather than off a manager-wide ring, so this is the whole of what
-    `send_version` owes it, whether the connection is outbound or in.
+    `own_version` owes it, whether the connection is outbound or in.
     """
     connection, _ = a_connection()
     manager = cast("Any", connection.manager)
@@ -144,13 +144,13 @@ def test_send_version_records_this_connections_own_nonce() -> None:
     connection._send = _send  # type: ignore[method-assign]
 
     with connection.client:
-        asyncio.run(connection.send_version())
+        asyncio.run(connection.async_send(connection.own_version()))
     drawn = connection.nonce
     assert drawn is not None
     assert manager.pending_outbound_nonces == {drawn}
 
 
-def test_send_version_only_adds_an_outbound_nonce_to_the_manager() -> None:
+def test_own_version_only_adds_an_outbound_nonce_to_the_manager() -> None:
     """An inbound connection's own nonce never enters `pending_outbound_nonces`.
 
     `P2pManager.is_self_connect_nonce`'s own docstring is where that set
@@ -170,12 +170,12 @@ def test_send_version_only_adds_an_outbound_nonce_to_the_manager() -> None:
     connection._send = _send  # type: ignore[method-assign]
 
     with connection.client:
-        asyncio.run(connection.send_version())
+        asyncio.run(connection.async_send(connection.own_version()))
     assert connection.nonce is not None
     assert not manager.pending_outbound_nonces
 
 
-def test_send_version_announces_the_name_and_the_installed_version() -> None:
+def test_own_version_announces_the_name_and_the_installed_version() -> None:
     """The `version` on the wire carries `/btclib:<installed version>/`.
 
     Read back off the framed octets `_send` is handed, not off
@@ -196,14 +196,14 @@ def test_send_version_announces_the_name_and_the_installed_version() -> None:
     connection._send = _send  # type: ignore[method-assign]
 
     with connection.client:
-        asyncio.run(connection.send_version())
+        asyncio.run(connection.async_send(connection.own_version()))
 
     (framed,) = sent
     user_agent = Version.parse(Message.parse(framed).payload).user_agent
     assert user_agent == f"/btclib:{version('btclib-node')}/".encode()
 
 
-def test_send_version_carries_this_nodes_own_best_height() -> None:
+def test_own_version_carries_this_nodes_own_best_height() -> None:
     """`start_height` on the wire is `manager.node.best_height` (closes #722).
 
     Core's own `PushNodeVersion` (`net_processing.cpp:1673`, at
@@ -225,14 +225,14 @@ def test_send_version_carries_this_nodes_own_best_height() -> None:
     connection._send = _send  # type: ignore[method-assign]
 
     with connection.client:
-        asyncio.run(connection.send_version())
+        asyncio.run(connection.async_send(connection.own_version()))
 
     (framed,) = sent
     start_height = Version.parse(Message.parse(framed).payload).start_height
     assert start_height == 741
 
 
-def test_send_version_advertises_node_network_when_not_pruned() -> None:
+def test_own_version_advertises_node_network_when_not_pruned() -> None:
     """An unpruned node's `version` carries `NODE_NETWORK`, among the rest."""
     connection, _ = a_connection()
     manager = cast("Any", connection.manager)
@@ -247,7 +247,7 @@ def test_send_version_advertises_node_network_when_not_pruned() -> None:
     connection._send = _send  # type: ignore[method-assign]
 
     with connection.client:
-        asyncio.run(connection.send_version())
+        asyncio.run(connection.async_send(connection.own_version()))
 
     (framed,) = sent
     services = Version.parse(Message.parse(framed).payload).services
@@ -256,7 +256,7 @@ def test_send_version_advertises_node_network_when_not_pruned() -> None:
     assert services & ServiceFlags.NODE_WITNESS
 
 
-def test_send_version_drops_node_network_when_pruned() -> None:
+def test_own_version_drops_node_network_when_pruned() -> None:
     """A pruned node's own `version` keeps `LIMITED`, drops `NODE_NETWORK`.
 
     Core's own `g_local_services` (`src/init.cpp`, at
@@ -277,7 +277,7 @@ def test_send_version_drops_node_network_when_pruned() -> None:
     connection._send = _send  # type: ignore[method-assign]
 
     with connection.client:
-        asyncio.run(connection.send_version())
+        asyncio.run(connection.async_send(connection.own_version()))
 
     (framed,) = sent
     services = Version.parse(Message.parse(framed).payload).services
@@ -360,7 +360,7 @@ def a_running_connection(
         chain=RegTest(),
         status=NodeStatus.Starting,
         config=SimpleNamespace(pruned=False),
-        # `send_version`'s own `start_height` (btclib-org/btclib-node#722),
+        # `own_version`'s own `start_height` (btclib-org/btclib-node#722),
         # 0 matching a fresh `Node`'s own initial value (`__init__.py`).
         best_height=0,
         logger=SimpleNamespace(
@@ -649,7 +649,7 @@ def test_a_connections_own_task_cancelled_directly_still_closes_its_socket() -> 
         connection = a_running_connection(loop, ours)
         task = asyncio.ensure_future(connection.run())
         connection.task = task  # type: ignore[assignment]
-        # past send_version's own await and parked in sock_recv: nothing
+        # past the `version` send's own await and parked in sock_recv: nothing
         # here ever completes that read, so a task still running after
         # this is one still suspended there and not one already done
         await asyncio.sleep(0)
@@ -1111,7 +1111,7 @@ def test_run_does_not_read_again_while_recv_resume_is_cleared() -> None:
 
         connection.loop.sock_recv = fake_sock_recv  # type: ignore[method-assign,assignment]
         task = asyncio.ensure_future(connection.run())
-        # two turns: past send_version's own await and parked on
+        # two turns: past the `version` send's own await and parked on
         # `_recv_resume.wait()`, the same shape the cancellation test
         # above uses to park a connection in `sock_recv` instead
         await asyncio.sleep(0)
