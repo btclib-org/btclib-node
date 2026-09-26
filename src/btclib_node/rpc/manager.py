@@ -217,6 +217,14 @@ class RpcManager(threading.Thread):
                     "The RPC server is not safe to expose to untrusted networks "
                     "such as the public internet"
                 )
+            # Nagle's algorithm off, as Core sets it on every bound socket
+            try:
+                bound[-1].setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                self.logger.info(
+                    "WARNING: Unable to set TCP_NODELAY on RPC server socket, "
+                    "continuing anyway"
+                )
         return bound
 
     def _listen(self) -> list[socket.socket]:

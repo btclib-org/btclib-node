@@ -28,7 +28,7 @@ import subprocess
 import sys
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -47,6 +47,7 @@ from btclib.tx.tx_out import TxOut
 
 from btclib_node.chains import RegTest
 from btclib_node.p2p.address import peer_address
+from btclib_node.rpc import manager as rpc_manager
 from btclib_node.rpc.auth import COOKIE_FILE, password_hmac
 
 if TYPE_CHECKING:
@@ -382,29 +383,78 @@ def get_random_port() -> int:
         return port
 
 
+def resolvable(host: str) -> bool:
+    """Whether the lookup the JSON-RPC listener binds through answers `host`.
+
+    `AI_ADDRCONFIG`, which libevent passes off Windows, can refuse `::1`
+    on a host with no IPv6 address, so what `bitcoind` binds depends on
+    the machine too. A loopback this refuses is one the tests neither
+    open nor expect bound.
+    """
+    # numeric alone, which changes nothing for a literal and keeps a
+    # name from being looked up
+    flags = rpc_manager._ADDRESS_FLAGS | socket.AI_NUMERICHOST
+    try:
+        socket.getaddrinfo(host, 0, type=socket.SOCK_STREAM, flags=flags)
+    except OSError:
+        return False
+    return True
+
+
+# the loopbacks the JSON-RPC listener binds by default, on this machine
+LOOPBACKS = [host for host in rpc_manager._LOOPBACK_HOSTS if resolvable(host)]
+
+
+def unbindable(args: tuple[object, ...]) -> bool:
+    """Whether `args` is `_bind`'s warning over a loopback outside `LOOPBACKS`.
+
+    What the JSON-RPC listener logs on a host without IPv6, whatever the
+    test: a test recording warnings passes these over.
+    """
+    return (
+        args[:1] == ("Binding RPC on address %s port %s failed.",)
+        and args[1] not in LOOPBACKS
+    )
+
+
+def warnings_into(logged: list[tuple[object, ...]]) -> Callable[..., None]:
+    """Return a `logger.warning` recording its arguments but `unbindable`'s."""
+
+    def warning(*args: object) -> None:
+        if not unbindable(args):
+            logged.append(args)
+
+    return warning
+
+
+def _family(host: str) -> socket.AddressFamily:
+    """Return the address family of the loopback `host`."""
+    return socket.AF_INET6 if ":" in host else socket.AF_INET
+
+
 def assert_loopbacks_free(port: int) -> None:
-    """Bind `port` on `127.0.0.1` and `::1`, raising where either is held."""
-    for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
-        with socket.socket(family, socket.SOCK_STREAM) as probe:
+    """Bind `port` on every one of `LOOPBACKS`, raising where one is held."""
+    for host in LOOPBACKS:
+        with socket.socket(_family(host), socket.SOCK_STREAM) as probe:
             probe.bind((host, port))
 
 
 @contextmanager
 def taken_loopbacks() -> Iterator[int]:
-    """Hold `127.0.0.1` and `::1` at one port, answering the port.
+    """Hold every one of `LOOPBACKS` at one port, answering the port.
 
     What the JSON-RPC listener binds by default, as `bitcoind` binds
-    both, so a test that needs its bind to fail holds the two.
+    both, so a test that needs its bind to fail holds them all.
     """
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as v4:
-        v4.bind(("127.0.0.1", 0))
-        v4.listen()
-        port = v4.getsockname()[1]
+    with ExitStack() as stack:
+        port = 0
+        for host in LOOPBACKS:
+            holder = stack.enter_context(socket.socket(_family(host)))
+            holder.bind((host, port))
+            holder.listen()
+            port = holder.getsockname()[1]
         assert isinstance(port, int)
-        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as v6:
-            v6.bind(("::1", port))
-            v6.listen()
-            yield port
+        yield port
 
 
 def taken_port_bind_error(port: int) -> re.Pattern[str]:
