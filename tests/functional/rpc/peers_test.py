@@ -99,7 +99,7 @@ def test_get_peer_info(tmp_path: Path) -> None:
         assert body["result"][0]["addrlocal"] == f"127.0.0.1:{local_port}"
         assert body["result"][0]["network"] == "not_publicly_routable"
         # network | witness | compact_filters | network_limited, which
-        # is what send_version advertises, over the 64-bit field
+        # is what own_version advertises, over the 64-bit field
         assert body["result"][0]["services"] == "0000000000000449"
         assert body["result"][0]["servicesnames"] == [
             "NETWORK",
@@ -118,7 +118,7 @@ def test_get_peer_info(tmp_path: Path) -> None:
         assert body["result"][0]["addrlocal"] == f"127.0.0.1:{node1.p2p_port}"
         assert body["result"][0]["network"] == "not_publicly_routable"
         # network | witness | compact_filters | network_limited, which
-        # is what send_version advertises, over the 64-bit field
+        # is what own_version advertises, over the 64-bit field
         assert body["result"][0]["services"] == "0000000000000449"
         assert body["result"][0]["servicesnames"] == [
             "NETWORK",

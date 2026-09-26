@@ -19,10 +19,12 @@ import time
 from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
+from io import BytesIO
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, cast, override
 
 import pytest
+from btclib import var_int
 from btclib.amount import sats_from_btc
 from btclib.block import Block, BlockHeader
 from btclib.exceptions import BTClibException, BTClibValueError
@@ -64,6 +66,8 @@ from btclib.p2p.limits import (
     MAX_GETCFHEADERS_SIZE,
     MAX_GETCFILTERS_SIZE,
     MAX_HEADERS_RESULTS,
+    MAX_INV_SZ,
+    MAX_LOCATOR_SZ,
     PROTOCOL_VERSION,
 )
 from btclib.p2p.negotiation import FeeFilter, GetAddr, WtxidRelay
@@ -78,6 +82,7 @@ from btclib_node.config import DEFAULT_MIN_RELAY_FEERATE
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, NodeStatus, P2pConnStatus
 from btclib_node.exceptions import (
     ChainstateInconsistencyError,
+    MisbehavingError,
     MissingPrevoutError,
     NonStandardTxError,
 )
@@ -499,6 +504,7 @@ def a_peer(**attributes: Any) -> Any:
         has_all_wanted_services=False,
         _ping_lock=threading.Lock(),
         send_ping=lambda: sent.append("ping"),
+        own_version=lambda: "version",
         client=SimpleNamespace(getpeername=lambda: ("1.2.3.4", 18444)),
         inbound=False,
         # what `Connection` starts every connection at, and what
@@ -632,6 +638,35 @@ def test_a_version_carrying_our_own_nonce_is_this_node_calling_itself() -> None:
     assert peer.stopped == [True]
     assert not peer.sent
     assert not node.p2p_manager.discouraged
+
+
+@pytest.mark.parametrize("inbound", [True, False], ids=["inbound", "outbound"])
+def test_an_inbound_peer_is_answered_with_this_node_s_version(*, inbound: bool) -> None:
+    """ISS 1207: Core's `PushNodeVersion`, ahead of the rest, inbound only.
+
+    An outbound connection sent its own `version` on opening.
+    """
+    node = a_handshake_node()
+    peer = a_peer(inbound=inbound)
+    version(node, a_version(), peer)
+    expected = ["WtxidRelay", "SendAddrV2", "Verack"]
+    assert commands(peer) == (["version", *expected] if inbound else expected)
+
+
+@pytest.mark.parametrize(
+    ("protocol", "nonce"),
+    [(MIN_PEER_PROTO_VERSION - 1, 8), (PROTOCOL_VERSION, 7)],
+    ids=["obsolete", "self-connect"],
+)
+def test_an_inbound_peer_refused_is_sent_no_version(
+    *, protocol: int, nonce: int
+) -> None:
+    """ISS 1207: a refused inbound peer learns nothing of this node."""
+    node = a_handshake_node(pending_outbound_nonces=[7])
+    peer = a_peer(inbound=True)
+    version(node, a_version(protocol=protocol, nonce=nonce), peer)
+    assert peer.stopped == [True]
+    assert not peer.sent
 
 
 def test_a_peer_speaking_an_older_protocol_is_let_go() -> None:
@@ -835,9 +870,11 @@ def test_a_version_with_a_trailing_octet_still_costs_the_peer() -> None:
     a stream that could plausibly hold more would make a genuinely unknown
     trailing octet misread as that flag. There is no btclib mechanism this node
     can lean on for `version` without a private copy of its field-by-field
-    parse, so this still raises out of the callback -- main.handle_p2p_handshake
-    is what turns that into conn.stop(), covered by
-    tests/unit/p2p/main_test.py's own coverage of that generic behaviour.
+    parse, so this still raises out of the callback. main.handle_p2p_handshake
+    logs that and keeps the peer, as Core only logs what ProcessMessage throws
+    (btclib-org/btclib-node#1170): the handshake never completes, and the
+    connection is left to the timeout of a pending one
+    (btclib-org/btclib-node#1169).
     """
     peer = a_peer()
     with pytest.raises(BTClibValueError):
@@ -860,7 +897,7 @@ def test_a_relay_octet_that_is_neither_0_nor_1_still_costs_the_peer() -> None:
     serialize.h) can never write anything but 0x00/0x01: a bool
     converts to 0 or 1, nothing else, so no peer running Core -- or
     this node's own Version.serialize -- ever reaches this path, only
-    an adversarial or already-broken one does. Disconnecting it is the
+    an adversarial or already-broken one does. Refusing it is the
     policy kept.
     """
     peer = a_peer()
@@ -985,6 +1022,8 @@ def test_an_outbound_handshake_records_the_address_dialled() -> None:
         address=dialled,
     )
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+    # gossiped first: `add_active_address` records a known endpoint alone
+    peer_db.add_addresses([dialled])
     verack(a_handshake_node(peer_db=peer_db), b"", peer)
     (recorded,) = peer_db.active_addresses
     assert recorded.address == dialled.address
@@ -1018,6 +1057,8 @@ def test_an_inbound_handshake_records_the_peers_announced_port() -> None:
         address=accepted,
     )
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+    # gossiped first: `add_active_address` records a known endpoint alone
+    peer_db.add_addresses([replace(accepted, port=8333)])
     verack(a_handshake_node(peer_db=peer_db), b"", peer)
     (recorded,) = peer_db.active_addresses
     # the accepted connection's own address, proven reachable by the TCP
@@ -1504,27 +1545,18 @@ def test_tokens_refill_at_core_s_rate_up_to_its_ceiling(
 
 
 def test_an_octet_past_an_addr_or_addrv2_no_longer_costs_the_peer() -> None:
-    """A trailing octet on `addr` or `addrv2` is parsed past, not a disconnect.
+    """A trailing octet on `addr` or `addrv2` is parsed past, gossip kept.
 
     issue #149: btclib's own assert_no_trailing raises out of
-    Addr.parse/AddrV2.parse for exactly this, which main.handle_p2p
-    turns into a disconnect if the callback lets it through. Core does
-    not disconnect here (net_processing.cpp's ProcessMessage reads what
-    it wants out of vRecv and never checks for anything left), and this
-    node now matches that for the two of the three messages issue #149
-    is about where it can without a second copy of btclib's codec --
-    Addr and AddrV2 accept a stream, and btclib's own assert_no_trailing
+    Addr.parse/AddrV2.parse for exactly this, which would throw the
+    whole message's gossip away if the callback let it through. Core
+    reads the entries (net_processing.cpp's ProcessMessage reads what it
+    wants out of vRecv and never checks for anything left), and this
+    node matches that for the two of the three messages issue #149 is
+    about where it can without a second copy of btclib's codec -- Addr
+    and AddrV2 accept a stream, and btclib's own assert_no_trailing
     docstring calls a stream "the caller's", nothing past it checked.
     """
-    # issue #149: btclib's own assert_no_trailing raises out of
-    # Addr.parse/AddrV2.parse for exactly this, which main.handle_p2p
-    # turns into a disconnect if the callback lets it through. Core does
-    # not disconnect here (net_processing.cpp's ProcessMessage reads what
-    # it wants out of vRecv and never checks for anything left), and this
-    # node now matches that for the two of the three messages issue #149
-    # is about where it can without a second copy of btclib's codec --
-    # Addr and AddrV2 accept a stream, and btclib's own assert_no_trailing
-    # docstring calls a stream "the caller's", nothing past it checked.
     given = [a_gossiped_address("1.2.3.4")]
     for callback, message in (
         (addr, Addr([addr_entry(address) for address in given])),
@@ -2142,7 +2174,7 @@ def test_a_block_whose_proof_of_work_does_not_hold_up_is_refused() -> None:
     payload = BlockMsg(broken, include_witness=True, check_validity=False).serialize(
         check_validity=False
     )
-    with pytest.raises(BTClibValueError):
+    with pytest.raises(MisbehavingError):
         block_callback(node, payload, a_peer())
     assert added == []
     assert index.marked == []
@@ -2188,11 +2220,11 @@ def test_an_unsolicited_block_with_an_unknown_parent_is_refused() -> None:
     bitcoin/bitcoin@ca7162cde5) refuses exactly this shape with
     `BLOCK_MISSING_PREV`, and `MaybePunishNodeForBlock`
     (`net_processing.cpp`, same sha) calls `Misbehaving` for it --
-    `BTClibValueError` here is what `main.handle_p2p`'s own `except`
-    reads the same way, discouraging and dropping the peer
-    (`test_a_callback_that_raises_drops_the_peer`, `p2p/main_test.py`,
-    already covers that mechanics generically). Before the fix this
-    raised `KeyError` instead, which is not discouraged.
+    `MisbehavingError` here is what `main.handle_p2p`'s own `except`
+    answers by discouraging and dropping the peer
+    (`test_a_callback_that_raises_a_btclib_exception_costs_the_peer`,
+    `p2p/main_test.py`, covers that mechanics generically). Before the
+    fix this raised `KeyError` instead, which is not discouraged.
     btclib-org/btclib-node#711
     """
     (orphan,) = generate_random_chain(1, b"\x11" * 32)
@@ -2204,7 +2236,7 @@ def test_an_unsolicited_block_with_an_unknown_parent_is_refused() -> None:
     payload = BlockMsg(orphan, include_witness=True, check_validity=False).serialize(
         check_validity=False
     )
-    with pytest.raises(BTClibValueError):
+    with pytest.raises(MisbehavingError):
         block_callback(node, payload, a_peer())
     assert added == []
     assert index.marked == []
@@ -4067,3 +4099,182 @@ def test_every_block_announced_is_one_the_peer_has() -> None:
     assert peer.block_availability == BlockAvailability(
         best_known=_HELD, last_unknown=unknown
     )
+
+
+# One entry of each vector Core bounds: an `inv`/`getdata` item, an `addr`
+# entry and an `addrv2` one, each for `1.2.3.4:8333`.
+_AN_INV_ITEM = (1).to_bytes(4, "little") + b"\x11" * 32
+_AN_ADDR_ENTRY = (
+    bytes(4) + bytes(8) + bytes(10) + b"\xff\xff" + bytes([1, 2, 3, 4]) + b"\x20\x8d"
+)
+_AN_ADDRV2_ENTRY = bytes(4) + b"\x00" + b"\x01\x04" + bytes([1, 2, 3, 4]) + b"\x20\x8d"
+_BOUNDED = [
+    pytest.param(inv, MAX_INV_SZ, _AN_INV_ITEM, id="inv"),
+    pytest.param(getdata, MAX_INV_SZ, _AN_INV_ITEM, id="getdata"),
+    pytest.param(addr, MAX_ADDR_TO_SEND, _AN_ADDR_ENTRY, id="addr"),
+    pytest.param(addrv2, MAX_ADDR_TO_SEND, _AN_ADDRV2_ENTRY, id="addrv2"),
+]
+
+
+@pytest.mark.parametrize(("callback", "bound", "entry"), _BOUNDED)
+def test_a_vector_past_cores_bound_is_misbehaving(
+    callback: Any, bound: int, entry: bytes
+) -> None:
+    """ISS 1170: Core calls `Misbehaving` for a vector past its bound.
+
+    One entry fewer is the control: it is read, where btclib's own
+    parser would refuse the one past the bound as it refuses a payload
+    that does not parse.
+    """
+    payload = var_int.serialize(bound + 1) + entry * (bound + 1)
+    with pytest.raises(MisbehavingError, match=f"message size = {bound + 1}"):
+        callback(a_data_node(), payload, a_peer())
+    assert _parsed_at_the_bound(callback, bound, entry)
+
+
+def _parsed_at_the_bound(callback: Any, bound: int, entry: bytes) -> bool:
+    """Whether `callback`'s own parse reads a vector exactly at `bound`."""
+    parser = {inv: Inv, getdata: GetData}.get(callback)
+    payload = var_int.serialize(bound) + entry * bound
+    if parser is not None:
+        return len(parser.parse(payload).items) == bound
+    codec = Addr if callback is addr else AddrV2
+    return len(codec.parse(BytesIO(payload)).addresses) == bound
+
+
+@pytest.mark.parametrize(("callback", "bound", "entry"), _BOUNDED)
+def test_a_vector_too_short_for_its_count_is_only_a_parse_failure(
+    callback: Any, bound: int, entry: bytes
+) -> None:
+    """ISS 1170: Core throws reading such a vector, and only logs that.
+
+    The count passes the bound, and the payload holds one entry fewer
+    than the bound: Core's read of the vector throws before its size is
+    compared, so the refusal is not a `MisbehavingError`.
+    """
+    payload = var_int.serialize(bound + 1) + entry * (bound - 1)
+    with pytest.raises(BTClibValueError) as refused:
+        callback(a_data_node(), payload, a_peer())
+    assert not isinstance(refused.value, MisbehavingError)
+
+
+def test_a_headers_count_past_the_bound_is_misbehaving_on_its_own() -> None:
+    """ISS 1170: Core reads the count of a `headers` and compares it first.
+
+    No header follows it, and it is still `Misbehaving`; the bound
+    itself is the control, left to btclib's parse of the missing headers.
+    """
+    with pytest.raises(MisbehavingError, match="headers message size = 2001"):
+        headers(a_data_node(), var_int.serialize(MAX_HEADERS_RESULTS + 1), a_peer())
+    with pytest.raises(BTClibValueError) as refused:
+        headers(a_data_node(), var_int.serialize(MAX_HEADERS_RESULTS), a_peer())
+    assert not isinstance(refused.value, MisbehavingError)
+
+
+@pytest.mark.parametrize(
+    ("count", "dropped"), [(MAX_LOCATOR_SZ + 1, True), (MAX_LOCATOR_SZ, False)]
+)
+def test_a_getheaders_locator_past_the_bound_drops_the_peer(
+    an_index: BlockIndex, count: int, *, dropped: bool
+) -> None:
+    """ISS 1170: Core disconnects for a locator past `MAX_LOCATOR_SZ`.
+
+    It does not call `Misbehaving`, so nothing is raised; the bound
+    itself is the control, and is answered.
+    """
+    node = a_data_node(block_index=an_index)
+    peer = a_peer()
+    payload = (
+        PROTOCOL_VERSION.to_bytes(4, "little")
+        + var_int.serialize(count)
+        + b"\x11" * 32 * count
+        + b"\x00" * 32
+    )
+    getheaders(node, payload, peer)
+    assert bool(peer.stopped) is dropped
+    assert bool(peer.sent) is not dropped
+
+
+def test_a_block_that_does_not_parse_is_only_a_parse_failure() -> None:
+    """ISS 1170: Core only logs a `block` whose payload throws."""
+    with pytest.raises(BTClibValueError) as refused:
+        block_callback(a_data_node(), b"\x00" * 10, a_peer())
+    assert not isinstance(refused.value, MisbehavingError)
+
+
+def _an_addrv2_entry(network: int, address: bytes, services: bytes = b"\x00") -> bytes:
+    """Return one `addrv2` entry's octets, time and port zero."""
+    return (
+        bytes(4)
+        + services
+        + bytes([network])
+        + var_int.serialize(len(address))
+        + address
+        + bytes(2)
+    )
+
+
+_ADDRV2_ENTRIES = [
+    pytest.param(_an_addrv2_entry(1, bytes(4)), id="ipv4"),
+    pytest.param(_an_addrv2_entry(2, bytes(16)), id="ipv6"),
+    pytest.param(_an_addrv2_entry(4, bytes(32)), id="torv3"),
+    pytest.param(_an_addrv2_entry(1, bytes(5)), id="ipv4-wrong-length"),
+    pytest.param(_an_addrv2_entry(8, b""), id="unknown-network-empty"),
+    pytest.param(_an_addrv2_entry(8, bytes(512)), id="unknown-network-at-the-cap"),
+    pytest.param(_an_addrv2_entry(8, bytes(513)), id="unknown-network-past-the-cap"),
+    pytest.param(
+        _an_addrv2_entry(1, bytes(4), b"\xfd\x01\x00"), id="services-not-canonical"
+    ),
+    pytest.param(
+        _an_addrv2_entry(1, bytes(4), b"\xfd\x00\x01"), id="services-canonical-wide"
+    ),
+    pytest.param(_an_addrv2_entry(1, bytes(4))[:-1], id="short"),
+    pytest.param(bytes(4) + b"\xfd\xff", id="services-cut-short"),
+    pytest.param(bytes(4) + b"\x00\x08" + b"\xfd\xff", id="address-length-cut-short"),
+    pytest.param(b"", id="empty"),
+]
+
+
+@pytest.mark.parametrize("entry", _ADDRV2_ENTRIES)
+def test_an_addrv2_entry_is_skipped_where_btclib_reads_it(entry: bytes) -> None:
+    """ISS 1170: the skip by length fields answers as `NetworkAddressV2.parse`.
+
+    The walk counting an `addrv2` past its bound builds no entry, so it
+    is compared with btclib's own parse, entry by entry, on what each
+    reads and where each stops.
+    """
+    stream = BytesIO(entry)
+    try:
+        NetworkAddressV2.parse(stream)
+    except BTClibValueError:
+        expected = -1
+    else:
+        expected = stream.tell()
+    assert cb._skip_addrv2_entry(entry, 0) == expected
+
+
+def test_an_addrv2_count_past_what_the_payload_could_hold_decides_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1170: a count no payload of this size could hold is not walked.
+
+    The octets after the count are fewer than the nine each entry takes
+    at the least, so the count answers alone and no entry is skipped;
+    the same octets under a count they can hold is the control, walked
+    whole.
+    """
+    skipped: list[int] = []
+    skip = cb._skip_addrv2_entry
+
+    def recorded(msg: bytes, pos: int) -> int:
+        skipped.append(pos)
+        return skip(msg, pos)
+
+    monkeypatch.setattr(cb, "_skip_addrv2_entry", recorded)
+    entry = _an_addrv2_entry(8, b"")
+    assert len(entry) == 9
+    payload = entry * 1001
+    assert cb._addrv2_count_past(var_int.serialize(1002) + payload, 1000) == 0
+    assert skipped == []
+    assert cb._addrv2_count_past(var_int.serialize(1001) + payload, 1000) == 1001
+    assert len(skipped) == 1001
