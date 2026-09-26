@@ -472,7 +472,8 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 ### A `history.log` line carries its level as `debug.log` does
 
 - **A warning is marked `[warning]` and an error `[error]`** (closes #1280),
-  with Core's `[debug]` for debug lines and nothing for info.
+  nothing for info, and `[debug]` for a debug line, where Core's carries its
+  category instead.
 
 ## v2026.9.24
 
