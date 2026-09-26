@@ -118,6 +118,8 @@ def _announce_added_blocks(node: Node, blocks: list[Block]) -> None:
     headers = [block.header for block in blocks[-_MAX_BLOCKS_TO_ANNOUNCE:]]
     tip_hash = headers[-1].hash
     # one nonce for every peer, as Core's `m_most_recent_compact_block`
+    # gives where it holds the block; this node keeps none between calls
+    # (btclib-org/btclib-node#1336)
     compact: CmpctBlock | None = None
     for conn in node.p2p_manager.connections.copy().values():
         state = conn.block_availability
@@ -175,7 +177,9 @@ def new_pow_valid_block(node: Node, block: Block) -> None:
     node.highest_fast_announce = height
     if height < node.chain.consensus.segwit_height:
         return
-    # one nonce for every peer, as Core's `pcmpctblock`
+    # one nonce for every peer, as Core's `pcmpctblock`, which Core also
+    # keeps for later requests and this node does not
+    # (btclib-org/btclib-node#1336)
     compact: CmpctBlock | None = None
     for conn in node.p2p_manager.connections.copy().values():
         if (
@@ -683,19 +687,19 @@ def _validate_block(
 def contextual_check_block(node: Node, block: Block, index: int) -> tuple[int, bool]:
     """Refuse what Core's `ContextualCheckBlock` refuses of `block` at `index`.
 
-    `bad-cb-height` wherever BIP34 binds, and `bad-txns-nonfinal`
-    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
-    The witness commitment and the weight, the other two rules there, are
-    `Block.assert_valid`'s. The block's parent is indexed, and the block
-    need not be on the active chain. Answers the parent's median time past
-    and whether BIP113 binds, which `_validate_block`'s sequence locks
-    read too.
+    `bad-txns-nonfinal`, then `bad-cb-height` wherever BIP34 binds, in
+    Core's order (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag). The witness commitment and the weight, the other two rules
+    there, are `Block.assert_valid`'s. `Block.assert_valid_contextual`,
+    which asks `bad-cb-height`, asks `time-too-new` first: Core asks that
+    one of the header, in `ContextualCheckBlockHeader`, which
+    `BlockIndex.add_headers` has already done here, so a block reaching
+    this passes it unless the clock went back. The block's parent is
+    indexed, and the block need not be on the active chain. Answers the
+    parent's median time past and whether BIP113 binds, which
+    `_validate_block`'s sequence locks read too.
     """
     block_hash = block.header.hash
-    block.assert_valid_contextual(
-        BlockContext(index, datetime.now(UTC), node.chain.consensus.bip34_height)
-    )
-
     block_index = node.chainstate.block_index
     parent_header = block_index.header_dict[block.header.previous_block_hash].header
     parent_mtp = median_time_past(parent_header, index - 1, parent_lookup(node))
@@ -717,6 +721,9 @@ def contextual_check_block(node: Node, block: Block, index: int) -> tuple[int, b
         if not is_final(tx, index, lock_time_cutoff):
             err_msg = "bad-txns-nonfinal"
             raise BTClibValueError(err_msg)
+    block.assert_valid_contextual(
+        BlockContext(index, datetime.now(UTC), node.chain.consensus.bip34_height)
+    )
     return parent_mtp, bip113_active
 
 

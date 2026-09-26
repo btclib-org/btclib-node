@@ -382,6 +382,27 @@ def test_reject_block_whose_coinbase_duplicates_an_unspent_txid(node: Node) -> N
     assert node.chainstate.utxo_index.db.get(key) is not None
 
 
+def test_a_block_both_nonfinal_and_without_its_height_is_refused_nonfinal(
+    node: Node,
+) -> None:
+    """Core's `ContextualCheckBlock` asks `bad-txns-nonfinal` before BIP34's.
+
+    ISS 1315's review measured it on bitcoind: a block failing both is
+    refused `bad-txns-nonfinal`.
+    """
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+    funding = chain[0].transactions[0]
+    nonfinal = locked_spend(
+        funding, funding.vout[0].value, lock_time=2_000_000_000, sequence=0
+    )
+    bad = build_block(
+        chain[-1].header.hash, [generate_coinbase(), nonfinal], len(chain)
+    )
+    connect(node, [bad])
+    rejected_because(node, bad, "bad-txns-nonfinal")
+
+
 def test_reject_block_with_a_transaction_locked_to_the_future(node: Node) -> None:
     """A transaction locked to a 2033 timestamp fails to connect.
 
@@ -2405,6 +2426,8 @@ def a_fast_peer(
     "case",
     [
         "announced",
+        "at-no-ban-version",
+        "at-segwit",
         "ibd",
         "not-on-tip",
         "low-bandwidth",
@@ -2440,8 +2463,9 @@ def test_a_new_block_is_sent_to_a_high_bandwidth_peer_before_connecting(
         block = build_block(chain[0].header.hash, [generate_coinbase(height=5)], 2)
     elif case == "announced-before":
         node.highest_fast_announce = 2
-    elif case == "pre-segwit":
-        consensus = replace(node.chain.consensus, segwit_height=3)
+    elif case in ("pre-segwit", "at-segwit"):
+        segwit_height = 3 if case == "pre-segwit" else 2
+        consensus = replace(node.chain.consensus, segwit_height=segwit_height)
         node.chain = cast("Any", SimpleNamespace(consensus=consensus))
     block_index.add_headers([block.header])
     best_known = {"no-parent": None, "has-it": block.header.hash}.get(
@@ -2452,13 +2476,13 @@ def test_a_new_block_is_sent_to_a_high_bandwidth_peer_before_connecting(
         sent,
         BlockAvailability(best_known=best_known),
         high_bandwidth=case != "low-bandwidth",
-        version=70014 if case == "old-version" else 70016,
+        version={"old-version": 70014, "at-no-ban-version": 70015}.get(case, 70016),
         status=P2pConnStatus.Closed if case == "closed" else P2pConnStatus.Connected,
     )
 
     main.new_pow_valid_block(node, block)
 
-    if case == "announced":
+    if case in ("announced", "at-no-ban-version", "at-segwit"):
         (message,) = sent
         assert isinstance(message, CmpctBlock)
         assert message.serialize() == compact_block(block, message.nonce).serialize()

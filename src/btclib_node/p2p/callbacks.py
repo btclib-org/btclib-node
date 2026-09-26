@@ -1113,6 +1113,8 @@ def _block_answer(node: Node, item: Inventory, block: Block) -> BlockMsg | Cmpct
         height = block_index.header_dict[item.hash].index
         tip_height = len(block_index.active_chain) - 1
         if _can_direct_fetch(node) and height >= tip_height - MAX_CMPCTBLOCK_DEPTH:
+            # a fresh nonce, where Core answers the most recent block with
+            # the one it announced (btclib-org/btclib-node#1336)
             return compact_block(block, secrets.randbits(64))
         include_witness = True
     else:
