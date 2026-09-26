@@ -59,6 +59,11 @@ from tests.conftest import node_context, unstarted_node_context
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
 
+# How long a test waits for a node's own thread to end: the bound
+# `Node.stop` grants every node, read here at import, before a test
+# patches the constant to the bound it measures.
+_STOP_TIMEOUT = btclib_node.STOP_TIMEOUT
+
 
 def a_node(tmp_path: Path) -> Node:
     """Return a regtest `Node`, neither p2p nor RPC enabled, never started."""
@@ -406,7 +411,7 @@ def test_the_node_asking_itself_to_stop_does_not_wait_for_itself(
     monkeypatch.setattr(node.logger, "exception", lambda *args: exceptions.append(args))
     monkeypatch.setattr(btclib_node, "update_chain", lambda node: node.stop())
     node.start()
-    node.join(timeout=10)
+    node.join(timeout=_STOP_TIMEOUT)
     assert not node.is_alive()
     # run() logs and swallows what a step raises, so the exception a
     # self-join raises would leave the node stopping all the same
@@ -432,7 +437,7 @@ def test_a_signal_asks_the_node_to_stop(
     # of what it says.
     assert callable(handler)
     handler(signal_number, None)
-    node.join(timeout=10)
+    node.join(timeout=_STOP_TIMEOUT)
     assert not node.is_alive()
 
 
@@ -569,7 +574,7 @@ def test_a_second_node_does_not_disown_the_first(tmp_path: Path) -> None:
         assert signal.getsignal(signal.SIGINT) is handler
         assert callable(handler)
         handler(signal.SIGINT, None)
-        node1.join(timeout=10)
+        node1.join(timeout=_STOP_TIMEOUT)
         assert not node1.is_alive()
     finally:
         node2._close_worker_pool()
@@ -667,7 +672,7 @@ def test_a_step_that_raises_brings_the_node_down_rather_than_spinning(
     monkeypatch.setattr(btclib_node, "update_chain", boom)
     node = a_node(tmp_path)
     node.start()
-    node.join(timeout=10)
+    node.join(timeout=_STOP_TIMEOUT)
     assert not node.is_alive()
     assert node.chainstate.db.closed
     assert node.block_db.db.closed
@@ -723,7 +728,7 @@ def test_a_missing_reverse_patch_stops_the_node_rather_than_rolling_back(
     monkeypatch.setattr(node, "_drain_message_queues", drain_once_synced)
 
     node.start()
-    node.join(timeout=10)
+    node.join(timeout=_STOP_TIMEOUT)
     assert not node.is_alive()
     assert node.chainstate.db.closed
     assert node.block_db.db.closed
@@ -766,7 +771,7 @@ def a_wedged_node(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[N
         yield node
     finally:
         released.set()
-        node.join(timeout=10)
+        node.join(timeout=_STOP_TIMEOUT)
         assert not node.is_alive()
 
 
@@ -1367,7 +1372,7 @@ def test_stopping_the_node_waits_for_an_in_flight_warmup_before_the_pool_comes_d
     assert "terminated" not in built
 
     release.set()
-    node.join(timeout=5)
+    node.join(timeout=_STOP_TIMEOUT)
     assert built == [btclib_node._WORKER_COUNT, "terminated", "joined"]
 
 
