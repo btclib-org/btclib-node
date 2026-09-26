@@ -44,6 +44,7 @@ from btclib_node.p2p.callbacks import (
     MAX_GETDATA_INFLIGHT_BYTES,
     handshake_callbacks,
 )
+from btclib_node.p2p.chain_sync import ChainSyncTimeoutState
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 from btclib_node.p2p.protocol_version import BIP0031_VERSION, common_version
 
@@ -490,6 +491,13 @@ class Connection:
     # class default for the reason `time_received` gives.
     # btclib-org/btclib-node#1164
     _writing: asyncio.Task[object] | None = None
+
+    # Core's `CNodeState::m_chain_sync` (`p2p/chain_sync.py`), here for
+    # the same reasons as `block_availability` above.
+    @cached_property
+    def chain_sync(self) -> ChainSyncTimeoutState:
+        """Whether this peer is behind this node's tip, and since when."""
+        return ChainSyncTimeoutState()
 
     def __init__(
         self,
