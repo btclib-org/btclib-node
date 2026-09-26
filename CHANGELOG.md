@@ -411,6 +411,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   it, at Core's thresholds** (closes #1180); `sendheaders` waits for the
   peer's best block to carry the minimum chain work.
 
+### Core's licence travels with Core's BIP158 vectors
+
+- **`BITCOIN_CORE_COPYING` sits beside `blockfilters.json`, pinned in
+  `tests/_data/README.md`** (closes #1202), so the sdist carries it too.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
