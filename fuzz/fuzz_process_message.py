@@ -12,10 +12,8 @@ function of octets for the same reason (`fuzz_framing.py`,
 which needs a `Node`, a `P2pManager` and a `Connection` rather than a
 bare buffer -- issue #698 is that third shape.
 
-The first shape is fuzzed where the codec lives, which for BIP61's
-`reject` is `btclib` and its own harness over `Reject.parse`. What this
-tree owns of that message is `p2p.callbacks.reject`, one of the
-handlers this harness drives (issue #827).
+BIP61's `reject` reaches no handler, as in Core (issue #1255), so this
+harness drives none of it.
 
 Core carries two fuzz targets over that same layer, one message
 (`process_message.cpp`) and a sequence of them fed to the same
