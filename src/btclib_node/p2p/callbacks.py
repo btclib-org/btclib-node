@@ -47,7 +47,13 @@ from btclib.p2p.block_filters import (
     GetCFHeaders,
     GetCFilters,
 )
-from btclib.p2p.compact_blocks import SendCmpct
+from btclib.p2p.compact_blocks import (
+    BlockTxn,
+    CmpctBlock,
+    GetBlockTxn,
+    PrefilledTransaction,
+    SendCmpct,
+)
 from btclib.p2p.data import BlockPayload as BlockMsg
 from btclib.p2p.data import TxPayload as TxMsg
 from btclib.p2p.handshake import Verack, Version
@@ -87,6 +93,7 @@ from btclib_node.exceptions import (
 from btclib_node.main import verify_mempool_acceptance
 from btclib_node.p2p.address import ip_and_port
 from btclib_node.p2p.block_availability import update_block_availability
+from btclib_node.p2p.chain_sync import protect_if_caught_up
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
 from btclib_node.p2p.protocol_version import (
     BIP0031_VERSION,
@@ -99,12 +106,17 @@ from btclib_node.p2p.protocol_version import (
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
+    from btclib.block import Block
+
     from btclib_node import Node
     from btclib_node.chainstate.block_index import BlockIndex
     from btclib_node.p2p.connection import Connection
 
 __all__ = [
+    "CMPCTBLOCKS_VERSION",
+    "MAX_BLOCKTXN_DEPTH",
     "MAX_CFILTERS_INFLIGHT_BYTES",
+    "MAX_CMPCTBLOCK_DEPTH",
     "MAX_GETDATA_INFLIGHT_BYTES",
     "MAX_PENDING_CFILTERS_HEIGHTS",
     "MAX_PENDING_GETDATA_ITEMS",
@@ -114,11 +126,13 @@ __all__ = [
     "advance_getdata",
     "block",
     "callbacks",
+    "compact_block",
     "feefilter",
     "get_cfcheckpt",
     "get_cfheaders",
     "get_cfilters",
     "getaddr",
+    "getblocktxn",
     "getdata",
     "getheaders",
     "handshake_callbacks",
@@ -307,9 +321,10 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     Continuing means answering `verack`, with `wtxidrelay` and
     `sendaddrv2` ahead of it where the common version reaches
     `WTXID_RELAY_VERSION` and, to an inbound peer, this node's own
-    `version` ahead of all three; recording a peer this node dialled as
-    answered; and recording whether the peer asked to have transactions
-    relayed.
+    `version` ahead of all three; setting up address relay with a peer
+    this node dialled, and asking it for addresses; recording a peer this
+    node dialled as answered; and recording whether the peer asked to have
+    transactions relayed.
     """
     if conn.version_message is not None:
         return
@@ -407,13 +422,27 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
         conn.send(SendAddrV2())
     conn.send(Verack())
 
-    # Core's `VERSION` handler records a peer this node dialled as
-    # answered, `m_addrman.Good(pfrom.addr)` under `!pfrom.IsInboundConn()`,
-    # once `VERACK` is sent (`net_processing.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `conn.address` is what
-    # this node dialled, and the socket connecting there already answered.
-    # An inbound peer is not recorded: its connection proves only that it
-    # can reach this node, not that this node can reach it.
+    # Core's `VERSION` handler, right after `VERACK`, calls
+    # `SetupAddressRelay` for a peer this node dialled, and sends it a
+    # `getaddr` with room for the answer past
+    # `_MAX_ADDR_PROCESSING_TOKEN_BUCKET` (`net_processing.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). An inbound peer keeps
+    # the one token it started with, and waits for its own first `addr`,
+    # `addrv2` or `getaddr`. `SetupAddressRelay` answers false, and so
+    # sends no `getaddr`, for a block-relay-only peer, which this node
+    # does not open.
+    if not conn.inbound:
+        conn.addr_relay_enabled = True
+        conn.send(GetAddr())
+        conn.addr_token_bucket += MAX_ADDR_TO_SEND
+
+    # Core's `VERSION` handler then records a peer this node dialled as
+    # answered, `m_addrman.Good(pfrom.addr)` under `!pfrom.IsInboundConn()`
+    # (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    # tag). `conn.address` is what this node dialled, and the socket
+    # connecting there already answered. An inbound peer is not recorded:
+    # its connection proves only that it can reach this node, not that
+    # this node can reach it.
     if not conn.inbound:
         conn.address = replace(conn.address, services=version_msg.services)
         node.p2p_manager.peer_db.add_active_address(conn.address)
@@ -467,7 +496,7 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     # known block has the minimum chain work, as Core's
     # `MaybeSendSendHeaders` does
     if common_version(conn) >= SHORT_IDS_BLOCKS_VERSION:
-        conn.send(SendCmpct(announce=False, version=1))
+        conn.send(SendCmpct(announce=False, version=CMPCTBLOCKS_VERSION))
     # BIP133's own floor is not sent here: DownloadManager._send_due_feefilters
     # (src/btclib_node/download.py) reaches every connected connection on the
     # very next step(), Connection.next_feefilter_send_time defaulting to
@@ -480,14 +509,7 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     # fSuccessfullyConnected, not from a one-time handshake action.
     # btclib-org/btclib-node#275
     conn.send_ping()
-    # Core's `VERACK` handler (`net_processing.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) asks an outbound peer
-    # alone, and makes room for its answer past
-    # `_MAX_ADDR_PROCESSING_TOKEN_BUCKET`; an inbound peer keeps the one
-    # token it started with.
-    if not conn.inbound:
-        conn.send(GetAddr())
-        conn.addr_token_bucket += MAX_ADDR_TO_SEND
+    # No `getaddr` here either: `version` sends it, as Core's does.
     # No `getheaders` here: whether this peer is asked for headers is
     # `DownloadManager.sync_headers`'s decision, made on the next pass
     # of `Node`'s own loop, as Core makes it in `SendMessages` rather
@@ -640,6 +662,7 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
     # addresses and read them back from a node that only dials out.
     if not conn.inbound:
         return
+    conn.addr_relay_enabled = True
     # Once per connection, matching the flag's own docstring
     # (connection.py): a peer asking in a loop is served the table once
     # rather than once per ask. btclib-org/btclib-node#71
@@ -708,6 +731,7 @@ def addr(node: Node, msg: bytes, conn: Connection) -> None:
     # without a second copy of Addr's codec. btclib-org/btclib-node#149
     _refuse_past_bound("addr", _count_past(msg, MAX_ADDR_TO_SEND, _ADDR_ENTRY_SIZE))
     entries = Addr.parse(BytesIO(msg)).addresses
+    conn.addr_relay_enabled = True
     # BIP155's record is what the table holds, an addr version 1 entry
     # having no room for the networks a peer may yet gossip
     _store_gossip(node, conn, (peer_from_addr_entry(entry) for entry in entries))
@@ -719,13 +743,15 @@ def addrv2(node: Node, msg: bytes, conn: Connection) -> None:
     # entries fully read, anything past them left unchecked rather than
     # costing this node the gossip. btclib-org/btclib-node#149
     _refuse_past_bound("addrv2", _addrv2_count_past(msg, MAX_ADDR_TO_SEND))
-    _store_gossip(node, conn, AddrV2.parse(BytesIO(msg)).addresses)
+    addresses = AddrV2.parse(BytesIO(msg)).addresses
+    conn.addr_relay_enabled = True
+    _store_gossip(node, conn, addresses)
 
 
 # Core's `MAX_ADDR_RATE_PER_SECOND` and `MAX_ADDR_PROCESSING_TOKEN_BUCKET`
 # (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
 # tag): the rate a peer's address tokens refill at, and the ceiling that
-# refill stops at, which the `MAX_ADDR_TO_SEND` added by `verack`'s own
+# refill stops at, which the `MAX_ADDR_TO_SEND` added by `version`'s own
 # `getaddr` may exceed.
 _MAX_ADDR_RATE_PER_SECOND = 0.1
 _MAX_ADDR_PROCESSING_TOKEN_BUCKET = MAX_ADDR_TO_SEND
@@ -1021,17 +1047,73 @@ def inv(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 # The two families `advance_getdata` below dispatches on -- everything
-# else a `getdata` may name (`MSG_FILTERED_BLOCK`, `MSG_CMPCT_BLOCK`,
-# `UNDEFINED`, an unrecognised code) is neither, and is popped off the
-# front of the pending items and otherwise ignored, the same silence
-# `_filter_range` already answers a request it declines with elsewhere
-# in this module.
+# else a `getdata` may name (`MSG_FILTERED_BLOCK`, `UNDEFINED`, an
+# unrecognised code) is neither, and is popped off the front of the
+# pending items and otherwise ignored, the same silence `_filter_range`
+# already answers a request it declines with elsewhere in this module.
 _GETDATA_TX_TYPES = (
     InventoryType.MSG_TX,
     InventoryType.MSG_WTX,
     InventoryType.MSG_WITNESS_TX,
 )
-_GETDATA_BLOCK_TYPES = (InventoryType.MSG_BLOCK, InventoryType.MSG_WITNESS_BLOCK)
+_GETDATA_BLOCK_TYPES = (
+    InventoryType.MSG_BLOCK,
+    InventoryType.MSG_WITNESS_BLOCK,
+    InventoryType.MSG_CMPCT_BLOCK,
+)
+
+# BIP152's compact blocks as Core serves them (`net_processing.cpp`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the one version Core speaks,
+# the depth past which a `MSG_CMPCT_BLOCK` is answered with the full block
+# instead, and the depth past which a `getblocktxn` is
+CMPCTBLOCKS_VERSION = 2
+MAX_CMPCTBLOCK_DEPTH = 5
+MAX_BLOCKTXN_DEPTH = 10
+# Core's `CanDirectFetch`: the tip is within this many target spacings
+# of now
+_DIRECT_FETCH_SPACINGS = 20
+
+
+def compact_block(block: Block, nonce: int) -> CmpctBlock:
+    """Return `block` as a `cmpctblock`, the coinbase alone sent whole.
+
+    Core's `CBlockHeaderAndShortTxIDs` constructor: the coinbase
+    prefilled at index 0, and every other transaction by the short id of
+    its wtxid under the key `nonce` and the header give.
+    """
+    coinbase = PrefilledTransaction(0, block.transactions[0])
+    keyed = CmpctBlock(block.header, nonce, (), (coinbase,), check_validity=False)
+    short_ids = [keyed.short_id(tx.hash) for tx in block.transactions[1:]]
+    return CmpctBlock(block.header, nonce, short_ids, (coinbase,))
+
+
+def _can_direct_fetch(node: Node) -> bool:
+    """Core's `CanDirectFetch`: whether this node's tip is recent."""
+    block_index = node.chainstate.block_index
+    tip = block_index.header_dict[block_index.active_chain[-1]].header
+    spacing = node.chain.consensus.pow_target_spacing
+    return tip.time.timestamp() > time.time() - spacing * _DIRECT_FETCH_SPACINGS
+
+
+def _block_answer(node: Node, item: Inventory, block: Block) -> BlockMsg | CmpctBlock:
+    """Answer a block item as Core's `ProcessGetBlockData` does.
+
+    A `MSG_CMPCT_BLOCK` for a block at most `MAX_CMPCTBLOCK_DEPTH` below
+    a recent tip gets a `cmpctblock` under a fresh nonce; one for an
+    older block gets the full block with witnesses, "we're almost
+    guaranteed they won't have a useful mempool to match against".
+    """
+    if item.type_code == InventoryType.MSG_CMPCT_BLOCK:
+        block_index = node.chainstate.block_index
+        height = block_index.header_dict[item.hash].index
+        tip_height = len(block_index.active_chain) - 1
+        if _can_direct_fetch(node) and height >= tip_height - MAX_CMPCTBLOCK_DEPTH:
+            return compact_block(block, secrets.randbits(64))
+        include_witness = True
+    else:
+        include_witness = item.type_code == InventoryType.MSG_WITNESS_BLOCK
+    return BlockMsg(block, include_witness=include_witness, check_validity=False)
+
 
 # Room to schedule ahead of a peer's own draining before `advance_getdata`
 # pauses and hands the rest to `node.pending_getdata`, for `resume_getdata`
@@ -1183,10 +1265,7 @@ def _serve_getdata_item(
             return not_found_bytes
         block = node.block_db.get_block(item.hash)
         if block:
-            include_witness = item.type_code == InventoryType.MSG_WITNESS_BLOCK
-            conn.send(
-                BlockMsg(block, include_witness=include_witness, check_validity=False)
-            )
+            conn.send(_block_answer(node, item, block))
     # else: neither family, popped and otherwise ignored -- see the
     # comment beside _GETDATA_TX_TYPES above.
     return not_found_bytes
@@ -1432,6 +1511,7 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
         conn.best_known_height = max(
             conn.best_known_height, block_index.get_block_info(tip).index
         )
+        protect_if_caught_up(node, conn)
     if tip is None:
         # a batch connecting to nothing this node knows, whatever its
         # length: get_block_locator_hashes asks from what this node
@@ -1912,6 +1992,42 @@ def get_cfcheckpt(node: Node, msg: bytes, conn: Connection) -> None:
     )
 
 
+def getblocktxn(node: Node, msg: bytes, conn: Connection) -> None:
+    """Answer the transactions of a block a peer's `cmpctblock` lacked.
+
+    Core's `GETBLOCKTXN` handling (`net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag): silence for a block not
+    held; a `blocktxn` for one at most `MAX_BLOCKTXN_DEPTH` below the
+    tip, an index past its last transaction being misbehaviour; and for
+    an older one the full block, queued as a `MSG_WITNESS_BLOCK` item of
+    this connection's own `getdata`, whose serving pays for the disk
+    read the request cost.
+    """
+    request = GetBlockTxn.parse(msg)
+    block_index = node.chainstate.block_index
+    block_info = block_index.header_dict.get(request.block_hash)
+    if block_info is None:
+        return
+    # Core's `!(pindex->nStatus & BLOCK_HAVE_DATA)` return, ahead of any
+    # depth: a block never downloaded or pruned away is not queued for the
+    # `getdata` below, whose prune threshold would drop the connection
+    if not node.block_db.has_block(request.block_hash):
+        return
+    if block_info.index < len(block_index.active_chain) - 1 - MAX_BLOCKTXN_DEPTH:
+        item = Inventory(InventoryType.MSG_WITNESS_BLOCK, request.block_hash)
+        getdata(node, GetData([item]).serialize(), conn)
+        return
+    block = node.block_db.get_block(request.block_hash)
+    if block is None:
+        return
+    transactions = block.transactions
+    if any(index >= len(transactions) for index in request.indexes):
+        err_msg = "getblocktxn with out-of-bounds tx indices"
+        raise MisbehavingError(err_msg)
+    answer = [transactions[index] for index in request.indexes]
+    conn.send(BlockTxn(request.block_hash, answer))
+
+
 def not_found(node: Node, msg: bytes, conn: Connection) -> None:
     """Clear the in-flight record for a transaction the peer could not answer.
 
@@ -1972,6 +2088,7 @@ callbacks = {
     "tx": tx,
     "block": block,
     "getdata": getdata,
+    "getblocktxn": getblocktxn,
     "getheaders": getheaders,
     "headers": headers,
     "addr": addr,
