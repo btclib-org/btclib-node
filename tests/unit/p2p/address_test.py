@@ -182,7 +182,7 @@ def test_add_active_address_waits_out_a_prune_already_in_progress(
     # index is rebuilt against it, which is the exact gap the finding
     # traced.
     peer_db = a_peer_db()
-    stale = peer_address("9.9.9.9", 1, timestamp=int(time.time()) - 3600 * 4)
+    stale = peer_address("9.9.9.9", 1, timestamp=int(time.time()) - 31 * 24 * 3600)
     peer_db.active_addresses.append(stale)
 
     entered_prune = threading.Event()
@@ -280,20 +280,34 @@ def test_add_addresses_and_random_address_do_not_interleave(
     assert known.port == 8333
 
 
-def test_an_address_not_seen_for_three_hours_stops_being_active() -> None:
-    """A stale active address is dropped by `get_active_addresses`.
+@pytest.mark.parametrize(
+    ("age", "kept"),
+    [
+        pytest.param(3600 * 4, True, id="four-hours"),
+        pytest.param(30 * 24 * 3600 - 60, True, id="inside-the-horizon"),
+        pytest.param(30 * 24 * 3600 + 60, False, id="past-the-horizon"),
+        pytest.param(-9 * 60, True, id="nine-minutes-ahead"),
+        pytest.param(-11 * 60, False, id="eleven-minutes-ahead"),
+    ],
+)
+def test_an_answered_address_is_kept_until_is_terrible_ages_it_out(
+    *, age: int, kept: bool
+) -> None:
+    """ISS 1318: `IsTerrible`'s horizon and its future bound, not 3 hours.
 
-    Not merely hidden: checked twice, the answer excludes it and the
-    table itself no longer holds it -- a read that filtered it out
-    without pruning would pass the first assertion and fail the second.
+    Not merely hidden: checked twice, the answer excludes an aged-out
+    row and the table itself no longer holds it -- a read that filtered
+    it out without pruning would pass the first assertion and fail the
+    second.
     """
     peer_db = a_peer_db()
-    fresh = peer_address("1.2.3.4", 18444, timestamp=int(time.time()) - 3600)
-    stale = peer_address("5.6.7.8", 18444, timestamp=int(time.time()) - 3600 * 4)
-    peer_db.active_addresses += [fresh, stale]
-    assert peer_db.get_active_addresses() == [fresh]
-    # and it is dropped, not merely left out of the answer
-    assert peer_db.active_addresses == [fresh]
+    now = int(time.time())
+    fresh = peer_address("1.2.3.4", 18444, timestamp=now - 3600)
+    other = peer_address("5.6.7.8", 18444, timestamp=now - age)
+    peer_db.active_addresses += [fresh, other]
+    expected = [fresh, other] if kept else [fresh]
+    assert peer_db.get_active_addresses() == expected
+    assert peer_db.active_addresses == expected
 
 
 def test_the_two_ip_networks_are_told_apart_by_the_text_of_the_address() -> None:
@@ -1061,24 +1075,47 @@ def test_a_store_with_a_recently_answered_address_skips_the_seeds(
 def test_a_stale_answered_address_no_longer_holds_off_the_seeds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An active address recorded four hours ago no longer skips the seeds.
+    """An active address recorded past the horizon no longer skips the seeds.
 
-    `time.time` is patched to four hours in the past only for the
+    `time.time` is patched to 31 days in the past only for the
     `add_active_address` call, so the row is written stale rather than
     aged after the fact; a fresh `PeerDB` on the same store reads it
-    back past the three-hour active window and asks the seeds anyway.
+    back past `_ADDRMAN_HORIZON` and asks the seeds anyway.
     """
     first = a_peer_db(data_dir=tmp_path)
     stale = peer_address("1.2.3.4", 8333)
-    four_hours_ago = time.time() - 3600 * 4
+    past_the_horizon = time.time() - 31 * 24 * 3600
     with monkeypatch.context() as patch:
-        patch.setattr(time, "time", lambda: four_hours_ago)
+        patch.setattr(time, "time", lambda: past_the_horizon)
         first.add_addresses([stale])
         first.add_active_address(stale)
     first.close()
 
     second = a_peer_db(data_dir=tmp_path)
     assert second.ask_dns_nodes
+    second.close()
+
+
+def test_a_store_answered_a_day_ago_still_skips_the_seeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1318: a node down for a day restarts with its answered rows.
+
+    Core's tried table survives a restart of any length under
+    `ADDRMAN_HORIZON`, so the store is not treated as empty.
+    """
+    first = a_peer_db(data_dir=tmp_path)
+    answered = peer_address("1.2.3.4", 8333)
+    a_day_ago = time.time() - 24 * 3600
+    with monkeypatch.context() as patch:
+        patch.setattr(time, "time", lambda: a_day_ago)
+        first.add_addresses([answered])
+        first.add_active_address(answered)
+    first.close()
+
+    second = a_peer_db(data_dir=tmp_path)
+    assert not second.ask_dns_nodes
+    assert [a.address for a in second.get_active_addresses()] == [answered.address]
     second.close()
 
 
@@ -1098,9 +1135,9 @@ def test_get_active_addresses_deletes_a_stale_row_from_the_store(
     # `known-` ones
     peer_db = a_peer_db(data_dir=tmp_path)
     stale = peer_address("1.2.3.4", 8333)
-    four_hours_ago = time.time() - 3600 * 4
+    past_the_horizon = time.time() - 31 * 24 * 3600
     with monkeypatch.context() as patch:
-        patch.setattr(time, "time", lambda: four_hours_ago)
+        patch.setattr(time, "time", lambda: past_the_horizon)
         peer_db.add_addresses([stale])
         peer_db.add_active_address(stale)
     assert peer_db.db is not None
@@ -1124,9 +1161,9 @@ def test_a_stale_answered_row_does_not_survive_a_restart(
     """
     first = a_peer_db(data_dir=tmp_path)
     stale = peer_address("1.2.3.4", 8333)
-    four_hours_ago = time.time() - 3600 * 4
+    past_the_horizon = time.time() - 31 * 24 * 3600
     with monkeypatch.context() as patch:
-        patch.setattr(time, "time", lambda: four_hours_ago)
+        patch.setattr(time, "time", lambda: past_the_horizon)
         first.add_addresses([stale])
         first.add_active_address(stale)
     first.close()

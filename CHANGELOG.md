@@ -546,6 +546,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   early in a pass for a recent try or a bad port** (closes #1224), as in Core;
   a DNS seed's answer carries Core's `SeedsServiceFlags` (closes #1236).
 
+### An answered address is kept for Core's 30-day horizon
+
+- **An answered row leaves the table only when `IsTerrible`'s time tests call
+  it terrible: no handshake in 30 days, or a stamp over 10 minutes ahead**
+  (closes #1318), where it left three hours after its last handshake.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
