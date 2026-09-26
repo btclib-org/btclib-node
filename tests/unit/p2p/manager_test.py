@@ -24,6 +24,7 @@ from concurrent.futures import Future
 from contextlib import ExitStack, closing, suppress
 from dataclasses import replace
 from functools import partial
+from ipaddress import ip_address
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast, override
 from unittest.mock import AsyncMock
@@ -38,7 +39,12 @@ from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.log import Logger
 from btclib_node.p2p import manager as manager_module
-from btclib_node.p2p.address import PeerDB, fixed_seed_addresses, peer_address
+from btclib_node.p2p.address import (
+    PeerDB,
+    endpoint_key,
+    fixed_seed_addresses,
+    peer_address,
+)
 from btclib_node.p2p.banman import DUMP_BANS_INTERVAL, BanMan, Subnet, lookup_subnet
 from btclib_node.p2p.main import handle_p2p_handshake
 from btclib_node.p2p.manager import P2pManager
@@ -1431,6 +1437,42 @@ def test_a_draw_refused_otherwise_ends_the_pass(
     asyncio.run(manager._maybe_dial_more_peers())
     assert len(drawn) == 1
     assert dial.await_count == 0
+
+
+@pytest.mark.parametrize("port", [8333, 18444])
+def test_a_local_address_drawn_ends_the_pass(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, port: int
+) -> None:
+    """ISS 1238: "if we selected an invalid or local address, restart".
+
+    `IsLocal` compares the port too: this node's own address on another
+    port is dialled.
+    """
+    dial = AsyncMock(return_value=None)
+    monkeypatch.setattr(manager_module, "dial", dial)
+    drawn_address = peer_address("1.2.3.4", port)
+    drawn, draw = draws_of(drawn_address, peer_address("5.6.7.8", 8333))
+    manager = a_manager(peer_db=a_peer_db_stub(is_empty=False, random_address=draw))
+    manager.local_addresses = frozenset({endpoint_key(peer_address("1.2.3.4", 8333))})
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert len(drawn) == 1
+    assert dial.await_count == (port != 8333)
+
+
+def test_discover_keeps_each_routable_interface_address_at_the_port(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1238: Core's `Discover`, each address through `AddLocal`.
+
+    A private address is not routable, and `AddLocal` refuses it.
+    """
+    interfaces = [ip_address("1.2.3.4"), ip_address("192.168.1.2")]
+    monkeypatch.setattr(manager_module, "local_addresses", lambda: interfaces)
+    manager = a_manager()
+    manager._discover()
+    assert manager.local_addresses == {
+        endpoint_key(peer_address("1.2.3.4", cast("int", manager.port)))
+    }
 
 
 def test_a_pass_draws_a_hundred_times_at_most(a_manager: AManagerFactory) -> None:

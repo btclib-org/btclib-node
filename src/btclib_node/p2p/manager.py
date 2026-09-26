@@ -22,7 +22,7 @@ import time
 from collections import deque
 from concurrent.futures import CancelledError
 from contextlib import suppress
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, cast, override
 
 from btclib.p2p.addrv2 import BIP155Network, can_addrv1, network_address
 
@@ -41,11 +41,13 @@ from btclib_node.p2p.connection import Connection
 from btclib_node.p2p.eviction import (
     EvictionCandidate,
     is_local,
+    is_routable,
     keyed_net_group,
     net_class,
     net_group,
     select_node_to_evict,
 )
+from btclib_node.p2p.netif import local_addresses
 from btclib_node.p2p.protocol_version import BIP0031_VERSION, common_version
 
 if TYPE_CHECKING:
@@ -410,6 +412,11 @@ class P2pManager(threading.Thread):
         # is refused -- and `dial` answers a refusal with None, which
         # `async_connect` drops. Nothing retries.
         self.listening = threading.Event()
+        # Core's `mapLocalHost` as `IsLocal` reads it: this node's own
+        # addresses, by `endpoint_key`, which `_discover` fills ahead of
+        # the bind. Written before `manage_connections` is scheduled and
+        # read only by it, on this thread.
+        self.local_addresses: frozenset[bytes] = frozenset()
         # set by `run` once it has bound, given up on binding, or been
         # told not to bind by `-listen=0`, which is what
         # `start_listener` waits on
@@ -950,6 +957,11 @@ class P2pManager(threading.Thread):
                 break
             if can_addrv1(address) and net_group(address) in outbound_net_groups:
                 continue
+            # "if we selected an invalid or local address, restart": an
+            # address `_discover` found to be this node's own ends the
+            # pass, as `IsLocal` compares address and port
+            if endpoint_key(address) in self.local_addresses:
+                break
             # Any other draw ends the pass, as Core's loop breaks
             # with it and `OpenNetworkConnection` (`src/net.cpp`, at
             # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) returns
@@ -1097,6 +1109,29 @@ class P2pManager(threading.Thread):
             server_socket.close()
             raise
         return server_socket
+
+    def _discover(self) -> None:
+        """Record this machine's routable addresses, as Core's `Discover` does.
+
+        `AppInitMain` calls `Discover` (`src/net.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag) ahead of the bind,
+        where the listener is to bind every interface, as `_bind`'s
+        does, and `-discover` is on. Core's parameter interaction turns
+        `-discover` off under `-listen=0`, `-proxy` or `-externalip`, and
+        this node has neither of the last two, so `run` calls this
+        wherever it is about to bind. Each address goes to `AddLocal` at
+        the listening port, which keeps a routable one on a reachable
+        network; IPv4 and IPv6 are both reachable here.
+        """
+        # set wherever `run` binds, which is where it calls this
+        port = cast("int", self.port)
+        local = set()
+        for ip in local_addresses():
+            address = peer_address(str(ip), port)
+            if is_routable(address):
+                self.logger.info("Discover: %s", ip)
+                local.add(endpoint_key(address))
+        self.local_addresses = frozenset(local)
 
     def _bind(self) -> list[socket.socket]:
         """Bind every listener this node has, the IPv4 one required.
@@ -1389,6 +1424,7 @@ class P2pManager(threading.Thread):
             self.logger.info("Starting P2P manager")
             asyncio.set_event_loop(loop)
             if self.listen:
+                self._discover()
                 server_sockets = self._bind()
         except OSError as error:
             # `start_listener` reads the failure off `listening`, so it

@@ -496,6 +496,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 - **Its list is the method table's, with no count** (closes #1221).
 
+### The automatic dial passes over this node's own address, as in Core
+
+- **A listening node records its routable interface addresses, and a draw of
+  one at its port ends the pass** (closes #1238); on Windows none is found
+  (#1310).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
