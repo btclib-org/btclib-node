@@ -343,12 +343,18 @@ class PeerDB:
         self.chain = chain
         self.data_dir = data_dir
         self.addresses: set[NetworkAddressV2] = set()
+        # The `endpoint_key` of every member of `addresses`, kept in step
+        # by `add_addresses` under `_addresses_lock` and by `init_from_db`
+        # before this object is shared, so `add_active_address` asks
+        # whether an endpoint is known without walking the set.
+        self._known_keys: set[bytes] = set()
         # A lock of its own, not `_active_lock` below: `add_addresses`
         # reaches this set from both threads too (#298) -- gossip
         # through `callbacks.addr`/`addrv2` on `Node`'s, DNS seed
         # answers through `get_addr_from_dns` on `P2pManager`'s, and
         # `address_sampler`'s own dialable-address comprehension on
-        # `P2pManager`'s as well, racing against gossip on `Node`'s.
+        # `P2pManager`'s as well, racing against gossip on `Node`'s, and
+        # `add_active_address` asks `_known_keys` under it on `Node`'s.
         # Unprotected, that last pairing is not only the lost-update or
         # wrong-row risk `_active_lock` guards against: iterating a
         # `set` while another thread mutates it is `RuntimeError: Set
@@ -421,21 +427,34 @@ class PeerDB:
         `_ANSWERED` above argues why), so this walks it whole and
         dispatches on the prefix rather than stopping at the first key
         without one. A row `_storable` refuses is deleted rather than
-        loaded, as Core's addrman holds no such address.
+        loaded, as Core's addrman holds no such address, and so is an
+        answered row whose endpoint no known row holds, as Core's tried
+        table holds nothing addrman does not.
         """
         if self.db is None:
             return
         refused: list[bytes] = []
+        answered: list[tuple[bytes, NetworkAddressV2]] = []
         for key, value in self.db:
             if key.startswith(_KNOWN):
-                table = self.addresses.add
+                known = True
             elif key.startswith(_ANSWERED):
-                table = self.active_addresses.append
+                known = False
             else:
                 continue
             address = NetworkAddressV2.parse(value, check_validity=False)
-            if _storable(address):
-                table(address)
+            if not _storable(address):
+                refused.append(key)
+            elif known:
+                self.addresses.add(address)
+                self._known_keys.add(endpoint_key(address))
+            else:
+                answered.append((key, address))
+        # after the walk: the store is sorted, and `answered-` rows come
+        # ahead of the `known-` rows they are checked against
+        for key, address in answered:
+            if endpoint_key(address) in self._known_keys:
+                self.active_addresses.append(address)
             else:
                 refused.append(key)
         with self.db.write_batch() as wb:
@@ -616,6 +635,7 @@ class PeerDB:
                 if existing is not None:
                     self.addresses.discard(existing)
                 self.addresses.add(known)
+                self._known_keys.add(key)
                 by_endpoint[key] = known
                 if wb is not None:
                     value = known.serialize(check_validity=False)
@@ -652,14 +672,20 @@ class PeerDB:
         """Record `addr` as dialled and answered, just now.
 
         A repeat handshake with an already-held endpoint settles onto
-        its one row rather than growing the table, and an address
-        `_storable` refuses is not recorded. Locked with `_active_lock`.
+        its one row rather than growing the table. An endpoint
+        `addresses` does not hold is not recorded, as Core's
+        `AddrManImpl::Good_` updates only an entry addrman already has
+        (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        tag), and neither is an address `_storable` refuses, which
+        `addresses` never holds. Takes `_addresses_lock` to ask, then
+        `_active_lock` to write, the two never nested.
         """
-        if not _storable(addr):
-            return
         # a whole second: the field is four octets on the wire
         answered = replace(addr, timestamp=int(time.time()))
         key = endpoint_key(answered)
+        with self._addresses_lock:
+            if key not in self._known_keys:
+                return
         with self._active_lock:
             position = self._active_index.get(key)
             if position is not None:
