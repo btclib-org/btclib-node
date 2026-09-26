@@ -321,8 +321,9 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     Continuing means answering `verack`, with `wtxidrelay` and
     `sendaddrv2` ahead of it where the common version reaches
     `WTXID_RELAY_VERSION` and, to an inbound peer, this node's own
-    `version` ahead of all three; and recording whether the peer asked to
-    have transactions relayed.
+    `version` ahead of all three; setting up address relay with a peer
+    this node dialled, and asking it for addresses; and recording whether
+    the peer asked to have transactions relayed.
     """
     if conn.version_message is not None:
         return
@@ -420,6 +421,20 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
         conn.send(SendAddrV2())
     conn.send(Verack())
 
+    # Core's `VERSION` handler, right after `VERACK`, calls
+    # `SetupAddressRelay` for a peer this node dialled, and sends it a
+    # `getaddr` with room for the answer past
+    # `_MAX_ADDR_PROCESSING_TOKEN_BUCKET` (`net_processing.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). An inbound peer keeps
+    # the one token it started with, and waits for its own first `addr`,
+    # `addrv2` or `getaddr`. `SetupAddressRelay` answers false, and so
+    # sends no `getaddr`, for a block-relay-only peer, which this node
+    # does not open.
+    if not conn.inbound:
+        conn.addr_relay_enabled = True
+        conn.send(GetAddr())
+        conn.addr_token_bucket += MAX_ADDR_TO_SEND
+
     # relay_tx, which is the attribute Connection defines: the name this
     # wrote before was one letter different, so what the peer asked for
     # landed on an attribute nothing reads and the connection's own flag
@@ -497,14 +512,7 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     # fSuccessfullyConnected, not from a one-time handshake action.
     # btclib-org/btclib-node#275
     conn.send_ping()
-    # Core's `VERACK` handler (`net_processing.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) asks an outbound peer
-    # alone, and makes room for its answer past
-    # `_MAX_ADDR_PROCESSING_TOKEN_BUCKET`; an inbound peer keeps the one
-    # token it started with.
-    if not conn.inbound:
-        conn.send(GetAddr())
-        conn.addr_token_bucket += MAX_ADDR_TO_SEND
+    # No `getaddr` here either: `version` sends it, as Core's does.
     # No `getheaders` here: whether this peer is asked for headers is
     # `DownloadManager.sync_headers`'s decision, made on the next pass
     # of `Node`'s own loop, as Core makes it in `SendMessages` rather
@@ -657,6 +665,7 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
     # addresses and read them back from a node that only dials out.
     if not conn.inbound:
         return
+    conn.addr_relay_enabled = True
     # Once per connection, matching the flag's own docstring
     # (connection.py): a peer asking in a loop is served the table once
     # rather than once per ask. btclib-org/btclib-node#71
@@ -725,6 +734,7 @@ def addr(node: Node, msg: bytes, conn: Connection) -> None:
     # without a second copy of Addr's codec. btclib-org/btclib-node#149
     _refuse_past_bound("addr", _count_past(msg, MAX_ADDR_TO_SEND, _ADDR_ENTRY_SIZE))
     entries = Addr.parse(BytesIO(msg)).addresses
+    conn.addr_relay_enabled = True
     # BIP155's record is what the table holds, an addr version 1 entry
     # having no room for the networks a peer may yet gossip
     _store_gossip(node, conn, (peer_from_addr_entry(entry) for entry in entries))
@@ -738,6 +748,7 @@ def addrv2(node: Node, msg: bytes, conn: Connection) -> None:
     # costing this node the gossip. btclib-org/btclib-node#149
     _refuse_past_bound("addrv2", _addrv2_count_past(msg, MAX_ADDR_TO_SEND))
     entries = AddrV2.parse(BytesIO(msg)).addresses
+    conn.addr_relay_enabled = True
     _store_gossip(node, conn, entries)
     _maybe_finish_addr_fetch(node, conn, len(entries))
 
@@ -758,7 +769,7 @@ def _maybe_finish_addr_fetch(node: Node, conn: Connection, received: int) -> Non
 # Core's `MAX_ADDR_RATE_PER_SECOND` and `MAX_ADDR_PROCESSING_TOKEN_BUCKET`
 # (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
 # tag): the rate a peer's address tokens refill at, and the ceiling that
-# refill stops at, which the `MAX_ADDR_TO_SEND` added by `verack`'s own
+# refill stops at, which the `MAX_ADDR_TO_SEND` added by `version`'s own
 # `getaddr` may exceed.
 _MAX_ADDR_RATE_PER_SECOND = 0.1
 _MAX_ADDR_PROCESSING_TOKEN_BUCKET = MAX_ADDR_TO_SEND

@@ -215,6 +215,12 @@ def test_addnode_is_the_same_shape_as_connect() -> None:
     assert config.connect == ()
 
 
+def test_addnode_keeps_its_values_as_given() -> None:
+    """ISS 1224: `AddedNodesContain` compares the values as given."""
+    config = Config(chain="regtest", addnode=["10.0.0.1:1", "10.0.0.2"])
+    assert config.addnode_args == ("10.0.0.1:1", "10.0.0.2")
+
+
 def test_connect_and_addnode_both_take_several_entries() -> None:
     """Every spec given is resolved, in order, not only the last one."""
     config = Config(
@@ -314,6 +320,29 @@ def test_split_host_port_rejects_a_port_past_the_ceiling() -> None:
     """A port above 65535 does not fit a `uint16_t`, and is refused."""
     with pytest.raises(ValueError, match="invalid port"):
         split_host_port("127.0.0.1:70000", 8333)
+
+
+@pytest.mark.parametrize(
+    "port",
+    ["+80", " 80", "80 ", "8_0", "\u0668\u0660", "\u00b2", "99999999999999999999"],
+)
+def test_split_host_port_reads_ascii_digits_alone(port: str) -> None:
+    """`ToIntegral<uint16_t>`: what `int` reads beyond ASCII digits is refused.
+
+    Each refused by `bitcoind` v31.1.0 as `-rpcbind=127.0.0.1:<port>`, the
+    last two read from `std::from_chars` rather than measured.
+    """
+    with pytest.raises(ValueError, match="invalid port"):
+        split_host_port(f"127.0.0.1:{port}", 8333)
+
+
+def test_split_host_port_reads_leading_zeros() -> None:
+    """`bitcoind` v31.1.0 binds `-rpcbind=127.0.0.1:031301` at port 31301."""
+    assert split_host_port("127.0.0.1:031301", 8333) == ("127.0.0.1", 31301)
+    assert split_host_port("127.0.0.1:0000000000000000045000", 1) == (
+        "127.0.0.1",
+        45000,
+    )
 
 
 def test_max_connections_defaults_to_core_s_own() -> None:
