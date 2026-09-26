@@ -73,6 +73,13 @@ _OUTBOUND_TX_ANNOUNCE_INTERVAL = 2.0
 # alike beyond this one number. btclib-org/btclib-node#289
 _TX_REQUEST_TIMEOUT = 60.0
 
+# Core's `MAX_PEER_TX_ANNOUNCEMENTS` (`src/node/txdownloadman.h`) and
+# `MAX_GETDATA_SZ` (`src/net_processing.cpp`), at bitcoin/bitcoin@9be056a8a7,
+# the v31.1 tag: the announcements tracked per peer, and the items in one
+# `getdata`
+_MAX_PEER_TX_ANNOUNCEMENTS = 5000
+_MAX_GETDATA_SZ = 1000
+
 # Core's own `AVG_FEEFILTER_BROADCAST_INTERVAL` (10min) and
 # `MAX_FEEFILTER_CHANGE_DELAY` (5min), `net_processing.cpp`, same commit:
 # the mean of the exponential draw `_send_due_feefilters` makes for a
@@ -551,6 +558,12 @@ class DownloadManager:
                 for announced in dict.fromkeys(inv)
                 if announced not in target.tx_requested
             ]
+            # Core's `MAX_PEER_TX_ANNOUNCEMENTS`: an announcement past it
+            # is dropped, the ones already tracked counting against it.
+            # Everything this pass queued is asked for in this pass, so
+            # what is tracked is what is outstanding plus these.
+            room = _MAX_PEER_TX_ANNOUNCEMENTS - len(target.tx_requested)
+            wanted = wanted[: max(room, 0)]
             if not wanted:
                 continue
             for announced in wanted:
@@ -559,7 +572,10 @@ class DownloadManager:
             # `TxRequestTracker`'s delays, none of which this node applies
             # (btclib-org/btclib-node#1196).
             fetch_type = _tx_fetch_type(target)
-            target.send(GetData([Inventory(fetch_type, h) for h in wanted]))
+            # in `getdata`s of at most Core's `MAX_GETDATA_SZ` items
+            for start in range(0, len(wanted), _MAX_GETDATA_SZ):
+                batch = wanted[start : start + _MAX_GETDATA_SZ]
+                target.send(GetData([Inventory(fetch_type, h) for h in batch]))
 
     def _send_due_announcements(self) -> None:
         # Core's `TxRelay::m_next_inv_send_time`/`m_tx_inventory_to_send`
