@@ -460,6 +460,15 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A header whose version BIP34, BIP66 or BIP65 made obsolete is refused
   `bad-version` from that BIP's height, and its sender discouraged, as in
   Core** (closes #1262).
+### PeerDB records as answered only a peer it already knows
+
+- **A peer is recorded as answered only where gossip already holds its
+  endpoint** (closes #1189), as Core's `Good_` updates only what addrman holds.
+
+### A message that does not parse costs its peer nothing, as in Core
+
+- **A peer is discouraged only where Core calls `Misbehaving`** (closes
+  #1170); a payload that does not parse is logged and the peer kept.
 
 ## v2026.9.24
 
