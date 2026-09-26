@@ -881,7 +881,7 @@ def test_a_candidate_with_no_conflict_passes_the_replacement_check() -> None:
 
 
 def test_a_confirmed_spend_evicts_its_conflicts_and_their_descendants() -> None:
-    """Core's `removeConflicts`: what spends a spent coin goes, with children."""
+    """Core's `removeConflicts`: a spend of a spent coin goes, with children."""
     mempool, coin, held, child = a_mempool_with_a_conflict()
     unrelated = a_spend_of([(secrets.token_bytes(32), 0)])
     assert mempool.add_tx(unrelated, 1000)
