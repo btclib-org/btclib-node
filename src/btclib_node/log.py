@@ -48,7 +48,9 @@ class _LevelFormatter(logging.Formatter):
     UTC, and one space.
     """
 
-    converter = time.gmtime
+    @override
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(record.created))
 
     @override
     def formatMessage(self, record: logging.LogRecord) -> str:
@@ -76,7 +78,7 @@ class Logger(logging.Logger):
         handler = logging.FileHandler(log_path) if log_path else logging.StreamHandler()
         # `%(asctime)s` in the format string is what makes `format` set
         # `record.asctime` before `formatMessage` reads it
-        formatter = _LevelFormatter("%(asctime)s %(message)s", "%Y-%m-%dT%H:%M:%SZ")
+        formatter = _LevelFormatter("%(asctime)s %(message)s")
         handler.setFormatter(formatter)
         self.addHandler(handler)
 
