@@ -35,8 +35,8 @@ from btclib_node.constants import (
 from btclib_node.exceptions import (
     ChainstateInconsistencyError,
     MissingPrevoutError,
-    TxRejectedError,
     NonStandardTxError,
+    TxRejectedError,
 )
 from btclib_node.interpreter import check_transactions, get_flags
 from btclib_node.main import update_chain, verify_mempool_acceptance
@@ -621,9 +621,7 @@ def test_a_mempool_spend_locked_to_an_already_reached_height_is_accepted(
     connect(node, chain)
 
     funding = chain[0].transactions[0]
-    final = locked_spend(
-        funding, funding.vout[0].value - FEE, lock_time=1, sequence=0
-    )
+    final = locked_spend(funding, funding.vout[0].value - FEE, lock_time=1, sequence=0)
     fee = verify_mempool_acceptance(node, final)
     assert fee >= 0
 
@@ -796,7 +794,9 @@ def test_a_mempool_candidate_is_read_against_relay_policy(node: Node) -> None:
     with pytest.raises(NonStandardTxError, match="non-minimal push"):
         verify_mempool_acceptance(node, non_minimal)
 
-    minimal = generate_random_transaction(coinbase.id, value=coinbase.vout[0].value - FEE)
+    minimal = generate_random_transaction(
+        coinbase.id, value=coinbase.vout[0].value - FEE
+    )
     minimal.vin[0].script_sig = script.serialize(["OP_1"])
     assert verify_mempool_acceptance(node, minimal) == FEE
 
@@ -868,7 +868,10 @@ def test_a_fee_under_the_mempool_s_rolling_minimum_is_refused_first(
 
 def test_bypass_limits_skips_the_feerate_floor(node: Node) -> None:
     """`bypass_limits` accepts a fee-free candidate, Core's own reorg re-add."""
-    assert verify_mempool_acceptance(node, a_funded_spend(node, 0), bypass_limits=True) == 0
+    assert (
+        verify_mempool_acceptance(node, a_funded_spend(node, 0), bypass_limits=True)
+        == 0
+    )
 
 
 def test_a_spend_of_more_than_its_inputs_is_refused_for_that_not_its_fee(
@@ -879,7 +882,9 @@ def test_a_spend_of_more_than_its_inputs_is_refused_for_that_not_its_fee(
     Core's `CheckTxInputs` runs before `CheckFeeRate`; the negative fee
     would otherwise read as one under the floor.
     """
-    with pytest.raises(BTClibValueError, match="Invalid transaction amounts") as refused:
+    with pytest.raises(
+        BTClibValueError, match="Invalid transaction amounts"
+    ) as refused:
         verify_mempool_acceptance(node, a_funded_spend(node, -1))
     assert not isinstance(refused.value, TxRejectedError)
 
