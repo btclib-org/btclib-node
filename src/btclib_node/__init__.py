@@ -384,8 +384,9 @@ class Node(threading.Thread):
 
         # This node's own active-chain tip height, at the moment
         # `main._finalize_fork` last moved it -- read by
-        # `p2p.connection.Connection.send_version`, on `P2pManager`'s own
-        # asyncio loop rather than this thread, the same way Core's own
+        # `p2p.connection.Connection.own_version`, for an outbound
+        # connection on `P2pManager`'s own asyncio loop rather than this
+        # thread, the same way Core's own
         # `PushNodeVersion` (`net_processing.cpp:1673`, at
         # bitcoin/bitcoin@ca7162cde5) reads `m_best_height` from the net
         # processing thread rather than validation's. Core declares that
