@@ -149,7 +149,7 @@ _ADD_NEXT_SEEDNODE = 10
 # `_SEEDNODE_CHECK_INTERVAL`, its `sleep_for(500ms)`.
 _SEEDNODE_TIMEOUT = 30
 _SEEDNODE_CHECK_INTERVAL = 0.5
-# `ThreadDNSAddressSeed`'s schedule (`src/net.h`, same sha): how many
+# `ThreadDNSAddressSeed`'s schedule (`src/net.cpp`, same sha): how many
 # seeds are asked between two waits, how long a wait is, and the table
 # size from which it is the longer one
 _DNSSEEDS_TO_QUERY_AT_ONCE = 3

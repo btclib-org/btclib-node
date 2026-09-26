@@ -399,7 +399,7 @@ class PeerDB:
     """
 
     def __init__(self, chain: Chain, data_dir: Path | None) -> None:
-        """Load the durable tables, then decide whether DNS is still needed."""
+        """Load the durable tables, then prune the answered rows aged out."""
         self.chain = chain
         self.data_dir = data_dir
         self.addresses: set[NetworkAddressV2] = set()

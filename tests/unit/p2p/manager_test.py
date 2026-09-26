@@ -2179,6 +2179,19 @@ def test_two_full_relay_peers_end_the_wait_and_the_seeding(
     ]
 
 
+def test_peers_short_of_the_handshake_do_not_end_the_wait(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1265: `GetFullOutboundConnCount` counts only connected peers.
+
+    Two automatic peers still pending leave every seed asked.
+    """
+    manager, queried, logged = a_dns_seeding_manager(a_manager, monkeypatch, pending=2)
+    asyncio.run(manager._dns_address_seed())
+    assert sorted(queried) == _SEEDS
+    assert logged.count("Waiting 0 seconds before querying DNS seeds.") == 2
+
+
 @pytest.mark.parametrize(
     ("holds_nothing", "force"),
     [pytest.param(True, False, id="empty"), pytest.param(False, True, id="forced")],
