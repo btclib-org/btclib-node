@@ -170,7 +170,12 @@ from typing import TYPE_CHECKING
 
 from btclib_node import Node, install_signal_handlers
 from btclib_node.block_db import blocks_directory
-from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, Config, split_host_port
+from btclib_node.config import (
+    DEFAULT_MAX_PEER_CONNECTIONS,
+    Config,
+    get_path_arg,
+    split_host_port,
+)
 from btclib_node.constants import MIN_PRUNE_TARGET_MIB
 from btclib_node.dirlock import DirectoryLock, lock_directories
 from btclib_node.exceptions import DirectoryLockError
@@ -681,15 +686,19 @@ def _parse_conf_text(text: str, path: str) -> _RoConfig:
     return config
 
 
-def _read_conf_file(path: Path, *, required: bool) -> _RoConfig:
-    """Read and parse `path`; `{}` if it is missing and not `required`.
+def _read_conf_file(
+    path: Path, *, required: bool, include: str | None = None
+) -> _RoConfig:
+    """Read and parse `path`; `{}` if it cannot be read and is not `required`.
 
     Core's own "ok to not have a config file" (`ReadConfigFiles`,
     `src/common/config.cpp`) for the default filename, which is what
     `required=False` is for. `required=True` is what `-conf` explicitly
     naming a file gets instead: a missing or unreadable one is fatal
     there, the same as Core's own "specified config file ... could not
-    be opened".
+    be opened". Core asks `stream.good()` of every file, so any `OSError`
+    the read raises is what "could not be opened" is here, a missing
+    file and one the process may not read alike.
 
     A directory is checked with `is_dir()` before the file is opened,
     matching `ReadConfigFiles`'s own `fs::is_directory(conf_path)` guard,
@@ -699,15 +708,22 @@ def _read_conf_file(path: Path, *, required: bool) -> _RoConfig:
     `IsADirectoryError` (`errno.EISDIR`) on POSIX and `PermissionError`
     (`errno.EACCES`) on Windows, so a handler for one platform's
     exception class is not reached by the other's error.
+
+    The refusals are `ReadConfigFiles`'s own words, those of an included
+    file where `include` is the `includeconf` value that named it.
     """
     if path.is_dir():
-        err_msg = f"configuration file {path} is a directory"
+        kind = "Config" if include is None else "Included config"
+        err_msg = f'{kind} file "{path}" is a directory.'
         raise ValueError(err_msg)
     try:
         text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
+    except OSError:
+        if include is not None:
+            err_msg = f"Failed to include configuration file {include}"
+            raise ValueError(err_msg) from None
         if required:
-            err_msg = f"specified configuration file {path} could not be opened"
+            err_msg = f'specified config file "{path}" could not be opened.'
             raise ValueError(err_msg) from None
         return {}
     return _parse_conf_text(text, str(path))
@@ -732,10 +748,11 @@ def _load_conf_tree(
         return tree
     includes = tree.get("", {}).get("includeconf", [])
     for name in includes[_negated(includes) :]:
-        include_path = Path(_setting_to_str(name))
+        include = _setting_to_str(name)
+        include_path = Path(include)
         if not include_path.is_absolute():
             include_path = base_dir / include_path
-        included = _read_conf_file(include_path, required=True)
+        included = _read_conf_file(include_path, required=True, include=include)
         for section, keys in included.items():
             dest = tree.setdefault(section, {})
             for key, values in keys.items():
@@ -991,18 +1008,19 @@ def _help_message(*, show_debug: bool) -> str:
     return "".join(parts)
 
 
-def _check_datadir(base_dir: Path) -> None:
+def _check_datadir(base_dir: Path, datadir: str) -> None:
     """Refuse an explicit `-datadir` that is not an existing directory.
 
     Core's own `CheckDataDirOption` (`src/common/args.cpp:891`, at
     bitcoin/bitcoin@ca7162cde5) -- `datadir.empty() ||
     fs::is_directory(fs::absolute(datadir))` -- validates `-datadir` as
     a directory separately from reading the config file, and
-    `ReadConfigFiles` (`src/common/config.cpp:230-232`, same sha)
-    answers "specified data directory ... does not exist." when it
-    fails, called again there because a `datadir=` line inside the
-    config file can still change it after the command-line value
-    already passed this same check once. This function is
+    `InitConfig` (`src/common/init.cpp`, at bitcoin/bitcoin@9be056a8a7)
+    answers "Specified data directory ... does not exist." when it
+    fails, naming `datadir` as it was given; `ReadConfigFiles` checks
+    again because a `datadir=` line inside the config file can still
+    change it after the command-line value already passed this same
+    check once. This function is
     `build_config`'s counterpart of the first call, ahead of
     `_load_conf_tree`; there is no second call here because a
     `datadir=` line inside a configuration file never reaches
@@ -1020,7 +1038,7 @@ def _check_datadir(base_dir: Path) -> None:
     path gets from `GetBlocksDirPath`'s `fs::create_directories`.
     """
     if not base_dir.is_dir():
-        err_msg = f'specified data directory "{base_dir}" does not exist.'
+        err_msg = f'Specified data directory "{datadir}" does not exist.'
         raise ValueError(err_msg)
 
 
@@ -1034,20 +1052,19 @@ def _check_ignored_conf(
 ) -> None:
     """Refuse a `bitcoin.conf` in `base_dir` that `-conf` leaves unread.
 
-    `InitConfig` (`src/common/init.cpp`, at bitcoin/bitcoin@9be056a8a7),
-    and its message. `conf_path`, the file read, `None` under `-noconf`,
-    is compared with `base_dir`'s own as `fs::equivalent` compares them,
-    and an `OSError` is refused as `InitConfig`'s `catch` refuses an
-    exception, in Python's words rather than the C++ library's. The
-    message's paths are Core's: `-datadir` and `-conf` lexically normal
-    (`GetPathArg`), the first made absolute and a relative `-conf` joined
-    to it (`AbsPathForConfigVal`); the file read is not normalised
-    (btclib-org/btclib-node#1187), so it is not what the message shows
-    where a `..` follows a symbolic link. `-allowignoredconf` makes the
-    refusal a warning on stderr, as this module's other warnings are,
-    where Core logs it. Core's other source, "data directory", is a
-    `datadir=` line that moved the data directory, which `_parse_conf_text`
-    drops; and the line Core logs under `-noconf` is not written.
+    `InitConfig` (`src/common/init.cpp`, at bitcoin/bitcoin@9be056a8a7), and
+    its message. `conf_path`, the file read, `None` under `-noconf`, is
+    compared with `base_dir`'s own as `fs::equivalent` compares them, and an
+    `OSError` is refused as `InitConfig`'s `catch` refuses an exception, in
+    Python's words rather than the C++ library's. The message's paths are
+    Core's: `-datadir` and `-conf` lexically normal (`GetPathArg`), the
+    first made absolute and a relative `-conf` joined to it
+    (`AbsPathForConfigVal`), as `_read_settings` reads them.
+    `-allowignoredconf` makes the refusal a warning on stderr, as this
+    module's other warnings are, where Core logs it. Core's other source,
+    "data directory", is a `datadir=` line that moved the data directory,
+    which `_parse_conf_text` drops; and the line Core logs under `-noconf`
+    is not written.
     """
     base_config = base_dir / _DEFAULT_CONF_FILENAME
     if conf_path is None or not base_config.exists():
@@ -1061,13 +1078,13 @@ def _check_ignored_conf(
         if conf_path.samefile(base_config):
             return
         if datadir := _get_arg(settings, "datadir"):
-            base = os.path.normpath(datadir)
+            base = get_path_arg(datadir)
             if not os.path.isabs(base):  # noqa: PTH117
                 base = os.path.join(os.getcwd(), base)  # noqa: PTH109, PTH118
     except OSError as os_error:
         raise ValueError(str(os_error)) from None
     conf = _get_arg(settings, "conf") or ""
-    config = os.path.join(base, os.path.normpath(conf or _DEFAULT_CONF_FILENAME))  # noqa: PTH118
+    config = os.path.join(base, get_path_arg(conf or _DEFAULT_CONF_FILENAME))  # noqa: PTH118
     name = _quoted(_DEFAULT_CONF_FILENAME)
     error = (
         f"Data directory {_quoted(base)} contains a {name} file which is ignored, "
@@ -1124,20 +1141,37 @@ def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
     options, token = _parse_parameters(argv)
     settings = _Settings(options)
 
+    # `-datadir` and `-conf` are read by `get_path_arg`, lexically normal
+    # before the file system is asked anything: `missing/..` and
+    # `symlink/..` are the directory they are written in. `-datadir` is
+    # made absolute as `GetDataDir` makes it (`src/common/args.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7). A value that is `.` once normal is
+    # where a path a refusal names still differs from Core's: Core joins
+    # the `.` on and `Path` drops it, so `-datadir=.` names "<cwd>/x"
+    # where Core names "<cwd>/./x" (btclib-org/btclib-node#1273).
     datadir = _get_arg(settings, "datadir")
-    base_dir = Path(datadir) if datadir else Path.home() / ".btclib"
+    base_dir = Path.home() / ".btclib"
     if datadir:
-        _check_datadir(base_dir)
+        base_dir = Path(get_path_arg(datadir))
+        if not base_dir.is_absolute():
+            base_dir = Path.cwd() / base_dir
+        _check_datadir(base_dir, datadir)
     conf_path = None
     if not _is_negated(settings, "conf"):
-        conf_value = Path(_get_arg(settings, "conf") or _DEFAULT_CONF_FILENAME)
+        conf = _get_arg(settings, "conf")
+        conf_value = Path(get_path_arg(conf) if conf else _DEFAULT_CONF_FILENAME)
         conf_path = conf_value if conf_value.is_absolute() else base_dir / conf_value
-        settings.ro_config = _load_conf_tree(
-            conf_path,
-            conf_explicit=_is_set(settings, "conf"),
-            base_dir=base_dir,
-            use_includes="includeconf" not in settings.command_line,
-        )
+        try:
+            settings.ro_config = _load_conf_tree(
+                conf_path,
+                conf_explicit=_is_set(settings, "conf"),
+                base_dir=base_dir,
+                use_includes="includeconf" not in settings.command_line,
+            )
+        except ValueError as error:
+            # `InitConfig`'s own prefix on a `ReadConfigFiles` refusal
+            err_msg = f"Error reading configuration file: {error}"
+            raise ValueError(err_msg) from None
     chain_name = _resolve_chain_name(settings)
     settings.network = _CHAIN_SECTION[chain_name]
     _check_ignored_conf(settings, base_dir, conf_path)

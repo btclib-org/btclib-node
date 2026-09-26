@@ -25,6 +25,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import replace
+from functools import partial
 from io import BytesIO
 from ipaddress import IPv4Address, IPv6Address, ip_address
 from typing import TYPE_CHECKING, cast
@@ -44,7 +45,7 @@ from btclib_node.exceptions import UnsupportedAddressTypeError
 from btclib_node.p2p.eviction import is_routable
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator
+    from collections.abc import Callable, Iterable, Iterator
     from pathlib import Path
 
     from btclib_node.chains import Chain
@@ -265,6 +266,28 @@ def _storable(address: NetworkAddressV2) -> bool:
     return not is_embedded_ipv6(address) and is_routable(address)
 
 
+def _select(
+    answered: list[NetworkAddressV2], known: list[NetworkAddressV2]
+) -> NetworkAddressV2 | None:
+    """Draw from one table, a fair coin deciding where both hold something.
+
+    Core's `AddrManImpl::Select_` (`src/addrman.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) searches the tried table
+    or the new table with `randbool()` when both are non-empty, and
+    whichever one is not empty otherwise. `answered` stands for tried,
+    and `known` for new.
+    """
+    if not answered and not known:
+        return None
+    if not known:
+        table = answered
+    elif not answered:
+        table = known
+    else:
+        table = answered if secrets.randbelow(2) else known
+    return secrets.choice(table)
+
+
 def endpoint_key(address: NetworkAddressV2) -> bytes:
     """Return the octets a persisted address is keyed on.
 
@@ -309,12 +332,18 @@ class PeerDB:
         self.chain = chain
         self.data_dir = data_dir
         self.addresses: set[NetworkAddressV2] = set()
+        # The `endpoint_key` of every member of `addresses`, kept in step
+        # by `add_addresses` under `_addresses_lock` and by `init_from_db`
+        # before this object is shared, so `add_active_address` asks
+        # whether an endpoint is known without walking the set.
+        self._known_keys: set[bytes] = set()
         # A lock of its own, not `_active_lock` below: `add_addresses`
         # reaches this set from both threads too (#298) -- gossip
         # through `callbacks.addr`/`addrv2` on `Node`'s, DNS seed
         # answers through `get_addr_from_dns` on `P2pManager`'s, and
-        # `random_address`'s own dialable-address comprehension on
-        # `P2pManager`'s as well, racing against gossip on `Node`'s.
+        # `address_sampler`'s own dialable-address comprehension on
+        # `P2pManager`'s as well, racing against gossip on `Node`'s, and
+        # `add_active_address` asks `_known_keys` under it on `Node`'s.
         # Unprotected, that last pairing is not only the lost-update or
         # wrong-row risk `_active_lock` guards against: iterating a
         # `set` while another thread mutates it is `RuntimeError: Set
@@ -386,21 +415,34 @@ class PeerDB:
         `_ANSWERED` above argues why), so this walks it whole and
         dispatches on the prefix rather than stopping at the first key
         without one. A row `_storable` refuses is deleted rather than
-        loaded, as Core's addrman holds no such address.
+        loaded, as Core's addrman holds no such address, and so is an
+        answered row whose endpoint no known row holds, as Core's tried
+        table holds nothing addrman does not.
         """
         if self.db is None:
             return
         refused: list[bytes] = []
+        answered: list[tuple[bytes, NetworkAddressV2]] = []
         for key, value in self.db:
             if key.startswith(_KNOWN):
-                table = self.addresses.add
+                known = True
             elif key.startswith(_ANSWERED):
-                table = self.active_addresses.append
+                known = False
             else:
                 continue
             address = NetworkAddressV2.parse(value, check_validity=False)
-            if _storable(address):
-                table(address)
+            if not _storable(address):
+                refused.append(key)
+            elif known:
+                self.addresses.add(address)
+                self._known_keys.add(endpoint_key(address))
+            else:
+                answered.append((key, address))
+        # after the walk: the store is sorted, and `answered-` rows come
+        # ahead of the `known-` rows they are checked against
+        for key, address in answered:
+            if endpoint_key(address) in self._known_keys:
+                self.active_addresses.append(address)
             else:
                 refused.append(key)
         with self.db.write_batch() as wb:
@@ -504,17 +546,23 @@ class PeerDB:
     def random_address(self) -> NetworkAddressV2 | None:
         """Return a random dialable address, or `None` if there is none.
 
-        Preferred from `get_active_addresses`'s own dialable subset;
-        falls back to `addresses` whole, locked, only if that is empty.
+        One draw of `address_sampler`.
         """
-        # Preferred: an address this node has itself dialled and heard
-        # back from recently, over one merely gossiped -- #123, so that
-        # a run draws on what it already knows works rather than on the
-        # whole table uniformly, even before a restart ever reads any
-        # of it back.
-        preferred = [addr for addr in self.get_active_addresses() if can_connect(addr)]
-        if preferred:
-            return secrets.choice(preferred)
+        return self.address_sampler()()
+
+    def address_sampler(self) -> Callable[[], NetworkAddressV2 | None]:
+        """Return a draw over the dialable addresses of both tables, as of now.
+
+        Each call of what this returns is one `_select`, between the
+        answered table and the gossiped one, so `P2pManager` can draw
+        many times a pass for the price of one walk of each table. An
+        answered endpoint is left out of the gossiped side, where
+        `addresses` holds it too, as Core's `Good_` moves an entry from
+        the new table to the tried one and `Select_` flips between two
+        tables that never hold one endpoint twice.
+        """
+        answered = [addr for addr in self.get_active_addresses() if can_connect(addr)]
+        tried = {endpoint_key(addr) for addr in answered}
         # Drawn from the addresses that can be dialled, rather than from
         # the whole table with a retry on the ones that cannot: a table
         # holding none of them -- a seed answering with AAAA records
@@ -528,10 +576,12 @@ class PeerDB:
         # unprotected, that is CPython's `RuntimeError: Set changed
         # size during iteration`, not merely a stale answer.
         with self._addresses_lock:
-            dialable = [address for address in self.addresses if can_connect(address)]
-        if not dialable:
-            return None
-        return secrets.choice(dialable)
+            known = [
+                address
+                for address in self.addresses
+                if can_connect(address) and endpoint_key(address) not in tried
+            ]
+        return partial(_select, answered, known)
 
     def add_addresses(self, addresses: Iterable[NetworkAddressV2]) -> None:
         """Merge `addresses` into `self.addresses`, checked and deduplicated.
@@ -573,6 +623,7 @@ class PeerDB:
                 if existing is not None:
                     self.addresses.discard(existing)
                 self.addresses.add(known)
+                self._known_keys.add(key)
                 by_endpoint[key] = known
                 if wb is not None:
                     value = known.serialize(check_validity=False)
@@ -605,14 +656,20 @@ class PeerDB:
         """Record `addr` as dialled and answered, just now.
 
         A repeat handshake with an already-held endpoint settles onto
-        its one row rather than growing the table, and an address
-        `_storable` refuses is not recorded. Locked with `_active_lock`.
+        its one row rather than growing the table. An endpoint
+        `addresses` does not hold is not recorded, as Core's
+        `AddrManImpl::Good_` updates only an entry addrman already has
+        (`src/addrman.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        tag), and neither is an address `_storable` refuses, which
+        `addresses` never holds. Takes `_addresses_lock` to ask, then
+        `_active_lock` to write, the two never nested.
         """
-        if not _storable(addr):
-            return
         # a whole second: the field is four octets on the wire
         answered = replace(addr, timestamp=int(time.time()))
         key = endpoint_key(answered)
+        with self._addresses_lock:
+            if key not in self._known_keys:
+                return
         with self._active_lock:
             position = self._active_index.get(key)
             if position is not None:
