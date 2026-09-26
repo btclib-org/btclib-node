@@ -32,6 +32,7 @@ from btclib_node.p2p.callbacks import (
     MAX_GETDATA_INFLIGHT_BYTES,
     maybe_send_getheaders,
 )
+from btclib_node.p2p.chain_sync import consider_eviction
 from btclib_node.p2p.eviction import get_network
 from btclib_node.p2p.protocol_version import (
     FEEFILTER_VERSION,
@@ -433,8 +434,10 @@ class DownloadManager:
     def step(self) -> None:
         """Run one pass.
 
-        Headers, blocks and txs are asked for, and sendheaders and
-        feefilters sent.
+        Headers, blocks and txs are asked for, sendheaders and feefilters
+        sent, outbound peers behind this node's tip given a deadline, and
+        Core's check for a stale tip and extra outbound peers run on its
+        own interval.
         """
         self.sync_headers()
         self.update_last_common_blocks()
@@ -442,6 +445,7 @@ class DownloadManager:
         self.tx_download()
         self._send_due_sendheaders()
         self._send_due_feefilters()
+        self._consider_evictions()
         self._check_for_stale_tip_and_evict_peers()
 
     def _check_for_stale_tip_and_evict_peers(self) -> None:
@@ -501,14 +505,13 @@ class DownloadManager:
         """Drop one full-relay peer past the target, if one may go.
 
         The full-relay half of Core's `EvictExtraOutboundPeers`: of the
-        automatic full-relay peers connected, those not alone on their
-        network among the manual and full-relay ones, the one that least
-        recently announced a block, the youngest by connection id on a
-        tie -- once connected longer than `_MINIMUM_CONNECT_TIME` and with
-        no block in flight from it. Dropping it clears
-        `try_new_outbound_peer` until the tip is next found stale.
-        Core also passes over a peer `m_chain_sync.m_protect` holds,
-        which nothing sets in this tree (btclib-org/btclib-node#1154).
+        automatic full-relay peers connected, those neither protected by
+        `chain_sync.protect_if_caught_up` nor alone on their network among
+        the manual and full-relay ones, the one that least recently
+        announced a block, the youngest by connection id on a tie -- once
+        connected longer than `_MINIMUM_CONNECT_TIME` and with no block in
+        flight from it. Dropping it clears `try_new_outbound_peer` until
+        the tip is next found stale.
         """
         manager = self.node.p2p_manager
         peers = [
@@ -523,7 +526,8 @@ class DownloadManager:
         counts = manager.network_conn_counts()
         worst = None
         for conn in peers:
-            if counts[get_network(conn.address)] <= 1:
+            # Core's order: `m_protect` first, then the network
+            if conn.chain_sync.protect or counts[get_network(conn.address)] <= 1:
                 continue
             if worst is None or (conn.last_block_announcement, -conn.id) < (
                 worst.last_block_announcement,
@@ -843,6 +847,17 @@ class DownloadManager:
             return Inventory(InventoryType.MSG_WTX, wtxid)
         txid = self.node.mempool.transactions[wtxid].id
         return Inventory(InventoryType.MSG_TX, txid)
+
+    def _consider_evictions(self) -> None:
+        """Run Core's `ConsiderEviction` for every connected peer.
+
+        `p2p/chain_sync.py` is where it is argued; Core runs it from
+        `SendMessages`, once per peer past its handshake.
+        """
+        now = time.time()
+        for conn in list(self.node.p2p_manager.connections.values()):
+            if conn.status == P2pConnStatus.Connected:
+                consider_eviction(self.node, conn, now, maybe_send_getheaders)
 
     def _send_due_sendheaders(self) -> None:
         """Ask a peer, once, for new blocks as headers (BIP130).

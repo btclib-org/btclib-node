@@ -12,10 +12,14 @@ description = "Bitcoin node in python"
 authors = [{ name = "The btclib developers", email = "devs@btclib.org" }]
 readme = "README.md"
 license = "MIT"
-# Core's own licence travels in the wheel with the fixed seeds
-# `_chainparamsseeds.py` is generated from, under a name that licenses
-# nothing else
-license-files = ["LICENSE", "AUTHORS.md", "scripts/seeds/BITCOIN_CORE_COPYING"]
+# Core's licence, which covers the fixed seeds, is not a third name here:
+# the standard's section 3 names these two and nothing else
+# (btclib-org/.github#1390). The wheel carries it inside
+# `_chainparamsseeds.py`, whose opening comment
+# scripts/seeds/generate_seeds.py writes from
+# scripts/seeds/BITCOIN_CORE_COPYING in full; the sdist carries that file
+# too, under `scripts/**` below.
+license-files = ["LICENSE", "AUTHORS.md"]
 # Above the standard's 3.10 floor, deliberately: this is the version
 # .python-version pins, and with no CI matrix here
 # (btclib-org/btclib-node#33) it is the only version anything runs on.
