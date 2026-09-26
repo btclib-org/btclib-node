@@ -1220,9 +1220,9 @@ def _after_lock(before: _BeforeLock) -> Config:
     """Refuse what Core refuses after its lock, and return the `Config`.
 
     `AppInitMain` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7) in its
-    order: `CheckHostPortOptions`'s `-port`, `-rpcport` and `-rpcbind`,
-    then `Config.__init__`'s `-rpccookieperms` and `-rpcauth`, which
-    `StartHTTPRPC` reads in that order.
+    order: `CheckHostPortOptions`'s `-port`, `-rpcport` and `-rpcbind`.
+    `-rpccookieperms` and `-rpcauth` are refused later, by
+    `RpcAuth.start`, as `StartHTTPRPC` refuses them.
     """
     settings = before.settings
     p2p_port = _get_port(settings, "port")

@@ -695,8 +695,41 @@ def test_build_config_server_off_reads_no_rpc_option(
     config = _build(tmp_path, "-server=0", argument)
     assert config.rpc_auth == ()
     assert config.rpc_cookie_perms is None
-    with pytest.raises(ValueError, match="rpc"):
-        _build(tmp_path, argument)
+    assert not config.rpc_auth_invalid
+    assert config.rpc_cookie_perms_error is None
+    config = _build(tmp_path, argument)
+    assert config.rpc_auth_invalid or config.rpc_cookie_perms_error is not None
+
+
+@pytest.mark.parametrize(
+    "argument", ["-rpcauth=bogus", "-rpccookieperms=bogus"], ids=["rpcauth", "perms"]
+)
+def test_main_a_refused_rpc_credential_prints_core_s_one_line(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    argument: str,
+) -> None:
+    """Stderr holds "Unable to start HTTP server" alone, as `bitcoind` has it.
+
+    `bitcoind` v31.1.0 with either value, and with both, prints this line
+    alone and exits 1; the value's own line is in its log.
+    """
+    monkeypatch.setattr(cli, "install_signal_handlers", lambda node: None)
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(
+            [
+                f"-datadir={tmp_path}",
+                "-regtest",
+                "-listen=0",
+                f"-rpcport={get_random_port()}",
+                argument,
+            ]
+        )
+    assert excinfo.value.code == 1
+    assert capsys.readouterr().err == (
+        "Error: Unable to start HTTP server. See debug log for details.\n"
+    )
 
 
 def test_build_config_noblocksdir_is_the_working_directory(
@@ -882,13 +915,12 @@ def test_build_config_norpcauth_is_get_settings_list(
     assert [entry.user.decode() for entry in config.rpc_auth] == users
 
 
-def test_build_config_a_malformed_rpcauth_in_the_file_raises(tmp_path: Path) -> None:
-    """A malformed `rpcauth=` stops the node starting, as it stops Core."""
+def test_build_config_a_malformed_rpcauth_in_the_file_is_kept(tmp_path: Path) -> None:
+    """A malformed `rpcauth=` is left for the RPC listener to refuse."""
     (tmp_path / "bitcoin.conf").write_text(
         "regtest=1\nrpcauth=pytest:no-dollar-sign\n", encoding="utf-8"
     )
-    with pytest.raises(ValueError, match="Invalid -rpcauth argument"):
-        cli.build_config([f"-datadir={tmp_path}"])
+    assert cli.build_config([f"-datadir={tmp_path}"]).rpc_auth_invalid
 
 
 def test_build_config_datadir_a_file_raises(tmp_path: Path) -> None:
@@ -1606,10 +1638,6 @@ def test_main_these_options_are_refused_before_a_held_directory(
             ["-rpcbind=1.2.3.4:0", "-rpcport=0"],
             "Invalid port specified in -rpcport: '0'",
         ),
-        (
-            ["-rpcauth=bogus", "-rpccookieperms=bogus"],
-            "Invalid -rpccookieperms=bogus; must be one of 'owner', 'group', or 'all'.",
-        ),
     ],
     ids=[
         "blocksdir, maxconnections",
@@ -1617,7 +1645,6 @@ def test_main_these_options_are_refused_before_a_held_directory(
         "debug, prune",
         "rpcbind",
         "rpcport, rpcbind",
-        "rpccookieperms, rpcauth",
     ],
 )
 def test_build_config_refuses_in_core_order(
@@ -1625,10 +1652,7 @@ def test_build_config_refuses_in_core_order(
 ) -> None:
     """Two refusals in one command line: the one `bitcoind` names first.
 
-    Each measured on `bitcoind` v31.1.0 but the last, where both refusals
-    are its "Unable to start HTTP server", and `StartHTTPRPC` reads
-    `-rpccookieperms` ahead of `-rpcauth` (`src/httprpc.cpp`, at
-    bitcoin/bitcoin@9be056a8a7).
+    Each measured on `bitcoind` v31.1.0.
     """
     argv = [arg.format(x=tmp_path) for arg in argv]
     expected = re.escape(refusal.format(x=tmp_path))
@@ -1824,8 +1848,9 @@ def test_build_config_rpccookieperms_from_the_file(tmp_path: Path) -> None:
     """`rpccookieperms=` in the file, and a bad value refused."""
     (tmp_path / "bitcoin.conf").write_text("rpccookieperms=all\n", encoding="utf-8")
     assert cli.build_config([f"-datadir={tmp_path}"]).rpc_cookie_perms == 0o644
-    with pytest.raises(ValueError, match=r"^Invalid -rpccookieperms=x;"):
-        cli.build_config([f"-datadir={tmp_path}", "-rpccookieperms=x"])
+    config = cli.build_config([f"-datadir={tmp_path}", "-rpccookieperms=x"])
+    assert config.rpc_cookie_perms_error is not None
+    assert config.rpc_cookie_perms_error.startswith("Invalid -rpccookieperms=x;")
 
 
 def test_build_config_rpcwhitelist_from_the_command_line_and_the_file(

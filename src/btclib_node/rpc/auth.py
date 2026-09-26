@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode
 
+from btclib_node.exceptions import RpcCredentialRefusedError
 from btclib_node.rpc.errors import RpcError, json_type_name
 from btclib_node.rpc.jsonrpc import JsonRpcRequest, error_status
 
@@ -287,6 +288,8 @@ class RpcAuth:
         cookie_file: Path | None = None,
         cookie_tmp: Path | None = None,
         cookie_perms: int | None = None,
+        cookie_perms_error: str | None = None,
+        rpcauth_invalid: bool = False,
         whitelist: Mapping[bytes, frozenset[str]] | None = None,
         whitelist_default: bool = False,
     ) -> None:
@@ -294,15 +297,19 @@ class RpcAuth:
 
         `password` set is `-rpcpassword` set, which is what stops `start`
         writing a cookie; `cookie_file` `None` is `-norpccookiefile`.
-        `cookie_tmp` is `generate_cookie`'s `tmp`.
+        `cookie_tmp` is `generate_cookie`'s `tmp`. `cookie_perms_error`
+        and `rpcauth_invalid` are what `start` refuses, `Config`'s own
+        `rpc_cookie_perms_error` and `rpc_auth_invalid`.
         """
         self.entries = [password] if password is not None else []
         self.entries.extend(entries)
         self.password_set = password is not None
-        self.rpcauth_set = bool(entries)
+        self.rpcauth_set = bool(entries) or rpcauth_invalid
         self.cookie_file = cookie_file
         self.cookie_tmp = cookie_tmp
         self.cookie_perms = cookie_perms
+        self.cookie_perms_error = cookie_perms_error
+        self.rpcauth_invalid = rpcauth_invalid
         self.whitelist = dict(whitelist or {})
         self.whitelist_default = whitelist_default
         # where `generate_cookie` wrote, and what `delete_cookie`
@@ -319,6 +326,8 @@ class RpcAuth:
             cookie_file=config.rpc_cookie_file,
             cookie_tmp=config.rpc_cookie_tmp,
             cookie_perms=config.rpc_cookie_perms,
+            cookie_perms_error=config.rpc_cookie_perms_error,
+            rpcauth_invalid=config.rpc_auth_invalid,
             whitelist=config.rpc_whitelist,
             whitelist_default=config.rpc_whitelist_default,
         )
@@ -329,8 +338,14 @@ class RpcAuth:
         `InitRPCAuthentication`: no cookie where `-rpcpassword` is set,
         with Core's warning that the password sits in plain text, and
         none where `-norpccookiefile` is given. Raises `generate_cookie`'s
-        `OSError` where the cookie cannot be written or its permissions set.
+        `OSError` where the cookie cannot be written or its permissions set,
+        and `RpcCredentialRefusedError` where Core refuses
+        `-rpccookieperms`, before the cookie, or `-rpcauth`, after it, each
+        logged at Core's level.
         """
+        if self.cookie_perms_error is not None:
+            logger.error("%s", self.cookie_perms_error)
+            raise RpcCredentialRefusedError(self.cookie_perms_error)
         if self.password_set:
             logger.info("Using rpcuser/rpcpassword authentication.")
             logger.warning(RPCPASSWORD_WARNING)
@@ -348,6 +363,10 @@ class RpcAuth:
             logger.info("Using random cookie authentication.")
         if self.rpcauth_set:
             logger.info("Using rpcauth authentication.")
+        if self.rpcauth_invalid:
+            err_msg = "Invalid -rpcauth argument."
+            logger.warning(err_msg)
+            raise RpcCredentialRefusedError(err_msg)
 
     def generate_cookie(
         self, path: Path, perms: int | None = None, *, tmp: Path | None = None

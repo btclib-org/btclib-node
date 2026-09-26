@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, cast
 import pytest
 
 from btclib_node.config import Config
+from btclib_node.exceptions import RpcCredentialRefusedError
 from btclib_node.rpc.auth import (
     COOKIE_FILE,
     COOKIE_USER,
@@ -355,7 +356,7 @@ def test_the_cookie_goes_where_it_is_told(tmp_path: Path) -> None:
 
 
 class Recorder:
-    """A logger's `info` and `warning`, each call kept as its arguments."""
+    """A logger's `info`, `warning` and `error`, each call kept as its args."""
 
     def __init__(self) -> None:
         """Keep nothing yet."""
@@ -369,12 +370,55 @@ class Recorder:
         """Keep a `warning` call."""
         self.calls.append(("warning", args))
 
+    def error(self, *args: object) -> None:
+        """Keep an `error` call."""
+        self.calls.append(("error", args))
 
-def start(auth: RpcAuth) -> list[tuple[str, tuple[object, ...]]]:
-    """Run `auth.start` and return what it logged."""
-    recorder = Recorder()
+
+def start(
+    auth: RpcAuth, recorder: Recorder | None = None
+) -> list[tuple[str, tuple[object, ...]]]:
+    """Run `auth.start` and return what it logged into `recorder`."""
+    recorder = Recorder() if recorder is None else recorder
     auth.start(cast("logging.Logger", recorder))
     return recorder.calls
+
+
+def test_start_refuses_rpccookieperms_before_the_cookie(tmp_path: Path) -> None:
+    """`InitRPCAuthentication`'s `LogError`, and no cookie written."""
+    path = tmp_path / COOKIE_FILE
+    message = "Invalid -rpccookieperms=x; must be one of 'owner', 'group', or 'all'."
+    auth = RpcAuth(cookie_file=path, cookie_perms_error=message)
+    recorder = Recorder()
+    with pytest.raises(RpcCredentialRefusedError, match=f"^{re.escape(message)}$"):
+        start(auth, recorder)
+    assert recorder.calls == [("error", ("%s", message))]
+    assert auth.cookie_path is None
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_start_refuses_rpcauth_after_the_cookie(tmp_path: Path) -> None:
+    """`InitRPCAuthentication`'s `LogWarning`, after the cookie it wrote.
+
+    With no well-formed value at all, "Using rpcauth authentication."
+    still comes first, as `bitcoind` v31.1.0 logs it for `-rpcauth=bogus`.
+    """
+    path = tmp_path / COOKIE_FILE
+    auth = RpcAuth(cookie_file=path, rpcauth_invalid=True)
+    recorder = Recorder()
+    with pytest.raises(
+        RpcCredentialRefusedError, match=r"^Invalid -rpcauth argument\.$"
+    ):
+        start(auth, recorder)
+    assert auth.cookie_path == path
+    perms = stat.filemode(path.stat().st_mode)[1:]
+    assert recorder.calls == [
+        ("info", ("Generated RPC authentication cookie %s", path)),
+        ("info", ("Permissions used for cookie: %s", perms)),
+        ("info", ("Using random cookie authentication.",)),
+        ("info", ("Using rpcauth authentication.",)),
+        ("warning", ("Invalid -rpcauth argument.",)),
+    ]
 
 
 def test_start_writes_the_cookie_and_logs_what_core_logs(tmp_path: Path) -> None:
@@ -453,3 +497,16 @@ def test_from_config_carries_every_setting(tmp_path: Path) -> None:
     assert auth.cookie_tmp == config.rpc_cookie_tmp
     assert auth.whitelist == {b"alice": frozenset({"getblockcount"})}
     assert auth.whitelist_default
+
+
+def test_from_config_carries_what_start_refuses(tmp_path: Path) -> None:
+    """A malformed `-rpcauth` and `-rpccookieperms` reach `start`."""
+    config = Config(
+        chain="regtest", data_dir=tmp_path, rpcauth=["bogus"], rpccookieperms="x"
+    )
+    auth = RpcAuth.from_config(config)
+    assert auth.cookie_perms_error == config.rpc_cookie_perms_error
+    assert auth.cookie_perms_error is not None
+    assert auth.rpcauth_invalid
+    assert auth.rpcauth_set
+    assert not RpcAuth.from_config(Config(chain="regtest")).rpcauth_invalid

@@ -129,6 +129,28 @@ def _resolve_peers(
     return tuple(peers)
 
 
+def _read_cookie_perms(value: str) -> tuple[int | None, str | None]:
+    """Return `-rpccookieperms`' mode, or `cookie_perms`' refusal of it."""
+    try:
+        return cookie_perms(value), None
+    except ValueError as err:
+        return None, str(err)
+
+
+def _read_rpcauth(values: Sequence[str]) -> tuple[tuple[RpcAuthEntry, ...], bool]:
+    """Return the `-rpcauth` entries before a malformed one, and whether one is.
+
+    `InitRPCAuthentication` stops at the first malformed value, refusing it.
+    """
+    entries: list[RpcAuthEntry] = []
+    for value in values:
+        try:
+            entries.append(RpcAuthEntry.parse(value))
+        except ValueError:
+            return tuple(entries), True
+    return tuple(entries), False
+
+
 def _resolve_cookie_file(
     value: str | Path | None, data_dir: Path, *, temp: bool = False
 ) -> Path | None:
@@ -218,8 +240,13 @@ class Config:
     # listener is supposed to accept a stranger.
     rpc_host: str
     # Core's own `-rpcauth`, one entry per value: users the RPC listener
-    # accepts beside the cookie and `rpc_password_entry`.
+    # accepts beside the cookie and `rpc_password_entry`. Where a value
+    # is malformed, the values ahead of it, and `rpc_auth_invalid` set.
     rpc_auth: tuple[RpcAuthEntry, ...]
+    # whether a `-rpcauth` value is malformed, which `RpcAuth.start`
+    # refuses once the listener is bound, as Core's
+    # `InitRPCAuthentication` does
+    rpc_auth_invalid: bool
     # Core's own `-rpcuser`/`-rpcpassword`, hashed with a random salt so
     # that the plaintext password is not what is kept; `None` where
     # `-rpcpassword` is unset or empty. Set, it stops the cookie being
@@ -235,6 +262,10 @@ class Config:
     # maps it to; `None` is its default, owner-only, and is what it is
     # wherever `-rpcpassword` is set, Core not reading it then.
     rpc_cookie_perms: int | None
+    # `rpc.auth.cookie_perms`' own message where Core reads
+    # `-rpccookieperms` and it names no mode, `None` otherwise: refused
+    # by `RpcAuth.start` once the listener is bound, as Core refuses it
+    rpc_cookie_perms_error: str | None
     # Core's own `-rpcwhitelist`, parsed by `rpc.auth.parse_whitelist`:
     # the methods each user named may call.
     rpc_whitelist: Mapping[bytes, frozenset[str]]
@@ -412,15 +443,16 @@ class Config:
         self.rpc_cookie_tmp = _resolve_cookie_file(
             rpccookiefile, self.data_dir, temp=True
         )
-        # an invalid value is fatal, `cookie_perms`' own `ValueError`,
-        # where Core reads it at all
-        self.rpc_cookie_perms = None
+        # Core refuses a malformed value in `InitRPCAuthentication`,
+        # after binding, so its line goes to the log and stderr gets
+        # `RPC_INIT_ERROR`: kept here for `RpcAuth.start` rather than
+        # raised
+        self.rpc_cookie_perms, self.rpc_cookie_perms_error = None, None
         if rpccookieperms is not None and self.rpc_password_entry is None:
-            self.rpc_cookie_perms = cookie_perms(rpccookieperms)
-        # a malformed value is fatal, `RpcAuthEntry.parse`'s own
-        # `ValueError`, as Core refuses to start on one, after
-        # `-rpccookieperms` as `InitRPCAuthentication` reads them
-        self.rpc_auth = tuple(RpcAuthEntry.parse(value) for value in rpcauth)
+            self.rpc_cookie_perms, self.rpc_cookie_perms_error = _read_cookie_perms(
+                rpccookieperms
+            )
+        self.rpc_auth, self.rpc_auth_invalid = _read_rpcauth(rpcauth)
         self.rpc_whitelist = parse_whitelist(rpcwhitelist)
         self.rpc_whitelist_default = (
             bool(rpcwhitelist) if rpcwhitelistdefault is None else rpcwhitelistdefault

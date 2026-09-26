@@ -294,6 +294,27 @@ def test_a_manager_that_cannot_bind_stops_being_alive(
     assert not cookie_path(manager.node.config.data_dir).exists()
 
 
+def test_a_manager_whose_auth_refuses_a_value_closes_its_socket_at_once(
+    a_manager: AManagerFactory,
+) -> None:
+    """`InitRPCAuthentication` refusing a value: not listening, port closed.
+
+    Closed by the thread that bound it, before `stop` closes it again,
+    so the port is free while the node is still tearing itself down.
+    """
+    port = get_random_port()
+    manager = a_manager(port)
+    manager.auth.rpcauth_invalid = True
+    assert not manager.start_listener()
+    wait_until(lambda: not manager.is_alive())
+    assert not manager.listening.is_set()
+    assert manager._server_socket is not None
+    # a closed socket's own fileno is -1; still >= 0 is still open
+    assert manager._server_socket.fileno() == -1
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", port))
+
+
 def test_stop_closes_the_listening_socket_even_when_the_accept_task_never_ran(
     a_manager: AManagerFactory,
 ) -> None:

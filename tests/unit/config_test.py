@@ -303,10 +303,15 @@ def test_rpcauth_is_parsed_into_rpc_auth() -> None:
     )
 
 
-def test_a_malformed_rpcauth_raises() -> None:
-    """Core refuses to start on one, with this message."""
-    with pytest.raises(ValueError, match=r"^Invalid -rpcauth argument\.$"):
-        Config(chain="regtest", rpcauth=["pytest"])
+def test_a_malformed_rpcauth_is_left_for_the_rpc_listener() -> None:
+    """Core refuses one once bound, so `Config` keeps the values before it."""
+    assert not Config(chain="regtest", rpcauth=[RPCAUTH]).rpc_auth_invalid
+    config = Config(chain="regtest", rpcauth=[RPCAUTH, "pytest", RPCAUTH])
+    assert config.rpc_auth_invalid
+    assert config.rpc_auth == (RpcAuthEntry.parse(RPCAUTH),)
+    assert not Config(
+        chain="regtest", rpcauth=["pytest"], allow_rpc=False
+    ).rpc_auth_invalid
 
 
 def test_rpcpassword_is_kept_hashed_and_empty_is_unset() -> None:
@@ -383,10 +388,17 @@ def test_rpccookieperms_is_parsed_unless_rpcpassword_is_set() -> None:
     """Core reads it only on the way to a cookie, refusing a bad one there."""
     assert Config(chain="regtest").rpc_cookie_perms is None
     assert Config(chain="regtest", rpccookieperms="group").rpc_cookie_perms == 0o640
-    with pytest.raises(ValueError, match=r"^Invalid -rpccookieperms=bogus;"):
-        Config(chain="regtest", rpccookieperms="bogus")
+    assert (
+        Config(chain="regtest", rpccookieperms="group").rpc_cookie_perms_error is None
+    )
+    config = Config(chain="regtest", rpccookieperms="bogus")
+    assert config.rpc_cookie_perms is None
+    assert config.rpc_cookie_perms_error == (
+        "Invalid -rpccookieperms=bogus; must be one of 'owner', 'group', or 'all'."
+    )
     config = Config(chain="regtest", rpcpassword="pw", rpccookieperms="bogus")
     assert config.rpc_cookie_perms is None
+    assert config.rpc_cookie_perms_error is None
 
 
 def test_rpcwhitelistdefault_defaults_to_whether_a_whitelist_is_set() -> None:

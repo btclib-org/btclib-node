@@ -45,6 +45,7 @@ __all__ = [
     "PrevoutCountMismatchError",
     "ReimportedMainProcessError",
     "RejectedMessageError",
+    "RpcCredentialRefusedError",
     "StoreClosedError",
     "StoreCorruptionError",
     "UnknownChainError",
@@ -329,6 +330,19 @@ class DirectoryLockError(RuntimeError):
     Raised by `dirlock.DirectoryLock`, with Core's own message for each
     of its two refusals, and printed by `cli.main` the way Core's
     `InitError` is.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class RpcCredentialRefusedError(ValueError):
+    """`InitRPCAuthentication` refuses a `-rpcauth` or `-rpccookieperms` value.
+
+    Raised by `rpc.auth.RpcAuth.start` once it has logged Core's line for
+    the value, and read by `rpc.manager.RpcManager` as a listener that
+    did not come up, which `Node` answers with Core's "Unable to start
+    HTTP server. See debug log for details."
     """
 
     def __init__(self, message: str) -> None:
