@@ -531,11 +531,9 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 ### The mempool refuses a fee under its floor, as Core
 
-- **Under the rolling minimum, "mempool min fee not met"; under
-  `min_relay_feerate`, "min relay fee not met"; each with "<fee> < <floor>"
-  for the vsize** (closes #1245). `testmempoolaccept` reports the pair as
-  `reject-reason` and `reject-details`, `sendrawtransaction` answers `-26`
-  with it, and a reorg's re-added transactions are exempt.
+- **A fee under the rolling minimum or `min_relay_feerate` for the vsize is
+  refused in Core's words, which both RPCs report** (closes #1245); a reorg's
+  re-added transactions are exempt.
 
 ### The mempool refuses a second spend of one outpoint, and a block evicts it
 
