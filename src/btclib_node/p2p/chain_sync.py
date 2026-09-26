@@ -183,8 +183,9 @@ def disconnect_if_insufficient_work(node: Node, conn: Connection) -> bool:
     whose best known block has less work than the chain's
     `minimum_chain_work`, is disconnected, as it cannot serve a chain
     this node would download. `callbacks.headers` asks it only of a batch
-    that says the peer has nothing more to give. Answers whether the peer
-    was dropped.
+    that says the peer has nothing more to give and that this node already
+    had, the gates Core puts in front of it. Answers whether the peer was
+    dropped.
     """
     best_known = conn.block_availability.best_known
     if (
