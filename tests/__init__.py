@@ -21,6 +21,7 @@ functions the tests import directly, in `tests/unit/`,
 
 import base64
 import json
+import os
 import re
 import secrets
 import socket
@@ -366,20 +367,78 @@ def generate_random_chain(
     return chain
 
 
-def get_random_port() -> int:
-    """Return a TCP port the operating system currently reports as free.
+# Core's functional tests take a node's p2p, rpc and tor ports from one
+# fixed range: `PORT_MIN`, 11000, on for three `PORT_RANGE`s of 5000
+# (test/functional/test_framework/util.py), and so does this suite. A port
+# the kernel picks itself -- for a bind to port 0, or for an outbound
+# connection's own end -- comes from its ephemeral range, which
+# `test_no_port_the_kernel_picks_is_a_test_port` checks lies outside this
+# one on every platform the suite runs on.
+TEST_PORTS = range(11000, 11000 + 3 * 5000)
 
-    Binding to port 0 and reading back the port the kernel picked is
-    the same trick `conftest.py`'s node fixtures rely on to give every
-    node its own p2p and RPC port, so parallel tests never contend for
-    one -- the port is free at the moment this returns, not reserved,
-    so a caller has to bind it before another process can.
+
+class PortPool:
+    """Hand out `ports` in turn, beginning `start` places in.
+
+    A port something holds is passed over, whoever holds it: another
+    program on the machine, or a listener of this process still open when
+    the walk comes round to it again.
     """
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("", 0))
-        port = sock.getsockname()[1]
-        assert isinstance(port, int)
-        return port
+
+    def __init__(self, ports: range, start: int) -> None:
+        """Walk `ports` from the one `start` places in, wrapping at the end."""
+        self.ports = ports
+        self._offset = start % len(ports)
+
+    def draw(self) -> int:
+        """Return the next port nothing holds, or raise if every one is held."""
+        for _ in self.ports:
+            port = self.ports[self._offset]
+            self._offset = (self._offset + 1) % len(self.ports)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                try:
+                    sock.bind(("", port))
+                except OSError:
+                    continue
+            return port
+        msg = f"every port of {self.ports} is held"
+        raise OSError(msg)
+
+
+def worker_ports(worker: str, count: int) -> range:
+    """Return the slice of `TEST_PORTS` xdist worker `worker` of `count` has.
+
+    Where Core gives each test of a run its own `--portseed`, a worker
+    here takes its slice by its index in `gw0`, `gw1`, ..., disjoint from
+    every other worker's. A replacement for a crashed worker takes the
+    next id, so the index wraps.
+    """
+    width = len(TEST_PORTS) // count
+    first = TEST_PORTS.start + int(worker.removeprefix("gw")) % count * width
+    return range(first, first + width)
+
+
+# xdist sets both variables before a worker imports this module; the
+# first port is drawn at the PID, as Core's `--portseed` defaults to it
+# for a test run alone, so that two runs on one machine start apart.
+_PORTS = PortPool(
+    worker_ports(
+        os.environ.get("PYTEST_XDIST_WORKER", "gw0"),
+        int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "1")),
+    ),
+    start=os.getpid(),
+)
+
+
+def get_random_port() -> int:
+    """Return a TCP port that nothing holds and no other worker is handed.
+
+    The port is free when this returns, not reserved, so a caller has to
+    bind it before another program can; what cannot take it first is
+    another worker of this run, whose slice is its own, or an outbound
+    connection, whose port the kernel picks outside `TEST_PORTS`.
+    """
+    return _PORTS.draw()
 
 
 def taken_port_bind_error(port: int) -> re.Pattern[str]:

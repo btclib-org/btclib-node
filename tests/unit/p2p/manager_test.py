@@ -191,8 +191,8 @@ def a_manager() -> Iterator[AManagerFactory]:
         # of this same tree on one machine, or a second worker of this
         # same run (btclib-org/btclib-node#678). `get_random_port()`
         # drawn fresh on every call, rather than once as a mutable
-        # default would be, is what keeps every manager built without
-        # an explicit `port=` off both.
+        # default would be, is what gives every manager built without
+        # an explicit `port=` a port of its own.
         if port is None:
             port = get_random_port()
         node = SimpleNamespace(

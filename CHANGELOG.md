@@ -599,6 +599,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   reindexes only where it pruned a row** (closes #1217, closes #1283), where
   each pass serialized every answered row and every dialable gossiped one.
 
+### The suite's ports come from the range Core's tests use
+
+- **`get_random_port` hands each xdist worker ports of its own from 11000 to
+  25999, as Core's tests take theirs**, not a port the kernel picked for a
+  bind to 0, which anything could take before bitcoind bound it (closes #1340).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
