@@ -36,6 +36,8 @@ from btclib_node.p2p.address import (
     ip_and_port,
     peer_address,
 )
+from btclib_node.p2p.banman import DUMP_BANS_INTERVAL, BanMan, Subnet
+from btclib_node.p2p.callbacks import _has_all_desirable_services
 from btclib_node.p2p.connection import Connection
 from btclib_node.p2p.eviction import (
     EvictionCandidate,
@@ -143,6 +145,111 @@ _REACHABLE_NETWORKS = (BIP155Network.IPV4, BIP155Network.IPV6)
 # (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
 _MAX_DRAWS_PER_PASS = 100
 
+# `ThreadOpenConnections`' own thresholds, as the constant above: a draw
+# tried less than ten minutes ago is passed over while fewer than 30
+# draws have been made, and one on a port `_BAD_PORTS` holds while fewer
+# than 50 have.
+_RECENT_TRY_SECONDS = 10 * 60
+_RECENT_TRY_DRAWS = 30
+_BAD_PORT_DRAWS = 50
+
+# `AddedNodesContain`'s bound: with this many `-addnode` values or more
+# it answers no for every address (`src/net.cpp`, same sha).
+_ADDED_NODES_BOUND = 24
+
+# Core's `IsBadPort` (`src/netbase.cpp`, at bitcoin/bitcoin@9be056a8a7,
+# the v31.1 tag): ports other services listen on, which an automatic
+# dial passes over while `_BAD_PORT_DRAWS` has not been reached.
+_BAD_PORTS = frozenset(
+    {
+        1,
+        7,
+        9,
+        11,
+        13,
+        15,
+        17,
+        19,
+        20,
+        21,
+        22,
+        23,
+        25,
+        37,
+        42,
+        43,
+        53,
+        69,
+        77,
+        79,
+        87,
+        95,
+        101,
+        102,
+        103,
+        104,
+        109,
+        110,
+        111,
+        113,
+        115,
+        117,
+        119,
+        123,
+        135,
+        137,
+        139,
+        143,
+        161,
+        179,
+        389,
+        427,
+        465,
+        512,
+        513,
+        514,
+        515,
+        526,
+        530,
+        531,
+        532,
+        540,
+        548,
+        554,
+        556,
+        563,
+        587,
+        601,
+        636,
+        989,
+        990,
+        993,
+        995,
+        1719,
+        1720,
+        1723,
+        2049,
+        3306,
+        3389,
+        3659,
+        4045,
+        5060,
+        5061,
+        5432,
+        5900,
+        6000,
+        6566,
+        6665,
+        6666,
+        6667,
+        6668,
+        6669,
+        6697,
+        10080,
+        27017,
+    }
+)
+
 # How many hosts `P2pManager.discourage` remembers. Core keeps them in
 # `BanMan::m_discouraged`, a `CRollingBloomFilter{50000, 0.000001}`
 # (`src/banman.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). This
@@ -184,13 +291,27 @@ class P2pManager(threading.Thread):
     a connection between them are this class's own state for that.
     """
 
-    def __init__(self, node: Node, port: int | None, peer_db: PeerDB) -> None:
-        """Set up empty connection tables and queues, and a fresh event loop."""
+    def __init__(
+        self,
+        node: Node,
+        port: int | None,
+        peer_db: PeerDB,
+        ban_man: BanMan | None = None,
+    ) -> None:
+        """Set up empty connection tables and queues, and a fresh event loop.
+
+        `ban_man` `None` is a ban list kept in memory only.
+        """
         super().__init__()
         self.node = node
         self.logger = node.logger
         self.port = port
         self.peer_db = peer_db
+        self.ban_man = ban_man if ban_man is not None else BanMan(None, node.logger)
+        # Core's scheduler first dumps the ban list one interval after
+        # start (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        # tag)
+        self._last_ban_dump = time.time()
         # Core's own `-connect`: dial only the peers it names, with DNS
         # seeding and every automatically-drawn outbound connection off
         # (`connOptions.m_use_addrman_outgoing = false`, `src/init.cpp`
@@ -234,6 +355,18 @@ class P2pManager(threading.Thread):
         # outbound connection counts against it, `_automatic_outbound`
         # below being the one count of them.
         self.max_automatic_outbound = min(automatic_outbound, max_connections)
+        # Core's `AddrInfo::m_last_try` of each endpoint this manager
+        # dialled on its own, by `endpoint_key`, which `_passed_over`
+        # reads. Only this thread reads or writes it, and `_dial_one_draw`
+        # drops an entry once it is too old for that read to use.
+        self._last_try: dict[bytes, float] = {}
+        # Core's `m_added_node_params` as `AddedNodesContain` reads it:
+        # each `-addnode` value as given, compared with a drawn address's
+        # text, and nothing at all past `_ADDED_NODES_BOUND` values.
+        added = node.config.addnode_args
+        self._added_nodes = (
+            frozenset(added) if len(added) < _ADDED_NODES_BOUND else frozenset()
+        )
         # Core's own `-dnsseed`, which `InitParameterInteraction` soft-sets
         # off under `-connect` and under `-maxconnections=0` alike
         # (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
@@ -649,6 +782,20 @@ class P2pManager(threading.Thread):
                 other.stop()
         return True
 
+    def disconnect_subnet(self, subnet: Subnet) -> bool:
+        """Drop every peer `subnet` matches, Core's `DisconnectNode(CSubNet)`.
+
+        Whatever the connection's kind, a manual one included, and
+        answering whether any matched (`src/net.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        """
+        with self._connections_lock:
+            held = (*self.connections.values(), *self.pending_connections.values())
+        matched = [conn for conn in held if subnet.matches_peer(conn.address)]
+        for conn in matched:
+            conn.stop()
+        return bool(matched)
+
     async def async_connect(self, address: NetworkAddressV2) -> None:
         """Dial `address` and, if it comes up, register the connection.
 
@@ -797,6 +944,12 @@ class P2pManager(threading.Thread):
                 )
             )
 
+    def _maybe_dump_banlist(self, now: float) -> None:
+        if now - self._last_ban_dump < DUMP_BANS_INTERVAL:
+            return
+        self._last_ban_dump = now
+        self.ban_man.dump()
+
     async def _maybe_dial_more_peers(self) -> None:
         # `-connect`'s own other half: `peer_db`'s table is never drawn
         # from at all, on top of `run` below never scheduling the DNS
@@ -902,7 +1055,9 @@ class P2pManager(threading.Thread):
         # `continue`s on it: one draw a pass would stall wherever
         # the table is mostly such peers (btclib-org/btclib-node#1201).
         draw = self.peer_db.address_sampler()
-        for _ in range(_MAX_DRAWS_PER_PASS):
+        now = time.time()
+        # Core's `nTries`, which counts the draw it is about to make
+        for tries in range(1, _MAX_DRAWS_PER_PASS + 1):
             address = draw()
             # `is_empty` answers whether the table holds anything,
             # not whether it holds anything this node can dial, so
@@ -915,18 +1070,78 @@ class P2pManager(threading.Thread):
                 break
             if can_addrv1(address) and net_group(address) in outbound_net_groups:
                 continue
+            if self._passed_over(address, tries, now):
+                continue
             # Any other draw ends the pass, as Core's loop breaks
             # with it and `OpenNetworkConnection` (`src/net.cpp`, at
             # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) returns
-            # without dialling a peer already connected or
-            # discouraged, the latter being one this node dropped
+            # without dialling a peer already connected, discouraged
+            # or banned, a discouraged one being one this node dropped
             # for cause (btclib-org/btclib-node#283).
             held = endpoint_key(address) in already_connected
-            if not held and not self.is_discouraged(address):
+            if (
+                not held
+                and not self.is_discouraged(address)
+                and not self.ban_man.is_peer_banned(address)
+            ):
+                self._record_attempt(address)
                 sock = await dial(address)
                 if sock:
                     self.create_connection(sock, address, inbound=False, automatic=True)
             break
+
+    def _passed_over(self, address: NetworkAddressV2, tries: int, now: float) -> bool:
+        """Answer whether `ThreadOpenConnections` draws again past `address`.
+
+        Its four `continue`s after the network-group one, in its order
+        (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        Its invalid-or-local `break` and its unreachable-network
+        `continue`, between the two, are not here. `address_sampler`
+        draws IPv4 and IPv6 addresses alone, and `_storable` keeps out
+        of the table every address `IsRoutable` refuses, an invalid one
+        among them. `IsLocal` reads `mapLocalHost`, this node's own
+        addresses, and this tree keeps no such table.
+        """
+        last_try = self._last_try.get(endpoint_key(address), 0.0)
+        if now - last_try < _RECENT_TRY_SECONDS and tries < _RECENT_TRY_DRAWS:
+            return True
+        if not _has_all_desirable_services(self.node, address.services):
+            return True
+        # Core's `IsIPv4() || IsIPv6()` holds of every draw, as above
+        if tries < _BAD_PORT_DRAWS and address.port in _BAD_PORTS:
+            return True
+        return self._added_node(address)
+
+    def _added_node(self, address: NetworkAddressV2) -> bool:
+        """Core's `AddedNodesContain`: a `-addnode` value names `address`.
+
+        Compared as text, as Core compares `ToStringAddr` and
+        `ToStringAddrPort`: a value without a port names the host on
+        every port, and one with a port names that endpoint alone.
+        """
+        if not self._added_nodes:
+            return False
+        endpoint = network_address(address)
+        with_port = ip_and_port(str(endpoint.ip), endpoint.port)
+        host = with_port.rsplit(":", 1)[0].removeprefix("[").removesuffix("]")
+        return host in self._added_nodes or with_port in self._added_nodes
+
+    def _record_attempt(self, address: NetworkAddressV2) -> None:
+        """Record a dial of `address`, as Core's `Attempt_` sets `m_last_try`.
+
+        An entry too old for `_passed_over` to read is dropped here, so
+        the table holds the dials of the last `_RECENT_TRY_SECONDS`.
+        Called before the dial, where `ConnectNode` calls `Attempt` once
+        the connect has been tried, so the time kept is earlier than
+        Core's by however long the connect took.
+        """
+        now = time.time()
+        self._last_try = {
+            key: when
+            for key, when in self._last_try.items()
+            if now - when < _RECENT_TRY_SECONDS
+        }
+        self._last_try[endpoint_key(address)] = now
 
     async def _maybe_redial_specified(self) -> None:
         """Redial a `-connect`/`-addnode` peer not connected, on backoff.
@@ -972,7 +1187,8 @@ class P2pManager(threading.Thread):
         """Prune, prune some more, maybe dial, sleep -- forever, every 0.1s.
 
         `_prune_stale_connections` pings or drops an idle peer every
-        pass; `_maybe_prune_active_addresses` runs far less often;
+        pass; `_maybe_prune_active_addresses` and `_maybe_dump_banlist`
+        run far less often;
         `_maybe_dial_more_peers` dials one more only if this node still
         has room for it; `_maybe_redial_specified` is the standing
         redial issue #651 asked for, for `-connect`/`-addnode` alone.
@@ -982,6 +1198,7 @@ class P2pManager(threading.Thread):
             now = time.time()
             self._prune_stale_connections(now)
             self._maybe_prune_active_addresses(now)
+            self._maybe_dump_banlist(now)
             await self._maybe_dial_more_peers()
             await self._maybe_redial_specified()
             await asyncio.sleep(0.1)
@@ -1248,12 +1465,21 @@ class P2pManager(threading.Thread):
                     address = peer_address(*sockaddr[:2])
                     # Core's `CreateNodeFromAcceptedSocket` (`src/net.cpp`,
                     # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), on one
-                    # count of the inbound peers: a discouraged host is
-                    # refused once one more peer would fill the inbound
-                    # share; past that share an inbound peer is evicted
-                    # to make room, and only where every candidate is
-                    # protected is the new peer refused. Either refusal
-                    # comes before `create_connection` builds anything.
+                    # count of the inbound peers: a banned host is refused
+                    # outright, a discouraged host once one more peer would
+                    # fill the inbound share; past that share an inbound
+                    # peer is evicted to make room, and only where every
+                    # candidate is protected is the new peer refused. Every
+                    # refusal comes before `create_connection` builds
+                    # anything.
+                    if self.ban_man.is_peer_banned(address):
+                        endpoint = network_address(address)
+                        self.logger.debug(
+                            "connection from %s dropped (banned)",
+                            ip_and_port(str(endpoint.ip), endpoint.port),
+                        )
+                        sock.close()
+                        continue
                     inbound = self._inbound_count()
                     discouraged = self.is_discouraged(address)
                     if discouraged and inbound + 1 >= self.max_inbound:

@@ -22,6 +22,7 @@ either step failed, which Core turns into an `InitError`.
 
 import asyncio
 import os
+import re
 import socket
 import sys
 import threading
@@ -32,6 +33,7 @@ from ipaddress import ip_address
 from typing import TYPE_CHECKING, override
 
 from btclib_node.config import split_host_port
+from btclib_node.exceptions import RpcCredentialRefusedError
 from btclib_node.rpc.allow import allowed_subnets, client_allowed
 from btclib_node.rpc.auth import RpcAuth
 from btclib_node.rpc.connection import REQUEST_TIMEOUT, RpcConnection
@@ -63,13 +65,52 @@ def _is_bind_any(host: str) -> bool:
         return False
 
 
-# libevent resolves an IP literal and the empty host itself on Windows,
-# where it is never held to `AI_ADDRCONFIG`, and hands every other
-# lookup to the system's `getaddrinfo` with that flag
-# (`evutil_getaddrinfo` and `evutil_getaddrinfo_common_`, `evutil.c`,
-# same version as below).
 _WINDOWS = sys.platform == "win32"
-_ADDRESS_FLAGS = socket.AI_PASSIVE | (0 if _WINDOWS else socket.AI_ADDRCONFIG)
+# what `strtoul` reads whole as a zone index, the empty zone included
+_NUMERIC_ZONE = re.compile(r"([ \t\n\v\f\r]*[+-]?[0-9]+)?")
+
+
+def _libevent_literal(host: str) -> bool:
+    """Whether libevent's own parse reads `host` as an IP address.
+
+    `evutil_getaddrinfo_common_` tries `evutil_inet_pton_scope` for IPv6,
+    whose zone after `%` is an interface name or a number `strtoul`
+    reads to its end, then `evutil_inet_pton` for IPv4 (`evutil.c`, at
+    libevent 2.1.12-stable).
+    """
+    address, percent, zone = host.partition("%")
+    try:
+        socket.inet_pton(socket.AF_INET6, address)
+    except OSError:
+        pass
+    else:
+        if not percent or _NUMERIC_ZONE.fullmatch(zone):
+            return True
+        try:
+            socket.if_nametoindex(zone)
+        except OSError:
+            return False
+        return True
+    try:
+        socket.inet_pton(socket.AF_INET, host)
+    except OSError:
+        return False
+    return True
+
+
+def _address_flags(host: str) -> int:
+    """Return the flags libevent's lookup of `host` is held to.
+
+    `make_addrinfo` asks for `AI_PASSIVE | AI_ADDRCONFIG` (`http.c`, at
+    libevent 2.1.12-stable). On Windows, `evutil_getaddrinfo` answers an IP
+    literal itself, never held to `AI_ADDRCONFIG`, and hands a name to
+    the system's `getaddrinfo` with it.
+    """
+    if _WINDOWS and _libevent_literal(host):
+        return socket.AI_PASSIVE
+    return socket.AI_PASSIVE | socket.AI_ADDRCONFIG
+
+
 # what `getaddrinfo` answers as an address
 _SockAddr = tuple[str, int] | tuple[str, int, int, int] | tuple[int, bytes]
 
@@ -99,7 +140,7 @@ def _first_address(
         os.fsencode(host) if host else None,
         port,
         type=socket.SOCK_STREAM,
-        flags=_ADDRESS_FLAGS,
+        flags=_address_flags(host),
     )[0]
     return family, kind, proto, sockaddr
 
@@ -305,7 +346,9 @@ class RpcManager(threading.Thread):
         to bind any endpoint for RPC server", logged; and
         `InitRPCAuthentication`'s refusal of a cookie that cannot be
         written, logged as the warning `GenerateAuthCookie` logs, the
-        sockets closed.
+        sockets closed. Raises `RpcCredentialRefusedError` where
+        `auth.start` refuses a value, having closed the sockets, `start`
+        having logged it.
         """
         try:
             self.allowed_subnets = allowed_subnets(self.node.config.rpcallowip)
@@ -328,6 +371,10 @@ class RpcManager(threading.Thread):
             for server_socket in self._server_sockets:
                 server_socket.close()
             self.logger.warning("%s", err)
+            raise
+        except RpcCredentialRefusedError:
+            for server_socket in self._server_sockets:
+                server_socket.close()
             raise
         self.listening.set()
         return self._server_sockets
@@ -524,7 +571,7 @@ class RpcManager(threading.Thread):
             self.logger.info("Starting RPC manager")
             asyncio.set_event_loop(loop)
             server_sockets = self._listen()
-        except OSError:
+        except OSError, RpcCredentialRefusedError:
             # logged by `_listen`; `start_listener` reads the failure
             # off `listening`, so it is not raised into
             # `threading.excepthook` as well
