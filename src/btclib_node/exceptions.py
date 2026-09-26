@@ -48,6 +48,7 @@ __all__ = [
     "StoreClosedError",
     "StoreCorruptionError",
     "UnknownChainError",
+    "UnmetExpectationError",
     "UnsupportedAddressTypeError",
     "WrongNetworkMagicError",
 ]
@@ -446,3 +447,15 @@ class OversizedRequestBodyError(BTClibValueError):
 
     def __init__(self, detail: str) -> None:
         super().__init__(f"request body refused: {detail}")
+
+
+class UnmetExpectationError(BTClibValueError):
+    """A request's `Expect` is one libevent answers 417 Expectation Failed.
+
+    Any value but `100-continue` on a request of HTTP/1.1 or later that
+    has a body. A class of its own for `OversizedRequestBodyError`'s
+    reason.
+    """
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(f"expectation refused: {detail}")
