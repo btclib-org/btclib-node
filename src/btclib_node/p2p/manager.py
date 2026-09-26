@@ -1202,7 +1202,7 @@ class P2pManager(threading.Thread):
         return None
 
     def _maybe_pick_preferred_network(self) -> bool:
-        """Pick a network none of the outbound peers is on, if there is one.
+        """Pick a network no manual or full-relay peer is on, if there is one.
 
         Core's `MaybePickPreferredNetwork`: the reachable networks in a
         random order, the first with no `MANUAL` or `OUTBOUND_FULL_RELAY`

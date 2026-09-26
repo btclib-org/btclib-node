@@ -571,7 +571,7 @@ class PeerDB:
         answered = [
             addr
             for addr in self.get_active_addresses()
-            if can_connect(addr) and network in {None, get_network(addr)}
+            if can_connect(addr) and (network is None or get_network(addr) == network)
         ]
         tried = {endpoint_key(addr) for addr in answered}
         # Drawn from the addresses that can be dialled, rather than from
@@ -592,7 +592,7 @@ class PeerDB:
                 for address in self.addresses
                 if can_connect(address)
                 and endpoint_key(address) not in tried
-                and network in {None, get_network(address)}
+                and (network is None or get_network(address) == network)
             ]
         return partial(_select, [] if new_only else answered, known)
 

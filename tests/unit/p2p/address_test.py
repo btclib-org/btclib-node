@@ -1362,3 +1362,31 @@ def test_an_extra_network_peer_draws_on_its_network_alone() -> None:
     assert draws(Network.IPV6) == {v6.address, answered.address}
     assert draws(Network.IPV4) == {v4.address}
     assert peer_db.address_sampler(network=Network.ONION)() is None
+
+
+def test_a_draw_on_no_network_never_calls_get_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1100: `get_network` runs only where a network is asked for.
+
+    Every dial pass walks both tables under their locks, so a draw on
+    no network is left the walk it had before; asked for a network, the
+    same table reaches it.
+    """
+    peer_db = a_peer_db()
+    answered = peer_address("1.2.3.4", 8333, timestamp=int(time.time()))
+    peer_db.add_addresses(
+        [replace(answered, timestamp=1), peer_address("5.6.7.8", 8333)]
+    )
+    peer_db.add_active_address(answered)
+    asked: list[NetworkAddressV2] = []
+
+    def get_network(address: NetworkAddressV2) -> Network:
+        asked.append(address)
+        return Network.IPV4
+
+    monkeypatch.setattr(address_module, "get_network", get_network)
+    assert peer_db.address_sampler()() is not None
+    assert asked == []
+    assert peer_db.address_sampler(network=Network.IPV4)() is not None
+    assert len(asked) == 2
