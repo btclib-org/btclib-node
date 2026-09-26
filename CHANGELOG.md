@@ -461,6 +461,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **Stderr names each unrecognised section with its file and line** (closes
   #1271), in Core's words and before the refusals that follow it.
 
+### `bitcoin.conf` is read as bytes, as `bitcoind` reads it
+
+- **A byte that is not UTF-8 no longer stops the node** (closes #1290): it is
+  kept, and written back as that byte in stderr, the log and the credentials.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

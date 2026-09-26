@@ -25,6 +25,7 @@ from btclib_node.rpc.auth import (
     RpcAuth,
     RpcAuthEntry,
     cookie_perms,
+    parse_whitelist,
     password_hmac,
 )
 from tests import RPCAUTH, RPCAUTH_PASSWORD
@@ -375,6 +376,22 @@ def start(auth: RpcAuth) -> list[tuple[str, tuple[object, ...]]]:
     recorder = Recorder()
     auth.start(cast("logging.Logger", recorder))
     return recorder.calls
+
+
+def test_a_byte_utf8_refuses_is_the_byte_a_client_sends() -> None:
+    """ISS 1290: `rpcuser`/`rpcpassword` and `rpcauth` hold the file's bytes.
+
+    `bitcoind` v31.1.0 with `rpcuser=u<0xe9>` and `rpcpassword=p<0xe9>`
+    in `bitcoin.conf` accepts `u<0xe9>:p<0xe9>` and refuses the same
+    user and password sent as UTF-8.
+    """
+    auth = RpcAuth(password=RpcAuthEntry.from_password("u\udce9", "p\udce9"))
+    assert auth.authenticated_user(basic(b"u\xe9:p\xe9")) == b"u\xe9"
+    assert auth.authenticated_user(basic("u\u00e9:p\u00e9".encode())) is None
+    assert RpcAuthEntry.parse("u\udce9:s$h").user == b"u\xe9"
+    assert parse_whitelist(["u\udce9:getblockcount"]) == {
+        b"u\xe9": frozenset({"getblockcount"})
+    }
 
 
 def test_start_writes_the_cookie_and_logs_what_core_logs(tmp_path: Path) -> None:

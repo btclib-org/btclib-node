@@ -65,6 +65,7 @@ __all__ = [
     "cookie_perms",
     "parse_whitelist",
     "password_hmac",
+    "to_bytes",
 ]
 
 # Core's `COOKIEAUTH_USER` and `COOKIEAUTH_FILE`
@@ -114,6 +115,16 @@ def password_hmac(salt: bytes, password: bytes) -> bytes:
     return hmac.new(salt, password, hashlib.sha256).hexdigest().encode()
 
 
+def to_bytes(value: str) -> bytes:
+    """Return the bytes `value` was read from, as Core holds a setting.
+
+    UTF-8, a lone surrogate being the byte `surrogateescape` decoded it
+    from: a `bitcoin.conf` read by `cli._read_conf_file`, and an argument
+    on POSIX, where Python decodes `argv` the same way.
+    """
+    return value.encode("utf-8", "surrogateescape")
+
+
 def cookie_perms(value: str) -> int:
     """Return the mode `-rpccookieperms=<value>` sets: `InterpretPermString`.
 
@@ -142,7 +153,7 @@ def parse_whitelist(values: Sequence[str]) -> dict[bytes, frozenset[str]]:
     whitelist: dict[bytes, frozenset[str]] = {}
     for value in values:
         name, colon, methods = value.partition(":")
-        user = name.encode()
+        user = to_bytes(name)
         intersect = user in whitelist
         allowed = whitelist.setdefault(user, frozenset())
         if colon:
@@ -178,13 +189,13 @@ class RpcAuthEntry:
             err_msg = "Invalid -rpcauth argument."
             raise ValueError(err_msg)
         user, salt, digest = fields[0], *salt_hmac
-        return cls(user.encode(), salt.encode(), digest.encode())
+        return cls(to_bytes(user), to_bytes(salt), to_bytes(digest))
 
     @classmethod
     def from_password(cls, user: str, password: str) -> RpcAuthEntry:
         """Hash `password` with a fresh random salt, as Core stores one."""
         salt = secrets.token_hex(_SALT_SIZE).encode()
-        return cls(user.encode(), salt, password_hmac(salt, password.encode()))
+        return cls(to_bytes(user), salt, password_hmac(salt, to_bytes(password)))
 
 
 @dataclass(frozen=True)
