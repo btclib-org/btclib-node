@@ -465,6 +465,31 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`add_addresses` ORs a known endpoint's services with the gossiped ones**
   (closes #1276), as Core's `AddSingle` does, where the last gossip replaced
   them.
+### A message that does not parse costs its peer nothing, as in Core
+
+- **A peer is discouraged only where Core calls `Misbehaving`** (closes
+  #1170); a payload that does not parse is logged and the peer kept.
+
+### An inbound peer is sent `version` only once its own is accepted, as in Core
+
+- **A refused inbound peer is sent nothing** (closes #1207).
+
+### JSON-RPC named parameters are mapped onto positions, as in Core
+
+- **A `params` object is read as `transformNamedArguments` reads it**
+  (closes #1168), `args` holding the leading positions; a name repeated,
+  unknown or given both ways is refused with `RPC_INVALID_PARAMETER`.
+
+### `-rpcbind` is ignored without `-rpcallowip`, as `bitcoind` ignores it
+
+- **The JSON-RPC listener stays on loopback whatever `-rpcbind` names**
+  (closes #1211), and every value is checked, where the last was bound.
+
+### `-datadir`, `-conf` and `-blocksdir` are read lexically normal, as in Core
+
+- **A `..` comes off, and a leading `//` becomes `/`, before the file system is
+  asked** (closes #1187); a missing data directory and an unreadable
+  configuration file are refused in Core's words.
 
 ## v2026.9.24
 
