@@ -19,9 +19,9 @@ from bitcoin_core_rpc import RPCErrorCode
 import btclib_node.rpc.callbacks as rpc_callbacks
 from btclib_node.exceptions import StoreCorruptionError
 from btclib_node.log import Logger
-from btclib_node.rpc.callbacks import callbacks
+from btclib_node.rpc.callbacks import arg_names, callbacks
 from btclib_node.rpc.errors import RpcError
-from btclib_node.rpc.jsonrpc import NO_CONTENT, OK, HttpReply
+from btclib_node.rpc.jsonrpc import NO_CONTENT, OK, HttpReply, decode
 from btclib_node.rpc.main import get_connection, handle_rpc
 from tests import generate_random_transaction
 
@@ -366,6 +366,109 @@ def test_no_params_is_an_empty_list(monkeypatch: pytest.MonkeyPatch) -> None:
         node, _, _, _ = make_node(request)
         handle_rpc(node)
     assert seen == [[], []]
+
+
+def _named(monkeypatch: pytest.MonkeyPatch, body: bytes) -> tuple[list[Any], Any]:
+    """Answer `body`, a request to `named`, and return its params and answer.
+
+    `named` takes `a`, then `b` under two names, then `c`.
+    """
+    seen: list[Any] = []
+    monkeypatch.setitem(
+        callbacks, "named", lambda node, conn, params: seen.append(params)
+    )
+    monkeypatch.setitem(arg_names, "named", ("a", "b|bb", "c"))
+    node, sent, _, _ = make_node(decode(body))
+    handle_rpc(node)
+    return seen, sent[0]
+
+
+def test_named_params_are_mapped_onto_positions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A position left out ahead of one given is null, and after it absent."""
+    for params, positions in (
+        (b"{}", []),
+        (b'{"a":1}', [1]),
+        (b'{"c":3,"a":1}', [1, None, 3]),
+        (b'{"bb":2}', [None, 2]),
+        (b'{"b":2,"bb":5}', None),
+    ):
+        seen, answer = _named(
+            monkeypatch, b'{"id":1,"method":"named","params":%s}' % params
+        )
+        if positions is None:
+            # `b` is taken and `bb`, a second name for its position, is not
+            message = "Unknown named parameter bb"
+            assert answer.body["error"] == error(
+                RPCErrorCode.INVALID_PARAMETER, message
+            )
+        else:
+            assert seen == [positions]
+
+
+def test_an_args_array_holds_the_leading_positions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`args` holds the leading positions, and a non-array is dropped."""
+    for params, positions in (
+        (b'{"args":[1]}', [1]),
+        (b'{"args":[1],"c":3}', [1, None, 3]),
+        (b'{"args":[1,2,3,4]}', [1, 2, 3, 4]),
+        (b'{"args":5,"a":1}', [1]),
+        (b'{"args":null}', []),
+    ):
+        seen, _ = _named(monkeypatch, b'{"id":1,"method":"named","params":%s}' % params)
+        assert seen == [positions]
+
+
+def test_a_named_params_refusal_is_invalid_parameter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each refusal is `RPC_INVALID_PARAMETER`, and the callback never runs."""
+    for params, message in (
+        (b'{"a":1,"a":2}', "Parameter a specified multiple times"),
+        (b'{"x":1,"args":[],"args":[]}', "Parameter args specified multiple times"),
+        (b'{"y":1,"a":1,"x":2}', "Unknown named parameter x"),
+        (b'{"x":2,"a":1,"y":1}', "Unknown named parameter y"),
+        (b'{"args":"a","q":1}', "Unknown named parameter q"),
+        (
+            b'{"args":[1,2],"bb":2}',
+            "Parameter b|bb specified twice both as positional and named argument",
+        ),
+        (
+            b'{"args":[1],"a":1,"x":1}',
+            "Parameter a specified twice both as positional and named argument",
+        ),
+    ):
+        seen, answer = _named(
+            monkeypatch, b'{"id":1,"method":"named","params":%s}' % params
+        )
+        assert not seen
+        assert answer == HttpReply(
+            SERVER_ERROR,
+            {
+                "result": None,
+                "error": error(RPCErrorCode.INVALID_PARAMETER, message),
+                "id": 1,
+            },
+        )
+
+
+def test_named_params_to_a_method_there_is_not_are_not_read() -> None:
+    """The method is looked up first, as `CRPCTable::execute` looks it up."""
+    node, sent, _, _ = make_node(
+        decode(b'{"id":1,"method":"nosuch","params":{"a":1,"a":2}}')
+    )
+    handle_rpc(node)
+    assert sent[0].body["error"] == error(
+        RPCErrorCode.METHOD_NOT_FOUND, "Method not found"
+    )
+
+
+def test_every_method_names_its_positions() -> None:
+    """`arg_names` has an entry for each method `callbacks` dispatches."""
+    assert arg_names.keys() == callbacks.keys()
 
 
 def test_stop_is_asked_of_the_batch_not_of_its_last_request() -> None:
