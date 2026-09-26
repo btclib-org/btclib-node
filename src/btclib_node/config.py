@@ -10,8 +10,9 @@ on which interfaces, and the feerate floor it tells a peer about in
 `DEFAULT_MIN_RELAY_TX_FEE`. `_resolve_chain` is what turns a chain
 already built, or a network's name, into the `Chain` a `Config` carries.
 `split_host_port` is `cli.py`'s own splitter for `-rpcbind`'s optional
-port too, which is why it is public here rather than named with a
-leading underscore.
+port too, and `get_path_arg` its reader of `-datadir`, `-conf` and
+`-blocksdir`, which is why the two are public here rather than named
+with a leading underscore.
 """
 
 import os
@@ -38,6 +39,7 @@ __all__ = [
     "DEFAULT_MAX_PEER_CONNECTIONS",
     "DEFAULT_MIN_RELAY_FEERATE",
     "Config",
+    "get_path_arg",
     "split_host_port",
 ]
 
@@ -63,6 +65,23 @@ DEFAULT_MAX_PEER_CONNECTIONS = 125
 # shape `DEFAULT_MIN_RELAY_FEERATE` above already uses for the same
 # reason.
 DEFAULT_CHAIN = Main()
+
+
+def get_path_arg(value: str) -> str:
+    """Return `value` normalised as Core's `GetPathArg` normalises a path.
+
+    `GetPathArg` (`src/common/args.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag) is `lexically_normal` and a trailing-slash strip, and
+    `os.path.normpath` is both, lexical too, so `missing/../name` is
+    `name` whether or not `missing` exists. A leading `//` is the one
+    difference: POSIX lets `normpath` keep it, `lexically_normal`
+    collapses it to `/`, and it is collapsed here, so that a path a
+    refusal names is the one `bitcoind` v31.1.0 names. `normpath` gives
+    back no other leading `//`: it collapses three or more slashes to
+    one, and on Windows it writes backslashes.
+    """
+    path = os.path.normpath(value)
+    return path[1:] if path.startswith("//") else path
 
 
 def split_host_port(spec: str, default_port: int) -> tuple[str, int]:
@@ -135,14 +154,9 @@ def _resolve_cookie_file(
     """Return where `-rpccookiefile=<value>` writes, `None` for no cookie.
 
     Core's `GetAuthCookieFile`: an empty value is `COOKIE_FILE`, any
-    other is normalised the way `GetPathArg` normalises it, and
+    other is normalised by `get_path_arg` above, and
     `AbsPathForConfigVal` resolves a relative one against the chain's
-    own data directory. `os.path.normpath` is `lexically_normal` plus
-    `GetPathArg`'s own trailing-slash strip: both are lexical, so
-    `missing/../name` is `name` whether or not `missing` exists. The one
-    difference measured is a leading `//`, which POSIX lets `normpath`
-    keep and which `lexically_normal` collapses to `/`; macOS and Linux
-    both resolve the two to the same file.
+    own data directory.
 
     `temp` is `GetAuthCookieFile(true)`, the file the cookie is written
     to before its rename: `.tmp` appended to the normalised value before
@@ -154,7 +168,7 @@ def _resolve_cookie_file(
     """
     if value is None:
         return None
-    arg = os.path.normpath(value) if value else COOKIE_FILE
+    arg = get_path_arg(str(value)) if value else COOKIE_FILE
     path = Path(arg + ".tmp" if temp else arg)
     return path if path.is_absolute() else data_dir / path
 
@@ -217,6 +231,10 @@ class Config:
     # every interface unconditionally, and is right to, since a peer
     # listener is supposed to accept a stranger.
     rpc_host: str
+    # Core's `-rpcbind` values, checked by `cli` and bound nowhere: Core
+    # binds them only beside `-rpcallowip`, which this node does not
+    # have, and `RpcManager` logs the warning Core logs over them.
+    rpcbind: tuple[str, ...]
     # Core's own `-rpcauth`, one entry per value: users the RPC listener
     # accepts beside the cookie and `rpc_password_entry`.
     rpc_auth: tuple[RpcAuthEntry, ...]
@@ -324,6 +342,7 @@ class Config:
         p2p_port: int | None = None,
         rpc_port: int | None = None,
         rpc_host: str = "127.0.0.1",
+        rpcbind: Sequence[str] = (),
         allow_p2p: bool = True,
         allow_rpc: bool = True,
         pruned: bool = False,
@@ -351,16 +370,18 @@ class Config:
 
         self.blocks_dir = None
         if blocks_dir is not None:
-            # Core's own check, on the raw value, before the
-            # chain-specific subdirectory below is ever appended to it
-            # (`GetBlocksDirPath`, same citation as the field comment):
-            # "Specified blocks directory ... does not exist"
-            # (`src/init.cpp:1006`, same sha) is fatal there too, not a
-            # silent `mkdir` -- unlike `data_dir` above, which every
-            # caller here is content to have created on first use.
-            resolved = Path(blocks_dir).absolute()
+            # Core's own check, before the chain-specific subdirectory
+            # below is ever appended to it (`GetBlocksDirPath`, same
+            # citation as the field comment): "Specified blocks directory
+            # ... does not exist" (`src/init.cpp:1006`, same sha) is fatal
+            # there too, not a silent `mkdir` -- unlike `data_dir` above,
+            # which every caller here is content to have created on first
+            # use. The path asked about is `get_path_arg`'s, as
+            # `GetBlocksDirPath` reads `GetPathArg`, and the message names
+            # the value as given, as Core names `GetArg("-blocksdir")`.
+            resolved = Path(get_path_arg(str(blocks_dir))).absolute()
             if not resolved.is_dir():
-                err_msg = f"specified blocks directory {resolved} does not exist"
+                err_msg = f'Specified blocks directory "{blocks_dir}" does not exist.'
                 raise ValueError(err_msg)
             self.blocks_dir = resolved / self.chain.name
 
@@ -396,6 +417,7 @@ class Config:
                 self.rpc_port = rpc_port
 
         self.rpc_host = rpc_host
+        self.rpcbind = tuple(rpcbind)
         # Core reads the RPC options below in `StartHTTPRPC` and its
         # `InitRPCAuthentication` (`src/httprpc.cpp`), which `AppInitMain`
         # runs under `-server` alone (`src/init.cpp`, both at
@@ -403,9 +425,6 @@ class Config:
         # value refuses nothing
         if not allow_rpc:
             rpcauth, rpccookieperms, rpcwhitelist = (), None, ()
-        # a malformed value is fatal, `RpcAuthEntry.parse`'s own
-        # `ValueError`, as Core refuses to start on one
-        self.rpc_auth = tuple(RpcAuthEntry.parse(value) for value in rpcauth)
         # `InitRPCAuthentication`'s `GetArg("-rpcpassword", "") == ""`:
         # an empty password is no password
         self.rpc_password_entry = (
@@ -420,6 +439,10 @@ class Config:
         self.rpc_cookie_perms = None
         if rpccookieperms is not None and self.rpc_password_entry is None:
             self.rpc_cookie_perms = cookie_perms(rpccookieperms)
+        # a malformed value is fatal, `RpcAuthEntry.parse`'s own
+        # `ValueError`, as Core refuses to start on one, after
+        # `-rpccookieperms` as `InitRPCAuthentication` reads them
+        self.rpc_auth = tuple(RpcAuthEntry.parse(value) for value in rpcauth)
         self.rpc_whitelist = parse_whitelist(rpcwhitelist)
         self.rpc_whitelist_default = (
             bool(rpcwhitelist) if rpcwhitelistdefault is None else rpcwhitelistdefault

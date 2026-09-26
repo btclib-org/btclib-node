@@ -13,6 +13,7 @@ messages addressed to a connection that is no longer there.
 import asyncio
 import errno
 import re
+import secrets
 import socket
 import sys
 import threading
@@ -23,6 +24,7 @@ from contextlib import ExitStack, closing, suppress
 from functools import partial
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast, override
+from unittest.mock import AsyncMock
 
 import pytest
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2
@@ -62,6 +64,7 @@ def a_conn(
     *,
     status: P2pConnStatus = P2pConnStatus.Connected,
     last_receive: float | None = None,
+    connected_time: int | None = None,
     address: NetworkAddressV2 | None = None,
     relay_tx: bool = True,
     feefilter: int = 0,
@@ -84,6 +87,7 @@ def a_conn(
         status=status,
         address=address or peer_address("1.2.3.4", 18444),
         last_receive=time.time() if last_receive is None else last_receive,
+        connected_time=int(time.time()) if connected_time is None else connected_time,
         ping_sent=0,
         relay_tx=relay_tx,
         feefilter=feefilter,
@@ -116,11 +120,16 @@ def a_peer_db_stub(**attributes: Any) -> Any:
     missing it fails a test on an `AttributeError` the test is not
     about. `holds_network` is too, answering that every network is
     held, so that no fixed seed is added where a test is not about them.
+    A `random_address` given is the draw `address_sampler` hands back,
+    so each call of it is one draw of the pass.
     """
     defaults: dict[str, Any] = {
         "get_active_addresses": list,
         "holds_network": lambda network_id: True,
     }
+    if "random_address" in attributes:
+        draw = attributes.pop("random_address")
+        defaults["address_sampler"] = lambda: draw
     defaults.update(attributes)
     return SimpleNamespace(**defaults)
 
@@ -708,14 +717,47 @@ def test_a_pending_connection_gone_quiet_is_dropped_without_a_ping(
 
     `ping` is as much a message the handshake has to clear before it
     is sent as `inv`/`tx` is, so a connection stuck short of `verack`
-    is dropped once idle rather than pinged and given a second window.
+    is dropped rather than pinged and given a second window.
     """
-    conn = a_conn(1, status=P2pConnStatus.Open, last_receive=time.time() - 200)
+    conn = a_conn(
+        1,
+        status=P2pConnStatus.Open,
+        last_receive=time.time() - 200,
+        connected_time=int(time.time()) - 200,
+    )
     manager = a_manager()
     manager.pending_connections[conn.id] = conn
     asyncio.run(one_pass(manager))
     assert not manager.pending_connections
     assert conn.sent == []
+
+
+@pytest.mark.parametrize(("age", "dropped"), [(62, True), (58, False)])
+def test_a_pending_connection_is_dropped_a_minute_after_connecting(
+    a_manager: AManagerFactory, age: int, *, dropped: bool
+) -> None:
+    """ISS 1169: Core's `InactivityCheck`, past `DEFAULT_PEER_CONNECT_TIMEOUT`.
+
+    Core drops a connection not yet `fSuccessfullyConnected` once sixty
+    seconds have passed since it connected, whatever it has sent: the
+    peer here sent something just now. Two seconds short is the control.
+    """
+    conn = a_conn(1, status=P2pConnStatus.Open, connected_time=int(time.time()) - age)
+    manager = a_manager()
+    manager.pending_connections[conn.id] = conn
+    asyncio.run(one_pass(manager))
+    assert (conn.id not in manager.pending_connections) is dropped
+    assert conn.sent == []
+
+
+def test_a_connected_peer_outlives_the_handshake_timeout(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1169: the timeout is the handshake's, not the connection's."""
+    conn = a_conn(1, connected_time=int(time.time()) - 600)
+    manager = a_manager([conn])
+    asyncio.run(one_pass(manager))
+    assert conn.id in manager.connections
 
 
 def a_counting_prune() -> tuple[list[None], Any]:
@@ -1294,6 +1336,140 @@ def test_a_fixed_seed_step_that_raises_is_logged(
     monkeypatch.setattr(manager.logger, "exception", logged.append)
     assert asyncio.run(one_pass(manager)) is True
     assert logged
+
+
+def test_a_held_answered_peer_does_not_stop_the_dialling(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1201: the gossiped table is still drawn from, in the same pass.
+
+    The answered table holds only the peer already connected, so every
+    draw from it is refused; Core's coin and its hundred draws still
+    reach the gossiped address. A real `PeerDB`, and the coin forced to
+    the answered table on the first draw, so the pass has to draw again.
+    """
+    dialled: list[NetworkAddressV2] = []
+
+    async def records(address: NetworkAddressV2) -> None:
+        dialled.append(address)
+
+    monkeypatch.setattr(manager_module, "dial", records)
+    coins = iter([1, 0])
+    monkeypatch.setattr(secrets, "randbelow", lambda n: next(coins))
+    held = peer_address("1.2.3.4", 8333)
+    gossiped = peer_address("5.6.7.8", 8333)
+    peer_db = PeerDB(cast("Any", None), None)
+    peer_db.add_addresses([held, gossiped])
+    peer_db.add_active_address(held)
+    manager = a_manager([a_conn(1, automatic=True, address=held)], peer_db=peer_db)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert [a.address for a in dialled] == [gossiped.address]
+
+
+def draws_of(*addresses: NetworkAddressV2) -> tuple[list[None], Any]:
+    """Return a record of the draws made, and a draw answering `addresses`."""
+    drawn: list[None] = []
+    queue = iter(addresses)
+
+    def draw() -> NetworkAddressV2:
+        drawn.append(None)
+        return next(queue)
+
+    return drawn, draw
+
+
+def test_a_draw_in_a_held_group_draws_again(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1201: Core's loop `continue`s on an outbound peer's group.
+
+    `1.2.9.9` shares the `/16` of the outbound peer at `1.2.3.4`, so the
+    pass draws again and dials `5.6.7.8`.
+    """
+    dialled: list[NetworkAddressV2] = []
+
+    async def records(address: NetworkAddressV2) -> None:
+        dialled.append(address)
+
+    monkeypatch.setattr(manager_module, "dial", records)
+    same_group = peer_address("1.2.9.9", 8333)
+    other = peer_address("5.6.7.8", 8333)
+    drawn, draw = draws_of(same_group, other)
+    peer_db = a_peer_db_stub(is_empty=False, random_address=draw)
+    held = a_conn(1, address=peer_address("1.2.3.4", 8333))
+    manager = a_manager([held], peer_db=peer_db)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert len(drawn) == 2
+    assert dialled == [other]
+
+
+@pytest.mark.parametrize("refusal", ["connected", "discouraged"])
+def test_a_draw_refused_otherwise_ends_the_pass(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, refusal: str
+) -> None:
+    """ISS 1201: Core's loop breaks with it, and nothing is dialled.
+
+    `OpenNetworkConnection` returns without dialling an address already
+    connected or discouraged, so the pass ends there. The peer already
+    connected is inbound, adding no group, so the group check does not
+    reach it first.
+    """
+    # a double that is never awaited, so it records without a body
+    dial = AsyncMock(return_value=None)
+    monkeypatch.setattr(manager_module, "dial", dial)
+    refused = peer_address("1.2.3.4", 8333)
+    drawn, draw = draws_of(refused, peer_address("5.6.7.8", 8333))
+    peer_db = a_peer_db_stub(is_empty=False, random_address=draw)
+    if refusal == "connected":
+        manager = a_manager([a_conn(1, address=refused, inbound=True)], peer_db=peer_db)
+    else:
+        manager = a_manager(peer_db=peer_db)
+        manager.discourage(refused)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert len(drawn) == 1
+    assert dial.await_count == 0
+
+
+def test_a_pass_draws_a_hundred_times_at_most(a_manager: AManagerFactory) -> None:
+    """ISS 1201: `ThreadOpenConnections` gives up after its hundredth draw."""
+    held = peer_address("1.2.3.4", 8333)
+    drawn: list[None] = []
+
+    def draw() -> NetworkAddressV2:
+        drawn.append(None)
+        return held
+
+    peer_db = a_peer_db_stub(is_empty=False, random_address=draw)
+    manager = a_manager([a_conn(1, address=held)], peer_db=peer_db)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert len(drawn) == 100
+
+
+def test_an_empty_draw_ends_the_pass(a_manager: AManagerFactory) -> None:
+    """ISS 1201: nothing dialable is an answer, not a hundred of them."""
+    drawn: list[None] = []
+    peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: drawn.append(None))
+    manager = a_manager(peer_db=peer_db)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert len(drawn) == 1
+
+
+def test_a_pass_dials_once_and_draws_no_more(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1201: one `OpenNetworkConnection` per iteration of Core's loop."""
+    dialled: list[NetworkAddressV2] = []
+
+    async def records(address: NetworkAddressV2) -> None:
+        dialled.append(address)
+
+    monkeypatch.setattr(manager_module, "dial", records)
+    peer_db = a_peer_db_stub(
+        is_empty=False, random_address=lambda: peer_address("5.6.7.8", 8333)
+    )
+    manager = a_manager(peer_db=peer_db)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert len(dialled) == 1
 
 
 def refuses_to_be_asked() -> NoReturn:

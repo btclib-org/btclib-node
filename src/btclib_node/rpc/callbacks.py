@@ -47,6 +47,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "add_node",
+    "arg_names",
     "callbacks",
     "get_best_block_hash",
     "get_block",
@@ -1630,4 +1631,35 @@ callbacks = {
     "sendrawtransaction": send_raw_transaction,
     "ping": ping,
     "stop": stop,
+}
+
+# Each method's parameter names, in the order of its positions, as its
+# `RPCHelpMan` declares them and `CRPCCommand::argNames` carries them
+# (`src/rpc/server.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): what
+# `rpc.jsonrpc.transform_named_arguments` maps an object's keys onto.
+# `a|b` is two names for one position. None of these methods takes an
+# `OBJ_NAMED_PARAMS` options object, so no name here is named-only.
+# `bitcoind`'s own table is what `help dump_all_command_conversions`
+# answers, and `tests/integration/rpc_framing_test.py` holds this one to it.
+arg_names: dict[str, tuple[str, ...]] = {
+    "getbestblockhash": (),
+    "getblockcount": (),
+    "getblockchaininfo": (),
+    "pruneblockchain": ("height",),
+    "getblockhash": ("height",),
+    "getblockheader": ("blockhash", "verbose"),
+    "getblock": ("blockhash", "verbosity|verbose"),
+    "submitblock": ("hexdata", "dummy"),
+    "getpeerinfo": (),
+    "getconnectioncount": (),
+    "getnetworkinfo": (),
+    "addnode": ("node", "command", "v2transport"),
+    "getmempoolinfo": (),
+    "getrawmempool": ("verbose", "mempool_sequence"),
+    "getrawtransaction": ("txid", "verbosity|verbose", "blockhash"),
+    "gettxoutsetinfo": ("hash_type", "hash_or_height", "use_index"),
+    "testmempoolaccept": ("rawtxs", "maxfeerate"),
+    "sendrawtransaction": ("hexstring", "maxfeerate", "maxburnamount"),
+    "ping": (),
+    "stop": ("wait",),
 }
