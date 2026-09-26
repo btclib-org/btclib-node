@@ -26,6 +26,13 @@ btclib\_node.p2p.anchors module
    :members:
    :show-inheritance:
 
+btclib\_node.p2p.banman module
+---------------------------------
+
+.. automodule:: btclib_node.p2p.banman
+   :members:
+   :show-inheritance:
+
 btclib\_node.p2p.block\_availability module
 -----------------------------------------------
 
