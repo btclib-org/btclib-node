@@ -1039,7 +1039,12 @@ def _chain_arg(settings: _Settings) -> str:
     signet = get_net("signet")
     regtest = get_net("regtest")
     if sum([chain_alias is not None, testnet, signet, regtest]) > 1:
-        err_msg = "invalid combination of -regtest, -signet, -testnet and -chain: use at most one"
+        # Core's words, `-testnet4` included, though this node has no
+        # such option
+        err_msg = (
+            "Invalid combination of -regtest, -signet, -testnet, -testnet4 and "
+            "-chain. Can use at most one."
+        )
         raise _ChainError(err_msg)
     if chain_alias is not None:
         return _CHAIN_ALIASES.get(chain_alias, _UNKNOWN_CHAIN + chain_alias)
@@ -1060,7 +1065,7 @@ def _resolve_chain_name(settings: _Settings) -> str:
     """
     chain_name = _chain_arg(settings)
     if chain_name.startswith(_UNKNOWN_CHAIN):
-        err_msg = f"unknown chain {chain_name.removeprefix(_UNKNOWN_CHAIN)!r}"
+        err_msg = f"Unknown chain {chain_name.removeprefix(_UNKNOWN_CHAIN)}."
         raise ValueError(err_msg)
     return chain_name
 

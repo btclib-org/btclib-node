@@ -933,7 +933,9 @@ def test_build_config_refuses_two_chain_selectors(
     tmp_path: Path, argv: list[str], conf: str
 ) -> None:
     """More than one selector, counted over the command line and the file."""
-    with pytest.raises(ValueError, match="use at most one"):
+    with pytest.raises(
+        ValueError, match=r"^Invalid combination of .* Can use at most one\.$"
+    ):
         _build(tmp_path, *argv, conf=conf)
 
 
@@ -945,7 +947,7 @@ def test_build_config_refuses_an_unknown_chain(
     tmp_path: Path, argv: list[str], conf: str, alias: str
 ) -> None:
     """An alias outside Core's four, `-nochain`'s `0` among them."""
-    with pytest.raises(ValueError, match=f"^unknown chain '{alias}'$"):
+    with pytest.raises(ValueError, match=f"^Unknown chain {re.escape(alias)}\\.$"):
         _build(tmp_path, *argv, conf=conf)
 
 
@@ -2096,7 +2098,10 @@ def test_main_refuses_a_conflicting_chain_before_any_include(
     )
     with pytest.raises(SystemExit):
         cli.main([f"-datadir={tmp_path}", "-testnet"])
-    assert capsys.readouterr().err.startswith("Error: invalid combination of ")
+    assert capsys.readouterr().err == (
+        "Error: Invalid combination of -regtest, -signet, -testnet, -testnet4 and "
+        "-chain. Can use at most one.\n"
+    )
 
 
 def test_config_options_records_every_section_as_core_does() -> None:

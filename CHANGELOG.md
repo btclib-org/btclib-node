@@ -503,6 +503,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   (closes #1302), the chain resolved first and a conflicting one refused
   before any include, as `ReadConfigFiles` does.
 
+### A conflicting or unknown chain is refused in `bitcoind`'s words
+
+- **Two chain selectors, and a `-chain` Core does not know, are refused as
+  `bitcoind` refuses them** (closes #1311), "Invalid combination of ..." and
+  "Unknown chain bogus." in `GetChainArg`'s and `GetChainType`'s words.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
