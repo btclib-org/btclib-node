@@ -12,7 +12,10 @@ description = "Bitcoin node in python"
 authors = [{ name = "The btclib developers", email = "devs@btclib.org" }]
 readme = "README.md"
 license = "MIT"
-license-files = ["LICENSE", "AUTHORS.md"]
+# Core's own licence travels in the wheel with the fixed seeds
+# `_chainparamsseeds.py` is generated from, under a name that licenses
+# nothing else
+license-files = ["LICENSE", "AUTHORS.md", "scripts/seeds/BITCOIN_CORE_COPYING"]
 # Above the standard's 3.10 floor, deliberately: this is the version
 # .python-version pins, and with no CI matrix here
 # (btclib-org/btclib-node#33) it is the only version anything runs on.
@@ -431,8 +434,8 @@ build-backend = "uv_build"
 # by. btclib-org/.github#135 is why it is not named instead: it is a
 # repository file rather than a distributed one, LICENSE carrying the
 # holder a consumer needs, and this being the source of a source-file
-# header. `license-files` above names LICENSE and AUTHORS.md, so
-# nothing else puts COPYRIGHT in the archive either. What the CPY rule
+# header. `license-files` above does not name it either, so nothing
+# else puts COPYRIGHT in the archive. What the CPY rule
 # checks the sources against is notice-rgx in this file, which travels
 # regardless.
 source-include = [
@@ -1098,7 +1101,10 @@ builtin = "clear"
 # with --write-changes. A "correction" inside one would invalidate the round
 # trip tests/fuzz_corpus_test.py holds it to, in a rewrite of a .bin
 # nobody reads a diff for.
-skip = "*/_data/*.json,*/_data/*.csv,*/_data/*.txt,*/_data/*.bin,fuzz/corpus/*"
+# Core's fixed seed lists, scripts/seeds/nodes_*.txt, and the module
+# generated from them are skipped for the same reason: base32 and hex
+# spell nothing, and a "correction" is a seed that no longer exists.
+skip = "*/_data/*.json,*/_data/*.csv,*/_data/*.txt,*/_data/*.bin,fuzz/corpus/*,scripts/seeds/nodes_*.txt,src/btclib_node/_chainparamsseeds.py"
 # a misspelling written on purpose goes in backticks, and that is a rule
 # rather than a preference: prose that configures a spell checker has to
 # be able to name what it catches, and the comment above costs this hook
@@ -1130,6 +1136,9 @@ extend-exclude = [
     # all: pre-commit names files on the command line, and typos
     # otherwise overrides an exclude for a path named that way
     "fuzz/corpus/**",
+    # Core's fixed seeds, as [tool.codespell] skips them above
+    "scripts/seeds/nodes_*.txt",
+    "src/btclib_node/_chainparamsseeds.py",
 ]
 
 [tool.mypy]

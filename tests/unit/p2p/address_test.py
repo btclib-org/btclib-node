@@ -19,7 +19,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
-from btclib.p2p.address import NetworkAddress
+from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2, is_embedded_ipv6
 
 import btclib_node.p2p.address as address_module
@@ -27,6 +27,7 @@ from btclib_node.p2p.address import (
     PeerDB,
     can_connect,
     dial,
+    fixed_seed_addresses,
     ip_and_port,
     peer_address,
 )
@@ -1165,3 +1166,38 @@ def test_an_unroutable_row_is_dropped_from_the_store_on_load(
         prefix + address_module.endpoint_key(routable)
     ]
     second.close()
+
+
+def test_a_fixed_seed_decodes_as_cores_convert_seeds_reads_it() -> None:
+    """ISS 1099: network id, compact-size length, address, big-endian port.
+
+    The first line of Core's `nodes_main.txt` at
+    bitcoin/bitcoin@9be056a8a7, a CJDNS address, then an IPv4 one on a
+    port of its own, serialized as `generate_seeds.py` serializes them;
+    each gets Core's `SeedsServiceFlags`.
+    """
+    seeds = bytes.fromhex(
+        "0610fc11f76916e6361158ae1d4afcf757a4208d"  # [fc11:...:57a4]:8333
+        "0104010203042382"  # 1.2.3.4:9090
+    )
+    cjdns, ipv4 = fixed_seed_addresses(seeds)
+    assert cjdns.network_id == BIP155Network.CJDNS
+    assert cjdns.address == bytes.fromhex("fc11f76916e6361158ae1d4afcf757a4")
+    assert cjdns.port == 8333
+    assert ipv4 == peer_address(
+        "1.2.3.4", 9090, services=ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
+    )
+
+
+@pytest.mark.parametrize("table", ["addresses", "active_addresses"])
+def test_either_table_holding_a_network_holds_it(table: str) -> None:
+    """ISS 1099: Core's `addrman.Size(net)` counts new and tried alike."""
+    peer_db = a_peer_db()
+    assert not peer_db.holds_network(BIP155Network.IPV6)
+    held = peer_address("2a01:4f8::1", 8333)
+    if table == "addresses":
+        peer_db.add_addresses([held])
+    else:
+        peer_db.add_active_address(held)
+    assert peer_db.holds_network(BIP155Network.IPV6)
+    assert not peer_db.holds_network(BIP155Network.IPV4)

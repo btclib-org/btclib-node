@@ -422,6 +422,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   refuses to start** (closes #1155), with `bitcoind`'s message;
   `-allowignoredconf` makes it a warning.
 
+### Core's fixed seeds, for a table DNS seeding left empty
+
+- **A reachable network the table holds nothing for gets Core's fixed seeds
+  after sixty seconds** (closes #1099); `scripts/seeds/` holds Core's lists,
+  its licence, which the wheel carries too, and the generator.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

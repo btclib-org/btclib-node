@@ -12,6 +12,9 @@ than the network itself: the genesis block and the magic built from it,
 and that `Chain.consensus` reaches the row of the chain it is asked of.
 """
 
+import runpy
+from pathlib import Path
+
 from btclib.consensus import CONSENSUS_PARAMS
 
 from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet
@@ -113,3 +116,31 @@ def test_consensus_is_the_row_of_the_same_name_in_btclibs_own_table() -> None:
     """
     for chain in CHAINS:
         assert chain.consensus is CONSENSUS_PARAMS[chain.name], chain.name
+
+
+def test_the_fixed_seeds_regenerate_from_cores_lists() -> None:
+    """ISS 1099: `_chainparamsseeds.py` is what its generator writes.
+
+    `scripts/seeds/generate_seeds.py` is Core's `generate-seeds.py`, and
+    its inputs are Core's `nodes_*.txt`, so a hand edit to the module, or
+    a list refreshed without regenerating it, fails here.
+    """
+    root = Path(__file__).parents[2]
+    generate = runpy.run_path(str(root / "scripts/seeds/generate_seeds.py"))["generate"]
+    # text on both sides, so that a checkout's own line endings, CRLF on
+    # a Windows runner, decide nothing
+    committed = (root / "src/btclib_node/_chainparamsseeds.py").read_text("utf-8")
+    assert generate(root / "scripts/seeds") == committed, (
+        "regenerate with: uv run python scripts/seeds/generate_seeds.py"
+        " scripts/seeds > src/btclib_node/_chainparamsseeds.py"
+    )
+
+
+def test_regtest_alone_has_no_fixed_seed() -> None:
+    """ISS 1099: Core clears `vFixedSeeds` for regtest alone of these four."""
+    assert {chain.name: bool(chain.fixed_seeds) for chain in CHAINS} == {
+        "mainnet": True,
+        "testnet": True,
+        "signet": True,
+        "regtest": False,
+    }

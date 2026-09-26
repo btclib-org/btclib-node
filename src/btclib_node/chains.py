@@ -27,6 +27,12 @@ from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
 from btclib.tx.tx_out import TxOut
 
+from btclib_node._chainparamsseeds import (
+    CHAINPARAMS_SEED_MAIN,
+    CHAINPARAMS_SEED_SIGNET,
+    CHAINPARAMS_SEED_TEST,
+)
+
 __all__ = ["Chain", "Main", "RegTest", "SigNet", "TestNet"]
 
 
@@ -114,6 +120,10 @@ class Chain:
     # all.
     rpc_port: int
     addresses: list[str]
+    # Core's `vFixedSeeds` (`src/kernel/chainparams.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): BIP155 serialized
+    # endpoints, `p2p.address.fixed_seed_addresses`'s to decode.
+    fixed_seeds: bytes
     genesis_block: Block
     # Core's `nPruneAfterHeight` (`src/kernel/chainparams.cpp`, at
     # bitcoin/bitcoin@ca7162cde5): `rpc.callbacks.prune_blockchain`'s own
@@ -186,6 +196,7 @@ class Main(Chain):
             "dnsseed.emzy.de",
             "seed.bitcoin.wiz.biz",
         ]
+        self.fixed_seeds = CHAINPARAMS_SEED_MAIN
         self.genesis_block = create_genesis(
             1231006505, 2083236893, 0x1D00FFFF, 1, 50 * 10**8
         )
@@ -210,6 +221,7 @@ class TestNet(Chain):
             "seed.testnet.bitcoin.sprovoost.nl",
             "testnet-seed.bluematt.me",
         ]
+        self.fixed_seeds = CHAINPARAMS_SEED_TEST
         self.genesis_block = create_genesis(
             1296688602, 414098458, 0x1D00FFFF, 1, 50 * 10**8
         )
@@ -234,6 +246,7 @@ class SigNet(Chain):
         self.port = 38333
         self.rpc_port = 38332
         self.addresses = ["178.128.221.177"]
+        self.fixed_seeds = CHAINPARAMS_SEED_SIGNET
         self.genesis_block = create_genesis(
             1598918400, 52613770, 0x1E0377AE, 1, 50 * 10**8
         )
@@ -262,6 +275,7 @@ class RegTest(Chain):
         self.port = 18444
         self.rpc_port = 18443
         self.addresses = []
+        self.fixed_seeds = b""
         self.genesis_block = create_genesis(1296688602, 2, 0x207FFFFF, 1, 50 * 10**8)
         # src/kernel/chainparams.cpp:601, at bitcoin/bitcoin@ca7162cde5:
         # `opts.fastprune ? 100 : 1000` -- this tree never passes
