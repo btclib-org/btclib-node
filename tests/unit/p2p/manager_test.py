@@ -3820,10 +3820,15 @@ def test_a_feeler_is_held_to_no_network_group(
     assert made
 
 
+@pytest.mark.parametrize("discouraged", [False, True])
 def test_a_feeler_waits_a_uniform_second_before_its_dial(
-    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch, *, discouraged: bool
 ) -> None:
-    """Core's `FEELER_SLEEP_WINDOW`: up to a second, drawn ahead of the dial."""
+    """Core's `FEELER_SLEEP_WINDOW`: up to a second, drawn ahead of the dial.
+
+    Ahead of `OpenNetworkConnection`'s refusals too, which Core asks once
+    the wait is over: a discouraged address is refused after it.
+    """
     window = manager_module._FEELER_SLEEP_WINDOW
     new = peer_address("5.6.7.8", 18444, services=FULL_NODE)
     manager, _ = a_feeler_manager(a_manager, monkeypatch, new)
@@ -3841,10 +3846,15 @@ def test_a_feeler_waits_a_uniform_second_before_its_dial(
     async def dial(address: NetworkAddressV2) -> None:
         events.append(address)
 
+    def is_discouraged(address: NetworkAddressV2) -> bool:
+        events.append("asked")
+        return discouraged
+
     monkeypatch.setattr(secrets, "SystemRandom", Draws)
     monkeypatch.setattr(manager_module, "dial", dial)
+    monkeypatch.setattr(manager, "is_discouraged", is_discouraged)
     asyncio.run(manager._maybe_dial_more_peers())
-    assert events == [(0, 1.0), new]
+    assert events == [(0, 1.0), "asked", *([] if discouraged else [new])]
 
 
 def test_a_feeler_to_nothing_new_dials_nothing(

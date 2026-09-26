@@ -1317,7 +1317,7 @@ def test_either_table_holding_a_network_holds_it(table: str) -> None:
     assert not peer_db.holds_network(BIP155Network.IPV4)
 
 
-def test_a_feeler_draws_what_was_never_answered() -> None:
+def test_a_feeler_draws_what_the_answered_table_does_not_hold() -> None:
     """ISS 1096: Core's `Select(true, ...)`, the new table alone.
 
     An address answered, whatever timestamp the gossiped copy carries,

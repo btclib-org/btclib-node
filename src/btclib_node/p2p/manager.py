@@ -1021,22 +1021,24 @@ class P2pManager(threading.Thread):
             address = self._pop_anchor(outbound_net_groups)
         if address is None:
             address = self._draw(outbound_net_groups, feeler=feeler)
+        if address is None:
+            return
+        if feeler:
+            # Core's "small amount of random noise before connection
+            # to avoid synchronization", ahead of the checks
+            # `OpenNetworkConnection` makes
+            await asyncio.sleep(secrets.SystemRandom().uniform(0, _FEELER_SLEEP_WINDOW))
         # `OpenNetworkConnection` (`src/net.cpp`, at
         # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) returns without
         # dialling a peer already connected, discouraged or banned, a
         # discouraged one being one this node dropped for cause
         # (btclib-org/btclib-node#283).
         if (
-            address is None
-            or endpoint_key(address) in already_connected
+            endpoint_key(address) in already_connected
             or self.is_discouraged(address)
             or self.ban_man.is_peer_banned(address)
         ):
             return
-        if feeler:
-            # Core's "small amount of random noise before connection
-            # to avoid synchronization"
-            await asyncio.sleep(secrets.SystemRandom().uniform(0, _FEELER_SLEEP_WINDOW))
         sock = await dial(address)
         if sock:
             self.create_connection(
@@ -1081,8 +1083,10 @@ class P2pManager(threading.Thread):
     ) -> NetworkAddressV2 | None:
         """Draw from the table up to `_MAX_DRAWS_PER_PASS` times.
 
-        A feeler draws from the addresses never answered, Core's
-        `Select(true, ...)` of the new table, is held to no network
+        A feeler draws from the gossiped addresses not in the answered
+        table, which holds an address three hours
+        (btclib-org/btclib-node#1318), standing in for Core's
+        `Select(true, ...)` of the new table. It is held to no network
         group, and wants only `MayHaveUsefulAddressDB` of what it draws.
         Core's `SelectTriedCollision`, asked first, has nothing to answer
         here, this table keeping no tried buckets to collide in.
