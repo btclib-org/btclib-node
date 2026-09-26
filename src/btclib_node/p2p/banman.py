@@ -172,8 +172,8 @@ class SpecialAddress:
         return _encode_base32(self.packed) + _I2P
 
 
+#: An address `lookup_host` reads: an IP one, or an onion or I2P host.
 type Host = IPv4Address | IPv6Address | SpecialAddress
-"""An address `lookup_host` reads: an IP one, or an onion or I2P host."""
 
 
 def lookup_host(text: str) -> Host | None:
