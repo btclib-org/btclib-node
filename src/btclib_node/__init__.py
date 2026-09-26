@@ -389,7 +389,9 @@ class Node(threading.Thread):
         peer_db = PeerDB(self.chain, self.data_dir)
         self._opened.callback(peer_db.close)
         # Core's `banlist.json`, in the chain's own directory
-        ban_man = BanMan(self.data_dir / "banlist.json", self.logger)
+        ban_man = BanMan(
+            self.data_dir / "banlist.json", self.logger, self.config.ban_time
+        )
         self.p2p_manager = P2pManager(self, self.p2p_port, peer_db, ban_man)
         self._opened.callback(self.p2p_manager.loop.close)
         self.chainstate = Chainstate(self.data_dir, self.chain, self.logger)

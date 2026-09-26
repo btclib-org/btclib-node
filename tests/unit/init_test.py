@@ -1523,8 +1523,7 @@ def test_a_store_that_cannot_be_opened_ends_start_up_with_the_rest_closed(
     assert node.p2p_manager.loop.is_closed()
     peer_db = node.p2p_manager.peer_db.db
     assert peer_db is not None
-    with pytest.raises(Exception, match=r"(?i)closed"):
-        peer_db.get(b"")
+    assert peer_db.closed
     reopened = Node(config=config)
     try:
         reopened.start()
@@ -1571,3 +1570,23 @@ def test_a_stop_asked_for_while_the_stores_load_starts_no_p2p_side(
     assert node.loaded
     assert node.p2p_manager.ident is None
     assert not node.init_errors
+
+
+def test_a_nodes_ban_list_takes_its_default_length_from_the_config(
+    tmp_path: Path,
+) -> None:
+    """ISS 1219: `Config.ban_time` reaches `BanMan`, as `-bantime` does."""
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            allow_rpc=False,
+            ban_time=100,
+        )
+    )
+    try:
+        node.start()
+        assert node.p2p_manager.ban_man.default_ban_time == 100
+    finally:
+        node.stop()
