@@ -12,6 +12,7 @@ is btclib's own and is tested there (btclib-org/btclib#1581).
 """
 
 import asyncio
+import secrets
 import socket
 import threading
 import time
@@ -890,28 +891,62 @@ def test_updating_an_endpoint_already_known_does_not_spend_the_cap() -> None:
     assert updated.services == 1
 
 
-def test_an_address_that_answered_is_preferred_within_the_same_run() -> None:
-    """`random_address` favours an address already known to have answered.
+@pytest.mark.parametrize(("coin", "table"), [(1, "answered"), (0, "gossiped")])
+def test_a_coin_decides_between_the_answered_and_the_gossiped_table(
+    monkeypatch: pytest.MonkeyPatch, coin: int, table: str
+) -> None:
+    """ISS 1201: Core's `Select_` flips `randbool()` where both tables hold one.
 
-    #123: dialling should not draw uniformly over a table that already
-    knows which of its entries actually answered, even before any of
-    it is read back from a restart -- so the answered address is drawn
-    every time here, over twenty draws against a table also holding an
-    unconfirmed, merely gossiped one.
+    The coin fixed each way reaches each table. `addresses` holds both
+    endpoints, as it does once a gossiped peer answers, and the answered
+    one alone holds `1.2.3.4`: the gossiped side leaves it out, so the
+    coin at 0 reaches `5.6.7.8` every time.
     """
-    # #123: dialling should not draw uniformly over a table that already
-    # knows which of its entries actually answered, even before any of
-    # it is read back from a restart
     peer_db = a_peer_db()
     answered = peer_address("1.2.3.4", 8333)
     gossiped = peer_address("5.6.7.8", 8333)
-    peer_db.addresses |= {answered, gossiped}
+    peer_db.add_addresses([answered, gossiped])
     peer_db.add_active_address(answered)
-    for _ in range(20):
+    monkeypatch.setattr(secrets, "randbelow", lambda n: coin)
+    drawn = peer_db.random_address()
+    assert drawn is not None
+    expected = answered if table == "answered" else gossiped
+    assert drawn.address == expected.address
+
+
+def test_an_answered_endpoint_is_drawn_from_the_answered_table_alone() -> None:
+    """ISS 1201: Core's `Good_` moves an entry from the new table to tried.
+
+    So the two tables `Select_` flips between never hold one endpoint
+    twice. `addresses` keeps the answered endpoint, so the gossiped
+    side of the draw leaves it out, with `services` differing to show
+    the match is on the endpoint; `5.6.7.8`, gossiped alone, is the
+    control.
+    """
+    peer_db = a_peer_db()
+    answered = peer_address("1.2.3.4", 8333)
+    gossiped = peer_address("5.6.7.8", 8333)
+    peer_db.add_addresses([peer_address("1.2.3.4", 8333, services=1), gossiped])
+    peer_db.add_active_address(answered)
+    # a `functools.partial` over `_select`, whose two tables are its args
+    tried, new = cast("Any", peer_db.address_sampler()).args
+    assert [a.address for a in tried] == [answered.address]
+    assert [a.address for a in new] == [gossiped.address]
+
+
+@pytest.mark.parametrize("table", ["answered", "gossiped"])
+def test_a_table_holding_nothing_leaves_the_draw_to_the_other(table: str) -> None:
+    """ISS 1201: Core searches the only table holding anything, coin or not."""
+    peer_db = a_peer_db()
+    address = peer_address("1.2.3.4", 8333)
+    if table == "answered":
+        peer_db.add_active_address(address)
+    else:
+        peer_db.add_addresses([address])
+    for _ in range(8):
         drawn = peer_db.random_address()
         assert drawn is not None
-        assert drawn.address == answered.address
-        assert drawn.port == answered.port
+        assert drawn.address == address.address
 
 
 def test_a_known_address_survives_a_restart(tmp_path: Path) -> None:
@@ -929,13 +964,12 @@ def test_a_known_address_survives_a_restart(tmp_path: Path) -> None:
     second.close()
 
 
-def test_an_address_that_answered_survives_a_restart_and_is_preferred(
-    tmp_path: Path,
+def test_an_address_that_answered_survives_a_restart_and_is_drawn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Which address answered survives a restart, and is still preferred.
+    """Which address answered survives a restart, and is drawn as answered.
 
-    The preference the previous test checks in memory is checked here
-    across a `close` and a fresh `PeerDB` on the same store: the
+    Across a `close` and a fresh `PeerDB` on the same store: the
     active-address record is durable, not only a hint kept for the run
     that made it.
     """
@@ -948,6 +982,8 @@ def test_an_address_that_answered_survives_a_restart_and_is_preferred(
 
     second = a_peer_db(data_dir=tmp_path)
     assert second.addresses == {answered, unconfirmed}
+    # the coin fixed to the answered table, which only `answered` is in
+    monkeypatch.setattr(secrets, "randbelow", lambda n: 1)
     drawn = second.random_address()
     assert drawn is not None
     assert drawn.address == answered.address
