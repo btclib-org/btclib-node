@@ -13,9 +13,10 @@ the request-targets libevent refuses or proxies and a `CONNECT`
 (btclib-org/btclib-node#1125), the version an answer is written in
 (btclib-org/btclib-node#1127), lines ended by a bare line feed
 (btclib-org/btclib-node#1150), an object naming a key twice
-(btclib-org/btclib-node#1151), and the header fields, the header
-section's size and the chunked bodies libevent reads or refuses
-(btclib-org/btclib-node#1126). Each exchange ends in a request asking
+(btclib-org/btclib-node#1151), the header fields, the header section's
+size and the chunked bodies libevent reads or refuses
+(btclib-org/btclib-node#1126), and named parameters
+(btclib-org/btclib-node#1168). Each exchange ends in a request asking
 for `Connection: close` or one libevent closes after, so each answer
 ends at the close.
 """
@@ -23,12 +24,13 @@ ends at the close.
 import base64
 import re
 import socket
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
 from btclib_node import Node
 from btclib_node.config import Config
+from btclib_node.rpc.callbacks import arg_names
 from tests import cookie_path, get_random_port, wait_until_listening
 
 if TYPE_CHECKING:
@@ -38,6 +40,9 @@ if TYPE_CHECKING:
     from tests.integration.conftest import Bitcoind
 
 _GOOD = b'{"id":1,"method":"getblockcount"}'
+
+# regtest's genesis block, which both nodes hold from the start
+_GENESIS = b"0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206"
 
 # a request line, the header fields after the credential, and the body
 _CASES = {
@@ -91,6 +96,48 @@ _CASES = {
         b'{"id":{"a":1,"a":2},"method":"getblockcount"}',
     ),
 }
+
+# named parameters, each a `params` object sent as a legacy request, as
+# a 2.0 one, and as a batch member
+_NAMED = {
+    "named": b'"getblockhash","params":{"height":0}',
+    "named-none": b'"getblockcount","params":{}',
+    "named-twice": b'"getblockhash","params":{"height":0,"height":5}',
+    "named-unknown": b'"getblockcount","params":{"b":1,"a":2}',
+    "named-unknown-after-a-known": b'"getblockhash","params":{"x":1,"height":0}',
+    "named-not-found": b'"nosuch","params":{"a":1,"a":2}',
+    "named-hole": (
+        b'"getrawtransaction","params":{"txid":"%s","blockhash":"%s"}'
+        % (b"00" * 32, b"00" * 32)
+    ),
+    "named-alias": b'"getblockheader","params":{"blockhash":"%s","verbose":false}'
+    % _GENESIS,
+    "named-both-aliases": (
+        b'"getblock","params":{"blockhash":"%s","verbose":0,"verbosity":1}' % _GENESIS
+    ),
+    "named-args": b'"getblockhash","params":{"args":[0]}',
+    "named-args-then-named": (
+        b'"getblock","params":{"args":["%s"],"verbose":0}' % _GENESIS
+    ),
+    "named-args-and-named": b'"getblockhash","params":{"args":[0],"height":0}',
+    "named-args-and-alias": (
+        b'"getblock","params":{"args":["%s",1],"verbose":0}' % _GENESIS
+    ),
+    "named-args-twice": b'"getblockhash","params":{"args":[0],"args":[1]}',
+    "named-args-not-an-array": b'"getblockhash","params":{"args":5,"height":0}',
+    "named-args-unknown": b'"getblockhash","params":{"args":"a","height":0,"q":1}',
+}
+for _name, _call in _NAMED.items():
+    for _prefix, _request_head, _suffix in (
+        ("", b'{"id":1,"method":', b"}"),
+        ("2.0-", b'{"jsonrpc":"2.0","id":1,"method":', b"}"),
+        ("batch-", b'[{"id":1,"method":', b"}]"),
+    ):
+        _CASES[_prefix + _name] = (
+            b"POST / HTTP/1.1",
+            b"",
+            _request_head + _call + _suffix,
+        )
 
 
 # written whole, `{AUTH}` standing for the `Authorization` field, and
@@ -368,3 +415,21 @@ def test_the_answer_is_bitcoind_s(case: str, bitcoind: Bitcoind, node: Node) -> 
     )
     assert theirs
     assert ours == theirs
+
+
+def test_each_method_names_its_positions_as_bitcoind_does(bitcoind: Bitcoind) -> None:
+    """`arg_names` is `bitcoind`'s own table, for every method this node has.
+
+    `help dump_all_command_conversions` answers one row per name, each
+    naming its method and its position; a method taking nothing has no
+    row.
+    """
+    rows = bitcoind.rpc("help", ["dump_all_command_conversions"])
+    names: dict[str, dict[int, list[str]]] = {}
+    for method, position, name, _ in cast("list[list[Any]]", rows):
+        names.setdefault(method, {}).setdefault(position, []).append(name)
+    theirs = {}
+    for method in arg_names:
+        positions = names.get(method, {})
+        theirs[method] = tuple("|".join(positions[i]) for i in range(len(positions)))
+    assert theirs == arg_names
