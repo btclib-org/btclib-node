@@ -117,9 +117,7 @@ def test_send_tx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         wait_until(lambda: connection.status == P2pConnStatus.Connected)
 
         funding = chain[0].transactions[0]
-        tx = generate_random_transaction(
-            funding.id, value=funding.vout[0].value - 1000
-        )
+        tx = generate_random_transaction(funding.id, value=funding.vout[0].value - 1000)
 
         assert node1.mempool.size == 0
 

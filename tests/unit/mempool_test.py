@@ -772,7 +772,9 @@ def a_spend_of(outpoints: list[tuple[bytes, int]], value: int = 1) -> Tx:
             for txid, vout in outpoints
         ],
         vout=[
-            TxOut(value=value, script_pub_key=script.serialize([secrets.token_bytes(32)]))
+            TxOut(
+                value=value, script_pub_key=script.serialize([secrets.token_bytes(32)])
+            )
         ],
     )
 
@@ -875,7 +877,7 @@ def test_a_conflict_paying_for_what_it_replaces_is_still_refused() -> None:
 def test_a_candidate_with_no_conflict_passes_the_replacement_check() -> None:
     """Spending another output of a held transaction is no conflict."""
     mempool, _, held, _ = a_mempool_with_a_conflict()
-    assert mempool.check_replacement(a_spend_of([(held.id, 1)]), 0) is None
+    mempool.check_replacement(a_spend_of([(held.id, 1)]), 0)
 
 
 def test_a_confirmed_spend_evicts_its_conflicts_and_their_descendants() -> None:

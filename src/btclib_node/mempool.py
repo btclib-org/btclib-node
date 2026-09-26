@@ -373,8 +373,11 @@ class Mempool:
         tag).
         """
         outpoints = ((vin.prev_out.tx_id, vin.prev_out.vout) for vin in tx.vin)
-        conflicts = {self.outpoint_spender.get(outpoint) for outpoint in outpoints}
-        conflicts.discard(None)
+        conflicts = {
+            self.outpoint_spender[outpoint]
+            for outpoint in outpoints
+            if outpoint in self.outpoint_spender
+        }
         return set().union(*(self._descendants(wtxid) for wtxid in conflicts))
 
     def check_replacement(self, tx: Tx, fee: int) -> None:
@@ -403,15 +406,18 @@ class Mempool:
                 f"rejecting replacement {txid}, less fees than conflicting txs; "
                 f"{_format_money(fee)} < {_format_money(original)}"
             )
-            raise TxRejectedError("insufficient fee", details)
+            reason = "insufficient fee"
+            raise TxRejectedError(reason, details)
         relay_fee = fee_from_vsize(tx.vsize, _INCREMENTAL_RELAY_FEE_RATE)
         if fee - original < relay_fee:
             details = (
                 f"rejecting replacement {txid}, not enough additional fees to "
                 f"relay; {_format_money(fee - original)} < {_format_money(relay_fee)}"
             )
-            raise TxRejectedError("insufficient fee", details)
-        raise TxRejectedError("bip125-replacement-disallowed")
+            reason = "insufficient fee"
+            raise TxRejectedError(reason, details)
+        reason = "bip125-replacement-disallowed"
+        raise TxRejectedError(reason)
 
     def remove_conflicts(self, tx: Tx) -> None:
         """Remove what spends an outpoint `tx` spends, with its descendants.

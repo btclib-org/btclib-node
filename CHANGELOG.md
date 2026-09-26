@@ -539,10 +539,9 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 ### The mempool refuses a second spend of one outpoint, and a block evicts it
 
-- **A conflicting candidate is refused: "insufficient fee" in Core's words
-  where Core's fee rules refuse it, "bip125-replacement-disallowed" where
-  Core would replace; a connected block evicts what spends its inputs, with
-  its descendants** (closes #1244). Replacing is not ported (issue #1334).
+- **A conflicting candidate is refused, in Core's words where its fee rules
+  refuse it too, and a connected block evicts what spends its inputs**
+  (closes #1244); replacing is not ported (issue #1334).
 
 ## v2026.9.24
 
