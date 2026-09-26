@@ -455,6 +455,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A coin picks the answered or the gossiped table, and a pass draws up to
   a hundred times** (closes #1201), so held answered peers no longer stall it.
 
+### The dialler passes over the draws Core's loop passes over
+
+- **A draw is passed over for an `-addnode` peer or missing services, and
+  early in a pass for a recent try or a bad port** (closes #1224), as in Core;
+  a DNS seed's answer carries Core's `SeedsServiceFlags` (closes #1236).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

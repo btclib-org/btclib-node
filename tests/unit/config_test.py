@@ -213,6 +213,12 @@ def test_addnode_is_the_same_shape_as_connect() -> None:
     assert config.connect == ()
 
 
+def test_addnode_keeps_its_values_as_given() -> None:
+    """ISS 1224: `AddedNodesContain` compares the values as given."""
+    config = Config(chain="regtest", addnode=["10.0.0.1:1", "10.0.0.2"])
+    assert config.addnode_args == ("10.0.0.1:1", "10.0.0.2")
+
+
 def test_connect_and_addnode_both_take_several_entries() -> None:
     """Every spec given is resolved, in order, not only the last one."""
     config = Config(

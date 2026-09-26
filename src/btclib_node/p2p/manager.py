@@ -36,6 +36,7 @@ from btclib_node.p2p.address import (
     ip_and_port,
     peer_address,
 )
+from btclib_node.p2p.callbacks import _has_all_desirable_services
 from btclib_node.p2p.connection import Connection
 from btclib_node.p2p.eviction import (
     EvictionCandidate,
@@ -143,6 +144,111 @@ _REACHABLE_NETWORKS = (BIP155Network.IPV4, BIP155Network.IPV6)
 # (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
 _MAX_DRAWS_PER_PASS = 100
 
+# `ThreadOpenConnections`' own thresholds, as the constant above: a draw
+# tried less than ten minutes ago is passed over while fewer than 30
+# draws have been made, and one on a port `_BAD_PORTS` holds while fewer
+# than 50 have.
+_RECENT_TRY_SECONDS = 10 * 60
+_RECENT_TRY_DRAWS = 30
+_BAD_PORT_DRAWS = 50
+
+# `AddedNodesContain`'s bound: with this many `-addnode` values or more
+# it answers no for every address (`src/net.cpp`, same sha).
+_ADDED_NODES_BOUND = 24
+
+# Core's `IsBadPort` (`src/netbase.cpp`, at bitcoin/bitcoin@9be056a8a7,
+# the v31.1 tag): ports other services listen on, which an automatic
+# dial passes over while `_BAD_PORT_DRAWS` has not been reached.
+_BAD_PORTS = frozenset(
+    {
+        1,
+        7,
+        9,
+        11,
+        13,
+        15,
+        17,
+        19,
+        20,
+        21,
+        22,
+        23,
+        25,
+        37,
+        42,
+        43,
+        53,
+        69,
+        77,
+        79,
+        87,
+        95,
+        101,
+        102,
+        103,
+        104,
+        109,
+        110,
+        111,
+        113,
+        115,
+        117,
+        119,
+        123,
+        135,
+        137,
+        139,
+        143,
+        161,
+        179,
+        389,
+        427,
+        465,
+        512,
+        513,
+        514,
+        515,
+        526,
+        530,
+        531,
+        532,
+        540,
+        548,
+        554,
+        556,
+        563,
+        587,
+        601,
+        636,
+        989,
+        990,
+        993,
+        995,
+        1719,
+        1720,
+        1723,
+        2049,
+        3306,
+        3389,
+        3659,
+        4045,
+        5060,
+        5061,
+        5432,
+        5900,
+        6000,
+        6566,
+        6665,
+        6666,
+        6667,
+        6668,
+        6669,
+        6697,
+        10080,
+        27017,
+    }
+)
+
 # How many hosts `P2pManager.discourage` remembers. Core keeps them in
 # `BanMan::m_discouraged`, a `CRollingBloomFilter{50000, 0.000001}`
 # (`src/banman.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag). This
@@ -234,6 +340,18 @@ class P2pManager(threading.Thread):
         # outbound connection counts against it, `_automatic_outbound`
         # below being the one count of them.
         self.max_automatic_outbound = min(automatic_outbound, max_connections)
+        # Core's `AddrInfo::m_last_try` of each endpoint this manager
+        # dialled on its own, by `endpoint_key`, which `_passed_over`
+        # reads. Only this thread reads or writes it, and `_dial_one_draw`
+        # drops an entry once it is too old for that read to use.
+        self._last_try: dict[bytes, float] = {}
+        # Core's `m_added_node_params` as `AddedNodesContain` reads it:
+        # each `-addnode` value as given, compared with a drawn address's
+        # text, and nothing at all past `_ADDED_NODES_BOUND` values.
+        added = node.config.addnode_args
+        self._added_nodes = (
+            frozenset(added) if len(added) < _ADDED_NODES_BOUND else frozenset()
+        )
         # Core's own `-dnsseed`, which `InitParameterInteraction` soft-sets
         # off under `-connect` and under `-maxconnections=0` alike
         # (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
@@ -902,7 +1020,9 @@ class P2pManager(threading.Thread):
         # `continue`s on it: one draw a pass would stall wherever
         # the table is mostly such peers (btclib-org/btclib-node#1201).
         draw = self.peer_db.address_sampler()
-        for _ in range(_MAX_DRAWS_PER_PASS):
+        now = time.time()
+        # Core's `nTries`, which counts the draw it is about to make
+        for tries in range(1, _MAX_DRAWS_PER_PASS + 1):
             address = draw()
             # `is_empty` answers whether the table holds anything,
             # not whether it holds anything this node can dial, so
@@ -915,6 +1035,8 @@ class P2pManager(threading.Thread):
                 break
             if can_addrv1(address) and net_group(address) in outbound_net_groups:
                 continue
+            if self._passed_over(address, tries, now):
+                continue
             # Any other draw ends the pass, as Core's loop breaks
             # with it and `OpenNetworkConnection` (`src/net.cpp`, at
             # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) returns
@@ -923,10 +1045,64 @@ class P2pManager(threading.Thread):
             # for cause (btclib-org/btclib-node#283).
             held = endpoint_key(address) in already_connected
             if not held and not self.is_discouraged(address):
+                self._record_attempt(address)
                 sock = await dial(address)
                 if sock:
                     self.create_connection(sock, address, inbound=False, automatic=True)
             break
+
+    def _passed_over(self, address: NetworkAddressV2, tries: int, now: float) -> bool:
+        """Answer whether `ThreadOpenConnections` draws again past `address`.
+
+        Its four `continue`s after the network-group one, in its order
+        (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        Its invalid-or-local `break` and its unreachable-network
+        `continue`, between the two, are not here. `address_sampler`
+        draws IPv4 and IPv6 addresses alone, and `_storable` keeps out
+        of the table every address `IsRoutable` refuses, an invalid one
+        among them. `IsLocal` reads `mapLocalHost`, this node's own
+        addresses, and this tree keeps no such table.
+        """
+        last_try = self._last_try.get(endpoint_key(address), 0.0)
+        if now - last_try < _RECENT_TRY_SECONDS and tries < _RECENT_TRY_DRAWS:
+            return True
+        if not _has_all_desirable_services(self.node, address.services):
+            return True
+        # Core's `IsIPv4() || IsIPv6()` holds of every draw, as above
+        if tries < _BAD_PORT_DRAWS and address.port in _BAD_PORTS:
+            return True
+        return self._added_node(address)
+
+    def _added_node(self, address: NetworkAddressV2) -> bool:
+        """Core's `AddedNodesContain`: a `-addnode` value names `address`.
+
+        Compared as text, as Core compares `ToStringAddr` and
+        `ToStringAddrPort`: a value without a port names the host on
+        every port, and one with a port names that endpoint alone.
+        """
+        if not self._added_nodes:
+            return False
+        endpoint = network_address(address)
+        with_port = ip_and_port(str(endpoint.ip), endpoint.port)
+        host = with_port.rsplit(":", 1)[0].removeprefix("[").removesuffix("]")
+        return host in self._added_nodes or with_port in self._added_nodes
+
+    def _record_attempt(self, address: NetworkAddressV2) -> None:
+        """Record a dial of `address`, as Core's `Attempt_` sets `m_last_try`.
+
+        An entry too old for `_passed_over` to read is dropped here, so
+        the table holds the dials of the last `_RECENT_TRY_SECONDS`.
+        Called before the dial, where `ConnectNode` calls `Attempt` once
+        the connect has been tried, so the time kept is earlier than
+        Core's by however long the connect took.
+        """
+        now = time.time()
+        self._last_try = {
+            key: when
+            for key, when in self._last_try.items()
+            if now - when < _RECENT_TRY_SECONDS
+        }
+        self._last_try[endpoint_key(address)] = now
 
     async def _maybe_redial_specified(self) -> None:
         """Redial a `-connect`/`-addnode` peer not connected, on backoff.

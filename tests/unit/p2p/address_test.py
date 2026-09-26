@@ -25,6 +25,7 @@ from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2, is_embedded_ipv6
 
 import btclib_node.p2p.address as address_module
 from btclib_node.p2p.address import (
+    SEEDS_SERVICE_FLAGS,
     PeerDB,
     can_connect,
     dial,
@@ -545,6 +546,14 @@ def a_chain(seeds: list[str]) -> Any:
     return SimpleNamespace(addresses=list(seeds), port=18444)
 
 
+def a_seed_answer(ip: str) -> NetworkAddressV2:
+    """Build what a DNS seed's answer of `ip` is recorded as, on regtest's port.
+
+    With Core's `SeedsServiceFlags`, as `ThreadDNSAddressSeed` records it.
+    """
+    return peer_address(ip, 18444, services=SEEDS_SERVICE_FLAGS)
+
+
 def test_the_seeds_that_answer_fill_the_table_and_the_rest_are_passed_over(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -564,8 +573,8 @@ def test_the_seeds_that_answer_fill_the_table_and_the_rest_are_passed_over(
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
     asyncio.run(peer_db.get_addr_from_dns())
     assert peer_db.addresses == {
-        peer_address("1.2.3.4", 18444),
-        peer_address("5.6.7.8", 18444),
+        a_seed_answer("1.2.3.4"),
+        a_seed_answer("5.6.7.8"),
     }
 
 
@@ -592,9 +601,9 @@ def test_every_seed_that_answers_is_taken_and_a_host_two_of_them_share_is_one(
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
     asyncio.run(peer_db.get_addr_from_dns())
     assert peer_db.addresses == {
-        peer_address("1.2.3.4", 18444),
-        peer_address("5.6.7.8", 18444),
-        peer_address("9.10.11.12", 18444),
+        a_seed_answer("1.2.3.4"),
+        a_seed_answer("5.6.7.8"),
+        a_seed_answer("9.10.11.12"),
     }
 
 
@@ -626,7 +635,7 @@ def test_a_seed_answering_with_ipv6_gives_up_its_host_and_its_port(
     peer_db = a_peer_db(a_chain(["v6.example"]))
     monkeypatch.setattr(asyncio, "get_running_loop", FakeIpv6Loop)
     asyncio.run(peer_db.get_addr_from_dns())
-    assert peer_db.addresses == {peer_address("2a01:4f8::1", 18444)}
+    assert peer_db.addresses == {a_seed_answer("2a01:4f8::1")}
 
 
 def test_a_node_that_already_knows_peers_does_not_ask_the_seeds(

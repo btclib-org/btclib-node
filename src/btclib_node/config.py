@@ -280,6 +280,10 @@ class Config:
     # instead of it: Core's own `-addnode`
     # (`connOptions.m_added_nodes`, `src/init.cpp:2193-2198`, same sha).
     addnode: tuple[tuple[str, int], ...]
+    # the same values as given, which Core's `AddedNodesContain`
+    # (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+    # compares a drawn address's text with
+    addnode_args: tuple[str, ...]
     # Core's own `-listen`, `DEFAULT_LISTEN` (`src/net.h`) true unless
     # `-connect` or `-maxconnections=0` is given, in which case
     # `InitParameterInteraction` (`src/init.cpp`,
@@ -373,6 +377,7 @@ class Config:
             () if list(connect) == ["0"] else _resolve_peers(connect, self.chain.port)
         )
         self.addnode = _resolve_peers(addnode, self.chain.port)
+        self.addnode_args = tuple(addnode)
         self.listen = listen
 
         if max_connections < 0:

@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from btclib_node.chains import Chain
 
 __all__ = [
+    "SEEDS_SERVICE_FLAGS",
     "PeerDB",
     "can_connect",
     "dial",
@@ -88,6 +89,12 @@ def peer_address(
     return NetworkAddressV2(timestamp, services, network_id, parsed.packed, port)
 
 
+# Core's `SeedsServiceFlags` (`src/protocol.h`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the services a fixed seed
+# and a DNS seed's answer are recorded with, which the dial loop requires.
+SEEDS_SERVICE_FLAGS = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
+
+
 def fixed_seed_addresses(seeds: bytes) -> list[NetworkAddressV2]:
     """Decode a chain's `fixed_seeds`, as Core's `ConvertSeeds` does.
 
@@ -98,7 +105,7 @@ def fixed_seed_addresses(seeds: bytes) -> list[NetworkAddressV2]:
     each a random time one to two weeks past, which is left at 0 here:
     `PeerDB.add_addresses` keeps no address's time.
     """
-    services = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
+    services = SEEDS_SERVICE_FLAGS
     stream = BytesIO(seeds)
     addresses: list[NetworkAddressV2] = []
     while stream.tell() < len(seeds):
@@ -496,7 +503,16 @@ class PeerDB:
         # through add_addresses, and not a bare add to the set: a seed
         # is gossip like a peer's is, and belongs in the durable table
         # the same way, so a later restart has it without asking again
-        self.add_addresses(peer_address(ip, port) for ip, port in endpoints)
+        # labelled with Core's `requiredServiceBits`, `SeedsServiceFlags`
+        # (`ThreadDNSAddressSeed`, `src/net.cpp`, same sha). Core asks
+        # the seed's `x9.` subdomain, so the seed answers with peers
+        # offering those services, and falls back to an addr-fetch where
+        # it answers nothing; this resolves the bare name and labels
+        # whatever it answers (btclib-org/btclib-node#1284).
+        self.add_addresses(
+            peer_address(ip, port, services=SEEDS_SERVICE_FLAGS)
+            for ip, port in endpoints
+        )
 
     @property
     def is_empty(self) -> bool:
