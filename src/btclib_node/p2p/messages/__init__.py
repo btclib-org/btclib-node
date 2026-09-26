@@ -52,7 +52,7 @@ _FINAL_ALERT = bytes.fromhex(
 
 @dataclass(frozen=True)
 class FinalAlert(Payload):
-    """The final `alert`, for a peer at `SENDHEADERS_VERSION` or below.
+    """The final `alert`, for a peer at a common version of 70012 or below.
 
     What Core's `version` handler (`src/net_processing.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag) sends a peer "old enough

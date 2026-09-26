@@ -82,7 +82,7 @@ _PEER_CONNECT_TIMEOUT = 60
 # this long again after that is dropped. A pending connection is held
 # to `_PEER_CONNECT_TIMEOUT` above instead. A peer at `BIP0031_VERSION`
 # or below answers its `ping` with no `pong` (`Connection.send_ping`), so
-# it is sent one whenever nothing has gone to it this long, and is
+# it is sent one whenever none has been queued to it this long, and is
 # dropped once quiet twice this long.
 _IDLE_TIMEOUT = 120
 
@@ -712,7 +712,7 @@ class P2pManager(threading.Thread):
             # quiet span is waited out here instead
             if now - conn.last_receive > 2 * _IDLE_TIMEOUT:
                 self.remove_connection(conn.id)
-            elif now - conn.last_send > _IDLE_TIMEOUT:
+            elif now - conn.ping_start > _IDLE_TIMEOUT:
                 conn.send_ping()
         elif not ping_sent:
             conn.send_ping()

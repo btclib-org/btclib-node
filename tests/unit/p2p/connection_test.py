@@ -1649,8 +1649,10 @@ def test_a_ping_carries_a_nonce_only_above_bip31(
     connection.send = sent.append  # type: ignore[method-assign,assignment]
     if protocol is not None:
         connection.version_message = cast("Any", SimpleNamespace(version=protocol))
+    before = time.time()
     connection.send_ping()
     connection.client.close()
+    assert connection.ping_start >= before
     (ping,) = sent
     assert isinstance(ping, Ping if nonce else NoncelessPing)
     assert bool(connection.ping_sent) is nonce

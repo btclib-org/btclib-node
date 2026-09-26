@@ -492,6 +492,12 @@ class Connection:
     # btclib-org/btclib-node#1164
     _writing: asyncio.Task[object] | None = None
 
+    # Core's `m_ping_start`: when `send_ping` last queued a `ping`,
+    # nonceless or not, stamped as it is pushed rather than once the write
+    # completes, which is what `last_send` records. A class default for
+    # the reason `time_received` gives. btclib-org/btclib-node#1204
+    ping_start: float = 0
+
     def __init__(
         self,
         manager: P2pManager,
@@ -1197,6 +1203,7 @@ class Connection:
         v31.1 tag): no `pong` answers it, so nothing is recorded as
         outstanding. btclib-org/btclib-node#1204
         """
+        self.ping_start = time.time()
         if common_version(self) <= BIP0031_VERSION:
             self.send(NoncelessPing())
             return
