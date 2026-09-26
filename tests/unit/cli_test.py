@@ -500,9 +500,8 @@ def test_build_config_orders_the_log_warnings_as_bitcoind_logs_them(
 
     Measured on `bitcoind` v31.1.0 with this file and `-nolisten=0`: its
     `debug.log` opens, after five blank lines, on the first four, then
-    its version line and its "parameter interaction" lines, then the
-    section warning, which its stderr holds alone. The version line is
-    one history.log does not have (#1309).
+    its version line, then the section warning, which its stderr holds
+    alone. The version line is one history.log does not have (#1309).
     """
     conf = "regtest=1\nfoo=1\nnoserver=0\n[x]\n[y]\nbar=2\n"
     config = _build(tmp_path, "-nolisten=0", conf=conf)
