@@ -132,7 +132,7 @@ def a_peer_db_stub(**attributes: Any) -> Any:
         "holds_network": lambda network_id: True,
         "holds_nothing": False,
         "size": 1,
-        "query_dns_seed": asks_no_dns_server,
+        "query_dns_seed": refuses_to_be_asked,
     }
     if "random_address" in attributes:
         draw = attributes.pop("random_address")
@@ -2374,13 +2374,8 @@ def test_run_reads_dnsseed_whatever_the_arm(
 
 
 def refuses_to_be_asked() -> NoReturn:
-    """Stand in for `random_address`/`get_active_addresses`, unreachable."""
+    """Stand in for a `PeerDB` or module call no test path reaches."""
     raise RuntimeError("no")
-
-
-async def asks_no_dns_server(seed: str) -> int:
-    """Stand in for a `query_dns_seed` that never touches a real server."""
-    return 0
 
 
 def test_connect_turns_off_addrman_outgoing(a_manager: AManagerFactory) -> None:
