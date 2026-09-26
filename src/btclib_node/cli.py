@@ -180,6 +180,7 @@ from btclib_node.config import (
 from btclib_node.constants import MIN_PRUNE_TARGET_MIB
 from btclib_node.dirlock import DirectoryLock, lock_directories
 from btclib_node.exceptions import DirectoryLockError
+from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -311,6 +312,12 @@ _OPTIONS: dict[str, _Option] = {
         f"For backwards compatibility, treat an unused {_DEFAULT_CONF_FILENAME} "
         "file in the datadir as a warning, not an error.",
         _OPTIONS_TITLE,
+    ),
+    "bantime": _Option(
+        "=<n>",
+        "Default duration (in seconds) of manually configured bans (default: "
+        f"{DEFAULT_MISBEHAVING_BANTIME})",
+        _CONNECTION_TITLE,
     ),
     "blocksdir": _Option(
         "=<dir>",
@@ -1296,6 +1303,11 @@ def _after_lock(before: _BeforeLock) -> Config:
         else _get_arg(settings, "rpccookiefile") or ""
     )
     server = _get_bool(settings, "server")
+    # `-bantime`, which `AppInitMain` hands to `BanMan` at step 6
+    # (`src/init.cpp:1644`, same sha)
+    ban_time = _get_int(settings, "bantime")
+    if ban_time is None:
+        ban_time = DEFAULT_MISBEHAVING_BANTIME
     prune = before.prune
 
     return Config(
@@ -1313,6 +1325,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         addnode=_get_args(settings, "addnode"),
         listen=listen,
         max_connections=before.max_connections,
+        ban_time=ban_time,
         rpcauth=_get_args(settings, "rpcauth"),
         rpcuser=_get_arg(settings, "rpcuser") or "",
         rpcpassword=_get_arg(settings, "rpcpassword") or "",

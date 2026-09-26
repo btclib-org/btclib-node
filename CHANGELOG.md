@@ -558,6 +558,29 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `bitcoind` words them** (closes #1267), with no path; a line ends at a
   newline alone, as Core counts it.
 
+### `-bantime`, as in Core
+
+- **A `setban` ban that names no length lasts `-bantime` seconds** (closes
+  #1219), 86400 by default, as `bitcoind` has it.
+
+### A block nobody asked for is stored only where Core's `AcceptBlock` would
+
+- **An unrequested block with less work than the tip, more than
+  `MIN_BLOCKS_TO_KEEP` above it, or below the minimum chain work is dropped
+  unstored, and its peer is not punished** (closes #1247).
+
+### A peer's announced transactions are asked for as Core asks for them
+
+- **At most `MAX_PEER_TX_ANNOUNCEMENTS` tracked per peer, in `getdata`s of at
+  most `MAX_GETDATA_SZ` items, so no announcement can make the request raise
+  and stop the node** (closes #1243).
+
+### An obsolete header version is refused `bad-version`
+
+- **A header whose version BIP34, BIP66 or BIP65 made obsolete is refused
+  `bad-version` from that BIP's height, and its sender discouraged, as in
+  Core** (closes #1262).
+
 ### A `history.log` line carries its level as `debug.log` does
 
 - **A warning is marked `[warning]` and an error `[error]`** (closes #1280),

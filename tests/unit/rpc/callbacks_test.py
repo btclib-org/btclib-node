@@ -3311,3 +3311,35 @@ def test_submit_block_invalidates_a_block_whose_body_mismatches_its_header(
     block_info = node.chainstate.block_index.get_block_info(mismatched.header.hash)
     assert not block_info.downloaded
     assert node.block_db.get_block(mismatched.header.hash) is None
+
+
+# A regtest header at height 1 of version -1, as a bitcoind v31.1.0 run with
+# `-testactivationheight=bip34@100` (and `dersig`, `cltv` at 100) took it
+# through `submitblock` and answered it back through `getblockheader false`.
+_A_VERSION_MINUS_ONE_HEADER = (
+    "ffffffff06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f"
+    "a7c0dbac4920cf8d62f0cb6d2efaa0105c5d6bbd3552da2c805dc60856589631dfefb76a"
+    "ffff7f2001000000"
+)
+
+
+def test_a_stored_version_minus_one_header_is_answered_as_bitcoind_answers() -> None:
+    """ISS 1262: the index stores it below BIP34's height, as Core does.
+
+    bitcoind answered the raw header with these same octets, `version`
+    -1 and `versionHex` "ffffffff", Core's `%08x` of its `int32_t`.
+    """
+    header = BlockHeader.parse(
+        bytes.fromhex(_A_VERSION_MINUS_ONE_HEADER), check_validity=False
+    )
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chainstate=SimpleNamespace(block_index=a_block_index([header]))
+        ),
+    )
+    raw = get_block_header(node, _CONN, [header.hash.hex(), False])
+    assert raw == _A_VERSION_MINUS_ONE_HEADER
+    verbose = get_block_header(node, _CONN, [header.hash.hex()])
+    assert isinstance(verbose, dict)
+    assert (verbose["version"], verbose["versionHex"]) == (-1, "ffffffff")
