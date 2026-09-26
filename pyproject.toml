@@ -35,12 +35,14 @@ dependencies = [
     # imports -- `btclib.muhash`, `btclib.p2p.reject`, `btclib.tx.coin`
     # and `btclib.tx.tx_context` among the modules -- so a floor below
     # it is a release the published wheel's own smoke test cannot
-    # import (btclib-org/btclib-node#848). Raised to 2026.9.13:
-    # `tests/unit/interpreter_test.py` imports `point_from_pub_key` from
-    # `btclib.curves`, which is where that release first exports it --
-    # 2026.9.3 defines it only in the `to_pub_key` module `btclib`
-    # deletes on its own `main` (btclib-org/btclib-node#972).
-    "btclib[secp256k1]>=2026.9.13",
+    # import (btclib-org/btclib-node#848). Raised to 2026.9.24, the
+    # release the `test` group's `btclib-wallet` requires, so no run of
+    # the suite -- deps-oldest.yml's included -- resolves anything lower,
+    # and a floor below it would be one no run exercises
+    # (btclib-org/btclib-node#1181). `tests/unit/interpreter_test.py`
+    # hands `ScriptPubKey` a `PubKeyData`, which that release's
+    # constructors take in place of the key's octets.
+    "btclib[secp256k1]>=2026.9.24",
     "rocksdict>=0.3.29",
     # `rpc/errors.py` imports `RPCErrorCode` directly now, so this is a
     # direct runtime dependency rather than the transitive arrival
@@ -265,6 +267,13 @@ test = [
     # through the first two where they express the case, and the
     # integration client is a `SessionTransport` now.
     "bitcoin-core-rpc>=2026.8.29",
+    # `BitcoinCoreFetcher`, which tests/functional/rpc drives against
+    # this node unchanged: `btclib_wallet.fetch` is where it lives,
+    # btclib's `main` holding no `fetch` package and its next release none
+    # (btclib-org/btclib-node#1181). A test
+    # dependency and not a runtime one, nothing under `src/` importing it.
+    # Its own btclib requirement is what sets btclib's floor above.
+    "btclib-wallet>=2026.9.24",
 ]
 # mypy runs from this environment rather than from a hook's own --
 # .pre-commit-config.yaml's mypy hook is where that decision is argued
