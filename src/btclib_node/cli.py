@@ -170,8 +170,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from btclib_node import Node, install_signal_handlers
+from btclib_node.block_db import blocks_directory
 from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, Config, split_host_port
 from btclib_node.constants import MIN_PRUNE_TARGET_MIB
+from btclib_node.dirlock import DirectoryLock, lock_directories
 from btclib_node.exceptions import DirectoryLockError
 
 if TYPE_CHECKING:
@@ -1142,26 +1144,87 @@ def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
     return settings, base_dir, chain_name
 
 
-def build_config(argv: Sequence[str] | None = None) -> Config:
-    """Parse `argv` (`sys.argv[1:]` if `None`) and its `-conf` into a `Config`.
+@dataclass(frozen=True)
+class _BeforeLock:
+    """What `_before_lock` read, for `_after_lock` to finish the `Config`.
 
-    Raises `ValueError` on a malformed argument, a malformed
-    configuration file, or an unknown chain, and `SystemExit(0)` once
-    the help is printed.
+    `directories` is a `Config` of the chain, the data directory and
+    `-blocksdir`, the fields that name the directories `Node.__init__`
+    locks, and of `-maxconnections`, which `Config.__init__` refuses just
+    after a missing blocks directory, as Core does.
     """
-    settings, base_dir, chain_name = _read_settings(
-        sys.argv[1:] if argv is None else argv
-    )
 
-    # Refused in Core's order: `-debug`'s categories, then `-prune`, both
-    # in `AppInitParameterInteraction`, then `CheckHostPortOptions`'s
-    # `-port`, `-rpcport` and `-rpcbind` in `AppInitMain` (`src/init.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7). `Config.__init__`'s own refusals of
-    # a missing blocks directory and a negative `-maxconnections` come
-    # after all of these, where Core checks them ahead of `-debug`.
+    settings: _Settings
+    base_dir: Path
+    chain_name: str
+    blocksdir: str | None
+    max_connections: int
+    debug: bool
+    prune: int
+    directories: Config
+
+
+def _before_lock(argv: Sequence[str]) -> _BeforeLock:
+    """Read `argv` and its file, and refuse what Core refuses before its lock.
+
+    `InitConfig`, then `AppInitParameterInteraction` (`src/init.cpp`, at
+    bitcoin/bitcoin@9be056a8a7) in its order: a missing blocks directory,
+    a negative `-maxconnections`, `-debug`'s categories, `-prune`.
+    """
+    settings, base_dir, chain_name = _read_settings(argv)
+    # `GetBlocksDirPath`: a negated `-blocksdir` is an empty path, which
+    # `fs::absolute` reads as the working directory
+    blocksdir = _get_arg(settings, "blocksdir")
+    if _is_negated(settings, "blocksdir"):
+        blocksdir = ""
+    max_connections = _get_int(settings, "maxconnections")
+    if max_connections is None:
+        max_connections = DEFAULT_MAX_PEER_CONNECTIONS
+    directories = Config(
+        chain=chain_name,
+        data_dir=base_dir,
+        blocks_dir=blocksdir,
+        max_connections=max_connections,
+    )
     debug = _resolve_debug(settings)
     prune = _get_int(settings, "prune") or 0
     _check_prune(prune)
+    return _BeforeLock(
+        settings,
+        base_dir,
+        chain_name,
+        blocksdir,
+        max_connections,
+        debug,
+        prune,
+        directories,
+    )
+
+
+def _lock(directories: Config) -> tuple[DirectoryLock, ...]:
+    """Lock the directories `Node.__init__` locks, as `Node.__init__` does.
+
+    Core's `AppInitLockDirectories` (`src/init.cpp`, at
+    bitcoin/bitcoin@9be056a8a7), between `_before_lock` and `_after_lock`.
+    `Node.__init__` takes the same locks again, which a process already
+    holding them is granted (`dirlock`), so `main` releases these once
+    the `Node` holds its own.
+    """
+    blocks_dir = blocks_directory(directories.data_dir, directories.blocks_dir)
+    directories.data_dir.mkdir(exist_ok=True, parents=True)
+    blocks_dir.mkdir(exist_ok=True, parents=True)
+    return lock_directories(directories.data_dir, blocks_dir)
+
+
+def _after_lock(before: _BeforeLock) -> Config:
+    """Refuse what Core refuses after its lock, and return the `Config`.
+
+    `AppInitMain` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7) in its
+    order: `CheckHostPortOptions`'s `-port`, `-rpcport` and `-rpcbind`,
+    then `Config.__init__`'s `-rpccookieperms` and `-rpcauth`, which
+    `StartHTTPRPC` reads in that order.
+    """
+    settings = before.settings
     p2p_port = _get_port(settings, "port")
     rpc_port = _get_port(settings, "rpcport")
     rpc_host = "127.0.0.1"
@@ -1175,7 +1238,11 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
         None if _is_negated(settings, "rpcbind") else _get_arg(settings, "rpcbind")
     )
     if rpcbind is not None:
-        rpc_host, rpcbind_port = split_host_port(rpcbind, 0)
+        try:
+            rpc_host, rpcbind_port = split_host_port(rpcbind, 0)
+        except ValueError:
+            err_msg = f"Invalid port specified in -rpcbind: '{rpcbind}'"
+            raise ValueError(err_msg) from None
         if rpcbind_port:
             rpc_port = rpcbind_port
 
@@ -1183,19 +1250,11 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
     # `-noconnect` is Core's `-connect=0`: no automatic connection, and
     # nobody named (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7)
     connect_negated = _is_negated(settings, "connect")
-    max_connections = _get_int(settings, "maxconnections")
-    if max_connections is None:
-        max_connections = DEFAULT_MAX_PEER_CONNECTIONS
     # `InitParameterInteraction`'s soft-set, which an explicit value wins
     # over (`src/init.cpp`, same sha)
     listen = _get_bool(settings, "listen")
     if listen is None:
-        listen = not connect and not connect_negated and max_connections > 0
-    # `GetBlocksDirPath`: a negated `-blocksdir` is an empty path, which
-    # `fs::absolute` reads as the working directory
-    blocksdir = _get_arg(settings, "blocksdir")
-    if _is_negated(settings, "blocksdir"):
-        blocksdir = ""
+        listen = not connect and not connect_negated and before.max_connections > 0
     # `GetAuthCookieFile` (`src/rpc/request.cpp`, same sha): negated, no cookie
     rpccookiefile = (
         None
@@ -1203,22 +1262,23 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
         else _get_arg(settings, "rpccookiefile") or ""
     )
     server = _get_bool(settings, "server")
+    prune = before.prune
 
     return Config(
-        chain=chain_name,
-        data_dir=base_dir,
-        blocks_dir=blocksdir,
+        chain=before.chain_name,
+        data_dir=before.base_dir,
+        blocks_dir=before.blocksdir,
         p2p_port=p2p_port,
         rpc_port=rpc_port,
         rpc_host=rpc_host,
         allow_rpc=server is None or server,
         pruned=bool(prune),
         prune_target_mib=prune if prune >= MIN_PRUNE_TARGET_MIB else None,
-        debug=debug,
+        debug=before.debug,
         connect=connect or (["0"] if connect_negated else []),
         addnode=_get_args(settings, "addnode"),
         listen=listen,
-        max_connections=max_connections,
+        max_connections=before.max_connections,
         rpcauth=_get_args(settings, "rpcauth"),
         rpcuser=_get_arg(settings, "rpcuser") or "",
         rpcpassword=_get_arg(settings, "rpcpassword") or "",
@@ -1229,37 +1289,48 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
     )
 
 
+def build_config(argv: Sequence[str] | None = None) -> Config:
+    """Parse `argv` (`sys.argv[1:]` if `None`) and its `-conf` into a `Config`.
+
+    Raises `ValueError` on a malformed argument, a malformed
+    configuration file, or an unknown chain, in the order `bitcoind`
+    refuses them, and `SystemExit(0)` once the help is printed. No lock
+    is taken: `main` takes it between `_before_lock` and `_after_lock`.
+    """
+    return _after_lock(_before_lock(sys.argv[1:] if argv is None else argv))
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     """Build a `Config` from the command line and `bitcoin.conf`, and run it.
 
     Waits on the node's thread until a signal `install_signal_handlers`
-    below caught, or the `stop` RPC, stops it. A `build_config` refusal,
-    a `DirectoryLockError` where the node cannot lock its directories, or
-    each of `Node.init_errors` where the node's start-up failed, is
-    printed as `Error: <message>` and the exit status is `1`: Core's
-    `InitError`, and `CConnman`'s own `MSG_ERROR` for a failed bind,
-    reach stderr through `noui_ThreadSafeMessageBox` with that caption
-    (`src/noui.cpp:22-46`, at bitcoin/bitcoin@9be056a8a7), and
-    `bitcoind` exits `EXIT_FAILURE`.
+    below caught, or the `stop` RPC, stops it. A `build_config` refusal, the
+    `DirectoryLockError` of a directory another process holds, taken between
+    the refusals Core makes before its lock and those it makes after
+    (`_before_lock` and `_after_lock` above), or each of `Node.init_errors`
+    where the node's start-up failed, is printed as `Error: <message>` and
+    the exit status is `1`: Core's `InitError`, and `CConnman`'s own
+    `MSG_ERROR` for a failed bind, reach stderr through
+    `noui_ThreadSafeMessageBox` with that caption (`src/noui.cpp:22-46`, at
+    bitcoin/bitcoin@9be056a8a7), and `bitcoind` exits `EXIT_FAILURE`.
     """
     try:
-        config = build_config(argv)
-    except ValueError as error:
+        before = _before_lock(sys.argv[1:] if argv is None else argv)
+        locks = _lock(before.directories)
+    except (ValueError, DirectoryLockError) as error:
         sys.stderr.write(f"Error: {error}\n")
         raise SystemExit(1) from error
-
-    # Core takes the lock ahead of `CheckHostPortOptions` and of the RPC
-    # options `StartHTTPRPC` refuses (`AppInitMain`, `src/init.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7), where every `build_config` refusal
-    # comes first here: over a locked directory, `bitcoind` answers
-    # `-port=0` or a malformed `-rpcauth` with the lock, and this with the
-    # option -- an open defect rather than a decision, which
-    # btclib-org/btclib-node#1191 tracks.
+    # `Node.__init__` takes the same locks, and holds them once these go
     try:
+        try:
+            config = _after_lock(before)
+        except ValueError as error:
+            sys.stderr.write(f"Error: {error}\n")
+            raise SystemExit(1) from error
         node = Node(config=config)
-    except DirectoryLockError as error:
-        sys.stderr.write(f"Error: {error}\n")
-        raise SystemExit(1) from error
+    finally:
+        for lock in locks:
+            lock.release()
     install_signal_handlers(node)
     node.start()
     node.join()

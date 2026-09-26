@@ -444,6 +444,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A pending connection is dropped sixty seconds after it connected,
   whatever it sends** (closes #1169), as Core's `InactivityCheck` drops it.
 
+### Over a held data directory, `btclib-node` refuses in `bitcoind`'s order
+
+- **`-port`, `-rpcport`, `-rpcbind`, `-rpcauth` and `-rpccookieperms` are
+  refused after the lock, the others before it, as in Core** (closes #1191);
+  `-blocksdir` and `-rpcbind` are refused in Core's words.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
