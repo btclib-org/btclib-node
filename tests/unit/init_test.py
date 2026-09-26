@@ -95,11 +95,18 @@ class AManager:
         # shutdown path reads it off whichever manager it holds without
         # checking which, so the stand-in carries it too (#263)
         self.peer_db = SimpleNamespace(close=lambda: None)
+        # the ban list, read off the manager the same way: how many
+        # times `run`'s shutdown dumped it, as Core's `~BanMan` does
+        self.ban_list_dumps = 0
+        self.ban_man = SimpleNamespace(dump=self._dump_ban_list)
         # what `run`'s own `config.connect`/`config.addnode` dial loop
         # calls, in order -- only P2pManager's own attribute has a real
         # `connect`, and this stand-in is asked for both managers, so
         # both carry it the same way `peer_db` above does
         self.connect_calls: list[Any] = []
+
+    def _dump_ban_list(self) -> None:
+        self.ban_list_dumps += 1
 
     def start(self) -> None:
         """Record that `run`'s own start branch reached this stand-in."""
@@ -844,6 +851,7 @@ def test_a_port_configured_is_a_manager_started_and_stopped(
     node.stop()
     assert p2p_manager.stopped
     assert rpc_manager.stopped
+    assert p2p_manager.ban_list_dumps == 1
 
     quiet = a_node(tmp_path / "quiet")
     quiet.start()
@@ -965,6 +973,54 @@ def test_a_node_that_cannot_write_its_cookie_stops_and_frees_its_rpc_port(
         node.stop()
     assert node.init_errors == [btclib_node.RPC_INIT_ERROR]
     assert not cookie_path(node.data_dir).exists()
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", port))
+
+
+@pytest.mark.parametrize(
+    ("rpcauth", "rpccookieperms", "line"),
+    [
+        (["bogus"], None, "Invalid -rpcauth argument."),
+        (
+            [],
+            "bogus",
+            "Invalid -rpccookieperms=bogus; must be one of 'owner', 'group', or 'all'.",
+        ),
+    ],
+    ids=["rpcauth", "rpccookieperms"],
+)
+def test_a_node_refusing_an_rpc_credential_names_it_in_the_log_alone(
+    tmp_path: Path, rpcauth: list[str], rpccookieperms: str | None, line: str
+) -> None:
+    """Core's `InitError` where `InitRPCAuthentication` refuses a value.
+
+    `init_errors`, which `cli.main` prints, holds "Unable to start HTTP
+    server" alone, and the value's own line is in the log ahead of it,
+    as `bitcoind` v31.1.0 shows them. The cookie `-rpcauth` is refused
+    after is deleted, and the port is free again.
+    """
+    port = get_random_port()
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            rpc_port=port,
+            debug=True,
+            rpcauth=rpcauth,
+            rpccookieperms=rpccookieperms,
+        )
+    )
+    try:
+        node.start()
+        wait_until(lambda: not node.is_alive())
+    finally:
+        node.stop()
+    assert node.init_errors == [btclib_node.RPC_INIT_ERROR]
+    assert not cookie_path(node.data_dir).exists()
+    log_text = (node.data_dir / "history.log").read_text(encoding="utf-8")
+    assert f"{line}\n" in log_text
+    assert log_text.index(line) < log_text.index(btclib_node.RPC_INIT_ERROR)
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", port))
 

@@ -1334,9 +1334,9 @@ def _after_lock(before: _BeforeLock) -> Config:
     """Refuse what Core refuses after its lock, and return the `Config`.
 
     `AppInitMain` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7) in its
-    order: `CheckHostPortOptions`'s `-port`, `-rpcport` and `-rpcbind`,
-    then `Config.__init__`'s `-rpccookieperms` and `-rpcauth`, which
-    `StartHTTPRPC` reads in that order.
+    order: `CheckHostPortOptions`'s `-port`, `-rpcport` and `-rpcbind`.
+    `-rpccookieperms` and `-rpcauth` are refused later, by
+    `RpcAuth.start`, as `StartHTTPRPC` refuses them.
     """
     settings = before.settings
     p2p_port = _get_port(settings, "port")
@@ -1408,6 +1408,27 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
     return _after_lock(_before_lock(sys.argv[1:] if argv is None else argv))
 
 
+# Core's `SetupEnvironment` (`src/common/system.cpp`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which `bitcoind`'s own
+# `main` calls right after building its `interfaces::Init`
+# (`src/bitcoind.cpp`, same sha): the process umask becomes 0077
+# everywhere but Windows, so every directory and file it creates is its
+# owner's alone.
+# Core has no option to keep the caller's: `-sysperms` is gone by v31.1.
+_PRIVATE_UMASK = 0o077
+
+
+def _setup_environment() -> None:
+    """Make the process umask owner-only, as Core's `SetupEnvironment` does.
+
+    Called by `main` alone: a caller building a `Node` in its own
+    process keeps its own umask, the reason `RpcAuth.generate_cookie`
+    sets the cookie's mode on the file.
+    """
+    if sys.platform != "win32":
+        os.umask(_PRIVATE_UMASK)
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     """Build a `Config` from the command line and `bitcoin.conf`, and run it.
 
@@ -1422,6 +1443,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     `noui_ThreadSafeMessageBox` with that caption (`src/noui.cpp:22-46`, at
     bitcoin/bitcoin@9be056a8a7), and `bitcoind` exits `EXIT_FAILURE`.
     """
+    _setup_environment()
     try:
         before = _before_lock(sys.argv[1:] if argv is None else argv)
         locks = _lock(before.directories)
