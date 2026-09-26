@@ -262,12 +262,12 @@ def a_mined_header(parent: BlockHeader, version: int) -> BlockHeader:
         nonce=0,
         check_validity=False,
     )
-    for nonce in range(1_000):
-        header.nonce = nonce
+    # a regtest target is met about every other nonce
+    while True:
         with suppress(BTClibValueError):
             header.assert_valid_pow(REGTEST_POW_LIMIT_BITS)
             return header
-    raise AssertionError
+        header.nonce += 1
 
 
 @pytest.mark.parametrize("version", [-1, 1, 2, 3])
