@@ -443,6 +443,35 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 - **`sendcmpct` offers version 2, and a `MSG_CMPCT_BLOCK` or a `getblocktxn`
   is answered at Core's depths** (closes #1206).
+### A connection short of verack is dropped a minute after connecting
+
+- **A pending connection is dropped sixty seconds after it connected,
+  whatever it sends** (closes #1169), as Core's `InactivityCheck` drops it.
+
+### Over a held data directory, `btclib-node` refuses in `bitcoind`'s order
+
+- **`-port`, `-rpcport`, `-rpcbind`, `-rpcauth` and `-rpccookieperms` are
+  refused after the lock, the others before it, as in Core** (closes #1191);
+  `-blocksdir` and `-rpcbind` are refused in Core's words.
+
+### The dialler draws from both tables, as Core's `Select_` does
+
+- **A coin picks the answered or the gossiped table, and a pass draws up to
+  a hundred times** (closes #1201), so held answered peers no longer stall it.
+
+### PeerDB records as answered only a peer it already knows
+
+- **A peer is recorded as answered only where gossip already holds its
+  endpoint** (closes #1189), as Core's `Good_` updates only what addrman holds.
+
+### A message that does not parse costs its peer nothing, as in Core
+
+- **A peer is discouraged only where Core calls `Misbehaving`** (closes
+  #1170); a payload that does not parse is logged and the peer kept.
+
+### An inbound peer is sent `version` only once its own is accepted, as in Core
+
+- **A refused inbound peer is sent nothing** (closes #1207).
 
 ## v2026.9.24
 

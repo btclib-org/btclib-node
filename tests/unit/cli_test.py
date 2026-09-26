@@ -17,9 +17,15 @@ from btclib_node import Node, cli
 from btclib_node.chains import Main, RegTest
 from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, Config
 from btclib_node.constants import MIN_PRUNE_TARGET_MIB
-from btclib_node.exceptions import DirectoryLockError
 from btclib_node.rpc.auth import COOKIE_FILE, RpcAuthEntry, password_hmac
-from tests import RPCAUTH, cookie_path, get_random_port, wait_until_listening
+from tests import (
+    RPCAUTH,
+    cookie_path,
+    get_random_port,
+    held_by_another_process,
+    lock_from_another_process,
+    wait_until_listening,
+)
 
 
 def test_parse_conf_text_reads_a_key_value_pair_in_the_default_section() -> None:
@@ -1511,25 +1517,151 @@ def test_main_a_node_that_failed_to_start_exits_one_with_its_init_errors(
     )
 
 
-def test_main_a_directory_the_node_cannot_lock_exits_one_with_the_refusal(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+# Each row measured on `bitcoind` v31.1.0, a first instance running over
+# the data directory: the options Core refuses after `AppInitLockDirectories`
+# are answered with the lock, the others with their own refusal
+_AFTER_THE_LOCK = [
+    ["-port=0"],
+    ["-rpcport=0"],
+    ["-port=abc"],
+    ["-rpcbind=1.2.3.4:0"],
+    ["-rpcauth=bogus"],
+    ["-rpccookieperms=bogus"],
+    ["-port=0", "-rpcauth=bogus"],
+    ["-rpcport=0", "-port=0"],
+]
+_BEFORE_THE_LOCK = [
+    (["-prune=-1"], "Prune cannot be configured with a negative value."),
+    (["-debug=bogus"], "Unsupported logging category -debug=bogus."),
+    (["-maxconnections=-1"], "-maxconnections must be greater or equal than zero"),
+    (
+        ["-blocksdir={x}/nosuch"],
+        'Specified blocks directory "{x}/nosuch" does not exist.',
+    ),
+    (["-prune=-1", "-port=0"], "Prune cannot be configured with a negative value."),
+]
+
+
+@pytest.mark.usefixtures("no_node")
+@pytest.mark.parametrize("argv", _AFTER_THE_LOCK)
+def test_main_a_held_directory_is_refused_before_these_options(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], argv: list[str]
 ) -> None:
-    """Core's `InitError` caption, and nothing started or waited on."""
-
-    class FakeNode:
-        def __init__(self, config: Any) -> None:
-            err_msg = "Cannot obtain a lock on directory <dir>."
-            raise DirectoryLockError(err_msg)
-
-    monkeypatch.setattr(cli, "Node", FakeNode)
-    with pytest.raises(SystemExit) as excinfo:
-        cli.main([f"-datadir={tmp_path}", "-regtest"])
+    """`AppInitMain`'s refusals come after `AppInitLockDirectories`'s."""
+    data_dir = tmp_path / "d"
+    (data_dir / "regtest").mkdir(parents=True)
+    with (
+        held_by_another_process(data_dir / "regtest"),
+        pytest.raises(SystemExit) as excinfo,
+    ):
+        cli.main([f"-datadir={data_dir}", "-regtest", *argv])
     assert excinfo.value.code == 1
     assert capsys.readouterr().err == (
-        "Error: Cannot obtain a lock on directory <dir>.\n"
+        f"Error: Cannot obtain a lock on directory {data_dir / 'regtest'}. "
+        "btclib-node is probably already running.\n"
     )
+
+
+@pytest.mark.usefixtures("no_node")
+@pytest.mark.parametrize(("argv", "refusal"), _BEFORE_THE_LOCK)
+def test_main_these_options_are_refused_before_a_held_directory(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    refusal: str,
+) -> None:
+    """`AppInitParameterInteraction`'s refusals come before the lock."""
+    data_dir = tmp_path / "d"
+    (data_dir / "regtest").mkdir(parents=True)
+    argv = [arg.format(x=tmp_path) for arg in argv]
+    with (
+        held_by_another_process(data_dir / "regtest"),
+        pytest.raises(SystemExit) as excinfo,
+    ):
+        cli.main([f"-datadir={data_dir}", "-regtest", *argv])
+    assert excinfo.value.code == 1
+    assert capsys.readouterr().err == f"Error: {refusal.format(x=tmp_path)}\n"
+
+
+@pytest.mark.parametrize(
+    ("argv", "refusal"),
+    [
+        (
+            ["-blocksdir={x}/nosuch", "-maxconnections=-1"],
+            'Specified blocks directory "{x}/nosuch" does not exist.',
+        ),
+        (
+            ["-maxconnections=-1", "-debug=bogus"],
+            "-maxconnections must be greater or equal than zero",
+        ),
+        (
+            ["-debug=bogus", "-prune=-1"],
+            "Unsupported logging category -debug=bogus.",
+        ),
+        (
+            ["-rpcbind=1.2.3.4:0"],
+            "Invalid port specified in -rpcbind: '1.2.3.4:0'",
+        ),
+        (
+            ["-rpcbind=1.2.3.4:0", "-rpcport=0"],
+            "Invalid port specified in -rpcport: '0'",
+        ),
+        (
+            ["-rpcauth=bogus", "-rpccookieperms=bogus"],
+            "Invalid -rpccookieperms=bogus; must be one of 'owner', 'group', or 'all'.",
+        ),
+    ],
+    ids=[
+        "blocksdir, maxconnections",
+        "maxconnections, debug",
+        "debug, prune",
+        "rpcbind",
+        "rpcport, rpcbind",
+        "rpccookieperms, rpcauth",
+    ],
+)
+def test_build_config_refuses_in_core_order(
+    tmp_path: Path, argv: list[str], refusal: str
+) -> None:
+    """Two refusals in one command line: the one `bitcoind` names first.
+
+    Each measured on `bitcoind` v31.1.0 but the last, where both refusals
+    are its "Unable to start HTTP server", and `StartHTTPRPC` reads
+    `-rpccookieperms` ahead of `-rpcauth` (`src/httprpc.cpp`, at
+    bitcoin/bitcoin@9be056a8a7).
+    """
+    argv = [arg.format(x=tmp_path) for arg in argv]
+    expected = re.escape(refusal.format(x=tmp_path))
+    with pytest.raises(ValueError, match=f"^{expected}$"):
+        cli.build_config([f"-datadir={tmp_path}", "-regtest", *argv])
+
+
+def test_main_releases_its_lock_once_the_node_holds_its_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The lock `main` takes ahead of `Node` is not held past it.
+
+    `FakeNode` takes no lock of its own, so while it runs another
+    process is refused only where `main` still holds one.
+    """
+    answers: list[str] = []
+
+    class FakeNode:
+        init_errors: tuple[str, ...] = ()
+
+        def __init__(self, config: Any) -> None:
+            self.data_dir = config.data_dir
+
+        def start(self) -> None:
+            answers.append(lock_from_another_process(self.data_dir))
+
+        def join(self) -> None:
+            pass
+
+    monkeypatch.setattr(cli, "Node", FakeNode)
+    monkeypatch.setattr(cli, "install_signal_handlers", lambda _: None)
+    cli.main([f"-datadir={tmp_path}", "-regtest"])
+    assert answers == ["locked"]
 
 
 @pytest.fixture
