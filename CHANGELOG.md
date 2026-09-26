@@ -450,6 +450,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   refused after the lock, the others before it, as in Core** (closes #1191);
   `-blocksdir` and `-rpcbind` are refused in Core's words.
 
+### The dialler draws from both tables, as Core's `Select_` does
+
+- **A coin picks the answered or the gossiped table, and a pass draws up to
+  a hundred times** (closes #1201), so held answered peers no longer stall it.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
