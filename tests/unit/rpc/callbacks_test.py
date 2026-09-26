@@ -1333,13 +1333,54 @@ def test_mempool_acceptance_propagates_a_store_error_rather_than_reporting_it(
         mempool_accept(a_node(), _CONN, [[tx.serialize(include_witness=True).hex()]])
 
 
-def test_an_unparsable_transaction_is_named_as_such() -> None:
-    """`testmempoolaccept` reports a transaction that fails to parse as invalid.
+def decode_failure(rawtx: str) -> str:
+    """Core's own `-22` message for a `rawtx` that does not decode."""
+    return f"TX decode failed: {rawtx} Make sure the tx has at least one input."
 
-    'Invalid serialization' is reported rather than raising.
+
+def test_an_unparsable_transaction_ends_the_call() -> None:
+    """A `rawtx` that does not decode is `-22` for the call, as in Core.
+
+    `bitcoind` v31.1 on regtest: `testmempoolaccept '["zz","00"]'` is
+    `-22` "TX decode failed: zz Make sure the tx has at least one input.",
+    where this reported each entry "Invalid serialization"
+    (btclib-org/btclib-node#1329).
     """
-    (result,) = mempool_accept(a_node(), _CONN, [["not a transaction"]])
-    assert result == {"allowed": False, "reject-reason": "Invalid serialization"}
+    with pytest.raises(RpcError) as raised:
+        mempool_accept(a_node(), _CONN, [["zz", "00"]])
+    assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+    assert raised.value.message == decode_failure("zz")
+
+
+def test_the_first_bad_rawtx_in_order_is_the_one_named() -> None:
+    """Each element is typed and then decoded, one after the other."""
+    with pytest.raises(RpcError) as raised:
+        mempool_accept(a_node(), _CONN, [["zz", 5]])
+    assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+    with pytest.raises(RpcError) as raised:
+        mempool_accept(a_node(), _CONN, [[5, "zz"]])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+
+
+@pytest.mark.parametrize("count", [0, 26])
+def test_an_array_outside_one_to_twenty_five_is_refused(count: int) -> None:
+    """Core's `MAX_PACKAGE_COUNT`: `-8` for an empty or a 26-entry array.
+
+    `bitcoind` v31.1 on regtest answers both "Array must contain between
+    1 and 25 transactions."
+    """
+    raw = a_tx().serialize(include_witness=True).hex()
+    with pytest.raises(RpcError) as raised:
+        mempool_accept(a_node(), _CONN, [[raw] * count])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert raised.value.message == "Array must contain between 1 and 25 transactions."
+
+
+def test_twenty_five_rawtxs_are_each_answered(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The bound's own edge is inside it."""
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
+    raw = a_tx().serialize(include_witness=True).hex()
+    assert len(mempool_accept(a_node(), _CONN, [[raw] * 25])) == 25
 
 
 def test_test_mempool_accept_with_no_params_is_answered_the_usage() -> None:
@@ -1411,16 +1452,17 @@ def test_test_mempool_accept_a_rawtx_of_the_wrong_json_type_is_named(
     assert verified == []
 
 
-def test_a_rawtx_with_a_truncated_script_is_named_invalid() -> None:
-    """A script shorter than its declared length is an invalid serialization.
+def test_a_rawtx_with_a_truncated_script_is_a_decode_failure() -> None:
+    """A script shorter than its declared length does not decode either.
 
     `Tx.parse` raises `BTClibRuntimeError` there rather than
-    `BTClibValueError`, which answered `-32603 Internal Error` instead
-    of this entry's own verdict.
+    `BTClibValueError`, which answered `-32603 Internal Error`.
     """
     truncated = "02000000" + "01" + "00" * 32 + "00000000" + "05" + "0000"
-    (result,) = mempool_accept(a_node(), _CONN, [[truncated]])
-    assert result == {"allowed": False, "reject-reason": "Invalid serialization"}
+    with pytest.raises(RpcError) as raised:
+        mempool_accept(a_node(), _CONN, [[truncated]])
+    assert raised.value.code == RPCErrorCode.DESERIALIZATION_ERROR
+    assert raised.value.message == decode_failure(truncated)
 
 
 def test_a_relayed_transaction_is_answered_with_its_txid(
