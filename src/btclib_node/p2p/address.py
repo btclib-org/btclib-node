@@ -306,8 +306,7 @@ def _endpoint(address: NetworkAddressV2) -> tuple[int, bytes, int]:
 
     Two addresses have one `endpoint_key` exactly where they have one of
     these, and this costs no `replace` and no `serialize`: what a walk
-    over a whole table compares by, where `endpoint_key` would cost
-    tens of milliseconds a pass (btclib-org/btclib-node#1283).
+    over a whole table compares by (btclib-org/btclib-node#1283).
     """
     return address.network_id, address.address, address.port
 
@@ -376,19 +375,17 @@ class PeerDB:
         # its prune removed a row, both already O(n) over it.
         self._active_index: dict[bytes, int] = {}
         # `add_active_address` reads this index and then writes into
-        # `active_addresses` at the position it found -- two statements,
-        # not one -- and `get_active_addresses`, where its prune removed
-        # a row, reassigns the list and then rebuilds the index against
-        # it -- likewise two. The first
-        # runs on `Node`'s own thread, off `callbacks.verack`; the
-        # second runs on `P2pManager`'s, off `manage_connections`, which
-        # calls it every few minutes regardless of what else that loop
-        # is doing (#71). Interleaved without a lock, a position read
-        # before a prune can be written after it, into a list the prune
-        # already reshaped: one endpoint's row silently holding another
-        # endpoint's data, or an `IndexError`. `KeyValueStore` has its
-        # own lock for the store; this one is for these two in-memory
-        # structures alone, and is not the same lock.
+        # `active_addresses` at the position it found -- two statements, not one
+        # -- and `get_active_addresses`, where its prune removed a row,
+        # reassigns the list and then rebuilds the index against it -- likewise
+        # two. The first runs on `Node`'s own thread, off `callbacks.verack`;
+        # the second runs on `P2pManager`'s, off `manage_connections`, which
+        # calls it every few minutes regardless of what else that loop is doing
+        # (#71). Interleaved without a lock, a position read before a prune can
+        # be written after it, into a list the prune already reshaped: one
+        # endpoint's row silently holding another endpoint's data, or an
+        # `IndexError`. `KeyValueStore` has its own lock for the store; this one
+        # is for these two in-memory structures alone, and is not the same lock.
         self._active_lock = threading.Lock()
         # What `callbacks.getaddr` last answered with, and until when it
         # is still good for: a fresh `secrets.SystemRandom().sample` per

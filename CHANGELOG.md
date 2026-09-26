@@ -455,11 +455,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A coin picks the answered or the gossiped table, and a pass draws up to
   a hundred times** (closes #1201), so held answered peers no longer stall it.
 
-### A dial pass no longer serializes every address it could draw
-
-- **`address_sampler` compares endpoints field by field, and
-  `get_active_addresses` reindexes only where it pruned a row** (closes
-  #1217, closes #1283), where each pass serialized every row of both tables.
 ### PeerDB records as answered only a peer it already knows
 
 - **A peer is recorded as answered only where gossip already holds its
@@ -490,6 +485,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A `..` comes off, and a leading `//` becomes `/`, before the file system is
   asked** (closes #1187); a missing data directory and an unreadable
   configuration file are refused in Core's words.
+
+### A dial pass no longer serializes every address it could draw
+
+- **`address_sampler` compares endpoints field by field, and
+  `get_active_addresses` reindexes only where it pruned a row** (closes
+  #1217, closes #1283), where each pass serialized every row of both tables.
 
 ## v2026.9.24
 

@@ -1359,6 +1359,9 @@ def test_a_read_that_prunes_nothing_does_not_rebuild_the_index(
         real_reindex()
 
     monkeypatch.setattr(peer_db, "_reindex_active", counted)
+    # known first: `add_active_address` records only an endpoint
+    # `addresses` holds
+    peer_db.add_addresses([kept])
     peer_db.add_active_address(kept)
     assert peer_db.get_active_addresses() == peer_db.active_addresses
     assert rebuilt == []
