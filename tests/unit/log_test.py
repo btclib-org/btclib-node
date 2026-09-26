@@ -37,7 +37,10 @@ def test_a_byte_utf8_refuses_is_logged_as_that_byte(tmp_path: Path) -> None:
     logger = Logger(path)
     logger.warning("Invalid -rpccookieperms=o\udce9")
     logger.close()
-    assert path.read_bytes().endswith(b"Invalid -rpccookieperms=o\xe9\n")
+    # the line's own end left out: a text-mode file ends it in `\r\n` on
+    # Windows, which is not what this test is about
+    line = path.read_bytes().rstrip(b"\r\n")
+    assert line.endswith(b"Invalid -rpccookieperms=o\xe9")
 
 
 def test_no_log_path_is_the_stream_and_not_a_file() -> None:
