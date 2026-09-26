@@ -480,6 +480,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **The JSON-RPC listener stays on loopback whatever `-rpcbind` names**
   (closes #1211), and every value is checked, where the last was bound.
 
+### `-datadir`, `-conf` and `-blocksdir` are read lexically normal, as in Core
+
+- **A `..` comes off, and a leading `//` becomes `/`, before the file system is
+  asked** (closes #1187); a missing data directory and an unreadable
+  configuration file are refused in Core's words.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
