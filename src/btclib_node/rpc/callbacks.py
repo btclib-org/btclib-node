@@ -896,7 +896,10 @@ def _socket_addresses(p2p_conn: Connection) -> tuple[str, str] | None:
     is `m_addr_name`, which is that same string only where the peer was
     not dialled by name. Here addr is `getpeername`'s and never a name,
     so one formatter serves both. `disconnectnode` matches its `address`
-    against the same `addr`, as Core's matches `m_addr_name`.
+    against the same `addr`, as Core's matches `m_addr_name`. For a
+    peer dialled by a destination string that is the string as given,
+    where this `addr` is formatted from the socket
+    (btclib-org/btclib-node#1301).
     """
     try:
         addr = p2p_conn.client.getpeername()
@@ -1091,7 +1094,7 @@ def disconnect_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
     short of `verack` is found too, as Core's `m_nodes` holds it. The
     address is matched against `getpeerinfo`'s own `addr`, the id against
     its `id`, and neither found is `RPC_CLIENT_NODE_NOT_CONNECTED`. Named
-    arguments are btclib-org/btclib-node#1168's.
+    arguments reach it mapped onto these two positions by `arg_names`.
     """
     if len(params) > 2:  # noqa: PLR2004
         raise RpcError(RPCErrorCode.MISC_ERROR, _DISCONNECTNODE_HELP)
@@ -1757,6 +1760,7 @@ arg_names: dict[str, tuple[str, ...]] = {
     "getconnectioncount": (),
     "getnetworkinfo": (),
     "addnode": ("node", "command", "v2transport"),
+    "disconnectnode": ("address", "nodeid"),
     "getmempoolinfo": (),
     "getrawmempool": ("verbose", "mempool_sequence"),
     "getrawtransaction": ("txid", "verbosity|verbose", "blockhash"),

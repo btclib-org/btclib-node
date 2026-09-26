@@ -291,7 +291,8 @@ class P2pManager(threading.Thread):
         # that missed, from `pending_connections` -- two statements
         # again. `promote_connection` runs on `Node`'s own loop, off
         # `callbacks.verack`; `remove_connection` runs on this
-        # manager's own loop, off `_prune_stale_connections`. Unlocked,
+        # manager's own loop, off `_prune_stale_connections`, and on
+        # `Node`'s, off the `disconnectnode` RPC. Unlocked,
         # a `remove_connection` whose first pop misses because the
         # connection is still pending can run its second pop after
         # `promote_connection` has already moved it, missing it there
@@ -506,8 +507,8 @@ class P2pManager(threading.Thread):
         calls only because the status belongs to the connection and the
         dict it lives in belongs to the manager. `_connections_lock`
         (`__init__`) is what makes the pop and the write one step too,
-        against `remove_connection`'s own two pops below, on the other
-        thread.
+        against `remove_connection`'s own two pops below, which this
+        manager's own thread also runs.
 
         Successfully connected is exactly the state
         `pending_outbound_nonces` (`__init__`) has to stop answering
@@ -1435,10 +1436,11 @@ class P2pManager(threading.Thread):
         # Only after join(), not before: `run()` above has now returned,
         # so nothing but this thread can still be adding to
         # `self.connections`/`self.pending_connections` -- `create_connection`
-        # and `remove_connection` are only ever reached from a coroutine
-        # on this manager's own loop, and `promote_connection`, `Node`'s
-        # thread's own exception, cannot race a `stop()` that same
-        # thread is itself blocked inside. A sweep taken before join()
+        # is only ever reached from a coroutine on this manager's own
+        # loop, and `promote_connection` and `remove_connection`, which
+        # `Node`'s thread also reaches (the latter through the
+        # `disconnectnode` RPC), cannot race a `stop()` that same thread
+        # is itself blocked inside. A sweep taken before join()
         # closed whatever it snapshotted correctly but could still miss
         # a connection `server()`'s own accept loop created in the
         # window between `loop.stop` merely being scheduled above and

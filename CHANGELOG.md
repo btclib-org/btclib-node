@@ -465,10 +465,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A peer is discouraged only where Core calls `Misbehaving`** (closes
   #1170); a payload that does not parse is logged and the peer kept.
 
-### `disconnectnode` drops a connection, as Core's does
-
-- **`disconnectnode` drops a connection by `getpeerinfo`'s address or id, with
-  Core's errors** (closes #1193).
 ### An inbound peer is sent `version` only once its own is accepted, as in Core
 
 - **A refused inbound peer is sent nothing** (closes #1207).
@@ -489,6 +485,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A `..` comes off, and a leading `//` becomes `/`, before the file system is
   asked** (closes #1187); a missing data directory and an unreadable
   configuration file are refused in Core's words.
+
+### `disconnectnode` drops a connection, as Core's does
+
+- **`disconnectnode` drops a connection by `getpeerinfo`'s address or id, with
+  Core's errors** (closes #1193).
 
 ## v2026.9.24
 
