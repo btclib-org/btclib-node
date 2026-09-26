@@ -184,6 +184,19 @@ def bound_hosts(server_sockets: list[socket.socket]) -> list[str]:
     return hosts
 
 
+def test_warnings_into_passes_over_a_loopback_the_host_cannot_bind() -> None:
+    """The control for `warnings_into`: one such warning is not recorded.
+
+    A host without IPv6 logs it for `::1`; here a loopback outside
+    `LOOPBACKS` stands in for it, beside a warning that is recorded.
+    """
+    logged: list[tuple[object, ...]] = []
+    warning = warnings_into(logged)
+    warning("Binding RPC on address %s port %s failed.", "::2", 1)
+    warning("Binding RPC on address %s port %s failed.", LOOPBACKS[0], 1)
+    assert logged == [("Binding RPC on address %s port %s failed.", LOOPBACKS[0], 1)]
+
+
 def test_resolvable_refuses_what_the_lookup_does_not_answer() -> None:
     """The control for `LOOPBACKS`: a name is not an address it answers."""
     assert not resolvable("localhost")
