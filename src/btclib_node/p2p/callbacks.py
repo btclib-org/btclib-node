@@ -900,6 +900,27 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
         node.download_manager.received_txs.append((conn.id, tx.hash))
 
 
+def _unrequested_block_refused(node: Node, block_hash: bytes) -> bool:
+    """Whether a block nobody asked for is left unprocessed, as Core leaves it.
+
+    Core's `AcceptBlock` (`validation.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag) returns without storing an unrequested block with less
+    work than the active tip, more than `MIN_BLOCKS_TO_KEEP` above it, or
+    below the minimum chain work. Its other refusal, a block processed
+    before and pruned since, falls under the first: pruning stays
+    `MIN_BLOCKS_TO_KEEP` below the tip, so such a block has less work.
+    """
+    block_index = node.chainstate.block_index
+    active_chain = block_index.active_chain
+    work = block_index.chainwork[block_hash]
+    height = block_index.get_block_info(block_hash).index
+    return (
+        work < block_index.chainwork[active_chain[-1]]
+        or height > len(active_chain) - 1 + MIN_BLOCKS_TO_KEEP
+        or work < node.chain.consensus.minimum_chain_work
+    )
+
+
 def block(node: Node, msg: bytes, conn: Connection) -> None:
     """Store a requested block once its proof of work checks out.
 
@@ -942,6 +963,12 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
     block = BlockMsg.parse(msg, check_validity=False).block
     block_hash = block.header.hash
 
+    # Core's `IsBlockRequested`: asked of any peer, read before this one's
+    # request is removed
+    requested = block_hash in conn.download_queue or any(
+        block_hash in other.download_queue
+        for other in list(node.p2p_manager.connections.values())
+    )
     if block_hash in conn.download_queue:
         conn.download_queue.remove(block_hash)
 
@@ -962,6 +989,8 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
     block_info = block_index.get_block_info(block_hash)
 
     if not block_info.downloaded:
+        if not requested and _unrequested_block_refused(node, block_hash):
+            return
         # a block that does not hold up is nobody's: the raise reaches
         # main.handle_p2p, which drops the peer that sent it. Invalidate
         # first and re-raise, so the next peer offering the same block
