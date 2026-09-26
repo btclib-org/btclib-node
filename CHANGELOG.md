@@ -518,6 +518,14 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   and the log names the value** (closes #1210), refused once the RPC
   listener is bound, `-rpcauth` after the cookie, as `bitcoind` refuses it.
 
+### The mempool refuses a fee under its floor, as Core
+
+- **Under the rolling minimum, "mempool min fee not met"; under
+  `min_relay_feerate`, "min relay fee not met"; each with "<fee> < <floor>"
+  for the vsize** (closes #1245). `testmempoolaccept` reports the pair as
+  `reject-reason` and `reject-details`, `sendrawtransaction` answers `-26`
+  with it, and a reorg's re-added transactions are exempt.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
