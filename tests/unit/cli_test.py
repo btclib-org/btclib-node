@@ -1239,44 +1239,56 @@ def test_build_config_cli_port_overrides_the_file(tmp_path: Path) -> None:
     assert config.p2p_port == 2222
 
 
-def test_build_config_rpcbind_sets_the_host() -> None:
-    """`-rpcbind=<addr>` sets `rpc_host`."""
-    config = cli.build_config(["-regtest", "-rpcbind=0.0.0.0"])
-    assert config.rpc_host == "0.0.0.0"  # noqa: S104
+@pytest.mark.parametrize(
+    "argv",
+    [
+        pytest.param(["-rpcbind=0.0.0.0"], id="every interface"),
+        pytest.param(["-rpcbind=127.0.0.1:9998"], id="a port of its own"),
+        pytest.param(["-rpcbind=127.0.0.2", "-rpcbind=[::1]:9997"], id="several"),
+    ],
+)
+def test_build_config_rpcbind_is_ignored_without_rpcallowip(argv: list[str]) -> None:
+    """ISS 1211: Core binds `-rpcbind` only beside `-rpcallowip`.
 
-
-def test_build_config_rpcbind_port_overrides_rpcport() -> None:
-    """`-rpcbind`'s own port, when given, wins over `-rpcport`."""
-    config = cli.build_config(["-regtest", "-rpcbind=127.0.0.1:9998", "-rpcport=9999"])
-    assert config.rpc_port == 9998
+    bitcoind v31.1.0 given each of these and no `-rpcallowip` listens on
+    loopback at `-rpcport`, and logs a warning; this node has no
+    `-rpcallowip`, so the listener stays on `127.0.0.1` at `-rpcport`,
+    the values kept for `RpcManager` to warn over.
+    """
+    config = cli.build_config(["-regtest", *argv, "-rpcport=9999"])
+    assert config.rpc_host == "127.0.0.1"
+    assert config.rpc_port == 9999
+    assert config.rpcbind == tuple(value.removeprefix("-rpcbind=") for value in argv)
 
 
 @pytest.mark.parametrize(
-    ("argv", "conf", "host"),
+    ("argv", "conf", "values"),
     [
-        (["-rpcbind=127.0.0.2"], "rpcbind=127.0.0.3\n", "127.0.0.2"),
-        ([], "rpcbind=127.0.0.3\nrpcbind=127.0.0.4\n", "127.0.0.3"),
-        (["-norpcbind"], "rpcbind=127.0.0.3\n", "127.0.0.1"),
-        (["-rpcbind=127.0.0.2", "-rpcbind=127.0.0.5"], "", "127.0.0.5"),
+        (["-rpcbind=127.0.0.2"], "rpcbind=127.0.0.3\n", ("127.0.0.2", "127.0.0.3")),
+        ([], "rpcbind=127.0.0.3\nrpcbind=127.0.0.4\n", ("127.0.0.3", "127.0.0.4")),
+        (["-norpcbind"], "rpcbind=127.0.0.3\n", ()),
     ],
-    ids=[
-        "the command line over the file",
-        "the file's first",
-        "negated",
-        "the command line's last",
-    ],
+    ids=["the command line then the file", "the file's every value", "negated"],
 )
-def test_build_config_rpcbind_is_read_as_one_value(
-    tmp_path: Path, argv: list[str], conf: str, host: str
+def test_build_config_rpcbind_is_read_as_a_list(
+    tmp_path: Path, argv: list[str], conf: str, values: tuple[str, ...]
 ) -> None:
-    """The one address bound: the command line's last, or the file's first."""
-    assert _build(tmp_path, *argv, conf=conf).rpc_host == host
+    """ISS 1211: Core's `GetArgs("-rpcbind")`, every value from every level."""
+    assert _build(tmp_path, *argv, conf=conf).rpcbind == values
 
 
-def test_build_config_rpcbind_without_a_port_leaves_rpcport_alone() -> None:
-    """`-rpcbind` naming no port of its own does not touch `-rpcport`."""
-    config = cli.build_config(["-regtest", "-rpcbind=127.0.0.1", "-rpcport=9999"])
-    assert config.rpc_port == 9999
+def test_build_config_every_rpcbind_value_is_checked() -> None:
+    """ISS 1211: `CheckHostPortOptions` checks every value, bound or not.
+
+    bitcoind v31.1.0 refuses `-rpcbind=1.2.3.4:0 -rpcbind=127.0.0.1` with
+    "Invalid port specified in -rpcbind: '1.2.3.4:0'", where only the
+    last value was read here.
+    """
+    argv = ["-regtest", "-rpcbind=1.2.3.4:0", "-rpcbind=127.0.0.1"]
+    with pytest.raises(
+        ValueError, match=re.escape("Invalid port specified in -rpcbind: '1.2.3.4:0'")
+    ):
+        cli.build_config(argv)
 
 
 def test_build_config_prune_nonzero_reaches_config_pruned() -> None:
