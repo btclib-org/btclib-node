@@ -747,6 +747,15 @@ class P2pManager(threading.Thread):
         """Schedule `async_connect(address)` onto this manager's own loop."""
         asyncio.run_coroutine_threadsafe(self.async_connect(address), self.loop)
 
+    def _held_endpoints(self) -> set[bytes]:
+        """Return the `endpoint_key` of every connection, pending ones too."""
+        with self._connections_lock:
+            connected = (
+                *self.connections.values(),
+                *self.pending_connections.values(),
+            )
+        return {endpoint_key(c.address) for c in connected}
+
     async def async_connect_host(
         self, host: str, port: int, *, addr_fetch: bool = False
     ) -> None:
@@ -763,15 +772,12 @@ class P2pManager(threading.Thread):
         `async_connect` logs it.
         """
         name = (host, port)
-        with self._connections_lock:
-            connected = (
-                *self.connections.values(),
-                *self.pending_connections.values(),
-            )
-        held = {endpoint_key(c.address) for c in connected}
-        if self._named_endpoints.get(name) in held:
+        if self._named_endpoints.get(name) in self._held_endpoints():
             return
         ips = await lookup_host(host, _MAX_NAME_ANSWERS)
+        # read again after the lookup, as `ConnectNode` asks
+        # `AlreadyConnectedToAddressPort` of each answer once resolved
+        held = self._held_endpoints()
         secrets.SystemRandom().shuffle(ips)
         addresses = [peer_address(ip, port) for ip in ips]
         for ip, address in zip(ips, addresses, strict=True):
