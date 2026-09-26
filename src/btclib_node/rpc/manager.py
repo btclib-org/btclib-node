@@ -21,6 +21,7 @@ either step failed, which Core turns into an `InitError`.
 """
 
 import asyncio
+import os
 import socket
 import sys
 import threading
@@ -59,13 +60,45 @@ def _is_bind_any(host: str) -> bool:
         return False
 
 
-# libevent resolves an IP literal itself on Windows, where it is never
-# held to `AI_ADDRCONFIG`, and hands every other lookup to the system's
-# `getaddrinfo` with that flag (`evutil_getaddrinfo`, `evutil.c`, same
-# version as below). A host a Python caller names by a name is the one
-# case this leaves apart, on Windows alone.
+# libevent resolves an IP literal and the empty host itself on Windows,
+# where it is never held to `AI_ADDRCONFIG`, and hands every other
+# lookup to the system's `getaddrinfo` with that flag
+# (`evutil_getaddrinfo` and `evutil_getaddrinfo_common_`, `evutil.c`,
+# same version as below).
 _WINDOWS = sys.platform == "win32"
 _ADDRESS_FLAGS = socket.AI_PASSIVE | (0 if _WINDOWS else socket.AI_ADDRCONFIG)
+# what `getaddrinfo` answers as an address
+_SockAddr = tuple[str, int] | tuple[str, int, int, int] | tuple[int, bytes]
+
+
+def _first_address(
+    host: str, port: int | None
+) -> tuple[socket.AddressFamily, socket.SocketKind, int, _SockAddr]:
+    """Return the family, type, protocol and address `host` binds first.
+
+    `host` reaches `getaddrinfo` as its bytes, as libevent hands it
+    over: a `str` would be IDNA-encoded first, which reads fullwidth
+    digits as ASCII ones and refuses `a..b` with a `UnicodeError`
+    rather than as a lookup that failed. The empty host is libevent's
+    `NULL`, every interface, which on Windows `evutil_getaddrinfo_common_`
+    answers itself, `0.0.0.0` ahead of `::`; elsewhere the system
+    lookup answers it, in the order it answers `bitcoind`.
+    """
+    if not host and _WINDOWS:
+        return (
+            socket.AF_INET,
+            socket.SOCK_STREAM,
+            socket.IPPROTO_TCP,
+            # libevent's own `0.0.0.0`, bound exactly as `bitcoind` binds it
+            ("0.0.0.0", port or 0),  # noqa: S104
+        )
+    family, kind, proto, _, sockaddr = socket.getaddrinfo(
+        os.fsencode(host) if host else None,
+        port,
+        type=socket.SOCK_STREAM,
+        flags=_ADDRESS_FLAGS,
+    )[0]
+    return family, kind, proto, sockaddr
 
 
 def _bind_endpoint(host: str, port: int | None) -> socket.socket:
@@ -79,9 +112,7 @@ def _bind_endpoint(host: str, port: int | None) -> socket.socket:
     this one holds. Raises `OSError` where any step fails, the socket
     closed.
     """
-    family, kind, proto, _, sockaddr = socket.getaddrinfo(
-        host or None, port, type=socket.SOCK_STREAM, flags=_ADDRESS_FLAGS
-    )[0]
+    family, kind, proto, sockaddr = _first_address(host, port)
     server_socket = socket.socket(family, kind, proto)
     try:
         server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
