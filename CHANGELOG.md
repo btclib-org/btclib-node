@@ -526,6 +526,13 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `reject-reason` and `reject-details`, `sendrawtransaction` answers `-26`
   with it, and a reorg's re-added transactions are exempt.
 
+### The mempool refuses a second spend of one outpoint, and a block evicts it
+
+- **A conflicting candidate is refused: "insufficient fee" in Core's words
+  where Core's fee rules refuse it, "bip125-replacement-disallowed" where
+  Core would replace; a connected block evicts what spends its inputs, with
+  its descendants** (closes #1244). Replacing is not ported (issue #1334).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

@@ -319,13 +319,13 @@ def test_eviction_of_a_diamond_shaped_package_removes_every_descendant_once() ->
     mempool = Mempool(Logger(debug=True))
     parent = generate_random_transaction()
     child_a = generate_random_transaction(parent.id)
-    child_b = generate_random_transaction(parent.id)
+    # parent:1, not parent:0 again: a second spend of one outpoint is a
+    # conflict `add_tx` refuses (btclib-org/btclib-node#1244)
+    child_b = a_spend_of([(parent.id, 1)])
     grandchild = a_transaction_spending(child_a.id, child_b.id)
     keeper = generate_random_transaction()
-    mempool.add_tx(parent, 0)
-    mempool.add_tx(child_a, 0)
-    mempool.add_tx(child_b, 0)
-    mempool.add_tx(grandchild, 0)
+    for tx in (parent, child_a, child_b, grandchild):
+        assert mempool.add_tx(tx, 0)
     mempool.bytesize_limit = mempool.bytesize + keeper.vsize - 1
     assert mempool.add_tx(keeper, 10_000) is True
     assert not mempool.contains_tx(parent)

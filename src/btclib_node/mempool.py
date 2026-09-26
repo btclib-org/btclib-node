@@ -390,7 +390,8 @@ class Mempool:
         an increase under the incremental relay fee for its vsize. A
         candidate that pays for them, which Core may accept, is refused
         "bip125-replacement-disallowed", Core's reason where it allows no
-        replacement. btclib-org/btclib-node#1244
+        replacement; replacing is btclib-org/btclib-node#1334.
+        btclib-org/btclib-node#1244
         """
         replaced = self._replaced(tx)
         if not replaced:
