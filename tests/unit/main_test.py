@@ -2498,3 +2498,21 @@ def test_a_block_sent_before_connecting_is_not_announced_again(node: Node) -> No
     assert len(fast) == 1
     (message,) = slow
     assert isinstance(message, Headers)
+
+
+def test_every_high_bandwidth_peer_is_sent_one_and_the_same_cmpctblock(
+    node: Node,
+) -> None:
+    """ISS 1315: Core's `NewPoWValidBlock` builds one `pcmpctblock` for all."""
+    chain = generate_random_chain(2, RegTest().genesis.hash)
+    connect(node, chain[:1])
+    node.is_initial_block_download = False
+    node.chainstate.block_index.add_headers([chain[1].header])
+    sent: dict[int, list[Any]] = {1: [], 2: []}
+    for conn_id, messages in sent.items():
+        node.p2p_manager.connections[conn_id] = a_fast_peer(
+            messages, BlockAvailability(best_known=chain[0].header.hash)
+        )
+    main.new_pow_valid_block(node, chain[1])
+    (first,) = sent[1]
+    assert sent[2] == [first]
