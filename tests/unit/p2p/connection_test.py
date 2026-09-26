@@ -231,6 +231,36 @@ def test_send_version_carries_this_nodes_own_best_height() -> None:
     assert start_height == 741
 
 
+@pytest.mark.parametrize(("block_relay", "relay"), [(True, False), (False, True)])
+def test_send_version_asks_a_block_relay_only_peer_for_no_transactions(
+    *, block_relay: bool, relay: bool
+) -> None:
+    """ISS 1095: `fRelay` is `!RejectIncomingTxs`, false for `BLOCK_RELAY`.
+
+    Written on the wire as the octet, not left out: Core always sends it.
+    """
+    connection, _ = a_connection()
+    connection.block_relay = block_relay
+    manager = cast("Any", connection.manager)
+    manager.pending_outbound_nonces = set()
+    manager.add_pending_outbound_nonce = manager.pending_outbound_nonces.add
+    manager.port = 18444
+    sent: list[bytes] = []
+
+    async def _send(data: bytes) -> None:
+        sent.append(data)
+
+    connection._send = _send  # type: ignore[method-assign]
+
+    with connection.client:
+        asyncio.run(connection.send_version())
+
+    (framed,) = sent
+    payload = Message.parse(framed).payload
+    assert Version.parse(payload).relay is relay
+    assert payload[-1:] == (b"\x01" if relay else b"\x00")
+
+
 def test_send_version_advertises_node_network_when_not_pruned() -> None:
     """An unpruned node's `version` carries `NODE_NETWORK`, among the rest."""
     connection, _ = a_connection()

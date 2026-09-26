@@ -405,8 +405,12 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     # landed on an attribute nothing reads and the connection's own flag
     # stayed true for its whole life. is_relay_requested and not relay
     # because an absent flag means true, which is BIP37's default and
-    # Core's.
-    conn.relay_tx = version_msg.is_relay_requested
+    # Core's. A block-relay-only connection relays no transaction
+    # whatever the peer asked for: Core's `VERSION` handler builds no
+    # `TxRelay` for one (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    # the v31.1 tag), so nothing is announced to it and a `getdata` of
+    # its for a transaction goes unanswered.
+    conn.relay_tx = version_msg.is_relay_requested and not conn.block_relay
     # where Core's `ProcessMessage` sets `m_time_offset`, once every
     # refusal above is behind it
     conn.stats.time_offset = version_msg.timestamp - int(time.time())
@@ -458,7 +462,15 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     else:
         address = replace(conn.address, services=services)
         conn.address = address
-        node.p2p_manager.peer_db.add_active_address(address)
+        # Not a block-relay-only peer's: the table is what `getaddr`
+        # answers from, so recording one would advertise the link, which
+        # Core avoids by never calling `AddrMan::Connected` for it
+        # (`FinalizeNode`, `net_processing.cpp`, at
+        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Its `AddrMan::Good`,
+        # which this table cannot record apart from that, is not
+        # reproduced (btclib-org/btclib-node#1226).
+        if not conn.block_relay:
+            node.p2p_manager.peer_db.add_active_address(address)
 
     # `sendheaders` is `DownloadManager`'s to send, once this peer's best
     # known block has the minimum chain work, as Core's
@@ -481,8 +493,9 @@ def verack(node: Node, msg: bytes, conn: Connection) -> None:
     # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) asks an outbound peer
     # alone, and makes room for its answer past
     # `_MAX_ADDR_PROCESSING_TOKEN_BUCKET`; an inbound peer keeps the one
-    # token it started with.
-    if not conn.inbound:
+    # token it started with. A block-relay-only peer is not asked either,
+    # `SetupAddressRelay` refusing it.
+    if not conn.inbound and not conn.block_relay:
         conn.send(GetAddr())
         conn.addr_token_bucket += MAX_ADDR_TO_SEND
     # No `getheaders` here: whether this peer is asked for headers is
@@ -688,7 +701,18 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 def addr(node: Node, msg: bytes, conn: Connection) -> None:
-    """Merge the addr-version-1 entries a peer gossiped into the table."""
+    """Merge the addr-version-1 entries a peer gossiped into the table.
+
+    Ignored from a block-relay-only peer once parsed, as Core's `ADDR`
+    handler (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+    v31.1 tag) ignores it, `SetupAddressRelay` refusing the peer ahead
+    of the `MAX_ADDR_TO_SEND` check. A payload the parse refuses is
+    logged by `main.handle_p2p` and costs the peer nothing, as in Core,
+    whose parse reads a count past that bound where btclib's refuses it.
+    """
+    if conn.block_relay:
+        Addr.parse(BytesIO(msg))
+        return
     # Addr.parse(msg) would refuse an octet past the last address
     # (btclib's own assert_no_trailing, a malleability guard that holds
     # across the library) by raising out of this callback, which
@@ -710,7 +734,14 @@ def addr(node: Node, msg: bytes, conn: Connection) -> None:
 
 
 def addrv2(node: Node, msg: bytes, conn: Connection) -> None:
-    """Merge the BIP155 entries a peer gossiped into the address table."""
+    """Merge the BIP155 entries a peer gossiped into the address table.
+
+    Ignored from a block-relay-only peer once parsed, as `addr` above
+    ignores it.
+    """
+    if conn.block_relay:
+        AddrV2.parse(BytesIO(msg))
+        return
     # the same leniency as addr above, and the same reason: BIP155
     # entries fully read, anything past them left unchecked rather than
     # costing this node the gossip. btclib-org/btclib-node#149
@@ -809,7 +840,16 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
     already holds this wtxid or has recently refused it, if the
     transaction fails a relay or a consensus check, or if `add_tx`
     itself declines to keep it.
+
+    A block-relay-only peer sending one is disconnected, and not
+    discouraged, as Core's `TX` handler does first of all where
+    `RejectIncomingTxs` holds (`net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
     """
+    if conn.block_relay:
+        node.logger.debug("transaction sent in violation of protocol, peer=%s", conn.id)
+        conn.stop()
+        return
     # Core's own early return in IBD, before it even parses the payload:
     # "we don't have enough information to validate it yet"
     # (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
@@ -965,6 +1005,31 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
         block_index.set_downloaded(block_hash)
 
 
+# The transaction items Core's `IsGenTxMsg` answers for, and the one its
+# `INV` loop skips before asking, by whether the peer sent `wtxidrelay`:
+# `MSG_TX` from one that did, `MSG_WTX` from one that did not.
+_TX_TYPES = frozenset(
+    {InventoryType.MSG_TX, InventoryType.MSG_WTX, InventoryType.MSG_WITNESS_TX}
+)
+
+
+def _first_rejected_item(conn: Connection, items: tuple[Inventory, ...]) -> int | None:
+    """Return the index of a block-relay-only peer's first transaction item."""
+    if not conn.block_relay:
+        return None
+    skipped = (
+        InventoryType.MSG_TX if conn.wtxidrelay_received else InventoryType.MSG_WTX
+    )
+    return next(
+        (
+            position
+            for position, item in enumerate(items)
+            if item.type_code in _TX_TYPES and item.type_code != skipped
+        ),
+        None,
+    )
+
+
 def inv(node: Node, msg: bytes, conn: Connection) -> None:
     """Ask for headers behind an announced block, queue missing transactions.
 
@@ -978,14 +1043,28 @@ def inv(node: Node, msg: bytes, conn: Connection) -> None:
     to this peer is in flight, and a peer not yet syncing has its turn
     spent all the same, as in Core. Transactions are queued only out of
     initial block download, where Core calls `AddTxAnnouncement`.
+
+    A block-relay-only peer announcing a transaction is disconnected
+    there and then, as Core's loop does on the first such item where
+    `RejectIncomingTxs` holds: what came before it is taken, and nothing
+    after it, `getheaders` included. An item of the kind Core skips for
+    the peer's `wtxidrelay` is not one: `MSG_TX` from a peer that sent
+    it, `MSG_WTX` from one that did not.
     """
     _refuse_past_bound("inv", _count_past(msg, MAX_INV_SZ, _INV_ENTRY_SIZE))
     inv = Inv.parse(msg)
+    rejected = _first_rejected_item(conn, inv.items)
 
     block_index = node.chainstate.block_index
-    for item in inv.items:
+    for item in inv.items[:rejected]:
         if item.type_code == InventoryType.MSG_BLOCK:
             update_block_availability(block_index, conn.block_availability, item.hash)
+    if rejected is not None:
+        node.logger.debug(
+            "transaction inv sent in violation of protocol, peer=%s", conn.id
+        )
+        conn.stop()
+        return
     unknown = [
         x.hash
         for x in inv.items

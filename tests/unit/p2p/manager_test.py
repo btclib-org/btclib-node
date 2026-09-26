@@ -12,6 +12,7 @@ messages addressed to a connection that is no longer there.
 
 import asyncio
 import errno
+import math
 import re
 import secrets
 import socket
@@ -72,6 +73,7 @@ def a_conn(
     inbound: bool = False,
     automatic: bool = False,
     protocol: int = PROTOCOL_VERSION,
+    block_relay: bool = False,
 ) -> Any:
     """Build a `Connection` double: no socket, its own `sent`/`stopped` logs.
 
@@ -95,6 +97,7 @@ def a_conn(
         inbound=inbound,
         automatic=automatic,
         version_message=SimpleNamespace(version=protocol),
+        block_relay=block_relay,
         sent=[],
         stopped=[],
     )
@@ -1283,18 +1286,21 @@ def test_the_fixed_seeds_are_added_at_once_without_dns_seeding(
     assert bool(added) is adds
 
 
-@pytest.mark.parametrize(("live", "adds"), [(8, True), (11, False)])
-def test_fixed_seeds_wait_on_the_outbound_grant_not_the_full_relay_target(
-    a_manager: AManagerFactory, live: int, *, adds: bool
+@pytest.mark.parametrize(
+    ("full_relay", "block_relay", "adds"),
+    [(8, 0, True), (8, 2, True), (8, 3, False), (11, 0, False)],
+)
+def test_fixed_seeds_wait_on_the_outbound_grant_not_the_targets(
+    a_manager: AManagerFactory, full_relay: int, block_relay: int, *, adds: bool
 ) -> None:
-    """ISS 1099: Core's `semOutbound` holds eleven, not the eight full-relay.
+    """ISS 1099, 1095: Core's `semOutbound` holds eleven, not the two targets.
 
-    `ThreadOpenConnections` takes a grant before its fixed-seed step,
-    and the grant counts block-relay and feeler slots too, so eight
-    full-relay peers still leave it to seed; eleven automatic peers
-    fill it, and the step is not reached.
+    `ThreadOpenConnections` takes a grant before its fixed-seed step and
+    counts peers of either kind after it, so eight full-relay and two
+    block-relay-only peers, both targets met, still leave it to seed;
+    eleven automatic peers fill the grant, and the step is not reached.
     """
-    conns = [a_conn(i, automatic=True) for i in range(live)]
+    conns = automatic_conns(full_relay, block_relay)
     manager, added = a_seeding_manager(a_manager, elapsed=61, conns=conns)
     asyncio.run(manager._maybe_dial_more_peers())
     assert bool(added) is adds
@@ -1811,23 +1817,157 @@ def test_a_peer_db_that_raises_does_not_stop_the_housekeeping(
     assert logged
 
 
-@pytest.mark.parametrize("status", list(NodeStatus))
-@pytest.mark.parametrize(("automatic", "dials"), [(7, True), (8, False)])
-def test_eight_automatic_peers_are_the_target_however_far_the_sync_is(
-    a_manager: AManagerFactory, status: NodeStatus, automatic: int, *, dials: bool
-) -> None:
-    """ISS 1073: `m_max_outbound_full_relay`, eight, from the first pass on.
+def automatic_conns(full_relay: int, block_relay: int) -> list[Any]:
+    """Build that many full-relay and block-relay-only automatic peers."""
+    return [a_conn(i, automatic=True) for i in range(full_relay)] + [
+        a_conn(full_relay + i, automatic=True, block_relay=True)
+        for i in range(block_relay)
+    ]
 
-    Seven dialled automatically leave room for an eighth whatever
-    `node.status` says, headers unsynced included, and eight fill it:
-    the draw being asked for, or not, is the assertion.
+
+@pytest.mark.parametrize("status", list(NodeStatus))
+@pytest.mark.parametrize(
+    ("full_relay", "block_relay", "dials"), [(7, 2, True), (8, 1, True), (8, 2, False)]
+)
+def test_eight_and_two_automatic_peers_are_the_target_however_far_the_sync_is(
+    a_manager: AManagerFactory,
+    status: NodeStatus,
+    full_relay: int,
+    block_relay: int,
+    *,
+    dials: bool,
+) -> None:
+    """ISS 1073, 1095: Core's two targets, eight and two, from the first pass.
+
+    `m_max_outbound_full_relay` and `m_max_outbound_block_relay`: one
+    short of either leaves room whatever `node.status` says, headers
+    unsynced included, and both met fill it. The draw being asked for,
+    or not, is the assertion.
     """
     drawn: list[None] = []
     peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: drawn.append(None))
-    conns = [a_conn(i, automatic=True) for i in range(automatic)]
+    conns = automatic_conns(full_relay, block_relay)
     manager = a_manager(conns, peer_db=peer_db, status=status)
     asyncio.run(manager._maybe_dial_more_peers())
     assert bool(drawn) is dials
+
+
+@pytest.mark.parametrize(
+    ("full_relay", "block_relay", "kind"),
+    [(0, 0, False), (7, 0, False), (7, 2, False), (8, 0, True), (8, 1, True)],
+)
+def test_block_relay_only_peers_are_dialled_once_full_relay_ones_are_met(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    full_relay: int,
+    block_relay: int,
+    *,
+    kind: bool,
+) -> None:
+    """ISS 1095: `ThreadOpenConnections`' order, full-relay first.
+
+    The dial is block-relay-only once eight full-relay peers are held,
+    pending or not, and full-relay until then, whatever is held of the
+    other kind. What `create_connection` is handed is the assertion.
+    """
+    ours, theirs = socket.socketpair()
+
+    async def answers(address: NetworkAddressV2) -> socket.socket:
+        return ours
+
+    made: list[dict[str, Any]] = []
+    monkeypatch.setattr(manager_module, "dial", answers)
+    peer_db = a_peer_db_stub(
+        is_empty=False, random_address=lambda: peer_address("5.6.7.8", 18444)
+    )
+    conns = automatic_conns(full_relay, block_relay)
+    manager = a_manager(peer_db=peer_db)
+    for conn in conns:
+        # distinct groups, so that the draw is refused for nothing else
+        conn.address = peer_address(f"10.{conn.id}.0.1", 18444)
+        manager.pending_connections[conn.id] = conn
+    monkeypatch.setattr(
+        manager, "create_connection", lambda *args, **kwargs: made.append(kwargs)
+    )
+    with ours, theirs:
+        asyncio.run(manager._maybe_dial_more_peers())
+    assert made == [{"inbound": False, "automatic": True, "block_relay": kind}]
+
+
+@pytest.mark.parametrize(
+    ("started", "due", "dials"),
+    [(True, True, True), (True, False, False), (False, True, False)],
+)
+def test_an_extra_block_relay_only_peer_waits_for_the_start_and_the_timer(
+    a_manager: AManagerFactory, *, started: bool, due: bool, dials: bool
+) -> None:
+    """ISS 1095: past both targets, one more once the timer comes due.
+
+    Core's `m_start_extra_block_relay_peers` and `next_extra_block_relay`
+    both have to allow it, and picking it draws the timer again, so a
+    second pass straight after dials nothing.
+    """
+    drawn: list[None] = []
+    peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: drawn.append(None))
+    manager = a_manager(automatic_conns(8, 2), peer_db=peer_db)
+    manager.start_extra_block_relay_peers = started
+    manager._next_extra_block_relay = time.time() + (-1 if due else 60)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert bool(drawn) is dials
+    drawn.clear()
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert not drawn
+
+
+def test_the_extra_block_relay_only_timer_is_drawn_as_the_manager_runs(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`run` draws Core's `next_extra_block_relay` off its own start."""
+    monkeypatch.setattr(manager_module, "_exponential_delay", lambda mean: mean)
+    manager = a_manager(listen=False, max_connections=0)
+    assert manager._next_extra_block_relay == math.inf
+    before = time.time()
+    manager.start()
+    wait_until(manager.loop.is_running)
+    assert before + 300 <= manager._next_extra_block_relay <= time.time() + 300
+
+
+@pytest.mark.parametrize(
+    ("max_connections", "full_relay", "block_relay", "dials"),
+    [(8, 7, 0, True), (8, 8, 0, False), (9, 8, 0, True), (9, 8, 1, False)],
+)
+def test_the_outbound_grants_are_core_s_semaphore(
+    a_manager: AManagerFactory,
+    max_connections: int,
+    full_relay: int,
+    block_relay: int,
+    *,
+    dials: bool,
+) -> None:
+    """ISS 1095: `semOutbound`, `min(automatic outbound, -maxconnections)`.
+
+    At `-maxconnections=8` the eight full-relay peers take every grant
+    and no block-relay-only peer is dialled; at nine one is, and then
+    nothing more, not even the extra one.
+    """
+    drawn: list[None] = []
+    peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: drawn.append(None))
+    manager = a_manager(
+        automatic_conns(full_relay, block_relay),
+        peer_db=peer_db,
+        max_connections=max_connections,
+    )
+    manager.start_extra_block_relay_peers = True
+    manager._next_extra_block_relay = 0
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert bool(drawn) is dials
+
+
+def test_an_exponential_delay_has_the_mean_it_is_given() -> None:
+    """Core's `rand_exp_duration`: positive draws, averaging the mean."""
+    draws = [manager_module._exponential_delay(300) for _ in range(20_000)]
+    assert min(draws) > 0
+    assert 280 < sum(draws) / len(draws) < 320
 
 
 def test_no_automatic_outbound_slot_means_no_dial(
@@ -1884,11 +2024,13 @@ def test_a_connection_not_dialled_automatically_leaves_the_target_open(
     assert drawn
 
 
-def test_eight_automatic_peers_fill_the_target(a_manager: AManagerFactory) -> None:
-    """The control for the test above: eight dialled automatically fill it."""
+def test_eight_and_two_automatic_peers_fill_the_target(
+    a_manager: AManagerFactory,
+) -> None:
+    """The control for the test above: ten dialled automatically fill it."""
     drawn: list[None] = []
     peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: drawn.append(None))
-    conns = [a_conn(i, automatic=True) for i in range(8)]
+    conns = automatic_conns(8, 2)
     manager = a_manager(conns, peer_db=peer_db)
     asyncio.run(manager._maybe_dial_more_peers())
     assert not drawn
@@ -2070,6 +2212,34 @@ def test_a_peer_that_answers_the_dial_becomes_a_connection(
         manager.loop.run_until_complete(dial())
 
 
+@pytest.mark.parametrize("block_relay", [True, False])
+def test_create_connection_marks_a_block_relay_only_connection(
+    a_manager: AManagerFactory, *, block_relay: bool
+) -> None:
+    """ISS 1095: the kind is on the connection before its task first runs.
+
+    `send_version` reads it for the relay flag, so it is set before the
+    task is scheduled.
+    """
+    manager = a_manager()
+    ours, theirs = socket.socketpair()
+    address = peer_address("1.2.3.4", 18444)
+
+    async def create() -> None:
+        manager.create_connection(
+            ours, address, inbound=False, automatic=True, block_relay=block_relay
+        )
+        (conn,) = manager.pending_connections.values()
+        assert conn.block_relay is block_relay
+        assert conn.automatic
+        assert conn.task is not None
+        conn.task.cancel()
+        await asyncio.sleep(0)
+
+    with ours, theirs:
+        manager.loop.run_until_complete(create())
+
+
 @pytest.mark.parametrize(("inbound", "verb"), [(True, "Accepted"), (False, "Dialled")])
 def test_create_connection_logs_the_id_beside_the_address(
     a_manager: AManagerFactory,
@@ -2214,30 +2384,41 @@ def test_a_manager_accepts_an_ipv6_peer_too(a_manager: AManagerFactory) -> None:
 
 
 @pytest.mark.parametrize(
-    ("max_connections", "max_inbound", "max_outbound_full_relay", "grant"),
+    (
+        "max_connections",
+        "max_inbound",
+        "max_outbound_full_relay",
+        "max_outbound_block_relay",
+        "grant",
+    ),
     [
         # Core's own default: eleven outbound slots reserved, the rest
-        # inbound, eight of the eleven full-relay
-        (DEFAULT_MAX_PEER_CONNECTIONS, 114, 8, 11),
+        # inbound, eight of the eleven full-relay and two block-relay-only
+        (DEFAULT_MAX_PEER_CONNECTIONS, 114, 8, 2, 11),
         # one past the reservation: a single inbound slot
-        (12, 1, 8, 11),
+        (12, 1, 8, 2, 11),
+        # one block-relay-only slot left over by the full-relay eight
+        (9, 0, 8, 1, 9),
         # under the reservation: no inbound slot, and the full-relay
         # target and the grant are the total itself
-        (5, 0, 5, 5),
-        (0, 0, 0, 0),
+        (5, 0, 5, 0, 5),
+        (0, 0, 0, 0, 0),
     ],
 )
 def test_max_connections_is_divided_the_way_core_divides_it(
     a_manager: AManagerFactory,
+    *,
     max_connections: int,
     max_inbound: int,
     max_outbound_full_relay: int,
+    max_outbound_block_relay: int,
     grant: int,
 ) -> None:
     """`CConnman::Init`'s division, and the size of `semOutbound`."""
     manager = a_manager(max_connections=max_connections)
     assert manager.max_inbound == max_inbound
     assert manager.max_outbound_full_relay == max_outbound_full_relay
+    assert manager.max_outbound_block_relay == max_outbound_block_relay
     assert manager.max_automatic_outbound == grant
 
 

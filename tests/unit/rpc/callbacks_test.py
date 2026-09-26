@@ -155,6 +155,7 @@ def a_peer(
     relay: bool = True,
     inbound: bool = True,
     automatic: bool = False,
+    block_relay: bool = False,
     versioned: bool = True,
 ) -> Any:
     """Build a `P2pManager.connections` entry `get_peer_info` can read.
@@ -189,6 +190,7 @@ def a_peer(
         ping_sent=ping_sent,
         inbound=inbound,
         automatic=automatic,
+        block_relay=block_relay,
         stats=PeerStats(),
         block_availability=BlockAvailability(),
         tx_announce_queue=[],
@@ -529,22 +531,42 @@ def test_a_peer_that_asked_for_no_relay_has_no_tx_relay() -> None:
 
 
 @pytest.mark.parametrize(
-    ("inbound", "automatic", "connection_type"),
+    ("inbound", "automatic", "block_relay", "connection_type"),
     [
-        (True, False, "inbound"),
-        (False, True, "outbound-full-relay"),
-        (False, False, "manual"),
+        (True, False, False, "inbound"),
+        (False, True, False, "outbound-full-relay"),
+        (False, True, True, "block-relay-only"),
+        (False, False, False, "manual"),
     ],
 )
 def test_the_connection_type_is_core_s(
     inbound: bool,  # noqa: FBT001
     automatic: bool,  # noqa: FBT001
+    block_relay: bool,  # noqa: FBT001
     connection_type: str,
 ) -> None:
-    """Inbound, drawn by this node, or named by an operator."""
-    peer = a_peer(inbound=inbound, automatic=automatic)
+    """Inbound, drawn by this node as either kind, or named by an operator."""
+    peer = a_peer(inbound=inbound, automatic=automatic, block_relay=block_relay)
     (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
     assert info["connection_type"] == connection_type
+
+
+def test_a_block_relay_only_peer_has_no_tx_relay_nor_addr_relay() -> None:
+    """ISS 1095: no `TxRelay` whatever it asked for, and no address relay.
+
+    Core's `TxRelay`-backed fields answer 0 and false, and
+    `m_addr_relay_enabled` stays false, `SetupAddressRelay` refusing it.
+    """
+    peer = a_peer(inbound=False, automatic=True, block_relay=True, relay=True)
+    peer.stats = PeerStats(last_inv_sequence=42)
+    peer.tx_announce_queue = [b"\x01" * 32]
+    peer.feefilter = 1234
+    (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
+    assert info["relaytxes"] is False
+    assert info["last_inv_sequence"] == 0
+    assert info["inv_to_send"] == 0
+    assert info["minfeefilter"].text == "0.00000000"
+    assert info["addr_relay_enabled"] is False
 
 
 @pytest.mark.parametrize(

@@ -68,6 +68,9 @@ def a_conn(
     version_message: Any = ...,
     best_known_height: int = 0,
     wtxidrelay_received: bool = True,
+    block_relay: bool = False,
+    connected_time: int = 0,
+    last_novel_block_time: int = 0,
 ) -> Any:
     """Build a fake connection, recording every message handed to `send`.
 
@@ -81,6 +84,7 @@ def a_conn(
             ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
         )
     sent: list[Any] = []
+    stopped: list[bool] = []
     return SimpleNamespace(
         id=conn_id,
         send=sent.append,
@@ -92,7 +96,11 @@ def a_conn(
         download_queue=queue if queue is not None else [],
         pending_eviction=pending_eviction,
         last_block_timestamp=time.time() if last_block is None else last_block,
-        stop=lambda: None,
+        stop=lambda: stopped.append(True),
+        stopped=stopped,
+        block_relay=block_relay,
+        connected_time=connected_time,
+        last_novel_block_time=last_novel_block_time,
         tx_announce_queue=[],
         next_inv_send_time=0.0,
         stats=PeerStats(),
@@ -1802,3 +1810,185 @@ def test_in_initial_block_download_only_a_peer_synced_from_moves(
     )
     expected = [preferred] if in_flight else [preferred, inbound]
     assert moved(manager, monkeypatch) == expected
+
+
+def test_a_block_relay_only_connection_is_sent_no_feefilter() -> None:
+    """ISS 1095: `MaybeSendFeefilter` returns for `IsBlockOnlyConn()`.
+
+    A full-relay connection beside it is the control that one is sent.
+    """
+    block_relay = a_conn(1, block_relay=True)
+    full_relay = a_conn(2)
+    manager = make_manager([block_relay, full_relay])
+    manager._send_due_feefilters()
+    assert not only(block_relay, FeeFilter)
+    assert only(full_relay, FeeFilter)
+
+
+def a_tip_index(tip_age: float) -> Any:
+    """Build a block index whose active tip is `tip_age` seconds old."""
+    tip = SimpleNamespace(
+        header=SimpleNamespace(time=datetime.fromtimestamp(time.time() - tip_age, UTC))
+    )
+    return SimpleNamespace(active_chain=[b"tip"], header_dict={b"tip": tip})
+
+
+def an_extra_peer_manager(
+    conns: list[Any], *, tip_age: float = 0, max_outbound_block_relay: int = 2
+) -> DownloadManager:
+    """Build a manager whose extra-peer check is due now."""
+    manager = make_manager(conns, block_index=a_tip_index(tip_age))
+    p2p_manager = cast("Any", manager.node).p2p_manager
+    p2p_manager.max_outbound_block_relay = max_outbound_block_relay
+    p2p_manager.start_extra_block_relay_peers = False
+    manager._next_extra_peer_check = 0
+    return manager
+
+
+def block_relay_peers(*last_blocks: int, connected_time: int = 0) -> list[Any]:
+    """Build a block-relay-only peer per last novel block time, by id."""
+    return [
+        a_conn(
+            conn_id,
+            block_relay=True,
+            last_novel_block_time=last_block,
+            connected_time=connected_time,
+        )
+        for conn_id, last_block in enumerate(last_blocks)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("last_blocks", "dropped"),
+    [
+        # the youngest goes where it gave no block more recently
+        ((5, 5, 5), 2),
+        ((5, 9, 0), 2),
+        ((5, 9, 9), 2),
+        # and the next youngest goes where it did
+        ((5, 0, 9), 1),
+        ((9, 5, 7), 1),
+    ],
+)
+def test_the_extra_block_relay_only_peer_to_drop_is_core_s(
+    last_blocks: tuple[int, ...], dropped: int
+) -> None:
+    """ISS 1095: `EvictExtraOutboundPeers`' block-relay-only half.
+
+    Of the youngest two by connection id, the youngest, unless it gave a
+    novel block more recently than the other.
+    """
+    peers = block_relay_peers(*last_blocks)
+    manager = an_extra_peer_manager(peers)
+    manager._check_for_stale_tip_and_evict_peers()
+    assert [bool(peer.stopped) for peer in peers] == [
+        conn_id == dropped for conn_id in range(len(peers))
+    ]
+
+
+@pytest.mark.parametrize(
+    ("count", "maximum", "dropped"), [(2, 2, False), (3, 2, True), (1, 0, True)]
+)
+def test_only_a_block_relay_only_peer_past_the_target_is_dropped(
+    count: int, maximum: int, *, dropped: bool
+) -> None:
+    """Core's `GetExtraBlockRelayCount() > 0`, whatever the target is.
+
+    At a target of none, the one peer is dropped where it gave no block:
+    Core's `next_youngest_peer` stays `{-1, 0}`.
+    """
+    peers = block_relay_peers(*[0] * count)
+    manager = an_extra_peer_manager(peers, max_outbound_block_relay=maximum)
+    manager._check_for_stale_tip_and_evict_peers()
+    assert bool(peers[-1].stopped) is dropped
+
+
+def test_a_lone_extra_block_relay_only_peer_that_gave_a_block_stays() -> None:
+    """Core's `ForNode(-1)` finds nobody: the peer is kept."""
+    peers = block_relay_peers(5)
+    manager = an_extra_peer_manager(peers, max_outbound_block_relay=0)
+    manager._check_for_stale_tip_and_evict_peers()
+    assert not peers[0].stopped
+
+
+def test_only_a_connected_block_relay_only_peer_is_counted() -> None:
+    """Core's `ForEachNode` skips one mid-handshake or already dropped.
+
+    Nor is a full-relay peer counted: three of either beside two
+    block-relay-only peers leave both.
+    """
+    peers = [
+        *block_relay_peers(0, 0),
+        a_conn(5, block_relay=True, status=P2pConnStatus.Open),
+        a_conn(6, block_relay=True, status=P2pConnStatus.Closed),
+        a_conn(7),
+    ]
+    manager = an_extra_peer_manager(peers)
+    manager._check_for_stale_tip_and_evict_peers()
+    assert not any(peer.stopped for peer in peers)
+
+
+def test_an_extra_block_relay_only_peer_is_kept_while_young_or_busy() -> None:
+    """`MINIMUM_CONNECT_TIME`, and no block in flight from it.
+
+    The youngest is picked in each case and kept, and the next check is
+    45 seconds on, not the next step.
+    """
+    young = block_relay_peers(0, 0, 0, connected_time=int(time.time()))
+    busy = block_relay_peers(0, 0, 0)
+    busy[-1].download_queue.append(b"\x11" * 32)
+    for peers in (young, busy):
+        manager = an_extra_peer_manager(peers)
+        manager._check_for_stale_tip_and_evict_peers()
+        assert not any(peer.stopped for peer in peers)
+        assert manager._next_extra_peer_check > time.time() + 40
+
+
+def test_the_extra_peer_check_waits_for_its_interval() -> None:
+    """Core's `EXTRA_PEER_CHECK_INTERVAL`, from start-up on."""
+    peers = block_relay_peers(0, 0, 0)
+    manager = an_extra_peer_manager(peers)
+    manager._next_extra_peer_check = time.time() + 1
+    manager._check_for_stale_tip_and_evict_peers()
+    assert not any(peer.stopped for peer in peers)
+    fresh = make_manager([])
+    assert fresh._next_extra_peer_check > time.time() + 40
+
+
+@pytest.mark.parametrize(
+    ("tip_age", "started"), [(0, True), (20 * 600 - 5, True), (20 * 600 + 5, False)]
+)
+def test_extra_block_relay_only_peers_start_once_the_tip_is_close(
+    tip_age: float, *, started: bool
+) -> None:
+    """ISS 1095: `StartExtraBlockRelayPeers` once `CanDirectFetch` holds.
+
+    Twenty block intervals, and once: a tip that ages after that does
+    not stop them, `m_initial_sync_finished` being a latch.
+    """
+    manager = an_extra_peer_manager([], tip_age=tip_age)
+    p2p_manager = cast("Any", manager.node).p2p_manager
+    manager._check_for_stale_tip_and_evict_peers()
+    assert p2p_manager.start_extra_block_relay_peers is started
+    if started:
+        p2p_manager.start_extra_block_relay_peers = False
+        manager._next_extra_peer_check = 0
+        manager._check_for_stale_tip_and_evict_peers()
+        assert p2p_manager.start_extra_block_relay_peers is False
+
+
+def test_a_step_runs_the_extra_peer_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`step` reaches `_check_for_stale_tip_and_evict_peers`, last."""
+    manager = make_manager([])
+    ran: list[str] = []
+    for name in (
+        "sync_headers",
+        "update_last_common_blocks",
+        "block_download",
+        "tx_download",
+        "_send_due_feefilters",
+        "_check_for_stale_tip_and_evict_peers",
+    ):
+        monkeypatch.setattr(manager, name, lambda name=name: ran.append(name))
+    manager.step()
+    assert ran[-1] == "_check_for_stale_tip_and_evict_peers"

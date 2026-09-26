@@ -76,6 +76,7 @@ def make_node(
     conn = SimpleNamespace(
         status=status,
         address=_AN_ADDRESS,
+        block_relay=False,
         stop=lambda: stopped.append(True),
         queued_recv_bytes=queued_recv_bytes,
         _recv_lock=threading.Lock(),

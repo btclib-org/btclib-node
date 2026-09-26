@@ -709,13 +709,15 @@ def _network_name(network: Network) -> str:
 
 
 def _connection_type(p2p_conn: Connection) -> str:
-    """Core's `ConnectionTypeAsString` for the three types this node opens.
+    """Core's `ConnectionTypeAsString` for the four types this node opens.
 
     An outbound connection `P2pManager` did not draw itself is a
     `-connect`, `-addnode` or `addnode` peer, Core's `MANUAL`.
     """
     if p2p_conn.inbound:
         return "inbound"
+    if p2p_conn.block_relay:
+        return "block-relay-only"
     return "outbound-full-relay" if p2p_conn.automatic else "manual"
 
 
@@ -730,9 +732,14 @@ def _peer_entry(
     """
     version_message = p2p_conn.version_message
     # Core's `TxRelay` exists only once the peer's `version` asked for
-    # relay, this node offering no `NODE_BLOOM`, and the fields read off
-    # it answer 0 or false where it does not.
-    relays = version_message is not None and version_message.is_relay_requested
+    # relay, this node offering no `NODE_BLOOM`, and never for a
+    # block-relay-only peer; the fields read off it answer 0 or false
+    # where it does not.
+    relays = (
+        version_message is not None
+        and version_message.is_relay_requested
+        and not p2p_conn.block_relay
+    )
     services = 0 if version_message is None else version_message.services
 
     entry: dict[str, Any] = {"id": connection_id, "addr": addr, "addrbind": addrbind}
@@ -812,10 +819,13 @@ def _peer_entry(
         block_index.get_block_info(block_hash).index
         for block_hash in p2p_conn.download_queue
     ]
-    # True for every handshake-complete peer, where Core waits on an
+    # True for every handshake-complete peer but a block-relay-only one,
+    # which Core's `SetupAddressRelay` refuses, where Core waits on an
     # inbound one's first `addr`, `addrv2` or `getaddr`
     # (btclib-org/btclib-node#1178).
-    entry["addr_relay_enabled"] = p2p_conn.status == P2pConnStatus.Connected
+    entry["addr_relay_enabled"] = (
+        p2p_conn.status == P2pConnStatus.Connected and not p2p_conn.block_relay
+    )
     entry["addr_processed"] = p2p_conn.stats.addr_processed
     entry["addr_rate_limited"] = p2p_conn.stats.addr_rate_limited
     # No `-whitelist`/`-whitebind`: no peer holds a permission.

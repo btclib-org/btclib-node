@@ -516,6 +516,9 @@ def a_peer(**attributes: Any) -> Any:
         # what `Connection` starts every connection at, and what
         # `P2pManager.create_connection` sets for a peer it drew itself
         automatic=False,
+        # what `Connection` starts every connection at, and what
+        # `P2pManager.create_connection` sets for a block-relay-only one
+        block_relay=False,
         address=peer_address("1.2.3.4", 18444),
         stats=PeerStats(),
         # what `Connection` starts every connection at, and what
@@ -4257,3 +4260,165 @@ def test_an_addrv2_count_past_what_the_payload_could_hold_decides_alone(
     assert skipped == []
     assert cb._addrv2_count_past(var_int.serialize(1001) + payload, 1000) == 1001
     assert len(skipped) == 1001
+
+
+@pytest.mark.parametrize(("block_relay", "wanted"), [(True, False), (False, True)])
+def test_a_block_relay_only_peer_is_relayed_no_transaction(
+    *, block_relay: bool, wanted: bool
+) -> None:
+    """ISS 1095: Core builds no `TxRelay` for a block-relay-only peer.
+
+    Whatever its `version` asked for: `relay_tx` is what announcements
+    and a transaction `getdata` read.
+    """
+    peer = a_peer(block_relay=block_relay, automatic=True)
+    version(a_handshake_node(), a_version(relay=True), peer)
+    assert peer.relay_tx is wanted
+
+
+@pytest.mark.parametrize("block_relay", [True, False])
+def test_a_block_relay_only_peer_is_asked_for_no_addresses_nor_recorded(
+    *, block_relay: bool
+) -> None:
+    """ISS 1095: no `getaddr` to it, and its address not advertised.
+
+    `SetupAddressRelay` refuses a block-relay-only peer, and Core never
+    calls `AddrMan::Connected` for one. A full-relay peer, the control,
+    is asked and recorded.
+    """
+    peer = a_peer(
+        version_message=a_parsed_version(),
+        wtxidrelay_received=True,
+        automatic=True,
+        block_relay=block_relay,
+    )
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+    # gossiped first: `add_active_address` records a known endpoint alone
+    peer_db.add_addresses([peer.address])
+    verack(a_handshake_node(peer_db=peer_db), b"", peer)
+    assert peer.status == P2pConnStatus.Connected
+    assert ("GetAddr" in commands(peer)) is not block_relay
+    assert peer.addr_token_bucket == (1.0 if block_relay else 1.0 + MAX_ADDR_TO_SEND)
+    assert bool(peer_db.active_addresses) is not block_relay
+
+
+@pytest.mark.parametrize("block_relay", [True, False])
+def test_a_block_relay_only_peer_s_gossip_is_ignored_once_parsed(
+    *, block_relay: bool
+) -> None:
+    """ISS 1095: `addr` and `addrv2` from it are parsed, then dropped.
+
+    Core parses them and ignores them ahead of its `MAX_ADDR_TO_SEND`
+    check, so a payload that does not parse is refused as from any peer,
+    and one past the bound is no `MisbehavingError`, where the control's
+    is.
+    """
+    given = [a_gossiped_address("1.2.3.4")]
+    for callback, message, entry in (
+        (addr, Addr([addr_entry(address) for address in given]), _AN_ADDR_ENTRY),
+        (addrv2, AddrV2(given), _AN_ADDRV2_ENTRY),
+    ):
+        peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+        node = a_handshake_node(peer_db=peer_db)
+        peer = a_gossiping_peer(block_relay=block_relay)
+        callback(node, message.serialize(), peer)
+        assert bool(peer_db.addresses) is not block_relay
+        assert peer.stats.addr_processed == (0 if block_relay else 1)
+        with pytest.raises(BTClibException):
+            callback(node, b"\xff" * 9, peer)
+        past = var_int.serialize(MAX_ADDR_TO_SEND + 1) + entry * (MAX_ADDR_TO_SEND + 1)
+        with pytest.raises(BTClibException) as refused:
+            callback(node, past, peer)
+        assert isinstance(refused.value, MisbehavingError) is not block_relay
+
+
+@pytest.mark.parametrize("ibd", [True, False])
+def test_a_transaction_from_a_block_relay_only_peer_drops_it(
+    monkeypatch: pytest.MonkeyPatch, *, ibd: bool
+) -> None:
+    """ISS 1095: disconnected, not discouraged, in or out of IBD.
+
+    Core's `TX` handler checks `RejectIncomingTxs` before anything else,
+    its own IBD gate included. The transaction is not taken either.
+    """
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", lambda node, tx: 0)
+    transaction = a_transaction()
+    node = a_data_node(is_initial_block_download=ibd)
+    peer = a_peer(id=3, automatic=True, block_relay=True)
+    tx(node, TxMsg(transaction, include_witness=True).serialize(), peer)
+    assert peer.stopped == [True]
+    assert not node.p2p_manager.discouraged
+    assert not node.mempool.contains_tx(transaction)
+
+
+@pytest.mark.parametrize(
+    ("wtxidrelay", "type_code"),
+    [
+        (True, InventoryType.MSG_WTX),
+        (True, InventoryType.MSG_WITNESS_TX),
+        (False, InventoryType.MSG_TX),
+        (False, InventoryType.MSG_WITNESS_TX),
+    ],
+)
+def test_a_transaction_announced_by_a_block_relay_only_peer_drops_it(
+    *, wtxidrelay: bool, type_code: InventoryType
+) -> None:
+    """ISS 1095: the first transaction item ends the `inv` and the peer.
+
+    The block announced ahead of it is taken and the one after it is
+    not, and no `getheaders` goes out for either, as Core returns from
+    its loop there. Before `BlockSynced`, where the transaction items
+    are otherwise never read.
+    """
+    node = a_data_node(status=NodeStatus.HeaderSynced, block_index=an_inv_index())
+    peer = a_peer(
+        id=4, automatic=True, block_relay=True, wtxidrelay_received=wtxidrelay
+    )
+    items = [
+        Inventory(InventoryType.MSG_BLOCK, b"\x11" * 32),
+        Inventory(type_code, a_transaction().hash),
+        Inventory(InventoryType.MSG_BLOCK, b"\x22" * 32),
+    ]
+    inv(node, Inv(items).serialize(), peer)
+    assert peer.stopped == [True]
+    assert not node.p2p_manager.discouraged
+    assert peer.block_availability.last_unknown == b"\x11" * 32
+    assert not peer.sent
+
+
+@pytest.mark.parametrize(
+    ("wtxidrelay", "type_code"),
+    [(True, InventoryType.MSG_TX), (False, InventoryType.MSG_WTX)],
+)
+def test_the_kind_the_peer_does_not_relay_by_is_skipped_from_a_block_relay_only_peer(
+    *, wtxidrelay: bool, type_code: InventoryType
+) -> None:
+    """ISS 1095: Core skips the item its `wtxidrelay` setting does not match.
+
+    So it drops nobody, and the blocks after it are taken as usual.
+    """
+    node = a_data_node(status=NodeStatus.HeaderSynced, block_index=an_inv_index())
+    peer = a_peer(
+        id=4, automatic=True, block_relay=True, wtxidrelay_received=wtxidrelay
+    )
+    items = [
+        Inventory(type_code, a_transaction().hash),
+        Inventory(InventoryType.MSG_BLOCK, b"\x22" * 32),
+    ]
+    inv(node, Inv(items).serialize(), peer)
+    assert not peer.stopped
+    assert peer.block_availability.last_unknown == b"\x22" * 32
+
+
+def test_a_transaction_announced_by_a_full_relay_peer_drops_nobody() -> None:
+    """The control for the two tests above: the whole `inv` is taken."""
+    node = a_data_node(status=NodeStatus.HeaderSynced, block_index=an_inv_index())
+    peer = a_peer(id=4, automatic=True)
+    items = [
+        Inventory(InventoryType.MSG_BLOCK, b"\x11" * 32),
+        Inventory(InventoryType.MSG_WTX, a_transaction().hash),
+        Inventory(InventoryType.MSG_BLOCK, b"\x22" * 32),
+    ]
+    inv(node, Inv(items).serialize(), peer)
+    assert not peer.stopped
+    assert peer.block_availability.last_unknown == b"\x22" * 32
