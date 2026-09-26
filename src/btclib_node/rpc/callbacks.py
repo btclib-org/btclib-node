@@ -48,6 +48,7 @@ if TYPE_CHECKING:
 __all__ = [
     "add_node",
     "callbacks",
+    "disconnect_node",
     "get_best_block_hash",
     "get_block",
     "get_block_count",
