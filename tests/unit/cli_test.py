@@ -5,10 +5,11 @@
 """`cli.py`: argument parsing, `bitcoin.conf` reading, and `main`'s dispatch."""
 
 import functools
+import io
 import os
 import re
 import runpy
-from contextlib import suppress
+from contextlib import redirect_stderr, suppress
 from pathlib import Path
 from typing import Any
 
@@ -186,6 +187,19 @@ def test_main_writes_a_byte_utf8_refuses_as_that_byte(
     with pytest.raises(SystemExit):
         cli.main([f"-datadir={tmp_path}"])
     assert capfdbinary.readouterr().err.endswith(b"parse error on line 2: x\xe9y\n")
+
+
+@pytest.mark.usefixtures("no_node")
+def test_main_writes_to_a_stderr_it_cannot_reconfigure(tmp_path: Path) -> None:
+    """ISS 1290: a stream with no encoding of its own is written as it is.
+
+    `io.StringIO`, which `redirect_stderr` puts in place, keeps text
+    rather than bytes, so there is no error handler to set on it.
+    """
+    (tmp_path / "bitcoin.conf").write_text("regtest=1\nbad\n", encoding="utf-8")
+    with redirect_stderr(io.StringIO()) as err, pytest.raises(SystemExit):
+        cli.main([f"-datadir={tmp_path}"])
+    assert err.getvalue().endswith("parse error on line 2: bad\n")
 
 
 @pytest.mark.parametrize(
