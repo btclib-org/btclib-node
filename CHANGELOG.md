@@ -534,6 +534,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`btclib-node` sets the umask to 0077 on POSIX, so its chain directory
   is 0700 and `history.log` 0600, as `bitcoind` leaves them** (closes #1198).
 
+### Three peer refusals are answered as Core answers them
+
+- **A header on an invalid parent and a non-continuous `headers` batch cost
+  their sender, as does a header already invalid from an outbound peer, and a
+  non-btclib exception keeps the peer** (closes #1233), as in Core.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

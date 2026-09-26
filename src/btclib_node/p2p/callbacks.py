@@ -1477,14 +1477,15 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
         # again, from this node's own tip, would draw the same empty answer.
         node.download_manager.last_getheaders_timestamps.pop(conn.id, None)
         return
-    # add_headers raises on a batch it refuses -- a header failing its
-    # own proof of work or context check -- and the raise is left to
-    # reach handle_p2p, which drops and discourages the peer for a
+    # add_headers raises on a batch it refuses, and the raise is left to
+    # reach handle_p2p, which discourages the peer for a
     # `MisbehavingError` the same way block's own does: a peer that sent
     # it is not one telling us it has nothing left, and this is not the
     # ordinary end of a sync. btclib-org/btclib-node#75
+    # A header already marked invalid costs an outbound peer alone, as
+    # Core's `MaybePunishNodeForBlock` has it for `BLOCK_CACHED_INVALID`.
     block_index = node.chainstate.block_index
-    tip = block_index.add_headers(headers)
+    tip = block_index.add_headers(headers, punish_cached_invalid=not conn.inbound)
     # The batch's last header is a block the peer has: Core's
     # `UpdatePeerStateForReceivedHeaders` where the batch connected, and
     # `HandleUnconnectingHeaders`, which keeps it as unknown until it is
@@ -1520,16 +1521,10 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
         # or beating its chainwork, and a locator built from it would
         # ask for this same batch again and stall short of the fork's
         # own tip. An ordinary batch extending header_index already gets
-        # header_index's own richer, multi-entry locator, unchanged; a
-        # batch built on a parent this node already proved invalid does
-        # too, rather than this node asking the same peer for more of a
-        # branch it has already proved bad, with no misbehaviour scoring
-        # anywhere in this tree to ever stop it otherwise.
-        # btclib-org/btclib-node#122
-        if (
-            tip != block_index.header_index[-1]
-            and block_index.get_block_info(tip).status != BlockStatus.invalid
-        ):
+        # header_index's own richer, multi-entry locator, unchanged. A
+        # batch on a branch this node proved invalid never gets here:
+        # add_headers refuses it. btclib-org/btclib-node#122
+        if tip != block_index.header_index[-1]:
             block_locators = [tip]
         else:
             block_locators = block_index.get_block_locator_hashes()

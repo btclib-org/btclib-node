@@ -3199,13 +3199,17 @@ class FakeHeaderIndex:
         self.header_index = [header_index_tip]
         self.tip_status = tip_status
         self.given: list[BlockHeader] | None = None
+        self.punish_cached_invalid: bool | None = None
         # what `update_block_availability` looks a hash up in: empty, so
         # every hash `headers` records for the peer is kept as unknown
         self.header_dict: dict[bytes, Any] = {}
 
-    def add_headers(self, headers: Iterable[BlockHeader]) -> bytes | None:
-        """Record the headers given, then answer `tip` or raise if `refuse`."""
+    def add_headers(
+        self, headers: Iterable[BlockHeader], *, punish_cached_invalid: bool = False
+    ) -> bytes | None:
+        """Record the headers and the flag given, then answer `tip` or raise."""
         self.given = list(headers)
+        self.punish_cached_invalid = punish_cached_invalid
         if self.refuse:
             err_msg = "a header failing on its own terms"
             raise BTClibValueError(err_msg)
@@ -3271,107 +3275,16 @@ def test_a_full_batch_on_a_live_fork_asks_from_the_fork_s_own_tip() -> None:
     assert node.status == NodeStatus.SyncingHeaders
 
 
-def test_a_full_batch_on_an_invalid_fork_uses_the_usual_locator_instead() -> None:
-    """A full batch on an already-invalid fork falls back to the usual locator.
-
-    A batch built on a parent this node already proved invalid is a fork by the
-    header_index test above, but not one worth asking a peer for more of:
-    nothing in this tree scores or bans a peer that keeps sending it, so the
-    locator falls back rather than naming that fork's own tip back to it.
-    """
-    # a batch built on a parent this node already proved invalid is a
-    # fork by the header_index test above, but not one worth asking a
-    # peer for more of: nothing in this tree scores or bans a peer that
-    # keeps sending it, so the locator falls back rather than naming that
-    # fork's own tip back to it
-    chain = generate_random_header_chain(2000, RegTest().genesis.hash)
-    node = a_data_node(status=NodeStatus.SyncingHeaders)
-    index = FakeHeaderIndex(
-        tip=chain[-1].hash,
-        header_index_tip=b"\xff" * 32,
-        tip_status=BlockStatus.invalid,
-    )
-    node.chainstate.block_index = index
-    peer = a_peer()
-    headers(node, Headers(chain).serialize(), peer)
-    (answer,) = peer.sent
-    assert isinstance(answer, GetHeaders)
-    assert answer.locator == (b"\x00" * 32,)
-    assert node.status == NodeStatus.SyncingHeaders
-
-
-def test_a_full_batch_from_nowhere_known_asks_from_what_this_node_knows() -> None:
-    """A full batch connecting to nothing known asks from what this node has.
-
-    `add_headers` answers `tip=None` for a batch with no known ancestor, which
-    asks with the ordinary locator rather than one built from a tip that was
-    never reached.
-    """
-    chain = generate_random_header_chain(2000, RegTest().genesis.hash)
-    node = a_data_node(status=NodeStatus.SyncingHeaders)
-    index = FakeHeaderIndex(tip=None)
-    node.chainstate.block_index = index
-    peer = a_peer()
-    headers(node, Headers(chain).serialize(), peer)
-    (answer,) = peer.sent
-    assert isinstance(answer, GetHeaders)
-    assert answer.locator == (b"\x00" * 32,)
-    assert node.status == NodeStatus.SyncingHeaders
-
-
-def test_a_short_batch_from_nowhere_known_asks_from_what_this_node_knows() -> None:
-    """A short, unconnecting batch still gets a `getheaders`, not silence.
-
-    A short batch is the ordinary shape of a BIP130 announcement, and unlike the
-    full-batch case above the pre-existing code never sent anything for it: the
-    `len(headers) == 2000` guard was the only place a follow-up GetHeaders was
-    built. btclib-org/btclib-node#233
-    """
-    # a short batch is the ordinary shape of a BIP130 announcement, and
-    # unlike the full-batch case above the pre-existing code never sent
-    # anything for it: the `len(headers) == 2000` guard was the only
-    # place a follow-up GetHeaders was built. btclib-org/btclib-node#233
-    chain = generate_random_header_chain(4, RegTest().genesis.hash)
-    node = a_data_node(status=NodeStatus.SyncingHeaders)
-    index = FakeHeaderIndex(tip=None)
-    node.chainstate.block_index = index
-    peer = a_peer()
-    headers(node, Headers(chain).serialize(), peer)
-    (answer,) = peer.sent
-    assert isinstance(answer, GetHeaders)
-    assert answer.locator == (b"\x00" * 32,)
-    # not the ordinary end of a sync either: nothing of this batch
-    # connected, so there is nothing to have caught up to
-    assert node.status == NodeStatus.SyncingHeaders
-
-
-def test_a_batch_on_an_already_invalid_parent_is_not_asked_for_again(
+def test_a_batch_on_an_already_invalid_parent_is_refused_misbehaving(
     tmp_path: Path,
 ) -> None:
-    """A batch on an already-invalid parent falls back to the usual locator.
+    """ISS 1233: Core's `bad-prevblk`, which `MaybePunishNodeForBlock` punishes.
 
-    add_headers has no reason to refuse this batch -- every header in it still
-    passes its own checks on its own terms, invalid parent or not -- so avoiding
-    a request for more of a branch this node has already proved bad is
-    callbacks.headers's own contract, proved here through the real BlockIndex
-    and not a fake standing in for it. btclib-org/btclib-node#122
+    Through the real `BlockIndex`: nothing of the batch is indexed, and no
+    `getheaders` goes back for more of a branch this node proved bad.
     """
-    # add_headers has no reason to refuse this batch -- every header in
-    # it still passes its own checks on its own terms, invalid parent or
-    # not -- so avoiding a request for more of a branch this node has
-    # already proved bad is callbacks.headers's own contract, proved
-    # here through the real BlockIndex and not a fake standing in for
-    # it. btclib-org/btclib-node#122
     chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
     block_index = chainstate.block_index
-    # heavier than the invalid fork below could ever become, so
-    # header_index never shifts onto it and the fallback below is
-    # decided by BlockStatus alone, not by tip == header_index[-1]
-    active = generate_random_header_chain(3000, RegTest().genesis.hash)
-    block_index.add_headers(active)
-    for header in active:
-        block_index.add_to_active_chain(header.hash)
-
     victim = generate_random_header_chain(1, RegTest().genesis.hash)
     block_index.add_headers(victim)
     block_index.invalidate(victim[0].hash)
@@ -3379,15 +3292,25 @@ def test_a_batch_on_an_already_invalid_parent_is_not_asked_for_again(
     extension = generate_random_header_chain(2000, victim[0].hash, victim[0].time)
     node = a_data_node(block_index=block_index, status=NodeStatus.SyncingHeaders)
     peer = a_peer()
-    headers(node, Headers(extension).serialize(), peer)
+    with pytest.raises(MisbehavingError, match="bad-prevblk"):
+        headers(node, Headers(extension).serialize(), peer)
 
-    assert block_index.header_index[-1] == active[-1].hash
-    assert block_index.get_block_info(extension[-1].hash).status == BlockStatus.invalid
-    (answer,) = peer.sent
-    assert isinstance(answer, GetHeaders)
-    assert extension[-1].hash not in answer.locator
-    assert answer.locator == tuple(block_index.get_block_locator_hashes())
+    assert extension[0].hash not in block_index.header_dict
+    assert not peer.sent
     chainstate.close()
+
+
+@pytest.mark.parametrize("inbound", [True, False])
+def test_headers_punishes_a_cached_invalid_header_from_an_outbound_peer_alone(
+    inbound: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1233: Core's `BLOCK_CACHED_INVALID` costs an outbound peer alone."""
+    chain = generate_random_header_chain(2, RegTest().genesis.hash)
+    node = a_data_node(status=NodeStatus.SyncingHeaders)
+    index = FakeHeaderIndex(tip=chain[-1].hash)
+    node.chainstate.block_index = index
+    headers(node, Headers(chain).serialize(), a_peer(inbound=inbound))
+    assert index.punish_cached_invalid is not inbound
 
 
 def test_a_refused_batch_is_not_the_end_of_a_sync() -> None:
