@@ -392,6 +392,14 @@ def test_a_byte_utf8_refuses_is_the_byte_a_client_sends() -> None:
     assert parse_whitelist(["u\udce9:getblockcount"]) == {
         b"u\xe9": frozenset({"getblockcount"})
     }
+    # `bitcoind` logs `RPC User u<0xe9> not allowed to call method ...`
+    whitelisted = RpcAuth(
+        password=RpcAuthEntry.from_password("u\udce9", "p"),
+        whitelist=parse_whitelist(["u\udce9:getblockcount"]),
+    )
+    refusal = whitelisted.refusal(b"u\xe9", {"id": 1, "method": "getnetworkinfo"})
+    assert refusal is not None
+    assert refusal.warning[1] == "u\udce9"
 
 
 def test_start_writes_the_cookie_and_logs_what_core_logs(tmp_path: Path) -> None:

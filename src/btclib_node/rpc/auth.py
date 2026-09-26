@@ -472,8 +472,9 @@ class RpcAuth:
         checked entry by entry, before any of them runs. Anything else a
         whitelisted user sends is left to the answer anybody else gets.
         """
-        # a name some entry holds, so it decodes, for the log line alone
-        name = user.decode(errors="replace")
+        # for the log line alone: a byte UTF-8 refuses is kept as the
+        # lone surrogate the log's handler writes back as that byte
+        name = user.decode("utf-8", "surrogateescape")
         allowed = self.whitelist.get(user)
         if allowed is None:
             if self.whitelist_default:
