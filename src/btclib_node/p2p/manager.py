@@ -36,6 +36,7 @@ from btclib_node.p2p.address import (
     ip_and_port,
     peer_address,
 )
+from btclib_node.p2p.banman import DUMP_BANS_INTERVAL, BanMan, Subnet
 from btclib_node.p2p.connection import Connection
 from btclib_node.p2p.eviction import (
     EvictionCandidate,
@@ -179,13 +180,27 @@ class P2pManager(threading.Thread):
     a connection between them are this class's own state for that.
     """
 
-    def __init__(self, node: Node, port: int | None, peer_db: PeerDB) -> None:
-        """Set up empty connection tables and queues, and a fresh event loop."""
+    def __init__(
+        self,
+        node: Node,
+        port: int | None,
+        peer_db: PeerDB,
+        ban_man: BanMan | None = None,
+    ) -> None:
+        """Set up empty connection tables and queues, and a fresh event loop.
+
+        `ban_man` `None` is a ban list kept in memory only.
+        """
         super().__init__()
         self.node = node
         self.logger = node.logger
         self.port = port
         self.peer_db = peer_db
+        self.ban_man = ban_man if ban_man is not None else BanMan(None, node.logger)
+        # Core's scheduler first dumps the ban list one interval after
+        # start (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+        # tag)
+        self._last_ban_dump = time.time()
         # Core's own `-connect`: dial only the peers it names, with DNS
         # seeding and every automatically-drawn outbound connection off
         # (`connOptions.m_use_addrman_outgoing = false`, `src/init.cpp`
@@ -644,6 +659,20 @@ class P2pManager(threading.Thread):
                 other.stop()
         return True
 
+    def disconnect_subnet(self, subnet: Subnet) -> bool:
+        """Drop every peer `subnet` matches, Core's `DisconnectNode(CSubNet)`.
+
+        Whatever the connection's kind, a manual one included, and
+        answering whether any matched (`src/net.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        """
+        with self._connections_lock:
+            held = (*self.connections.values(), *self.pending_connections.values())
+        matched = [conn for conn in held if subnet.matches_peer(conn.address)]
+        for conn in matched:
+            conn.stop()
+        return bool(matched)
+
     async def async_connect(self, address: NetworkAddressV2) -> None:
         """Dial `address` and, if it comes up, register the connection.
 
@@ -792,6 +821,12 @@ class P2pManager(threading.Thread):
                 )
             )
 
+    def _maybe_dump_banlist(self, now: float) -> None:
+        if now - self._last_ban_dump < DUMP_BANS_INTERVAL:
+            return
+        self._last_ban_dump = now
+        self.ban_man.dump()
+
     async def _maybe_dial_more_peers(self) -> None:
         # `-connect`'s own other half: `peer_db`'s table is never drawn
         # from at all, on top of `run` below never scheduling the DNS
@@ -893,7 +928,8 @@ class P2pManager(threading.Thread):
             # dropped for cause rather than one it already holds,
             # and Core's `OpenNetworkConnection` (`src/net.cpp`, at
             # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) refuses it
-            # the same way. btclib-org/btclib-node#283
+            # the same way, and a banned one too.
+            # btclib-org/btclib-node#283
             if (
                 address is not None
                 and endpoint_key(address) not in already_connected
@@ -901,6 +937,7 @@ class P2pManager(threading.Thread):
                     can_addrv1(address) and net_group(address) in outbound_net_groups
                 )
                 and not self.is_discouraged(address)
+                and not self.ban_man.is_peer_banned(address)
             ):
                 sock = await dial(address)
                 if sock:
@@ -952,7 +989,8 @@ class P2pManager(threading.Thread):
         """Prune, prune some more, maybe dial, sleep -- forever, every 0.1s.
 
         `_prune_stale_connections` pings or drops an idle peer every
-        pass; `_maybe_prune_active_addresses` runs far less often;
+        pass; `_maybe_prune_active_addresses` and `_maybe_dump_banlist`
+        run far less often;
         `_maybe_dial_more_peers` dials one more only if this node still
         has room for it; `_maybe_redial_specified` is the standing
         redial issue #651 asked for, for `-connect`/`-addnode` alone.
@@ -962,6 +1000,7 @@ class P2pManager(threading.Thread):
             now = time.time()
             self._prune_stale_connections(now)
             self._maybe_prune_active_addresses(now)
+            self._maybe_dump_banlist(now)
             await self._maybe_dial_more_peers()
             await self._maybe_redial_specified()
             await asyncio.sleep(0.1)
@@ -1228,12 +1267,21 @@ class P2pManager(threading.Thread):
                     address = peer_address(*sockaddr[:2])
                     # Core's `CreateNodeFromAcceptedSocket` (`src/net.cpp`,
                     # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), on one
-                    # count of the inbound peers: a discouraged host is
-                    # refused once one more peer would fill the inbound
-                    # share; past that share an inbound peer is evicted
-                    # to make room, and only where every candidate is
-                    # protected is the new peer refused. Either refusal
-                    # comes before `create_connection` builds anything.
+                    # count of the inbound peers: a banned host is refused
+                    # outright, a discouraged host once one more peer would
+                    # fill the inbound share; past that share an inbound
+                    # peer is evicted to make room, and only where every
+                    # candidate is protected is the new peer refused. Every
+                    # refusal comes before `create_connection` builds
+                    # anything.
+                    if self.ban_man.is_peer_banned(address):
+                        endpoint = network_address(address)
+                        self.logger.debug(
+                            "connection from %s dropped (banned)",
+                            ip_and_port(str(endpoint.ip), endpoint.port),
+                        )
+                        sock.close()
+                        continue
                     inbound = self._inbound_count()
                     discouraged = self.is_discouraged(address)
                     if discouraged and inbound + 1 >= self.max_inbound:

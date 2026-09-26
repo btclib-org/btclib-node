@@ -95,11 +95,18 @@ class AManager:
         # shutdown path reads it off whichever manager it holds without
         # checking which, so the stand-in carries it too (#263)
         self.peer_db = SimpleNamespace(close=lambda: None)
+        # the ban list, read off the manager the same way: how many
+        # times `run`'s shutdown dumped it, as Core's `~BanMan` does
+        self.ban_list_dumps = 0
+        self.ban_man = SimpleNamespace(dump=self._dump_ban_list)
         # what `run`'s own `config.connect`/`config.addnode` dial loop
         # calls, in order -- only P2pManager's own attribute has a real
         # `connect`, and this stand-in is asked for both managers, so
         # both carry it the same way `peer_db` above does
         self.connect_calls: list[Any] = []
+
+    def _dump_ban_list(self) -> None:
+        self.ban_list_dumps += 1
 
     def start(self) -> None:
         """Record that `run`'s own start branch reached this stand-in."""
@@ -844,6 +851,7 @@ def test_a_port_configured_is_a_manager_started_and_stopped(
     node.stop()
     assert p2p_manager.stopped
     assert rpc_manager.stopped
+    assert p2p_manager.ban_list_dumps == 1
 
     quiet = a_node(tmp_path / "quiet")
     quiet.start()

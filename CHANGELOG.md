@@ -450,6 +450,16 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   refused after the lock, the others before it, as in Core** (closes #1191);
   `-blocksdir` and `-rpcbind` are refused in Core's words.
 
+### A ban list, as Core's `BanMan`
+
+- **`setban`, `listbanned` and `clearbanned` keep it in `banlist.json`; a
+  banned host is refused on accept, not dialled automatically, and left out of
+  `getaddr` answers and of the gossip stored** (closes #1088).
+
+### `running_a_node.md` names every RPC method the node serves
+
+- **Its list is the method table's, with no count** (closes #1221).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
