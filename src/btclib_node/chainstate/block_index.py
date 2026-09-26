@@ -72,7 +72,7 @@ from btclib.utils import bytesio_from_binarydata
 from btclib_node.exceptions import ChainstateInconsistencyError
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Iterable
 
     from btclib_node.chains import Chain
     from btclib_node.db import KeyValueStore
@@ -265,12 +265,11 @@ class BlockIndex:
         self.header_index: list[bytes] = []
 
         # header_index's own hash -> position, kept beside it rather
-        # than computed from it: get_headers_from_locators resolves a
-        # peer's locator against this index once per message, and
+        # than computed from it: `p2p.block_availability`'s ancestor walk
+        # asks whether a block is on header_index at every step, and
         # header_index holds one entry per header this node has ever
-        # indexed -- the whole known chain -- so a membership test or a
-        # position lookup done against the list itself is an O(n) scan
-        # repeated for every entry of the locator.
+        # indexed -- the whole known chain -- so a membership test done
+        # against the list itself is an O(n) scan repeated at every step.
         # btclib-org/btclib-node#439, following chainwork (#201) and
         # children (#125) in keeping a derived index beside the primary
         # structure rather than recomputing it on every read. Maintained
@@ -883,36 +882,3 @@ class BlockIndex:
         if self.header_index[0] not in block_locators:
             block_locators.append(self.header_index[0])
         return block_locators
-
-    def get_headers_from_locators(
-        self, block_locators: Sequence[bytes], stop: bytes
-    ) -> list[BlockHeader]:
-        """Return up to 2000 headers after the first locator this index knows.
-
-        `block_locators` is read in the caller's own order, so the
-        first one found in `header_index` is where the answer resumes
-        from. Stops at `stop` if reached first, and returns nothing if
-        none of `block_locators` is known.
-
-        Membership and position both come from `header_index_pos`
-        rather than a scan of `header_index` itself
-        (btclib-org/btclib-node#439). The slice is capped at 2000
-        before `stop` is looked for, rather than after: `stop` is
-        looked for inside the capped slice, not the whole of
-        `header_index`, which is what btclib-org/btclib-node#434 raised
-        `ValueError` on -- a `stop` at or below `block_locator`'s own
-        height is never in the slice taken after it, so it is simply
-        not found rather than raising, and the answer is the slice
-        unchanged: empty where the locator is already this index's own
-        tip, Core's own "nothing to send" for the same request.
-        """
-        output: list[bytes] = []
-        for block_locator in block_locators:
-            start = self.header_index_pos.get(block_locator)
-            if start is None:
-                continue
-            output = self.header_index[start + 1 : start + 1 + 2000]
-            if stop in output:
-                output = output[: output.index(stop) + 1]
-            break
-        return [self.get_block_info(x).header for x in output]
