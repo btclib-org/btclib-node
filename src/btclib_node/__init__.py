@@ -494,9 +494,10 @@ class Node(threading.Thread):
         module nothing there -- and is still made, both arms being one
         call site and the warm-up being harmless where it is not needed.
 
-        `download_manager.block_download` is the only caller, right
-        before it sends the first real `GetData` for a block this node
-        does not have -- the earliest point a script is actually going
+        `download_manager._request_blocks` is the only caller, for
+        `block_download` and `headers_direct_fetch` alike, right before
+        it sends the first real `GetData` for a block this node does not
+        have -- the earliest point a script is actually going
         to be validated, with a peer's round trip ahead of it as extra
         runway, rather than the moment header sync merely completes.
         Reaching `HeaderSynced` is not enough on its own: the comment on
@@ -505,8 +506,8 @@ class Node(threading.Thread):
         synced but which never has a block to fetch -- a header-only
         peer under test, a peer whose counterpart stops serving blocks
         -- is exactly that. The guard below makes a second call a no-op,
-        since `block_download` runs on every pass of the loop below and
-        would otherwise ask for a second thread once the first has
+        since `_request_blocks` runs for every batch of blocks asked for
+        and would otherwise ask for a second thread once the first has
         already built the pool.
         """
         if self._worker_pool_warmup is not None:

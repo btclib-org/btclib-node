@@ -16,7 +16,7 @@ import math
 import time
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, cast, override
 
 import pytest
 from btclib.fee import FeeRate, fee_from_vsize
@@ -41,7 +41,7 @@ from btclib_node.p2p.protocol_version import FEEFILTER_VERSION, SENDHEADERS_VERS
 from tests import generate_random_header_chain, generate_random_transaction
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
     from btclib.p2p.addrv2 import NetworkAddressV2
 
@@ -1796,3 +1796,32 @@ def test_a_reorg_deeper_than_the_limit_is_left_to_block_download(
     shallow = extend(index, MAX_BLOCKS_IN_TRANSIT_PER_PEER + 1)
     manager.headers_direct_fetch(conn, shallow[-1])
     assert conn.download_queue == shallow[:MAX_BLOCKS_IN_TRANSIT_PER_PEER]
+
+
+def test_a_direct_fetch_reads_the_connections_through_a_snapshot(
+    index: BlockIndex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A peer removed from `connections` mid-read is no error.
+
+    `P2pManager.remove_connection` changes `connections` from that
+    manager's own thread, stood in for here by a queue whose reading
+    removes a peer.
+    """
+    an_active_chain(index, 1)
+    a_clock_at(monkeypatch, index, 60)
+    announced = extend(index, 2, index.active_chain[-1])
+    conn = a_conn(1)
+    gone = a_conn(2)
+    leaving = a_conn(3)
+    manager = make_manager([leaving, gone, conn], block_index=index)
+    connections = manager.node.p2p_manager.connections
+
+    class RemovingQueue(list[bytes]):
+        @override
+        def __iter__(self) -> Iterator[bytes]:
+            connections.pop(gone.id, None)
+            return super().__iter__()
+
+    leaving.download_queue = RemovingQueue()
+    manager.headers_direct_fetch(conn, announced[-1])
+    assert conn.download_queue == announced

@@ -290,7 +290,10 @@ def _extend_tx_announce_queue(conn: Connection, new_for_conn: list[bytes]) -> No
 
 
 class DownloadManager:
-    """What decides what this node asks its peers for, one `step` at a time.
+    """What decides what this node asks its peers for.
+
+    Mostly one `step` at a time, and blocks also from the `headers`
+    callback, through `headers_direct_fetch`.
 
     Which peer headers are synced from, which blocks each peer is asked
     for and who stalls them, transaction announcement and request
@@ -971,9 +974,11 @@ class DownloadManager:
         and `last_header` is not invalid and has at least the tip's work.
         The blocks from the active chain up to `last_header` that are
         neither held nor in flight from any peer are asked for, earliest
-        first, up to `conn`'s room in flight. Where the active chain is
-        not reached within `MAX_BLOCKS_IN_TRANSIT_PER_PEER` + 1 blocks,
-        nothing is asked, and `block_download` is left to it.
+        first, up to `conn`'s room in flight. The walk back stops once
+        more than `MAX_BLOCKS_IN_TRANSIT_PER_PEER` blocks are collected,
+        as Core bounds `vToFetch`; where it has not reached the active
+        chain by then, nothing is asked, and `block_download` is left
+        to it.
 
         Core also leaves out a block `conn` could not serve without
         witnesses, where `callbacks.version` refuses such a peer, and
@@ -1000,7 +1005,7 @@ class DownloadManager:
 
         in_flight = {
             block_hash
-            for peer in node.p2p_manager.connections.values()
+            for peer in list(node.p2p_manager.connections.values())
             for block_hash in peer.download_queue
         }
         to_fetch: list[bytes] = []
