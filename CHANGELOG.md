@@ -486,11 +486,37 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   asked** (closes #1187); a missing data directory and an unreadable
   configuration file are refused in Core's words.
 
+### A ban list, as Core's `BanMan`
+
+- **`setban`, `listbanned` and `clearbanned` keep it in `banlist.json`; a
+  banned host is refused on accept, not dialled automatically, and left out of
+  `getaddr` answers and of the gossip stored** (closes #1088).
+
+### `running_a_node.md` names every RPC method the node serves
+
+- **Its list is the method table's, with no count** (closes #1221).
+
+### Compact blocks are served, and offered at version 2, as in Core
+
+- **`sendcmpct` offers version 2, and a `MSG_CMPCT_BLOCK` or a `getblocktxn`
+  is answered at Core's depths** (closes #1206).
+
+### Core's licence travels in the fixed seeds' module, not in `license-files`
+
+- **`_chainparamsseeds.py` opens with Core's `COPYING` in full, and
+  `license-files` drops it** (closes btclib-org/.github#1390); the file
+  stays beside the lists, and in the sdist.
+
+### An outbound peer behind this node's tip is dropped, as in Core
+
+- **Core's `ConsiderEviction`: `CHAIN_SYNC_TIMEOUT`, one `getheaders`, then
+  a disconnect, with up to four peers at the tip protected** (closes #1154).
+
 ### A dial pass no longer serializes every address it could draw
 
-- **`address_sampler` compares endpoints field by field, and
-  `get_active_addresses` reindexes only where it pruned a row** (closes
-  #1217, closes #1283), where each pass serialized every row of both tables.
+- **`address_sampler` compares endpoints by field, and `get_active_addresses`
+  reindexes only where it pruned a row** (closes #1217, closes #1283), where
+  each pass serialized every answered row and every dialable gossiped one.
 
 ## v2026.9.24
 
