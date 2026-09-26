@@ -516,7 +516,7 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 - **`add_addresses` ORs gossiped services into both rows of an endpoint, and
   an outbound peer's `version` overwrites them** (closes #1276), as Core's
-  `AddSingle` and `SetServices` do, where the last gossip replaced them.
+  `AddSingle` and `SetServices` do, where a gossip replaced a known row's.
 
 ## v2026.9.24
 
