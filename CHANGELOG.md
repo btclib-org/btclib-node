@@ -460,6 +460,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A peer is recorded as answered only where gossip already holds its
   endpoint** (closes #1189), as Core's `Good_` updates only what addrman holds.
 
+### A message that does not parse costs its peer nothing, as in Core
+
+- **A peer is discouraged only where Core calls `Misbehaving`** (closes
+  #1170); a payload that does not parse is logged and the peer kept.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
