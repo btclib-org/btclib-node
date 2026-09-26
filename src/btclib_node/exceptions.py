@@ -38,6 +38,7 @@ __all__ = [
     "InvalidBlockInputError",
     "InvalidChainTypeError",
     "MalformedRequestHeadError",
+    "MisbehavingError",
     "MissingPrevoutError",
     "NodeShutdownTimeoutError",
     "NonStandardTxError",
@@ -52,6 +53,21 @@ __all__ = [
     "UnsupportedAddressTypeError",
     "WrongNetworkMagicError",
 ]
+
+
+class MisbehavingError(BTClibValueError):
+    """A peer's message of the kind Core answers with `Misbehaving`.
+
+    `p2p.main` discourages the peer for this class alone. Any other
+    `BTClibException` out of a callback, a payload btclib cannot parse
+    among them, is logged and the peer kept, as Core's
+    `PeerManagerImpl::ProcessMessages` catches an exception out of
+    `ProcessMessage` and only logs it (`src/net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Raised where Core calls
+    `Misbehaving`, directly or through `MaybePunishNodeForBlock`.
+    `BTClibValueError`, so that a caller refusing a header or a block
+    for any reason still catches it as one.
+    """
 
 
 class MissingPrevoutError(ValueError):
@@ -83,10 +99,10 @@ class NonStandardTxError(BTClibValueError):
     `BTClibValueError`, so that both RPC paths answer this through the
     clause they already answer a refused candidate with:
     `rpc.callbacks.test_mempool_accept` reports the entry not allowed
-    and `send_raw_transaction` answers `VERIFY_REJECTED`. The cost of
-    that base is that `p2p.main.handle_p2p`'s own `isinstance(e,
-    BTClibException)` would discourage the peer for it, which is why
-    `tx`'s catch is what keeps the peer and has a test of its own.
+    and `send_raw_transaction` answers `VERIFY_REJECTED`. Not a
+    `MisbehavingError`, so `p2p.main.handle_p2p` would not discourage
+    the peer for it either, and `tx`'s catch is what records the
+    refusal.
     """
 
 
