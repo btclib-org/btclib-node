@@ -1085,18 +1085,19 @@ def test_a_verack_before_the_version_is_ignored() -> None:
     assert not node.p2p_manager.discouraged
 
 
-def test_a_verack_from_a_peer_that_never_asked_for_wtxid_relay_is_let_go() -> None:
-    """ISS 1133: a `verack` from a peer that skipped `wtxidrelay` is let go.
+def test_a_verack_from_a_peer_that_never_asked_for_wtxid_relay_completes() -> None:
+    """ISS 1183: a peer that skipped `wtxidrelay` is kept, as Core keeps it.
 
-    Dropped and not promoted, and not discouraged either.
+    Promoted and not stopped: its transactions are relayed by txid.
     """
     promoted: list[int] = []
-    node = a_handshake_node(promote_connection=promoted.append)
-    peer = a_peer(version_message=object())
+    peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+    node = a_handshake_node(promote_connection=promoted.append, peer_db=peer_db)
+    peer = a_peer(id=3, version_message=a_parsed_version())
     verack(node, b"", peer)
-    assert peer.stopped == [True]
-    assert promoted == []
-    assert not node.p2p_manager.discouraged
+    assert peer.status == P2pConnStatus.Connected
+    assert not peer.stopped
+    assert promoted == [3]
 
 
 def test_the_flags_a_peer_sets_on_this_connection() -> None:
@@ -2179,7 +2180,7 @@ def an_inv_index() -> Any:
 def test_a_transaction_announced_before_the_blocks_are_synced_is_ignored() -> None:
     """A `wtx` `inv` before `BlockSynced` is not queued: IBD asks for none."""
     node = a_data_node(status=NodeStatus.HeaderSynced)
-    peer = a_peer(id=4)
+    peer = a_peer(id=4, wtxidrelay_received=True)
     items = [Inventory(InventoryType.MSG_WTX, a_transaction().hash)]
     inv(node, Inv(items).serialize(), peer)
     assert node.download_manager.inv_txs == []
@@ -2322,21 +2323,53 @@ def test_a_transaction_announced_that_we_lack_is_wanted() -> None:
     """
     transaction = a_transaction()
     node = a_data_node()
-    peer = a_peer(id=4)
+    peer = a_peer(id=4, wtxidrelay_received=True)
     items = [Inventory(InventoryType.MSG_WTX, transaction.hash)]
     inv(node, Inv(items).serialize(), peer)
     assert node.download_manager.inv_txs == [(4, transaction.hash)]
     assert not peer.sent
 
 
-def test_a_transaction_announced_that_we_hold_is_not_wanted() -> None:
-    """A `wtx` `inv` for a transaction already in the mempool is not queued."""
+@pytest.mark.parametrize("by_wtxid", [True, False])
+def test_a_transaction_inv_is_read_in_the_peer_s_own_relay_mode(
+    by_wtxid: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1183: Core ignores an `inv` that does not match `wtxidrelay`.
+
+    A wtxid-relay peer's `MSG_TX` and another peer's `MSG_WTX` are both
+    skipped; what is kept is queued under the hash it was announced by.
+    """
+    transaction = a_transaction()
+    node = a_data_node()
+    peer = a_peer(id=4, wtxidrelay_received=by_wtxid)
+    items = [
+        Inventory(InventoryType.MSG_WTX, transaction.hash),
+        Inventory(InventoryType.MSG_TX, transaction.id),
+    ]
+    inv(node, Inv(items).serialize(), peer)
+    kept = transaction.hash if by_wtxid else transaction.id
+    assert node.download_manager.inv_txs == [(4, kept)]
+
+
+@pytest.mark.parametrize("by_wtxid", [True, False])
+def test_a_transaction_announced_that_we_hold_is_not_wanted(
+    by_wtxid: bool,  # noqa: FBT001
+) -> None:
+    """An `inv` for a transaction already in the mempool is not queued.
+
+    Looked up by wtxid for a wtxid-relay peer and by txid for another
+    (ISS 1183), each announcing in its own mode.
+    """
     transaction = a_transaction()
     mempool = Mempool(Logger(debug=True))
     mempool.add_tx(transaction)
     node = a_data_node(mempool=mempool)
-    items = [Inventory(InventoryType.MSG_WTX, transaction.hash)]
-    inv(node, Inv(items).serialize(), a_peer(id=4))
+    if by_wtxid:
+        item = Inventory(InventoryType.MSG_WTX, transaction.hash)
+    else:
+        item = Inventory(InventoryType.MSG_TX, transaction.id)
+    peer = a_peer(id=4, wtxidrelay_received=by_wtxid)
+    inv(node, Inv([item]).serialize(), peer)
     assert node.download_manager.inv_txs == []
 
 

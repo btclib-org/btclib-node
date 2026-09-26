@@ -61,7 +61,7 @@ _OUTBOUND_TX_ANNOUNCE_INTERVAL = 2.0
 # table with no second candidate to fall back to, but the same problem
 # applies to it: with no expiry at all, a peer that neither answers nor
 # sends `notfound` blocks this node from ever asking it again for that
-# wtxid, permanently, since `tx_download`'s own `wanted` filter reads the
+# hash, permanently, since `tx_download`'s own `wanted` filter reads the
 # entry as still outstanding. Reusing Core's own bound rather than a
 # fresh one is a lower-risk choice, not evidence the two trackers behave
 # alike beyond this one number. btclib-org/btclib-node#289
@@ -280,6 +280,21 @@ def _is_preferred_download(conn: Connection) -> bool:
     return not conn.inbound and _can_serve_blocks(conn)
 
 
+def _tx_fetch_type(conn: Connection) -> InventoryType:
+    """Return the type a `getdata` asks `conn` for a transaction under.
+
+    Core's `SendMessages` (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag): `MSG_WTX` of a peer with `m_wtxid_relay`, else `MSG_TX`
+    with `GetFetchFlags`' witness flag where the peer offers `NODE_WITNESS`.
+    """
+    if conn.wtxidrelay_received:
+        return InventoryType.MSG_WTX
+    version_message = conn.version_message
+    if version_message and version_message.services & ServiceFlags.NODE_WITNESS:
+        return InventoryType.MSG_WITNESS_TX
+    return InventoryType.MSG_TX
+
+
 def _extend_tx_announce_queue(conn: Connection, new_for_conn: list[bytes]) -> None:
     """Append `new_for_conn`'s own wtxids not already in `conn`'s queue.
 
@@ -414,11 +429,21 @@ class DownloadManager:
         if not received:
             return
         # `received` itself stays a list, for the order `_send_due_
-        # announcements` sends in; membership below is against this set
-        # instead, so a peer with many wtxids still outstanding does not
-        # turn one `inv_txs` pass into a full scan of `received` per
-        # entry. btclib-org/btclib-node#444
-        received_set = set(received)
+        # announcements` sends in; membership below is against the dict
+        # `answers` instead, so a peer with many wtxids still outstanding
+        # does not turn one `inv_txs` pass into a full scan of `received`
+        # per entry. btclib-org/btclib-node#444
+        #
+        # A peer without wtxid relay announces and is asked by txid
+        # (`callbacks.inv`), so a transaction received answers for its
+        # txid as well: `answers` maps either hash to the wtxid. One
+        # already evicted again has no txid to read back, and is left
+        # to the ask's own timeout.
+        answers = {wtxid: wtxid for wtxid in received}
+        for wtxid in received:
+            held = self.node.mempool.transactions.get(wtxid)
+            if held is not None:
+                answers.setdefault(held.id, wtxid)
         # a peer that announced a transaction we now hold, or sent it
         # to us, already has it: it is the others that are told. A
         # locally originated transaction's conn_id is `None`, which
@@ -430,19 +455,19 @@ class DownloadManager:
         for conn_id, wtxid in self.received_txs:
             has_it.setdefault(conn_id, set()).add(wtxid)
         still_wanted: list[tuple[int, bytes]] = []
-        for conn_id, wtxid in self.inv_txs:
-            if wtxid in received_set:
-                has_it.setdefault(conn_id, set()).add(wtxid)
+        for conn_id, announced in self.inv_txs:
+            if announced in answers:
+                has_it.setdefault(conn_id, set()).add(answers[announced])
             else:
-                still_wanted.append((conn_id, wtxid))
+                still_wanted.append((conn_id, announced))
         self.inv_txs = still_wanted
 
         for conn in self.node.p2p_manager.connections.copy().values():
             # the tx is in the mempool now: nobody is still owed an
             # answer to a `getdata` this node already sent for it,
-            # wtxid matching what the request loop below asks by.
-            for wtxid in received:
-                conn.tx_requested.pop(wtxid, None)
+            # by whichever hash the request loop below asked it by.
+            for asked in answers:
+                conn.tx_requested.pop(asked, None)
 
             # what the peer's version asked for. An answer nothing
             # consults is the same peer told the same thing whatever
@@ -491,8 +516,8 @@ class DownloadManager:
         if not self.inv_txs:
             return
         invs: dict[int, list[bytes]] = {}
-        for conn_id, wtxid in self.inv_txs:
-            invs.setdefault(conn_id, []).append(wtxid)
+        for conn_id, announced in self.inv_txs:
+            invs.setdefault(conn_id, []).append(announced)
 
         for conn_id, inv in invs.items():
             target = self.node.p2p_manager.connections.get(conn_id)
@@ -503,28 +528,30 @@ class DownloadManager:
             # still be about to answer is no longer treated as
             # outstanding: a peer that neither sends the transaction
             # nor answers `notfound` would otherwise block every
-            # future request to it for this wtxid, permanently.
+            # future request to it for this hash, permanently.
             # btclib-org/btclib-node#289
-            for wtxid, asked_at in list(target.tx_requested.items()):
+            for announced, asked_at in list(target.tx_requested.items()):
                 if now - asked_at > _TX_REQUEST_TIMEOUT:
-                    del target.tx_requested[wtxid]
+                    del target.tx_requested[announced]
             # a peer that announced the same transaction twice is
             # asked for it once, and a peer already asked for a
             # transaction is not asked again while that ask is still
             # outstanding: `not_found` is what clears it early, the
             # tx itself arriving is what clears it above.
             wanted = [
-                wtxid
-                for wtxid in dict.fromkeys(inv)
-                if wtxid not in target.tx_requested
+                announced
+                for announced in dict.fromkeys(inv)
+                if announced not in target.tx_requested
             ]
             if not wanted:
                 continue
-            for wtxid in wanted:
-                target.tx_requested[wtxid] = now
-            target.send(
-                GetData([Inventory(InventoryType.MSG_WTX, wtxid) for wtxid in wanted])
-            )
+            for announced in wanted:
+                target.tx_requested[announced] = now
+            # Core's `TXID_RELAY_DELAY` for a txid announcement is one of
+            # `TxRequestTracker`'s delays, none of which this node applies
+            # (btclib-org/btclib-node#1196).
+            fetch_type = _tx_fetch_type(target)
+            target.send(GetData([Inventory(fetch_type, h) for h in wanted]))
 
     def _send_due_announcements(self) -> None:
         # Core's `TxRelay::m_next_inv_send_time`/`m_tx_inventory_to_send`
@@ -603,11 +630,7 @@ class DownloadManager:
                     if conn.queued_send_bytes >= MAX_GETDATA_INFLIGHT_BYTES:
                         break
                     chunk = queue[start : start + MAX_INV_SZ]
-                    conn.send(
-                        Inv(
-                            [Inventory(InventoryType.MSG_WTX, wtxid) for wtxid in chunk]
-                        )
-                    )
+                    conn.send(Inv([self._tx_inventory(conn, w) for w in chunk]))
                     sent_through = start + len(chunk)
                 # Only the entries this call actually served leave the
                 # queue: what a chunk past the bound above left behind is
@@ -630,6 +653,17 @@ class DownloadManager:
                     conn.next_inv_send_time = now + _rng.expovariate(
                         1 / _OUTBOUND_TX_ANNOUNCE_INTERVAL
                     )
+
+    def _tx_inventory(self, conn: Connection, wtxid: bytes) -> Inventory:
+        """Name a held transaction the way `conn` relays: wtxid, else txid.
+
+        Core's `SendMessages` announces `MSG_WTX` to a peer with
+        `m_wtxid_relay` and `MSG_TX` by txid to any other.
+        """
+        if conn.wtxidrelay_received:
+            return Inventory(InventoryType.MSG_WTX, wtxid)
+        txid = self.node.mempool.transactions[wtxid].id
+        return Inventory(InventoryType.MSG_TX, txid)
 
     def _send_due_feefilters(self) -> None:
         """Tell every connected peer this node's own current relay floor.
