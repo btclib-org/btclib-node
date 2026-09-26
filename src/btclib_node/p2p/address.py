@@ -181,6 +181,23 @@ _SEED_SERVICE_BITS = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
 _MAX_SEED_ANSWERS = 32
 
 
+def _resolved_ip(host: str) -> str | None:
+    """Return a resolved `host` as `CNetAddr` reads it, `None` if internal.
+
+    A mapped IPv4 address is IPv4, and one under the Tor v2 prefix the
+    unspecified address, as `SetLegacyIPv6` reads them; a scope id is
+    dropped.
+    """
+    ip = ip_address(host.partition("%")[0])
+    if isinstance(ip, IPv6Address):
+        if ip in _INTERNAL:
+            return None
+        if ip in _TORV2:
+            ip = IPv6Address(0)
+        return str(ip.ipv4_mapped or ip)
+    return str(ip)
+
+
 async def lookup_host(name: str, max_answers: int) -> list[str]:
     """Return the IPs `name` resolves to, as Core's `LookupHost` does.
 
@@ -189,10 +206,9 @@ async def lookup_host(name: str, max_answers: int) -> list[str]:
     the v31.1 tag): `getaddrinfo` asked for a TCP stream socket with
     `AI_ADDRCONFIG`, asked again without it where that fails, and read in
     the resolver's order. Its first `max_answers` addresses are kept,
-    none under the internal prefix. A mapped IPv4 answer is IPv4, and one
-    under the Tor v2 prefix the unspecified address, as `SetLegacyIPv6`
-    reads them. Core's Tor and I2P names are not read here, this node
-    having no dial for either.
+    none under the internal prefix, each read by `_resolved_ip`. Core's
+    Tor and I2P names are not read here, this node having no dial for
+    either.
     """
     if not name or "\0" in name:
         return []
@@ -215,14 +231,9 @@ async def lookup_host(name: str, max_answers: int) -> list[str]:
             continue
         if len(ips) >= max_answers:
             break
-        ip = ip_address(str(sockaddr[0]).partition("%")[0])
-        if isinstance(ip, IPv6Address):
-            if ip in _INTERNAL:
-                continue
-            if ip in _TORV2:
-                ip = IPv6Address(0)
-            ip = ip.ipv4_mapped or ip
-        ips.append(str(ip))
+        ip = _resolved_ip(str(sockaddr[0]))
+        if ip is not None:
+            ips.append(ip)
     return ips
 
 
@@ -543,7 +554,7 @@ class PeerDB:
             self.db.close()
 
     async def get_addr_from_dns(self) -> list[str]:
-        """Ask every chain DNS seed for peers, and return the ones to addr-fetch.
+        """Ask every chain DNS seed for peers; return the ones to addr-fetch.
 
         Core's `ThreadDNSAddressSeed` asks a seed's `x9.` subdomain
         (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag),

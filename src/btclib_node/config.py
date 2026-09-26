@@ -109,10 +109,11 @@ def _resolve_peers(
     `-addnode` and `-seednode`, which dial through `CConnman::ConnectNode`
     and resolve one via `Resolve` (`src/net.cpp`) same as any other peer.
     This node dials a `NetworkAddressV2` built straight off a parsed IP
-    (`p2p/address.py`'s `peer_address`), and the only DNS lookup here is
-    `PeerDB.get_addr_from_dns`'s own coroutine, on `P2pManager`'s asyncio
-    loop. A hostname is refused up front, at `Config` construction,
-    rather than dialled wrong or silently dropped later.
+    (`p2p/address.py`'s `peer_address`), and DNS is asked only through
+    `p2p/address.py`'s `lookup_host`, awaited on `P2pManager`'s asyncio
+    loop by DNS seeding and by `P2pManager._process_addr_fetch`. A
+    hostname is refused up front, at `Config` construction, rather than
+    dialled wrong or silently dropped later.
     """
     peers: list[tuple[str, int]] = []
     for spec in specs:

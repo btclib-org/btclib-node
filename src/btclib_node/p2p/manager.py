@@ -907,7 +907,7 @@ class P2pManager(threading.Thread):
             )
 
     async def _process_addr_fetch(self) -> None:
-        """Dial the addr-fetch peer queued first, where an outbound slot is free.
+        """Dial the addr-fetch peer queued first, where a slot is free.
 
         Core's `ProcessAddrFetch` (`src/net.cpp`, at
         bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the entry leaves the

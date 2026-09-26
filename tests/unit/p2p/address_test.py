@@ -549,14 +549,18 @@ class FakeLoop:
         self.asked: list[tuple[str, int]] = []
 
     async def getaddrinfo(
-        self, host: str, port: None, *, type: int, proto: int, flags: int = 0
+        self, host: str, port: None, **hints: int
     ) -> list[tuple[Any, ...]]:
         """Answer `host` from `self.answers`, in `getaddrinfo`'s own shape."""
-        assert (port, type, proto) == (None, socket.SOCK_STREAM, socket.IPPROTO_TCP)
+        flags = hints.pop("flags", 0)
+        assert (port, hints) == (
+            None,
+            {"type": socket.SOCK_STREAM, "proto": socket.IPPROTO_TCP},
+        )
         self.asked.append((host, flags))
         if flags & socket.AI_ADDRCONFIG and host in self.addrconfig_fails:
-            raise socket.gaierror("no address of that family")
-        answer = self.answers.get(host, socket.gaierror("no such host"))
+            raise socket.gaierror
+        answer = self.answers.get(host, socket.gaierror())
         if isinstance(answer, Exception):
             raise answer
         return [_an_answer(ip) if isinstance(ip, str) else ip for ip in answer]
@@ -614,7 +618,7 @@ def test_each_seed_is_asked_for_its_x9_subdomain_and_answers_on_the_chain_port(
 def test_a_seed_whose_subdomain_answers_nothing_is_handed_back(
     monkeypatch: pytest.MonkeyPatch, answer: Exception | list[str]
 ) -> None:
-    """ISS 1284: Core's `AddAddrFetch(seed)`, for the name as the chain gives it.
+    """ISS 1284: Core's `AddAddrFetch(seed)`, of the name the chain gives.
 
     The bare name is not resolved here: `P2pManager` dials it.
     """

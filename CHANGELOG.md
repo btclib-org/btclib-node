@@ -475,6 +475,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   dialled to fetch addresses and then dropped** (closes #1192); `getpeerinfo`
   names that connection `addr-fetch`.
 
+### DNS seeding asks each seed's `x9.` subdomain, as Core does
+
+- **A seed is asked for `x9.<seed>`, at most 32 of its answers kept, and one
+  whose subdomain answers nothing is dialled for its addresses** (closes
+  #1284), where the seed's own name was resolved and every answer kept.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

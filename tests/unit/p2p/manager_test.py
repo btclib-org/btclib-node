@@ -22,6 +22,7 @@ import warnings
 from concurrent.futures import Future
 from contextlib import ExitStack, closing, suppress
 from functools import partial
+from ipaddress import ip_address
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast, override
 from unittest.mock import AsyncMock
@@ -1812,6 +1813,182 @@ def test_fixed_seeds_enabled_are_not_said_disabled(
     monkeypatch.setattr(manager.logger, "info", lambda msg, *a: logged.append(msg))
     assert asyncio.run(one_pass(manager)) is True
     assert logged == []
+
+
+def test_a_seed_whose_subdomain_answered_nothing_is_queued_for_an_addr_fetch(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1284: Core's `AddAddrFetch(seed)`, on the chain's own port."""
+
+    async def unanswered() -> list[str]:
+        return ["seed.example"]
+
+    peer_db = a_peer_db_stub(
+        is_empty=True, holds_nothing=True, get_addr_from_dns=unanswered
+    )
+    manager = a_manager(peer_db=peer_db)
+    asyncio.run(manager._dns_address_seed())
+    assert list(manager._addr_fetches) == [("seed.example", 18444)]
+
+
+def a_name_fetching_manager(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    resolved: list[str],
+    *,
+    answering: frozenset[str] = frozenset(),
+    conns: Sequence[Any] = (),
+) -> tuple[P2pManager, list[tuple[Any, ...]]]:
+    """Build a manager with `seed.example` queued for an addr-fetch.
+
+    The name resolves to `resolved`, and `dial` answers with a socket
+    stand-in for the addresses in `answering` alone. Every lookup, dial,
+    registered connection and logged line is recorded, in order.
+    """
+    calls: list[tuple[Any, ...]] = []
+
+    async def lookup_host(name: str, max_answers: int) -> list[str]:
+        calls.append(("lookup", name, max_answers))
+        return list(resolved)
+
+    async def dial(address: NetworkAddressV2) -> object:
+        calls.append(("dial", address))
+        return "a socket" if str(ip_address(address.address)) in answering else None
+
+    monkeypatch.setattr(manager_module, "lookup_host", lookup_host)
+    monkeypatch.setattr(manager_module, "dial", dial)
+    manager = a_manager(conns, peer_db=a_peer_db_stub(is_empty=True))
+    monkeypatch.setattr(
+        manager,
+        "create_connection",
+        lambda sock, address, **kwargs: calls.append(("create", address, kwargs)),
+    )
+    for level in ("info", "debug"):
+        monkeypatch.setattr(
+            manager.logger,
+            level,
+            lambda msg, *args, level=level: calls.append((level, msg % args)),
+        )
+    manager._addr_fetches.append(("seed.example", 18444))
+    return manager, calls
+
+
+def test_a_name_is_resolved_and_the_first_answer_that_connects_is_kept(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1284: `ConnectNode` tries each resolved address until one connects.
+
+    Up to 256 answers are asked for, and the connection is an
+    `ADDR_FETCH` one.
+    """
+    manager, calls = a_name_fetching_manager(
+        a_manager, monkeypatch, ["1.2.3.4", "5.6.7.8"], answering=frozenset({"5.6.7.8"})
+    )
+    asyncio.run(manager._process_addr_fetch())
+    assert calls[0] == ("lookup", "seed.example", 256)
+    kept = peer_address("5.6.7.8", 18444)
+    assert calls[-1] == (
+        "create",
+        kept,
+        {"inbound": False, "automatic": True, "addr_fetch": True},
+    )
+    assert ("dial", kept) in calls
+    assert not manager._addr_fetches
+
+
+def test_a_name_s_answers_are_tried_in_a_shuffled_order_and_one_is_kept(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1284: `ConnectNode` shuffles what a name resolves to.
+
+    The shuffle is made to reverse the answers here, and every answer
+    connects, so the one dialled first is the one kept, and no other.
+    """
+    manager, calls = a_name_fetching_manager(
+        a_manager,
+        monkeypatch,
+        ["1.2.3.4", "5.6.7.8"],
+        answering=frozenset({"1.2.3.4", "5.6.7.8"}),
+    )
+    monkeypatch.setattr(
+        manager_module.secrets,
+        "SystemRandom",
+        lambda: SimpleNamespace(shuffle=lambda items: items.reverse()),
+    )
+    asyncio.run(manager._process_addr_fetch())
+    kept = peer_address("5.6.7.8", 18444)
+    assert [call[:2] for call in calls[1:]] == [("dial", kept), ("create", kept)]
+
+
+def test_a_name_none_of_whose_answers_connects_makes_no_connection(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1284: every answer is tried, and the entry is spent all the same."""
+    manager, calls = a_name_fetching_manager(
+        a_manager, monkeypatch, ["1.2.3.4", "5.6.7.8"]
+    )
+    asyncio.run(manager._process_addr_fetch())
+    dialled = [call[1] for call in calls if call[0] == "dial"]
+    assert sorted(dialled, key=lambda address: address.address) == [
+        peer_address("1.2.3.4", 18444),
+        peer_address("5.6.7.8", 18444),
+    ]
+    assert not [call for call in calls if call[0] == "create"]
+    assert not manager._addr_fetches
+
+
+@pytest.mark.parametrize(
+    ("resolved", "line"),
+    [
+        pytest.param([], None, id="no-answer"),
+        pytest.param(
+            ["5.6.7.8", "0.0.0.0"],  # noqa: S104 -- a resolver's answer
+            (
+                "debug",
+                "Resolver returned invalid address 0.0.0.0:18444 for seed.example",
+            ),
+            id="invalid",
+        ),
+        pytest.param(
+            ["255.255.255.255"],
+            (
+                "debug",
+                "Resolver returned invalid address 255.255.255.255:18444 for "
+                "seed.example",
+            ),
+            id="broadcast",
+        ),
+        pytest.param(
+            ["5.6.7.8", "1.2.3.4"],
+            (
+                "info",
+                (
+                    "Not opening a connection to seed.example, already connected "
+                    "to 1.2.3.4:18444"
+                ),
+            ),
+            id="already-connected",
+        ),
+    ],
+)
+def test_a_name_is_not_dialled_where_core_s_connect_node_gives_up(
+    a_manager: AManagerFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    resolved: list[str],
+    line: tuple[str, str] | None,
+) -> None:
+    """ISS 1284: no answer, an invalid one, or one already connected.
+
+    `ConnectNode` returns before it dials anything where any resolved
+    address is invalid or already connected, logging which.
+    """
+    held = a_conn(9, address=peer_address("1.2.3.4", 18444))
+    manager, calls = a_name_fetching_manager(
+        a_manager, monkeypatch, resolved, answering=frozenset(resolved), conns=[held]
+    )
+    asyncio.run(manager._process_addr_fetch())
+    assert calls[1:] == ([] if line is None else [line])
+    assert not manager._addr_fetches
 
 
 def a_dns_seeding_manager(
