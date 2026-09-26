@@ -154,7 +154,7 @@ intersphinx_cache_limit = 0
 #   entry above. The numbering restarts in each signature, and
 #   config.py's own Config.__init__ takes one number per parameter
 #   typed `Sequence[str]`, Sequence being what that file imports under
-#   TYPE_CHECKING, which is why the numbers run past 2
+#   TYPE_CHECKING, which is why the entries run past __annotationlib_name_2__
 # - asyncio.AbstractEventLoop, spelled that way everywhere this tree
 #   uses it (p2p/manager.py, rpc/manager.py, rpc/connection.py):
 #   autodoc reads the qualified name back off the class itself once
@@ -179,6 +179,7 @@ nitpick_ignore = [
     ("py:class", "__annotationlib_name_3__"),
     ("py:class", "__annotationlib_name_4__"),
     ("py:class", "__annotationlib_name_5__"),
+    ("py:class", "__annotationlib_name_6__"),
     ("py:class", "asyncio.events.AbstractEventLoop"),
     ("py:class", "BinaryData"),
     ("py:class", "ScriptFlag"),
