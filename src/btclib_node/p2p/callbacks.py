@@ -955,7 +955,10 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
         # is refused before it is asked to send it: btclib-org/btclib-node#77
         # A `MisbehavingError`: this is Core's `CheckBlock`, whose
         # `BLOCK_CONSENSUS` and `BLOCK_MUTATED` `MaybePunishNodeForBlock`
-        # punishes (btclib-org/btclib-node#1170).
+        # punishes (btclib-org/btclib-node#1170). One refusal here is
+        # btclib's and not Core's: its header check refuses a version of
+        # zero or below as "invalid version", where Core accepts such a
+        # block below BIP34's height (btclib-org/btclib#2309).
         try:
             block.assert_valid(node.chain.pow_limit_bits)
         except BTClibException as e:
@@ -1405,7 +1408,7 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     _refuse_past_bound("headers", _count_past(msg, MAX_HEADERS_RESULTS, 0))
     # Unchecked, as Core's own `CBlockHeader` read checks nothing: btclib's
     # `BlockHeader.assert_valid` would refuse a version of zero or below
-    # and a time before genesis (btclib-org/btclib#2309), which Core
+    # (btclib-org/btclib#2309) and a time before genesis, which Core
     # leaves to `ContextualCheckBlockHeader`'s `bad-version` and
     # `time-too-old`, both `Misbehaving`. The count and the transaction
     # counts are bounded either way, and `add_headers` checks the work.

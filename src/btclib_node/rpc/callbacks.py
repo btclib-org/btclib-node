@@ -459,8 +459,11 @@ def get_block_header(
 
     if not verbose:
         # src/rpc/blockchain.cpp:668-673: the same eighty bytes a peer
-        # is sent on the wire, hex-encoded rather than the JSON object
-        return header.serialize().hex()
+        # is sent on the wire, hex-encoded rather than the JSON object.
+        # Unchecked, as the index stores it: a version of zero or below,
+        # which Core takes below BIP34's height, is one btclib's own
+        # check refuses (btclib-org/btclib#2309)
+        return header.serialize(check_validity=False).hex()
 
     # the blocks this node has validated and connected, which is what
     # Core hands blockheaderToJSON: `ActiveChain().Tip()`, at
@@ -489,11 +492,10 @@ def get_block_header(
         # src/rpc/blockchain.cpp:175
         "version": header.version,
         # strprintf("%08x", nVersion), src/rpc/blockchain.cpp:176 --
-        # btclib bounds `version` to `0 < version <= 0x7FFFFFFF`
-        # (block_header.py's own `assert_valid`), so the top bit is
-        # never set and a plain positive format matches what Core's
-        # signed `%x` prints
-        "versionHex": f"{header.version:08x}",
+        # Core's int32_t printed as its 32 bits, so a negative version,
+        # which the index stores below BIP34's height, is `ffffffff` for
+        # -1 rather than Python's signed `-0000001`
+        "versionHex": f"{header.version & 0xFFFFFFFF:08x}",
         # src/rpc/blockchain.cpp:177 -- Core's own name, not btclib's
         # `to_dict`'s `merkle_root`
         "merkleroot": header.merkle_root,

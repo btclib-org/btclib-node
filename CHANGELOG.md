@@ -455,12 +455,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A coin picks the answered or the gossiped table, and a pass draws up to
   a hundred times** (closes #1201), so held answered peers no longer stall it.
 
-### An obsolete header version is refused `bad-version`
-
-- **A header whose version BIP34, BIP66 or BIP65 made obsolete is refused
-  `bad-version` from that BIP's height, and its sender discouraged, as in
-  Core** (closes #1262).
-
 ### PeerDB records as answered only a peer it already knows
 
 - **A peer is recorded as answered only where gossip already holds its
@@ -491,6 +485,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A `..` comes off, and a leading `//` becomes `/`, before the file system is
   asked** (closes #1187); a missing data directory and an unreadable
   configuration file are refused in Core's words.
+
+### An obsolete header version is refused `bad-version`
+
+- **A header whose version BIP34, BIP66 or BIP65 made obsolete is refused
+  `bad-version` from that BIP's height, and its sender discouraged, as in
+  Core** (closes #1262).
 
 ## v2026.9.24
 
