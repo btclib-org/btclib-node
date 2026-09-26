@@ -475,6 +475,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   (closes #1168), `args` holding the leading positions; a name repeated,
   unknown or given both ways is refused with `RPC_INVALID_PARAMETER`.
 
+### `-rpcbind` is ignored without `-rpcallowip`, as `bitcoind` ignores it
+
+- **The JSON-RPC listener stays on loopback whatever `-rpcbind` names**
+  (closes #1211), and every value is checked, where the last was bound.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

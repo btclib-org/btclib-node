@@ -217,6 +217,10 @@ class Config:
     # every interface unconditionally, and is right to, since a peer
     # listener is supposed to accept a stranger.
     rpc_host: str
+    # Core's `-rpcbind` values, checked by `cli` and bound nowhere: Core
+    # binds them only beside `-rpcallowip`, which this node does not
+    # have, and `RpcManager` logs the warning Core logs over them.
+    rpcbind: tuple[str, ...]
     # Core's own `-rpcauth`, one entry per value: users the RPC listener
     # accepts beside the cookie and `rpc_password_entry`.
     rpc_auth: tuple[RpcAuthEntry, ...]
@@ -324,6 +328,7 @@ class Config:
         p2p_port: int | None = None,
         rpc_port: int | None = None,
         rpc_host: str = "127.0.0.1",
+        rpcbind: Sequence[str] = (),
         allow_p2p: bool = True,
         allow_rpc: bool = True,
         pruned: bool = False,
@@ -396,6 +401,7 @@ class Config:
                 self.rpc_port = rpc_port
 
         self.rpc_host = rpc_host
+        self.rpcbind = tuple(rpcbind)
         # Core reads the RPC options below in `StartHTTPRPC` and its
         # `InitRPCAuthentication` (`src/httprpc.cpp`), which `AppInitMain`
         # runs under `-server` alone (`src/init.cpp`, both at
