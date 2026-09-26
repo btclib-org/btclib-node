@@ -19,7 +19,7 @@ import socket
 import sys
 from ipaddress import IPv4Address, IPv6Address
 
-__all__ = ["local_addresses"]
+__all__ = ["from_sockaddr", "interface_addresses", "local_addresses"]
 
 # `<net/if.h>`'s flags, the same on Linux and on the BSDs
 _IFF_UP = 0x1
