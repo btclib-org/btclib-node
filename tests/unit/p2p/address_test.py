@@ -973,13 +973,14 @@ def test_a_try_is_recorded_for_an_endpoint_a_table_holds(table: str) -> None:
     """ISS 1277: Core's `Attempt_` sets `m_last_try` on an entry it finds.
 
     An endpoint neither table holds gets no record, as `Attempt_` bails
-    out where addrman does not find the address.
+    out where addrman does not find the address. An answered endpoint is
+    a known one too, `add_active_address` taking no other.
     """
     peer_db = a_peer_db()
     address = peer_address("1.2.3.4", 8333)
-    if table == "known":
+    if table != "neither":
         peer_db.add_addresses([address])
-    elif table == "answered":
+    if table == "answered":
         peer_db.add_active_address(address)
     before = time.time()
     peer_db.attempt(address)

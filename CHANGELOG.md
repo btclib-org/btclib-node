@@ -549,7 +549,7 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 ### Every dial records its try, as Core's `Attempt` does
 
 - **A `-connect` or `-addnode` dial counts as a recent try too, for an address
-  the table holds** (closes #1277); as in Core, a restart forgets every try.
+  a table holds** (closes #1277); as in Core, a restart forgets every try.
 
 ## v2026.9.24
 

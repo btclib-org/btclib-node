@@ -665,18 +665,14 @@ class PeerDB:
         `AddrManImpl::Attempt_` (`src/addrman.cpp`, at
         bitcoin/bitcoin@9be056a8a7, the v31.1 tag) sets `m_last_try` on
         the entry addrman holds for the address, and does nothing where
-        it holds none; so is an endpoint neither table holds left out
-        here. A try older than `RECENT_TRY_SECONDS` is dropped, since
-        nothing reads one.
+        it holds none; so is an endpoint `_known_keys` does not hold left
+        out here, an answered one being known too. A try older than
+        `RECENT_TRY_SECONDS` is dropped, since nothing reads one.
         """
         key = endpoint_key(address)
-        with self._active_lock:
-            held = key in self._active_index
-        if not held:
-            with self._addresses_lock:
-                held = any(endpoint_key(known) == key for known in self.addresses)
-        if not held:
-            return
+        with self._addresses_lock:
+            if key not in self._known_keys:
+                return
         now = time.time()
         self._last_try = {
             tried: when
