@@ -19,7 +19,7 @@ import threading
 from concurrent.futures import Future
 from contextlib import suppress
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import pytest
 
@@ -353,18 +353,25 @@ def test_the_lookup_is_held_to_addrconfig_where_libevent_holds_it(
     assert manager_module._address_flags(host) == flags
 
 
+def test_a_zone_naming_an_interface_is_a_literal_libevent_parses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1269: `evutil_inet_pton_scope` takes a zone `if_nametoindex` knows."""
+    monkeypatch.setattr(manager_module, "_WINDOWS", True)
+    name = socket.if_nameindex()[0][1]
+    assert manager_module._address_flags(f"fe80::1%{name}") == PASSIVE
+
+
 def test_the_empty_host_is_0_0_0_0_first_on_windows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """ISS 1269: `evutil_getaddrinfo_common_`'s own answer, not the system's."""
     monkeypatch.setattr(manager_module, "_WINDOWS", True)
-
-    def not_asked(*args: object, **kwargs: object) -> NoReturn:
-        raise AssertionError((args, kwargs))
-
-    monkeypatch.setattr(socket, "getaddrinfo", not_asked)
+    asked: list[object] = []
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *args, **_: asked.append(args))
     family, _, _, sockaddr = manager_module._first_address("", 8332)
     assert (family, sockaddr) == (socket.AF_INET, ("0.0.0.0", 8332))  # noqa: S104
+    assert not asked
 
 
 def test_the_empty_host_is_the_system_s_passive_answer_elsewhere(
