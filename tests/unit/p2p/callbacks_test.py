@@ -11,6 +11,7 @@ losing the peer. The functional tests drive two cooperating nodes, which
 is the path where every message is welcome; these are the rest.
 """
 
+import logging
 import math
 import secrets
 import socket
@@ -89,6 +90,7 @@ from btclib_node.exceptions import (
 from btclib_node.log import Logger
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import PeerDB, endpoint_key, host_key, peer_address
+from btclib_node.p2p.banman import BanMan, lookup_subnet
 from btclib_node.p2p.block_availability import BlockAvailability
 from btclib_node.p2p.callbacks import (
     MAX_CFILTERS_INFLIGHT_BYTES,
@@ -180,17 +182,29 @@ def a_version_address(services: int = 0) -> NetworkAddress:
     return NetworkAddress(services, "0.0.0.0", 18444)  # noqa: S104
 
 
+def a_ban_man(*subnets: str) -> BanMan:
+    """Build a ban list, in memory, banning each of `subnets` for a day."""
+    ban_man = BanMan(None, logging.getLogger(__name__))
+    for text in subnets:
+        subnet = lookup_subnet(text)
+        assert subnet is not None
+        ban_man.ban(subnet)
+    return ban_man
+
+
 def make_node(
     addresses: Sequence[NetworkAddressV2],
     *,
     prefer_addressv2: bool = False,
     discouraged: Sequence[NetworkAddressV2] = (),
+    banned: Sequence[str] = (),
     inbound: bool = True,
 ) -> tuple[Any, Any, list[Any]]:
     """Build a node with `peer_db` addresses active, and a peer stand-in.
 
-    `is_discouraged` answers for the hosts of `discouraged`. The peer is
-    inbound by default, the only kind whose `getaddr` is answered.
+    `is_discouraged` answers for the hosts of `discouraged`, and the ban
+    list holds the subnets of `banned`. The peer is inbound by default,
+    the only kind whose `getaddr` is answered.
     """
     peer_db = PeerDB(cast("Chain", None), cast("Path", None))
     for address in addresses:
@@ -207,6 +221,7 @@ def make_node(
         p2p_manager=SimpleNamespace(
             peer_db=peer_db,
             is_discouraged=lambda address: host_key(address) in keys,
+            ban_man=a_ban_man(*banned),
         )
     )
     return node, conn, sent
@@ -419,6 +434,22 @@ def test_a_discouraged_host_is_left_out_of_a_getaddr_answer(
     assert answer.addresses == (kept,)
 
 
+def test_a_banned_host_is_left_out_of_a_getaddr_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Core's `GetAddressesUnsafe` leaves a banned host out, by subnet."""
+    monkeypatch.setattr(cb, "_addresses_to_send", list)
+    now = int(time.time())
+    kept = peer_address("1.2.3.4", 18444, timestamp=now)
+    banned = peer_address("5.6.7.8", 18444, timestamp=now)
+    node, conn, sent = make_node(
+        [kept, banned], prefer_addressv2=True, banned=["5.6.0.0/16"]
+    )
+    getaddr(node, b"", conn)
+    (answer,) = sent
+    assert answer.addresses == (kept,)
+
+
 def a_version(
     *,
     protocol: int = PROTOCOL_VERSION,
@@ -551,11 +582,12 @@ def a_handshake_node(
     promote_connection: Any = None,
     min_relay_feerate: FeeRate = DEFAULT_MIN_RELAY_FEERATE,
     discouraged_hosts: Sequence[str] = (),
+    banned: Sequence[str] = (),
 ) -> Any:
     """Build a node double with just what handshake callbacks read or write.
 
     `is_discouraged` answers for the IPs `discouraged_hosts` names,
-    whatever the port.
+    whatever the port, and the ban list holds the subnets of `banned`.
     """
     discouraged, record = discourage_recorder()
     discouraged_keys = {host_key(peer_address(host, 0)) for host in discouraged_hosts}
@@ -571,6 +603,7 @@ def a_handshake_node(
             maybe_discourage_and_disconnect=record,
             discouraged=discouraged,
             is_discouraged=lambda address: host_key(address) in discouraged_keys,
+            ban_man=a_ban_man(*banned),
         ),
         chainstate=SimpleNamespace(
             block_index=SimpleNamespace(get_block_locator_hashes=lambda: [b"\x00" * 32])
@@ -1397,6 +1430,20 @@ def test_a_discouraged_host_gossiped_is_not_stored() -> None:
     ):
         peer_db = PeerDB(cast("Chain", None), cast("Path", None))
         node = a_handshake_node(peer_db=peer_db, discouraged_hosts=["1.2.3.5"])
+        callback(node, message.serialize(), a_gossiping_peer())
+        assert peer_db.addresses == {replace(kept, timestamp=0)}
+
+
+def test_a_banned_host_gossiped_is_not_stored() -> None:
+    """Core's `ADDR`/`ADDRV2` loop skips a banned host, by subnet."""
+    kept = a_gossiped_address("1.2.3.4")
+    banned = a_gossiped_address("5.6.7.8")
+    for callback, message in (
+        (addr, Addr([addr_entry(address) for address in (kept, banned)])),
+        (addrv2, AddrV2([kept, banned])),
+    ):
+        peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+        node = a_handshake_node(peer_db=peer_db, banned=["5.6.7.0/24"])
         callback(node, message.serialize(), a_gossiping_peer())
         assert peer_db.addresses == {replace(kept, timestamp=0)}
 

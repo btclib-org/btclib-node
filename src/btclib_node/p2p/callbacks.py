@@ -654,14 +654,15 @@ def getaddr(node: Node, msg: bytes, conn: Connection) -> None:
     now = time.time()
     if now >= peer_db.addr_sample_expiration:
         # Drawn and then filtered, as Core's `GetAddressesUnsafe` leaves
-        # every discouraged host out of what addrman drew (`src/net.cpp`,
-        # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) before the cache
-        # is kept.
-        is_discouraged = node.p2p_manager.is_discouraged
+        # every discouraged or banned host out of what addrman drew
+        # (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+        # before the cache is kept.
+        manager = node.p2p_manager
         peer_db.addr_sample = [
             address
             for address in _addresses_to_send(peer_db.get_active_addresses())
-            if not is_discouraged(address)
+            if not manager.is_discouraged(address)
+            and not manager.ban_man.is_peer_banned(address)
         ]
         # The sample can go on naming an endpoint `active_addresses` has
         # since aged out or dropped, for as long as this cache is still
@@ -775,9 +776,7 @@ def _store_gossip(
             ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_NETWORK_LIMITED
         ):
             continue
-        # Core's `IsBanned` beside it has no counterpart: this node keeps
-        # no ban list (btclib-org/btclib-node#1088)
-        if manager.is_discouraged(address):
+        if manager.is_discouraged(address) or manager.ban_man.is_peer_banned(address):
             continue
         kept.append(address)
     conn.stats.addr_processed += len(kept)

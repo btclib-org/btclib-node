@@ -159,11 +159,14 @@ without a whitelist even where none is set.
 
 ## RPC methods
 
-Fourteen, each mirroring the Core method of the same name:
-`getbestblockhash`, `getblockcount`, `getblockchaininfo`,
-`getblockhash`, `getblockheader`, `getpeerinfo`, `getconnectioncount`,
-`getmempoolinfo`, `getrawmempool`, `getrawtransaction`,
-`testmempoolaccept`, `sendrawtransaction`, `ping`, `stop`.
+Each mirrors the Core method of the same name: `getbestblockhash`,
+`getblockcount`, `getblockchaininfo`, `pruneblockchain`, `getblockhash`,
+`getblockheader`, `getblock`, `submitblock`, `getpeerinfo`,
+`getconnectioncount`, `getnetworkinfo`, `addnode`, `setban`, `listbanned`,
+`clearbanned`, `getmempoolinfo`, `getrawmempool`, `getrawtransaction`,
+`gettxoutsetinfo`, `testmempoolaccept`, `sendrawtransaction`, `ping`,
+`stop`. The `callbacks` table in `src/btclib_node/rpc/callbacks.py` is
+the list the node serves.
 
 ## What is validated, and what is not
 

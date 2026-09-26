@@ -12,6 +12,7 @@ messages addressed to a connection that is no longer there.
 
 import asyncio
 import errno
+import logging
 import re
 import secrets
 import socket
@@ -21,6 +22,7 @@ import time
 import warnings
 from concurrent.futures import Future
 from contextlib import ExitStack, closing, suppress
+from dataclasses import replace
 from functools import partial
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast, override
@@ -37,6 +39,7 @@ from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.log import Logger
 from btclib_node.p2p import manager as manager_module
 from btclib_node.p2p.address import PeerDB, fixed_seed_addresses, peer_address
+from btclib_node.p2p.banman import DUMP_BANS_INTERVAL, BanMan, Subnet, lookup_subnet
 from btclib_node.p2p.main import handle_p2p_handshake
 from btclib_node.p2p.manager import P2pManager
 
@@ -3488,3 +3491,108 @@ def test_report_server_failure_does_not_log_a_returned_cancelled_error(
     future.set_exception(asyncio.CancelledError())
     manager._report_server_failure(future)
     assert logged == []
+
+
+def a_subnet(text: str) -> Subnet:
+    """Parse `text` as `setban` would, asserting it parses."""
+    subnet = lookup_subnet(text)
+    assert subnet is not None
+    return subnet
+
+
+def test_a_banned_host_is_refused_with_every_slot_free(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `CreateNodeFromAcceptedSocket` refuses a banned peer outright.
+
+    Ahead of the discouragement and the eviction, which both need the
+    inbound slots nearly full: here none is taken. A host the banned
+    subnet does not hold takes a slot.
+    """
+    port = get_random_port()
+    manager = a_manager(port=port)
+    manager.ban_man.ban(a_subnet("1.2.3.0/24"))
+    logged, record = log_recorder()
+    monkeypatch.setattr(manager.logger, "debug", record)
+    manager.start()
+    wait_until_listening(manager)
+    with ExitStack() as peers:
+        _, refused = land_an_inbound_peer(manager, "1.2.3.4", 50000)
+        peers.enter_context(closing(refused))
+        assert refused.recv(4096) == b""
+        assert manager.last_connection_id == -1
+        assert "connection from 1.2.3.4:50000 dropped (banned)" in logged
+        _, accepted = land_an_inbound_peer(manager, "1.2.4.4", 50000)
+        peers.enter_context(closing(accepted))
+        wait_until(lambda: manager.last_connection_id == 0)
+        manager.stop()
+        manager.join(timeout=10)
+
+
+def test_a_banned_address_is_not_dialled(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Core's `OpenNetworkConnection` never dials a banned address."""
+    dialled: list[NetworkAddressV2] = []
+
+    async def records(address: NetworkAddressV2) -> None:
+        dialled.append(address)
+
+    monkeypatch.setattr(manager_module, "dial", records)
+    drawn = [peer_address("1.2.3.4", 18444), peer_address("1.2.4.4", 18444)]
+    peer_db = a_peer_db_stub(is_empty=False, random_address=drawn.pop)
+    manager = a_manager(peer_db=peer_db)
+    manager.ban_man.ban(a_subnet("1.2.4.0/24"))
+    asyncio.run(one_pass(manager))
+    asyncio.run(one_pass(manager))
+    assert dialled == [peer_address("1.2.3.4", 18444)]
+
+
+def test_disconnecting_a_subnet_drops_every_connection_it_holds(
+    a_manager: AManagerFactory,
+) -> None:
+    """Core's `DisconnectNode(CSubNet)`: every kind of connection, no other.
+
+    Manual and pending ones included, an IPv4 peer mapped into IPv6 as
+    well, and answering whether any matched.
+    """
+    inbound = a_conn(0, address=peer_address("1.2.3.4", 50000), inbound=True)
+    manual = a_conn(1, address=peer_address("::ffff:1.2.3.5", 18444))
+    pending = a_conn(2, address=peer_address("1.2.3.6", 18444), automatic=True)
+    other = a_conn(3, address=peer_address("1.2.4.4", 18444), inbound=True)
+    onion = a_conn(
+        4, address=NetworkAddressV2(0, 0, BIP155Network.TORV3, b"\x11" * 32, 8333)
+    )
+    manager = a_manager([inbound, manual, other, onion])
+    manager.pending_connections[2] = pending
+    assert manager.disconnect_subnet(a_subnet("1.2.3.0/24")) is True
+    for conn in (inbound, manual, pending):
+        assert conn.stopped == [True]
+    assert not other.stopped
+    assert not onion.stopped
+    assert manager.disconnect_subnet(a_subnet("5.6.7.8")) is False
+
+
+def test_the_ban_list_is_written_once_every_interval(
+    a_manager: AManagerFactory, tmp_path: Path
+) -> None:
+    """Core's scheduler dumps the ban list every `DUMP_BANS_INTERVAL`.
+
+    A ban ending in the meantime is swept and written out then, rather
+    than only at the next change or at stop.
+    """
+    path = tmp_path / "banlist.json"
+    ban_man = BanMan(path, logging.getLogger(__name__))
+    ban_man.ban(a_subnet("1.2.3.4"), 1_000)
+    manager = a_manager()
+    manager.ban_man = ban_man
+    with ban_man._lock:
+        ban_man._banned = {
+            subnet: replace(entry, ban_until=entry.ban_until - 2_000)
+            for subnet, entry in ban_man._banned.items()
+        }
+    now = manager._last_ban_dump + DUMP_BANS_INTERVAL
+    manager._maybe_dump_banlist(now - 1)
+    assert "1.2.3.4/32" in path.read_text(encoding="utf-8")
+    manager._maybe_dump_banlist(now)
+    assert "1.2.3.4/32" not in path.read_text(encoding="utf-8")
