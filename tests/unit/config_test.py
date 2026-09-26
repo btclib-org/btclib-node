@@ -16,6 +16,7 @@ from btclib_node.config import (
     DEFAULT_MAX_PEER_CONNECTIONS,
     DEFAULT_MIN_RELAY_FEERATE,
     Config,
+    get_path_arg,
     split_host_port,
 )
 from btclib_node.rpc.auth import COOKIE_FILE, RpcAuthEntry, password_hmac
@@ -417,3 +418,18 @@ def test_rpccookiefile_is_normalised_as_core_s_get_path_arg(
     """
     config = Config(chain="regtest", data_dir=tmp_path, rpccookiefile=value)
     assert config.rpc_cookie_file == config.data_dir / name
+
+
+@pytest.mark.skipif(os.name == "nt", reason="`//` starts a UNC path on Windows")
+def test_a_leading_double_slash_is_collapsed_as_lexically_normal_does(
+    tmp_path: Path,
+) -> None:
+    """`GetPathArg` names `//<X>/c` as `/<X>/c`, where `normpath` keeps `//`.
+
+    Measured on `bitcoind` v31.1.0 with `-conf` under `-datadir=//<X>/d`,
+    named "/<X>/d/missing.conf"; three slashes are one to both.
+    """
+    assert get_path_arg(f"/{tmp_path}/c") == f"{tmp_path}/c"
+    assert get_path_arg(f"//{tmp_path}/c") == f"{tmp_path}/c"
+    config = Config(chain="regtest", data_dir=tmp_path, rpccookiefile=f"/{tmp_path}/c")
+    assert str(config.rpc_cookie_file) == f"{tmp_path}/c"

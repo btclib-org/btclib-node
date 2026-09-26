@@ -28,7 +28,7 @@ from btclib_node.chainstate.block_index import (
     _skip_height,
     calculate_work,
 )
-from btclib_node.exceptions import ChainstateInconsistencyError
+from btclib_node.exceptions import ChainstateInconsistencyError, MisbehavingError
 from btclib_node.log import Logger
 from tests import brute_force_nonce, generate_random_header_chain
 
@@ -115,7 +115,7 @@ def test_reject_header_claiming_work_it_did_not_do(
     header = unmined_header(RegTest().genesis.hash, b"\x03\x00\x00\x01")
     assert calculate_work(header) > 2**254
 
-    with pytest.raises(BTClibValueError):
+    with pytest.raises(MisbehavingError):
         block_index.add_headers([header])
     assert header.hash not in block_index.header_dict
     assert not block_index.block_candidates
@@ -141,7 +141,7 @@ def test_a_header_claiming_a_target_it_was_never_mined_to_is_refused(
     block_index = chainstate.block_index
     header = unmined_header(RegTest().genesis.hash, b"\x1d\x00\xff\xff")
 
-    with pytest.raises(BTClibValueError):
+    with pytest.raises(MisbehavingError):
         block_index.add_headers([header])
     assert len(block_index.header_dict) == 1
 
@@ -159,7 +159,7 @@ def test_reject_header_with_zero_target(
     block_index = chainstate.block_index
     header = unmined_header(RegTest().genesis.hash, b"\x01\x00\xff\xff")
 
-    with pytest.raises(BTClibValueError):
+    with pytest.raises(MisbehavingError):
         block_index.add_headers([header])
     assert len(block_index.header_dict) == 1
 
@@ -178,7 +178,7 @@ def test_one_bad_header_refuses_the_whole_batch(
     chain = generate_random_header_chain(5, RegTest().genesis.hash)
     bad = unmined_header(chain[-1].hash, b"\x03\x00\x00\x01")
 
-    with pytest.raises(BTClibValueError):
+    with pytest.raises(MisbehavingError):
         block_index.add_headers([*chain, bad])
     assert len(block_index.header_dict) == 1
     # and the same batch without it is taken
@@ -216,7 +216,7 @@ def test_a_header_with_valid_pow_but_the_wrong_required_target_is_refused(
     brute_force_nonce(header)
     assert header.bits != REGTEST_POW_LIMIT_BITS
 
-    with pytest.raises(BTClibValueError):
+    with pytest.raises(MisbehavingError):
         block_index.add_headers([header])
     assert header.hash not in block_index.header_dict
     assert len(block_index.header_dict) == 1
@@ -246,10 +246,39 @@ def test_a_header_with_valid_pow_but_no_later_than_the_median_is_refused(
     )
     brute_force_nonce(header)
 
-    with pytest.raises(BTClibValueError):
+    with pytest.raises(MisbehavingError):
         block_index.add_headers([header])
     assert header.hash not in block_index.header_dict
     assert len(block_index.header_dict) == 1
+
+
+def test_a_header_too_far_in_the_future_is_refused_without_misbehaving(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """ISS 1170: Core's `time-too-new` is `BLOCK_TIME_FUTURE`, not punished.
+
+    The header is solved and correctly targeted, three hours ahead of the
+    clock, past Core's two: refused, as `bad-diffbits` and `time-too-old`
+    above are, and not a `MisbehavingError`, as they are.
+    """
+    chainstate = a_chainstate(None)
+    block_index = chainstate.block_index
+    genesis = RegTest().genesis
+    header = BlockHeader(
+        version=70015,
+        previous_block_hash=genesis.hash,
+        merkle_root=secrets.token_bytes(32),
+        time=datetime.now(UTC) + timedelta(hours=3),
+        bits=REGTEST_POW_LIMIT_BITS,
+        nonce=1,
+        check_validity=False,
+    )
+    brute_force_nonce(header)
+
+    with pytest.raises(BTClibValueError) as refused:
+        block_index.add_headers([header])
+    assert not isinstance(refused.value, MisbehavingError)
+    assert header.hash not in block_index.header_dict
 
 
 def test_add_headers_returns_the_batch_s_own_tip(
@@ -680,7 +709,7 @@ def test_a_header_before_its_own_new_parent_in_the_batch_refuses_the_batch(
     block_index = chainstate.block_index
     parent, child = generate_random_header_chain(2, RegTest().genesis.hash)
 
-    with pytest.raises(BTClibValueError):
+    with pytest.raises(MisbehavingError):
         block_index.add_headers([child, parent])
     assert child.hash not in block_index.header_dict
     assert parent.hash not in block_index.header_dict

@@ -683,7 +683,7 @@ class DownloadManager:
         a permission, connection-kind or run mode this tree does not
         have -- `P2pManager` dials and accepts one connection kind, and
         nothing here grants a peer immunity from this node's own
-        filter. `Connection.send_version`'s own `relay=True` argues the
+        filter. `Connection.own_version`'s own `relay=True` argues the
         same absence already, for the identical set of Core concepts
         read against `RejectIncomingTxs`.
 
