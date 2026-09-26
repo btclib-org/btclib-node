@@ -44,7 +44,7 @@ from btclib_node.p2p.callbacks import (
 )
 from btclib_node.p2p.connection import Connection
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
-from tests import discourage_recorder, log_recorder
+from tests import discourage_recorder, log_recorder, wait_until
 
 if TYPE_CHECKING:
     import concurrent.futures
@@ -702,11 +702,10 @@ def the_send_is_over(
 
     A selector loop's `sock_sendall` waits on a writer that `_close`
     unregisters before closing the socket, so nothing completes it and
-    only `stop_a_threaded_loop`'s own cancel ends it. A proactor loop's
-    is one overlapped `WSASend` instead, which Winsock ends when the
-    socket closes, with an error `_send` suppresses as it suppresses
-    every `OSError`: on the Windows job `_send` had already finished,
-    and the drain found no task left (btclib-org/btclib-node#1087).
+    `_close` cancels the task awaiting it (btclib-org/btclib-node#1164).
+    A proactor loop's is one overlapped `WSASend`, and on the Windows job
+    `socket.socketpair()` takes the whole write, returning, before `stop`
+    is called, so there is nothing left for `_close` to cancel there.
     Either way it is over, which is what `done` asks. The loop is asked
     rather than `sys.platform`, as `manager_test.py` asks it.
     """
@@ -762,9 +761,9 @@ def test_stop_from_another_thread_does_not_raise_past_a_registered_writer(
         connection.stop()
         time.sleep(0.15)
     finally:
-        # on a selector loop _send's own sock_sendall is still pending,
-        # theirs never having drained it, and the drain is what cancels
-        # and finishes it; a proactor loop's close has already ended it
+        # on a selector loop _close has cancelled _send, theirs never
+        # having drained it, and the drain finishes it if that step has
+        # not run yet; a proactor loop has already written it whole
         stop_a_threaded_loop(loop, thread)
         theirs.close()
 
@@ -827,6 +826,58 @@ def test_stop_on_the_loop_s_own_thread_does_not_raise_past_a_registered_writer(
     assert "Bad file descriptor" not in caplog.text
     assert the_send_is_over(loop, send)
     assert not asyncio.all_tasks(loop)
+
+
+def test_stop_ends_every_delivery_the_peer_never_drained() -> None:
+    """A `_deliver` blocked on an undrained peer ends at `stop`, not later.
+
+    On a selector loop the first delivery fills the socket and waits in
+    `sock_sendall`, and the second waits on `_write_lock` behind it; on
+    a proactor loop the socket pair takes both whole, and
+    `test_the_send_queue_bound_drops_a_peer_it_has_no_way_to_pace`
+    (`tests/functional/p2p/backpressure_test.py`) is where a write is
+    left in flight there. Both are over, and nothing
+    is left in `queued_send_bytes`, before `stop_a_threaded_loop` has
+    cancelled anything: otherwise the first is pending until whatever
+    closes the loop, or freed pending by the collector first
+    (btclib-org/btclib-node#1164).
+    """
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    ours, theirs = socket.socketpair()
+    ours.setblocking(False)
+    data = b"x" * (16 * 1024 * 1024)
+    try:
+        connection = a_running_connection(loop, ours)
+        connection.queued_send_bytes = 2 * len(data)
+        first = asyncio.run_coroutine_threadsafe(connection._deliver(data), loop)
+        second = asyncio.run_coroutine_threadsafe(connection._deliver(data), loop)
+        time.sleep(0.15)
+        connection.stop()
+        wait_until(lambda: first.done() and second.done(), timeout=10)
+    finally:
+        stop_a_threaded_loop(loop, thread)
+        theirs.close()
+
+    assert connection.queued_send_bytes == 0
+    assert connection._writing is None
+
+
+def test_stop_a_threaded_loop_drains_a_task_left_pending() -> None:
+    """The drain in `stop_a_threaded_loop` cancels and finishes a live task.
+
+    The tests above leave none for it, `_close` cancelling the `_send`
+    their peer never drained (btclib-org/btclib-node#1164); a task
+    asleep for an hour stands in for the next one that does.
+    """
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    asleep = asyncio.run_coroutine_threadsafe(asyncio.sleep(3600), loop)
+    stop_a_threaded_loop(loop, thread)
+    assert asleep.cancelled()
+    assert loop.is_closed()
 
 
 def test_close_on_an_already_closed_socket_touches_neither_reader_nor_writer() -> None:

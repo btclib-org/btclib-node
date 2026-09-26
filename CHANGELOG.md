@@ -366,6 +366,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`PeerDB.add_active_address` refuses what `add_addresses` refuses, and a
   stored row either table refuses is deleted on load** (issue #1140).
 
+### A stopped connection ends the write its peer left undrained
+
+- **`Connection._close` cancels the `sock_sendall` whose writer it removes**
+  (closes #1164), so a `_deliver` blocked on a peer that stopped reading
+  ends at `stop` rather than staying pending until shutdown.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

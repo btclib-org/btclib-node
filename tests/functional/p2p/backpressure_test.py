@@ -301,7 +301,9 @@ def test_the_send_queue_bound_drops_a_peer_it_has_no_way_to_pace(
     announcement, an `addr`, a `headers` answer -- is counted against
     this bound with no pacing point in front of it, and this bound is
     the only thing underneath. `queued_send_bytes` never crosses it, the
-    refusal coming before the message is counted.
+    refusal coming before the message is counted, and it falls to zero
+    once the stopped connection has ended every write the peer left
+    undrained (btclib-org/btclib-node#1164).
     """
     node, _, chain = deaf_peer
     connection = the_connection(node)
@@ -309,6 +311,7 @@ def test_the_send_queue_bound_drops_a_peer_it_has_no_way_to_pace(
         connection.send(BlockMsg(block, include_witness=True, check_validity=False))
     wait_until(lambda: connection.status == P2pConnStatus.Closed)
     assert connection.queued_send_bytes <= MAX_QUEUED_SEND_BYTES
+    wait_until(lambda: connection.queued_send_bytes == 0)
 
 
 def test_a_getcfilters_answer_will_not_schedule_ahead_of_a_peer_that_is_behind(
