@@ -450,6 +450,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   refused after the lock, the others before it, as in Core** (closes #1191);
   `-blocksdir` and `-rpcbind` are refused in Core's words.
 
+### `REVIEWING.md` lets a filed issue carry its fix
+
+- **An issue filed from a review may say the fix where one is known**,
+  the filing bar standing as it was (issue btclib-org/.github#1378).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
