@@ -88,10 +88,11 @@ Known and recorded, rather than something to report again.
   no `-rpcwhitelist`, Core's default too, whoever holds one of those
   credentials can call `stop` and `sendrawtransaction`. The credential
   crosses the wire as HTTP Basic, unencrypted, as Core's has since Core
-  dropped `-rpcssl`. `Config.rpc_host` binds loopback by default and
-  `-rpcbind` is what widens it, matching Core's own
-  `rpcbind`/`rpcallowip` default (btclib-org/btclib-node#27): do not
-  widen the bind past a network whose traffic you trust.
+  dropped `-rpcssl`. `Config.rpc_host` binds loopback by default
+  (btclib-org/btclib-node#27), and `-rpcbind` is ignored, as Core ignores
+  it without `-rpcallowip`, which this node does not have
+  (btclib-org/btclib-node#1268): do not widen the bind past a network
+  whose traffic you trust.
 - **`Development Status :: 3 - Alpha` is the claim `pyproject.toml`
   makes**, and it is the right one to read the limitation above against: this
   node has downloaded and validated the chain, which is not the same as
