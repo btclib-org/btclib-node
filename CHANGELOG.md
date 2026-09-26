@@ -483,9 +483,9 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 ### DNS seeding waits and then asks three seeds at a time, as Core does
 
-- **A table holding addresses waits 11 seconds, or 5 minutes from 1000 up,
-  before each three seeds, and `-forcednsseed` asks them all at once**
-  (closes #1265), where only a table with nothing dialable asked, every seed.
+- **With addresses in the table, DNS seeding waits 11 seconds, or 5 minutes
+  from 1000, ahead of each three seeds; `-forcednsseed` asks every seed at
+  once** (closes #1265), where seeds were asked only with nothing to dial.
 
 ## v2026.9.24
 
