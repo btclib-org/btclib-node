@@ -15,9 +15,10 @@ batch that connects.
 
 Core applies the two to different sets of outbound connections, which
 `_outbound_or_block_relay` and `_full_outbound` name after Core's
-`IsOutboundOrBlockRelayConn` and `IsFullOutboundConn`. This node opens
-one kind of automatic outbound connection, Core's `OUTBOUND_FULL_RELAY`,
-so today both answer `Connection.automatic`. A block is a hash here
+`IsOutboundOrBlockRelayConn` and `IsFullOutboundConn`. Of the automatic
+outbound connections this node opens, a `-seednode` one is Core's
+`ADDR_FETCH`, which neither takes (`src/net.h`, same sha), and every
+other is Core's `OUTBOUND_FULL_RELAY`, which both take. A block is a hash here
 where Core holds a `CBlockIndex*`, as in `block_availability`.
 """
 
@@ -69,12 +70,12 @@ class ChainSyncTimeoutState:
 
 def _outbound_or_block_relay(conn: Connection) -> bool:
     """Core's `IsOutboundOrBlockRelayConn`, which `ConsiderEviction` reads."""
-    return conn.automatic
+    return conn.automatic and not conn.addr_fetch
 
 
 def _full_outbound(conn: Connection) -> bool:
     """Core's `IsFullOutboundConn`, which the protection reads."""
-    return conn.automatic
+    return conn.automatic and not conn.addr_fetch
 
 
 def _locator(block_index: BlockIndex, start: bytes) -> list[bytes]:

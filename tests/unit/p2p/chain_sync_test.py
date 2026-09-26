@@ -62,12 +62,19 @@ def a_node(tip_height: int, *conns: Any, sync_started: bool = True) -> Any:
     )
 
 
-def a_conn(conn_id: int = 1, *, best: int | None = None, automatic: bool = True) -> Any:
+def a_conn(
+    conn_id: int = 1,
+    *,
+    best: int | None = None,
+    automatic: bool = True,
+    addr_fetch: bool = False,
+) -> Any:
     """Build an outbound connection whose best known block is at `best`."""
     stopped: list[bool] = []
     return SimpleNamespace(
         id=conn_id,
         automatic=automatic,
+        addr_fetch=addr_fetch,
         status=P2pConnStatus.Connected,
         chain_sync=ChainSyncTimeoutState(),
         block_availability=BlockAvailability(
@@ -187,6 +194,28 @@ def test_a_peer_outside_core_s_condition_is_never_considered(
     node = a_node(10, conn, sync_started=sync_started)
     consider_eviction(node, conn, 100.0, a_recorder()[1])
     assert conn.chain_sync.timeout == 0
+
+
+@pytest.mark.parametrize("addr_fetch", [False, True], ids=["full-relay", "addr-fetch"])
+def test_an_addr_fetch_peer_gets_no_deadline(*, addr_fetch: bool) -> None:
+    """ISS 1192: Core's `IsOutboundOrBlockRelayConn` is false for `ADDR_FETCH`.
+
+    A full-relay peer behind the tip is given a deadline, the control; a
+    `-seednode` one in the same state is not.
+    """
+    conn = a_conn(best=1, addr_fetch=addr_fetch)
+    node = a_node(10, conn)
+    consider_eviction(node, conn, 100.0, a_recorder()[1])
+    assert bool(conn.chain_sync.timeout) is not addr_fetch
+
+
+@pytest.mark.parametrize("addr_fetch", [False, True], ids=["full-relay", "addr-fetch"])
+def test_an_addr_fetch_peer_at_the_tip_is_not_protected(*, addr_fetch: bool) -> None:
+    """ISS 1192: Core's `IsFullOutboundConn` is false for `ADDR_FETCH`."""
+    conn = a_conn(best=10, addr_fetch=addr_fetch)
+    node = a_node(10, conn)
+    protect_if_caught_up(node, conn)
+    assert conn.chain_sync.protect is not addr_fetch
 
 
 def test_the_locator_is_core_s_locator_entries() -> None:

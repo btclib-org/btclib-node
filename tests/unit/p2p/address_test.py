@@ -1321,10 +1321,10 @@ def test_either_table_holding_an_address_holds_something(table: str) -> None:
     """ISS 1192: Core's `addrman.Size() == 0`, new and tried alike.
 
     The `active_addresses` case builds a state `PeerDB` itself never
-    reaches: since #1189 every answered row's endpoint is also in
-    `addresses`. It is built by hand, the key granted and `addresses`
-    left empty, so that `holds_nothing` is shown to read the answered
-    table too rather than only the gossiped one.
+    reaches, every answered row's endpoint being also in `addresses`.
+    It is built by hand, the key granted and `addresses` left empty, so
+    that `holds_nothing` is shown to read the answered table too rather
+    than only the gossiped one.
     """
     peer_db = a_peer_db()
     assert peer_db.holds_nothing
