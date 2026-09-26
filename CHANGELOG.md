@@ -518,6 +518,13 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   and the log names the value** (closes #1210), refused once the RPC
   listener is bound, `-rpcauth` after the cookie, as `bitcoind` refuses it.
 
+### A body its header does not commit to leaves the header valid, as in Core
+
+- **A `block` whose body is mutated, Core's `IsBlockMutated`, is refused
+  before its header is looked at, and a block failing its checks is marked
+  invalid only where Core marks it, over the weight, on the wire and through
+  `submitblock` alike** (closes #1242).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

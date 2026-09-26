@@ -599,11 +599,10 @@ def is_block_failed(block: Block, *, check_witness_root: bool) -> bool:
     `CheckBlock`, "protective against consensus failure if there are any
     unknown forms of block malleability", and `AcceptBlock` marks one
     failing `ContextualCheckBlock` unless the failure is `BLOCK_MUTATED`.
-    Of what `assert_valid` asks, the weight is `ContextualCheckBlock`'s
-    only consensus rule, asked last, after the witness commitment that
-    makes the weight a property of the header. A body over the weight
-    that also fails an earlier check is marked here where Core does not:
-    `assert_valid` does not say which check failed.
+    Of what `assert_valid` asks, that leaves the weight, which Core asks
+    after the witness commitment that makes it a property of the header.
+    A body over the weight that also fails an earlier check is marked here
+    where Core does not: `assert_valid` does not say which check failed.
     """
     return (
         not is_block_mutated(block, check_witness_root=check_witness_root)
