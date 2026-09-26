@@ -110,8 +110,8 @@ value, within a file the first, the chain selectors aside; and a
 negation discarding every value named before it at its own level.
 `-connect`, `-addnode`, `-rpcauth`, `-rpcwhitelist` and `-debug` are
 lists, every value from every level applying. `-rpcbind` is a list in
-Core too, every address bound; this node binds one, and reads it as an
-option taking one value.
+Core too, every value checked and none bound without `-rpcallowip`,
+which this node does not have.
 
 Not every option answers to the file the same way once the chain is
 not `main`: `-port`, `-rpcport`, `-rpcbind`, `-connect` and `-addnode`
@@ -409,8 +409,10 @@ _OPTIONS: dict[str, _Option] = {
     ),
     "rpcbind": _Option(
         "=<addr>[:port]",
-        "Bind to given address to listen for JSON-RPC connections; port is "
-        "optional and overrides -rpcport",
+        "Bind to given address to listen for JSON-RPC connections. This "
+        "option is ignored unless -rpcallowip is also passed, which this node "
+        "does not accept, so the listener stays on localhost. Use [host]:port "
+        "notation for IPv6. This option can be specified multiple times",
         _RPC_TITLE,
         network_only=True,
     ),
@@ -1227,24 +1229,18 @@ def _after_lock(before: _BeforeLock) -> Config:
     settings = before.settings
     p2p_port = _get_port(settings, "port")
     rpc_port = _get_port(settings, "rpcport")
-    rpc_host = "127.0.0.1"
-    # `-rpcbind` is a list in Core, every address bound where `-rpcallowip`
-    # is given too (`HTTPBindAddresses`, `src/httpserver.cpp`, same sha);
-    # this node has no `-rpcallowip`, and its listener binds one
-    # address, so it is read the way an option taking one value is, the
-    # command line over the file; negated, it is Core's empty list, and the
-    # listener stays on loopback
-    rpcbind = (
-        None if _is_negated(settings, "rpcbind") else _get_arg(settings, "rpcbind")
-    )
-    if rpcbind is not None:
+    # Every `-rpcbind` value is checked, as `CheckHostPortOptions` checks
+    # it, and none is bound: `HTTPBindAddresses` (`src/httpserver.cpp`,
+    # same sha) binds them only beside `-rpcallowip`, which this node
+    # does not have, so the listener stays on loopback and `RpcManager`
+    # logs Core's warning over the values (btclib-org/btclib-node#1211)
+    rpcbind = _get_args(settings, "rpcbind")
+    for value in rpcbind:
         try:
-            rpc_host, rpcbind_port = split_host_port(rpcbind, 0)
+            split_host_port(value, 0)
         except ValueError:
-            err_msg = f"Invalid port specified in -rpcbind: '{rpcbind}'"
+            err_msg = f"Invalid port specified in -rpcbind: '{value}'"
             raise ValueError(err_msg) from None
-        if rpcbind_port:
-            rpc_port = rpcbind_port
 
     connect = _get_args(settings, "connect")
     # `-noconnect` is Core's `-connect=0`: no automatic connection, and
@@ -1270,7 +1266,7 @@ def _after_lock(before: _BeforeLock) -> Config:
         blocks_dir=before.blocksdir,
         p2p_port=p2p_port,
         rpc_port=rpc_port,
-        rpc_host=rpc_host,
+        rpcbind=tuple(rpcbind),
         allow_rpc=server is None or server,
         pruned=bool(prune),
         prune_target_mib=prune if prune >= MIN_PRUNE_TARGET_MIB else None,
