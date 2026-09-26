@@ -131,7 +131,11 @@ def _assert_valid_in_context(  # noqa: PLR0913, PLR0917
     `pow_no_retargeting` and `pow_allow_min_difficulty_blocks` among
     them, in Core's own order rather than one this tree chooses.
     `BlockHeader.assert_valid_time` is the one check that needs no
-    chain at all. `BlockHeader.assert_valid_pow` answers the other half
+    chain at all. Last, a version BIP34, BIP66 or BIP65 made obsolete is
+    refused from the height each binds at, `chain.consensus`'s
+    `bip34_height`, `bip66_height` and `bip65_height`, as Core's
+    `bad-version` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag). `BlockHeader.assert_valid_pow` answers the other half
     of the proof-of-work question -- whether the hash meets the target
     the header itself claims -- and `_validate_header_batch`'s own loop
     has already asked it of `header`, ahead of this.
@@ -152,6 +156,18 @@ def _assert_valid_in_context(  # noqa: PLR0913, PLR0917
         raise BTClibValueError(err_msg)
 
     header.assert_valid_time(now)
+
+    # the least version a header may carry once each of BIP34, BIP66 and
+    # BIP65 binds, and the height it binds from
+    consensus = chain.consensus
+    for least, binds_at in (
+        (2, consensus.bip34_height),
+        (3, consensus.bip66_height),
+        (4, consensus.bip65_height),
+    ):
+        if header.version < least and parent_height + 1 >= binds_at:
+            err_msg = f"bad-version(0x{header.version & 0xFFFFFFFF:08x})"
+            raise BTClibValueError(err_msg)
 
 
 class BlockStatus(enum.IntEnum):

@@ -11,7 +11,8 @@ locators it serves.
 """
 
 import secrets
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -243,6 +244,77 @@ def test_a_header_with_valid_pow_but_no_later_than_the_median_is_refused(
         block_index.add_headers([header])
     assert header.hash not in block_index.header_dict
     assert len(block_index.header_dict) == 1
+
+
+def a_mined_header(parent: BlockHeader, version: int) -> BlockHeader:
+    """Mine a regtest header on `parent`, a second later, at `version`.
+
+    The nonce is searched in place rather than by `brute_force_nonce`,
+    whose copy would refuse a version of zero or below, which a block's
+    own header reaches `add_headers` with unchecked.
+    """
+    header = BlockHeader(
+        version=version,
+        previous_block_hash=parent.hash,
+        merkle_root=secrets.token_bytes(32),
+        time=parent.time + timedelta(seconds=1),
+        bits=REGTEST_POW_LIMIT_BITS,
+        nonce=0,
+        check_validity=False,
+    )
+    for nonce in range(1_000):
+        header.nonce = nonce
+        with suppress(BTClibValueError):
+            header.assert_valid_pow(REGTEST_POW_LIMIT_BITS)
+            return header
+    raise AssertionError
+
+
+@pytest.mark.parametrize("version", [-1, 1, 2, 3])
+def test_a_header_version_regtest_made_obsolete_is_refused_bad_version(
+    a_chainstate: Callable[[Path | None], Chainstate], version: int
+) -> None:
+    """ISS 1262: regtest binds BIP34, BIP66 and BIP65 from height 1.
+
+    Core's `bad-version`, the version printed as its 32 bits; version 4
+    is taken.
+    """
+    block_index = a_chainstate(None).block_index
+    genesis = RegTest().genesis
+    header = a_mined_header(genesis, version)
+    with pytest.raises(BTClibValueError) as refusal:
+        block_index.add_headers([header])
+    assert str(refusal.value) == f"bad-version(0x{version & 0xFFFFFFFF:08x})"
+    assert header.hash not in block_index.header_dict
+    taken = a_mined_header(genesis, 4)
+    assert block_index.add_headers([taken]) == taken.hash
+
+
+def test_each_bip_refuses_its_obsolete_version_from_its_own_height(
+    a_chainstate: Callable[[Path | None], Chainstate],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1262: BIP34 from its height, BIP66 and BIP65 from theirs.
+
+    With the three at heights 2, 3 and 4, each height takes the version
+    the one before it refuses.
+    """
+    block_index = a_chainstate(None).block_index
+    params = replace(
+        block_index.chain.consensus, bip34_height=2, bip66_height=3, bip65_height=4
+    )
+    # a property of the class, so patched there, for this test only
+    monkeypatch.setattr(RegTest, "consensus", property(lambda _: params))
+    parent = RegTest().genesis
+    for height, least in ((1, 1), (2, 2), (3, 3), (4, 4)):
+        if least > 1:
+            refused = a_mined_header(parent, least - 1)
+            with pytest.raises(BTClibValueError, match="bad-version"):
+                block_index.add_headers([refused])
+        header = a_mined_header(parent, least)
+        assert block_index.add_headers([header]) == header.hash
+        assert block_index.get_block_info(header.hash).index == height
+        parent = header
 
 
 def test_add_headers_returns_the_batch_s_own_tip(
