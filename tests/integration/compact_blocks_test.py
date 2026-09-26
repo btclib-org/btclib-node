@@ -6,8 +6,9 @@
 
 bitcoind sends `sendcmpct(1, 2)` to a peer that has just given it a new
 block (`MaybeSetPeerAsAnnouncingHeaderAndIDs`, `src/net_processing.cpp`, at
-bitcoin/bitcoin@9be056a8a7, the v31.1 tag). This node then announces the next
-lone block to it as a `cmpctblock`, which bitcoind takes without a `getdata`.
+bitcoin/bitcoin@9be056a8a7, the v31.1 tag). This node then sends it the next
+block as a `cmpctblock` before connecting it (`main.new_pow_valid_block`,
+Core's `NewPoWValidBlock`), which bitcoind takes without a `getdata`.
 The blocks are handed to this node with `submitblock`, so that they reach
 bitcoind from this node alone.
 """
@@ -83,6 +84,8 @@ def test_bitcoind_is_announced_a_new_block_as_a_cmpctblock(
         before = theirs()
 
         submit(3)
+        # new_pow_valid_block got past every gate it has before the peers
+        assert node.highest_fast_announce == 3
         after = theirs()
         received, sent = "bytesrecv_per_msg", "bytessent_per_msg"
         assert after[received]["cmpctblock"] > before[received]["cmpctblock"]

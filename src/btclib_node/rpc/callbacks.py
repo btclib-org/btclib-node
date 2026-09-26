@@ -29,6 +29,7 @@ from btclib_node.config import split_host_port
 from btclib_node.constants import MIN_BLOCKS_TO_KEEP, USER_AGENT, P2pConnStatus
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.main import (
+    new_pow_valid_block,
     parent_lookup,
     prune_up_to_height,
     verify_mempool_acceptance,
@@ -677,6 +678,7 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
 
     node.block_db.add_block(block)
     block_index.set_downloaded(block_hash)
+    new_pow_valid_block(node, block)
     return None
 
 

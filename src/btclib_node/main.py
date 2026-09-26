@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, cast
 from btclib.block import header_at_height, median_time_past
 from btclib.block.block_context import BlockContext
 from btclib.consensus import subsidy
-from btclib.exceptions import BTClibValueError
+from btclib.exceptions import BTClibException, BTClibValueError
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
 from btclib.script.engine.flags import ScriptFlag
 from btclib.tx.tx_context import (
@@ -33,7 +33,12 @@ from btclib.tx.tx_context import (
 
 from btclib_node.block_db import Coin
 from btclib_node.chainstate.block_index import BlockIndex, BlockStatus, block_time
-from btclib_node.constants import MAX_TIP_AGE, MIN_BLOCKS_TO_KEEP, NodeStatus
+from btclib_node.constants import (
+    MAX_TIP_AGE,
+    MIN_BLOCKS_TO_KEEP,
+    NodeStatus,
+    P2pConnStatus,
+)
 from btclib_node.exceptions import (
     ChainstateInconsistencyError,
     InvalidBlockInputError,
@@ -46,6 +51,10 @@ from btclib_node.p2p.block_availability import (
     process_block_availability,
 )
 from btclib_node.p2p.compact_block import compact_block
+from btclib_node.p2p.protocol_version import (
+    INVALID_CB_NO_BAN_VERSION,
+    common_version,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -62,6 +71,8 @@ if TYPE_CHECKING:
     from btclib_node.p2p.block_availability import BlockAvailability
 
 __all__ = [
+    "contextual_check_block",
+    "new_pow_valid_block",
     "parent_lookup",
     "prune_up_to_height",
     "update_chain",
@@ -98,9 +109,8 @@ _MAX_BLOCKS_TO_ANNOUNCE = 8
 # high-bandwidth peer (callbacks.sendcmpct), a single header to send goes
 # as the tip's `cmpctblock` instead, and a single new block is sent that
 # way whether or not the peer asked for headers. A peer that announced
-# the blocks to this node therefore hears nothing back. Core's
-# `NewPoWValidBlock` also sends that `cmpctblock` before the block is
-# connected, and this node does not (btclib-org/btclib-node#1315).
+# the blocks to this node therefore hears nothing back, and so does a
+# peer `new_pow_valid_block` below already sent the block to.
 # btclib-org/btclib-node#202, btclib-org/btclib-node#1160,
 # btclib-org/btclib-node#1223
 def _announce_added_blocks(node: Node, blocks: list[Block]) -> None:
@@ -129,6 +139,61 @@ def _announce_added_blocks(node: Node, blocks: list[Block]) -> None:
         elif to_send:
             conn.send(Headers(to_send))
             state.best_header_sent = to_send[-1].hash
+
+
+def new_pow_valid_block(node: Node, block: Block) -> None:
+    """Send a block just stored to every high-bandwidth peer, before connecting.
+
+    Core's `AcceptBlock` calls `NewPoWValidBlock` for a new block that
+    passed `CheckBlock` and `ContextualCheckBlock`, out of initial block
+    download and where the block extends the active tip
+    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    `NewPoWValidBlock` (`src/net_processing.cpp`, same tag) goes no lower
+    than the highest block it already announced this way, nor below
+    segwit's height. It sends the block's `cmpctblock` to every fully
+    connected peer from `INVALID_CB_NO_BAN_VERSION` up that asked for high
+    bandwidth, has the parent and lacks the block. That peer then counts
+    as having the block, so `_announce_added_blocks` does not send it
+    again once the block is connected.
+
+    `callbacks.block` and `submitblock` call this with a block that passed
+    `Block.assert_valid`. A block failing `contextual_check_block` is not
+    announced, and `update_chain` refuses it when it reaches it.
+    """
+    block_index = node.chainstate.block_index
+    previous_hash = block.header.previous_block_hash
+    if node.is_initial_block_download or previous_hash != block_index.active_chain[-1]:
+        return
+    block_hash = block.header.hash
+    height = block_index.get_block_info(block_hash).index
+    try:
+        contextual_check_block(node, block, height)
+    except BTClibException:
+        return
+    if height <= node.highest_fast_announce:
+        return
+    node.highest_fast_announce = height
+    if height < node.chain.consensus.segwit_height:
+        return
+    # one nonce for every peer, as Core's `pcmpctblock`
+    compact: CmpctBlock | None = None
+    for conn in node.p2p_manager.connections.copy().values():
+        if (
+            conn.status != P2pConnStatus.Connected
+            or common_version(conn) < INVALID_CB_NO_BAN_VERSION
+        ):
+            continue
+        state = conn.block_availability
+        process_block_availability(block_index, state)
+        if (
+            conn.requested_hb_cmpctblocks
+            and not peer_has_header(block_index, state, block_hash)
+            and peer_has_header(block_index, state, previous_hash)
+        ):
+            if compact is None:
+                compact = compact_block(block, secrets.randbits(64))
+            conn.send(compact)
+            state.best_header_sent = block_hash
 
 
 def _headers_to_announce(
@@ -586,33 +651,12 @@ def _validate_block(
     node: Node, block: Block, transactions: list[tuple[list[Coin], Tx]], index: int
 ) -> None:
     block_hash = block.header.hash
-    block.assert_valid_contextual(
-        BlockContext(index, datetime.now(UTC), node.chain.consensus.bip34_height)
-    )
+    parent_mtp, bip113_active = contextual_check_block(node, block, index)
 
     block_index = node.chainstate.block_index
     parent_header = block_index.header_dict[block.header.previous_block_hash].header
     parent_height = index - 1
     parent_of = parent_lookup(node)
-    parent_mtp = median_time_past(parent_header, parent_height, parent_of)
-
-    # Core deploys BIP68, BIP112 (the CHECKSEQUENCEVERIFY opcode) and
-    # BIP113 (this cutoff) together, as one soft fork -- this tree has
-    # no BIP9 deployment tracking of its own, so the height get_flags
-    # already turns the opcode on at is read here too, rather than a
-    # second activation table naming the same height for the same fork.
-    # btclib.tx.tx_context's own module docstring argues this the same
-    # way, for why assert_sequence_locks below takes no enforce_bip68
-    # flag of its own: the caller skips the call entirely rather than
-    # passing one.
-    bip113_active = ScriptFlag.CHECKSEQUENCEVERIFY in get_flags(
-        node.config, index, block_hash
-    )
-    lock_time_cutoff = parent_mtp if bip113_active else block_time(block.header)
-    for tx in block.transactions:
-        if not is_final(tx, index, lock_time_cutoff):
-            err_msg = "bad-txns-nonfinal"
-            raise BTClibValueError(err_msg)
 
     def ancestor_median_time_past(height: int) -> int:
         header = header_at_height(parent_header, parent_height, height, parent_of)
@@ -634,6 +678,46 @@ def _validate_block(
     )
     block_subsidy = subsidy(index, node.chain.consensus.subsidy_halving_interval)
     assert_coinbase_value(block.transactions[0], block_subsidy, fees)
+
+
+def contextual_check_block(node: Node, block: Block, index: int) -> tuple[int, bool]:
+    """Refuse what Core's `ContextualCheckBlock` refuses of `block` at `index`.
+
+    `bad-cb-height` wherever BIP34 binds, and `bad-txns-nonfinal`
+    (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    The witness commitment and the weight, the other two rules there, are
+    `Block.assert_valid`'s. The block's parent is indexed, and the block
+    need not be on the active chain. Answers the parent's median time past
+    and whether BIP113 binds, which `_validate_block`'s sequence locks
+    read too.
+    """
+    block_hash = block.header.hash
+    block.assert_valid_contextual(
+        BlockContext(index, datetime.now(UTC), node.chain.consensus.bip34_height)
+    )
+
+    block_index = node.chainstate.block_index
+    parent_header = block_index.header_dict[block.header.previous_block_hash].header
+    parent_mtp = median_time_past(parent_header, index - 1, parent_lookup(node))
+
+    # Core deploys BIP68, BIP112 (the CHECKSEQUENCEVERIFY opcode) and
+    # BIP113 (this cutoff) together, as one soft fork -- this tree has
+    # no BIP9 deployment tracking of its own, so the height get_flags
+    # already turns the opcode on at is read here too, rather than a
+    # second activation table naming the same height for the same fork.
+    # btclib.tx.tx_context's own module docstring argues this the same
+    # way, for why assert_sequence_locks in _validate_block takes no
+    # enforce_bip68 flag of its own: the caller skips the call entirely
+    # rather than passing one.
+    bip113_active = ScriptFlag.CHECKSEQUENCEVERIFY in get_flags(
+        node.config, index, block_hash
+    )
+    lock_time_cutoff = parent_mtp if bip113_active else block_time(block.header)
+    for tx in block.transactions:
+        if not is_final(tx, index, lock_time_cutoff):
+            err_msg = "bad-txns-nonfinal"
+            raise BTClibValueError(err_msg)
+    return parent_mtp, bip113_active
 
 
 def _record_rejection(node: Node, failed_hash: bytes, exc: BaseException) -> None:

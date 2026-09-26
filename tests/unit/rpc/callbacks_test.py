@@ -3174,6 +3174,22 @@ def test_submit_block_accepts_a_new_block_extending_the_tip(
     )
 
 
+def test_submit_block_offers_the_block_to_new_pow_valid_block(
+    regtest_node: Callable[..., Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1315: `submitblock` reaches Core's `NewPoWValidBlock`, once."""
+    offered: list[bytes] = []
+    monkeypatch.setattr(
+        cb, "new_pow_valid_block", lambda _, block: offered.append(block.header.hash)
+    )
+    node = regtest_node()
+    chain = generate_random_chain(2, node.chain.genesis.hash)
+    connect(node, chain[:1])
+    submit_block(node, _CONN, [chain[1].serialize(check_validity=False).hex()])
+    submit_block(node, _CONN, [chain[1].serialize(check_validity=False).hex()])
+    assert offered == [chain[1].header.hash]
+
+
 def test_submit_block_answers_duplicate_for_a_block_already_downloaded(
     regtest_node: Callable[..., Node],
 ) -> None:

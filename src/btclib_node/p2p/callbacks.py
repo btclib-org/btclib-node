@@ -89,7 +89,7 @@ from btclib_node.exceptions import (
     MisbehavingError,
     MissingPrevoutError,
 )
-from btclib_node.main import verify_mempool_acceptance
+from btclib_node.main import new_pow_valid_block, verify_mempool_acceptance
 from btclib_node.p2p.address import ip_and_port
 from btclib_node.p2p.block_availability import update_block_availability
 from btclib_node.p2p.compact_block import compact_block
@@ -1007,6 +1007,7 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
         conn.last_novel_block_time = int(time.time())
         node.logger.info("Received new block with hash:%s", block_hash.hex())
         block_index.set_downloaded(block_hash)
+        new_pow_valid_block(node, block)
 
 
 def inv(node: Node, msg: bytes, conn: Connection) -> None:
