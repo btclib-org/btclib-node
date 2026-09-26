@@ -84,6 +84,11 @@ on release day.
 - **`-debug=<category>` takes Core's logging category names**
   (closes #1123): `debug=false`, or any name Core does not know, refuses
   to start with `Unsupported logging category`, and `debug=none` is off.
+- **`-conf` naming another file while the data directory holds a
+  `bitcoin.conf` refuses to start, as `bitcoind` does** (closes #1155).
+  Move what that `bitcoin.conf` says into the file `-conf` names and
+  delete or rename it, or start with `-allowignoredconf` to read the file
+  `-conf` names with a warning on stderr.
 
 ## v2026.9.24
 

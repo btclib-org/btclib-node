@@ -54,6 +54,11 @@ file's values, and not once a value follows it there:
 `debug=` categories on; `-nodebug` turns them off. `-prune` is accepted,
 and `## Pruning` below is what any nonzero value actually does.
 
+`-conf=<file>` naming another file while the data directory still holds
+a `bitcoin.conf` refuses to start, as `bitcoind` refuses, that file's
+settings going unread; `-allowignoredconf` starts it anyway, the refusal
+written to stderr as a warning.
+
 ## Pruning
 
 `-prune=<n>` matches Core's own three-way split. `<n>` of `1` is manual
