@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 def test_bitcoind_is_announced_a_new_block_as_a_cmpctblock(
     bitcoind: Bitcoind, tmp_path: Path
 ) -> None:
-    """The second block reaches bitcoind as a `cmpctblock` it did not ask for."""
+    """The second block reaches bitcoind as a `cmpctblock`, unasked for."""
     # a recent tip takes both sides out of initial block download, where
     # neither announces a block
     anyone = cast("dict[str, str]", bitcoind.rpc("getdescriptorinfo", ["raw(51)"]))
