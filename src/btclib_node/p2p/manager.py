@@ -310,21 +310,7 @@ class P2pManager(threading.Thread):
         # below being the one place they are gathered.
         self.max_automatic_outbound = min(automatic_outbound, max_connections)
         self.max_outbound_block_relay = block_relay
-        # Core's `m_start_extra_block_relay_peers`, which
-        # `DownloadManager` sets from `Node`'s thread once the tip is
-        # close to the clock, and `_next_extra_block_relay`, the timer
-        # `run` draws before the first pass.
-        self.start_extra_block_relay_peers = False
-        self._next_extra_block_relay = math.inf
-        # Core's `next_feeler`, drawn by `run` as the other timer is
-        self._next_feeler = math.inf
-        # Core's `m_try_another_outbound_peer`, which `DownloadManager`
-        # sets from `Node`'s thread on a stale tip and clears, and
-        # `next_extra_network_peer`, drawn by `run`, with the network
-        # `_next_outbound` last picked for it, Core's `preferred_net`.
-        self.try_new_outbound_peer = False
-        self._next_extra_network_peer = math.inf
-        self._preferred_network = Network.IPV4
+        self._init_outbound_timers()
         # Core's `m_anchors`, which `run` reads from `anchors.dat` and
         # each anchor dial pops from the back, and its
         # `fAddressesInitialized`, which `run` sets once past the bind
@@ -531,6 +517,27 @@ class P2pManager(threading.Thread):
                 tuple[socket.socket, tuple[str, int] | tuple[str, int, int, int]]
             ],
         ] = {}
+
+    def _init_outbound_timers(self) -> None:
+        """Set the state `_next_outbound` reads, each timer not yet drawn.
+
+        Split out of `__init__` for ruff's statement ceiling.
+        """
+        # Core's `m_start_extra_block_relay_peers`, which
+        # `DownloadManager` sets from `Node`'s thread once the tip is
+        # close to the clock, and `_next_extra_block_relay`, the timer
+        # `run` draws before the first pass.
+        self.start_extra_block_relay_peers = False
+        self._next_extra_block_relay = math.inf
+        # Core's `next_feeler`, drawn by `run` as the other timer is
+        self._next_feeler = math.inf
+        # Core's `m_try_another_outbound_peer`, which `DownloadManager`
+        # sets from `Node`'s thread on a stale tip and clears, and
+        # `next_extra_network_peer`, drawn by `run`, with the network
+        # `_next_outbound` last picked for it, Core's `preferred_net`.
+        self.try_new_outbound_peer = False
+        self._next_extra_network_peer = math.inf
+        self._preferred_network = Network.IPV4
 
     # One keyword per fact a connection starts with and keeps, none of
     # them a knob of another, and every caller passes them by name.
