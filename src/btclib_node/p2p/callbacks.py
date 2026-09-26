@@ -1081,7 +1081,8 @@ _GETDATA_BLOCK_TYPES = (
 # BIP152's compact blocks as Core serves them (`net_processing.cpp`, at
 # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the one version Core speaks,
 # the depth past which a `MSG_CMPCT_BLOCK` is answered with the full block
-# instead, and the depth past which a `getblocktxn` is
+# instead, and the depth past which a `getblocktxn` is answered with the
+# full block too
 CMPCTBLOCKS_VERSION = 2
 MAX_CMPCTBLOCK_DEPTH = 5
 MAX_BLOCKTXN_DEPTH = 10

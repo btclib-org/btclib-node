@@ -85,7 +85,9 @@ def test_bitcoind_is_announced_a_new_block_as_a_cmpctblock(
         submit(3)
         after = theirs()
         received, sent = "bytesrecv_per_msg", "bytessent_per_msg"
-        assert after[received]["cmpctblock"] > before[received]["cmpctblock"]
+        # absent from `bytesrecv_per_msg` until one arrives
+        cmpctblocks = after[received].get("cmpctblock", 0)
+        assert cmpctblocks > before[received].get("cmpctblock", 0)
         assert after[sent].get("getdata") == before[sent].get("getdata")
         assert after[received].get("headers") == before[received].get("headers")
     finally:
