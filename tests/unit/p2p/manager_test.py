@@ -209,7 +209,7 @@ def a_manager() -> Iterator[AManagerFactory]:
                 max_connections=max_connections,
                 pruned=False,
             ),
-            # `Connection.send_version`'s own `start_height`
+            # `Connection.own_version`'s own `start_height`
             # (btclib-org/btclib-node#722), 0 matching a fresh `Node`'s
             # own initial value (`__init__.py`).
             best_height=0,
@@ -320,7 +320,7 @@ def test_removing_a_pending_connection_discards_its_own_pending_nonce(
 def test_removing_a_connection_with_no_nonce_yet_does_not_raise(
     a_manager: AManagerFactory,
 ) -> None:
-    """A connection dropped before `send_version` ran carries no nonce."""
+    """A connection dropped before `own_version` ran carries no nonce."""
     conn = a_conn(1, status=P2pConnStatus.Open, nonce=None)
     manager = a_manager()
     manager.pending_connections[conn.id] = conn
@@ -2185,10 +2185,11 @@ def test_a_manager_says_when_it_is_listening_and_not_before(
             (conn,) = manager.pending_connections.values()
             assert conn.inbound
             assert conn.address.port == peer.getsockname()[1]
-            # the version this node opens with: the socket was accepted
-            # into a connection and not merely into the backlog
-            peer.settimeout(20)
-            assert peer.recv(4096)
+            # and nothing is sent to an inbound peer ahead of its own
+            # `version`, as Core sends none (ISS 1207)
+            peer.settimeout(0.5)
+            with pytest.raises(TimeoutError):
+                peer.recv(4096)
     finally:
         manager.stop()
         manager.join(timeout=10)
