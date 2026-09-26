@@ -1937,8 +1937,16 @@ def _refused(argv: Sequence[str]) -> Any:
 def test_setup_environment_leaves_the_umask_on_windows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """ISS 1198: Core's `SetupEnvironment` sets no umask under `WIN32`."""
-    os.umask(0o022)
+    """ISS 1198: Core's `SetupEnvironment` sets no umask under `WIN32`.
+
+    The calls are recorded rather than read back from the process, so
+    the test answers the same on every platform; the POSIX call after
+    it is the control.
+    """
+    calls: list[int] = []
+    monkeypatch.setattr(os, "umask", calls.append)
     monkeypatch.setattr(sys, "platform", "win32")
     cli.setup_environment()
-    assert os.umask(0o022) == 0o022
+    monkeypatch.setattr(sys, "platform", "linux")
+    cli.setup_environment()
+    assert calls == [0o077]
