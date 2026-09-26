@@ -934,6 +934,28 @@ def test_an_answered_endpoint_is_drawn_from_the_answered_table_alone() -> None:
     assert [a.address for a in new] == [gossiped.address]
 
 
+@pytest.mark.parametrize(
+    "other",
+    [peer_address("1.2.3.4", 8334), peer_address("1.2.3.5", 8333)],
+    ids=["port", "address"],
+)
+def test_the_gossiped_side_leaves_out_the_answered_endpoint_alone(
+    other: NetworkAddressV2,
+) -> None:
+    """ISS 1283: an endpoint differing in its port or its address stays.
+
+    The draw compares `endpoint_key`'s three fields rather than the key.
+    The network id cannot differ alone between two dialable rows: IPv4
+    and IPv6 addresses differ in length.
+    """
+    peer_db = a_peer_db()
+    answered = peer_address("1.2.3.4", 8333)
+    peer_db.add_addresses([answered, other])
+    peer_db.add_active_address(answered)
+    _, new = cast("Any", peer_db.address_sampler()).args
+    assert new == [other]
+
+
 @pytest.mark.parametrize("table", ["answered", "gossiped"])
 def test_a_table_holding_nothing_leaves_the_draw_to_the_other(table: str) -> None:
     """ISS 1201: Core searches the only table holding anything, coin or not."""
@@ -1237,3 +1259,36 @@ def test_either_table_holding_a_network_holds_it(table: str) -> None:
         peer_db.add_active_address(held)
     assert peer_db.holds_network(BIP155Network.IPV6)
     assert not peer_db.holds_network(BIP155Network.IPV4)
+
+
+def test_a_read_that_prunes_nothing_does_not_rebuild_the_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1217: `get_active_addresses` rebuilds its index only after a prune.
+
+    Every row kept keeps its position, so a read that prunes nothing
+    leaves the index as it is. A stale row is the control: pruned, the
+    rows behind it move, and the index is rebuilt, so a repeat handshake
+    with the kept endpoint still settles onto its own row.
+    """
+    peer_db = a_peer_db()
+    stale = peer_address("9.9.9.9", 1, timestamp=int(time.time()) - 3600 * 4)
+    kept = peer_address("1.2.3.4", 18444)
+    rebuilt: list[None] = []
+    real_reindex = peer_db._reindex_active
+
+    def counted() -> None:
+        rebuilt.append(None)
+        real_reindex()
+
+    monkeypatch.setattr(peer_db, "_reindex_active", counted)
+    peer_db.add_active_address(kept)
+    assert peer_db.get_active_addresses() == peer_db.active_addresses
+    assert rebuilt == []
+    peer_db.active_addresses.insert(0, stale)
+    real_reindex()
+    peer_db.get_active_addresses()
+    assert rebuilt == [None]
+    peer_db.add_active_address(kept)
+    (active,) = peer_db.active_addresses
+    assert active.port == kept.port

@@ -301,6 +301,17 @@ def endpoint_key(address: NetworkAddressV2) -> bytes:
     return endpoint.serialize(check_validity=False)
 
 
+def _endpoint(address: NetworkAddressV2) -> tuple[int, bytes, int]:
+    """Return the fields `endpoint_key` serializes, unserialized.
+
+    Two addresses have one `endpoint_key` exactly where they have one of
+    these, and this costs no `replace` and no `serialize`: what a walk
+    over a whole table compares by, where `endpoint_key` would cost
+    tens of milliseconds a pass (btclib-org/btclib-node#1283).
+    """
+    return address.network_id, address.address, address.port
+
+
 def host_key(address: NetworkAddressV2) -> bytes:
     """Return the octets Core's `CNetAddr::GetAddrBytes` gives: no port.
 
@@ -355,13 +366,14 @@ class PeerDB:
         # rather than by scanning the list it is called once per
         # handshake against (#270). Rebuilt rather than kept in step
         # wherever something else reshapes the list instead --
-        # `init_from_db`'s bulk load and `get_active_addresses`'s prune,
-        # both already O(n) over it.
+        # `init_from_db`'s bulk load, and `get_active_addresses` where
+        # its prune removed a row, both already O(n) over it.
         self._active_index: dict[bytes, int] = {}
         # `add_active_address` reads this index and then writes into
         # `active_addresses` at the position it found -- two statements,
-        # not one -- and `get_active_addresses` reassigns the list and
-        # then rebuilds the index against it -- likewise two. The first
+        # not one -- and `get_active_addresses`, where its prune removed
+        # a row, reassigns the list and then rebuilds the index against
+        # it -- likewise two. The first
         # runs on `Node`'s own thread, off `callbacks.verack`; the
         # second runs on `P2pManager`'s, off `manage_connections`, which
         # calls it every few minutes regardless of what else that loop
@@ -543,7 +555,7 @@ class PeerDB:
         tables that never hold one endpoint twice.
         """
         answered = [addr for addr in self.get_active_addresses() if can_connect(addr)]
-        tried = {endpoint_key(addr) for addr in answered}
+        tried = {_endpoint(addr) for addr in answered}
         # Drawn from the addresses that can be dialled, rather than from
         # the whole table with a retry on the ones that cannot: a table
         # holding none of them -- a seed answering with AAAA records
@@ -560,7 +572,7 @@ class PeerDB:
             known = [
                 address
                 for address in self.addresses
-                if can_connect(address) and endpoint_key(address) not in tried
+                if can_connect(address) and _endpoint(address) not in tried
             ]
         return partial(_select, answered, known)
 
@@ -628,8 +640,12 @@ class PeerDB:
                     active.append(addr)
                 elif self.db is not None:
                     self.db.delete(_ANSWERED + endpoint_key(addr))
-            self.active_addresses = active
-            self._reindex_active()
+            # rebuilt only where the prune removed something: a row
+            # kept keeps its position, and rebuilding costs an
+            # `endpoint_key` per row every call (btclib-org/btclib-node#1217)
+            if len(active) != len(self.active_addresses):
+                self.active_addresses = active
+                self._reindex_active()
             return self.active_addresses
 
     def add_active_address(self, addr: NetworkAddressV2) -> None:
