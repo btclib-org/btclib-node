@@ -30,6 +30,7 @@ from btclib_node.constants import MIN_BLOCKS_TO_KEEP, USER_AGENT, P2pConnStatus
 from btclib_node.exceptions import MissingPrevoutError
 from btclib_node.main import (
     is_block_failed,
+    is_cached_invalid,
     parent_lookup,
     prune_up_to_height,
     verify_mempool_acceptance,
@@ -611,22 +612,49 @@ def get_block(node: Node, conn: RpcConnection, params: list[Any]) -> str:
     return block.serialize(check_validity=False).hex()
 
 
+def _index_submitted_header(block_index: BlockIndex, block: Block) -> str | None:
+    """Index a submitted block's header if new; answer why to stop, or None.
+
+    `"duplicate"` for a block already downloaded, `"prev-blk-not-found"`
+    for a header whose parent is unknown, and btclib's own message for
+    a header `add_headers` refuses; `submit_block` argues each.
+    """
+    block_hash = block.header.hash
+    if block_hash in block_index.header_dict:
+        if block_index.get_block_info(block_hash).downloaded:
+            return "duplicate"
+    else:
+        try:
+            if block_index.add_headers([block.header]) is None:
+                return "prev-blk-not-found"
+        except BTClibException as error:
+            # the header itself fails a range/proof-of-work check
+            # `_validate_header_batch` makes before anything is indexed
+            # -- caught here rather than left to propagate the way
+            # `p2p.callbacks.block` lets it, because that callback's own
+            # caller punishes the peer for it and `submitblock` has no
+            # peer to punish, only a reason to answer
+            return str(error)
+    return None
+
+
 def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | None:
     """Answer `submitblock`, Core's own two arguments, the second ignored.
 
     Core's own `submitblock` (`rpc/mining.cpp:1089-1136`, at
-    bitcoin/bitcoin@bb529657) decodes, indexes the header if it is new,
-    and hands the block to `ProcessNewBlock`: `None` for one accepted,
-    `"duplicate"` for one already held, and a reject reason for one
-    refused -- `BlockValidationResult::BLOCK_MISSING_PREV`'s own
-    `"prev-blk-not-found"` (`validation.cpp:4225`, same sha) is the one
-    reason this tree reproduces literally, being the one this node's own
+    bitcoin/bitcoin@bb529657) decodes, indexes the header if it is new, and
+    hands the block to `ProcessNewBlock`: `None` for one accepted,
+    `"duplicate"` for one already held, `"duplicate-invalid"` for one whose
+    header is marked invalid (`main.is_cached_invalid`), and a reject reason
+    for one refused -- `BlockValidationResult::BLOCK_MISSING_PREV`'s own
+    `"prev-blk-not-found"` (`validation.cpp:4225`, same sha) is reproduced
+    literally too, being the reason this node's own
     `block_index.add_headers` answers the identical way `p2p.callbacks
-    .block` already reads it (missing rather than invalid). A
-    structurally invalid block is answered with btclib's own exception
-    message instead of one of Core's: `BlockValidationResult` names
-    dozens of distinct single-word reasons across `validation.cpp`, and
-    this tree does not reproduce that vocabulary.
+    .block` already reads it (missing rather than invalid). A structurally
+    invalid block is answered with btclib's own exception message instead of
+    one of Core's: `BlockValidationResult` names dozens of distinct
+    single-word reasons across `validation.cpp`, and this tree does not
+    reproduce that vocabulary.
 
     Stores through the same `block_index`/`block_db` calls
     `p2p.callbacks.block` makes for a block delivered over the wire,
@@ -654,21 +682,11 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     block_hash = block.header.hash
     block_index = node.chainstate.block_index
 
-    if block_hash in block_index.header_dict:
-        if block_index.get_block_info(block_hash).downloaded:
-            return "duplicate"
-    else:
-        try:
-            if block_index.add_headers([block.header]) is None:
-                return "prev-blk-not-found"
-        except BTClibException as error:
-            # the header itself fails a range/proof-of-work check
-            # `_validate_header_batch` makes before anything is indexed
-            # -- caught here rather than left to propagate the way
-            # `p2p.callbacks.block` lets it, because that callback's own
-            # caller punishes the peer for it and `submitblock` has no
-            # peer to punish, only a reason to answer
-            return str(error)
+    if is_cached_invalid(block_index, block):
+        return "duplicate-invalid"
+    refusal = _index_submitted_header(block_index, block)
+    if refusal is not None:
+        return refusal
 
     try:
         block.assert_valid(node.chain.pow_limit_bits)
