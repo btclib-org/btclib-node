@@ -614,6 +614,15 @@ def test_each_seed_is_asked_for_its_x9_subdomain_and_answers_on_the_chain_port(
     }
 
 
+def test_size_counts_the_known_table() -> None:
+    """ISS 1265: Core's `addrman.Size()`, an answered endpoint counted once."""
+    peer_db = a_peer_db()
+    known = [peer_address("1.2.3.4", 18444), peer_address("5.6.7.8", 18444)]
+    peer_db.add_addresses(known)
+    peer_db.add_active_address(known[0])
+    assert peer_db.size == 2
+
+
 @pytest.mark.parametrize(
     "answer",
     [socket.gaierror("no such host"), []],

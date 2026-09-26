@@ -2173,20 +2173,42 @@ def test_every_seed_is_asked_at_once_for_an_empty_table_or_forcednsseed(
     assert logged == [*_loaded(queried), "5 addresses found from DNS seeds"]
 
 
-def test_an_empty_table_is_never_waited_for(
+def test_a_table_emptied_meanwhile_is_not_waited_for(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ISS 1265: past the seeds asked at once, Core waits only for a table.
+    """ISS 1265: Core waits ahead of a batch only for a nonempty `addrman`.
 
-    `-forcednsseed` over a table that stays empty asks every seed with
-    no wait, whatever `seeds_right_now` counts down to.
+    The table is looked at again ahead of each batch, so one emptied
+    during the first batch is not waited for ahead of the second.
     """
-    manager, queried, logged = a_dns_seeding_manager(
+    manager, queried, logged = a_dns_seeding_manager(a_manager, monkeypatch)
+    real_query = manager.peer_db.query_dns_seed
+
+    async def query_then_empty(seed: str) -> int:
+        answer = await real_query(seed)
+        monkeypatch.setattr(manager.peer_db, "holds_nothing", True)
+        return answer
+
+    monkeypatch.setattr(manager.peer_db, "query_dns_seed", query_then_empty)
+    asyncio.run(manager._dns_address_seed())
+    assert logged.count("Waiting 0 seconds before querying DNS seeds.") == 1
+    assert sorted(queried) == _SEEDS
+
+
+def test_the_seeds_are_asked_in_a_shuffled_order(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1265: Core's `std::shuffle` of the chain's seeds, ahead of any."""
+    manager, queried, _ = a_dns_seeding_manager(
         a_manager, monkeypatch, holds_nothing=True
     )
+    monkeypatch.setattr(
+        secrets,
+        "SystemRandom",
+        lambda: SimpleNamespace(shuffle=list.reverse),
+    )
     asyncio.run(manager._dns_address_seed())
-    assert "Waiting 0 seconds before querying DNS seeds." not in logged
-    assert sorted(queried) == _SEEDS
+    assert queried == _SEEDS[::-1]
 
 
 def test_a_seed_that_named_nothing_is_queued_for_an_addr_fetch(
