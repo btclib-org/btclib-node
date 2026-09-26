@@ -215,8 +215,9 @@ def test_connection_to_ourselves(tmp_path: Path) -> None:
         # separate table `callbacks.version` fills through
         # `add_active_address` for a peer this node dialled, after every
         # refusal, the self-connect one included, so this handshake adds
-        # nothing to it and nothing here depends on it either way. `addresses` gains entries from three places
-        # and this test drives none of them: `init_from_db` loads a datadir
+        # nothing to it and nothing here depends on it either way.
+        # `addresses` gains entries from three places and this test drives
+        # none of them: `init_from_db` loads a datadir
         # that `tmp_path` has just created empty, `callbacks.addr` and
         # `callbacks.addrv2` need a peer to gossip and the one connection
         # attempted is the self-connect refused above, and
