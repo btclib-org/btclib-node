@@ -450,11 +450,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   refused after the lock, the others before it, as in Core** (closes #1191);
   `-blocksdir` and `-rpcbind` are refused in Core's words.
 
-### An old peer is sent Core's nonceless ping and its final alert
-
-- **A peer at protocol version 60000 or below is sent a `ping` with no nonce,
-  and one at 70012 or below the final `alert`, as in Core** (closes #1204,
-  closes #1205).
 ### The dialler draws from both tables, as Core's `Select_` does
 
 - **A coin picks the answered or the gossiped table, and a pass draws up to
@@ -473,6 +468,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 ### An inbound peer is sent `version` only once its own is accepted, as in Core
 
 - **A refused inbound peer is sent nothing** (closes #1207).
+
+### An old peer is sent Core's nonceless ping and its final alert
+
+- **A peer at protocol version 60000 or below is sent a `ping` with no nonce,
+  and one at 70012 or below the final `alert`, as in Core** (closes #1204,
+  closes #1205).
 
 ## v2026.9.24
 
