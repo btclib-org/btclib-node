@@ -62,7 +62,22 @@ def test_a_line_carries_its_level_as_core_s_log_does(tmp_path: Path) -> None:
     logger.critical("c")
     logger.close()
     messages = [
-        line.split(" - ", 1)[1]
-        for line in path.read_text(encoding="utf-8").splitlines()
+        line.split(" ", 1)[1] for line in path.read_text(encoding="utf-8").splitlines()
     ]
     assert messages == ["[debug] d", "i", "[warning] w", "[error] e", "[error] c"]
+
+
+def test_a_line_opens_with_core_s_utc_second_and_a_space(tmp_path: Path) -> None:
+    """ISS 1297: `LogTimestampStr`, as `bitcoind` v31.1.0's `debug.log` has it.
+
+    `2026-09-26T09:42:51Z [error] Unable to start HTTP server. See debug
+    log for details.`: ISO 8601 in UTC, whatever the machine's zone, the
+    fraction of the second dropped, then one space.
+    """
+    logger = Logger(tmp_path / "history.log")
+    (handler,) = logger.handlers
+    record = logging.makeLogRecord(
+        {"msg": "a line", "levelno": logging.ERROR, "created": 86399.9}
+    )
+    assert handler.format(record) == "1970-01-01T23:59:59Z [error] a line"
+    logger.close()
