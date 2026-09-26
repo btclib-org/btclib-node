@@ -512,6 +512,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **Core's `ConsiderEviction`: `CHAIN_SYNC_TIMEOUT`, one `getheaders`, then
   a disconnect, with up to four peers at the tip protected** (closes #1154).
 
+### A malformed `-rpcauth` or `-rpccookieperms` is named in the log alone
+
+- **Stderr reads "Unable to start HTTP server. See debug log for details.",
+  and the log names the value** (closes #1210), refused once the RPC
+  listener is bound, `-rpcauth` after the cookie, as `bitcoind` refuses it.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
