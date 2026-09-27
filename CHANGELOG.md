@@ -613,9 +613,8 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 
 ### `testmempoolaccept` refuses the call for a `rawtx` that does not decode
 
-- **`-22` "TX decode failed: <hex> Make sure the tx has at least one input."
-  for the first one, and `-8` for an array not of 1 to 25** (closes #1329),
-  as `bitcoind` answers both.
+- **`-22` for the first one, its message naming the `rawtx`, and `-8` for an
+  array not of 1 to 25** (closes #1329), as `bitcoind` answers both.
 
 ## v2026.9.24
 

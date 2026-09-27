@@ -1573,9 +1573,7 @@ def test_mempool_accept(
     # does not decode ends the whole call. btclib-org/btclib-node#1253,
     # btclib-org/btclib-node#1329
     if not 1 <= len(rawtxs) <= _MAX_PACKAGE_COUNT:
-        err_msg = (
-            f"Array must contain between 1 and {_MAX_PACKAGE_COUNT} transactions."
-        )
+        err_msg = f"Array must contain between 1 and {_MAX_PACKAGE_COUNT} transactions."
         raise RpcError(RPCErrorCode.INVALID_PARAMETER, err_msg)
     txs: list[Tx] = []
     for rawtx in rawtxs:
@@ -1593,7 +1591,9 @@ def test_mempool_accept(
             # `BTClibException`, `send_raw_transaction`'s own clause below:
             # a script shorter than its declared length raises
             # `BTClibRuntimeError`, not `BTClibValueError`
-            err_msg = f"TX decode failed: {rawtx} Make sure the tx has at least one input."
+            err_msg = (
+                f"TX decode failed: {rawtx} Make sure the tx has at least one input."
+            )
             raise RpcError(RPCErrorCode.DESERIALIZATION_ERROR, err_msg) from error
     out: list[dict[str, Any]] = []
     for tx in txs:
