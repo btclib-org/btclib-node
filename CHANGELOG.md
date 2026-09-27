@@ -552,6 +552,137 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   has less than the minimum chain work is disconnected, after a batch this
   node already had** (closes #1230).
 
+### A malformed `bitcoin.conf` line is refused in Core's words
+
+- **`parse error on line N`, and `conf=` and a forbidden negation as
+  `bitcoind` words them** (closes #1267), with no path; a line ends at a
+  newline alone, as Core counts it.
+
+### `-bantime`, as in Core
+
+- **A `setban` ban that names no length lasts `-bantime` seconds** (closes
+  #1219), 86400 by default, as `bitcoind` has it.
+
+### A block nobody asked for is stored only where Core's `AcceptBlock` would
+
+- **An unrequested block with less work than the tip, more than
+  `MIN_BLOCKS_TO_KEEP` above it, or below the minimum chain work is dropped
+  unstored, and its peer is not punished** (closes #1247).
+
+### A peer's announced transactions are asked for as Core asks for them
+
+- **At most `MAX_PEER_TX_ANNOUNCEMENTS` tracked per peer, in `getdata`s of at
+  most `MAX_GETDATA_SZ` items, so no announcement can make the request raise
+  and stop the node** (closes #1243).
+
+### An obsolete header version is refused `bad-version`
+
+- **A header whose version BIP34, BIP66 or BIP65 made obsolete is refused
+  `bad-version` from that BIP's height, and its sender discouraged, as in
+  Core** (closes #1262).
+
+### A `history.log` line carries its level as `debug.log` does
+
+- **A warning is marked `[warning]` and an error `[error]`** (closes #1280),
+  nothing for info, and `[debug]` for a debug line, where Core's carries its
+  category instead.
+
+### Each chain asks Core's DNS seeds
+
+- **Every chain's seed list is Core v31.1's `vSeeds`, trailing dot included**
+  (closes #1303), where mainnet asked two seeds Core dropped and signet an IP
+  address; regtest names Core's `dummySeed.invalid.`.
+
+### A dial pass no longer serializes every address it could draw
+
+- **`address_sampler` compares endpoints by field, and `get_active_addresses`
+  reindexes only where it pruned a row** (closes #1217, closes #1283), where
+  each pass serialized every answered row and every dialable gossiped one.
+
+### A gossip adds services to an address, and a dialled peer's own replace them
+
+- **`add_addresses` ORs gossiped services into both rows of an endpoint, and
+  an outbound peer's `version` overwrites them** (closes #1276), as Core's
+  `AddSingle` and `SetServices` do, where a gossip replaced a known row's.
+
+### `testmempoolaccept` names a `rawtx` that is not a string, as Core
+
+- **`-3` "JSON value of type number is not of expected type string", before
+  any entry is validated** (closes #1253); a script shorter than its declared
+  length is an invalid serialization.
+
+### A `history.log` line is stamped as `debug.log` stamps it
+
+- **The time is UTC ISO 8601 to the second, then one space** (closes #1297),
+  where it was local time with milliseconds and ` - `.
+
+### The suite's ports come from the range Core's tests use
+
+- **`get_random_port` hands each xdist worker, and each of the first as many
+  replacements, ports of its own from 11000 to 25999, as Core's tests do**,
+  not a port a bind to 0 picked, which anything could take first (closes #1340).
+
+### A body its header does not commit to leaves the header valid, as in Core
+
+- **A mutated body, Core's `IsBlockMutated`, is refused before its header is
+  read, and a failing block is marked invalid only where Core marks it, over
+  the weight, on the wire and in `submitblock`** (closes #1242, closes #1333).
+
+### The P2P listener's sockets are kept before it says it is listening
+
+- **`_bind` records them ahead of setting `listening`** (closes #1325), so
+  a thread woken by it no longer reads an empty list.
+
+### Every dial records its try, as Core's `Attempt` does
+
+- **A `-connect` or `-addnode` dial counts as a recent try too, for an address
+  a table holds** (closes #1277); as in Core, a restart forgets every try.
+
+### `testmempoolaccept` refuses the call for a `rawtx` that does not decode
+
+- **`-22` for the first one, its message naming the `rawtx`, and `-8` for an
+  array not of 1 to 25** (closes #1329), as `bitcoind` answers both.
+
+### A `[section]` naming no chain is warned about as `bitcoind` warns
+
+- **Stderr names each unrecognised section with its file and line** (closes
+  #1271), in Core's words and before the refusals that follow it.
+
+### A failed RPC start leaves no chainstate and no address table behind
+
+- **The stores open once the RPC listener is up** (closes #1279), so a
+  refused start leaves `.lock`, `blocks/` and the log and no store,
+  `bitcoind` opening its stores only at its steps 6 and 7.
+
+### `REVIEWING.md` lets a filed issue carry its fix
+
+- **An issue filed from a review may say the fix where one is known**,
+  the filing bar standing as it was (issue btclib-org/.github#1378).
+
+### Two outbound peers are block-relay-only, as in Core
+
+- **Past eight full-relay outbound peers, two more are dialled that relay
+  blocks alone** (closes #1095), as `CConnman::ThreadOpenConnections` opens
+  `BLOCK_RELAY`, and a third on its five-minute timer once the tip is recent.
+
+### Feelers test a gossiped address, as in Core
+
+- **Every two minutes on average a short-lived connection is dialled to a
+  gossiped address not in the answered table** (closes #1096), as Core's
+  `FEELER`: asked for addresses, recorded as answered, then dropped.
+
+### Two block-relay-only peers are kept across a restart, as in Core
+
+- **The block-relay-only peers held at shutdown are written to `anchors.dat`
+  and dialled first at the next start** (closes #1097), two at most, in the
+  file format bitcoind v31.1.0 reads and writes.
+
+### An extra outbound peer for a stale tip or an unreached network, as in Core
+
+- **One more full-relay peer is dialled for a stale tip, and one on a
+  network none of the eight is on** (closes #1100), each followed by the
+  eviction of a full-relay peer past the target by `EvictExtraOutboundPeers`.
+
 ### Each peer is asked for blocks of its own best chain, as in Core
 
 - **A peer is asked only for blocks of its best known chain, within Core's
