@@ -265,9 +265,10 @@ class Config:
     # instead of it: Core's own `-addnode`
     # (`connOptions.m_added_nodes`, `src/init.cpp:2193-2198`, same sha).
     addnode: tuple[tuple[str, int], ...]
-    # the same values as given, which Core keeps in
-    # `m_added_node_params` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
-    # the v31.1 tag) and the `addnode` RPC's `remove` matches
+    # the same values as given, one to each pair above, which Core keeps
+    # in `m_added_node_params` (`src/net.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) and the `addnode` RPC's
+    # `remove` matches
     addnode_args: tuple[str, ...]
     # Core's own `-listen`, `DEFAULT_LISTEN` (`src/net.h`) true unless
     # `-connect` or `-maxconnections=0` is given, in which case

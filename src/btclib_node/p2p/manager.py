@@ -328,10 +328,9 @@ class P2pManager(threading.Thread):
         # reaches those two from its own thread, and
         # `_added_nodes_lock` is Core's `m_added_nodes_mutex`.
         self._added_nodes_lock = threading.Lock()
-        self._added_node_params: list[tuple[str, tuple[str, int]]] = [
-            (spec, split_host_port(spec, node.chain.port))
-            for spec in node.config.addnode_args
-        ]
+        self._added_node_params: list[tuple[str, tuple[str, int]]] = list(
+            zip(node.config.addnode_args, node.config.addnode, strict=True)
+        )
         # The endpoint each host and port given by name last connected
         # on, which Core keeps on the connection as `m_addr_name` and
         # `AlreadyConnectedToHost` compares a name against. An IP address

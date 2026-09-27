@@ -33,7 +33,7 @@ from btclib.p2p.keepalive import Ping
 from btclib.p2p.limits import PROTOCOL_VERSION
 
 from btclib_node.chains import Main, RegTest
-from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS
+from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, split_host_port
 from btclib_node.constants import NodeStatus, P2pConnStatus
 from btclib_node.log import Logger
 from btclib_node.p2p import manager as manager_module
@@ -217,6 +217,10 @@ def a_manager() -> Iterator[AManagerFactory]:
             config=SimpleNamespace(
                 connect=connect,
                 connect_given=bool(connect),
+                # split as `Config.__init__` splits it
+                addnode=tuple(
+                    split_host_port(spec, RegTest().port) for spec in addnode_args
+                ),
                 addnode_args=tuple(addnode_args),
                 listen=listen,
                 max_connections=max_connections,
