@@ -45,8 +45,7 @@ __all__ = [
     "lookup_subnet",
 ]
 
-# Core's `-bantime` default, which this node has no option to override
-# (btclib-org/btclib-node#1219)
+# Core's `-bantime` default
 DEFAULT_MISBEHAVING_BANTIME = 60 * 60 * 24
 # How often Core's scheduler calls `DumpBanlist`, in seconds
 DUMP_BANS_INTERVAL = 15 * 60
