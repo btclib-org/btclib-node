@@ -1628,6 +1628,7 @@ def test_mempool_accept(
             raise RpcError(RPCErrorCode.DESERIALIZATION_ERROR, err_msg) from error
     return [_mempool_accept_verdict(node, tx) for tx in txs]
 
+
 def _mempool_accept_verdict(node: Node, tx: Tx) -> dict[str, Any]:
     """Return `test_mempool_accept`'s own per-tx verdict for `tx`.
 

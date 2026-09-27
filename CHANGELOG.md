@@ -764,21 +764,33 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   `duplicate-invalid`, on the wire and by `submitblock`, and no longer stored,
   from an outbound peer as misbehaviour** (closes #1344).
 
-### `verify_mempool_acceptance` matches more of Core's own `MemPoolAccept`
+### The mempool refuses a second spend of one outpoint, and a block evicts it
 
-- **A second spend of an already-held outpoint is refused, in Core's words
-  where its fee rules refuse it too, and a connected block evicts what
-  spends its inputs** (closes #1244); replacing is not ported (issue #1334).
-- **A spend of an output a mempool parent lacks is a missing input, not an
-  `IndexError`** (closes #1252).
+- **A conflicting candidate is refused, in Core's words where its fee rules
+  refuse it too, and a connected block evicts what spends its inputs**
+  (closes #1244); replacing is not ported (issue #1334).
+
+### A spend of an output a mempool parent lacks is a missing input, as in Core
+
+- **It raised `IndexError`: the relaying peer was dropped and the RPC answered
+  `-32603`** (closes #1252).
+
+### The mempool sizes a transaction by its sigops too, as Core
+
 - **Every feerate and the size limit read Core's sigop-adjusted vsize, and a
   transaction over 16000 sigops is refused** (closes #1357), as `bitcoind`
   answers both.
-- **`-minrelaytxfee` sets the relay floor, read as Core's `ParseMoney` reads
-  it, in BTC/kvB** (closes #1332).
-- **Every other mempool refusal answers Core's own reject reason and
-  details, in the order Core checks them** (closes #1328); a failing
-  script's message inside the parentheses is btclib's (issue #1362).
+
+### `-minrelaytxfee` sets the relay floor, in BTC/kvB, as in Core
+
+- **Read as Core's `ParseMoney` reads it, and a value that is no amount
+  refused in Core's words** (closes #1332).
+
+### `sendrawtransaction` and `testmempoolaccept` refuse in Core's words
+
+- **Each mempool refusal answers Core's reject reason and details, in the
+  order Core checks them** (closes #1328); a failing script's message inside
+  the parentheses is btclib's (issue #1362).
 
 ## v2026.9.24
 
