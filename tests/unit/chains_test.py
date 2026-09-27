@@ -12,6 +12,9 @@ than the network itself: the genesis block and the magic built from it,
 and that `Chain.consensus` reaches the row of the chain it is asked of.
 """
 
+import runpy
+from pathlib import Path
+
 from btclib.consensus import CONSENSUS_PARAMS
 
 from btclib_node.chains import Chain, Main, RegTest, SigNet, TestNet
@@ -94,7 +97,7 @@ def test_the_genesis_block_carries_the_coinbase_its_header_commits_to() -> None:
     """Each chain's genesis block holds one coinbase, and its id is the root."""
     # the header is derived from the transaction, so a block built
     # without it hashes the same and is still wrong: it is the copy
-    # `Node.__init__` writes to `block_db` and serves to peers, and the
+    # `Node.load` writes to `block_db` and serves to peers, and the
     # BIP158 filter of height zero is built from its outputs
     for chain in CHAINS:
         (coinbase,) = chain.genesis_block.transactions
@@ -113,3 +116,63 @@ def test_consensus_is_the_row_of_the_same_name_in_btclibs_own_table() -> None:
     """
     for chain in CHAINS:
         assert chain.consensus is CONSENSUS_PARAMS[chain.name], chain.name
+
+
+def test_the_fixed_seeds_regenerate_from_cores_lists() -> None:
+    """ISS 1099: `_chainparamsseeds.py` is what its generator writes.
+
+    `scripts/seeds/generate_seeds.py` is Core's `generate-seeds.py`, and
+    its inputs are Core's `nodes_*.txt`, so a hand edit to the module, or
+    a list refreshed without regenerating it, fails here.
+    """
+    root = Path(__file__).parents[2]
+    generate = runpy.run_path(str(root / "scripts/seeds/generate_seeds.py"))["generate"]
+    # text on both sides, so that a checkout's own line endings, CRLF on
+    # a Windows runner, decide nothing
+    committed = (root / "src/btclib_node/_chainparamsseeds.py").read_text("utf-8")
+    assert generate(root / "scripts/seeds") == committed, (
+        "regenerate with: uv run python scripts/seeds/generate_seeds.py"
+        " scripts/seeds > src/btclib_node/_chainparamsseeds.py"
+    )
+
+
+def test_regtest_alone_has_no_fixed_seed() -> None:
+    """ISS 1099: Core clears `vFixedSeeds` for regtest alone of these four."""
+    assert {chain.name: bool(chain.fixed_seeds) for chain in CHAINS} == {
+        "mainnet": True,
+        "testnet": True,
+        "signet": True,
+        "regtest": False,
+    }
+
+
+def test_each_chain_asks_core_s_dns_seeds() -> None:
+    """ISS 1303: Core's `vSeeds` at bitcoin/bitcoin@9be056a8a7, the v31.1 tag.
+
+    Read from `src/kernel/chainparams.cpp` there, in its order and with
+    its trailing dots, for every chain this package defines.
+    """
+    assert {chain.name: chain.addresses for chain in CHAINS} == {
+        "mainnet": [
+            "seed.bitcoin.sipa.be.",
+            "dnsseed.bluematt.me.",
+            "seed.bitcoin.jonasschnelli.ch.",
+            "seed.btc.petertodd.net.",
+            "seed.bitcoin.sprovoost.nl.",
+            "dnsseed.emzy.de.",
+            "seed.bitcoin.wiz.biz.",
+            "seed.mainnet.achownodes.xyz.",
+        ],
+        "testnet": [
+            "testnet-seed.bitcoin.jonasschnelli.ch.",
+            "seed.tbtc.petertodd.net.",
+            "seed.testnet.bitcoin.sprovoost.nl.",
+            "testnet-seed.bluematt.me.",
+            "seed.testnet.achownodes.xyz.",
+        ],
+        "signet": [
+            "seed.signet.bitcoin.sprovoost.nl.",
+            "seed.signet.achownodes.xyz.",
+        ],
+        "regtest": ["dummySeed.invalid."],
+    }

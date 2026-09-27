@@ -21,22 +21,26 @@ functions the tests import directly, in `tests/unit/`,
 
 import base64
 import json
+import os
 import re
 import secrets
 import socket
+import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from bitcoin_core_rpc import BitcoinCoreRpcClient, http_request
-from btclib.block import Block, BlockHeader, build
+from btclib.block import Block, BlockHeader, build, witness_commitment_output
 from btclib.block.mining import candidate_block_header, mine
 from btclib.block.proof_of_work import REGTEST_POW_LIMIT_BITS
 from btclib.exceptions import BTClibValueError
 from btclib.script import script
+from btclib.script.witness import Witness
 from btclib.tx.limits import COINBASE_MATURITY
 from btclib.tx.out_point import OutPoint
 from btclib.tx.tx import Tx
@@ -48,7 +52,7 @@ from btclib_node.p2p.address import peer_address
 from btclib_node.rpc.auth import COOKIE_FILE, password_hmac
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
     from btclib.p2p.addrv2 import NetworkAddressV2
 
@@ -305,6 +309,24 @@ def build_block(
     return Block(header, transactions, check_validity=False)
 
 
+def generate_segwit_block(
+    *extra: Tx, nonce: bytes = bytes(32), witness: bytes = b"\x01" * 3
+) -> Block:
+    """Return a solved block at height 1 committing to a witness it carries.
+
+    A coinbase, a spend whose witness is `witness`, then `extra`; the
+    coinbase's own witness is `nonce`, and its last output the BIP141
+    commitment over all of them.
+    """
+    coinbase = generate_coinbase(height=1)
+    spend = generate_random_transaction()
+    spend.vin[0].script_witness = Witness([witness])
+    transactions = [coinbase, spend, *extra]
+    coinbase.vout = [*coinbase.vout, witness_commitment_output(transactions, nonce)]
+    coinbase.vin[0].script_witness = Witness([nonce])
+    return build_block(RegTest().genesis.hash, transactions, 0)
+
+
 def generate_random_chain(
     length: int, start: bytes, *, tip_time: datetime | None = None
 ) -> list[Block]:
@@ -364,20 +386,86 @@ def generate_random_chain(
     return chain
 
 
-def get_random_port() -> int:
-    """Return a TCP port the operating system currently reports as free.
+# Core's functional tests take a node's p2p, rpc and tor ports from one
+# fixed range: `PORT_MIN`, 11000, on for three `PORT_RANGE`s of 5000
+# (test/functional/test_framework/util.py), and so does this suite. A port
+# the kernel picks itself -- for a bind to port 0, or for an outbound
+# connection's own end -- comes from its ephemeral range, whose documented
+# default is 32768-60999 on Linux and 49152-65535 on macOS and Windows.
+# `test_no_port_the_kernel_picks_is_a_test_port` samples such ports and
+# finds none in this range; a kernel handing them out in sequence makes
+# the sample one short run, not the whole range.
+TEST_PORTS = range(11000, 11000 + 3 * 5000)
 
-    Binding to port 0 and reading back the port the kernel picked is
-    the same trick `conftest.py`'s node fixtures rely on to give every
-    node its own p2p and RPC port, so parallel tests never contend for
-    one -- the port is free at the moment this returns, not reserved,
-    so a caller has to bind it before another process can.
+
+class PortPool:
+    """Hand out `ports` in turn, beginning `start` places in.
+
+    A port something holds is passed over, whoever holds it: another
+    program on the machine, or a listener of this process still open when
+    the walk comes round to it again.
     """
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("", 0))
-        port = sock.getsockname()[1]
-        assert isinstance(port, int)
-        return port
+
+    def __init__(self, ports: range, start: int) -> None:
+        """Walk `ports` from the one `start` places in, wrapping at the end."""
+        self.ports = ports
+        self._offset = start % len(ports)
+
+    def draw(self) -> int:
+        """Return the next port nothing holds, or raise if every one is held."""
+        for _ in self.ports:
+            port = self.ports[self._offset]
+            self._offset = (self._offset + 1) % len(self.ports)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                try:
+                    sock.bind(("", port))
+                except OSError:
+                    continue
+            return port
+        msg = f"every port of {self.ports} is held"
+        raise OSError(msg)
+
+
+def worker_ports(worker: str, count: int) -> range:
+    """Return the slice of `TEST_PORTS` xdist worker `worker` of `count` has.
+
+    Where Core gives each test of a run its own `--portseed`, a worker
+    here takes its slice by its index in `gw0`, `gw1`, ... The range is
+    cut into twice `count` slices: xdist names a worker it starts to
+    replace a crashed one by the next index, `gw{count}` on, with `count`
+    unchanged, so the first `count` replacements take slices no worker
+    has. From the one after, the index wraps and a replacement shares a
+    slice with a live worker, the two kept apart only by their PIDs'
+    offsets and the bind check `PortPool` makes.
+    """
+    slices = 2 * count
+    width = len(TEST_PORTS) // slices
+    first = TEST_PORTS.start + int(worker.removeprefix("gw")) % slices * width
+    return range(first, first + width)
+
+
+# xdist sets both variables before a worker imports this module; the
+# first port is drawn at the PID, as Core's `--portseed` defaults to it
+# for a test run alone, so that two runs on one machine start apart.
+_PORTS = PortPool(
+    worker_ports(
+        os.environ.get("PYTEST_XDIST_WORKER", "gw0"),
+        int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "1")),
+    ),
+    start=os.getpid(),
+)
+
+
+def get_random_port() -> int:
+    """Return a TCP port that nothing holds, from this worker's own slice.
+
+    The port is free when this returns, not reserved, so a caller has to
+    bind it before another program can. Another worker of this run draws
+    from a slice of its own, `worker_ports` saying when a replacement for
+    a crashed one does not, and an outbound connection's port is one the
+    kernel picks outside `TEST_PORTS`.
+    """
+    return _PORTS.draw()
 
 
 def taken_port_bind_error(port: int) -> re.Pattern[str]:
@@ -625,3 +713,59 @@ def local_addr(
     """
     assert port is not None
     return peer_address("127.0.0.1", port, timestamp, services)
+
+
+# What `held_by_another_process` and `lock_from_another_process` run: a
+# second interpreter asking for `btclib_node.dirlock.DirectoryLock` over
+# the directory in its argument, printing `locked` or the refusal, and,
+# where it got the lock, holding it until its stdin closes.
+_LOCK_IN_A_CHILD = """
+import sys
+from pathlib import Path
+
+from btclib_node.dirlock import DirectoryLock
+from btclib_node.exceptions import DirectoryLockError
+
+try:
+    lock = DirectoryLock(Path(sys.argv[1]))
+except DirectoryLockError as error:
+    print(error, flush=True)
+else:
+    print("locked", flush=True)
+    sys.stdin.read()
+"""
+
+
+@contextmanager
+def held_by_another_process(directory: Path) -> Iterator[None]:
+    """Hold `directory`'s lock from a second interpreter while the block runs.
+
+    Another process rather than this one, because `DirectoryLock` never
+    refuses the process already holding a path, as Core's own table does
+    not.
+    """
+    with subprocess.Popen(  # noqa: S603
+        [sys.executable, "-c", _LOCK_IN_A_CHILD, str(directory)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        encoding="utf-8",
+    ) as child:
+        assert child.stdout is not None
+        assert child.stdout.readline() == "locked\n"
+        yield
+
+
+def lock_from_another_process(directory: Path) -> str:
+    """Return what a second interpreter's lock over `directory` answers.
+
+    `locked` where it got it, released again as it exits, and the
+    refusal's own message otherwise.
+    """
+    return subprocess.run(  # noqa: S603
+        [sys.executable, "-c", _LOCK_IN_A_CHILD, str(directory)],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        encoding="utf-8",
+        check=True,
+        timeout=60,
+    ).stdout.strip()

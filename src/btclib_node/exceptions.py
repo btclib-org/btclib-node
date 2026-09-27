@@ -32,11 +32,13 @@ from btclib.exceptions import BTClibRuntimeError, BTClibValueError
 
 __all__ = [
     "ChainstateInconsistencyError",
+    "DirectoryLockError",
     "IncompatibleStoreError",
     "IncompleteRequestHeadError",
     "InvalidBlockInputError",
     "InvalidChainTypeError",
     "MalformedRequestHeadError",
+    "MisbehavingError",
     "MissingPrevoutError",
     "NodeShutdownTimeoutError",
     "NonStandardTxError",
@@ -44,12 +46,29 @@ __all__ = [
     "PrevoutCountMismatchError",
     "ReimportedMainProcessError",
     "RejectedMessageError",
+    "RpcCredentialRefusedError",
     "StoreClosedError",
     "StoreCorruptionError",
     "UnknownChainError",
+    "UnmetExpectationError",
     "UnsupportedAddressTypeError",
     "WrongNetworkMagicError",
 ]
+
+
+class MisbehavingError(BTClibValueError):
+    """A peer's message of the kind Core answers with `Misbehaving`.
+
+    `p2p.main` discourages the peer for this class alone. Any other
+    `BTClibException` out of a callback, a payload btclib cannot parse
+    among them, is logged and the peer kept, as Core's
+    `PeerManagerImpl::ProcessMessages` catches an exception out of
+    `ProcessMessage` and only logs it (`src/net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Raised where Core calls
+    `Misbehaving`, directly or through `MaybePunishNodeForBlock`.
+    `BTClibValueError`, so that a caller refusing a header or a block
+    for any reason still catches it as one.
+    """
 
 
 class MissingPrevoutError(ValueError):
@@ -81,10 +100,10 @@ class NonStandardTxError(BTClibValueError):
     `BTClibValueError`, so that both RPC paths answer this through the
     clause they already answer a refused candidate with:
     `rpc.callbacks.test_mempool_accept` reports the entry not allowed
-    and `send_raw_transaction` answers `VERIFY_REJECTED`. The cost of
-    that base is that `p2p.main.handle_p2p`'s own `isinstance(e,
-    BTClibException)` would discourage the peer for it, which is why
-    `tx`'s catch is what keeps the peer and has a test of its own.
+    and `send_raw_transaction` answers `VERIFY_REJECTED`. Not a
+    `MisbehavingError`, so `p2p.main.handle_p2p` would not discourage
+    the peer for it either, and `tx`'s catch is what records the
+    refusal.
     """
 
 
@@ -321,6 +340,31 @@ class IncompatibleStoreError(RuntimeError):
         super().__init__(message)
 
 
+class DirectoryLockError(RuntimeError):
+    """A directory `Node` keeps its data in cannot be locked for it.
+
+    Raised by `dirlock.DirectoryLock`, with Core's own message for each
+    of its two refusals, and printed by `cli.main` the way Core's
+    `InitError` is.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class RpcCredentialRefusedError(ValueError):
+    """`InitRPCAuthentication` refuses a `-rpcauth` or `-rpccookieperms` value.
+
+    Raised by `rpc.auth.RpcAuth.start` once it has logged Core's line for
+    the value, and read by `rpc.manager.RpcManager` as a listener that
+    did not come up, which `Node` answers with Core's "Unable to start
+    HTTP server. See debug log for details."
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
 class UnknownChainError(ValueError):
     """`Config`'s own `chain` string names no chain this tree knows."""
 
@@ -390,21 +434,21 @@ class RejectedMessageError(BTClibValueError):
 
 
 class IncompleteRequestHeadError(BTClibRuntimeError):
-    """`parse_request_head` was handed octets with no header terminator yet.
+    """`parse_request_head` was handed octets holding no whole header section.
 
     `IncompleteMessageError`'s own reason applies here unchanged: a
     connection reading its header section a chunk at a time is the
     ordinary case, not a hostile one, so this is `BTClibRuntimeError`
     and not `BTClibValueError` -- more octets can still answer it, where
     the errors below cannot. `RpcConnection.run` never triggers this
-    itself, since it only calls `parse_request_head` once `_recv_until`
-    has already confirmed the terminator is present; it exists for
-    `parse_request_head`'s other caller, `fuzz/fuzz_rpc_head.py`, which
-    hands it whatever octets the fuzzer drew.
+    itself, since it reads more of the section instead of calling
+    `parse_request_head`; it exists for `parse_request_head`'s caller,
+    `fuzz/fuzz_rpc_head.py`, which hands it whatever octets the fuzzer
+    drew.
     """
 
     def __init__(self) -> None:
-        super().__init__("no header terminator yet")
+        super().__init__("no whole header section yet")
 
 
 class MalformedRequestHeadError(BTClibValueError):
@@ -422,13 +466,26 @@ class MalformedRequestHeadError(BTClibValueError):
 
 
 class OversizedRequestBodyError(BTClibValueError):
-    """A request's `Content-Length` is one libevent answers 413.
+    """A request's body is one libevent answers 413.
 
-    Past `rpc.connection.MAX_BODY_BYTES`, the body limit Core sets on
-    its HTTP server. A class of its own rather than a
-    `MalformedRequestHeadError`, since the status it is answered with is
-    another.
+    A `Content-Length` past `rpc.connection.MAX_BODY_BYTES`, the body
+    limit Core sets on its HTTP server, and a chunked body libevent
+    cannot read, which it answers the same way. A class of its own
+    rather than a `MalformedRequestHeadError`, since the status it is
+    answered with is another.
     """
 
-    def __init__(self, length: str) -> None:
-        super().__init__(f"request body too large: Content-Length {length}")
+    def __init__(self, detail: str) -> None:
+        super().__init__(f"request body refused: {detail}")
+
+
+class UnmetExpectationError(BTClibValueError):
+    """A request's `Expect` is one libevent answers 417 Expectation Failed.
+
+    Any value but `100-continue` on a request of HTTP/1.1 or later that
+    has a body. A class of its own for `OversizedRequestBodyError`'s
+    reason.
+    """
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(f"expectation refused: {detail}")

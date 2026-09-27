@@ -350,6 +350,51 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   first it lacks or the tip's `inv`** (closes #1160); `getpeerinfo`
   answers `synced_headers` and `synced_blocks` (closes #1105).
 
+### A second node over a held data directory is refused as `bitcoind` does
+
+- **`btclib-node` exits 1 with Core's "Cannot obtain a lock on directory"**
+  (closes #1147), locking the data and blocks directories as `bitcoind` does,
+  before its log or any store is opened.
+
+### Outbound peers sit in distinct network groups, as in Core
+
+- **An address whose network group an outbound peer already holds is not
+  dialled** (closes #1098), as `CConnman::ThreadOpenConnections` skips it.
+
+### No unroutable address is recorded as answered, as in Core's addrman
+
+- **`PeerDB.add_active_address` refuses what `add_addresses` refuses, and a
+  stored row either table refuses is deleted on load** (issue #1140).
+
+### A stopped connection ends the write its peer left undrained
+
+- **`Connection._close` cancels the `sock_sendall` whose writer it removes**
+  (closes #1164), so a `_deliver` blocked on a peer that stopped reading
+  ends at `stop` rather than staying pending until shutdown.
+
+### The JSON-RPC listener reads fields and chunked bodies as libevent does
+
+- **A header section is read as libevent reads it, bounded by Core's 8192
+  and not by a count of fields, and a chunked body is decoded** (closes
+  #1126), as in `bitcoind`.
+
+### `init_test.py` waits for a stopping node as long as `Node.stop` does
+
+- **A node's thread is joined for `STOP_TIMEOUT`, not ten seconds** (closes
+  #1159), the released wedged node's included.
+
+### A `getheaders` is answered off the active chain, as in Core
+
+- **The answer follows the locator's last block on the active chain, or
+  genesis, and an empty locator asks for its stop header alone** (closes
+  #1128).
+
+### The functional tests take `BitcoinCoreFetcher` from `btclib-wallet`
+
+- **`btclib_wallet.fetch.bitcoin_core` replaces `btclib.fetch.bitcoin_core`,
+  `btclib-wallet` joins the `test` group, and `btclib`'s floor moves to the
+  `2026.9.24` it requires** (closes #1181); nothing under `src/` imports it.
+
 ### A peer without `wtxidrelay` is kept and relayed to by txid, as in Core
 
 - **`verack` keeps a peer that sent no `wtxidrelay`, whose transactions are
@@ -365,6 +410,278 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **Each message newer than 31800 goes only to a peer whose version reaches
   it, at Core's thresholds** (closes #1180); `sendheaders` waits for the
   peer's best block to carry the minimum chain work.
+
+### Core's licence travels with Core's BIP158 vectors
+
+- **`BITCOIN_CORE_COPYING` sits beside `blockfilters.json`, pinned in
+  `tests/_data/README.md`** (closes #1202), so the sdist carries it too.
+
+### A `bitcoin.conf` that `-conf` leaves unread stops the node, as in Core
+
+- **`-conf` naming another file beside the data directory's `bitcoin.conf`
+  refuses to start** (closes #1155), with `bitcoind`'s message;
+  `-allowignoredconf` makes it a warning.
+
+### Core's fixed seeds, for a table DNS seeding left empty
+
+- **A reachable network the table holds nothing for gets Core's fixed seeds
+  after sixty seconds** (closes #1099); `scripts/seeds/` holds Core's lists,
+  its licence, which the wheel carries too, and the generator.
+
+### `whitelist_test.py` stops losing a reply under load
+
+- **Its read is no longer a `sock_recv` cancelled by a timeout**, which
+  dropped whatever that read had taken off the socket (closes #1212).
+
+### The JSON-RPC listener answers `Expect` as bitcoind does
+
+- **`Expect: 100-continue` gets an interim `100 Continue` and any other
+  value a 417** (closes #1194), where a request of HTTP/1.1 or later has a
+  body, ahead of the 413 and of every refusal after the header section.
+
+### A connection short of verack is dropped a minute after connecting
+
+- **A pending connection is dropped sixty seconds after it connected,
+  whatever it sends** (closes #1169), as Core's `InactivityCheck` drops it.
+
+### Over a held data directory, `btclib-node` refuses in `bitcoind`'s order
+
+- **`-port`, `-rpcport`, `-rpcbind`, `-rpcauth` and `-rpccookieperms` are
+  refused after the lock, the others before it, as in Core** (closes #1191);
+  `-blocksdir` and `-rpcbind` are refused in Core's words.
+
+### The dialler draws from both tables, as Core's `Select_` does
+
+- **A coin picks the answered or the gossiped table, and a pass draws up to
+  a hundred times** (closes #1201), so held answered peers no longer stall it.
+
+### PeerDB records as answered only a peer it already knows
+
+- **A peer is recorded as answered only where gossip already holds its
+  endpoint** (closes #1189), as Core's `Good_` updates only what addrman holds.
+
+### A message that does not parse costs its peer nothing, as in Core
+
+- **A peer is discouraged only where Core calls `Misbehaving`** (closes
+  #1170); a payload that does not parse is logged and the peer kept.
+
+### An inbound peer is sent `version` only once its own is accepted, as in Core
+
+- **A refused inbound peer is sent nothing** (closes #1207).
+
+### JSON-RPC named parameters are mapped onto positions, as in Core
+
+- **A `params` object is read as `transformNamedArguments` reads it**
+  (closes #1168), `args` holding the leading positions; a name repeated,
+  unknown or given both ways is refused with `RPC_INVALID_PARAMETER`.
+
+### `-rpcbind` is ignored without `-rpcallowip`, as `bitcoind` ignores it
+
+- **The JSON-RPC listener stays on loopback whatever `-rpcbind` names**
+  (closes #1211), and every value is checked, where the last was bound.
+
+### `-datadir`, `-conf` and `-blocksdir` are read lexically normal, as in Core
+
+- **A `..` comes off, and a leading `//` becomes `/`, before the file system is
+  asked** (closes #1187); a missing data directory and an unreadable
+  configuration file are refused in Core's words.
+
+### A ban list, as Core's `BanMan`
+
+- **`setban`, `listbanned` and `clearbanned` keep it in `banlist.json`; a
+  banned host is refused on accept, not dialled automatically, and left out of
+  `getaddr` answers and of the gossip stored** (closes #1088).
+
+### `running_a_node.md` names every RPC method the node serves
+
+- **Its list is the method table's, with no count** (closes #1221).
+
+### Compact blocks are served, and offered at version 2, as in Core
+
+- **`sendcmpct` offers version 2, and a `MSG_CMPCT_BLOCK` or a `getblocktxn`
+  is answered at Core's depths** (closes #1206).
+
+### Core's licence travels in the fixed seeds' module, not in `license-files`
+
+- **`_chainparamsseeds.py` opens with Core's `COPYING` in full, and
+  `license-files` drops it** (closes btclib-org/.github#1390); the file
+  stays beside the lists, and in the sdist.
+
+### An outbound peer behind this node's tip is dropped, as in Core
+
+- **Core's `ConsiderEviction`: `CHAIN_SYNC_TIMEOUT`, one `getheaders`, then
+  a disconnect, with up to four peers at the tip protected** (closes #1154).
+
+### A malformed `-rpcauth` or `-rpccookieperms` is named in the log alone
+
+- **Stderr reads "Unable to start HTTP server. See debug log for details.",
+  and the log names the value** (closes #1210), refused once the RPC
+  listener is bound, `-rpcauth` after the cookie, as `bitcoind` refuses it.
+
+### An oversized `inv` costs the peer in any sync state, as in Core
+
+- **An `inv` of more than `MAX_INV_SZ` items drops and discourages its
+  sender before the sync state is read** (closes #1145).
+
+### A port is read as Core reads it: ASCII digits alone
+
+- **`-rpcbind`, `-connect`, `-addnode` and `addnode` refuse a port with a
+  sign, a space, a `_` or a non-ASCII digit** (closes #1285), as `bitcoind`
+  refuses it for `-rpcbind`; `int` read each as a number.
+
+### What `btclib-node` creates is its owner's alone, as in Core
+
+- **`btclib-node` sets the umask to 0077 on POSIX, so its chain directory
+  is 0700 and `history.log` 0600, as `bitcoind` leaves them** (closes #1198).
+
+### `getpeerinfo`'s `addr_relay_enabled` is Core's
+
+- **An inbound peer answers `false` until its first `addr`, `addrv2` or
+  `getaddr`, a peer this node dialled `true` from its `version`**, where the
+  `getaddr` to it goes too (closes #1178).
+
+### The dialler passes over the draws Core's loop passes over
+
+- **A draw is passed over for an `-addnode` peer or missing services, and
+  early in a pass for a recent try or a bad port** (closes #1224), as in Core;
+  a DNS seed's answer carries Core's `SeedsServiceFlags` (closes #1236).
+
+### An outbound peer with too little work is dropped in IBD, as in Core
+
+- **During initial block download, a peer this node drew whose headers chain
+  has less than the minimum chain work is disconnected, after a batch this
+  node already had** (closes #1230).
+
+### A malformed `bitcoin.conf` line is refused in Core's words
+
+- **`parse error on line N`, and `conf=` and a forbidden negation as
+  `bitcoind` words them** (closes #1267), with no path; a line ends at a
+  newline alone, as Core counts it.
+
+### `-bantime`, as in Core
+
+- **A `setban` ban that names no length lasts `-bantime` seconds** (closes
+  #1219), 86400 by default, as `bitcoind` has it.
+
+### A block nobody asked for is stored only where Core's `AcceptBlock` would
+
+- **An unrequested block with less work than the tip, more than
+  `MIN_BLOCKS_TO_KEEP` above it, or below the minimum chain work is dropped
+  unstored, and its peer is not punished** (closes #1247).
+
+### A peer's announced transactions are asked for as Core asks for them
+
+- **At most `MAX_PEER_TX_ANNOUNCEMENTS` tracked per peer, in `getdata`s of at
+  most `MAX_GETDATA_SZ` items, so no announcement can make the request raise
+  and stop the node** (closes #1243).
+
+### An obsolete header version is refused `bad-version`
+
+- **A header whose version BIP34, BIP66 or BIP65 made obsolete is refused
+  `bad-version` from that BIP's height, and its sender discouraged, as in
+  Core** (closes #1262).
+
+### A `history.log` line carries its level as `debug.log` does
+
+- **A warning is marked `[warning]` and an error `[error]`** (closes #1280),
+  nothing for info, and `[debug]` for a debug line, where Core's carries its
+  category instead.
+
+### Each chain asks Core's DNS seeds
+
+- **Every chain's seed list is Core v31.1's `vSeeds`, trailing dot included**
+  (closes #1303), where mainnet asked two seeds Core dropped and signet an IP
+  address; regtest names Core's `dummySeed.invalid.`.
+
+### A dial pass no longer serializes every address it could draw
+
+- **`address_sampler` compares endpoints by field, and `get_active_addresses`
+  reindexes only where it pruned a row** (closes #1217, closes #1283), where
+  each pass serialized every answered row and every dialable gossiped one.
+
+### A gossip adds services to an address, and a dialled peer's own replace them
+
+- **`add_addresses` ORs gossiped services into both rows of an endpoint, and
+  an outbound peer's `version` overwrites them** (closes #1276), as Core's
+  `AddSingle` and `SetServices` do, where a gossip replaced a known row's.
+
+### `testmempoolaccept` names a `rawtx` that is not a string, as Core
+
+- **`-3` "JSON value of type number is not of expected type string", before
+  any entry is validated** (closes #1253); a script shorter than its declared
+  length is an invalid serialization.
+
+### A `history.log` line is stamped as `debug.log` stamps it
+
+- **The time is UTC ISO 8601 to the second, then one space** (closes #1297),
+  where it was local time with milliseconds and ` - `.
+
+### The suite's ports come from the range Core's tests use
+
+- **`get_random_port` hands each xdist worker, and each of the first as many
+  replacements, ports of its own from 11000 to 25999, as Core's tests do**,
+  not a port a bind to 0 picked, which anything could take first (closes #1340).
+
+### A body its header does not commit to leaves the header valid, as in Core
+
+- **A mutated body, Core's `IsBlockMutated`, is refused before its header is
+  read, and a failing block is marked invalid only where Core marks it, over
+  the weight, on the wire and in `submitblock`** (closes #1242, closes #1333).
+
+### The P2P listener's sockets are kept before it says it is listening
+
+- **`_bind` records them ahead of setting `listening`** (closes #1325), so
+  a thread woken by it no longer reads an empty list.
+
+### Every dial records its try, as Core's `Attempt` does
+
+- **A `-connect` or `-addnode` dial counts as a recent try too, for an address
+  a table holds** (closes #1277); as in Core, a restart forgets every try.
+
+### `testmempoolaccept` refuses the call for a `rawtx` that does not decode
+
+- **`-22` for the first one, its message naming the `rawtx`, and `-8` for an
+  array not of 1 to 25** (closes #1329), as `bitcoind` answers both.
+
+### A `[section]` naming no chain is warned about as `bitcoind` warns
+
+- **Stderr names each unrecognised section with its file and line** (closes
+  #1271), in Core's words and before the refusals that follow it.
+
+### A failed RPC start leaves no chainstate and no address table behind
+
+- **The stores open once the RPC listener is up** (closes #1279), so a
+  refused start leaves `.lock`, `blocks/` and the log and no store,
+  `bitcoind` opening its stores only at its steps 6 and 7.
+
+### `REVIEWING.md` lets a filed issue carry its fix
+
+- **An issue filed from a review may say the fix where one is known**,
+  the filing bar standing as it was (issue btclib-org/.github#1378).
+
+### Two outbound peers are block-relay-only, as in Core
+
+- **Past eight full-relay outbound peers, two more are dialled that relay
+  blocks alone** (closes #1095), as `CConnman::ThreadOpenConnections` opens
+  `BLOCK_RELAY`, and a third on its five-minute timer once the tip is recent.
+
+### Feelers test a gossiped address, as in Core
+
+- **Every two minutes on average a short-lived connection is dialled to a
+  gossiped address not in the answered table** (closes #1096), as Core's
+  `FEELER`: asked for addresses, recorded as answered, then dropped.
+
+### Two block-relay-only peers are kept across a restart, as in Core
+
+- **The block-relay-only peers held at shutdown are written to `anchors.dat`
+  and dialled first at the next start** (closes #1097), two at most, in the
+  file format bitcoind v31.1.0 reads and writes.
+
+### An extra outbound peer for a stale tip or an unreached network, as in Core
+
+- **One more full-relay peer is dialled for a stale tip, and one on a
+  network none of the eight is on** (closes #1100), each followed by the
+  eviction of a full-relay peer past the target by `EvictExtraOutboundPeers`.
 
 ### An inbound or manual peer is kept without `NODE_WITNESS`, as in Core
 

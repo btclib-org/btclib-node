@@ -4,10 +4,15 @@
 
 """`cli.py`: argument parsing, `bitcoin.conf` reading, and `main`'s dispatch."""
 
+import functools
+import os
 import re
 import runpy
+import stat
+import sys
+from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -16,41 +21,64 @@ from btclib_node.chains import Main, RegTest
 from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, Config
 from btclib_node.constants import MIN_PRUNE_TARGET_MIB
 from btclib_node.rpc.auth import COOKIE_FILE, RpcAuthEntry, password_hmac
-from tests import RPCAUTH, cookie_path, get_random_port, wait_until_listening
+from tests import (
+    RPCAUTH,
+    cookie_path,
+    get_random_port,
+    held_by_another_process,
+    lock_from_another_process,
+    wait_until_listening,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Sequence
+
+
+@pytest.fixture(autouse=True)
+def caller_umask() -> Iterator[None]:
+    """Give back, after each test, the umask `cli.main` makes owner-only.
+
+    The umask is the process's, so a test calling `main` would otherwise
+    leave it on every test after it in the same worker.
+    """
+    umask = os.umask(0o022)
+    os.umask(umask)
+    yield
+    os.umask(umask)
 
 
 def test_parse_conf_text_reads_a_key_value_pair_in_the_default_section() -> None:
     """A bare `key=value` line lands in the `""` (default) section."""
-    assert cli._parse_conf_text("port=9000\n", "conf") == {"": {"port": ["9000"]}}
+    assert cli._parse_conf_text("port=9000\n") == {"": {"port": ["9000"]}}
 
 
 def test_parse_conf_text_reads_a_section() -> None:
     """A `[section]` line switches which section later lines belong to."""
-    tree = cli._parse_conf_text("[regtest]\nport=9000\n", "conf")
+    tree = cli._parse_conf_text("[regtest]\nport=9000\n")
     assert tree == {"regtest": {"port": ["9000"]}}
 
 
 def test_parse_conf_text_reads_a_section_prefix_in_the_key() -> None:
     """`regtest.port=` in the default section is `port=` in `[regtest]`."""
-    tree = cli._parse_conf_text("regtest.port=9000\n", "conf")
+    tree = cli._parse_conf_text("regtest.port=9000\n")
     assert tree == {"regtest": {"port": ["9000"]}}
 
 
 def test_parse_conf_text_strips_a_trailing_comment() -> None:
     """`#` starts a comment that runs to the end of the line."""
-    tree = cli._parse_conf_text("port=9000 # the p2p port\n", "conf")
+    tree = cli._parse_conf_text("port=9000 # the p2p port\n")
     assert tree == {"": {"port": ["9000"]}}
 
 
 def test_parse_conf_text_skips_blank_and_comment_only_lines() -> None:
     """A blank line and a comment-only line contribute nothing."""
-    tree = cli._parse_conf_text("\n# a comment\n   \nport=9000\n", "conf")
+    tree = cli._parse_conf_text("\n# a comment\n   \nport=9000\n")
     assert tree == {"": {"port": ["9000"]}}
 
 
 def test_parse_conf_text_collects_repeated_keys_in_order() -> None:
     """Every occurrence of one key is kept, in the order it was read."""
-    tree = cli._parse_conf_text("addnode=1.2.3.4\naddnode=5.6.7.8\n", "conf")
+    tree = cli._parse_conf_text("addnode=1.2.3.4\naddnode=5.6.7.8\n")
     assert tree[""]["addnode"] == ["1.2.3.4", "5.6.7.8"]
 
 
@@ -62,45 +90,107 @@ def test_parse_conf_text_reads_a_no_prefix_as_a_negation(
     text: str, *, value: bool
 ) -> None:
     """`no<key>` is `<key>` negated, `False`; a double negative is `True`."""
-    assert cli._parse_conf_text(text, "conf") == {"": {"listen": [value]}}
+    assert cli._parse_conf_text(text) == {"": {"listen": [value]}}
 
 
-def test_parse_conf_text_rejects_a_leading_dash() -> None:
-    """A line starting with `-` is refused: no leading `-` in a file."""
-    with pytest.raises(ValueError, match="leading -"):
-        cli._parse_conf_text("-port=9000\n", "conf")
+# `GetConfigOptions`, `IsConfSupported` and `InterpretValue`'s words
+# (`src/common/config.cpp`, `src/common/args.cpp`, at
+# bitcoin/bitcoin@9be056a8a7), each measured on `bitcoind` v31.1.0 with
+# the line below `regtest=1`, which is what numbers it 2
+@pytest.mark.parametrize(
+    ("line", "refusal"),
+    [
+        pytest.param("foo", "parse error on line 2: foo", id="no equals sign"),
+        pytest.param("  foo # c", "parse error on line 2: foo", id="trimmed"),
+        pytest.param("[regtest", "parse error on line 2: [regtest", id="half section"),
+        pytest.param(
+            "nofoo",
+            "parse error on line 2: nofoo, if you intended to specify a negated "
+            "option, use nofoo=1 instead",
+            id="bare negation",
+        ),
+        pytest.param(
+            "no",
+            "parse error on line 2: no, if you intended to specify a negated "
+            "option, use no=1 instead",
+            id="bare no",
+        ),
+        pytest.param(
+            "  -foo = 1 # c",
+            "parse error on line 2: -foo = 1, options in configuration file must "
+            "be specified without leading -",
+            id="leading dash",
+        ),
+        pytest.param(
+            "rpcpassword=a#b",
+            "parse error on line 2, using # in rpcpassword can be ambiguous and "
+            "should be avoided",
+            id="hash in rpcpassword",
+        ),
+        pytest.param(
+            "conf=x.conf",
+            "conf cannot be set in the configuration file; use includeconf= if "
+            "you want to include additional config files",
+            id="conf",
+        ),
+        pytest.param(
+            "noconf=1",
+            "conf cannot be set in the configuration file; use includeconf= if "
+            "you want to include additional config files",
+            id="negated conf",
+        ),
+        pytest.param(
+            "nodatadir=1",
+            "Negating of -datadir is meaningless and therefore forbidden",
+            id="negated datadir",
+        ),
+    ],
+)
+def test_parse_conf_text_refuses_a_line_in_core_s_words(
+    line: str, refusal: str
+) -> None:
+    """ISS 1267: Core's message, numbered as Core numbers it, naming no path."""
+    with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
+        cli._parse_conf_text(f"regtest=1\n{line}\n")
 
 
-def test_parse_conf_text_rejects_a_line_with_no_equals_sign() -> None:
-    """A line matching neither `[section]` nor `key=value` is refused."""
-    with pytest.raises(ValueError, match=r"not a key=value line: 'garbage'$"):
-        cli._parse_conf_text("garbage\n", "conf")
+def test_parse_conf_text_ends_a_line_at_a_newline_alone() -> None:
+    """ISS 1267: `std::getline`'s lines, so a form feed ends none.
+
+    Measured on `bitcoind` v31.1.0: `foo`, a form feed and `bar=1` on
+    line 2 are one line, and `bad` below it is refused as line 3.
+    """
+    with pytest.raises(ValueError, match=r"^parse error on line 3: bad$"):
+        cli._parse_conf_text("regtest=1\nfoo\fbar=1\nbad\n")
 
 
-def test_parse_conf_text_suggests_a_negation_for_a_bare_no_line() -> None:
-    """A bare `nolisten` line gets `GetConfigOptions`'s own hint."""
-    with pytest.raises(ValueError, match=r"use nolisten=1 instead$"):
-        cli._parse_conf_text("nolisten\n", "conf")
+@pytest.mark.parametrize(
+    ("content", "line"),
+    [
+        (b"regtest=1\rfoo\nbad\n", "line 2: bad"),
+        (b"regtest=1\r\nfoo\r\n", "line 2: foo"),
+        (b"regtest=1\n\rfoo\r\n", "line 2: foo"),
+    ],
+    ids=["lone CR", "CRLF", "CR opening a line"],
+)
+def test_read_conf_file_ends_a_line_at_a_newline_alone(
+    tmp_path: Path, content: bytes, line: str
+) -> None:
+    """ISS 1267: a lone carriage return ends no line, as `bitcoind` reads it.
 
-
-@pytest.mark.parametrize("text", ["conf=other.conf\n", "noconf=1\n"])
-def test_parse_conf_text_rejects_conf_inside_a_file(text: str) -> None:
-    """`conf=` cannot be set in a configuration file, negated or not."""
-    with pytest.raises(ValueError, match="conf cannot be set"):
-        cli._parse_conf_text(text, "conf")
-
-
-def test_parse_conf_text_refuses_a_negated_datadir() -> None:
-    """`nodatadir=1` is Core's forbidden negation, in a file too."""
-    with pytest.raises(ValueError, match=r"^conf:1: Negating of -datadir is "):
-        cli._parse_conf_text("nodatadir=1\n", "conf")
+    Each measured on `bitcoind` v31.1.0, which names the same line.
+    """
+    path = tmp_path / "bitcoin.conf"
+    path.write_bytes(content)
+    with pytest.raises(ValueError, match=f"^parse error on {line}$"):
+        cli._read_conf_file(path, required=True)
 
 
 def test_parse_conf_text_warns_about_an_unknown_key_with_its_section(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """An unknown key is warned about, as written, and dropped."""
-    assert cli._parse_conf_text("[regtest]\nwalletnotify=x\n", "conf") == {}
+    assert cli._parse_conf_text("[regtest]\nwalletnotify=x\n") == {}
     assert capsys.readouterr().err == (
         "warning: ignoring unknown configuration value regtest.walletnotify\n"
     )
@@ -116,7 +206,7 @@ def test_parse_conf_text_warns_specifically_about_datadir(
     it gets says why it is never read from a file rather than implying
     it is a typo.
     """
-    assert cli._parse_conf_text("datadir=/x\n", "conf") == {}
+    assert cli._parse_conf_text("datadir=/x\n") == {}
     err = capsys.readouterr().err
     assert "cannot be set in a configuration file" in err
     assert "unknown configuration value" not in err
@@ -226,10 +316,16 @@ def test_load_conf_tree_reads_no_include_a_negation_discards(
 
 
 def test_load_conf_tree_a_missing_included_file_is_fatal(tmp_path: Path) -> None:
-    """An `includeconf` naming a file that does not exist is refused."""
+    """An `includeconf` naming a file that does not exist is refused.
+
+    In `ReadConfigFiles`'s words, naming the value as written, as
+    `bitcoind` v31.1.0 names `inc/../nosuch.conf`.
+    """
     conf = tmp_path / "bitcoin.conf"
     conf.write_text("includeconf=missing.conf\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="could not be opened"):
+    with pytest.raises(
+        ValueError, match=r"^Failed to include configuration file missing\.conf$"
+    ):
         _load(conf)
 
 
@@ -277,6 +373,31 @@ def _build(tmp_path: Path, *argv: str, conf: str = "") -> Config:
     """Build a `Config` from `argv`, `conf` in `tmp_path`'s `bitcoin.conf`."""
     (tmp_path / "bitcoin.conf").write_text(conf, encoding="utf-8")
     return cli.build_config([f"-datadir={tmp_path}", *argv])
+
+
+@pytest.mark.parametrize("port", ["+80", " 80", "8_0", "\u0668\u0660"])
+def test_build_config_an_rpcbind_port_int_would_read_is_refused(
+    tmp_path: Path, port: str
+) -> None:
+    """`CheckHostPortOptions`' refusal, as `bitcoind` v31.1.0 words each."""
+    value = f"127.0.0.1:{port}"
+    expected = re.escape(f"Invalid port specified in -rpcbind: '{value}'")
+    with pytest.raises(ValueError, match=f"^{expected}$"):
+        _build(tmp_path, "-regtest", f"-rpcbind={value}")
+
+
+@pytest.mark.parametrize("option", ["connect", "addnode"])
+def test_build_config_a_peer_s_port_int_would_read_is_refused(
+    tmp_path: Path, option: str
+) -> None:
+    """Refused as `0x50` already is, where `int` would dial port 80.
+
+    `bitcoind` v31.1.0 starts with `-connect` or `-addnode` at
+    `127.0.0.1:+<port>` and never connects, as it does for `0x50`:
+    btclib-org/btclib-node#1264's refusal of what Core would look up.
+    """
+    with pytest.raises(ValueError, match="invalid port"):
+        _build(tmp_path, "-regtest", f"-{option}=127.0.0.1:+80")
 
 
 @pytest.mark.parametrize(
@@ -367,6 +488,26 @@ def test_build_config_refuses_an_argument_that_is_not_an_option(
     )
     with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
         _build(tmp_path, *argv)
+
+
+@pytest.mark.parametrize(
+    ("argv", "conf", "ban_time"),
+    [([], "", 86400), (["-bantime=100"], "", 100), ([], "bantime=5\n", 5)],
+    ids=["Core's default", "command line", "file"],
+)
+def test_build_config_reads_bantime(
+    tmp_path: Path, argv: list[str], conf: str, ban_time: int
+) -> None:
+    """ISS 1219: `-bantime` is a `setban` ban's default length, as in Core."""
+    assert _build(tmp_path, *argv, conf=conf).ban_time == ban_time
+
+
+def test_help_names_bantime() -> None:
+    """ISS 1219: in Core's words, among the connection options."""
+    assert (
+        "Default duration (in seconds) of manually configured bans (default: 86400)"
+        in " ".join(cli._help_message(show_debug=False).split())
+    )
 
 
 def test_build_config_reads_a_double_dash_option(tmp_path: Path) -> None:
@@ -686,8 +827,41 @@ def test_build_config_server_off_reads_no_rpc_option(
     config = _build(tmp_path, "-server=0", argument)
     assert config.rpc_auth == ()
     assert config.rpc_cookie_perms is None
-    with pytest.raises(ValueError, match="rpc"):
-        _build(tmp_path, argument)
+    assert not config.rpc_auth_invalid
+    assert config.rpc_cookie_perms_error is None
+    config = _build(tmp_path, argument)
+    assert config.rpc_auth_invalid or config.rpc_cookie_perms_error is not None
+
+
+@pytest.mark.parametrize(
+    "argument", ["-rpcauth=bogus", "-rpccookieperms=bogus"], ids=["rpcauth", "perms"]
+)
+def test_main_a_refused_rpc_credential_prints_core_s_one_line(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    argument: str,
+) -> None:
+    """Stderr holds "Unable to start HTTP server" alone, as `bitcoind` has it.
+
+    `bitcoind` v31.1.0 with either value, and with both, prints this line
+    alone and exits 1; the value's own line is in its log.
+    """
+    monkeypatch.setattr(cli, "install_signal_handlers", lambda node: None)
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(
+            [
+                f"-datadir={tmp_path}",
+                "-regtest",
+                "-listen=0",
+                f"-rpcport={get_random_port()}",
+                argument,
+            ]
+        )
+    assert excinfo.value.code == 1
+    assert capsys.readouterr().err == (
+        "Error: Unable to start HTTP server. See debug log for details.\n"
+    )
 
 
 def test_build_config_noblocksdir_is_the_working_directory(
@@ -839,13 +1013,46 @@ def test_build_config_rpcauth_from_the_command_line_and_the_file(
     assert config.rpc_auth == (RpcAuthEntry.parse(RPCAUTH), RpcAuthEntry.parse(other))
 
 
-def test_build_config_a_malformed_rpcauth_in_the_file_raises(tmp_path: Path) -> None:
-    """A malformed `rpcauth=` stops the node starting, as it stops Core."""
+@pytest.mark.parametrize(
+    ("argv", "conf", "users"),
+    [
+        (["-rpcauth={}", "-norpcauth"], "", []),
+        (["-norpcauth", "-rpcauth={}"], "", ["pytest"]),
+        (["-norpcauth"], "rpcauth={}\n", []),
+        (["-norpcauth", "-rpcauth=other:aa$bb"], "rpcauth={}\n", ["other", "pytest"]),
+    ],
+    ids=[
+        "after a value",
+        "before a value",
+        "over the file",
+        "over the file, a value after it",
+    ],
+)
+def test_build_config_norpcauth_is_get_settings_list(
+    tmp_path: Path, argv: list[str], conf: str, users: list[str]
+) -> None:
+    """`-norpcauth` discards every `-rpcauth` before it, and the file's.
+
+    `gArgs.GetArgs("-rpcauth")` (`src/httprpc.cpp`, at
+    bitcoin/bitcoin@9be056a8a7) is `GetSettingsList`'s: a value after the
+    negation still brings the file's back. `bitcoind` v31.1.0 answers a
+    request with the credential each case leaves out 401, and with one it
+    keeps 200.
+    """
+    (tmp_path / "bitcoin.conf").write_text(
+        "regtest=1\n" + conf.format(RPCAUTH), encoding="utf-8"
+    )
+    argv = [arg.format(RPCAUTH) for arg in argv]
+    config = cli.build_config([f"-datadir={tmp_path}", *argv])
+    assert [entry.user.decode() for entry in config.rpc_auth] == users
+
+
+def test_build_config_a_malformed_rpcauth_in_the_file_is_kept(tmp_path: Path) -> None:
+    """A malformed `rpcauth=` is left for the RPC listener to refuse."""
     (tmp_path / "bitcoin.conf").write_text(
         "regtest=1\nrpcauth=pytest:no-dollar-sign\n", encoding="utf-8"
     )
-    with pytest.raises(ValueError, match="Invalid -rpcauth argument"):
-        cli.build_config([f"-datadir={tmp_path}"])
+    assert cli.build_config([f"-datadir={tmp_path}"]).rpc_auth_invalid
 
 
 def test_build_config_datadir_a_file_raises(tmp_path: Path) -> None:
@@ -920,6 +1127,467 @@ def test_build_config_conf_explicit_and_missing_raises(tmp_path: Path) -> None:
         cli.build_config([f"-datadir={tmp_path}", "-conf=nope.conf"])
 
 
+def _ignored_conf(datadir: str, config: str, conf: str) -> str:
+    """Return `InitConfig`'s refusal of an ignored `bitcoin.conf`, as measured.
+
+    `bitcoind` v31.1.0 printed it after `Error: `, the paths absolute.
+    """
+    return (
+        f'Data directory "{datadir}" contains a "bitcoin.conf" file which is '
+        f'ignored, because a different configuration file "{config}" from command '
+        f'line argument "-conf={conf}" is being used instead. Possible ways to '
+        "address this would be to:\n"
+        f'- Delete or rename the "bitcoin.conf" file in data directory "{datadir}".\n'
+        "- Change datadir= or conf= options to specify one configuration file, not "
+        "two, and use includeconf= to include any other configuration files.\n"
+        "- Set allowignoredconf=1 option to treat this condition as a warning, not "
+        "an error."
+    )
+
+
+@pytest.mark.parametrize(
+    ("datadir", "conf", "shown_datadir", "shown_config"),
+    [
+        ("{d}", "other.conf", "{d}", "{d}{s}other.conf"),
+        ("{d}/", "./sub/../other.conf", "{d}", "{d}{s}other.conf"),
+        ("{d}", "{d}/other.conf", "{d}", "{d}{s}other.conf"),
+        ("d", "other.conf", "{d}", "{d}{s}other.conf"),
+        ("d", "../d/other.conf", "{d}", "{d}{s}..{s}d{s}other.conf"),
+    ],
+    ids=["relative", "normalised", "absolute", "relative -datadir", "up and back"],
+)
+def test_build_config_an_ignored_bitcoin_conf_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    datadir: str,
+    conf: str,
+    shown_datadir: str,
+    shown_config: str,
+) -> None:
+    """A `bitcoin.conf` `-conf` leaves unread stops the node, as it stops Core.
+
+    Each case is one `bitcoind` v31.1.0 was run against, from the same
+    working directory, with `-help`: Core refuses ahead of the help.
+    """
+    data = tmp_path / "d"
+    (data / "sub").mkdir(parents=True)
+    (data / "bitcoin.conf").write_text("regtest=1\n", encoding="utf-8")
+    (data / "other.conf").write_text("regtest=1\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    d = str(data)
+    argv = [f"-datadir={datadir.format(d=d)}", f"-conf={conf.format(d=d)}", "-h"]
+    expected = _ignored_conf(
+        shown_datadir.format(d=d), shown_config.format(d=d, s=os.sep), conf.format(d=d)
+    )
+    with pytest.raises(ValueError, match=r"^Data directory") as error:
+        cli.build_config(argv)
+    assert str(error.value) == expected
+
+
+def test_build_config_an_ignored_bitcoin_conf_keeps_a_dot_datadir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`-datadir=.` is shown as `fs::absolute` shows it, the `.` kept."""
+    (tmp_path / "bitcoin.conf").write_text("", encoding="utf-8")
+    (tmp_path / "other.conf").write_text("", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ValueError, match=r"^Data directory") as error:
+        cli.build_config(["-datadir=.", "-conf=other.conf"])
+    dot = os.path.join(str(tmp_path), ".")  # noqa: PTH118
+    other_conf = os.path.join(dot, "other.conf")  # noqa: PTH118
+    assert str(error.value) == _ignored_conf(dot, other_conf, "other.conf")
+
+
+def test_build_config_an_ignored_bitcoin_conf_in_the_default_datadir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no `-datadir`, the default data directory is the one checked."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    data = tmp_path / ".btclib"
+    data.mkdir()
+    (data / "bitcoin.conf").write_text("", encoding="utf-8")
+    (data / "other.conf").write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"^Data directory") as error:
+        cli.build_config(["-conf=other.conf"])
+    expected = _ignored_conf(str(data), str(data / "other.conf"), "other.conf")
+    assert str(error.value) == expected
+
+
+@pytest.mark.skipif(os.name == "nt", reason='`"` names no Windows file')
+def test_build_config_an_ignored_bitcoin_conf_is_quoted_as_core_quotes(
+    tmp_path: Path,
+) -> None:
+    """A `"` or a `&` in a path is escaped with `&`, as `fs::quoted` does."""
+    (tmp_path / "bitcoin.conf").write_text("", encoding="utf-8")
+    (tmp_path / 'o"t&.conf').write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"^Data directory") as error:
+        cli.build_config([f"-datadir={tmp_path}", '-conf=o"t&.conf'])
+    assert f'file "{tmp_path}/o&"t&&.conf" from' in str(error.value)
+    assert 'argument "-conf=o&"t&&.conf" is' in str(error.value)
+
+
+def test_build_config_an_ignored_bitcoin_conf_directory_is_refused(
+    tmp_path: Path,
+) -> None:
+    """`fs::exists` is true of a directory, and no file is equivalent to it."""
+    (tmp_path / "bitcoin.conf").mkdir()
+    (tmp_path / "other.conf").write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"^Data directory"):
+        cli.build_config([f"-datadir={tmp_path}", "-conf=other.conf"])
+
+
+def test_build_config_an_ignored_bitcoin_conf_comes_before_the_token(
+    tmp_path: Path,
+) -> None:
+    """`InitConfig` runs inside `ParseArgs`, ahead of its "unexpected token"."""
+    (tmp_path / "bitcoin.conf").write_text("", encoding="utf-8")
+    (tmp_path / "other.conf").write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"^Data directory"):
+        cli.build_config([f"-datadir={tmp_path}", "-conf=other.conf", "token"])
+
+
+@pytest.mark.parametrize(
+    ("argv", "other"),
+    [
+        (["-allowignoredconf"], ""),
+        (["-allowignoredconf=1"], ""),
+        ([], "allowignoredconf=1\n"),
+        ([], "[regtest]\nallowignoredconf=1\n"),
+    ],
+    ids=["bare", "=1", "in the file", "in the chain's section"],
+)
+def test_build_config_allowignoredconf_warns_instead(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    other: str,
+) -> None:
+    """`-allowignoredconf` makes the refusal a warning, `-conf`'s file read."""
+    (tmp_path / "bitcoin.conf").write_text("", encoding="utf-8")
+    (tmp_path / "other.conf").write_text(
+        "regtest=1\n" + other + "[regtest]\nport=9123\n", encoding="utf-8"
+    )
+    config = cli.build_config([f"-datadir={tmp_path}", "-conf=other.conf", *argv])
+    assert config.p2p_port == 9123
+    other_conf = str(tmp_path / "other.conf")
+    expected = _ignored_conf(str(tmp_path), other_conf, "other.conf")
+    warning = expected.rpartition("\n")[0]
+    assert capsys.readouterr().err == f"warning: {warning}\n"
+
+
+@pytest.mark.parametrize("argv", [["-allowignoredconf=0"], ["-noallowignoredconf"]])
+def test_build_config_allowignoredconf_false_still_refuses(
+    tmp_path: Path, argv: list[str]
+) -> None:
+    """`-allowignoredconf=0` and `-noallowignoredconf` refuse, as in Core."""
+    (tmp_path / "bitcoin.conf").write_text("", encoding="utf-8")
+    (tmp_path / "other.conf").write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"^Data directory"):
+        cli.build_config([f"-datadir={tmp_path}", "-conf=other.conf", *argv])
+
+
+@pytest.mark.parametrize(
+    ("argv", "link"),
+    [
+        (["-conf=./bitcoin.conf"], False),
+        (["-conf={d}/bitcoin.conf"], False),
+        (["-conf="], False),
+        (["-conf=other.conf"], True),
+        (["-noconf", "-regtest"], False),
+    ],
+    ids=["./bitcoin.conf", "absolute", "empty", "a hard link to it", "-noconf"],
+)
+def test_build_config_bitcoin_conf_itself_is_not_ignored(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], argv: list[str], *, link: bool
+) -> None:
+    """The data directory's own file, by any name, is the file in use."""
+    (tmp_path / "bitcoin.conf").write_text("regtest=1\n", encoding="utf-8")
+    if link:
+        (tmp_path / "other.conf").hardlink_to(tmp_path / "bitcoin.conf")
+    argv = [arg.format(d=tmp_path) for arg in argv]
+    config = cli.build_config([f"-datadir={tmp_path}", *argv])
+    assert config.chain.name == "regtest"
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a symbolic link needs a privilege")
+@pytest.mark.parametrize(
+    ("argv", "files", "refused"),
+    [
+        (["-datadir={x}/a/sym/.."], ["real/bitcoin.conf"], False),
+        (["-datadir={x}/a/sym/.."], ["real/bitcoin.conf", "a/bitcoin.conf"], False),
+        (
+            ["-datadir={x}/D", "-conf=sym/../other.conf"],
+            ["D/bitcoin.conf", "real/other.conf"],
+            True,
+        ),
+    ],
+    ids=["datadir", "datadir, a bitcoin.conf beside the link", "conf"],
+)
+def test_build_config_an_ignored_bitcoin_conf_through_a_symbolic_link(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    files: list[str],
+    *,
+    refused: bool,
+) -> None:
+    """The file compared with `bitcoin.conf` is the file that was read.
+
+    `a/sym` and `D/sym` link to `real/inner`, so `sym/..` is `real` to the
+    operating system and `a` or `D` to Core's lexical normalisation.
+    `bitcoind` v31.1.0 starts on the first two, and refuses the third
+    because `D/other.conf` could not be opened, its message measured.
+    """
+    for directory in ("real/inner", "a", "D"):
+        (tmp_path / directory).mkdir(parents=True)
+    for link in ("a/sym", "D/sym"):
+        (tmp_path / link).symlink_to(tmp_path / "real" / "inner")
+    for name in files:
+        (tmp_path / name).write_text("regtest=1\n", encoding="utf-8")
+    argv = [arg.format(x=tmp_path) for arg in argv]
+    if refused:
+        with pytest.raises(ValueError, match=r"^Error reading") as error:
+            cli.build_config([*argv, "-h"])
+        assert str(error.value) == (
+            "Error reading configuration file: specified config file "
+            f'"{tmp_path / "D" / "other.conf"}" could not be opened.'
+        )
+        return
+    with pytest.raises(SystemExit) as stop:
+        cli.build_config([*argv, "-h"])
+    assert stop.value.code == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_build_config_an_ignored_bitcoin_conf_os_error_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An `OSError` comparing the files is refused, as Core's `catch` does."""
+
+    def refuse(*_: object) -> bool:
+        raise PermissionError(13, "Permission denied")
+
+    (tmp_path / "bitcoin.conf").write_text("", encoding="utf-8")
+    (tmp_path / "other.conf").write_text("", encoding="utf-8")
+    monkeypatch.setattr(Path, "samefile", refuse)
+    with pytest.raises(ValueError, match=r"^\[Errno 13\] Permission denied$"):
+        cli.build_config([f"-datadir={tmp_path}", "-conf=other.conf"])
+
+
+def test_build_config_an_absolute_datadir_needs_no_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An absolute `-datadir` asks for no working directory: `fs::absolute`."""
+    (tmp_path / "bitcoin.conf").write_text("", encoding="utf-8")
+    (tmp_path / "other.conf").write_text("", encoding="utf-8")
+    # records a call and answers one, as a working directory
+    calls: dict[str, str] = {}
+    getcwd = functools.partial(calls.setdefault, "getcwd", str(tmp_path))
+    monkeypatch.setattr(os, "getcwd", getcwd)
+    with pytest.raises(ValueError, match=r"^Data directory"):
+        cli.build_config([f"-datadir={tmp_path}", "-conf=other.conf"])
+    assert calls == {}
+
+
+_SYMLINK = pytest.mark.skipif(
+    os.name == "nt", reason="a symbolic link needs a privilege"
+)
+
+
+@pytest.fixture
+def paths(tmp_path: Path) -> Path:
+    """`d` with a regtest `bitcoin.conf`, `b`, and `sym` to `real/inner`."""
+    for directory in ("d/cdir", "d/incd", "b", "real/inner"):
+        (tmp_path / directory).mkdir(parents=True)
+    (tmp_path / "d" / "bitcoin.conf").write_text("regtest=1\n", encoding="utf-8")
+    # refused on Windows without the privilege, where `_SYMLINK` skips
+    # every case that reads it
+    with suppress(OSError):
+        (tmp_path / "sym").symlink_to(tmp_path / "real" / "inner")
+    return tmp_path
+
+
+# `GetPathArg`, measured on `bitcoind` v31.1.0 over the same layout: each
+# `..` is taken off the path before the file system is asked, so neither a
+# missing directory nor a symbolic link before it changes where it lands
+@pytest.mark.parametrize(
+    "datadir",
+    ["{x}/nosuch/../d", "{x}/d/", pytest.param("{x}/sym/../d", marks=_SYMLINK)],
+)
+def test_build_config_datadir_is_lexically_normal(paths: Path, datadir: str) -> None:
+    """`-datadir` is the directory it names once its `..` are taken off."""
+    config = cli.build_config([f"-datadir={datadir.format(x=paths)}"])
+    assert config.chain.name == "regtest"
+    assert config.data_dir == paths / "d" / "regtest"
+
+
+@pytest.mark.parametrize("datadir", ["{x}/nosuch/", "{x}/d/../nosuch"])
+def test_build_config_a_missing_datadir_is_named_as_given(
+    paths: Path, datadir: str
+) -> None:
+    """`InitConfig`'s refusal names `-datadir` as written, not normalised."""
+    datadir = datadir.format(x=paths)
+    expected = re.escape(f'Specified data directory "{datadir}" does not exist.')
+    with pytest.raises(ValueError, match=f"^{expected}$"):
+        cli.build_config([f"-datadir={datadir}"])
+
+
+@pytest.mark.parametrize(
+    ("blocksdir", "under"),
+    [("{x}/b/nosuch/..", "b"), pytest.param("{x}/sym/..", "", marks=_SYMLINK)],
+)
+def test_build_config_blocksdir_is_lexically_normal(
+    paths: Path, blocksdir: str, under: str
+) -> None:
+    """`-blocksdir` too: `bitcoind` put `blocks` under `b` and beside `sym`."""
+    argv = [f"-datadir={paths / 'd'}", f"-blocksdir={blocksdir.format(x=paths)}"]
+    config = cli.build_config(argv)
+    assert config.blocks_dir == paths / under / "regtest"
+    before = cli._before_lock(argv)
+    assert before.directories.blocks_dir == config.blocks_dir
+
+
+@pytest.mark.parametrize("blocksdir", ["{x}/nosuch/x/..", "{x}/b/nosuch/"])
+def test_build_config_a_missing_blocksdir_is_named_as_given(
+    paths: Path, blocksdir: str
+) -> None:
+    """`bitcoind` v31.1.0 names `-blocksdir` as written, `..` and all."""
+    blocksdir = blocksdir.format(x=paths)
+    expected = re.escape(f'Specified blocks directory "{blocksdir}" does not exist.')
+    with pytest.raises(ValueError, match=f"^{expected}$"):
+        cli.build_config([f"-datadir={paths / 'd'}", f"-blocksdir={blocksdir}"])
+
+
+@pytest.mark.parametrize(
+    ("argv", "conf", "refusal"),
+    [
+        (["-conf=nosuch/../cdir"], "", 'Config file "{d}{s}cdir" is a directory.'),
+        (
+            ["-conf=missing.conf"],
+            "",
+            'specified config file "{d}{s}missing.conf" could not be opened.',
+        ),
+        (
+            ["-conf=j.conf"],
+            "regtest=1\nincludeconf=incd\n",
+            'Included config file "{d}{s}incd" is a directory.',
+        ),
+        (
+            ["-conf=j.conf"],
+            "regtest=1\nincludeconf=inc/../nosuch.conf\n",
+            "Failed to include configuration file inc/../nosuch.conf",
+        ),
+    ],
+    ids=["a directory", "missing", "an included directory", "an included missing"],
+)
+def test_build_config_a_configuration_file_refusal_is_core_s(
+    paths: Path, argv: list[str], conf: str, refusal: str
+) -> None:
+    """`ReadConfigFiles`'s words after `InitConfig`'s prefix, each measured."""
+    data = paths / "d"
+    (data / "j.conf").write_text(conf, encoding="utf-8")
+    refusal = "Error reading configuration file: " + refusal.format(d=data, s=os.sep)
+    with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
+        cli.build_config([f"-datadir={data}", *argv])
+
+
+def test_build_config_a_relative_datadir_is_refused_by_its_full_path(
+    paths: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`GetDataDir`'s `fs::absolute`: the working directory joins the path.
+
+    Measured on `bitcoind` v31.1.0, which names the file in full.
+    """
+    monkeypatch.chdir(paths)
+    missing = Path.cwd() / "d" / "missing.conf"
+    refusal = (
+        f'Error reading configuration file: specified config file "{missing}" '
+        "could not be opened."
+    )
+    with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
+        cli.build_config(["-datadir=d", "-conf=missing.conf"])
+
+
+_UNREADABLE = pytest.mark.skipif(
+    os.name == "nt", reason="mode 000 does not stop a read on Windows"
+)
+
+
+@_UNREADABLE
+@pytest.mark.parametrize(
+    ("argv", "conf", "refusal"),
+    [
+        (
+            ["-conf=other.conf"],
+            "other.conf",
+            'specified config file "{d}/other.conf" could not be opened.',
+        ),
+        (
+            ["-conf=j.conf"],
+            "inc.conf",
+            "Failed to include configuration file inc.conf",
+        ),
+    ],
+    ids=["-conf", "an include"],
+)
+def test_build_config_an_unreadable_configuration_file_is_refused_as_core_s(
+    paths: Path, argv: list[str], conf: str, refusal: str
+) -> None:
+    """Core's `!stream.good()`: a file it may not read is one it cannot open.
+
+    Measured on `bitcoind` v31.1.0 with the file at mode 000.
+    """
+    data = paths / "d"
+    (data / "j.conf").write_text("regtest=1\nincludeconf=inc.conf\n", encoding="utf-8")
+    (data / "other.conf").write_text("regtest=1\n", encoding="utf-8")
+    (data / "inc.conf").write_text("port=1\n", encoding="utf-8")
+    (data / conf).chmod(0)
+    refusal = "Error reading configuration file: " + refusal.format(d=data)
+    with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
+        cli.build_config([f"-datadir={data}", *argv])
+
+
+@_UNREADABLE
+def test_build_config_an_unreadable_default_file_is_left_unread(tmp_path: Path) -> None:
+    """`bitcoind` v31.1.0 runs on mainnet past a `regtest=1` it cannot read."""
+    conf = tmp_path / "bitcoin.conf"
+    conf.write_text("regtest=1\n", encoding="utf-8")
+    conf.chmod(0)
+    assert cli.build_config([f"-datadir={tmp_path}"]).chain.name == "mainnet"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="`//` starts a UNC path on Windows")
+def test_build_config_names_a_leading_double_slash_as_one(paths: Path) -> None:
+    """`lexically_normal` collapses `//`, `bitcoind` naming "/<X>/d/..."."""
+    missing = paths / "d" / "missing.conf"
+    refusal = (
+        f'Error reading configuration file: specified config file "{missing}" '
+        "could not be opened."
+    )
+    with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
+        cli.build_config([f"-datadir=/{paths}/d", "-conf=missing.conf"])
+    with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
+        cli.build_config([f"-datadir={paths}/d", f"-conf=/{missing}"])
+
+
+@pytest.mark.skipif(os.name == "nt", reason="`//` starts a UNC path on Windows")
+def test_build_config_names_an_ignored_conf_s_double_slash_as_one(paths: Path) -> None:
+    """`bitcoind` v31.1.0 names "/<X>/d" for `-datadir=//<X>/d` here too."""
+    data = paths / "d"
+    (data / "other.conf").write_text("regtest=1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=f'^Data directory "{re.escape(str(data))}"'):
+        cli.build_config([f"-datadir=/{data}", "-conf=other.conf"])
+
+
+def test_build_config_conf_with_no_bitcoin_conf_beside_it(tmp_path: Path) -> None:
+    """With no `bitcoin.conf` in the data directory, `-conf` refuses nothing."""
+    (tmp_path / "other.conf").write_text("regtest=1\n", encoding="utf-8")
+    config = cli.build_config([f"-datadir={tmp_path}", "-conf=other.conf"])
+    assert config.chain.name == "regtest"
+
+
 def test_build_config_cli_port_overrides_the_file(tmp_path: Path) -> None:
     """`-port` on the command line wins over the file's own value."""
     (tmp_path / "bitcoin.conf").write_text("port=1111\n", encoding="utf-8")
@@ -927,44 +1595,56 @@ def test_build_config_cli_port_overrides_the_file(tmp_path: Path) -> None:
     assert config.p2p_port == 2222
 
 
-def test_build_config_rpcbind_sets_the_host() -> None:
-    """`-rpcbind=<addr>` sets `rpc_host`."""
-    config = cli.build_config(["-regtest", "-rpcbind=0.0.0.0"])
-    assert config.rpc_host == "0.0.0.0"  # noqa: S104
+@pytest.mark.parametrize(
+    "argv",
+    [
+        pytest.param(["-rpcbind=0.0.0.0"], id="every interface"),
+        pytest.param(["-rpcbind=127.0.0.1:9998"], id="a port of its own"),
+        pytest.param(["-rpcbind=127.0.0.2", "-rpcbind=[::1]:9997"], id="several"),
+    ],
+)
+def test_build_config_rpcbind_is_ignored_without_rpcallowip(argv: list[str]) -> None:
+    """ISS 1211: Core binds `-rpcbind` only beside `-rpcallowip`.
 
-
-def test_build_config_rpcbind_port_overrides_rpcport() -> None:
-    """`-rpcbind`'s own port, when given, wins over `-rpcport`."""
-    config = cli.build_config(["-regtest", "-rpcbind=127.0.0.1:9998", "-rpcport=9999"])
-    assert config.rpc_port == 9998
+    bitcoind v31.1.0 given each of these and no `-rpcallowip` listens on
+    loopback at `-rpcport`, and logs a warning; this node has no
+    `-rpcallowip`, so the listener stays on `127.0.0.1` at `-rpcport`,
+    the values kept for `RpcManager` to warn over.
+    """
+    config = cli.build_config(["-regtest", *argv, "-rpcport=9999"])
+    assert config.rpc_host == "127.0.0.1"
+    assert config.rpc_port == 9999
+    assert config.rpcbind == tuple(value.removeprefix("-rpcbind=") for value in argv)
 
 
 @pytest.mark.parametrize(
-    ("argv", "conf", "host"),
+    ("argv", "conf", "values"),
     [
-        (["-rpcbind=127.0.0.2"], "rpcbind=127.0.0.3\n", "127.0.0.2"),
-        ([], "rpcbind=127.0.0.3\nrpcbind=127.0.0.4\n", "127.0.0.3"),
-        (["-norpcbind"], "rpcbind=127.0.0.3\n", "127.0.0.1"),
-        (["-rpcbind=127.0.0.2", "-rpcbind=127.0.0.5"], "", "127.0.0.5"),
+        (["-rpcbind=127.0.0.2"], "rpcbind=127.0.0.3\n", ("127.0.0.2", "127.0.0.3")),
+        ([], "rpcbind=127.0.0.3\nrpcbind=127.0.0.4\n", ("127.0.0.3", "127.0.0.4")),
+        (["-norpcbind"], "rpcbind=127.0.0.3\n", ()),
     ],
-    ids=[
-        "the command line over the file",
-        "the file's first",
-        "negated",
-        "the command line's last",
-    ],
+    ids=["the command line then the file", "the file's every value", "negated"],
 )
-def test_build_config_rpcbind_is_read_as_one_value(
-    tmp_path: Path, argv: list[str], conf: str, host: str
+def test_build_config_rpcbind_is_read_as_a_list(
+    tmp_path: Path, argv: list[str], conf: str, values: tuple[str, ...]
 ) -> None:
-    """The one address bound: the command line's last, or the file's first."""
-    assert _build(tmp_path, *argv, conf=conf).rpc_host == host
+    """ISS 1211: Core's `GetArgs("-rpcbind")`, every value from every level."""
+    assert _build(tmp_path, *argv, conf=conf).rpcbind == values
 
 
-def test_build_config_rpcbind_without_a_port_leaves_rpcport_alone() -> None:
-    """`-rpcbind` naming no port of its own does not touch `-rpcport`."""
-    config = cli.build_config(["-regtest", "-rpcbind=127.0.0.1", "-rpcport=9999"])
-    assert config.rpc_port == 9999
+def test_build_config_every_rpcbind_value_is_checked() -> None:
+    """ISS 1211: `CheckHostPortOptions` checks every value, bound or not.
+
+    bitcoind v31.1.0 refuses `-rpcbind=1.2.3.4:0 -rpcbind=127.0.0.1` with
+    "Invalid port specified in -rpcbind: '1.2.3.4:0'", where only the
+    last value was read here.
+    """
+    argv = ["-regtest", "-rpcbind=1.2.3.4:0", "-rpcbind=127.0.0.1"]
+    with pytest.raises(
+        ValueError, match=re.escape("Invalid port specified in -rpcbind: '1.2.3.4:0'")
+    ):
+        cli.build_config(argv)
 
 
 def test_build_config_prune_nonzero_reaches_config_pruned() -> None:
@@ -1205,6 +1885,145 @@ def test_main_a_node_that_failed_to_start_exits_one_with_its_init_errors(
     )
 
 
+# Each row measured on `bitcoind` v31.1.0, a first instance running over
+# the data directory: the options Core refuses after `AppInitLockDirectories`
+# are answered with the lock, the others with their own refusal
+_AFTER_THE_LOCK = [
+    ["-port=0"],
+    ["-rpcport=0"],
+    ["-port=abc"],
+    ["-rpcbind=1.2.3.4:0"],
+    ["-rpcauth=bogus"],
+    ["-rpccookieperms=bogus"],
+    ["-port=0", "-rpcauth=bogus"],
+    ["-rpcport=0", "-port=0"],
+]
+_BEFORE_THE_LOCK = [
+    (["-prune=-1"], "Prune cannot be configured with a negative value."),
+    (["-debug=bogus"], "Unsupported logging category -debug=bogus."),
+    (["-maxconnections=-1"], "-maxconnections must be greater or equal than zero"),
+    (
+        ["-blocksdir={x}/nosuch"],
+        'Specified blocks directory "{x}/nosuch" does not exist.',
+    ),
+    (["-prune=-1", "-port=0"], "Prune cannot be configured with a negative value."),
+]
+
+
+@pytest.mark.usefixtures("no_node")
+@pytest.mark.parametrize("argv", _AFTER_THE_LOCK)
+def test_main_a_held_directory_is_refused_before_these_options(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], argv: list[str]
+) -> None:
+    """`AppInitMain`'s refusals come after `AppInitLockDirectories`'s."""
+    data_dir = tmp_path / "d"
+    (data_dir / "regtest").mkdir(parents=True)
+    with (
+        held_by_another_process(data_dir / "regtest"),
+        pytest.raises(SystemExit) as excinfo,
+    ):
+        cli.main([f"-datadir={data_dir}", "-regtest", *argv])
+    assert excinfo.value.code == 1
+    assert capsys.readouterr().err == (
+        f"Error: Cannot obtain a lock on directory {data_dir / 'regtest'}. "
+        "btclib-node is probably already running.\n"
+    )
+
+
+@pytest.mark.usefixtures("no_node")
+@pytest.mark.parametrize(("argv", "refusal"), _BEFORE_THE_LOCK)
+def test_main_these_options_are_refused_before_a_held_directory(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    refusal: str,
+) -> None:
+    """`AppInitParameterInteraction`'s refusals come before the lock."""
+    data_dir = tmp_path / "d"
+    (data_dir / "regtest").mkdir(parents=True)
+    argv = [arg.format(x=tmp_path) for arg in argv]
+    with (
+        held_by_another_process(data_dir / "regtest"),
+        pytest.raises(SystemExit) as excinfo,
+    ):
+        cli.main([f"-datadir={data_dir}", "-regtest", *argv])
+    assert excinfo.value.code == 1
+    assert capsys.readouterr().err == f"Error: {refusal.format(x=tmp_path)}\n"
+
+
+@pytest.mark.parametrize(
+    ("argv", "refusal"),
+    [
+        (
+            ["-blocksdir={x}/nosuch", "-maxconnections=-1"],
+            'Specified blocks directory "{x}/nosuch" does not exist.',
+        ),
+        (
+            ["-maxconnections=-1", "-debug=bogus"],
+            "-maxconnections must be greater or equal than zero",
+        ),
+        (
+            ["-debug=bogus", "-prune=-1"],
+            "Unsupported logging category -debug=bogus.",
+        ),
+        (
+            ["-rpcbind=1.2.3.4:0"],
+            "Invalid port specified in -rpcbind: '1.2.3.4:0'",
+        ),
+        (
+            ["-rpcbind=1.2.3.4:0", "-rpcport=0"],
+            "Invalid port specified in -rpcport: '0'",
+        ),
+    ],
+    ids=[
+        "blocksdir, maxconnections",
+        "maxconnections, debug",
+        "debug, prune",
+        "rpcbind",
+        "rpcport, rpcbind",
+    ],
+)
+def test_build_config_refuses_in_core_order(
+    tmp_path: Path, argv: list[str], refusal: str
+) -> None:
+    """Two refusals in one command line: the one `bitcoind` names first.
+
+    Each measured on `bitcoind` v31.1.0.
+    """
+    argv = [arg.format(x=tmp_path) for arg in argv]
+    expected = re.escape(refusal.format(x=tmp_path))
+    with pytest.raises(ValueError, match=f"^{expected}$"):
+        cli.build_config([f"-datadir={tmp_path}", "-regtest", *argv])
+
+
+def test_main_releases_its_lock_once_the_node_holds_its_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The lock `main` takes ahead of `Node` is not held past it.
+
+    `FakeNode` takes no lock of its own, so while it runs another
+    process is refused only where `main` still holds one.
+    """
+    answers: list[str] = []
+
+    class FakeNode:
+        init_errors: tuple[str, ...] = ()
+
+        def __init__(self, config: Any) -> None:
+            self.data_dir = config.data_dir
+
+        def start(self) -> None:
+            answers.append(lock_from_another_process(self.data_dir))
+
+        def join(self) -> None:
+            pass
+
+    monkeypatch.setattr(cli, "Node", FakeNode)
+    monkeypatch.setattr(cli, "install_signal_handlers", lambda _: None)
+    cli.main([f"-datadir={tmp_path}", "-regtest"])
+    assert answers == ["locked"]
+
+
 @pytest.fixture
 def no_node(monkeypatch: pytest.MonkeyPatch) -> None:
     """Remove `cli.Node`: an argument `main` does not refuse is a `NameError`.
@@ -1212,6 +2031,67 @@ def no_node(monkeypatch: pytest.MonkeyPatch) -> None:
     With `Node` in place such an argument starts a node that never stops.
     """
     monkeypatch.delattr(cli, "Node")
+
+
+def test_config_options_records_every_section_as_core_does() -> None:
+    """ISS 1271: `GetConfigOptions`' `sections`, a dotted key's included.
+
+    A `[section]` line, and a key's part before its last `.` where that
+    `.` sits at or past the `[section]` prefix's length: `regtest.x`
+    under `[regtest]`, `regtest` for a top-level `regtest.port`, and
+    `x.` for `.foo` under `[x]`, as `bitcoind` v31.1.0 names it, but not
+    `x` again for `foo` under `[x]`.
+    """
+    sections: list[tuple[str, str, int]] = []
+    text = "regtest.port=1\n[x]\nfoo=1\n.foo=1\n[regtest]\nx.bar=1\nbar=2\n"
+    cli._config_options(text, sections, "f.conf")
+    assert sections == [
+        ("regtest", "f.conf", 1),
+        ("x", "f.conf", 2),
+        ("x.", "f.conf", 4),
+        ("regtest", "f.conf", 5),
+        ("regtest.x", "f.conf", 6),
+    ]
+
+
+def test_warn_unrecognized_sections_is_one_core_warning(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ISS 1271: `InitWarning`'s lines, a chain's own section left out.
+
+    `testnet4` is one of Core's chains, and so is not warned about.
+    """
+    sections = [("x", "a.conf", 2), ("testnet4", "a.conf", 3), ("y", "b", 1)]
+    cli._warn_unrecognized_sections(sections)
+    assert capsys.readouterr().err == (
+        "Warning: a.conf:2 Section [x] is not recognized.\n"
+        "b:1 Section [y] is not recognized.\n\n"
+    )
+    cli._warn_unrecognized_sections([("main", "a.conf", 1)])
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.usefixtures("no_node")
+def test_main_warns_of_an_unrecognized_section_before_refusing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ISS 1271: the warning, then the blocks directory, as `bitcoind` prints.
+
+    Measured on `bitcoind` v31.1.0 with this file and include: the root
+    file is named by its path, the included one as `includeconf=` names
+    it.
+    """
+    (tmp_path / "bitcoin.conf").write_text(
+        "regtest=1\nincludeconf=inc.conf\n[x]\n", encoding="utf-8"
+    )
+    (tmp_path / "inc.conf").write_text("[z]\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        cli.main([f"-datadir={tmp_path}", f"-blocksdir={tmp_path}/nosuch"])
+    assert capsys.readouterr().err == (
+        f"Warning: {tmp_path / 'bitcoin.conf'}:3 Section [x] is not recognized.\n"
+        "inc.conf:1 Section [z] is not recognized.\n\n"
+        f'Error: Specified blocks directory "{tmp_path}/nosuch" does not exist.\n'
+    )
 
 
 @pytest.mark.usefixtures("no_node")
@@ -1308,7 +2188,11 @@ def test_a_hash_on_an_rpcpassword_line_is_refused(tmp_path: Path, text: str) -> 
     """Core's parse error: the `#` may be the password's or a comment's."""
     (tmp_path / "bitcoin.conf").write_text(text, encoding="utf-8")
     line = text.count("\n")
-    err_msg = f":{line}: using # in rpcpassword can be ambiguous and should be avoided$"
+    err_msg = (
+        "^Error reading configuration file: "
+        f"parse error on line {line}, using # in rpcpassword can be ambiguous "
+        "and should be avoided$"
+    )
     with pytest.raises(ValueError, match=err_msg):
         cli.build_config([f"-datadir={tmp_path}"])
 
@@ -1365,8 +2249,9 @@ def test_build_config_rpccookieperms_from_the_file(tmp_path: Path) -> None:
     """`rpccookieperms=` in the file, and a bad value refused."""
     (tmp_path / "bitcoin.conf").write_text("rpccookieperms=all\n", encoding="utf-8")
     assert cli.build_config([f"-datadir={tmp_path}"]).rpc_cookie_perms == 0o644
-    with pytest.raises(ValueError, match=r"^Invalid -rpccookieperms=x;"):
-        cli.build_config([f"-datadir={tmp_path}", "-rpccookieperms=x"])
+    config = cli.build_config([f"-datadir={tmp_path}", "-rpccookieperms=x"])
+    assert config.rpc_cookie_perms_error is not None
+    assert config.rpc_cookie_perms_error.startswith("Invalid -rpccookieperms=x;")
 
 
 def test_build_config_rpcwhitelist_from_the_command_line_and_the_file(
@@ -1429,3 +2314,47 @@ def test_rpcwhitelistdefault_is_read_as_core_s_interpret_bool(
     """
     argv = [f"-datadir={tmp_path}", f"-rpcwhitelistdefault={value}"]
     assert cli.build_config(argv).rpc_whitelist_default == expected
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX modes")
+def test_main_makes_what_the_node_creates_owner_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1198: Core's `SetupEnvironment` umask, set by `main` first.
+
+    Under a group- and world-readable umask, what is created after `main`
+    is 0700 for a directory and 0600 for a file, as `bitcoind` v31.1.0
+    leaves its own chain directory and `debug.log`.
+    """
+    os.umask(0o022)
+    monkeypatch.setattr(cli, "_before_lock", _refused)
+    with pytest.raises(SystemExit):
+        cli.main([])
+    directory = tmp_path / "chain"
+    directory.mkdir()
+    (directory / "history.log").write_text("")
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+    assert stat.S_IMODE((directory / "history.log").stat().st_mode) == 0o600
+
+
+def _refused(argv: Sequence[str]) -> Any:
+    """Stand in for `_before_lock`, refusing whatever it is given."""
+    raise ValueError(argv)
+
+
+def test_setup_environment_leaves_the_umask_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1198: Core's `SetupEnvironment` sets no umask under `WIN32`.
+
+    The calls are recorded rather than read back from the process, so
+    the test answers the same on every platform; the POSIX call after
+    it is the control.
+    """
+    calls: list[int] = []
+    monkeypatch.setattr(os, "umask", calls.append)
+    monkeypatch.setattr(sys, "platform", "win32")
+    cli._setup_environment()
+    monkeypatch.setattr(sys, "platform", "linux")
+    cli._setup_environment()
+    assert calls == [0o077]

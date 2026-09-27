@@ -45,7 +45,14 @@ if TYPE_CHECKING:
 
     from btclib_node.log import Logger
 
-__all__ = ["BlockDB", "BlockLocation", "Coin", "FileMetadata", "RevBlock"]
+__all__ = [
+    "BlockDB",
+    "BlockLocation",
+    "Coin",
+    "FileMetadata",
+    "RevBlock",
+    "blocks_directory",
+]
 
 
 class Coin(_BtclibCoin):
@@ -224,6 +231,18 @@ class FileMetadata:
         return out
 
 
+def blocks_directory(data_dir: Path, blocks_dir: Path | None = None) -> Path:
+    """Return the directory `BlockDB` keeps its files in: `blocks` under either.
+
+    Core's own `GetBlocksDirPath` (`src/common/args.cpp`, at
+    bitcoin/bitcoin@9be056a8a7), `blocks_dir` being `Config`'s own field
+    of the same name, already chain-suffixed there, and `data_dir` the
+    fallback where it is `None`. `Node.__init__` locks this directory
+    before `BlockDB` opens it.
+    """
+    return (blocks_dir if blocks_dir is not None else data_dir) / "blocks"
+
+
 class BlockDB:
     """Blocks and their undo data, appended to rotating flat files on disk.
 
@@ -274,7 +293,7 @@ class BlockDB:
         self.logger = logger
         self._lock = threading.RLock()
 
-        self.data_dir = (blocks_dir if blocks_dir is not None else data_dir) / "blocks"
+        self.data_dir = blocks_directory(data_dir, blocks_dir)
         self.data_dir.mkdir(exist_ok=True, parents=True)
         self.db = KeyValueStore(self.data_dir)
         self.files: dict[str, FileMetadata] = {}
@@ -465,6 +484,15 @@ class BlockDB:
         """Discard every reverse patch buffered since the last finalize."""
         with self._lock:
             self.pending_rev_blocks = {}
+
+    def has_block(self, block_hash: bytes) -> bool:
+        """Return whether `block_hash`'s block is held, with no disk read.
+
+        Core's `BLOCK_HAVE_DATA` status bit: false for a header whose block
+        never arrived and for a block pruned away.
+        """
+        with self._lock:
+            return block_hash in self.blocks
 
     def get_block(self, block_hash: bytes) -> Block | None:
         """Return the block stored under `block_hash`, or `None` if not held."""

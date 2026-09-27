@@ -12,6 +12,13 @@ description = "Bitcoin node in python"
 authors = [{ name = "The btclib developers", email = "devs@btclib.org" }]
 readme = "README.md"
 license = "MIT"
+# Core's licence, which covers the fixed seeds, is not a third name here:
+# the standard's section 3 names these two and nothing else
+# (btclib-org/.github#1390). The wheel carries it inside
+# `_chainparamsseeds.py`, whose opening comment
+# scripts/seeds/generate_seeds.py writes from
+# scripts/seeds/BITCOIN_CORE_COPYING in full; the sdist carries that file
+# too, under `scripts/**` below.
 license-files = ["LICENSE", "AUTHORS.md"]
 # Above the standard's 3.10 floor, deliberately: this is the version
 # .python-version pins, and with no CI matrix here
@@ -35,12 +42,14 @@ dependencies = [
     # imports -- `btclib.muhash`, `btclib.p2p.reject`, `btclib.tx.coin`
     # and `btclib.tx.tx_context` among the modules -- so a floor below
     # it is a release the published wheel's own smoke test cannot
-    # import (btclib-org/btclib-node#848). Raised to 2026.9.13:
-    # `tests/unit/interpreter_test.py` imports `point_from_pub_key` from
-    # `btclib.curves`, which is where that release first exports it --
-    # 2026.9.3 defines it only in the `to_pub_key` module `btclib`
-    # deletes on its own `main` (btclib-org/btclib-node#972).
-    "btclib[secp256k1]>=2026.9.13",
+    # import (btclib-org/btclib-node#848). Raised to 2026.9.24, the
+    # release the `test` group's `btclib-wallet` requires, so no run of
+    # the suite -- deps-oldest.yml's included -- resolves anything lower,
+    # and a floor below it would be one no run exercises
+    # (btclib-org/btclib-node#1181). `tests/unit/interpreter_test.py`
+    # hands `ScriptPubKey` a `PubKeyData`, which that release's
+    # constructors take in place of the key's octets.
+    "btclib[secp256k1]>=2026.9.24",
     "rocksdict>=0.3.29",
     # `rpc/errors.py` imports `RPCErrorCode` directly now, so this is a
     # direct runtime dependency rather than the transitive arrival
@@ -265,6 +274,13 @@ test = [
     # through the first two where they express the case, and the
     # integration client is a `SessionTransport` now.
     "bitcoin-core-rpc>=2026.8.29",
+    # `BitcoinCoreFetcher`, which tests/functional/rpc drives against
+    # this node unchanged: `btclib_wallet.fetch` is where it lives,
+    # btclib's `main` holding no `fetch` package and its next release none
+    # (btclib-org/btclib-node#1181). A test
+    # dependency and not a runtime one, nothing under `src/` importing it.
+    # Its own btclib requirement is what sets btclib's floor above.
+    "btclib-wallet>=2026.9.24",
 ]
 # mypy runs from this environment rather than from a hook's own --
 # .pre-commit-config.yaml's mypy hook is where that decision is argued
@@ -422,8 +438,8 @@ build-backend = "uv_build"
 # by. btclib-org/.github#135 is why it is not named instead: it is a
 # repository file rather than a distributed one, LICENSE carrying the
 # holder a consumer needs, and this being the source of a source-file
-# header. `license-files` above names LICENSE and AUTHORS.md, so
-# nothing else puts COPYRIGHT in the archive either. What the CPY rule
+# header. `license-files` above does not name it either, so nothing
+# else puts COPYRIGHT in the archive. What the CPY rule
 # checks the sources against is notice-rgx in this file, which travels
 # regardless.
 source-include = [
@@ -1089,7 +1105,10 @@ builtin = "clear"
 # with --write-changes. A "correction" inside one would invalidate the round
 # trip tests/fuzz_corpus_test.py holds it to, in a rewrite of a .bin
 # nobody reads a diff for.
-skip = "*/_data/*.json,*/_data/*.csv,*/_data/*.txt,*/_data/*.bin,fuzz/corpus/*"
+# Core's fixed seed lists, scripts/seeds/nodes_*.txt, and the module
+# generated from them are skipped for the same reason: base32 and hex
+# spell nothing, and a "correction" is a seed that no longer exists.
+skip = "*/_data/*.json,*/_data/*.csv,*/_data/*.txt,*/_data/*.bin,fuzz/corpus/*,scripts/seeds/nodes_*.txt,src/btclib_node/_chainparamsseeds.py"
 # a misspelling written on purpose goes in backticks, and that is a rule
 # rather than a preference: prose that configures a spell checker has to
 # be able to name what it catches, and the comment above costs this hook
@@ -1121,6 +1140,9 @@ extend-exclude = [
     # all: pre-commit names files on the command line, and typos
     # otherwise overrides an exclude for a path named that way
     "fuzz/corpus/**",
+    # Core's fixed seeds, as [tool.codespell] skips them above
+    "scripts/seeds/nodes_*.txt",
+    "src/btclib_node/_chainparamsseeds.py",
 ]
 
 [tool.mypy]

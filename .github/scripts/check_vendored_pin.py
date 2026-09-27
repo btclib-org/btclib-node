@@ -2,23 +2,22 @@
 # Distributed under the MIT software license, see the accompanying
 # LICENSE file or https://opensource.org/license/mit for the full text.
 
-"""Re-check tests/_data/README.md's vendored pin against upstream.
+"""Re-check tests/_data/README.md's vendored pins against upstream.
 
 That file documents its own procedure under "Re-checking a pin": a local
 `git hash-object` against the recorded `blob`, and a `commits?path=`
 query against the recorded `commit`, to answer whether the pin is still
 byte for byte and still at upstream's tip. This runs both, over every
-heading the README carries a full repo/path/commit/blob quadruple for --
-one today, `tests/unit/chainstate/_data/blockfilters.json`, its sibling
-entry being out of scope by the README's own account: derived rather
-than vendored, with no upstream blob to compare against.
+heading the README carries a full repo/path/commit/blob quadruple for.
+An entry the README calls derived rather than vendored carries no
+upstream blob, and is out of scope.
 
 Unlike btclib's own `check_vendored_vectors.py`, this opens no tracking
 issue on drift. Every other scheduled workflow in this tree that reports
 on something outside its own commits -- links.yml, bootstrap-dns.yml --
 fails the run and leaves it there for whoever reads the Actions tab,
-carrying no `issues: write` to do otherwise; one pin is not the case for
-this tree's first exception to that.
+carrying no `issues: write` to do otherwise; a handful of pins is not
+the case for this tree's first exception to that.
 
     python3 .github/scripts/check_vendored_pin.py tests/_data/README.md
 """

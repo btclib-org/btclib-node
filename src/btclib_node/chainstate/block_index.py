@@ -69,10 +69,10 @@ from btclib.block.proof_of_work import block_work
 from btclib.exceptions import BTClibValueError
 from btclib.utils import bytesio_from_binarydata
 
-from btclib_node.exceptions import ChainstateInconsistencyError
+from btclib_node.exceptions import ChainstateInconsistencyError, MisbehavingError
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Iterable
 
     from btclib_node.chains import Chain
     from btclib_node.db import KeyValueStore
@@ -113,6 +113,19 @@ def block_time(header: BlockHeader) -> int:
     return int(header.time.timestamp())
 
 
+def _assert_valid_pow(header: BlockHeader, pow_limit_bits: bytes) -> None:
+    """Assert `header`'s own proof of work, as Core's `CheckHeadersPoW`.
+
+    Core calls `Misbehaving` for a header failing it
+    (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
+    tag), so the refusal is a `MisbehavingError`.
+    """
+    try:
+        header.assert_valid_pow(pow_limit_bits)
+    except BTClibValueError as e:
+        raise MisbehavingError(str(e)) from e
+
+
 def _assert_valid_in_context(  # noqa: PLR0913, PLR0917
     chain: Chain,
     header: BlockHeader,
@@ -131,10 +144,23 @@ def _assert_valid_in_context(  # noqa: PLR0913, PLR0917
     `pow_no_retargeting` and `pow_allow_min_difficulty_blocks` among
     them, in Core's own order rather than one this tree chooses.
     `BlockHeader.assert_valid_time` is the one check that needs no
-    chain at all. `BlockHeader.assert_valid_pow` answers the other half
+    chain at all. Last, a version BIP34, BIP66 or BIP65 made obsolete is
+    refused from the height each binds at, `chain.consensus`'s
+    `bip34_height`, `bip66_height` and `bip65_height`, as Core's
+    `bad-version` (`src/validation.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag). `BlockHeader.assert_valid_pow` answers the other half
     of the proof-of-work question -- whether the hash meets the target
     the header itself claims -- and `_validate_header_batch`'s own loop
     has already asked it of `header`, ahead of this.
+
+    The target, the median time and the version are Core's
+    `bad-diffbits`, `time-too-old` and `bad-version`,
+    `BLOCK_INVALID_HEADER`, which Core's `MaybePunishNodeForBlock`
+    answers with `Misbehaving`, so they raise `MisbehavingError`.
+    `time-too-new` is `BLOCK_TIME_FUTURE`, which it does not punish, so
+    btclib's own refusal is left as it is
+    (`src/validation.cpp` and `src/net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
     """
     required = next_bits_required(
         header, parent, parent_height, parent_of, chain.consensus
@@ -142,16 +168,28 @@ def _assert_valid_in_context(  # noqa: PLR0913, PLR0917
     if header.bits != required:
         err_msg = f"proof-of-work target not the required one: {header.bits.hex()}"
         err_msg += f" instead of {required.hex()}"
-        raise BTClibValueError(err_msg)
+        raise MisbehavingError(err_msg)
 
     median = median_time_past(parent, parent_height, parent_of)
     time = block_time(header)
     if time <= median:
         err_msg = f"invalid timestamp (not after the median past): {time}"
         err_msg += f" <= {median}"
-        raise BTClibValueError(err_msg)
+        raise MisbehavingError(err_msg)
 
     header.assert_valid_time(now)
+
+    # the least version a header may carry once each of BIP34, BIP66 and
+    # BIP65 binds, and the height it binds from
+    consensus = chain.consensus
+    for least, binds_at in (
+        (2, consensus.bip34_height),
+        (3, consensus.bip66_height),
+        (4, consensus.bip65_height),
+    ):
+        if header.version < least and parent_height + 1 >= binds_at:
+            err_msg = f"bad-version(0x{header.version & 0xFFFFFFFF:08x})"
+            raise MisbehavingError(err_msg)
 
 
 class BlockStatus(enum.IntEnum):
@@ -206,8 +244,13 @@ class BlockInfo:
         return cls(header, index, status, downloaded)
 
     def serialize(self) -> bytes:
-        """Serialize this record to the bytes stored under `blkinfo-<hash>`."""
-        out = self.header.serialize()
+        """Serialize this record to the bytes stored under `blkinfo-<hash>`.
+
+        The header unchecked, as `deserialize`'s caller reads it back: a
+        header of a version zero or below is Core's to take below BIP34's
+        height, and btclib's `BlockHeader.assert_valid` refuses it.
+        """
+        out = self.header.serialize(check_validity=False)
         out += var_int.serialize(self.index)
         out += self.status.to_bytes(1, "little")
         out += int(self.downloaded).to_bytes(1, "little")
@@ -265,12 +308,11 @@ class BlockIndex:
         self.header_index: list[bytes] = []
 
         # header_index's own hash -> position, kept beside it rather
-        # than computed from it: get_headers_from_locators resolves a
-        # peer's locator against this index once per message, and
+        # than computed from it: `p2p.block_availability`'s ancestor walk
+        # asks whether a block is on header_index at every step, and
         # header_index holds one entry per header this node has ever
-        # indexed -- the whole known chain -- so a membership test or a
-        # position lookup done against the list itself is an O(n) scan
-        # repeated for every entry of the locator.
+        # indexed -- the whole known chain -- so a membership test done
+        # against the list itself is an O(n) scan repeated at every step.
         # btclib-org/btclib-node#439, following chainwork (#201) and
         # children (#125) in keeping a derived index beside the primary
         # structure rather than recomputing it on every read. Maintained
@@ -675,7 +717,7 @@ class BlockIndex:
             header_hash = header.hash
             not_yet_visited.discard(header_hash)
             try:
-                header.assert_valid_pow(pow_limit_bits)
+                _assert_valid_pow(header, pow_limit_bits)
                 if header_hash in self.header_dict or header_hash in pending:
                     continue
                 found = pending.get(header.previous_block_hash)
@@ -683,15 +725,13 @@ class BlockIndex:
                     block_info = self.header_dict.get(header.previous_block_hash)
                     if block_info is None:
                         if header.previous_block_hash in not_yet_visited:
-                            # kept inside the try, against TRY301: the
-                            # except right below logs every refusal this
-                            # loop finds the same way, whether it is
-                            # this raise or _assert_valid_in_context's
-                            # own, and abstracting this one out would
-                            # split that one log line into two shapes
-                            # for no reader's benefit.
+                            # inside the try: the except right below
+                            # logs every refusal this loop finds the
+                            # same way, whether it is this raise or
+                            # _assert_valid_in_context's own. Core's
+                            # "non-continuous headers sequence".
                             err_msg = "a header's parent is later in the same batch"
-                            raise BTClibValueError(err_msg)  # noqa: TRY301
+                            raise MisbehavingError(err_msg)
                         continue
                     found = (block_info.header, block_info.index)
                 parent, parent_height = found
@@ -883,36 +923,3 @@ class BlockIndex:
         if self.header_index[0] not in block_locators:
             block_locators.append(self.header_index[0])
         return block_locators
-
-    def get_headers_from_locators(
-        self, block_locators: Sequence[bytes], stop: bytes
-    ) -> list[BlockHeader]:
-        """Return up to 2000 headers after the first locator this index knows.
-
-        `block_locators` is read in the caller's own order, so the
-        first one found in `header_index` is where the answer resumes
-        from. Stops at `stop` if reached first, and returns nothing if
-        none of `block_locators` is known.
-
-        Membership and position both come from `header_index_pos`
-        rather than a scan of `header_index` itself
-        (btclib-org/btclib-node#439). The slice is capped at 2000
-        before `stop` is looked for, rather than after: `stop` is
-        looked for inside the capped slice, not the whole of
-        `header_index`, which is what btclib-org/btclib-node#434 raised
-        `ValueError` on -- a `stop` at or below `block_locator`'s own
-        height is never in the slice taken after it, so it is simply
-        not found rather than raising, and the answer is the slice
-        unchanged: empty where the locator is already this index's own
-        tip, Core's own "nothing to send" for the same request.
-        """
-        output: list[bytes] = []
-        for block_locator in block_locators:
-            start = self.header_index_pos.get(block_locator)
-            if start is None:
-                continue
-            output = self.header_index[start + 1 : start + 1 + 2000]
-            if stop in output:
-                output = output[: output.index(stop) + 1]
-            break
-        return [self.get_block_info(x).header for x in output]

@@ -110,6 +110,7 @@ def pruned_server_and_client(
             prune_target_mib=1,
         )
     )
+    server.load()
     monkeypatch.setattr(server.block_db, "current_usage", lambda: 2**40)
     client = Node(
         config=Config(
@@ -119,6 +120,7 @@ def pruned_server_and_client(
             allow_rpc=False,
         )
     )
+    client.load()
     # `DownloadManager.sync_headers` sends the server a real
     # `getheaders` once the handshake is done, and once the answer
     # indexes past `HeaderSynced`, `DownloadManager.block_download` would
@@ -165,7 +167,7 @@ def test_a_pruned_server_advertises_node_network_limited_only(
 
     `NODE_NETWORK_LIMITED` set, `NODE_NETWORK` dropped -- what the
     client actually received over the wire, not what the server's own
-    `send_version` was asked to build.
+    `own_version` was asked to build.
     """
     _server, client = pruned_server_and_client
     version = client.p2p_manager.connections[0].version_message

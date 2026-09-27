@@ -32,6 +32,8 @@ from btclib_node.p2p.callbacks import (
     MAX_GETDATA_INFLIGHT_BYTES,
     maybe_send_getheaders,
 )
+from btclib_node.p2p.chain_sync import consider_eviction
+from btclib_node.p2p.eviction import get_network
 from btclib_node.p2p.protocol_version import (
     FEEFILTER_VERSION,
     SENDHEADERS_VERSION,
@@ -72,6 +74,13 @@ _OUTBOUND_TX_ANNOUNCE_INTERVAL = 2.0
 # alike beyond this one number. btclib-org/btclib-node#289
 _TX_REQUEST_TIMEOUT = 60.0
 
+# Core's `MAX_PEER_TX_ANNOUNCEMENTS` (`src/node/txdownloadman.h`) and
+# `MAX_GETDATA_SZ` (`src/net_processing.cpp`), at bitcoin/bitcoin@9be056a8a7,
+# the v31.1 tag: the announcements tracked per peer, and the items in one
+# `getdata`
+_MAX_PEER_TX_ANNOUNCEMENTS = 5000
+_MAX_GETDATA_SZ = 1000
+
 # Core's own `AVG_FEEFILTER_BROADCAST_INTERVAL` (10min) and
 # `MAX_FEEFILTER_CHANGE_DELAY` (5min), `net_processing.cpp`, same commit:
 # the mean of the exponential draw `_send_due_feefilters` makes for a
@@ -103,6 +112,22 @@ _rng = SystemRandom()
 # `_BLOCK_STALL_DISCONNECT_TIMEOUT` drops the connection outright.
 _BLOCK_STALL_EVICTION_TIMEOUT = 120
 _BLOCK_STALL_DISCONNECT_TIMEOUT = 300
+
+# Core's `EXTRA_PEER_CHECK_INTERVAL` and `MINIMUM_CONNECT_TIME`
+# (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag):
+# how often `_check_for_stale_tip_and_evict_peers` runs, and how long
+# the peer it picks must have been connected for it to be dropped.
+_EXTRA_PEER_CHECK_INTERVAL = 45
+_MINIMUM_CONNECT_TIME = 30
+
+# The number of block intervals `CanDirectFetch` (same sha) allows the
+# active tip to lag the clock by, in `_POW_TARGET_SPACING` units.
+_DIRECT_FETCH_SPACINGS = 20
+
+# Core's `STALE_CHECK_INTERVAL` (same sha), in seconds, and the block
+# intervals past which `TipMayBeStale` calls the tip stale.
+_STALE_CHECK_INTERVAL = 10 * 60
+_STALE_TIP_SPACINGS = 3
 
 # `sync_headers`'s own timing, in seconds: `HEADERS_DOWNLOAD_TIMEOUT_BASE`
 # and `HEADERS_DOWNLOAD_TIMEOUT_PER_HEADER` (`net_processing.cpp`, at
@@ -402,12 +427,24 @@ class DownloadManager:
         # `callbacks.maybe_send_getheaders` last sent each peer a
         # `getheaders` that no `headers` has answered since.
         self.last_getheaders_timestamps: dict[int, float] = {}
+        # When `_check_for_stale_tip_and_evict_peers` next runs, which
+        # Core schedules `EXTRA_PEER_CHECK_INTERVAL` from start-up, and
+        # Core's `m_initial_sync_finished`.
+        self._next_extra_peer_check = time.time() + _EXTRA_PEER_CHECK_INTERVAL
+        self._initial_sync_finished = False
+        # Core's `m_last_tip_update`, which `main._finalize_fork` stamps
+        # as each block connects, zero until then, and
+        # `m_stale_tip_check_time`, when the stale-tip check next runs.
+        self.last_tip_update = 0.0
+        self._stale_tip_check_time = 0.0
 
     def step(self) -> None:
         """Run one pass.
 
-        Headers, blocks and txs are asked for, and sendheaders and
-        feefilters sent.
+        Headers, blocks and txs are asked for, sendheaders and feefilters
+        sent, outbound peers behind this node's tip given a deadline, and
+        Core's check for a stale tip and extra outbound peers run on its
+        own interval.
         """
         self.sync_headers()
         self.update_last_common_blocks()
@@ -415,6 +452,153 @@ class DownloadManager:
         self.tx_download()
         self._send_due_sendheaders()
         self._send_due_feefilters()
+        self._consider_evictions()
+        self._check_for_stale_tip_and_evict_peers()
+
+    def _check_for_stale_tip_and_evict_peers(self) -> None:
+        """Drop an extra outbound peer, and let `P2pManager` dial one more.
+
+        Core's `CheckForStaleTipAndEvictPeers` (`net_processing.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), every
+        `_EXTRA_PEER_CHECK_INTERVAL`. Every `_STALE_CHECK_INTERVAL` it
+        sets `try_new_outbound_peer` where the tip may be stale, under no
+        `-connect`, and clears it where not. Once the active tip is
+        within `CanDirectFetch`'s reach of the clock, it lets
+        `P2pManager` dial an extra block-relay-only peer, once and for
+        good, as `StartExtraBlockRelayPeers` does.
+        """
+        now = time.time()
+        if now < self._next_extra_peer_check:
+            return
+        self._next_extra_peer_check = now + _EXTRA_PEER_CHECK_INTERVAL
+        self._evict_extra_block_relay_peer(now)
+        self._evict_extra_full_relay_peer(now)
+        manager = self.node.p2p_manager
+        if now > self._stale_tip_check_time:
+            if manager.use_addrman_outgoing and self._tip_may_be_stale(now):
+                self.logger.info(
+                    "Potential stale tip detected, will try using extra outbound "
+                    "peer (last tip update: %d seconds ago)",
+                    now - self.last_tip_update,
+                )
+                manager.try_new_outbound_peer = True
+            elif manager.try_new_outbound_peer:
+                manager.try_new_outbound_peer = False
+            self._stale_tip_check_time = now + _STALE_CHECK_INTERVAL
+        if self._initial_sync_finished:
+            return
+        block_index = self.node.chainstate.block_index
+        tip = block_index.header_dict[block_index.active_chain[-1]].header
+        horizon = now - _POW_TARGET_SPACING * _DIRECT_FETCH_SPACINGS
+        if tip.time.timestamp() > horizon:
+            manager.start_extra_block_relay_peers = True
+            self._initial_sync_finished = True
+
+    def _tip_may_be_stale(self, now: float) -> bool:
+        """Core's `TipMayBeStale`: no block for three intervals, none in flight.
+
+        The first call stamps `last_tip_update` where no block has yet
+        connected, as Core's does.
+        """
+        if not self.last_tip_update:
+            self.last_tip_update = now
+        connections = self.node.p2p_manager.connections.copy().values()
+        return (
+            self.last_tip_update < now - _POW_TARGET_SPACING * _STALE_TIP_SPACINGS
+            and (not any(conn.download_queue for conn in connections))
+        )
+
+    def _evict_extra_full_relay_peer(self, now: float) -> None:
+        """Drop one full-relay peer past the target, if one may go.
+
+        The full-relay half of Core's `EvictExtraOutboundPeers`: of the
+        automatic full-relay peers connected, those neither protected by
+        `chain_sync.protect_if_caught_up` nor alone on their network among
+        the manual and full-relay ones, the one that least recently
+        announced a block, the youngest by connection id on a tie -- once
+        connected longer than `_MINIMUM_CONNECT_TIME` and with no block in
+        flight from it. Dropping it clears `try_new_outbound_peer` until
+        the tip is next found stale.
+        """
+        manager = self.node.p2p_manager
+        peers = [
+            conn
+            for conn in manager.connections.copy().values()
+            if conn.status == P2pConnStatus.Connected
+            and conn.automatic
+            and not (conn.block_relay or conn.feeler)
+        ]
+        if len(peers) <= manager.max_outbound_full_relay:
+            return
+        counts = manager.network_conn_counts()
+        worst = None
+        for conn in peers:
+            # Core's order: `m_protect` first, then the network
+            if conn.chain_sync.protect or counts[get_network(conn.address)] <= 1:
+                continue
+            if worst is None or (conn.last_block_announcement, -conn.id) < (
+                worst.last_block_announcement,
+                -worst.id,
+            ):
+                worst = conn
+        if worst is None:
+            return
+        if (
+            now - worst.connected_time > _MINIMUM_CONNECT_TIME
+            and not worst.download_queue
+        ):
+            self.logger.debug(
+                "disconnecting extra outbound peer=%s "
+                "(last block announcement received at time %s)",
+                worst.id,
+                worst.last_block_announcement,
+            )
+            worst.stop()
+            manager.try_new_outbound_peer = False
+
+    def _evict_extra_block_relay_peer(self, now: float) -> None:
+        """Drop one block-relay-only peer past the target, if one may go.
+
+        The block-relay-only half of Core's `EvictExtraOutboundPeers`:
+        of the youngest two such peers, by connection id, the youngest
+        goes unless it delivered a novel block more recently than the
+        other, which then goes instead -- once connected
+        `_MINIMUM_CONNECT_TIME` and with no block in flight from it.
+        Core's `ForEachNode` visits a peer done with its handshake and
+        not disconnected, which is `Connected` here.
+        """
+        manager = self.node.p2p_manager
+        peers = sorted(
+            (
+                conn
+                for conn in manager.connections.copy().values()
+                if conn.block_relay and conn.status == P2pConnStatus.Connected
+            ),
+            key=lambda conn: conn.id,
+        )
+        if len(peers) <= manager.max_outbound_block_relay:
+            return
+        # With no second peer Core's `next_youngest_peer` stays `{-1, 0}`,
+        # an id `ForNode` finds no peer under.
+        youngest = peers[-1]
+        next_youngest = peers[-2] if len(peers) > 1 else None
+        next_time = 0 if next_youngest is None else next_youngest.last_novel_block_time
+        to_disconnect = youngest
+        if youngest.last_novel_block_time > next_time:
+            if next_youngest is None:
+                return
+            to_disconnect = next_youngest
+        if (
+            now - to_disconnect.connected_time >= _MINIMUM_CONNECT_TIME
+            and not to_disconnect.download_queue
+        ):
+            self.logger.debug(
+                "disconnecting extra block-relay-only peer=%s "
+                "(last block received at time %s)",
+                to_disconnect.id,
+                to_disconnect.last_novel_block_time,
+            )
+            to_disconnect.stop()
 
     def tx_download(self) -> None:
         """Announce what this node received, and request what it still wants.
@@ -549,6 +733,12 @@ class DownloadManager:
                 for announced in dict.fromkeys(inv)
                 if announced not in target.tx_requested
             ]
+            # Core's `MAX_PEER_TX_ANNOUNCEMENTS`: an announcement past it
+            # is dropped, the ones already tracked counting against it.
+            # Everything this pass queued is asked for in this pass, so
+            # what is tracked is what is outstanding plus these.
+            room = _MAX_PEER_TX_ANNOUNCEMENTS - len(target.tx_requested)
+            wanted = wanted[: max(room, 0)]
             if not wanted:
                 continue
             for announced in wanted:
@@ -557,7 +747,10 @@ class DownloadManager:
             # `TxRequestTracker`'s delays, none of which this node applies
             # (btclib-org/btclib-node#1196).
             fetch_type = _tx_fetch_type(target)
-            target.send(GetData([Inventory(fetch_type, h) for h in wanted]))
+            # in `getdata`s of at most Core's `MAX_GETDATA_SZ` items
+            for start in range(0, len(wanted), _MAX_GETDATA_SZ):
+                batch = wanted[start : start + _MAX_GETDATA_SZ]
+                target.send(GetData([Inventory(fetch_type, h) for h in batch]))
 
     def _send_due_announcements(self) -> None:
         # Core's `TxRelay::m_next_inv_send_time`/`m_tx_inventory_to_send`
@@ -671,6 +864,17 @@ class DownloadManager:
         txid = self.node.mempool.transactions[wtxid].id
         return Inventory(InventoryType.MSG_TX, txid)
 
+    def _consider_evictions(self) -> None:
+        """Run Core's `ConsiderEviction` for every connected peer.
+
+        `p2p/chain_sync.py` is where it is argued; Core runs it from
+        `SendMessages`, once per peer past its handshake.
+        """
+        now = time.time()
+        for conn in list(self.node.p2p_manager.connections.values()):
+            if conn.status == P2pConnStatus.Connected:
+                consider_eviction(self.node, conn, now, maybe_send_getheaders)
+
     def _send_due_sendheaders(self) -> None:
         """Ask a peer, once, for new blocks as headers (BIP130).
 
@@ -710,15 +914,12 @@ class DownloadManager:
         Core's `fSuccessfullyConnected`: a connection still mid-handshake
         has no peer at the other end of `Connection.send` yet.
 
-        `NetPermissionFlags::ForceRelay`, block-relay-only outbound
-        connections and `-blocksonly` (`m_opts.ignore_incoming_txs`) all
-        have nothing to read here and are not reproduced: every one is
-        a permission, connection-kind or run mode this tree does not
-        have -- `P2pManager` dials and accepts one connection kind, and
-        nothing here grants a peer immunity from this node's own
-        filter. `Connection.send_version`'s own `relay=True` argues the
-        same absence already, for the identical set of Core concepts
-        read against `RejectIncomingTxs`.
+        A block-relay-only connection is sent none, as Core returns for
+        `IsBlockOnlyConn()`: it never announces a transaction to this
+        node. `NetPermissionFlags::ForceRelay` and `-blocksonly`
+        (`m_opts.ignore_incoming_txs`) have nothing to read here and are
+        not reproduced, being a permission and a run mode this tree does
+        not have.
 
         Core's `GetCommonVersion() < FEEFILTER_VERSION` return is kept:
         a peer that old is sent none.
@@ -748,7 +949,7 @@ class DownloadManager:
         min_relay_feerate = self.node.config.min_relay_feerate.sats_per_kvbyte
 
         for conn in self.node.p2p_manager.connections.copy().values():
-            if conn.status != P2pConnStatus.Connected:
+            if conn.status != P2pConnStatus.Connected or conn.block_relay:
                 continue
             if common_version(conn) < FEEFILTER_VERSION:
                 continue

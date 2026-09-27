@@ -12,24 +12,30 @@ is btclib's own and is tested there (btclib-org/btclib#1581).
 """
 
 import asyncio
+import secrets
 import socket
 import threading
 import time
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
-from btclib.p2p.address import NetworkAddress
+from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.addrv2 import BIP155Network, NetworkAddressV2, is_embedded_ipv6
 
 import btclib_node.p2p.address as address_module
 from btclib_node.p2p.address import (
+    RECENT_TRY_SECONDS,
+    SEEDS_SERVICE_FLAGS,
     PeerDB,
     can_connect,
     dial,
+    fixed_seed_addresses,
     ip_and_port,
     peer_address,
 )
+from btclib_node.p2p.eviction import Network
 from tests import call_within
 
 if TYPE_CHECKING:
@@ -74,6 +80,7 @@ def test_an_address_just_seen_is_active_and_can_be_sent() -> None:
     actually needs.
     """
     peer_db = a_peer_db()
+    peer_db.add_addresses([peer_address("1.2.3.4", 18444)])
     peer_db.add_active_address(peer_address("1.2.3.4", 18444))
     (active,) = peer_db.get_active_addresses()
     # a whole second, because the field is four octets on the wire and a
@@ -88,13 +95,19 @@ def test_the_table_of_active_addresses_is_bounded() -> None:
     A distinct port each time means every call is a genuinely new
     endpoint -- the case `test_redialling_the_same_endpoint...` below
     is not -- so the table's own count runs one step closer to the cap
-    per call rather than settling onto a single row.
+    per call rather than settling onto a single row. `addresses` holds
+    no more endpoints than this cap, so the known endpoints are written
+    straight into its index here, past what `add_addresses` would take.
     """
     # #71: the cap is on distinct endpoints, so this many distinct ports
     # each run the table a step closer to it rather than settling onto
     # one row the way redialling the same endpoint does, below
     peer_db = a_peer_db()
     limit = 10000
+    peer_db._known_keys |= {
+        address_module.endpoint_key(peer_address("1.2.3.4", port))
+        for port in range(limit + 10)
+    }
     for port in range(limit + 10):
         peer_db.add_active_address(peer_address("1.2.3.4", port))
     assert len(peer_db.active_addresses) == limit
@@ -114,6 +127,7 @@ def test_redialling_the_same_endpoint_settles_onto_its_one_row() -> None:
     # window grew one row per handshake instead of settling on the
     # latest the way add_addresses's own by_endpoint already does
     peer_db = a_peer_db()
+    peer_db.add_addresses([peer_address("1.2.3.4", 18444)])
     for port in (18444, 18444, 18444):
         peer_db.add_active_address(peer_address("1.2.3.4", port))
     (active,) = peer_db.active_addresses
@@ -139,6 +153,7 @@ def test_redialling_the_same_endpoint_many_times_still_holds_one_row() -> None:
     # `timeout` is what a scan repeated this many times fails on, not the
     # assertion below.
     peer_db = a_peer_db()
+    peer_db.add_addresses([peer_address("1.2.3.4", 18444)])
     for _ in range(10010):
         peer_db.add_active_address(peer_address("1.2.3.4", 18444))
     assert len(peer_db.active_addresses) == 1
@@ -183,6 +198,9 @@ def test_add_active_address_waits_out_a_prune_already_in_progress(
         real_reindex()
 
     monkeypatch.setattr(peer_db, "_reindex_active", paused_reindex)
+    # known ahead of the prune: `add_addresses` takes `_active_lock` too,
+    # for the answered row a gossip reaches
+    peer_db.add_addresses([peer_address("1.2.3.4", 18444)])
 
     pruner = threading.Thread(target=peer_db.get_active_addresses)
     pruner.start()
@@ -543,6 +561,14 @@ def a_chain(seeds: list[str]) -> Any:
     return SimpleNamespace(addresses=list(seeds), port=18444)
 
 
+def a_seed_answer(ip: str) -> NetworkAddressV2:
+    """Build what a DNS seed's answer of `ip` is recorded as, on regtest's port.
+
+    With Core's `SeedsServiceFlags`, as `ThreadDNSAddressSeed` records it.
+    """
+    return peer_address(ip, 18444, services=SEEDS_SERVICE_FLAGS)
+
+
 def test_the_seeds_that_answer_fill_the_table_and_the_rest_are_passed_over(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -562,8 +588,8 @@ def test_the_seeds_that_answer_fill_the_table_and_the_rest_are_passed_over(
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
     asyncio.run(peer_db.get_addr_from_dns())
     assert peer_db.addresses == {
-        peer_address("1.2.3.4", 18444),
-        peer_address("5.6.7.8", 18444),
+        a_seed_answer("1.2.3.4"),
+        a_seed_answer("5.6.7.8"),
     }
 
 
@@ -590,9 +616,9 @@ def test_every_seed_that_answers_is_taken_and_a_host_two_of_them_share_is_one(
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
     asyncio.run(peer_db.get_addr_from_dns())
     assert peer_db.addresses == {
-        peer_address("1.2.3.4", 18444),
-        peer_address("5.6.7.8", 18444),
-        peer_address("9.10.11.12", 18444),
+        a_seed_answer("1.2.3.4"),
+        a_seed_answer("5.6.7.8"),
+        a_seed_answer("9.10.11.12"),
     }
 
 
@@ -624,7 +650,7 @@ def test_a_seed_answering_with_ipv6_gives_up_its_host_and_its_port(
     peer_db = a_peer_db(a_chain(["v6.example"]))
     monkeypatch.setattr(asyncio, "get_running_loop", FakeIpv6Loop)
     asyncio.run(peer_db.get_addr_from_dns())
-    assert peer_db.addresses == {peer_address("2a01:4f8::1", 18444)}
+    assert peer_db.addresses == {a_seed_answer("2a01:4f8::1")}
 
 
 def test_a_node_that_already_knows_peers_does_not_ask_the_seeds(
@@ -851,23 +877,102 @@ def test_an_address_a_peer_told_us_about_is_kept_without_its_timestamp() -> None
     assert kept.address == early.address
 
 
-def test_two_gossiped_records_for_one_endpoint_settle_on_the_latest_services() -> None:
-    """One endpoint gossiped with two different `services` settles on the last.
+_FULL = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
 
-    #247: two records for the same network id, address and port but
-    different `services` used to become two members of the table
-    instead of one settling on the endpoint's latest `services`, since
-    `services` too is part of the equality a plain set dedups on.
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        (_FULL, ServiceFlags.NODE_NONE),
+        (ServiceFlags.NODE_NONE, _FULL),
+        (ServiceFlags.NODE_NETWORK, ServiceFlags.NODE_WITNESS),
+    ],
+    ids=["fewer later", "more later", "disjoint"],
+)
+def test_two_gossiped_records_for_one_endpoint_settle_on_every_service(
+    tmp_path: Path, first: int, second: int
+) -> None:
+    """ISS 1276: Core's `AddSingle` ORs the services of a known endpoint.
+
+    #247: the two records are one member of the table, not one per
+    `services` value, and the row on disk carries the same services, so
+    a restart reads them back.
     """
-    # #247: two records for the same network id, address and port but
-    # different `services` used to become two members of the table
-    # instead of one settling on the endpoint's latest `services`
-    peer_db = a_peer_db()
-    old = peer_address("1.2.3.4", 8333, services=0)
-    new = peer_address("1.2.3.4", 8333, services=1)
-    peer_db.add_addresses([old, new])
+    peer_db = a_peer_db(data_dir=tmp_path)
+    peer_db.add_addresses([peer_address("1.2.3.4", 8333, services=first)])
+    peer_db.add_addresses([peer_address("1.2.3.4", 8333, services=second)])
     (kept,) = peer_db.addresses
-    assert kept.services == 1
+    assert kept.services == first | second
+    peer_db.close()
+    (reloaded,) = a_peer_db(data_dir=tmp_path).addresses
+    assert reloaded.services == first | second
+
+
+def test_a_gossip_adds_its_services_to_the_answered_row_too(tmp_path: Path) -> None:
+    """ISS 1276: Core's `AddSingle` ORs gossip into a tried entry as well.
+
+    The answered row stands for Core's tried entry, and its row on disk
+    carries the same services, two records of one gossip included.
+    """
+    peer_db = a_peer_db(data_dir=tmp_path)
+    endpoint = peer_address("1.2.3.4", 8333)
+    peer_db.add_addresses([endpoint])
+    peer_db.add_active_address(endpoint)
+    peer_db.add_addresses(
+        replace(endpoint, services=services)
+        for services in (ServiceFlags.NODE_NETWORK, ServiceFlags.NODE_WITNESS)
+    )
+    (answered,) = peer_db.active_addresses
+    assert answered.services == _FULL
+    peer_db.close()
+    (reloaded,) = a_peer_db(data_dir=tmp_path).active_addresses
+    assert reloaded.services == _FULL
+
+
+@pytest.mark.parametrize("answered", [False, True], ids=["known", "answered"])
+def test_set_services_replaces_what_gossip_had_added(
+    tmp_path: Path, *, answered: bool
+) -> None:
+    """ISS 1276: Core's `SetServices`, which overwrites rather than ORs.
+
+    Both rows the endpoint has are written, in memory and on disk.
+    """
+    peer_db = a_peer_db(data_dir=tmp_path)
+    endpoint = peer_address("1.2.3.4", 8333, services=_FULL)
+    peer_db.add_addresses([endpoint])
+    if answered:
+        peer_db.add_active_address(endpoint)
+    peer_db.set_services(
+        replace(endpoint, services=ServiceFlags.NODE_NONE),
+        ServiceFlags.NODE_NETWORK_LIMITED,
+    )
+    rows = [*peer_db.addresses, *peer_db.active_addresses]
+    assert len(rows) == 1 + answered
+    assert {row.services for row in rows} == {ServiceFlags.NODE_NETWORK_LIMITED}
+    peer_db.close()
+    reloaded = a_peer_db(data_dir=tmp_path)
+    rows = [*reloaded.addresses, *reloaded.active_addresses]
+    assert {row.services for row in rows} == {ServiceFlags.NODE_NETWORK_LIMITED}
+
+
+def test_set_services_writes_an_answered_row_held_in_memory_alone() -> None:
+    """ISS 1276: a table with no store updates its answered row all the same."""
+    peer_db = a_peer_db()
+    endpoint = peer_address("1.2.3.4", 8333, services=_FULL)
+    peer_db.add_addresses([endpoint])
+    peer_db.add_active_address(endpoint)
+    peer_db.set_services(endpoint, ServiceFlags.NODE_WITNESS)
+    (answered,) = peer_db.active_addresses
+    assert answered.services == ServiceFlags.NODE_WITNESS
+
+
+def test_set_services_records_no_endpoint_the_table_does_not_hold() -> None:
+    """ISS 1276: `SetServices_` bails out where `Find` finds nothing."""
+    peer_db = a_peer_db()
+    peer_db.add_addresses([peer_address("5.6.7.8", 8333)])
+    peer_db.set_services(peer_address("1.2.3.4", 8333), _FULL)
+    assert peer_db.addresses == {peer_address("5.6.7.8", 8333)}
+    assert not peer_db.active_addresses
 
 
 def test_updating_an_endpoint_already_known_does_not_spend_the_cap() -> None:
@@ -889,28 +994,139 @@ def test_updating_an_endpoint_already_known_does_not_spend_the_cap() -> None:
     assert updated.services == 1
 
 
-def test_an_address_that_answered_is_preferred_within_the_same_run() -> None:
-    """`random_address` favours an address already known to have answered.
+@pytest.mark.parametrize(("coin", "table"), [(1, "answered"), (0, "gossiped")])
+def test_a_coin_decides_between_the_answered_and_the_gossiped_table(
+    monkeypatch: pytest.MonkeyPatch, coin: int, table: str
+) -> None:
+    """ISS 1201: Core's `Select_` flips `randbool()` where both tables hold one.
 
-    #123: dialling should not draw uniformly over a table that already
-    knows which of its entries actually answered, even before any of
-    it is read back from a restart -- so the answered address is drawn
-    every time here, over twenty draws against a table also holding an
-    unconfirmed, merely gossiped one.
+    The coin fixed each way reaches each table. `addresses` holds both
+    endpoints, as it does once a gossiped peer answers, and the answered
+    one alone holds `1.2.3.4`: the gossiped side leaves it out, so the
+    coin at 0 reaches `5.6.7.8` every time.
     """
-    # #123: dialling should not draw uniformly over a table that already
-    # knows which of its entries actually answered, even before any of
-    # it is read back from a restart
     peer_db = a_peer_db()
     answered = peer_address("1.2.3.4", 8333)
     gossiped = peer_address("5.6.7.8", 8333)
-    peer_db.addresses |= {answered, gossiped}
+    peer_db.add_addresses([answered, gossiped])
     peer_db.add_active_address(answered)
-    for _ in range(20):
+    monkeypatch.setattr(secrets, "randbelow", lambda n: coin)
+    drawn = peer_db.random_address()
+    assert drawn is not None
+    expected = answered if table == "answered" else gossiped
+    assert drawn.address == expected.address
+
+
+def test_an_answered_endpoint_is_drawn_from_the_answered_table_alone() -> None:
+    """ISS 1201: Core's `Good_` moves an entry from the new table to tried.
+
+    So the two tables `Select_` flips between never hold one endpoint
+    twice. `addresses` keeps the answered endpoint, so the gossiped
+    side of the draw leaves it out, with `services` differing to show
+    the match is on the endpoint; `5.6.7.8`, gossiped alone, is the
+    control.
+    """
+    peer_db = a_peer_db()
+    answered = peer_address("1.2.3.4", 8333)
+    gossiped = peer_address("5.6.7.8", 8333)
+    peer_db.add_addresses([peer_address("1.2.3.4", 8333, services=1), gossiped])
+    peer_db.add_active_address(answered)
+    # a `functools.partial` over `_select`, whose two tables are its args
+    tried, new = cast("Any", peer_db.address_sampler()).args
+    assert [a.address for a in tried] == [answered.address]
+    assert [a.address for a in new] == [gossiped.address]
+
+
+@pytest.mark.parametrize(
+    "other",
+    [peer_address("1.2.3.4", 8334), peer_address("1.2.3.5", 8333)],
+    ids=["port", "address"],
+)
+def test_the_gossiped_side_leaves_out_the_answered_endpoint_alone(
+    other: NetworkAddressV2,
+) -> None:
+    """ISS 1283: an endpoint differing in its port or its address stays.
+
+    The draw compares `endpoint_key`'s three fields rather than the key.
+    The network id cannot differ alone between two dialable rows: IPv4
+    and IPv6 addresses differ in length.
+    """
+    peer_db = a_peer_db()
+    answered = peer_address("1.2.3.4", 8333)
+    peer_db.add_addresses([answered, other])
+    peer_db.add_active_address(answered)
+    _, new = cast("Any", peer_db.address_sampler()).args
+    assert new == [other]
+
+
+@pytest.mark.parametrize("table", ["answered", "gossiped"])
+def test_a_table_holding_nothing_leaves_the_draw_to_the_other(table: str) -> None:
+    """ISS 1201: Core searches the only table holding anything, coin or not."""
+    peer_db = a_peer_db()
+    address = peer_address("1.2.3.4", 8333)
+    peer_db.add_addresses([address])
+    if table == "answered":
+        peer_db.add_active_address(address)
+    for _ in range(8):
         drawn = peer_db.random_address()
         assert drawn is not None
-        assert drawn.address == answered.address
-        assert drawn.port == answered.port
+        assert drawn.address == address.address
+
+
+@pytest.mark.parametrize("table", ["known", "answered", "neither"])
+def test_a_try_is_recorded_for_an_endpoint_a_table_holds(table: str) -> None:
+    """ISS 1277: Core's `Attempt_` sets `m_last_try` on an entry it finds.
+
+    An endpoint neither table holds gets no record, as `Attempt_` bails
+    out where addrman does not find the address. An answered endpoint is
+    a known one too, `add_active_address` taking no other.
+    """
+    peer_db = a_peer_db()
+    address = peer_address("1.2.3.4", 8333)
+    if table != "neither":
+        peer_db.add_addresses([address])
+    if table == "answered":
+        peer_db.add_active_address(address)
+    before = time.time()
+    peer_db.attempt(address)
+    if table == "neither":
+        assert peer_db.last_try(address) == 0.0
+    else:
+        assert peer_db.last_try(address) >= before
+
+
+def test_a_try_too_old_to_read_is_forgotten(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ISS 1277: a try `RECENT_TRY_SECONDS` old is dropped at the next one."""
+    peer_db = a_peer_db()
+    old = peer_address("1.2.3.4", 8333)
+    new = peer_address("5.6.7.8", 8333)
+    peer_db.add_addresses([old, new])
+    now = time.time()
+    monkeypatch.setattr(time, "time", lambda: now - RECENT_TRY_SECONDS)
+    peer_db.attempt(old)
+    monkeypatch.setattr(time, "time", lambda: now)
+    peer_db.attempt(new)
+    assert peer_db.last_try(old) == 0.0
+    assert peer_db.last_try(new) == now
+
+
+def test_a_try_does_not_survive_a_restart(tmp_path: Path) -> None:
+    """ISS 1277: `peers.dat` does not serialize `m_last_try`, nor does this.
+
+    `AddrInfo`'s `SERIALIZE_METHODS` writes `m_last_success` and
+    `nAttempts` beside the address and its source, and not `m_last_try`
+    (`src/addrman_impl.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    """
+    first = a_peer_db(data_dir=tmp_path)
+    address = peer_address("1.2.3.4", 8333)
+    first.add_addresses([address])
+    first.attempt(address)
+    assert first.last_try(address) > 0
+    first.close()
+    second = a_peer_db(data_dir=tmp_path)
+    assert second.addresses == {address}
+    assert second.last_try(address) == 0.0
+    second.close()
 
 
 def test_a_known_address_survives_a_restart(tmp_path: Path) -> None:
@@ -928,13 +1144,12 @@ def test_a_known_address_survives_a_restart(tmp_path: Path) -> None:
     second.close()
 
 
-def test_an_address_that_answered_survives_a_restart_and_is_preferred(
-    tmp_path: Path,
+def test_an_address_that_answered_survives_a_restart_and_is_drawn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Which address answered survives a restart, and is still preferred.
+    """Which address answered survives a restart, and is drawn as answered.
 
-    The preference the previous test checks in memory is checked here
-    across a `close` and a fresh `PeerDB` on the same store: the
+    Across a `close` and a fresh `PeerDB` on the same store: the
     active-address record is durable, not only a hint kept for the run
     that made it.
     """
@@ -947,6 +1162,8 @@ def test_an_address_that_answered_survives_a_restart_and_is_preferred(
 
     second = a_peer_db(data_dir=tmp_path)
     assert second.addresses == {answered, unconfirmed}
+    # the coin fixed to the answered table, which only `answered` is in
+    monkeypatch.setattr(secrets, "randbelow", lambda n: 1)
     drawn = second.random_address()
     assert drawn is not None
     assert drawn.address == answered.address
@@ -1018,6 +1235,7 @@ def test_a_stale_answered_address_no_longer_holds_off_the_seeds(
     four_hours_ago = time.time() - 3600 * 4
     with monkeypatch.context() as patch:
         patch.setattr(time, "time", lambda: four_hours_ago)
+        first.add_addresses([stale])
         first.add_active_address(stale)
     first.close()
 
@@ -1045,11 +1263,13 @@ def test_get_active_addresses_deletes_a_stale_row_from_the_store(
     four_hours_ago = time.time() - 3600 * 4
     with monkeypatch.context() as patch:
         patch.setattr(time, "time", lambda: four_hours_ago)
+        peer_db.add_addresses([stale])
         peer_db.add_active_address(stale)
     assert peer_db.db is not None
-    assert list(peer_db.db)
+    answered_rows = [key for key, _ in peer_db.db if key.startswith(b"answered-")]
+    assert answered_rows
     peer_db.get_active_addresses()
-    assert not list(peer_db.db)
+    assert not [key for key, _ in peer_db.db if key.startswith(b"answered-")]
     peer_db.close()
 
 
@@ -1069,15 +1289,18 @@ def test_a_stale_answered_row_does_not_survive_a_restart(
     four_hours_ago = time.time() - 3600 * 4
     with monkeypatch.context() as patch:
         patch.setattr(time, "time", lambda: four_hours_ago)
+        first.add_addresses([stale])
         first.add_active_address(stale)
     first.close()
 
     second = a_peer_db(data_dir=tmp_path)
     # `__init__` already calls `get_active_addresses` once, to decide
     # `ask_dns_nodes`, so the row is gone from the store by the time
-    # construction returns
+    # construction returns, where the gossiped row it was known by stays
     assert second.db is not None
-    assert not list(second.db)
+    assert [key for key, _ in second.db] == [
+        b"known-" + address_module.endpoint_key(stale)
+    ]
     second.close()
 
 
@@ -1106,3 +1329,269 @@ def test_a_key_this_version_does_not_know_is_left_where_it_is(tmp_path: Path) ->
     assert second.addresses == {peer_address("1.2.3.4", 8333)}
     assert second.active_addresses == []
     second.close()
+
+
+_UNSTORABLE = [
+    pytest.param(peer_address("127.0.0.1", 18444), id="loopback"),
+    pytest.param(peer_address("192.168.1.1", 8333), id="rfc1918"),
+    pytest.param(peer_address("::1", 8333), id="ipv6 loopback"),
+    pytest.param(peer_address(_AN_ONIONCAT_ADDRESS, 8333), id="embedded torv2"),
+]
+
+
+@pytest.mark.parametrize("address", _UNSTORABLE)
+def test_an_unroutable_peer_is_not_recorded_as_answered(
+    address: NetworkAddressV2,
+) -> None:
+    """ISS 1140: Core's `AddrManImpl::Good_` updates only what addrman holds.
+
+    `AddSingle` never holds an unroutable address, so an answered
+    handshake with one is not recorded, and `random_address` and
+    `getaddr` never read it back. A routable peer beside it is the
+    control.
+    """
+    peer_db = a_peer_db()
+    routable = peer_address("1.2.3.4", 8333)
+    peer_db.add_addresses([address, routable])
+    peer_db.add_active_address(address)
+    peer_db.add_active_address(routable)
+    assert [a.address for a in peer_db.get_active_addresses()] == [routable.address]
+
+
+@pytest.mark.parametrize("prefix", [b"known-", b"answered-"])
+@pytest.mark.parametrize("address", _UNSTORABLE)
+def test_an_unroutable_row_is_dropped_from_the_store_on_load(
+    tmp_path: Path, prefix: bytes, address: NetworkAddressV2
+) -> None:
+    """ISS 1140: a row neither table would take now is deleted, not loaded.
+
+    Written directly under the prefix, as a store filled before the
+    tables refused such an address holds it. A routable row beside it
+    is loaded and kept.
+    """
+    now = int(time.time())
+    routable = peer_address("1.2.3.4", 8333, timestamp=now)
+    first = a_peer_db(data_dir=tmp_path)
+    assert first.db is not None
+    for row in (address, routable):
+        stored = NetworkAddressV2(
+            now, row.services, row.network_id, row.address, row.port
+        )
+        key = address_module.endpoint_key(stored)
+        first.db.put(prefix + key, stored.serialize(check_validity=False))
+    # an answered row is kept only beside a known one (ISS 1189)
+    kept = {prefix + address_module.endpoint_key(routable)}
+    if prefix == b"answered-":
+        known_key = b"known-" + address_module.endpoint_key(routable)
+        first.db.put(known_key, routable.serialize(check_validity=False))
+        kept.add(known_key)
+    first.close()
+
+    second = a_peer_db(data_dir=tmp_path)
+    loaded = second.addresses if prefix == b"known-" else second.active_addresses
+    assert [a.address for a in loaded] == [routable.address]
+    assert second.db is not None
+    assert {key for key, _ in second.db} == kept
+    second.close()
+
+
+def test_an_answered_endpoint_not_gossiped_is_not_recorded() -> None:
+    """ISS 1189: Core's `AddrManImpl::Good_` updates only what addrman holds.
+
+    `Good_` returns at once where `Find` has no entry for the address,
+    so a peer answering a handshake is not added to the tried table on
+    that alone. A gossiped endpoint beside it is the control, and its
+    record differing in `services` from the gossip shows the match is
+    on the endpoint rather than on the whole record.
+    """
+    peer_db = a_peer_db()
+    stranger = peer_address("1.2.3.4", 8333)
+    gossiped = peer_address("5.6.7.8", 8333)
+    peer_db.add_addresses([gossiped])
+    peer_db.add_active_address(stranger)
+    peer_db.add_active_address(peer_address("5.6.7.8", 8333, services=1))
+    assert [a.address for a in peer_db.get_active_addresses()] == [gossiped.address]
+
+
+def test_an_answered_row_with_no_known_row_is_dropped_on_load(
+    tmp_path: Path,
+) -> None:
+    """ISS 1189: a store holding an answered row alone loses it on load.
+
+    Written directly, as a store filled before `add_active_address`
+    asked for a known endpoint holds it. An answered row beside a known
+    one for the same endpoint is the control, and it is kept.
+    """
+    first = a_peer_db(data_dir=tmp_path)
+    assert first.db is not None
+    now = int(time.time())
+    orphan = peer_address("1.2.3.4", 8333, timestamp=now)
+    held = peer_address("5.6.7.8", 8333, timestamp=now)
+    for key, row in (
+        (b"answered-", orphan),
+        (b"answered-", held),
+        (b"known-", held),
+    ):
+        first.db.put(key + address_module.endpoint_key(row), row.serialize())
+    first.close()
+
+    second = a_peer_db(data_dir=tmp_path)
+    assert [a.address for a in second.active_addresses] == [held.address]
+    assert second.db is not None
+    assert {key for key, _ in second.db} == {
+        b"answered-" + address_module.endpoint_key(held),
+        b"known-" + address_module.endpoint_key(held),
+    }
+    second.close()
+
+
+def test_a_fixed_seed_decodes_as_cores_convert_seeds_reads_it() -> None:
+    """ISS 1099: network id, compact-size length, address, big-endian port.
+
+    The first line of Core's `nodes_main.txt` at
+    bitcoin/bitcoin@9be056a8a7, a CJDNS address, then an IPv4 one on a
+    port of its own, serialized as `generate_seeds.py` serializes them;
+    each gets Core's `SeedsServiceFlags`.
+    """
+    seeds = bytes.fromhex(
+        "0610fc11f76916e6361158ae1d4afcf757a4208d"  # [fc11:...:57a4]:8333
+        "0104010203042382"  # 1.2.3.4:9090
+    )
+    cjdns, ipv4 = fixed_seed_addresses(seeds)
+    assert cjdns.network_id == BIP155Network.CJDNS
+    assert cjdns.address == bytes.fromhex("fc11f76916e6361158ae1d4afcf757a4")
+    assert cjdns.port == 8333
+    assert ipv4 == peer_address(
+        "1.2.3.4", 9090, services=ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
+    )
+
+
+@pytest.mark.parametrize("table", ["addresses", "active_addresses"])
+def test_either_table_holding_a_network_holds_it(table: str) -> None:
+    """ISS 1099: Core's `addrman.Size(net)` counts new and tried alike.
+
+    `add_active_address` records only an endpoint `addresses` holds
+    (ISS 1189), so the answered table is asked alone here by writing the
+    endpoint straight into `_known_keys`, past `addresses`.
+    """
+    peer_db = a_peer_db()
+    assert not peer_db.holds_network(BIP155Network.IPV6)
+    held = peer_address("2a01:4f8::1", 8333)
+    if table == "addresses":
+        peer_db.add_addresses([held])
+    else:
+        peer_db._known_keys.add(address_module.endpoint_key(held))
+        peer_db.add_active_address(held)
+        assert not peer_db.addresses
+    assert peer_db.holds_network(BIP155Network.IPV6)
+    assert not peer_db.holds_network(BIP155Network.IPV4)
+
+
+def test_a_feeler_draws_what_the_answered_table_does_not_hold() -> None:
+    """ISS 1096: Core's `Select(true, ...)`, the new table alone.
+
+    An address answered, whatever timestamp the gossiped copy carries,
+    is not drawn, nor is one this node cannot dial; once every dialable
+    one is answered there is nothing to draw. The control, the sampler
+    without `new_only`, draws the answered address as well.
+    """
+    peer_db = a_peer_db()
+    answered = peer_address("1.2.3.4", 8333, timestamp=int(time.time()))
+    new = peer_address("5.6.7.8", 8333)
+    peer_db.add_addresses([replace(answered, timestamp=1), new, an_onion_address()])
+    peer_db.add_active_address(answered)
+    draw = peer_db.address_sampler(new_only=True)
+    assert {draw() for _ in range(40)} == {new}
+    both = peer_db.address_sampler()
+    drawn = {address_module.endpoint_key(cast("Any", both())) for _ in range(80)}
+    assert drawn == {address_module.endpoint_key(a) for a in (answered, new)}
+    peer_db.add_active_address(replace(new, timestamp=int(time.time())))
+    assert peer_db.address_sampler(new_only=True)() is None
+
+
+def test_an_extra_network_peer_draws_on_its_network_alone() -> None:
+    """ISS 1100: Core's `Select(false, {network})`, over both tables.
+
+    For IPv6 an IPv6 address is drawn, answered or only gossiped, the
+    coin deciding between the two tables as `_select` does; nothing is
+    drawn for a network the table holds nothing on.
+    """
+    peer_db = a_peer_db()
+    v4 = peer_address("1.2.3.4", 8333)
+    v6 = peer_address("2a00::1", 8333)
+    answered = peer_address("2a00::2", 8333, timestamp=int(time.time()))
+    peer_db.add_addresses([v4, v6, replace(answered, timestamp=1), an_onion_address()])
+
+    def draws(network: Network) -> set[bytes]:
+        draw = peer_db.address_sampler(network=network)
+        return {cast("NetworkAddressV2", draw()).address for _ in range(80)}
+
+    assert draws(Network.IPV6) == {v6.address, answered.address}
+    peer_db.add_active_address(answered)
+    assert draws(Network.IPV6) == {v6.address, answered.address}
+    assert draws(Network.IPV4) == {v4.address}
+    assert peer_db.address_sampler(network=Network.ONION)() is None
+
+
+def test_a_draw_on_no_network_never_calls_get_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1100: `get_network` runs only where a network is asked for.
+
+    Every dial pass walks both tables under their locks, so a draw on
+    no network is left the walk it had before; asked for a network, the
+    same table reaches it.
+    """
+    peer_db = a_peer_db()
+    answered = peer_address("1.2.3.4", 8333, timestamp=int(time.time()))
+    peer_db.add_addresses(
+        [replace(answered, timestamp=1), peer_address("5.6.7.8", 8333)]
+    )
+    peer_db.add_active_address(answered)
+    asked: list[NetworkAddressV2] = []
+
+    def get_network(address: NetworkAddressV2) -> Network:
+        asked.append(address)
+        return Network.IPV4
+
+    monkeypatch.setattr(address_module, "get_network", get_network)
+    assert peer_db.address_sampler()() is not None
+    assert asked == []
+    assert peer_db.address_sampler(network=Network.IPV4)() is not None
+    assert len(asked) == 2
+
+
+def test_a_read_that_prunes_nothing_does_not_rebuild_the_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1217: `get_active_addresses` rebuilds its index only after a prune.
+
+    Every row kept keeps its position, so a read that prunes nothing
+    leaves the index as it is. A stale row is the control: pruned, the
+    rows behind it move, and the index is rebuilt, so a repeat handshake
+    with the kept endpoint still settles onto its own row.
+    """
+    peer_db = a_peer_db()
+    stale = peer_address("9.9.9.9", 1, timestamp=int(time.time()) - 3600 * 4)
+    kept = peer_address("1.2.3.4", 18444)
+    rebuilt: list[None] = []
+    real_reindex = peer_db._reindex_active
+
+    def counted() -> None:
+        rebuilt.append(None)
+        real_reindex()
+
+    monkeypatch.setattr(peer_db, "_reindex_active", counted)
+    # known first: `add_active_address` records only an endpoint
+    # `addresses` holds
+    peer_db.add_addresses([kept])
+    peer_db.add_active_address(kept)
+    assert peer_db.get_active_addresses() == peer_db.active_addresses
+    assert rebuilt == []
+    peer_db.active_addresses.insert(0, stale)
+    real_reindex()
+    peer_db.get_active_addresses()
+    assert rebuilt == [None]
+    peer_db.add_active_address(kept)
+    (active,) = peer_db.active_addresses
+    assert active.port == kept.port

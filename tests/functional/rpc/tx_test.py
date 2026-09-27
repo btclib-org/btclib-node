@@ -13,8 +13,8 @@ this node unchanged.
 from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import BitcoinCoreRpcClient
-from btclib.fetch.bitcoin_core import BitcoinCoreFetcher
 from btclib.tx.limits import COINBASE_MATURITY
+from btclib_wallet.fetch.bitcoin_core import BitcoinCoreFetcher
 
 from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus
@@ -66,9 +66,13 @@ def test_add_tx(rpc_node: Node) -> None:
         )
         return body["result"][0]
 
-    result = accept("00")
-    assert not result["allowed"]
-    assert result["reject-reason"] == "Invalid serialization"
+    _, body = client.call_raw(
+        "testmempoolaccept", [["00"]], jsonrpc="1.0", request_timeout=2
+    )
+    assert body["error"]["code"] == -22
+    assert body["error"]["message"] == (
+        "TX decode failed: 00 Make sure the tx has at least one input."
+    )
 
     result = accept(invalid_tx.serialize(include_witness=True).hex())
     assert not result["allowed"]
@@ -115,7 +119,9 @@ def test_add_tx(rpc_node: Node) -> None:
     assert result["allowed"]
 
 
-def test_get_raw_transaction_is_what_btclib_s_fetcher_gets(rpc_node: Node) -> None:
+def test_get_raw_transaction_is_what_btclib_wallet_s_fetcher_gets(
+    rpc_node: Node,
+) -> None:
     """btclib-org/btclib-node#21: `BitcoinCoreFetcher.get_tx`, unchanged.
 
     The mempool is the only source this fetcher's own call can reach --

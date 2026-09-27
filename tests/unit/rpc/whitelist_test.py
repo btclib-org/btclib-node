@@ -320,21 +320,26 @@ def exchange(auth: RpcAuth, requests: list[Any]) -> tuple[bytes, list[Any], list
                 head += b"\r\nConnection: close"
             head += b"\r\nContent-Length: %d\r\n\r\n" % len(body)
             await loop.sock_sendall(theirs, head + body)
-        queued = len(messages)
         task = asyncio.ensure_future(conn.run())
-        reply = b""
-        async with asyncio.timeout(5):
+
+        async def answer_queued() -> None:
+            queued = 0
             while True:
                 if len(messages) > queued:
                     queued = len(messages)
                     conn.send(HttpReply(OK, {"result": None}))
-                try:
-                    data = await asyncio.wait_for(loop.sock_recv(theirs, 65536), 0.05)
-                except TimeoutError:
-                    continue
-                if not data:
-                    break
+                await asyncio.sleep(0.01)
+
+        # The read is never cancelled while it waits: a `sock_recv`
+        # cancelled by a timeout after its reader callback has already
+        # taken bytes off the socket loses them, which is what left
+        # `reply` empty under load (btclib-org/btclib-node#1212).
+        answering = asyncio.ensure_future(answer_queued())
+        reply = b""
+        async with asyncio.timeout(5):
+            while data := await loop.sock_recv(theirs, 65536):
                 reply += data
+        answering.cancel()
         await task
         theirs.close()
         return reply, messages

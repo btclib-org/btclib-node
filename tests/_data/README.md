@@ -65,6 +65,22 @@ again: what it holds this tree to is the *index* built on top —
 it, and answering the two back — and the genesis block `chains.py`
 builds, whose filter is row 0.
 
+## `tests/unit/chainstate/_data/BITCOIN_CORE_COPYING`
+
+```text
+repo    bitcoin/bitcoin
+path    COPYING
+commit  b23b901363c56043c536f32261ac8cb540624a84  2025-12-29
+blob    89960cbf2f221a29852ed162b25bda2afc0b2dd6
+pulled  2026-09-26
+behind  0 revisions; that commit is the tip of the path
+```
+
+Bitcoin Core's licence, MIT, which `blockfilters.json` is distributed
+under and which travels with it, in the sdist too. The name keeps it
+from reading as the licence of the directory: `testnet_bip158_vectors.json`
+beside it is this tree's own.
+
 ## `tests/unit/chainstate/_data/testnet_bip158_vectors.json`
 
 Not vendored — derived. Two testnet blocks Core's own file above does

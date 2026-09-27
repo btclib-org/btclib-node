@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import BitcoinCoreRpcClient
-from btclib.fetch.bitcoin_core import BitcoinCoreFetcher
+from btclib_wallet.fetch.bitcoin_core import BitcoinCoreFetcher
 
 from btclib_node.chains import RegTest
 from btclib_node.constants import NodeStatus, P2pConnStatus
@@ -106,7 +106,7 @@ def test_block_count(rpc_node: Node) -> None:
     assert body["result"] == 10
 
 
-def test_blockchain_info_names_the_chain_btclib_s_fetcher_checks(
+def test_blockchain_info_names_the_chain_btclib_wallet_s_fetcher_checks(
     rpc_node: Node,
 ) -> None:
     """`getblockchaininfo` answers the field the fetcher checks by default.
@@ -192,7 +192,7 @@ def test_bitcoin_core_fetcher_works_against_this_node_unchanged(
 ) -> None:
     """btclib-org/btclib-node#21, the issue's own title, tested literally.
 
-    The client is btclib's own `BitcoinCoreFetcher`, pointed at this
+    The client is btclib-wallet's own `BitcoinCoreFetcher`, pointed at this
     node with no adapter -- `verify_network` at its default `True`, so
     `getblockchaininfo` is exercised here too, not only the two methods
     the issue names.

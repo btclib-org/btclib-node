@@ -11,7 +11,8 @@ locators it serves.
 """
 
 import secrets
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -23,7 +24,7 @@ from btclib.exceptions import BTClibValueError
 from btclib_node.chains import Main, RegTest
 from btclib_node.chainstate import Chainstate
 from btclib_node.chainstate.block_index import BlockInfo, BlockStatus, calculate_work
-from btclib_node.exceptions import ChainstateInconsistencyError
+from btclib_node.exceptions import ChainstateInconsistencyError, MisbehavingError
 from btclib_node.log import Logger
 from tests import brute_force_nonce, generate_random_header_chain
 
@@ -108,7 +109,7 @@ def test_reject_header_claiming_work_it_did_not_do(
     header = unmined_header(RegTest().genesis.hash, b"\x03\x00\x00\x01")
     assert calculate_work(header) > 2**254
 
-    with pytest.raises(BTClibValueError):
+    with pytest.raises(MisbehavingError):
         block_index.add_headers([header])
     assert header.hash not in block_index.header_dict
     assert not block_index.block_candidates
@@ -134,7 +135,7 @@ def test_a_header_claiming_a_target_it_was_never_mined_to_is_refused(
     block_index = chainstate.block_index
     header = unmined_header(RegTest().genesis.hash, b"\x1d\x00\xff\xff")
 
-    with pytest.raises(BTClibValueError):
+    with pytest.raises(MisbehavingError):
         block_index.add_headers([header])
     assert len(block_index.header_dict) == 1
 
@@ -152,7 +153,7 @@ def test_reject_header_with_zero_target(
     block_index = chainstate.block_index
     header = unmined_header(RegTest().genesis.hash, b"\x01\x00\xff\xff")
 
-    with pytest.raises(BTClibValueError):
+    with pytest.raises(MisbehavingError):
         block_index.add_headers([header])
     assert len(block_index.header_dict) == 1
 
@@ -171,7 +172,7 @@ def test_one_bad_header_refuses_the_whole_batch(
     chain = generate_random_header_chain(5, RegTest().genesis.hash)
     bad = unmined_header(chain[-1].hash, b"\x03\x00\x00\x01")
 
-    with pytest.raises(BTClibValueError):
+    with pytest.raises(MisbehavingError):
         block_index.add_headers([*chain, bad])
     assert len(block_index.header_dict) == 1
     # and the same batch without it is taken
@@ -209,7 +210,7 @@ def test_a_header_with_valid_pow_but_the_wrong_required_target_is_refused(
     brute_force_nonce(header)
     assert header.bits != REGTEST_POW_LIMIT_BITS
 
-    with pytest.raises(BTClibValueError):
+    with pytest.raises(MisbehavingError):
         block_index.add_headers([header])
     assert header.hash not in block_index.header_dict
     assert len(block_index.header_dict) == 1
@@ -239,10 +240,132 @@ def test_a_header_with_valid_pow_but_no_later_than_the_median_is_refused(
     )
     brute_force_nonce(header)
 
-    with pytest.raises(BTClibValueError):
+    with pytest.raises(MisbehavingError):
         block_index.add_headers([header])
     assert header.hash not in block_index.header_dict
     assert len(block_index.header_dict) == 1
+
+
+def a_mined_header(parent: BlockHeader, version: int) -> BlockHeader:
+    """Mine a regtest header on `parent`, a second later, at `version`.
+
+    The nonce is searched in place rather than by `brute_force_nonce`,
+    whose copy would refuse a version of zero or below, which a block's
+    own header reaches `add_headers` with unchecked.
+    """
+    header = BlockHeader(
+        version=version,
+        previous_block_hash=parent.hash,
+        merkle_root=secrets.token_bytes(32),
+        time=parent.time + timedelta(seconds=1),
+        bits=REGTEST_POW_LIMIT_BITS,
+        nonce=0,
+        check_validity=False,
+    )
+    # a regtest target is met about every other nonce
+    while True:
+        with suppress(BTClibValueError):
+            header.assert_valid_pow(REGTEST_POW_LIMIT_BITS)
+            return header
+        header.nonce += 1
+
+
+@pytest.mark.parametrize("version", [-1, 1, 2, 3])
+def test_a_header_version_regtest_made_obsolete_is_refused_bad_version(
+    a_chainstate: Callable[[Path | None], Chainstate], version: int
+) -> None:
+    """ISS 1262: regtest binds BIP34, BIP66 and BIP65 from height 1.
+
+    Core's `bad-version`, the version printed as its 32 bits, a
+    `MisbehavingError` since `MaybePunishNodeForBlock` punishes it;
+    version 4 is taken.
+    """
+    block_index = a_chainstate(None).block_index
+    genesis = RegTest().genesis
+    header = a_mined_header(genesis, version)
+    with pytest.raises(MisbehavingError) as refusal:
+        block_index.add_headers([header])
+    assert str(refusal.value) == f"bad-version(0x{version & 0xFFFFFFFF:08x})"
+    assert header.hash not in block_index.header_dict
+    taken = a_mined_header(genesis, 4)
+    assert block_index.add_headers([taken]) == taken.hash
+
+
+def test_each_bip_refuses_its_obsolete_version_from_its_own_height(
+    a_chainstate: Callable[[Path | None], Chainstate],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1262: BIP34 from its height, BIP66 and BIP65 from theirs.
+
+    With the three at heights 2, 3 and 4, each height takes the version
+    the one before it refuses.
+    """
+    block_index = a_chainstate(None).block_index
+    params = replace(
+        block_index.chain.consensus, bip34_height=2, bip66_height=3, bip65_height=4
+    )
+    # a property of the class, so patched there, for this test only
+    monkeypatch.setattr(RegTest, "consensus", property(lambda _: params))
+    parent = RegTest().genesis
+    for height, least in ((1, 1), (2, 2), (3, 3), (4, 4)):
+        if least > 1:
+            refused = a_mined_header(parent, least - 1)
+            with pytest.raises(BTClibValueError, match="bad-version"):
+                block_index.add_headers([refused])
+        header = a_mined_header(parent, least)
+        assert block_index.add_headers([header]) == header.hash
+        assert block_index.get_block_info(header.hash).index == height
+        parent = header
+
+
+def test_a_version_zero_header_below_bip34_is_indexed_and_reloaded(
+    a_chainstate: Callable[[Path | None], Chainstate],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1262: below BIP34's height Core takes a version of zero.
+
+    btclib's `BlockHeader.assert_valid` refuses one, so the index stores
+    and reads it back unchecked.
+    """
+    params = replace(
+        RegTest().consensus, bip34_height=2, bip66_height=2, bip65_height=2
+    )
+    monkeypatch.setattr(RegTest, "consensus", property(lambda _: params))
+    chainstate = a_chainstate(None)
+    header = a_mined_header(RegTest().genesis, 0)
+    assert chainstate.block_index.add_headers([header]) == header.hash
+    chainstate.close()
+    reloaded = a_chainstate(None).block_index
+    assert reloaded.get_block_info(header.hash).header.version == 0
+
+
+def test_a_header_too_far_in_the_future_is_refused_without_misbehaving(
+    a_chainstate: Callable[[Path | None], Chainstate],
+) -> None:
+    """ISS 1170: Core's `time-too-new` is `BLOCK_TIME_FUTURE`, not punished.
+
+    The header is solved and correctly targeted, three hours ahead of the
+    clock, past Core's two: refused, as `bad-diffbits` and `time-too-old`
+    above are, and not a `MisbehavingError`, as they are.
+    """
+    chainstate = a_chainstate(None)
+    block_index = chainstate.block_index
+    genesis = RegTest().genesis
+    header = BlockHeader(
+        version=70015,
+        previous_block_hash=genesis.hash,
+        merkle_root=secrets.token_bytes(32),
+        time=datetime.now(UTC) + timedelta(hours=3),
+        bits=REGTEST_POW_LIMIT_BITS,
+        nonce=1,
+        check_validity=False,
+    )
+    brute_force_nonce(header)
+
+    with pytest.raises(BTClibValueError) as refused:
+        block_index.add_headers([header])
+    assert not isinstance(refused.value, MisbehavingError)
+    assert header.hash not in block_index.header_dict
 
 
 def test_add_headers_returns_the_batch_s_own_tip(
@@ -673,7 +796,7 @@ def test_a_header_before_its_own_new_parent_in_the_batch_refuses_the_batch(
     block_index = chainstate.block_index
     parent, child = generate_random_header_chain(2, RegTest().genesis.hash)
 
-    with pytest.raises(BTClibValueError):
+    with pytest.raises(MisbehavingError):
         block_index.add_headers([child, parent])
     assert child.hash not in block_index.header_dict
     assert parent.hash not in block_index.header_dict
@@ -822,52 +945,6 @@ def test_a_locator_from_a_start_header_is_that_header_s_own_tip_locator(
     assert locators[0] == chain[-2].hash
 
 
-def test_block_locators_2(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
-    """A locator naming only the genesis returns the whole chain after it."""
-    chainstate = a_chainstate(None)
-    block_index = chainstate.block_index
-    chain = generate_random_header_chain(2000, RegTest().genesis.hash)
-    block_index.add_headers(chain)
-    headers = block_index.get_headers_from_locators(
-        [RegTest().genesis.hash], b"\x00" * 32
-    )
-    assert chain == headers
-
-
-def test_block_locators_3(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
-    """get_headers_from_locators stops at the requested `stop` hash.
-
-    Asked for what follows the genesis and to stop at the chain's own
-    1000th header, the answer ends there rather than running to the tip.
-    """
-    chainstate = a_chainstate(None)
-    block_index = chainstate.block_index
-    chain = generate_random_header_chain(2000, RegTest().genesis.hash)
-    block_index.add_headers(chain)
-    headers = block_index.get_headers_from_locators(
-        [RegTest().genesis.hash], chain[1000].hash
-    )
-    assert headers[-1] == chain[1000]
-    assert headers == chain[: 1000 + 1]
-
-
-def test_block_locators_4(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
-    """The first known locator resumes the answer, whatever order it is in.
-
-    Of the two locators offered, the chain's own unindexed tip and the
-    genesis, only the genesis is known, and the answer resumes from it
-    regardless of its position in the list.
-    """
-    chainstate = a_chainstate(None)
-    block_index = chainstate.block_index
-    chain = generate_random_header_chain(2000, RegTest().genesis.hash)
-    block_index.add_headers(chain[:1000])
-    headers = block_index.get_headers_from_locators(
-        [chain[-1].hash, RegTest().genesis.hash], b"\x00" * 32
-    )
-    assert headers == chain[:1000]
-
-
 def test_only_the_tip_can_leave_the_active_chain(
     a_chainstate: Callable[[Path | None], Chainstate],
 ) -> None:
@@ -921,35 +998,6 @@ def test_no_candidate_is_offered_when_none_outweighs_the_chain(
     for header in chain:
         block_index.add_to_active_chain(header.hash)
     assert block_index.get_first_candidate() is None
-    chainstate.close()
-
-
-def test_headers_from_a_locator_stop_where_asked(
-    a_chainstate: Callable[[Path | None], Chainstate],
-) -> None:
-    """get_headers_from_locators resumes from the first known locator.
-
-    Stopping at the fifth header of ten answers only those five; an
-    unknown locator ahead of the genesis in the list is skipped rather
-    than failing the call; and no known locator at all answers nothing.
-    """
-    chainstate = a_chainstate(None)
-    block_index = chainstate.block_index
-    chain = generate_random_header_chain(10, RegTest().genesis.hash)
-    block_index.add_headers(chain)
-
-    # from the genesis, stopping at the fifth
-    got = block_index.get_headers_from_locators([RegTest().genesis.hash], chain[4].hash)
-    assert [h.hash for h in got] == [h.hash for h in chain[:5]]
-
-    # a locator nothing knows is skipped, and the next one answers
-    got = block_index.get_headers_from_locators(
-        [b"\x11" * 32, RegTest().genesis.hash], b"\x00" * 32
-    )
-    assert [h.hash for h in got] == [h.hash for h in chain]
-
-    # no locator at all is no answer
-    assert block_index.get_headers_from_locators([b"\x11" * 32], b"\x00" * 32) == []
     chainstate.close()
 
 
@@ -1015,43 +1063,6 @@ def test_a_block_already_held_is_left_out_of_what_is_asked_for(
     block_index.set_downloaded(chain[1].hash)
 
     assert block_index.get_download_candidates() == [chain[0].hash, chain[2].hash]
-    chainstate.close()
-
-
-def test_a_stop_hash_at_or_below_the_locator_is_answered_not_raised(
-    a_chainstate: Callable[[Path | None], Chainstate],
-) -> None:
-    """A known `stop` at or below the resolved locator answers, not raises.
-
-    `stop` sitting at or below the locator's own height is not in the
-    slice `get_headers_from_locators` takes *after* it, and looking for
-    `stop` in `header_index` as a whole -- rather than in that slice --
-    used to raise `ValueError` here: btclib-org/btclib-node#434. A
-    `stop` behind the locator can never be reached going forward, so it
-    does not truncate the answer at all; where the locator is already
-    the chain's own tip, that answer is empty -- Core's own "nothing to
-    send" for the same request.
-    """
-    chainstate = a_chainstate(None)
-    block_index = chainstate.block_index
-    chain = generate_random_header_chain(5, RegTest().genesis.hash)
-    block_index.add_headers(chain)
-
-    # the genesis is the measured case in the issue: known, and below
-    # every locator this chain can offer -- and the locator here is
-    # already the tip, so there is nothing to send either way
-    assert (
-        block_index.get_headers_from_locators([chain[-1].hash], RegTest().genesis.hash)
-        == []
-    )
-    # stop at the locator itself, not only strictly below it
-    assert block_index.get_headers_from_locators([chain[-1].hash], chain[-1].hash) == []
-    # stop below a locator that is not the tip: unreachable going
-    # forward, so it does not raise and does not truncate what follows
-    assert (
-        block_index.get_headers_from_locators([chain[2].hash], chain[0].hash)
-        == chain[3:]
-    )
     chainstate.close()
 
 

@@ -110,8 +110,8 @@ value, within a file the first, the chain selectors aside; and a
 negation discarding every value named before it at its own level.
 `-connect`, `-addnode`, `-rpcauth`, `-rpcwhitelist` and `-debug` are
 lists, every value from every level applying. `-rpcbind` is a list in
-Core too, every address bound; this node binds one, and reads it as an
-option taking one value.
+Core too, every value checked and none bound without `-rpcallowip`,
+which this node does not have.
 
 Not every option answers to the file the same way once the chain is
 not `main`: `-port`, `-rpcport`, `-rpcbind`, `-connect` and `-addnode`
@@ -131,7 +131,7 @@ ignored, as Core warns (`ReadConfigFiles`, same file). On the command
 line `-includeconf` is refused unless negated, and `-noincludeconf`
 reads no included file, both as `ParseParameters` and `ReadConfigFiles`
 have it; `-noconf` reads no file at all. `conf=` inside a file is
-refused -- fatally, "conf cannot be set in a configuration file" -- and
+refused -- fatally, in Core's words, pointing at `includeconf=` -- and
 `datadir=` inside one is not read at all (unlike Core, which lets a file
 move the data directory read *after* the file naming it was found): this
 module needs a `-datadir` before it can know a file's own default path,
@@ -141,6 +141,11 @@ the same key mean two different things depending on when it is read.
 Warned about on stderr with its own message rather than the generic one
 below, since `datadir` is a real, documented option and not a typo the
 generic message would have a reader believe it was.
+
+A `bitcoin.conf` in the data directory that `-conf` leaves unread, by
+naming another file, is refused as `InitConfig` (`src/common/init.cpp`,
+same sha) refuses it, and `-allowignoredconf` makes that a warning:
+`_check_ignored_conf` below.
 
 An unrecognised key in the file is warned about, on stderr, and
 ignored -- Core's own default (`ReadConfigFiles(error,
@@ -156,6 +161,7 @@ A boolean, wherever it is read from, is Core's `InterpretBool`
 """
 
 import json
+import os
 import re
 import sys
 import textwrap
@@ -164,8 +170,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from btclib_node import Node, install_signal_handlers
-from btclib_node.config import DEFAULT_MAX_PEER_CONNECTIONS, Config, split_host_port
+from btclib_node.block_db import blocks_directory
+from btclib_node.config import (
+    DEFAULT_MAX_PEER_CONNECTIONS,
+    Config,
+    get_path_arg,
+    split_host_port,
+)
 from btclib_node.constants import MIN_PRUNE_TARGET_MIB
+from btclib_node.dirlock import DirectoryLock, lock_directories
+from btclib_node.exceptions import DirectoryLockError
+from btclib_node.p2p.banman import DEFAULT_MISBEHAVING_BANTIME
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -292,6 +307,18 @@ _OPTIONS: dict[str, _Option] = {
         _CONNECTION_TITLE,
         network_only=True,
     ),
+    "allowignoredconf": _Option(
+        "",
+        f"For backwards compatibility, treat an unused {_DEFAULT_CONF_FILENAME} "
+        "file in the datadir as a warning, not an error.",
+        _OPTIONS_TITLE,
+    ),
+    "bantime": _Option(
+        "=<n>",
+        "Default duration (in seconds) of manually configured bans (default: "
+        f"{DEFAULT_MISBEHAVING_BANTIME})",
+        _CONNECTION_TITLE,
+    ),
     "blocksdir": _Option(
         "=<dir>",
         "Specify directory to hold blocks subdirectory for *.dat files "
@@ -394,8 +421,10 @@ _OPTIONS: dict[str, _Option] = {
     ),
     "rpcbind": _Option(
         "=<addr>[:port]",
-        "Bind to given address to listen for JSON-RPC connections; port is "
-        "optional and overrides -rpcport",
+        "Bind to given address to listen for JSON-RPC connections. This "
+        "option is ignored unless -rpcallowip is also passed, which this node "
+        "does not accept, so the listener stays on localhost. Use [host]:port "
+        "notation for IPv6. This option can be specified multiple times",
         _RPC_TITLE,
         network_only=True,
     ),
@@ -452,6 +481,15 @@ _OPTIONS: dict[str, _Option] = {
     ),
 }
 
+# The sections `GetUnrecognizedSections` (`src/common/args.cpp`, same
+# sha) does not warn about: every `ChainTypeToString`, `testnet4`
+# included though this node runs no such chain.
+_RECOGNIZED_SECTIONS = frozenset({"main", "test", "testnet4", "signet", "regtest"})
+
+# Where a section of a file was named: Core's `SectionInfo`, its name,
+# the file as `ReadConfigFiles` names it, and the line.
+_SectionInfo = tuple[str, str, int]
+
 # A setting's value once read: a string, `False` for a negation, and
 # `True` for a double negative -- Core's `SettingsValue` as
 # `InterpretValue` fills it.
@@ -481,6 +519,8 @@ class _Settings:
     command_line: dict[str, list[_Value]]
     ro_config: _RoConfig = field(default_factory=dict)
     network: str = ""
+    # Core's `m_config_sections`: every section the files read named
+    config_sections: list[_SectionInfo] = field(default_factory=list)
 
 
 def _interpret_key(key: str) -> _KeyInfo:
@@ -572,35 +612,47 @@ def _parse_parameters(
     return options, token
 
 
-def _config_options(text: str, path: str) -> list[tuple[int, str, str]]:
-    """Return every `key=value` of `text`, its line and section prefix with it.
+def _config_options(
+    text: str, sections: list[_SectionInfo] | None = None, filepath: str = ""
+) -> list[tuple[str, str]]:
+    """Return every `key=value` of `text`, with its section prefix.
+
+    Every section named is appended to `sections`, where given, with
+    `filepath` and its line: a `[section]` line, and the part of a key
+    before its last `.` where that `.` sits at or past the length of the
+    `[section]` prefix, as `GetConfigOptions` appends to Core's
+    `sections`.
 
     Core's own config-file grammar (`GetConfigOptions`,
     `src/common/config.cpp`, at bitcoin/bitcoin@9be056a8a7): a key under
     a `[section]` line is returned as `section.key`. Raises `ValueError`
-    on a line that is neither `key=value` nor `[section]`, on one
-    starting with `-` (an option is named without it in a file), and on
-    a key naming `rpcpassword` on a line holding a `#` anywhere, the
-    last because a `#` may be part of the password or start a comment.
+    in Core's words on a line that is neither `key=value` nor
+    `[section]`, on one starting with `-` (an option is named without it
+    in a file), and on a key naming `rpcpassword` on a line holding a `#`
+    anywhere, the last because a `#` may be part of the password or start
+    a comment. A line ends at a newline alone, as `std::getline` ends
+    one, so that the number in a refusal is the one Core counts.
     """
-    options: list[tuple[int, str, str]] = []
+    options: list[tuple[str, str]] = []
     prefix = ""
-    for lineno, raw in enumerate(text.splitlines(), start=1):
+    for lineno, raw in enumerate(text.split("\n"), start=1):
         line, used_hash, _ = raw.partition("#")
         line = line.strip(" \t\r\n")
         if not line:
             continue
         if line[0] == "[" and line[-1] == "]":
             prefix = line[1:-1] + "."
+            if sections is not None:
+                sections.append((line[1:-1], filepath, lineno))
             continue
         if line[0] == "-":
             err_msg = (
-                f"{path}:{lineno}: options in a configuration file are "
-                "given without a leading -"
+                f"parse error on line {lineno}: {line}, options in "
+                "configuration file must be specified without leading -"
             )
             raise ValueError(err_msg)
         if "=" not in line:
-            err_msg = f"{path}:{lineno}: not a key=value line: {line!r}"
+            err_msg = f"parse error on line {lineno}: {line}"
             if line.startswith("no"):
                 err_msg += (
                     ", if you intended to specify a negated option, use "
@@ -611,39 +663,46 @@ def _config_options(text: str, path: str) -> list[tuple[int, str, str]]:
         name = prefix + key.strip(" \t\r\n")
         if used_hash and "rpcpassword" in name:
             err_msg = (
-                f"{path}:{lineno}: using # in rpcpassword can be ambiguous and "
-                "should be avoided"
+                f"parse error on line {lineno}, using # in rpcpassword can be "
+                "ambiguous and should be avoided"
             )
             raise ValueError(err_msg)
-        options.append((lineno, name, value.strip(" \t\r\n")))
+        options.append((name, value.strip(" \t\r\n")))
+        dot = name.rfind(".")
+        if sections is not None and dot != -1 and len(prefix) <= dot:
+            sections.append((name[:dot], filepath, lineno))
     return options
 
 
-def _parse_conf_text(text: str, path: str) -> _RoConfig:
+def _parse_conf_text(
+    text: str, sections: list[_SectionInfo] | None = None, filepath: str = ""
+) -> _RoConfig:
     """Parse `text` into `{section: {name: [values]}}`, in file order.
+
+    `sections` and `filepath` are `_config_options`'.
 
     `ReadConfigStream` (`src/common/config.cpp`, at
     bitcoin/bitcoin@9be056a8a7) over `_config_options`: `InterpretKey`
     and `InterpretValue` on each key. Raises `ValueError` where
     `_config_options` does, on a `conf=` key, and on a negation an
-    option forbids. An unknown key, and `datadir`, are warned about on
-    stderr and left out.
+    option forbids, each in `IsConfSupported`'s and `InterpretValue`'s
+    words, which name no line. An unknown key, and `datadir`, are warned
+    about on stderr and left out.
     """
     config: _RoConfig = {}
-    for lineno, name, value in _config_options(text, path):
+    for name, value in _config_options(text, sections, filepath):
         info = _interpret_key(name)
         if info.name == "conf":
-            err_msg = f"{path}:{lineno}: conf cannot be set in a configuration file"
+            err_msg = (
+                "conf cannot be set in the configuration file; use includeconf= "
+                "if you want to include additional config files"
+            )
             raise ValueError(err_msg)
         option = _OPTIONS.get(info.name)
         if option is None:
             sys.stderr.write(f"warning: ignoring unknown configuration value {name}\n")
             continue
-        try:
-            setting = _interpret_value(info, value, option)
-        except ValueError as error:
-            err_msg = f"{path}:{lineno}: {error}"
-            raise ValueError(err_msg) from None
+        setting = _interpret_value(info, value, option)
         if info.name == "datadir":
             sys.stderr.write(
                 "warning: -datadir cannot be set in a configuration file, "
@@ -654,15 +713,27 @@ def _parse_conf_text(text: str, path: str) -> _RoConfig:
     return config
 
 
-def _read_conf_file(path: Path, *, required: bool) -> _RoConfig:
-    """Read and parse `path`; `{}` if it is missing and not `required`.
+def _read_conf_file(
+    path: Path,
+    *,
+    required: bool,
+    include: str | None = None,
+    sections: list[_SectionInfo] | None = None,
+    filepath: str = "",
+) -> _RoConfig:
+    """Read and parse `path`; `{}` if it cannot be read and is not `required`.
+
+    `sections` and `filepath` are `_config_options`', `filepath` being
+    the name `path` is given in a warning.
 
     Core's own "ok to not have a config file" (`ReadConfigFiles`,
     `src/common/config.cpp`) for the default filename, which is what
     `required=False` is for. `required=True` is what `-conf` explicitly
     naming a file gets instead: a missing or unreadable one is fatal
     there, the same as Core's own "specified config file ... could not
-    be opened".
+    be opened". Core asks `stream.good()` of every file, so any `OSError`
+    the read raises is what "could not be opened" is here, a missing
+    file and one the process may not read alike.
 
     A directory is checked with `is_dir()` before the file is opened,
     matching `ReadConfigFiles`'s own `fs::is_directory(conf_path)` guard,
@@ -672,22 +743,36 @@ def _read_conf_file(path: Path, *, required: bool) -> _RoConfig:
     `IsADirectoryError` (`errno.EISDIR`) on POSIX and `PermissionError`
     (`errno.EACCES`) on Windows, so a handler for one platform's
     exception class is not reached by the other's error.
+
+    The refusals are `ReadConfigFiles`'s own words, those of an included
+    file where `include` is the `includeconf` value that named it.
     """
     if path.is_dir():
-        err_msg = f"configuration file {path} is a directory"
+        kind = "Config" if include is None else "Included config"
+        err_msg = f'{kind} file "{path}" is a directory.'
         raise ValueError(err_msg)
     try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
+        # `newline=""`: universal newlines would end a line at a lone
+        # `\r` too, where `std::getline` ends one at `\n` alone
+        text = path.read_text(encoding="utf-8", newline="")
+    except OSError:
+        if include is not None:
+            err_msg = f"Failed to include configuration file {include}"
+            raise ValueError(err_msg) from None
         if required:
-            err_msg = f"specified configuration file {path} could not be opened"
+            err_msg = f'specified config file "{path}" could not be opened.'
             raise ValueError(err_msg) from None
         return {}
-    return _parse_conf_text(text, str(path))
+    return _parse_conf_text(text, sections, filepath)
 
 
 def _load_conf_tree(
-    conf_path: Path, *, conf_explicit: bool, base_dir: Path, use_includes: bool
+    conf_path: Path,
+    *,
+    conf_explicit: bool,
+    base_dir: Path,
+    use_includes: bool,
+    sections: list[_SectionInfo] | None = None,
 ) -> _RoConfig:
     """Read `conf_path`, then every `includeconf` its default section names.
 
@@ -699,16 +784,29 @@ def _load_conf_tree(
     bitcoin/bitcoin@9be056a8a7). A negated `includeconf` discards the
     names before it, as that function's own `SettingsSpan` does, and
     `use_includes=False`, for `-noincludeconf`, reads none.
+
+    Every section named is appended to `sections`, where given: the root
+    file under its path, an included one under its name as written, as
+    `ReadConfigFiles` passes each to `ReadConfigStream`.
     """
-    tree = _read_conf_file(conf_path, required=conf_explicit)
+    tree = _read_conf_file(
+        conf_path, required=conf_explicit, sections=sections, filepath=str(conf_path)
+    )
     if not use_includes:
         return tree
     includes = tree.get("", {}).get("includeconf", [])
     for name in includes[_negated(includes) :]:
-        include_path = Path(_setting_to_str(name))
+        include = _setting_to_str(name)
+        include_path = Path(include)
         if not include_path.is_absolute():
             include_path = base_dir / include_path
-        included = _read_conf_file(include_path, required=True)
+        included = _read_conf_file(
+            include_path,
+            required=True,
+            include=include,
+            sections=sections,
+            filepath=include,
+        )
         for section, keys in included.items():
             dest = tree.setdefault(section, {})
             for key, values in keys.items():
@@ -964,18 +1062,19 @@ def _help_message(*, show_debug: bool) -> str:
     return "".join(parts)
 
 
-def _check_datadir(base_dir: Path) -> None:
+def _check_datadir(base_dir: Path, datadir: str) -> None:
     """Refuse an explicit `-datadir` that is not an existing directory.
 
     Core's own `CheckDataDirOption` (`src/common/args.cpp:891`, at
     bitcoin/bitcoin@ca7162cde5) -- `datadir.empty() ||
     fs::is_directory(fs::absolute(datadir))` -- validates `-datadir` as
     a directory separately from reading the config file, and
-    `ReadConfigFiles` (`src/common/config.cpp:230-232`, same sha)
-    answers "specified data directory ... does not exist." when it
-    fails, called again there because a `datadir=` line inside the
-    config file can still change it after the command-line value
-    already passed this same check once. This function is
+    `InitConfig` (`src/common/init.cpp`, at bitcoin/bitcoin@9be056a8a7)
+    answers "Specified data directory ... does not exist." when it
+    fails, naming `datadir` as it was given; `ReadConfigFiles` checks
+    again because a `datadir=` line inside the config file can still
+    change it after the command-line value already passed this same
+    check once. This function is
     `build_config`'s counterpart of the first call, ahead of
     `_load_conf_tree`; there is no second call here because a
     `datadir=` line inside a configuration file never reaches
@@ -993,8 +1092,71 @@ def _check_datadir(base_dir: Path) -> None:
     path gets from `GetBlocksDirPath`'s `fs::create_directories`.
     """
     if not base_dir.is_dir():
-        err_msg = f'specified data directory "{base_dir}" does not exist.'
+        err_msg = f'Specified data directory "{datadir}" does not exist.'
         raise ValueError(err_msg)
+
+
+def _quoted(text: str) -> str:
+    """Return Core's `fs::quoted`: `std::quoted` with `&` as its escape."""
+    return '"' + text.replace("&", "&&").replace('"', '&"') + '"'
+
+
+def _check_ignored_conf(
+    settings: _Settings, base_dir: Path, conf_path: Path | None
+) -> None:
+    """Refuse a `bitcoin.conf` in `base_dir` that `-conf` leaves unread.
+
+    `InitConfig` (`src/common/init.cpp`, at bitcoin/bitcoin@9be056a8a7), and
+    its message. `conf_path`, the file read, `None` under `-noconf`, is
+    compared with `base_dir`'s own as `fs::equivalent` compares them, and an
+    `OSError` is refused as `InitConfig`'s `catch` refuses an exception, in
+    Python's words rather than the C++ library's. The message's paths are
+    Core's: `-datadir` and `-conf` lexically normal (`GetPathArg`), the
+    first made absolute and a relative `-conf` joined to it
+    (`AbsPathForConfigVal`), as `_read_settings` reads them.
+    `-allowignoredconf` makes the refusal a warning on stderr, as this
+    module's other warnings are, where Core logs it. Core's other source,
+    "data directory", is a `datadir=` line that moved the data directory,
+    which `_parse_conf_text` drops; and the line Core logs under `-noconf`
+    is not written.
+    """
+    base_config = base_dir / _DEFAULT_CONF_FILENAME
+    if conf_path is None or not base_config.exists():
+        return
+    # strings rather than `Path`, which drops the `.` segment Core keeps:
+    # `-datadir=.` is shown as "<cwd>/.", and `-conf=other.conf` under it
+    # as "<cwd>/./other.conf"; `fs::absolute` asks for the working
+    # directory only where the path is relative
+    base = str(base_dir)
+    try:
+        if conf_path.samefile(base_config):
+            return
+        if datadir := _get_arg(settings, "datadir"):
+            base = get_path_arg(datadir)
+            if not os.path.isabs(base):  # noqa: PTH117
+                base = os.path.join(os.getcwd(), base)  # noqa: PTH109, PTH118
+    except OSError as os_error:
+        raise ValueError(str(os_error)) from None
+    conf = _get_arg(settings, "conf") or ""
+    config = os.path.join(base, get_path_arg(conf or _DEFAULT_CONF_FILENAME))  # noqa: PTH118
+    name = _quoted(_DEFAULT_CONF_FILENAME)
+    error = (
+        f"Data directory {_quoted(base)} contains a {name} file which is ignored, "
+        f"because a different configuration file {_quoted(config)} from command "
+        f"line argument {_quoted('-conf=' + conf)} is being used instead. Possible "
+        "ways to address this would be to:\n"
+        f"- Delete or rename the {name} file in data directory {_quoted(base)}.\n"
+        "- Change datadir= or conf= options to specify one configuration file, not "
+        "two, and use includeconf= to include any other configuration files."
+    )
+    if _get_bool(settings, "allowignoredconf"):
+        sys.stderr.write(f"warning: {error}\n")
+        return
+    error += (
+        "\n- Set allowignoredconf=1 option to treat this condition as a warning, "
+        "not an error."
+    )
+    raise ValueError(error)
 
 
 def _check_prune(prune: int) -> None:
@@ -1033,21 +1195,41 @@ def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
     options, token = _parse_parameters(argv)
     settings = _Settings(options)
 
+    # `-datadir` and `-conf` are read by `get_path_arg`, lexically normal
+    # before the file system is asked anything: `missing/..` and
+    # `symlink/..` are the directory they are written in. `-datadir` is
+    # made absolute as `GetDataDir` makes it (`src/common/args.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7). A value that is `.` once normal is
+    # where a path a refusal names still differs from Core's: Core joins
+    # the `.` on and `Path` drops it, so `-datadir=.` names "<cwd>/x"
+    # where Core names "<cwd>/./x" (btclib-org/btclib-node#1273).
     datadir = _get_arg(settings, "datadir")
-    base_dir = Path(datadir) if datadir else Path.home() / ".btclib"
+    base_dir = Path.home() / ".btclib"
     if datadir:
-        _check_datadir(base_dir)
+        base_dir = Path(get_path_arg(datadir))
+        if not base_dir.is_absolute():
+            base_dir = Path.cwd() / base_dir
+        _check_datadir(base_dir, datadir)
+    conf_path = None
     if not _is_negated(settings, "conf"):
-        conf_value = Path(_get_arg(settings, "conf") or _DEFAULT_CONF_FILENAME)
+        conf = _get_arg(settings, "conf")
+        conf_value = Path(get_path_arg(conf) if conf else _DEFAULT_CONF_FILENAME)
         conf_path = conf_value if conf_value.is_absolute() else base_dir / conf_value
-        settings.ro_config = _load_conf_tree(
-            conf_path,
-            conf_explicit=_is_set(settings, "conf"),
-            base_dir=base_dir,
-            use_includes="includeconf" not in settings.command_line,
-        )
+        try:
+            settings.ro_config = _load_conf_tree(
+                conf_path,
+                conf_explicit=_is_set(settings, "conf"),
+                base_dir=base_dir,
+                use_includes="includeconf" not in settings.command_line,
+                sections=settings.config_sections,
+            )
+        except ValueError as error:
+            # `InitConfig`'s own prefix on a `ReadConfigFiles` refusal
+            err_msg = f"Error reading configuration file: {error}"
+            raise ValueError(err_msg) from None
     chain_name = _resolve_chain_name(settings)
     settings.network = _CHAIN_SECTION[chain_name]
+    _check_ignored_conf(settings, base_dir, conf_path)
 
     if token is not None:
         err_msg = (
@@ -1063,60 +1245,131 @@ def _read_settings(argv: Sequence[str]) -> tuple[_Settings, Path, str]:
     return settings, base_dir, chain_name
 
 
-def build_config(argv: Sequence[str] | None = None) -> Config:
-    """Parse `argv` (`sys.argv[1:]` if `None`) and its `-conf` into a `Config`.
+@dataclass(frozen=True)
+class _BeforeLock:
+    """What `_before_lock` read, for `_after_lock` to finish the `Config`.
 
-    Raises `ValueError` on a malformed argument, a malformed
-    configuration file, or an unknown chain, and `SystemExit(0)` once
-    the help is printed.
+    `directories` is a `Config` of the chain, the data directory and
+    `-blocksdir`, the fields that name the directories `Node.__init__`
+    locks, and of `-maxconnections`, which `Config.__init__` refuses just
+    after a missing blocks directory, as Core does.
     """
-    settings, base_dir, chain_name = _read_settings(
-        sys.argv[1:] if argv is None else argv
-    )
 
-    # Refused in Core's order: `-debug`'s categories, then `-prune`, both
-    # in `AppInitParameterInteraction`, then `CheckHostPortOptions`'s
-    # `-port`, `-rpcport` and `-rpcbind` in `AppInitMain` (`src/init.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7). `Config.__init__`'s own refusals of
-    # a missing blocks directory and a negative `-maxconnections` come
-    # after all of these, where Core checks them ahead of `-debug`.
-    debug = _resolve_debug(settings)
-    prune = _get_int(settings, "prune") or 0
-    _check_prune(prune)
-    p2p_port = _get_port(settings, "port")
-    rpc_port = _get_port(settings, "rpcport")
-    rpc_host = "127.0.0.1"
-    # `-rpcbind` is a list in Core, every address bound where `-rpcallowip`
-    # is given too (`HTTPBindAddresses`, `src/httpserver.cpp`, same sha);
-    # this node has no `-rpcallowip`, and its listener binds one
-    # address, so it is read the way an option taking one value is, the
-    # command line over the file; negated, it is Core's empty list, and the
-    # listener stays on loopback
-    rpcbind = (
-        None if _is_negated(settings, "rpcbind") else _get_arg(settings, "rpcbind")
-    )
-    if rpcbind is not None:
-        rpc_host, rpcbind_port = split_host_port(rpcbind, 0)
-        if rpcbind_port:
-            rpc_port = rpcbind_port
+    settings: _Settings
+    base_dir: Path
+    chain_name: str
+    blocksdir: str | None
+    max_connections: int
+    debug: bool
+    prune: int
+    directories: Config
 
-    connect = _get_args(settings, "connect")
-    # `-noconnect` is Core's `-connect=0`: no automatic connection, and
-    # nobody named (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7)
-    connect_negated = _is_negated(settings, "connect")
-    max_connections = _get_int(settings, "maxconnections")
-    if max_connections is None:
-        max_connections = DEFAULT_MAX_PEER_CONNECTIONS
-    # `InitParameterInteraction`'s soft-set, which an explicit value wins
-    # over (`src/init.cpp`, same sha)
-    listen = _get_bool(settings, "listen")
-    if listen is None:
-        listen = not connect and not connect_negated and max_connections > 0
+
+def _warn_unrecognized_sections(sections: Sequence[_SectionInfo]) -> None:
+    """Warn on stderr of every section that names no chain, as Core does.
+
+    `AppInitParameterInteraction`'s one `InitWarning` over
+    `GetUnrecognizedSections` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7):
+    a line per section, each ending in a newline, printed after
+    `Warning: ` with a newline of its own, as `noui_ThreadSafeMessageBox`
+    prints it.
+    """
+    lines = "".join(
+        f"{filepath}:{lineno} Section [{name}] is not recognized.\n"
+        for name, filepath, lineno in sections
+        if name not in _RECOGNIZED_SECTIONS
+    )
+    if lines:
+        sys.stderr.write(f"Warning: {lines}\n")
+
+
+def _before_lock(argv: Sequence[str]) -> _BeforeLock:
+    """Read `argv` and its file, and refuse what Core refuses before its lock.
+
+    `InitConfig`, then `AppInitParameterInteraction` (`src/init.cpp`, at
+    bitcoin/bitcoin@9be056a8a7) in its order: the warning about a section
+    naming no chain, a missing blocks directory, a negative
+    `-maxconnections`, `-debug`'s categories, `-prune`.
+    """
+    settings, base_dir, chain_name = _read_settings(argv)
+    _warn_unrecognized_sections(settings.config_sections)
     # `GetBlocksDirPath`: a negated `-blocksdir` is an empty path, which
     # `fs::absolute` reads as the working directory
     blocksdir = _get_arg(settings, "blocksdir")
     if _is_negated(settings, "blocksdir"):
         blocksdir = ""
+    max_connections = _get_int(settings, "maxconnections")
+    if max_connections is None:
+        max_connections = DEFAULT_MAX_PEER_CONNECTIONS
+    directories = Config(
+        chain=chain_name,
+        data_dir=base_dir,
+        blocks_dir=blocksdir,
+        max_connections=max_connections,
+    )
+    debug = _resolve_debug(settings)
+    prune = _get_int(settings, "prune") or 0
+    _check_prune(prune)
+    return _BeforeLock(
+        settings,
+        base_dir,
+        chain_name,
+        blocksdir,
+        max_connections,
+        debug,
+        prune,
+        directories,
+    )
+
+
+def _lock(directories: Config) -> tuple[DirectoryLock, ...]:
+    """Lock the directories `Node.__init__` locks, as `Node.__init__` does.
+
+    Core's `AppInitLockDirectories` (`src/init.cpp`, at
+    bitcoin/bitcoin@9be056a8a7), between `_before_lock` and `_after_lock`.
+    `Node.__init__` takes the same locks again, which a process already
+    holding them is granted (`dirlock`), so `main` releases these once
+    the `Node` holds its own.
+    """
+    blocks_dir = blocks_directory(directories.data_dir, directories.blocks_dir)
+    directories.data_dir.mkdir(exist_ok=True, parents=True)
+    blocks_dir.mkdir(exist_ok=True, parents=True)
+    return lock_directories(directories.data_dir, blocks_dir)
+
+
+def _after_lock(before: _BeforeLock) -> Config:
+    """Refuse what Core refuses after its lock, and return the `Config`.
+
+    `AppInitMain` (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7) in its
+    order: `CheckHostPortOptions`'s `-port`, `-rpcport` and `-rpcbind`.
+    `-rpccookieperms` and `-rpcauth` are refused later, by
+    `RpcAuth.start`, as `StartHTTPRPC` refuses them.
+    """
+    settings = before.settings
+    p2p_port = _get_port(settings, "port")
+    rpc_port = _get_port(settings, "rpcport")
+    # Every `-rpcbind` value is checked, as `CheckHostPortOptions` checks
+    # it, and none is bound: `HTTPBindAddresses` (`src/httpserver.cpp`,
+    # same sha) binds them only beside `-rpcallowip`, which this node
+    # does not have, so the listener stays on loopback and `RpcManager`
+    # logs Core's warning over the values (btclib-org/btclib-node#1211)
+    rpcbind = _get_args(settings, "rpcbind")
+    for value in rpcbind:
+        try:
+            split_host_port(value, 0)
+        except ValueError:
+            err_msg = f"Invalid port specified in -rpcbind: '{value}'"
+            raise ValueError(err_msg) from None
+
+    connect = _get_args(settings, "connect")
+    # `-noconnect` is Core's `-connect=0`: no automatic connection, and
+    # nobody named (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7)
+    connect_negated = _is_negated(settings, "connect")
+    # `InitParameterInteraction`'s soft-set, which an explicit value wins
+    # over (`src/init.cpp`, same sha)
+    listen = _get_bool(settings, "listen")
+    if listen is None:
+        listen = not connect and not connect_negated and before.max_connections > 0
     # `GetAuthCookieFile` (`src/rpc/request.cpp`, same sha): negated, no cookie
     rpccookiefile = (
         None
@@ -1124,22 +1377,29 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
         else _get_arg(settings, "rpccookiefile") or ""
     )
     server = _get_bool(settings, "server")
+    # `-bantime`, which `AppInitMain` hands to `BanMan` at step 6
+    # (`src/init.cpp:1644`, same sha)
+    ban_time = _get_int(settings, "bantime")
+    if ban_time is None:
+        ban_time = DEFAULT_MISBEHAVING_BANTIME
+    prune = before.prune
 
     return Config(
-        chain=chain_name,
-        data_dir=base_dir,
-        blocks_dir=blocksdir,
+        chain=before.chain_name,
+        data_dir=before.base_dir,
+        blocks_dir=before.blocksdir,
         p2p_port=p2p_port,
         rpc_port=rpc_port,
-        rpc_host=rpc_host,
+        rpcbind=tuple(rpcbind),
         allow_rpc=server is None or server,
         pruned=bool(prune),
         prune_target_mib=prune if prune >= MIN_PRUNE_TARGET_MIB else None,
-        debug=debug,
+        debug=before.debug,
         connect=connect or (["0"] if connect_negated else []),
         addnode=_get_args(settings, "addnode"),
         listen=listen,
-        max_connections=max_connections,
+        max_connections=before.max_connections,
+        ban_time=ban_time,
         rpcauth=_get_args(settings, "rpcauth"),
         rpcuser=_get_arg(settings, "rpcuser") or "",
         rpcpassword=_get_arg(settings, "rpcpassword") or "",
@@ -1150,25 +1410,70 @@ def build_config(argv: Sequence[str] | None = None) -> Config:
     )
 
 
+def build_config(argv: Sequence[str] | None = None) -> Config:
+    """Parse `argv` (`sys.argv[1:]` if `None`) and its `-conf` into a `Config`.
+
+    Raises `ValueError` on a malformed argument, a malformed
+    configuration file, or an unknown chain, in the order `bitcoind`
+    refuses them, and `SystemExit(0)` once the help is printed. No lock
+    is taken: `main` takes it between `_before_lock` and `_after_lock`.
+    """
+    return _after_lock(_before_lock(sys.argv[1:] if argv is None else argv))
+
+
+# Core's `SetupEnvironment` (`src/common/system.cpp`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag), which `bitcoind`'s own
+# `main` calls right after building its `interfaces::Init`
+# (`src/bitcoind.cpp`, same sha): the process umask becomes 0077
+# everywhere but Windows, so every directory and file it creates is its
+# owner's alone.
+# Core has no option to keep the caller's: `-sysperms` is gone by v31.1.
+_PRIVATE_UMASK = 0o077
+
+
+def _setup_environment() -> None:
+    """Make the process umask owner-only, as Core's `SetupEnvironment` does.
+
+    Called by `main` alone: a caller building a `Node` in its own
+    process keeps its own umask, the reason `RpcAuth.generate_cookie`
+    sets the cookie's mode on the file.
+    """
+    if sys.platform != "win32":
+        os.umask(_PRIVATE_UMASK)
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     """Build a `Config` from the command line and `bitcoin.conf`, and run it.
 
     Waits on the node's thread until a signal `install_signal_handlers`
-    below caught, or the `stop` RPC, stops it. A `build_config` refusal,
-    or each of `Node.init_errors` where the node's start-up failed, is
-    printed as `Error: <message>` and the exit status is `1`: Core's
-    `InitError`, and `CConnman`'s own `MSG_ERROR` for a failed bind,
-    reach stderr through `noui_ThreadSafeMessageBox` with that caption
-    (`src/noui.cpp:22-46`, at bitcoin/bitcoin@9be056a8a7), and
-    `bitcoind` exits `EXIT_FAILURE`.
+    below caught, or the `stop` RPC, stops it. A `build_config` refusal, the
+    `DirectoryLockError` of a directory another process holds, taken between
+    the refusals Core makes before its lock and those it makes after
+    (`_before_lock` and `_after_lock` above), or each of `Node.init_errors`
+    where the node's start-up failed, is printed as `Error: <message>` and
+    the exit status is `1`: Core's `InitError`, and `CConnman`'s own
+    `MSG_ERROR` for a failed bind, reach stderr through
+    `noui_ThreadSafeMessageBox` with that caption (`src/noui.cpp:22-46`, at
+    bitcoin/bitcoin@9be056a8a7), and `bitcoind` exits `EXIT_FAILURE`.
     """
+    _setup_environment()
     try:
-        config = build_config(argv)
-    except ValueError as error:
+        before = _before_lock(sys.argv[1:] if argv is None else argv)
+        locks = _lock(before.directories)
+    except (ValueError, DirectoryLockError) as error:
         sys.stderr.write(f"Error: {error}\n")
         raise SystemExit(1) from error
-
-    node = Node(config=config)
+    # `Node.__init__` takes the same locks, and holds them once these go
+    try:
+        try:
+            config = _after_lock(before)
+        except ValueError as error:
+            sys.stderr.write(f"Error: {error}\n")
+            raise SystemExit(1) from error
+        node = Node(config=config)
+    finally:
+        for lock in locks:
+            lock.release()
     install_signal_handlers(node)
     node.start()
     node.join()
