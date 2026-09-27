@@ -814,12 +814,17 @@ def test_a_peer_drawn_without_the_witness_service_is_let_go() -> None:
 
 @pytest.mark.parametrize("inbound", [True, False], ids=["inbound", "manual"])
 def test_a_peer_not_drawn_is_kept_without_the_witness_service(*, inbound: bool) -> None:
-    """ISS 1138: Core's `ExpectServicesFromConn` is false for either kind."""
+    """ISS 1138: Core's `ExpectServicesFromConn` is false for either kind.
+
+    A manual peer is outbound and not block-relay-only, so `version`
+    sends it a `getaddr` (ISS 1178) whichever service it lacks; an
+    inbound one gets none.
+    """
     node = a_handshake_node()
     peer = a_peer(inbound=inbound)
     version(node, a_version(services=ServiceFlags.NODE_NETWORK), peer)
     assert not peer.stopped
-    assert commands(peer)[-1] == "Verack"
+    assert commands(peer)[-1] == ("Verack" if inbound else "GetAddr")
     assert not peer.has_all_wanted_services
 
 
@@ -5174,6 +5179,21 @@ def test_a_feeler_short_of_desirable_services_is_not_let_go_for_it() -> None:
     )
     peer = a_peer(inbound=False, automatic=True, feeler=True)
     version(node, a_version(services=ServiceFlags.NODE_WITNESS), peer)
+    assert not peer.stopped
+    assert commands(peer)[-1] == "stop_when_sent"
+
+
+def test_a_feeler_without_the_witness_service_is_kept_through_its_version() -> None:
+    """ISS 1138: `ExpectServicesFromConn` is false for `FEELER` too.
+
+    A feeler is `conn.automatic`, so the `NODE_WITNESS` check above the
+    desirable-services one has to exempt it by name, as that one already
+    does, or it drops the feeler before Core's own `VERSION` handler ends
+    it (btclib-org/btclib-node#1138, comment).
+    """
+    node = a_handshake_node(peer_db=PeerDB(cast("Chain", None), cast("Path", None)))
+    peer = a_peer(inbound=False, automatic=True, feeler=True)
+    version(node, a_version(services=ServiceFlags.NODE_NETWORK), peer)
     assert not peer.stopped
     assert commands(peer)[-1] == "stop_when_sent"
 

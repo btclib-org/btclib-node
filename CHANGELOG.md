@@ -683,10 +683,10 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   network none of the eight is on** (closes #1100), each followed by the
   eviction of a full-relay peer past the target by `EvictExtraOutboundPeers`.
 
-### An inbound or manual peer is kept without `NODE_WITNESS`, as in Core
+### An inbound, manual or feeler peer is kept without `NODE_WITNESS`, as in Core
 
-- **`NODE_WITNESS` is required only of a peer this node drew itself**
-  (closes #1138).
+- **`NODE_WITNESS` is required only where Core's `ExpectServicesFromConn`
+  holds** (closes #1138).
 
 ## v2026.9.24
 
