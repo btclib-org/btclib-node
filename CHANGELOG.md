@@ -683,6 +683,29 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   network none of the eight is on** (closes #1100), each followed by the
   eviction of a full-relay peer past the target by `EvictExtraOutboundPeers`.
 
+### `install-bitcoind` is removed, the reusable workflow installing bitcoind
+
+- **`.github/actions/install-bitcoind` goes**, the reusable workflow
+  `integration-bitcoind.yml` calls installing bitcoind from its own script
+  (issue btclib-org/.github#1373).
+
+### `codeql.yml`'s aggregate accepts `analyze` listed unfinished
+
+- **A row of `analyze`'s still listed unfinished passes where
+  `needs.analyze.result` is `success` or `skipped`** (issue
+  btclib-org/.github#1395); any other unfinished row but its own still fails.
+
+### `REPOSITORY.md` reads classic signatures and SHA pinning back
+
+- **Classic `required_signatures` answers `false` and `sha_pinning_required`
+  `true`**, section 11 linked for each (issue btclib-org/.github#1409).
+
+### Dependabot's `pre-commit` ecosystem is named as unused, not as absent
+
+- **`.github/dependabot.yml` and `.pre-commit-config.yaml` say it exists and
+  is not configured here**, pre-commit.ci's weekly autoupdate moving `rev:`
+  instead (issue btclib-org/.github#1391).
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool
