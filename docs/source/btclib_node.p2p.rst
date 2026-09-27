@@ -89,6 +89,13 @@ btclib\_node.p2p.manager module
    :members:
    :show-inheritance:
 
+btclib\_node.p2p.netif module
+--------------------------------
+
+.. automodule:: btclib_node.p2p.netif
+   :members:
+   :show-inheritance:
+
 btclib\_node.p2p.protocol\_version module
 --------------------------------------------
 
