@@ -4134,6 +4134,23 @@ def test_an_anchor_is_popped_off_the_back_past_those_refused(
     assert manager.anchors == []
 
 
+@pytest.mark.parametrize("port", [8333, 18444])
+def test_an_anchor_that_is_this_node_s_own_is_passed_over(
+    a_manager: AManagerFactory, port: int
+) -> None:
+    """ISS 1238: Core's anchor loop refuses `IsLocal(addr)` too.
+
+    `IsLocal` compares the host alone, so an anchor at this node's own
+    host on another port is refused the same way as any other.
+    """
+    manager = a_manager()
+    own = peer_address("9.9.9.9", port, services=FULL_NODE)
+    manager.local_addresses = frozenset({host_key(peer_address("9.9.9.9", 1))})
+    manager.anchors = [ANCHOR, own]
+    assert manager._pop_anchor({net_group(peer_address("7.7.2.2", 1))}) == ANCHOR
+    assert manager.anchors == []
+
+
 def test_an_anchor_short_of_any_left_draws_from_the_table(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

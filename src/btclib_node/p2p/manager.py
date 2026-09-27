@@ -1213,16 +1213,16 @@ class P2pManager(threading.Thread):
 
         Passed over, as Core's loop `continue`s ahead of counting a try:
         one this node cannot dial, one `CNetAddr::IsValid` refuses, one
-        short of the desirable services, and one in a network group an
-        outbound peer already holds. Core's `IsLocal` refusal has no
-        table of local addresses here to ask
-        (btclib-org/btclib-node#1238).
+        this node's own by `local_addresses`, one short of the desirable
+        services, and one in a network group an outbound peer already
+        holds.
         """
         while self.anchors:
             anchor = self.anchors.pop()
             if (
                 can_connect(anchor)
                 and is_valid(network_address(anchor).ip)
+                and host_key(anchor) not in self.local_addresses
                 and has_all_desirable_services(self.node, anchor.services)
                 and not (
                     can_addrv1(anchor) and net_group(anchor) in outbound_net_groups
