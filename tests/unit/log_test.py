@@ -5,7 +5,10 @@
 """`Logger` picks the right handler and drops it cleanly on `close`."""
 
 import logging
+import time
 from typing import TYPE_CHECKING
+
+import pytest
 
 from btclib_node.log import Logger
 
@@ -43,3 +46,52 @@ def test_closing_leaves_no_handler_a_late_record_could_reach() -> None:
     logger = Logger(debug=True)
     logger.close()
     assert not logger.handlers
+
+
+def test_a_line_carries_its_level_as_core_s_log_does(tmp_path: Path) -> None:
+    """ISS 1280: `GetLogPrefix`'s `[warning] ` and `[error] `, none at info.
+
+    As `bitcoind` v31.1.0's `debug.log` has them for a line with no
+    category: `[error] Unable to start HTTP server. See debug log for
+    details.` over a taken RPC port. `debug` is `[debug] `, and
+    `critical`, which Core has no level for, is `[error] `.
+    """
+    path = tmp_path / "history.log"
+    logger = Logger(path, debug=True)
+    logger.debug("d")
+    logger.info("i")
+    logger.warning("w")
+    logger.error("e")
+    logger.critical("c")
+    logger.close()
+    messages = [
+        line.split(" ", 1)[1] for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert messages == ["[debug] d", "i", "[warning] w", "[error] e", "[error] c"]
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="no time.tzset on Windows")
+def test_a_line_opens_with_core_s_utc_second_and_a_space(tmp_path: Path) -> None:
+    """ISS 1297: `LogTimestampStr`, as `bitcoind` v31.1.0's `debug.log` has it.
+
+    `2026-09-26T09:42:51Z [error] Unable to start HTTP server. See debug
+    log for details.`: ISO 8601 in UTC, whatever the machine's zone, the
+    fraction of the second dropped, then one space. The zone is pinned
+    to one five and a half hours off UTC with no daylight saving, so a
+    local time cannot pass for UTC on a machine that runs in UTC; and
+    reset once the variable is, for the tests the same worker runs next.
+    """
+    logger = Logger(tmp_path / "history.log")
+    (handler,) = logger.handlers
+    record = logging.makeLogRecord(
+        {"msg": "a line", "levelno": logging.ERROR, "created": 86399.9}
+    )
+    try:
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setenv("TZ", "Asia/Kolkata")
+            time.tzset()
+            assert time.localtime(0).tm_gmtoff == 5 * 3600 + 30 * 60
+            assert handler.format(record) == "1970-01-01T23:59:59Z [error] a line"
+    finally:
+        time.tzset()
+        logger.close()
