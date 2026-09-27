@@ -63,7 +63,7 @@ if TYPE_CHECKING:
 # against, and consensus caps a witnessless block's own weight at four
 # times that size -- so a megabyte is the most one of these can be, and
 # the payload is sized just under it. `_BLOCKS` is comfortably past what
-# `MAX_BLOCKS_PER_GETDATA_BURST` (`btclib_node/download.py`) asks one
+# `MAX_BLOCKS_IN_TRANSIT_PER_PEER` (`btclib_node/download.py`) asks one
 # peer for at a time, so the sync is several bursts rather than one.
 #
 # The trailing outputs are what make the node's own validation of a

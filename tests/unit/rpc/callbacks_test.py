@@ -201,7 +201,6 @@ def a_peer(
         # left unrounded cannot pass
         last_send=1.9,
         last_receive=2.7,
-        last_block_timestamp=3.5,
         last_novel_block_time=4,
         last_novel_tx_time=5,
         connected_time=6,
@@ -3115,6 +3114,55 @@ def test_setban_refuses_what_is_no_ip_nor_subnet(
         error = refusal(node, [subnet, command])
         assert error.code == RPCErrorCode.CLIENT_INVALID_IP_OR_SUBNET
         assert error.message == "Error: Invalid IP/Subnet"
+
+
+_ONION = "pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion"
+_I2P = "udhdrtrcetjm5sxzskjyr5ztpeszydbh4dpl3pl4utgqqw2v4jna.b32.i2p"
+
+
+def test_setban_bans_an_onion_or_i2p_host_and_no_subnet_of_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1218: as bitcoind v31.1 answers `setban`.
+
+    The host alone, each on its key whatever its case; a prefix is no
+    subnet of one. `listbanned` lists them after the IP bans.
+    """
+    node, dropped = a_banning_node(monkeypatch)
+    set_ban(node, _CONN, [_I2P, "add"])
+    set_ban(node, _CONN, [_ONION, "add"])
+    set_ban(node, _CONN, ["1.2.3.4", "add"])
+    assert dropped == [_I2P, _ONION, "1.2.3.4/32"]
+    upper = _ONION.removesuffix(".onion").upper() + ".onion"
+    for params in ([upper, "add"], [f"[{_ONION}]", "add"], [_I2P.upper(), "add"]):
+        assert refusal(node, params).code == RPCErrorCode.CLIENT_NODE_ALREADY_ADDED
+    error = refusal(node, [f"{_ONION}/32", "add"])
+    assert error.code == RPCErrorCode.CLIENT_INVALID_IP_OR_SUBNET
+    assert [entry["address"] for entry in list_banned(node, _CONN, [])] == [
+        "1.2.3.4/32",
+        _ONION,
+        _I2P,
+    ]
+    set_ban(node, _CONN, [upper, "remove"])
+    assert [entry["address"] for entry in list_banned(node, _CONN, [])] == [
+        "1.2.3.4/32",
+        _I2P,
+    ]
+
+
+def test_setban_bans_a_scoped_address_on_its_address_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1220: `fe80::1%2` is banned already, and removed, by `fe80::1%1`."""
+    node, _ = a_banning_node(monkeypatch)
+    set_ban(node, _CONN, ["fe80::1%1", "add"])
+    error = refusal(node, ["fe80::1%2", "add"])
+    assert error.code == RPCErrorCode.CLIENT_NODE_ALREADY_ADDED
+    assert [entry["address"] for entry in list_banned(node, _CONN, [])] == [
+        "fe80::1%1/128"
+    ]
+    set_ban(node, _CONN, ["fe80::1%2", "remove"])
+    assert list_banned(node, _CONN, []) == []
 
 
 def test_setban_takes_an_invalid_address_as_a_subnet(
