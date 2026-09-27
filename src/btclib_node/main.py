@@ -26,7 +26,9 @@ from btclib.block import (
 from btclib.block.block_context import BlockContext
 from btclib.consensus import MAX_BLOCK_WEIGHT, subsidy
 from btclib.exceptions import BTClibException, BTClibValueError
+from btclib.fee import fee_from_vsize
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
+from btclib.script.engine import verify_amounts
 from btclib.script.engine.flags import ScriptFlag
 from btclib.tx.tx_context import (
     assert_coinbase_maturity,
@@ -43,6 +45,7 @@ from btclib_node.exceptions import (
     InvalidBlockInputError,
     MissingPrevoutError,
     PrevoutCountMismatchError,
+    TxRejectedError,
 )
 from btclib_node.interpreter import check_transaction, check_transactions, get_flags
 from btclib_node.p2p.block_availability import (
@@ -262,7 +265,12 @@ def _reconcile_mempool_for_reorg(
             # the one path into the mempool that skipped that.
             # btclib-org/btclib-node#85
             try:
-                fee = verify_mempool_acceptance(node, tx)
+                # Core's own `bypass_limits=true` for this re-add
+                # (`MaybeUpdateMempoolForReorg`, `src/validation.cpp`,
+                # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a
+                # transaction a block already carried is not held to the
+                # feerate floor a newcomer is. btclib-org/btclib-node#1245
+                fee = verify_mempool_acceptance(node, tx, bypass_limits=True)
             except MissingPrevoutError, BTClibValueError:
                 continue
             node.mempool.add_tx(tx, fee)
@@ -953,7 +961,9 @@ def update_chain(node: Node) -> None:
         settle_at_no_candidate(node)
 
 
-def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
+def verify_mempool_acceptance(
+    node: Node, tx: Tx, *, bypass_limits: bool = False
+) -> int:
     """Verify a transaction against its prevouts and return its fee.
 
     The fee is the same sum-of-inputs-less-sum-of-outputs
@@ -972,6 +982,12 @@ def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
     a soft fork it has already activated, so Core's own mempool code
     does not ask either. `interpreter.check_transaction` reads the
     scripts the same way, against a flag set that consults no height.
+
+    Refuses a fee below the mempool's own rolling minimum or
+    `Config.min_relay_feerate` for the transaction's vsize, Core's own
+    `CheckFeeRate`, unless `bypass_limits` -- Core's own flag, set where
+    a disconnected block's transactions rejoin the mempool.
+    btclib-org/btclib-node#1245
     """
     prev_outputs: list[TxOut] = []
     # only the prevouts this reads off the UTXO set, since a mempool
@@ -1050,6 +1066,14 @@ def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
         tx, prevout_coins, spend_height, tip_mtp, ancestor_median_time_past
     )
 
+    # Core's own `CheckTxInputs` sits here, ahead of the feerate floor,
+    # so a transaction spending more than it has is refused for that and
+    # not for its fee; `check_transaction` below asks it again
+    verify_amounts(prev_outputs, tx)
+    fee = sum(x.value for x in prev_outputs) - sum(x.value for x in tx.vout)
+    if not bypass_limits:
+        _check_fee_rate(node, tx.vsize, fee)
+
     # Checked last, after the cheap finality and sequence-lock checks
     # above: Core defers its own script checks the same way, to spend no
     # signature verification on a candidate a comparison of two integers
@@ -1057,4 +1081,27 @@ def verify_mempool_acceptance(node: Node, tx: Tx) -> int:
     # at bitcoin/bitcoin@4519933391).
     check_transaction(prev_outputs, tx)
 
-    return sum(x.value for x in prev_outputs) - sum(x.value for x in tx.vout)
+    return fee
+
+
+def _check_fee_rate(node: Node, vsize: int, fee: int) -> None:
+    """Refuse a fee below either floor, Core's own `CheckFeeRate`.
+
+    `MemPoolAccept::CheckFeeRate` (`src/validation.cpp`,
+    at bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the mempool's own
+    rolling minimum first, then the relay floor, each rounded up for
+    `vsize` as `CFeeRate::GetFee` rounds it and each refused with Core's
+    own reason and "<fee> < <floor>". Core also asks whether the rolling
+    minimum is positive, which a fee never negative here makes
+    redundant: `verify_amounts` has already refused one. `vsize` is
+    `tx.vsize`, where Core's `GetTxSize` is the sigop-adjusted
+    `GetVirtualTransactionSize`: btclib-org/btclib-node#1357.
+    """
+    mempool_reject_fee = fee_from_vsize(vsize, node.mempool.get_min_fee_rate())
+    if fee < mempool_reject_fee:
+        reason, details = "mempool min fee not met", f"{fee} < {mempool_reject_fee}"
+        raise TxRejectedError(reason, details)
+    min_relay_fee = fee_from_vsize(vsize, node.config.min_relay_feerate)
+    if fee < min_relay_fee:
+        reason, details = "min relay fee not met", f"{fee} < {min_relay_fee}"
+        raise TxRejectedError(reason, details)

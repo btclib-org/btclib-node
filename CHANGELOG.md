@@ -740,6 +740,28 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **An inbound peer's endpoint no longer enters the answered table, and a
   dialled one enters it at its own `version`, as Core's `AddrMan::Good`
   does** (closes #1229, closes #1140).
+### `codeql.yml`'s aggregate reads a lagging row again
+
+- **An unfinished `analyze` row is read again before it is accepted, and a
+  `needs.analyze.result` neither `success` nor `skipped` fails the step**
+  (issue btclib-org/.github#1416) (issue btclib-org/.github#1424).
+
+### `integration-bitcoind.yml` names `skip-reason-prefix`
+
+- **Its comments name `skip-reason-prefix`, left empty, in place of
+  `exclude-classname`** (issue btclib-org/.github#1419).
+
+### The mempool refuses a fee under its floor, as Core
+
+- **A fee under the rolling minimum or `min_relay_feerate` for the vsize is
+  refused in Core's words, which both RPCs report** (closes #1245); a reorg's
+  re-added transactions are exempt.
+
+### A block asked of a peer without `NODE_WITNESS` carries no witness flag
+
+- **`DownloadManager` asks such a peer for `MSG_BLOCK` rather than
+  `MSG_WITNESS_BLOCK`, and its walk over the peer's chain ends at the first
+  block where SegWit is active** (closes #1208).
 
 ## v2026.9.24
 
