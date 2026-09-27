@@ -689,7 +689,15 @@ _SIG_OP_COSTS = {
         b"\x51",
         4 * 2,
     ),
+    "p2sh, pushdata4 of 174": (
+        _P2SH,
+        b"\x4e" + (174).to_bytes(4, "little") + _NOPS * 174,
+        (),
+        b"\x51",
+        0,
+    ),
     "p2sh, not push-only": (_P2SH, _push(_CHECKSIG) + b"\x76", (), b"\x51", 0),
+    "p2sh, not push-only first": (_P2SH, b"\x76" + _push(_CHECKSIG), (), b"\x51", 0),
     "p2sh, a truncated push": (_P2SH, _push(_CHECKSIG) + b"\x4c", (), b"\x51", 0),
     "p2sh, the last push": (_P2SH, _push(_CHECKSIG) + b"\x00", (), b"\x51", 0),
     "p2sh, OP_1 last": (_P2SH, _push(_CHECKSIG) + b"\x51", (), b"\x51", 0),
@@ -708,6 +716,7 @@ _SIG_OP_COSTS = {
     "p2wsh, the last item": (_P2WSH, b"", (_CHECKSIG, b"\x51"), b"\x51", 0),
     "p2wsh, no witness": (_P2WSH, b"", (), b"\x51", 0),
     "p2sh-p2wpkh": (_P2SH, _push(_P2WPKH), (b"",) * 2, b"\x51", 1),
+    "not p2sh, a pushed v0 program": (b"\x51", _push(_P2WPKH), (b"",) * 2, b"\x51", 0),
     "p2sh-p2wsh": (_P2SH, _push(_P2WSH), (_CHECKSIG * 3,), b"\x51", 3),
     "p2sh, a v0 program not pushed last": (
         _P2SH,
@@ -737,7 +746,7 @@ _SIG_OP_COSTS = {
         b"\x51",
         0,
     ),
-    "not a program, its version": (b"\x61\x14" + _KEYHASH, b"", (), b"\x51", 0),
+    "not a program, its version": (b"\x50\x14" + _KEYHASH, b"", (b"",) * 2, b"\x51", 0),
 }
 
 

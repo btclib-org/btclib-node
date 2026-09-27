@@ -913,6 +913,26 @@ def test_a_sigop_dense_spend_is_priced_by_its_sigop_cost(node: Node) -> None:
     assert verify_mempool_acceptance(node, spend(1_000)) == (1_000, 10_000)
 
 
+def test_a_sigop_dense_conflict_pays_relay_for_its_sigop_cost(node: Node) -> None:
+    """Rule 4 prices the candidate at its sigop-adjusted vsize.
+
+    `bitcoind` v31.1 on regtest, the 100-repeat spend held at 1000: a
+    conflict paying 1500 is "insufficient fee, rejecting replacement
+    <txid>, not enough additional fees to relay; 0.000005 < 0.00001",
+    where the weight alone would ask 19 satoshi (btclib-org/btclib-node#1357).
+    """
+    spend = a_sigop_dense_spend(node, 100)
+    held = spend(1_000)
+    node.mempool.add_tx(held, *verify_mempool_acceptance(node, held))
+    conflict = spend(1_500)
+    with pytest.raises(TxRejectedError) as raised:
+        verify_mempool_acceptance(node, conflict)
+    assert str(raised.value) == (
+        f"insufficient fee, rejecting replacement {conflict.id.hex()}, not "
+        "enough additional fees to relay; 0.000005 < 0.00001"
+    )
+
+
 def test_a_spend_over_the_standard_sigop_cost_is_refused(node: Node) -> None:
     """Core's "bad-txns-too-many-sigops", reorg re-add or not.
 

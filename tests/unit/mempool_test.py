@@ -940,8 +940,10 @@ def test_eviction_ranks_by_the_vsize_an_entry_came_with(heap: str) -> None:
     """
     mempool = Mempool(Logger(debug=True))
     dense, plain, rich = (generate_random_transaction() for _ in range(3))
-    mempool.add_tx(dense, 1_000, 10 * dense.vsize)
+    # the older of two equal rates goes first, so a size misread would
+    # evict `plain`
     mempool.add_tx(plain, 1_000)
+    mempool.add_tx(dense, 1_000, 10 * dense.vsize)
     if heap == "rebuilt":
         mempool._rebuild_feerate_heap()
     mempool.bytesize_limit = mempool.bytesize + rich.vsize - 1
