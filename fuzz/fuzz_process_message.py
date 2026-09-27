@@ -46,8 +46,9 @@ correctness, not memory safety -- and only conditionally, once a pass
 ends with the block index or the mempool's own sequence changed from
 what it started at, via `ResetChainmanAndMempool`
 (`src/test/util/validation.cpp`, same sha). `_node` below takes neither
-shape: `Node(...)` -- unstarted, no listener, no dial, the same
-construction `tests/conftest.py`'s own `unstarted_node_context` uses --
+shape: `Node(...)` and its `load()` -- unstarted, no listener, no
+dial, the same construction `tests/conftest.py`'s own
+`unstarted_node_context` uses --
 is built once, lazily, and reused whole for every call in the process,
 the way `g_setup` is, with nothing inside it rebuilt the way Core
 rebuilds `connman`/`banman`/`addrman`/`peerman` every single pass, nor
@@ -290,6 +291,7 @@ def _built_node() -> Node:
                 debug=True,
             )
         )
+        node.load()
         node.status = NodeStatus.HeaderSynced
         node.logger.addHandler(_capture)
         _node = node

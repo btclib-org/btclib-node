@@ -40,9 +40,7 @@ name: integration-bitcoind
 # (section 10 of its README.md). `btclib` calls the same file. What
 # stays here is the trigger, the schedule minute, the concurrency group,
 # and this tree's own pinned release, digest and environment-variable
-# names. `exclude-classname` is left unset: that input excludes
-# HWI-classified testcases before judging skips, for `btclib`'s own
-# `tests/integration`, which mixes them in; this tree's has none.
+# names.
 #
 # A reusable workflow changes the check context a required check reports
 # under -- GitHub composes it from the calling job's own id and the
@@ -135,6 +133,7 @@ jobs:
       # tests/integration/conftest.py's own two switches
       integration-env-var: BTCLIB_NODE_INTEGRATION
       bitcoind-path-env-var: BTCLIB_NODE_BITCOIND
-      # exclude-classname left at its default, the empty string: this
-      # tree's tests/integration carries no HWI-classified cases, so
-      # nothing here is excluded before the called workflow judges skips
+      # skip-reason-prefix left at its default, the empty string, which
+      # exempts no skip: tests/integration/conftest.py skips only for want
+      # of the switch or of a bitcoind, which is what the called
+      # workflow's node-ran check is there to fail on

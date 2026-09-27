@@ -11,7 +11,8 @@ locators it serves.
 """
 
 import secrets
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -243,6 +244,99 @@ def test_a_header_with_valid_pow_but_no_later_than_the_median_is_refused(
         block_index.add_headers([header])
     assert header.hash not in block_index.header_dict
     assert len(block_index.header_dict) == 1
+
+
+def a_mined_header(parent: BlockHeader, version: int) -> BlockHeader:
+    """Mine a regtest header on `parent`, a second later, at `version`.
+
+    The nonce is searched in place rather than by `brute_force_nonce`,
+    whose copy would refuse a version of zero or below, which a block's
+    own header reaches `add_headers` with unchecked.
+    """
+    header = BlockHeader(
+        version=version,
+        previous_block_hash=parent.hash,
+        merkle_root=secrets.token_bytes(32),
+        time=parent.time + timedelta(seconds=1),
+        bits=REGTEST_POW_LIMIT_BITS,
+        nonce=0,
+        check_validity=False,
+    )
+    # a regtest target is met about every other nonce
+    while True:
+        with suppress(BTClibValueError):
+            header.assert_valid_pow(REGTEST_POW_LIMIT_BITS)
+            return header
+        header.nonce += 1
+
+
+@pytest.mark.parametrize("version", [-1, 1, 2, 3])
+def test_a_header_version_regtest_made_obsolete_is_refused_bad_version(
+    a_chainstate: Callable[[Path | None], Chainstate], version: int
+) -> None:
+    """ISS 1262: regtest binds BIP34, BIP66 and BIP65 from height 1.
+
+    Core's `bad-version`, the version printed as its 32 bits, a
+    `MisbehavingError` since `MaybePunishNodeForBlock` punishes it;
+    version 4 is taken.
+    """
+    block_index = a_chainstate(None).block_index
+    genesis = RegTest().genesis
+    header = a_mined_header(genesis, version)
+    with pytest.raises(MisbehavingError) as refusal:
+        block_index.add_headers([header])
+    assert str(refusal.value) == f"bad-version(0x{version & 0xFFFFFFFF:08x})"
+    assert header.hash not in block_index.header_dict
+    taken = a_mined_header(genesis, 4)
+    assert block_index.add_headers([taken]) == taken.hash
+
+
+def test_each_bip_refuses_its_obsolete_version_from_its_own_height(
+    a_chainstate: Callable[[Path | None], Chainstate],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1262: BIP34 from its height, BIP66 and BIP65 from theirs.
+
+    With the three at heights 2, 3 and 4, each height takes the version
+    the one before it refuses.
+    """
+    block_index = a_chainstate(None).block_index
+    params = replace(
+        block_index.chain.consensus, bip34_height=2, bip66_height=3, bip65_height=4
+    )
+    # a property of the class, so patched there, for this test only
+    monkeypatch.setattr(RegTest, "consensus", property(lambda _: params))
+    parent = RegTest().genesis
+    for height, least in ((1, 1), (2, 2), (3, 3), (4, 4)):
+        if least > 1:
+            refused = a_mined_header(parent, least - 1)
+            with pytest.raises(BTClibValueError, match="bad-version"):
+                block_index.add_headers([refused])
+        header = a_mined_header(parent, least)
+        assert block_index.add_headers([header]) == header.hash
+        assert block_index.get_block_info(header.hash).index == height
+        parent = header
+
+
+def test_a_version_zero_header_below_bip34_is_indexed_and_reloaded(
+    a_chainstate: Callable[[Path | None], Chainstate],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ISS 1262: below BIP34's height Core takes a version of zero.
+
+    btclib's `BlockHeader.assert_valid` refuses one, so the index stores
+    and reads it back unchecked.
+    """
+    params = replace(
+        RegTest().consensus, bip34_height=2, bip66_height=2, bip65_height=2
+    )
+    monkeypatch.setattr(RegTest, "consensus", property(lambda _: params))
+    chainstate = a_chainstate(None)
+    header = a_mined_header(RegTest().genesis, 0)
+    assert chainstate.block_index.add_headers([header]) == header.hash
+    chainstate.close()
+    reloaded = a_chainstate(None).block_index
+    assert reloaded.get_block_info(header.hash).header.version == 0
 
 
 def test_a_header_too_far_in_the_future_is_refused_without_misbehaving(
@@ -778,49 +872,6 @@ def test_long_init(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
     assert block_index.chainwork == new_block_index.chainwork
 
 
-def test_block_candidates(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
-    """A freshly indexed 512-header chain is entirely its own candidates.
-
-    Nothing on it is downloaded or on the active chain yet, so
-    get_download_candidates returns every one of its headers, in order.
-    """
-    chainstate = a_chainstate(None)
-    block_index = chainstate.block_index
-    chain = generate_random_header_chain(512, RegTest().genesis.hash)
-    block_index.add_headers(chain)
-    assert block_index.get_download_candidates() == [x.hash for x in chain]
-
-
-def test_block_candidates_2(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
-    """The same check as above, at exactly MAX_DOWNLOAD_WINDOW headers."""
-    chainstate = a_chainstate(None)
-    block_index = chainstate.block_index
-    chain = generate_random_header_chain(1024, RegTest().genesis.hash)
-    block_index.add_headers(chain)
-    assert block_index.get_download_candidates() == [x.hash for x in chain]
-
-
-def test_block_candidates_3(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
-    """Once the chain is active, only its fork's headers are candidates.
-
-    With the 2000-header chain marked `in_active_chain` and reloaded,
-    get_download_candidates on the reopened index answers with the
-    200-header fork alone, in order.
-    """
-    chainstate = a_chainstate(None)
-    block_index = chainstate.block_index
-    chain = generate_random_header_chain(2000, RegTest().genesis.hash)
-    fork = generate_random_header_chain(200, chain[-10 - 1].hash, chain[-10 - 1].time)
-    block_index.add_headers(chain)
-    block_index.add_headers(fork)
-    for x in chain:
-        block_index.set_status(x.hash, BlockStatus.in_active_chain)
-    chainstate.db.close()
-    new_chainstate = a_chainstate(None)
-    new_block_index = new_chainstate.block_index
-    assert new_block_index.get_download_candidates() == [x.hash for x in fork]
-
-
 def test_block_locators(a_chainstate: Callable[[Path | None], Chainstate]) -> None:
     """A 24-header chain's locator carries 14 entries.
 
@@ -929,46 +980,6 @@ def test_a_header_that_does_not_outweigh_the_chain_is_not_a_candidate(
     assert block_index.add_headers(short_fork)
     assert short_fork[0].hash in block_index.header_dict
     assert not block_index.block_candidates
-    chainstate.close()
-
-
-def test_a_candidate_the_chain_has_caught_up_with_is_not_downloaded_again(
-    a_chainstate: Callable[[Path | None], Chainstate],
-) -> None:
-    """A branch the active chain has connected stops appearing as a candidate.
-
-    The deque is not emptied when a branch connects, so what keeps a
-    connected block from being fetched all over again is the work it
-    is weighed against, not its removal from `block_candidates`.
-    """
-    chainstate = a_chainstate(None)
-    block_index = chainstate.block_index
-    chain = generate_random_header_chain(3, RegTest().genesis.hash)
-    block_index.add_headers(chain)
-    assert block_index.get_download_candidates() == [header.hash for header in chain]
-
-    for header in chain:
-        block_index.add_to_active_chain(header.hash)
-    assert block_index.get_download_candidates() == []
-    chainstate.close()
-
-
-def test_a_block_already_held_is_left_out_of_what_is_asked_for(
-    a_chainstate: Callable[[Path | None], Chainstate],
-) -> None:
-    """get_download_candidates skips a block already marked downloaded.
-
-    The walk back from a candidate goes through blocks this node may
-    already have: they are what it is walking towards, and asking a
-    peer for them again is the download running twice.
-    """
-    chainstate = a_chainstate(None)
-    block_index = chainstate.block_index
-    chain = generate_random_header_chain(3, RegTest().genesis.hash)
-    block_index.add_headers(chain)
-    block_index.set_downloaded(chain[1].hash)
-
-    assert block_index.get_download_candidates() == [chain[0].hash, chain[2].hash]
     chainstate.close()
 
 

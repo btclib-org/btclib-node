@@ -19,6 +19,13 @@ btclib\_node.p2p.address module
    :members:
    :show-inheritance:
 
+btclib\_node.p2p.anchors module
+----------------------------------
+
+.. automodule:: btclib_node.p2p.anchors
+   :members:
+   :show-inheritance:
+
 btclib\_node.p2p.banman module
 ---------------------------------
 
@@ -37,6 +44,13 @@ btclib\_node.p2p.callbacks module
 ------------------------------------
 
 .. automodule:: btclib_node.p2p.callbacks
+   :members:
+   :show-inheritance:
+
+btclib\_node.p2p.chain\_sync module
+-------------------------------------
+
+.. automodule:: btclib_node.p2p.chain_sync
    :members:
    :show-inheritance:
 
