@@ -735,6 +735,29 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   and one at 70012 or below the final `alert`, as in Core** (closes #1204,
   closes #1205).
 
+### `codeql.yml`'s aggregate reads a lagging row again
+
+- **An unfinished `analyze` row is read again before it is accepted, and a
+  `needs.analyze.result` neither `success` nor `skipped` fails the step**
+  (issue btclib-org/.github#1416) (issue btclib-org/.github#1424).
+
+### `integration-bitcoind.yml` names `skip-reason-prefix`
+
+- **Its comments name `skip-reason-prefix`, left empty, in place of
+  `exclude-classname`** (issue btclib-org/.github#1419).
+
+### The mempool refuses a fee under its floor, as Core
+
+- **A fee under the rolling minimum or `min_relay_feerate` for the vsize is
+  refused in Core's words, which both RPCs report** (closes #1245); a reorg's
+  re-added transactions are exempt.
+
+### A block asked of a peer without `NODE_WITNESS` carries no witness flag
+
+- **`DownloadManager` asks such a peer for `MSG_BLOCK` rather than
+  `MSG_WITNESS_BLOCK`, and its walk over the peer's chain ends at the first
+  block where SegWit is active** (closes #1208).
+
 ### The configuration's warnings are logged, as `bitcoind` logs them
 
 - **An unknown key, a double negative and `-allowignoredconf`'s warning reach
@@ -752,17 +775,6 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **The digits a value starts with, saturated at the `int64_t` range** (closes
   #1313, closes #1324), where a value that is not an integer was refused;
   `-maxconnections` and `-prune` then narrow and wrap as they do in Core.
-
-### `codeql.yml`'s aggregate reads a lagging row again
-
-- **An unfinished `analyze` row is read again before it is accepted, and a
-  `needs.analyze.result` neither `success` nor `skipped` fails the step**
-  (issue btclib-org/.github#1416) (issue btclib-org/.github#1424).
-
-### `integration-bitcoind.yml` names `skip-reason-prefix`
-
-- **Its comments name `skip-reason-prefix`, left empty, in place of
-  `exclude-classname`** (issue btclib-org/.github#1419).
 
 ## v2026.9.24
 

@@ -28,6 +28,7 @@ from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.script import script
 from btclib.script.witness import Witness
+from btclib.tx.limits import COINBASE_MATURITY
 from btclib.tx.out_point import OutPoint
 from btclib.tx.tx import Tx
 from btclib.tx.tx_in import TxIn
@@ -46,8 +47,13 @@ from btclib_node.constants import (
     USER_AGENT,
     P2pConnStatus,
 )
-from btclib_node.exceptions import MissingPrevoutError, StoreCorruptionError
+from btclib_node.exceptions import (
+    MissingPrevoutError,
+    StoreCorruptionError,
+    TxRejectedError,
+)
 from btclib_node.log import Logger
+from btclib_node.main import verify_mempool_acceptance
 from btclib_node.mempool import Mempool
 from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.banman import BanEntry, BanMan, lookup_subnet
@@ -89,6 +95,7 @@ from tests import (
     generate_coinbase,
     generate_random_chain,
     generate_random_header_chain,
+    generate_random_transaction,
     generate_segwit_block,
 )
 from tests.unit.main_test import connect
@@ -2698,6 +2705,104 @@ def test_a_transaction_whose_scripts_do_not_verify_is_answered_with_the_refusal(
     assert raised.value.message == "Invalid signatures or script"
     assert not mempool.contains_tx(tx)
     assert broadcast == []
+
+
+def a_fee_refusal(node: Any, transaction: Any) -> NoReturn:
+    """Refuse as `verify_mempool_acceptance` refuses a fee under the floor."""
+    reason, details = "min relay fee not met", "0 < 11"
+    raise TxRejectedError(reason, details)
+
+
+def test_a_fee_refusal_is_answered_in_core_s_words(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`sendrawtransaction` answers `-26` and Core's own reason and details.
+
+    `bitcoind` v31.1 on regtest: "min relay fee not met, 0 < 11" for a
+    zero-fee 110-vbyte spend (btclib-org/btclib-node#1245).
+    """
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", a_fee_refusal)
+    tx = a_tx()
+    mempool = Mempool(Logger(debug=True))
+    broadcast: list[Tx] = []
+    node = a_node(mempool=mempool)
+    node.p2p_manager.broadcast_raw_transaction = lambda tx, fee: broadcast.append(tx)
+
+    with pytest.raises(RpcError) as raised:
+        send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
+    assert raised.value.code == RPCErrorCode.VERIFY_REJECTED
+    assert raised.value.message == "min relay fee not met, 0 < 11"
+    assert not mempool.contains_tx(tx)
+    assert broadcast == []
+
+
+def test_a_fee_refusal_is_reported_with_core_s_reason_and_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`testmempoolaccept` reports the reason and details, as Core does."""
+    monkeypatch.setattr(cb, "verify_mempool_acceptance", a_fee_refusal)
+    (result,) = mempool_accept(
+        a_node(), _CONN, [[a_tx().serialize(include_witness=True).hex()]]
+    )
+    assert result["allowed"] is False
+    assert result["reject-reason"] == "min relay fee not met"
+    assert result["reject-details"] == "min relay fee not met, 0 < 11"
+
+
+def a_node_holding(
+    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch, fee: int
+) -> tuple[Node, Tx, list[tuple[bytes, int]]]:
+    """Return a node holding a spend paying `fee`, and what it announces."""
+    node = regtest_node()
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+    funding = chain[0].transactions[0]
+    held = generate_random_transaction(funding.id, value=funding.vout[0].value - fee)
+    # `bypass_limits`, as a reorg re-adds a transaction: no floor at all
+    assert node.mempool.add_tx(
+        held, verify_mempool_acceptance(node, held, bypass_limits=True)
+    )
+    announced: list[tuple[bytes, int]] = []
+    monkeypatch.setattr(
+        node.p2p_manager,
+        "broadcast_raw_transaction",
+        lambda tx, fee: announced.append((tx.hash, fee)),
+    )
+    return node, held, announced
+
+
+def test_a_held_transaction_is_reannounced_not_judged_again(
+    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A txid already held answers its txid, the real verifier never asked.
+
+    Core's `BroadcastTransaction` returns early for a txid its mempool
+    holds, before any acceptance check: a fee-free transaction a reorg
+    re-added, resubmitted, is not "min relay fee not met"
+    (btclib-org/btclib-node#1245). The same txid under another witness
+    reannounces the mempool's copy.
+    """
+    node, held, announced = a_node_holding(regtest_node, monkeypatch, 0)
+    twin = Tx.parse(held.serialize(include_witness=True))
+    twin.vin[0].script_witness = Witness([b"\x01"])
+    assert twin.id == held.id
+    assert twin.hash != held.hash
+    for resubmitted in (held, twin):
+        raw = resubmitted.serialize(include_witness=True).hex()
+        assert send_raw_transaction(node, _CONN, [raw]) == held.id.hex()
+    assert announced == [(held.hash, 0), (held.hash, 0)]
+
+
+def test_a_held_transaction_under_a_risen_minimum_is_reannounced(
+    regtest_node: Callable[[], Node], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rolling minimum risen past what a held tx pays is no refusal."""
+    node, held, announced = a_node_holding(regtest_node, monkeypatch, 1_000)
+    node.mempool._rolling_min_fee_rate = 1_000_000.0
+    node.mempool._block_since_last_rolling_fee_bump = False
+    raw = held.serialize(include_witness=True).hex()
+    assert send_raw_transaction(node, _CONN, [raw]) == held.id.hex()
+    assert announced == [(held.hash, 1_000)]
 
 
 def test_a_corrupted_stored_record_is_not_answered_as_the_tx_s_own_refusal(

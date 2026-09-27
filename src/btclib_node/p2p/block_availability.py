@@ -232,10 +232,12 @@ def find_next_blocks_to_download(  # noqa: PLR0913
     state: BlockAvailability,
     count: int,
     minimum_chain_work: int,
+    segwit_height: int,
     *,
     in_flight: Mapping[bytes, int],
     peer_id: int,
     limited: bool,
+    can_serve_witnesses: bool,
 ) -> tuple[list[bytes], int | None]:
     """Choose up to `count` blocks to ask this peer for: Core's own walk.
 
@@ -262,9 +264,13 @@ def find_next_blocks_to_download(  # noqa: PLR0913
     possible races".
 
     Core also passes over a block of the active chain, which a walk
-    starting at or above the fork point never meets, and stops at a
-    block a peer without witnesses could not serve, where
-    `callbacks.version` refuses such a peer.
+    starting at or above the fork point never meets, and ends the walk,
+    ahead of every other check on that block, at the first one at or
+    past `segwit_height` where `can_serve_witnesses` is false --
+    `DeploymentActiveAt(*pindex, ..., DEPLOYMENT_SEGWIT)` held against a
+    peer that fails `CanServeWitnesses`. A block this node already holds
+    does not move `last_common` past that point either, ending the walk
+    the same way an invalid block does rather than being passed over.
     """
     ancestry = (
         None if count == 0 else _walk_start(block_index, state, minimum_chain_work)
@@ -284,7 +290,9 @@ def find_next_blocks_to_download(  # noqa: PLR0913
         block_hash = ancestry.at(height)
         assert block_hash is not None  # noqa: S101 -- at or below its own height
         block_info = header_dict[block_hash]
-        if block_info.status == BlockStatus.invalid:
+        if block_info.status == BlockStatus.invalid or (
+            not can_serve_witnesses and height >= segwit_height
+        ):
             break
         if block_info.downloaded:
             if all_held:

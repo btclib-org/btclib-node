@@ -14,6 +14,7 @@ import pytest
 from btclib.block import Block
 from btclib.consensus import MAX_BLOCK_WEIGHT
 from btclib.exceptions import BTClibValueError
+from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
 from btclib.script import script
 from btclib.script.engine.flags import ScriptFlag
@@ -40,6 +41,7 @@ from btclib_node.exceptions import (
     ChainstateInconsistencyError,
     MissingPrevoutError,
     NonStandardTxError,
+    TxRejectedError,
 )
 from btclib_node.interpreter import check_transactions, get_flags
 from btclib_node.main import update_chain, verify_mempool_acceptance
@@ -59,6 +61,11 @@ if TYPE_CHECKING:
 
     from btclib_node.block_db import Coin
     from btclib_node.p2p.connection import Connection
+
+
+# what a mempool candidate below pays where the test is not about its fee:
+# over `Config.min_relay_feerate`'s 100 sat/kvB for any size built here
+FEE = 1_000
 
 
 @pytest.fixture
@@ -618,7 +625,7 @@ def test_a_mempool_spend_locked_to_an_already_reached_height_is_accepted(
     connect(node, chain)
 
     funding = chain[0].transactions[0]
-    final = locked_spend(funding, funding.vout[0].value, lock_time=1, sequence=0)
+    final = locked_spend(funding, funding.vout[0].value - FEE, lock_time=1, sequence=0)
     fee = verify_mempool_acceptance(node, final)
     assert fee >= 0
 
@@ -646,7 +653,7 @@ def test_a_mempool_spend_whose_relative_lock_is_satisfied_is_accepted(
     connect(node, chain)
 
     funding = chain[0].transactions[0]
-    met = relative_locked_spend(funding, funding.vout[0].value, sequence=50)
+    met = relative_locked_spend(funding, funding.vout[0].value - FEE, sequence=50)
     fee = verify_mempool_acceptance(node, met)
     assert fee >= 0
 
@@ -680,7 +687,9 @@ def test_a_mempool_spend_whose_time_based_relative_lock_is_satisfied(
 
     funding = chain[0].transactions[0]
     type_flag = 1 << 22
-    met = relative_locked_spend(funding, funding.vout[0].value, sequence=type_flag | 0)
+    met = relative_locked_spend(
+        funding, funding.vout[0].value - FEE, sequence=type_flag | 0
+    )
     fee = verify_mempool_acceptance(node, met)
     assert fee >= 0
 
@@ -699,11 +708,11 @@ def test_a_mempool_chained_spend_s_zero_relative_lock_is_satisfied(
     connect(node, chain)
 
     funding = chain[0].transactions[0]
-    parent = generate_random_transaction(funding.id, value=funding.vout[0].value)
+    parent = generate_random_transaction(funding.id, value=funding.vout[0].value - FEE)
     verify_mempool_acceptance(node, parent)
     node.mempool.add_tx(parent)
 
-    child = relative_locked_spend(parent, parent.vout[0].value, sequence=0)
+    child = relative_locked_spend(parent, parent.vout[0].value - FEE, sequence=0)
     fee = verify_mempool_acceptance(node, child)
     assert fee >= 0
 
@@ -721,11 +730,11 @@ def test_a_mempool_chained_spend_s_relative_lock_cannot_yet_be_met(
     connect(node, chain)
 
     funding = chain[0].transactions[0]
-    parent = generate_random_transaction(funding.id, value=funding.vout[0].value)
+    parent = generate_random_transaction(funding.id, value=funding.vout[0].value - FEE)
     verify_mempool_acceptance(node, parent)
     node.mempool.add_tx(parent)
 
-    child = relative_locked_spend(parent, parent.vout[0].value, sequence=1)
+    child = relative_locked_spend(parent, parent.vout[0].value - FEE, sequence=1)
     with pytest.raises(BTClibValueError, match="bad-txns-nonfinal"):
         verify_mempool_acceptance(node, child)
 
@@ -750,8 +759,10 @@ def test_add_tx(node: Node) -> None:
     with pytest.raises(MissingPrevoutError):
         verify_mempool_acceptance(node, invalid_tx)
 
-    tx1 = generate_random_transaction(chain[0].transactions[0].id)
-    tx2 = generate_random_transaction(tx1.id)
+    tx1 = generate_random_transaction(
+        chain[0].transactions[0].id, value=chain[0].transactions[0].vout[0].value - FEE
+    )
+    tx2 = generate_random_transaction(tx1.id, value=tx1.vout[0].value - FEE)
 
     verify_mempool_acceptance(node, tx1)
 
@@ -780,14 +791,106 @@ def test_a_mempool_candidate_is_read_against_relay_policy(node: Node) -> None:
     connect(node, chain)
     coinbase = chain[0].transactions[0]
 
-    non_minimal = generate_random_transaction(coinbase.id)
+    non_minimal = generate_random_transaction(
+        coinbase.id, value=coinbase.vout[0].value - FEE
+    )
     non_minimal.vin[0].script_sig = b"\x4c\x01\x01"
     with pytest.raises(NonStandardTxError, match="non-minimal push"):
         verify_mempool_acceptance(node, non_minimal)
 
-    minimal = generate_random_transaction(coinbase.id)
+    minimal = generate_random_transaction(
+        coinbase.id, value=coinbase.vout[0].value - FEE
+    )
     minimal.vin[0].script_sig = script.serialize(["OP_1"])
-    assert verify_mempool_acceptance(node, minimal) == 0
+    assert verify_mempool_acceptance(node, minimal) == FEE
+
+
+def a_funded_spend(node: Node, fee: int) -> Tx:
+    """Connect a mature chain and return a spend of its first coinbase."""
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+    funding = chain[0].transactions[0]
+    return generate_random_transaction(funding.id, value=funding.vout[0].value - fee)
+
+
+def test_a_fee_under_the_relay_floor_is_refused_in_core_s_words(node: Node) -> None:
+    """A fee under `min_relay_feerate` for the vsize is refused, as by Core.
+
+    `bitcoind` v31.1 on regtest answers a zero-fee spend "min relay fee
+    not met, 0 < 11", 11 being its own 110-vbyte size at 100 sat/kvB
+    rounded up; this answers the same shape for its own size. One
+    satoshi under the floor is refused and the floor itself accepted
+    (btclib-org/btclib-node#1245).
+    """
+    probe = a_funded_spend(node, 0)
+    floor = fee_from_vsize(probe.vsize, node.config.min_relay_feerate)
+    assert floor > 0
+    funding_value = probe.vout[0].value
+    for fee in (0, floor - 1):
+        short = generate_random_transaction(
+            probe.vin[0].prev_out.tx_id, value=funding_value - fee
+        )
+        with pytest.raises(TxRejectedError) as refused:
+            verify_mempool_acceptance(node, short)
+        assert refused.value.reason == "min relay fee not met"
+        assert str(refused.value) == f"min relay fee not met, {fee} < {floor}"
+    at_floor = generate_random_transaction(
+        probe.vin[0].prev_out.tx_id, value=funding_value - floor
+    )
+    assert verify_mempool_acceptance(node, at_floor) == floor
+
+
+def test_a_fee_under_the_mempool_s_rolling_minimum_is_refused_first(
+    node: Node,
+) -> None:
+    """The rolling minimum is checked ahead of the relay floor, as by Core.
+
+    `CheckFeeRate` asks the mempool's own minimum first, so a fee under
+    both floors is refused for that one; a fee under it alone, and above
+    the relay floor, is refused too, and the minimum itself accepted.
+    """
+    probe = a_funded_spend(node, 0)
+    node.mempool._rolling_min_fee_rate = 5000.0
+    node.mempool._block_since_last_rolling_fee_bump = False
+    assert node.mempool.get_min_fee_rate() == FeeRate(sats_per_kvbyte=5000)
+    floor = fee_from_vsize(probe.vsize, FeeRate(sats_per_kvbyte=5000))
+    relay_floor = fee_from_vsize(probe.vsize, node.config.min_relay_feerate)
+    assert relay_floor < floor - 1
+    funding_value = probe.vout[0].value
+    for fee in (0, floor - 1):
+        short = generate_random_transaction(
+            probe.vin[0].prev_out.tx_id, value=funding_value - fee
+        )
+        with pytest.raises(TxRejectedError) as refused:
+            verify_mempool_acceptance(node, short)
+        assert str(refused.value) == f"mempool min fee not met, {fee} < {floor}"
+    at_floor = generate_random_transaction(
+        probe.vin[0].prev_out.tx_id, value=funding_value - floor
+    )
+    assert verify_mempool_acceptance(node, at_floor) == floor
+
+
+def test_bypass_limits_skips_the_feerate_floor(node: Node) -> None:
+    """`bypass_limits` accepts a fee-free candidate, Core's own reorg re-add."""
+    assert (
+        verify_mempool_acceptance(node, a_funded_spend(node, 0), bypass_limits=True)
+        == 0
+    )
+
+
+def test_a_spend_of_more_than_its_inputs_is_refused_for_that_not_its_fee(
+    node: Node,
+) -> None:
+    """Outputs over inputs is refused as such, ahead of the feerate floor.
+
+    Core's `CheckTxInputs` runs before `CheckFeeRate`; the negative fee
+    would otherwise read as one under the floor.
+    """
+    with pytest.raises(
+        BTClibValueError, match="Invalid transaction amounts"
+    ) as refused:
+        verify_mempool_acceptance(node, a_funded_spend(node, -1))
+    assert not isinstance(refused.value, TxRejectedError)
 
 
 def test_a_stored_coin_that_wont_parse_looks_missing_to_the_mempool(
@@ -1327,7 +1430,9 @@ def test_a_block_connected_before_header_sync_ends_leaves_the_mempool(
     chain = generate_random_chain(COINBASE_MATURITY + 1, RegTest().genesis.hash)
     connect(node, chain[:-1])
     mined = chain[-1].transactions[1]
-    node.mempool.add_tx(mined, verify_mempool_acceptance(node, mined))
+    # the block pays its coinbase the whole input, so this spend is fee-free
+    fee = verify_mempool_acceptance(node, mined, bypass_limits=True)
+    node.mempool.add_tx(mined, fee)
 
     connect(node, chain[-1:])
     assert node.chainstate.block_index.active_chain[-1] == chain[-1].header.hash
