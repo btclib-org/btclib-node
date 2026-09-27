@@ -799,7 +799,7 @@ def test_a_second_spend_of_one_outpoint_is_not_added() -> None:
     assert mempool.add_tx(second, 5000)
 
 
-def testformat_money_is_core_s_own() -> None:
+def test_format_money_is_core_s_own() -> None:
     """Eight decimals, right-trimmed to no fewer than two."""
     fmt = mempool_module.format_money
     assert fmt(0) == "0.00"

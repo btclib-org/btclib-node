@@ -314,7 +314,7 @@ class Mempool:
         # worst one held once trimming is done, eviction takes it right
         # back out and the return value is `False` here exactly as it
         # was for the old outright refusal -- `rpc/callbacks.py`'s own
-        # "Mempool is full" answers that case whether it is reached this
+        # "mempool full", Core's, answers that case whether it is reached this
         # way or the old way. A transaction already held under this
         # txid, same witness or not, is still a no-op that never touches
         # bytesize at all, for a caller that skipped

@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from bitcoin_core_rpc import RPCErrorCode, chain_from_network
 from btclib.block import Block, median_time_past
-from btclib.exceptions import BTClibException, BTClibValueError
+from btclib.exceptions import BTClibException
 from btclib.p2p.address import ServiceFlags
 from btclib.p2p.limits import PROTOCOL_VERSION
 from btclib.tx import Tx
@@ -1525,7 +1525,7 @@ _MISSING_INPUTS_REASON = "bad-txns-inputs-missingorspent"
 # alias of `RPC_VERIFY_REJECTED` (`-26`) -- the same code
 # `RPCErrorCode.VERIFY_REJECTED` (`bitcoin_core_rpc`) already answers a
 # transaction the mempool refused with, above. btclib-org/btclib-node#293
-_MEMPOOL_FULL_REASON = "Mempool is full"
+_MEMPOOL_FULL_REASON = "mempool full"
 
 
 def test_mempool_accept(

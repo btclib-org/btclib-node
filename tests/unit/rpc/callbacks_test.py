@@ -22,7 +22,6 @@ import pytest
 from bitcoin_core_rpc import RPCErrorCode
 from btclib.block import Block, BlockHeader
 from btclib.consensus import MAX_BLOCK_WEIGHT
-from btclib.exceptions import BTClibValueError
 from btclib.fee import FeeRate
 from btclib.p2p.address import NetworkAddress, ServiceFlags
 from btclib.p2p.limits import PROTOCOL_VERSION
@@ -1585,7 +1584,7 @@ def test_a_transaction_a_full_mempool_cannot_keep_is_refused_not_relayed(
     with pytest.raises(RpcError) as raised:
         send_raw_transaction(node, _CONN, [tx.serialize(include_witness=True).hex()])
     assert raised.value.code == RPCErrorCode.VERIFY_REJECTED
-    assert raised.value.message == "Mempool is full"
+    assert raised.value.message == "mempool full"
     assert not mempool.contains_tx(tx)
     assert broadcast == []
 
