@@ -88,7 +88,13 @@ on release day.
   `bitcoin.conf` refuses to start, as `bitcoind` does** (closes #1155).
   Move what that `bitcoin.conf` says into the file `-conf` names and
   delete or rename it, or start with `-allowignoredconf` to read the file
-  `-conf` names with a warning on stderr.
+  `-conf` names with a warning in the log.
+- **A `Node` opens its stores when it starts, not when it is built**
+  (closes #1279). `Node(config)` no longer has `chainstate`, `block_db`,
+  `p2p_manager` or `mempool`: they are there once `start()` returns,
+  unless `init_errors` says start-up failed, or once `load()` has run for
+  a node driven without its thread. A caller
+  reading them off a node it never started calls `node.load()` first.
 
 ## v2026.9.24
 

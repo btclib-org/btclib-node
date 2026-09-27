@@ -5,9 +5,9 @@
 """`Config`, the settings one `Node` is built from.
 
 Which chain to join, where its data lives, which listeners to start and
-on which interfaces, and the feerate floor it tells a peer about in
-`feefilter` -- `DEFAULT_MIN_RELAY_FEERATE` below, Core's own
-`DEFAULT_MIN_RELAY_TX_FEE`. `_resolve_chain` is what turns a chain
+on which interfaces, and the feerate floor its mempool accepts at and
+tells a peer about in `feefilter` -- `DEFAULT_MIN_RELAY_FEERATE` below,
+Core's own `DEFAULT_MIN_RELAY_TX_FEE`. `_resolve_chain` is what turns a chain
 already built, or a network's name, into the `Chain` a `Config` carries.
 `split_host_port` is `cli.py`'s own splitter for `-rpcbind`'s optional
 port too, and `get_path_arg` its reader of `-datadir`, `-conf` and
@@ -45,11 +45,10 @@ __all__ = [
 ]
 
 # Core's own floor, `DEFAULT_MIN_RELAY_TX_FEE` (`src/policy/policy.h`,
-# read at bitcoin/bitcoin@58a7869f86): 100 sat/kvB. This node prices
-# nothing at mempool acceptance yet (issue #85 is the open question of
-# what a rejected or evicted transaction costs), so the value below is
-# only ever the floor this node tells a peer about in `feefilter`
-# (btclib-org/btclib-node#94) -- it is not enforced anywhere else.
+# read at bitcoin/bitcoin@58a7869f86): 100 sat/kvB. The floor
+# `main.verify_mempool_acceptance` refuses a candidate under
+# (btclib-org/btclib-node#1245), and the one this node tells a peer about
+# in `feefilter` (btclib-org/btclib-node#94).
 DEFAULT_MIN_RELAY_FEERATE = FeeRate(sats_per_kvbyte=100)
 # Core's own `-maxconnections` default, `DEFAULT_MAX_PEER_CONNECTIONS`
 # (`src/net.h`), read at the release `integration-bitcoind.yml` pins,
@@ -309,6 +308,11 @@ class Config:
     # and `rpc.callbacks.get_blockchain_info` both check `pruned` first.
     prune_target_mib: int | None
     debug: bool
+    # what Core logs of its settings: the warnings it buffers while
+    # reading them, then the unrecognised-section warning, which it logs
+    # after its version line (a line history.log does not have, #1309).
+    # `Node` logs them in that order once its own log is open
+    log_warnings: tuple[str, ...]
     min_relay_feerate: FeeRate
     # (ip, port) pairs, resolved by `_resolve_peers` above: Core's own
     # `-connect`, which dials these alone and turns off DNS seeding and
@@ -351,6 +355,13 @@ class Config:
     # connection outside it too. `P2pManager.__init__` divides it into
     # inbound and outbound slots.
     max_connections: int
+    # Core's own `-dnsseed`, which this node has no option for: whether
+    # `P2pManager` asks the DNS seeds. `InitParameterInteraction`
+    # (`src/init.cpp`, at bitcoin/bitcoin@9be056a8a7) soft-sets it off
+    # under `-connect` or a `-maxconnections` whose `int64_t` is not
+    # positive; `__init__` computes that from `max_connections` where it
+    # is given `None`, and `cli` passes it from the `int64_t` itself.
+    dnsseed: bool
     # Core's own `-bantime`: how long a `setban` ban lasts, in seconds,
     # where the call names no length. `Node` hands it to its `BanMan`.
     ban_time: int
@@ -371,8 +382,11 @@ class Config:
     # constructor answering `Config("regtest")` for one parameter and
     # refusing it for the next -- which also drops PLR0917 (too many
     # positional arguments) below to zero, keyword-only meaning there
-    # is no longer a positional count to measure.
-    def __init__(  # noqa: PLR0913
+    # is no longer a positional count to measure. PLR0915 (too many
+    # statements) measures the same flatness from the body's side: one
+    # assignment per independent setting, which is what grows with every
+    # field this object carries rather than a body that wants splitting.
+    def __init__(  # noqa: PLR0913, PLR0915
         self,
         *,
         chain: Chain | str = DEFAULT_CHAIN,
@@ -393,6 +407,7 @@ class Config:
         addnode: Sequence[str] = (),
         listen: bool = True,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
+        dnsseed: bool | None = None,
         ban_time: int = DEFAULT_MISBEHAVING_BANTIME,
         rpcauth: Sequence[str] = (),
         rpcuser: str = "",
@@ -401,6 +416,7 @@ class Config:
         rpccookieperms: str | None = None,
         rpcwhitelist: Sequence[str] = (),
         rpcwhitelistdefault: bool | None = None,
+        log_warnings: Sequence[str] = (),
     ) -> None:
         """Resolve `chain` and ports."""
         self.chain = _resolve_chain(chain)
@@ -444,6 +460,11 @@ class Config:
             err_msg = "-maxconnections must be greater or equal than zero"
             raise ValueError(err_msg)
         self.max_connections = max_connections
+        self.dnsseed = (
+            not self.connect_given and max_connections > 0
+            if dnsseed is None
+            else dnsseed
+        )
         self.ban_time = ban_time
 
         self.p2p_port = None
@@ -496,4 +517,5 @@ class Config:
 
         self.debug = debug
         self.log_path = log_path
+        self.log_warnings = tuple(log_warnings)
         self.min_relay_feerate = min_relay_feerate

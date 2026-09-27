@@ -134,6 +134,7 @@ def test_a_connecting_node_carries_its_own_real_tip_height(tmp_path: Path) -> No
             allow_rpc=False,
         )
     )
+    node1.load()
     block_index = node1.chainstate.block_index
     block_index.add_headers([block.header for block in chain])
     node1.status = NodeStatus.HeaderSynced
@@ -188,6 +189,7 @@ def test_connection_to_ourselves(tmp_path: Path) -> None:
             allow_rpc=False,
         )
     )
+    node.load()
     recording = _RecordingPendingConnections()
     node.p2p_manager.pending_connections = recording
     node.start()
@@ -213,11 +215,11 @@ def test_connection_to_ourselves(tmp_path: Path) -> None:
         # That loop returns on `peer_db.is_empty`, which reads `addresses`
         # -- every endpoint heard about -- and not `active_addresses`, the
         # separate table `callbacks.version` fills through
-        # `add_active_address` for a peer this node dialled, after every
-        # refusal, the self-connect one included, so this handshake adds
-        # nothing to it and nothing here depends on it either way.
-        # `addresses` gains entries from three places and this test drives
-        # none of them: `init_from_db` loads a datadir
+        # `add_active_address`, past the self-connect check this
+        # handshake never gets past, so whether this handshake reaches
+        # that point decides nothing here. `addresses` gains entries
+        # from three places and this test drives none of them:
+        # `init_from_db` loads a datadir
         # that `tmp_path` has just created empty, `callbacks.addr` and
         # `callbacks.addrv2` need a peer to gossip and the one connection
         # attempted is the self-connect refused above, and
