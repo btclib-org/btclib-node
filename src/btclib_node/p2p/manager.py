@@ -993,14 +993,15 @@ class P2pManager(threading.Thread):
         """Draw up to `_MAX_DRAWS_PER_PASS` times, and dial at most once.
 
         The dial is of `kind`. A feeler draws from the gossiped
-        addresses not in the answered table, which holds an address
-        three hours (btclib-org/btclib-node#1318), standing in for
-        Core's `Select(true, ...)` of the new table. It is held to no
-        network group, and wants only `MayHaveUsefulAddressDB` of what
-        it draws. Core's `SelectTriedCollision`, asked first, has
-        nothing to answer here, this table keeping no tried buckets to
-        collide in. Split out of `_maybe_dial_more_peers` for ruff's
-        complexity ceiling; that method's own `try` guards it.
+        addresses not in the answered table, which
+        `get_active_addresses` prunes by age
+        (btclib-org/btclib-node#1318), standing in for Core's
+        `Select(true, ...)` of the new table. It is held to no network
+        group, and wants only `MayHaveUsefulAddressDB` of what it draws.
+        Core's `SelectTriedCollision`, asked first, has nothing to
+        answer here, this table keeping no tried buckets to collide in.
+        Split out of `_maybe_dial_more_peers` for ruff's complexity
+        ceiling; that method's own `try` guards it.
         """
         feeler = kind is _Outbound.FEELER
         # A draw in the group of an outbound peer, or a feeler's draw of
