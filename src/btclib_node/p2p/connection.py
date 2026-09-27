@@ -46,6 +46,7 @@ from btclib_node.p2p.callbacks import (
 )
 from btclib_node.p2p.chain_sync import ChainSyncTimeoutState
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
+from btclib_node.p2p.messages import NoncelessPing
 from btclib_node.p2p.protocol_version import BIP0031_VERSION, common_version
 
 if TYPE_CHECKING:
@@ -218,12 +219,9 @@ MAX_QUEUED_SEND_BYTES = int(
 # protocol violation to punish.
 #
 # The tempting number to size this against instead is this node's own
-# worst legitimate receive burst: `download.py`'s own
-# `_request_new_block_work` never asks one peer for more than
-# `MAX_BLOCKS_PER_GETDATA_BURST` blocks at once (`pending[:2]` never
-# adds to it -- the two are an `if`/`elif` on the same
-# `download_queue`, never both in one batch), each up to
-# `MAX_PROTOCOL_MESSAGE_LENGTH`, and this node never
+# worst legitimate receive burst: `download.py` never has more than
+# `MAX_BLOCKS_IN_TRANSIT_PER_PEER` blocks in flight from one peer, each
+# up to `MAX_PROTOCOL_MESSAGE_LENGTH`, and this node never
 # itself sends `GetCFilters`/`GetCFHeaders`/`GetCFCheckpt`, so no
 # cfilter headroom belongs on this side either -- 64,000,000 bytes,
 # nothing more, would be the whole of it. That is exactly the shape
@@ -517,6 +515,12 @@ class Connection:
     # btclib-org/btclib-node#1164
     _writing: asyncio.Task[object] | None = None
 
+    # Core's `m_ping_start`: when `send_ping` last queued a `ping`,
+    # nonceless or not, stamped as it is pushed rather than once the write
+    # completes, which is what `last_send` records. A class default for
+    # the reason `time_received` gives. btclib-org/btclib-node#1204
+    ping_start: float = 0
+
     # Core's `CNodeState::m_chain_sync` (`p2p/chain_sync.py`), here for
     # the same reasons as `block_availability` above.
     @cached_property
@@ -642,37 +646,9 @@ class Connection:
         self.has_all_wanted_services: bool = False
         self.keyed_net_group: int = 0
 
+        # Core's `vBlocksInFlight`, the rest of whose `CNodeState` is
+        # `block_availability`
         self.download_queue: list[bytes] = []
-        self.pending_eviction: bool = False
-        self.last_block_timestamp: float = time.time()
-
-        # This connection's own best known chain height -- callbacks.version
-        # sets it from the peer's own `start_height` and callbacks.headers
-        # raises it as headers this peer sent verify a taller tip. Core's
-        # own `pindexBestKnownBlock` (net_processing.cpp) is
-        # `block_availability.best_known`, ranked by chainwork and
-        # updated off inv/headers announcements alone; `download.py`
-        # reads this height instead (btclib-org/btclib-node#1179), so
-        # height off what this peer has itself sent stands in for it
-        # there. `start_height` is the useful seed Core's own
-        # field is in practice between two btclib-node peers, once
-        # `Connection.own_version` carries this node's own real tip
-        # (`Node.best_height`) rather than the literal `0` it used to
-        # send unconditionally (btclib-org/btclib-node#722): the peer on
-        # the other end of a fresh handshake seeds `best_known_height`
-        # at that peer's own real height already, and `headers` below
-        # only ever raises it further as that peer's own tip grows past
-        # what its `version` reported. A peer running software that
-        # still sends a literal `0`, or that has not extended its chain
-        # since connecting, is exactly the case `_reachable_blocks`
-        # (download.py) already treats as "nothing ruled out yet" rather
-        # than "confirmed at height 0", the threshold it computes from a
-        # low `best_known_height` excluding nothing a real download
-        # window holds. 0 until callbacks.version writes here, which
-        # every connection `DownloadManager` ever sees has already done
-        # by the time it is promoted (`callbacks.verack` refuses one
-        # that has not). btclib-org/btclib-node#706
-        self.best_known_height: int = 0
 
         # When `addr_token_bucket`, above, was last topped up: Core's
         # `Peer::m_addr_token_timestamp`, which starts at the peer's
@@ -1244,11 +1220,15 @@ class Connection:
         (`manage_connections`); `_ping_lock` is what keeps its own two
         writes one step against `callbacks.pong`'s read and clear.
 
-        Nothing is sent at a common version of `BIP0031_VERSION` or
-        below, where Core sends a `ping` with no nonce: btclib's `Ping`
-        has no such form. btclib-org/btclib-node#1204
+        At a common version of `BIP0031_VERSION` or below it is a
+        `NoncelessPing`, as in Core's `MaybeSendPing`
+        (`src/net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+        v31.1 tag): no `pong` answers it, so nothing is recorded as
+        outstanding. btclib-org/btclib-node#1204
         """
+        self.ping_start = time.time()
         if common_version(self) <= BIP0031_VERSION:
+            self.send(NoncelessPing())
             return
         # The nonce is the sender's to choose, and btclib's Ping defaults
         # it to zero rather than drawing one. Zero is also what

@@ -74,8 +74,8 @@ _WARNING = (
 # Core's base32 alphabet (`src/util/strencodings.cpp`), which
 # `DecodeBase32` also reads in upper case
 _BASE32 = "abcdefghijklmnopqrstuvwxyz234567"
-# `CNetAddr::SetTor` and `SetI2P` (`src/netaddress.cpp`, at
-# bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+# `CNetAddr::SetTor` and `SetI2P` (`src/netaddress.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
 _ONION = ".onion"
 _I2P = ".b32.i2p"
 _I2P_CHARS = 52
@@ -214,9 +214,9 @@ def _numeric_host(text: str) -> IPv4Address | IPv6Address | None:
             return ip.ipv4_mapped
         if ip in _INTERNAL:
             continue
-        if ip in _TORV2:
-            return IPv6Address(0)
         scope = cast("tuple[str, int, int, int]", sockaddr)[3]
+        if ip in _TORV2:
+            ip = IPv6Address(0)
         return IPv6Address(f"{ip}%{scope}") if scope else ip
     return None
 

@@ -96,12 +96,16 @@ from btclib_node.main import (
     verify_mempool_acceptance,
 )
 from btclib_node.p2p.address import ip_and_port
-from btclib_node.p2p.block_availability import update_block_availability
+from btclib_node.p2p.block_availability import (
+    remove_block_request,
+    update_block_availability,
+)
 from btclib_node.p2p.chain_sync import (
     disconnect_if_insufficient_work,
     protect_if_caught_up,
 )
 from btclib_node.p2p.filter_size import ONE_BUSY_MODERN_BLOCK_FILTER_BYTES
+from btclib_node.p2p.messages import FinalAlert
 from btclib_node.p2p.protocol_version import (
     BIP0031_VERSION,
     MIN_PEER_PROTO_VERSION,
@@ -314,71 +318,38 @@ def maybe_send_getheaders(node: Node, conn: Connection, locator: list[bytes]) ->
     return False
 
 
-def version(node: Node, msg: bytes, conn: Connection) -> None:
-    """Handle a peer's `version`: refuse an incompatible peer, else continue.
+# The common version at or below which `version` sends the final
+# `alert`: Core's literal 70012 (`src/net_processing.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), named for nothing else.
+_FINAL_ALERT_VERSION = 70012
 
-    A second `version` ahead of this connection's own `verack` is
-    ignored outright -- Core's own guard, `pfrom.nVersion != 0`
-    (`net_processing.cpp:3823`, at bitcoin/bitcoin@5f45583e43), which
-    logs and returns before doing anything else. `conn.status` stays
-    `Open` until `verack` promotes it, so a repeat sent before that
-    point reaches this callback, and unguarded would resend
-    `WtxidRelay`, `SendAddrV2` and `Verack` in answer.
-    btclib-org/btclib-node#482
 
-    Continuing means answering `verack`, with `wtxidrelay` and
-    `sendaddrv2` ahead of it where the common version reaches
-    `WTXID_RELAY_VERSION` and, to an inbound peer, this node's own
-    `version` ahead of all three; setting up address relay with a peer
-    this node dialled, and asking it for addresses; and recording whether
-    the peer asked to have transactions relayed. A feeler then has its
-    address recorded as answered, and is dropped once those are written,
-    as Core's `VERSION` handler ends one (`net_processing.cpp`, at
-    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+def _refuses(node: Node, conn: Connection, version_msg: Version) -> bool:
+    """Answer whether `version` drops the peer, and discourages nobody.
+
+    The refusals of Core's `VERSION` handling, which answers a
+    self-connect, an obsolete version and missing services with
+    `fDisconnect` alone (`src/net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Records whether the peer
+    has every service this node wants, once the refusals ahead of that
+    check have kept it.
     """
-    if conn.version_message is not None:
-        return
-    version_msg = Version.parse(msg)
-
-    conn.version_message = version_msg
-    # `Connection.best_known_height`'s own docstring (connection.py) is
-    # where reading `start_height` here is argued: `own_version`
-    # (connection.py) carries this node's own real tip as of
-    # btclib-org/btclib-node#722, so between two btclib-node peers this
-    # already seeds at the peer's own real height, and a taller value
-    # off headers this peer actually sends (below) only ever raises it
-    # further. btclib-org/btclib-node#706
-    conn.best_known_height = version_msg.start_height
-    # Core's `SetServices` of an outbound peer's own services, ahead of
-    # every refusal below (`src/net_processing.cpp`, at
-    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a table row gossip
-    # mislabelled is corrected here, the peer dropped or not
-    if not conn.inbound:
-        node.p2p_manager.peer_db.set_services(conn.address, version_msg.services)
-    # Every refusal below drops the peer and discourages nobody. Core's
-    # `VERSION` handling answers a self-connect, an obsolete version and
-    # missing services with `fDisconnect` alone (`src/net_processing.cpp`,
-    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
-    #
     # `is_self_connect_nonce` replaces a fixed-size ring of recently
     # sent nonces, which a burst of outbound connects could evict a
     # still-outstanding attempt's own nonce from before its `version`
     # came back (btclib-org/btclib-node#448) -- its own docstring is
     # where the search it runs is argued against Core's.
     if node.p2p_manager.is_self_connect_nonce(version_msg.nonce):
-        conn.stop()
-        return
+        return True
 
     # Core's floor: a peer older than `MIN_PEER_PROTO_VERSION` is
     # dropped, and every feature newer than that is gated per peer on
     # `common_version` (`p2p/protocol_version.py`)
     if version_msg.version < MIN_PEER_PROTO_VERSION:
-        conn.stop()
-        return
+        return True
     # we only connect to witness nodes
     if not version_msg.services & ServiceFlags.NODE_WITNESS:
-        conn.stop()
-        return
+        return True
     # Core disconnects for missing services only where
     # `ExpectServicesFromConn` (`src/net.h`, at bitcoin/bitcoin@9be056a8a7,
     # the v31.1 tag) holds, which is `false` for `INBOUND`, `MANUAL` and
@@ -417,12 +388,48 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     conn.has_all_wanted_services = has_all_desirable_services(
         node, version_msg.services
     )
-    if (
+    return (
         conn.automatic
         and not conn.feeler
         and node.status >= NodeStatus.BlockSynced
         and not conn.has_all_wanted_services
-    ):
+    )
+
+
+def version(node: Node, msg: bytes, conn: Connection) -> None:
+    """Handle a peer's `version`: refuse an incompatible peer, else continue.
+
+    A second `version` ahead of this connection's own `verack` is
+    ignored outright -- Core's own guard, `pfrom.nVersion != 0`
+    (`net_processing.cpp:3823`, at bitcoin/bitcoin@5f45583e43), which
+    logs and returns before doing anything else. `conn.status` stays
+    `Open` until `verack` promotes it, so a repeat sent before that
+    point reaches this callback, and unguarded would resend
+    `WtxidRelay`, `SendAddrV2` and `Verack` in answer.
+    btclib-org/btclib-node#482
+
+    Continuing means answering `verack`, with `wtxidrelay` and
+    `sendaddrv2` ahead of it where the common version reaches
+    `WTXID_RELAY_VERSION` and, to an inbound peer, this node's own
+    `version` ahead of all three; setting up address relay with a peer
+    this node dialled, and asking it for addresses; and recording whether
+    the peer asked to have transactions relayed. A feeler then has its
+    address recorded as answered, and is dropped once those are written,
+    as Core's `VERSION` handler ends one (`net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    """
+    if conn.version_message is not None:
+        return
+    version_msg = Version.parse(msg)
+
+    conn.version_message = version_msg
+    # Core's `SetServices` of an outbound peer's own services, ahead of
+    # every refusal below (`src/net_processing.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a table row gossip
+    # mislabelled is corrected here, the peer dropped or not
+    if not conn.inbound:
+        node.p2p_manager.peer_db.set_services(conn.address, version_msg.services)
+    if _refuses(node, conn, version_msg):
         conn.stop()
         return
 
@@ -432,8 +439,7 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
         conn.send(conn.own_version())
 
     # Core sends `sendaddrv2` from 70016 up too, "as a courtesy" to
-    # software that rejects a message it does not know. The final `alert`
-    # Core sends at 70012 or below is not: btclib-org/btclib-node#1205
+    # software that rejects a message it does not know.
     if common_version(conn) >= WTXID_RELAY_VERSION:
         conn.send(WtxidRelay())
         conn.send(SendAddrV2())
@@ -468,6 +474,10 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     # where Core's `ProcessMessage` sets `m_time_offset`, once every
     # refusal above is behind it
     conn.stats.time_offset = version_msg.timestamp - int(time.time())
+    # and where it sends the final `alert` to a peer "old enough to have
+    # the old alert system". btclib-org/btclib-node#1205
+    if common_version(conn) <= _FINAL_ALERT_VERSION:
+        conn.send(FinalAlert())
     _end_if_feeler(node, conn, version_msg.services)
 
 
@@ -1056,17 +1066,21 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
     block = BlockMsg.parse(msg, check_validity=False).block
     block_hash = block.header.hash
 
+    # a snapshot, as every other reader on Node's thread takes: P2pManager's
+    # thread pops from the dict itself when it drops a stale connection,
+    # `conn` among those it could already have dropped by now -- which is
+    # why this reads `conn.download_queue` directly rather than through
+    # the snapshot too. Reused below, only Node's thread adding to a queue.
+    connections = list(node.p2p_manager.connections.values())
     # Core's `IsBlockRequested`: asked of any peer, read before this one's
     # request is removed
     requested = block_hash in conn.download_queue or any(
-        block_hash in other.download_queue
-        for other in list(node.p2p_manager.connections.values())
+        block_hash in other.download_queue for other in connections
     )
-    if block_hash in conn.download_queue:
-        conn.download_queue.remove(block_hash)
-
-    conn.last_block_timestamp = time.time()
-    conn.pending_eviction = False
+    # no longer awaited from this peer, whatever it turns out to be: the
+    # `RemoveBlockRequest` of Core's `BLOCK` handling (`net_processing.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+    remove_block_request(connections, block_hash, time.time(), conn.id)
 
     block_index = node.chainstate.block_index
     # Core's `BLOCK` arm refuses a mutated body before the header is
@@ -1119,6 +1133,8 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
         conn.last_novel_block_time = int(time.time())
         node.logger.info("Received new block with hash:%s", block_hash.hex())
         block_index.set_downloaded(block_hash)
+        # stored, so awaited from nobody: Core's `ProcessBlock`
+        remove_block_request(connections, block_hash, time.time())
 
 
 # The transaction items Core's `IsGenTxMsg` answers for, and the one its
@@ -1700,13 +1716,6 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     )
     if tip is not None:
         node.download_manager.last_getheaders_timestamps.pop(conn.id, None)
-        # This batch connected, so its own tip is a taller header this
-        # connection has sent than any before it. `download.py`'s own
-        # citation is where a connection's `best_known_height` is read
-        # back. btclib-org/btclib-node#706
-        conn.best_known_height = max(
-            conn.best_known_height, block_index.get_block_info(tip).index
-        )
         # Core protects only a peer it did not just drop, and asks whether
         # to drop it only where the batch was short of a full one
         if not (
