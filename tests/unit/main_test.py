@@ -4,15 +4,19 @@
 
 """`update_chain`/`verify_mempool_acceptance`: connect, reorg, reject."""
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
+from btclib.block import Block
+from btclib.consensus import MAX_BLOCK_WEIGHT
 from btclib.exceptions import BTClibValueError
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
 from btclib.script import script
 from btclib.script.engine.flags import ScriptFlag
+from btclib.script.witness import Witness
 from btclib.tx.limits import COINBASE_MATURITY
 from btclib.tx.out_point import OutPoint
 from btclib.tx.tx import Tx
@@ -45,13 +49,12 @@ from tests import (
     generate_random_chain,
     generate_random_header_chain,
     generate_random_transaction,
+    generate_segwit_block,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
-
-    from btclib.block import Block
 
     from btclib_node.block_db import Coin
     from btclib_node.p2p.connection import Connection
@@ -2302,3 +2305,212 @@ def test_a_fork_longer_than_the_retained_depth_prunes_correctly_on_disk(
     for block_hash in kept_hashes:
         assert reopened.block_index.get_block_info(block_hash).downloaded is True
     reopened.close()
+
+
+def a_block_over(transactions: list[Tx], committed: list[Tx] | None = None) -> Block:
+    """Build a block of `transactions` whose header commits to `committed`.
+
+    `committed` defaults to `transactions` themselves, the honest case.
+    """
+    header = build_block(RegTest().genesis.hash, committed or transactions, 0).header
+    return Block(header, transactions, check_validity=False)
+
+
+def a_64_byte_transaction() -> Tx:
+    """Build a transaction serializing to 64 bytes without its witness."""
+    tx = Tx(
+        vin=[TxIn(OutPoint(b"\x01" * 32, 0), b"\x51" * 4, 0xFFFFFFFF)],
+        vout=[TxOut(1, b"")],
+        check_validity=False,
+    )
+    assert len(tx.serialize(include_witness=False, check_validity=False)) == 64
+    return tx
+
+
+@pytest.mark.parametrize("check_witness_root", [True, False])
+def test_a_block_as_mined_is_not_mutated(check_witness_root: bool) -> None:  # noqa: FBT001
+    """ISS 1242: a body its header commits to, no witness, is not mutated."""
+    (block,) = generate_random_chain(1, RegTest().genesis.hash)
+    assert not main.is_block_mutated(block, check_witness_root=check_witness_root)
+
+
+def test_a_body_the_merkle_root_does_not_match_is_mutated() -> None:
+    """ISS 1242: Core's `bad-txnmrklroot`."""
+    (block,) = generate_random_chain(1, RegTest().genesis.hash)
+    forged = a_block_over([generate_coinbase(value=1, height=1)], block.transactions)
+    assert main.is_block_mutated(forged, check_witness_root=True)
+
+
+def test_a_body_repeating_its_last_transaction_is_mutated() -> None:
+    """ISS 1242: CVE-2012-2459, one merkle root over one more transaction."""
+    txs = [
+        generate_coinbase(height=1),
+        *(generate_random_transaction() for _ in range(2)),
+    ]
+    repeated = a_block_over([*txs, txs[-1]], txs)
+    assert repeated.header.merkle_root == a_block_over(txs).header.merkle_root
+    assert main.is_block_mutated(repeated, check_witness_root=True)
+
+
+@pytest.mark.parametrize(
+    ("root", "mutated"),
+    [(bytes(32), False), (b"\x01" * 32, True)],
+    ids=["null-root", "other-root"],
+)
+def test_an_empty_body_is_mutated_unless_the_root_is_null(
+    root: bytes,
+    mutated: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1242: Core's merkle root of no transactions is the null hash."""
+    (block,) = generate_random_chain(1, RegTest().genesis.hash)
+    header = replace(block.header, merkle_root=root)
+    empty = Block(header, [], check_validity=False)
+    assert main.is_block_mutated(empty, check_witness_root=True) is mutated
+
+
+@pytest.mark.parametrize("sixty_four", [True, False])
+def test_a_body_without_a_coinbase_is_mutated_by_a_64_byte_transaction(
+    sixty_four: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1242: a 64-byte transaction could be an inner merkle node."""
+    tx = a_64_byte_transaction() if sixty_four else generate_random_transaction()
+    no_coinbase = a_block_over([tx])
+    assert main.is_block_mutated(no_coinbase, check_witness_root=True) is sixty_four
+
+
+def test_a_witness_the_coinbase_commits_to_is_not_mutated_under_segwit() -> None:
+    """ISS 1242: a commitment matching the witnesses, and a 32-byte nonce."""
+    assert not main.is_block_mutated(generate_segwit_block(), check_witness_root=True)
+
+
+def test_a_witness_before_segwit_is_mutated_whatever_it_commits_to() -> None:
+    """ISS 1242: no commitment is read, so any witness is unexpected."""
+    assert main.is_block_mutated(generate_segwit_block(), check_witness_root=False)
+
+
+def test_a_witness_with_no_commitment_is_mutated() -> None:
+    """ISS 1242: Core's `unexpected-witness`."""
+    spend = generate_random_transaction()
+    spend.vin[0].script_witness = Witness([b"\x01" * 3])
+    block = a_block_over([generate_coinbase(height=1), spend])
+    assert main.is_block_mutated(block, check_witness_root=True)
+
+
+@pytest.mark.parametrize("stack", [[], [bytes(32), b""]], ids=["none", "two"])
+def test_a_witness_nonce_not_of_one_element_is_mutated(stack: list[bytes]) -> None:
+    """ISS 1242: Core's `bad-witness-nonce-size`, on the element count."""
+    block = generate_segwit_block()
+    block.transactions[0].vin[0].script_witness = Witness(stack)
+    assert main.is_block_mutated(block, check_witness_root=True)
+
+
+def test_a_witness_nonce_not_of_32_bytes_is_mutated_though_it_matches() -> None:
+    """ISS 1242: Core's `bad-witness-nonce-size`, its commitment holding."""
+    block = generate_segwit_block(nonce=bytes(31))
+    assert main.is_block_mutated(block, check_witness_root=True)
+
+
+def test_a_witness_the_commitment_does_not_match_is_mutated() -> None:
+    """ISS 1242: Core's `bad-witness-merkle-match`, a witness swapped after."""
+    block = generate_segwit_block()
+    block.transactions[1].vin[0].script_witness = Witness([b"\x02" * 3])
+    assert main.is_block_mutated(block, check_witness_root=True)
+
+
+def a_block_of_weight(weight: int, *extra: Tx) -> Block:
+    """Build a segwit block whose weight is exactly `weight`, near the bound.
+
+    `generate_segwit_block`'s own, `extra` after the spend. The spend's
+    witness takes up the difference: a witness byte weighs one, and the
+    length prefix of an element this long is five bytes either side of
+    the adjustment.
+    """
+    witness = bytes(weight)
+    block = generate_segwit_block(*extra, witness=witness)
+    block = generate_segwit_block(
+        *extra, witness=bytes(len(witness) + weight - block.weight)
+    )
+    assert block.weight == weight
+    return block
+
+
+def test_a_committed_body_over_the_weight_is_marked_failed() -> None:
+    """ISS 1242: Core's `bad-blk-weight`, a `ContextualCheckBlock` rule."""
+    over = a_block_of_weight(MAX_BLOCK_WEIGHT + 1)
+    assert main.is_block_failed(over, check_witness_root=True)
+
+
+def test_a_committed_body_at_the_weight_is_not_marked_failed() -> None:
+    """ISS 1242: the bound is inclusive."""
+    at = a_block_of_weight(MAX_BLOCK_WEIGHT)
+    assert not main.is_block_failed(at, check_witness_root=True)
+
+
+def test_a_body_over_the_weight_on_a_witness_it_does_not_commit_to_is_not_failed() -> (
+    None
+):
+    """ISS 1242: Core asks the commitment first, so the weight is no one's."""
+    over = a_block_of_weight(MAX_BLOCK_WEIGHT + 1)
+    stuffed = over.transactions[1].vin[0].script_witness.stack[0]
+    over.transactions[1].vin[0].script_witness = Witness([b"\x01" * len(stuffed)])
+    assert over.weight > MAX_BLOCK_WEIGHT
+    assert not main.is_block_failed(over, check_witness_root=True)
+
+
+def a_spend_paying(script_pub_key: bytes) -> Tx:
+    """Build a valid transaction whose one output is `script_pub_key`."""
+    tx = generate_random_transaction()
+    tx.vout[0] = TxOut(tx.vout[0].value, script_pub_key)
+    return tx
+
+
+def a_spend_twice_of_one_outpoint() -> Tx:
+    """Build a spend of one outpoint twice, `bad-txns-inputs-duplicate`."""
+    tx = generate_random_transaction()
+    tx.vin = [tx.vin[0], tx.vin[0]]
+    return tx
+
+
+@pytest.mark.parametrize(
+    ("extra", "error"),
+    [
+        # three outputs of 400,000 bytes: 1.2 MB stripped, each transaction
+        # well under the bound on its own
+        (
+            lambda: [a_spend_paying(bytes(400_000)) for _ in range(3)],
+            "invalid stripped size",
+        ),
+        (lambda: [generate_coinbase(height=1)], "more than one coinbase"),
+        (lambda: [a_spend_twice_of_one_outpoint()], "spent twice"),
+        # OP_CHECKSIG, one legacy sigop a byte
+        (lambda: [a_spend_paying(b"\xac" * 20_001)], "invalid sigop cost"),
+    ],
+    ids=["bad-blk-length", "bad-cb-multiple", "tx", "bad-blk-sigops"],
+)
+def test_a_committed_body_over_the_weight_failing_check_block_is_not_failed(
+    extra: Callable[[], list[Tx]], error: str
+) -> None:
+    """ISS 1333: Core's `ProcessNewBlock` never marks a `CheckBlock` failure.
+
+    Each body is over the weight too, which alone would mark it.
+    """
+    over = a_block_of_weight(MAX_BLOCK_WEIGHT + 1_000_000, *extra())
+    assert over.weight > MAX_BLOCK_WEIGHT
+    with pytest.raises(BTClibValueError, match=error):
+        over.assert_valid(RegTest().pow_limit_bits)
+    assert not main.is_block_mutated(over, check_witness_root=True)
+    assert not main.is_block_failed(over, check_witness_root=True)
+
+
+def test_a_body_over_the_weight_with_no_coinbase_is_not_failed() -> None:
+    """ISS 1333: Core's `bad-cb-missing`, the body not mutated.
+
+    Core's `IsBlockMutated` reads no witness of a block without a
+    coinbase, so a witness is what puts this one over the weight.
+    """
+    spend = generate_random_transaction()
+    spend.vin[0].script_witness = Witness([bytes(MAX_BLOCK_WEIGHT)])
+    block = a_block_over([spend])
+    assert block.weight > MAX_BLOCK_WEIGHT
+    assert not main.is_block_mutated(block, check_witness_root=True)
+    assert not main.is_block_failed(block, check_witness_root=True)
