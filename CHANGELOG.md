@@ -614,7 +614,7 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 ### An answered address is kept for Core's 30-day horizon
 
 - **An answered row leaves the table only when `IsTerrible`'s time tests call
-  it terrible: no handshake in 30 days, or a stamp over 10 minutes ahead**
+  it terrible: its handshake stamp over 30 days old or 10 minutes ahead**
   (closes #1318), where it left three hours after its last handshake.
 
 ## v2026.9.24

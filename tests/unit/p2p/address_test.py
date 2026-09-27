@@ -296,7 +296,7 @@ def test_add_addresses_and_random_address_do_not_interleave(
 def test_an_answered_address_is_kept_until_is_terrible_ages_it_out(
     *, age: int, kept: bool
 ) -> None:
-    """ISS 1318: `IsTerrible`'s horizon and its future bound, not 3 hours.
+    """ISS 1318: `IsTerrible`'s horizon and its future bound.
 
     Not merely hidden: checked twice, the answer excludes an aged-out
     row and the table itself no longer holds it -- a read that filtered

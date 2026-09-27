@@ -269,11 +269,17 @@ _ADDRMAN_FUTURE_SLACK = 10 * 60
 
 
 def _aged_out(address: NetworkAddressV2, now: float) -> bool:
-    """Whether `IsTerrible` calls `address` terrible by its timestamp alone.
+    """Whether `address`'s handshake stamp fails `IsTerrible`'s time tests.
 
     The two time tests of `AddrInfo::IsTerrible` (`src/addrman.cpp`, at
     bitcoin/bitcoin@9be056a8a7, the v31.1 tag): stamped more than ten
-    minutes ahead of `now`, or older than `_ADDRMAN_HORIZON`.
+    minutes ahead of `now`, or older than `_ADDRMAN_HORIZON`. Core
+    applies them to `nTime`, which `Good_` leaves alone at the handshake
+    and which gossip and `Connected_` move instead, the latter when a
+    full outbound peer disconnects. `PeerDB.add_addresses` stores a
+    gossiped address with timestamp 0, so there is no gossip time to
+    test, and the handshake's is tested instead
+    (btclib-org/btclib-node#1364).
     """
     age = now - address.timestamp
     return age < -_ADDRMAN_FUTURE_SLACK or age > _ADDRMAN_HORIZON
@@ -750,12 +756,14 @@ class PeerDB:
         now = time.time()
         with self._active_lock:
             # A row's timestamp is its last handshake, and it is kept
-            # until `IsTerrible`'s time tests call it terrible. Core
-            # keeps even a terrible entry in its tried table, leaving it
-            # out of a `getaddr` answer and overwriting it only when
-            # another entry needs its slot. Here it leaves the table and
-            # its `answered-` row with it, so that the durable store
-            # stays bounded by what answered within the horizon (#253).
+            # until `IsTerrible`'s time tests call that stamp terrible
+            # (`_aged_out`, which says why the stamp is not Core's
+            # `nTime`). Core keeps even a terrible entry in its tried
+            # table, leaving it out of a `getaddr` answer and moving it
+            # back to the new table only when another entry needs its
+            # slot. Here it leaves the table and its `answered-` row
+            # with it, so that the durable store stays bounded by what
+            # answered within the horizon (#253).
             active: list[NetworkAddressV2] = []
             for addr in self.active_addresses:
                 if not _aged_out(addr, now):
