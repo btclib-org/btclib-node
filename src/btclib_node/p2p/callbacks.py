@@ -278,6 +278,22 @@ def _refuse_past_bound(msg_type: str, count: int) -> None:
         raise MisbehavingError(err_msg)
 
 
+def _record_answered(node: Node, conn: Connection, services: ServiceFlags) -> None:
+    """Record a peer this node dialled as answered, with the services it gave.
+
+    Core's `VERSION` handler calls `m_addrman.Good(pfrom.addr)` under
+    `!pfrom.IsInboundConn()` (`net_processing.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). `conn.address` is what
+    this node dialled, and the socket connecting there already answered.
+    An inbound peer is not recorded: its connection proves only that it
+    can reach this node, not that this node can reach it.
+    """
+    if conn.inbound:
+        return
+    conn.address = replace(conn.address, services=services)
+    node.p2p_manager.peer_db.add_active_address(conn.address)
+
+
 def _has_all_desirable_services(node: Node, services: int) -> bool:
     """Core's `HasAllDesirableServiceFlags`, argued in `version` below."""
     desirable = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
@@ -449,16 +465,8 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
         conn.send(GetAddr())
         conn.addr_token_bucket += MAX_ADDR_TO_SEND
 
-    # Core's `VERSION` handler then records a peer this node dialled as
-    # answered, `m_addrman.Good(pfrom.addr)` under `!pfrom.IsInboundConn()`
-    # (`net_processing.cpp`, at bitcoin/bitcoin@9be056a8a7, the v31.1
-    # tag). `conn.address` is what this node dialled, and the socket
-    # connecting there already answered. An inbound peer is not recorded:
-    # its connection proves only that it can reach this node, not that
-    # this node can reach it.
-    if not conn.inbound:
-        conn.address = replace(conn.address, services=version_msg.services)
-        node.p2p_manager.peer_db.add_active_address(conn.address)
+    # then records a peer this node dialled as answered
+    _record_answered(node, conn, version_msg.services)
 
     # relay_tx, which is the attribute Connection defines: the name this
     # wrote before was one letter different, so what the peer asked for
