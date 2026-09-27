@@ -417,7 +417,9 @@ class Node(threading.Thread):
             self.p2p_port = None
         peer_db = PeerDB(self.chain, self.data_dir)
         # Core's `banlist.json`, in the chain's own directory
-        ban_man = BanMan(self.data_dir / "banlist.json", self.logger)
+        ban_man = BanMan(
+            self.data_dir / "banlist.json", self.logger, self.config.ban_time
+        )
         self.p2p_manager = P2pManager(self, self.p2p_port, peer_db, ban_man)
 
         self.rpc_port: int | None
