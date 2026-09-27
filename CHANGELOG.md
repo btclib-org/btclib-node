@@ -493,6 +493,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   connected every 60 seconds** (closes #1316), each on a loop of its own,
   where both shared one doubling backoff inside the housekeeping loop.
 
+### A slow dial no longer holds up the pruning of idle peers
+
+- **The automatic dial, an addr-fetch's included, runs on a loop of its own**
+  (closes #1366), where the housekeeping loop awaited it and pinged or dropped
+  no idle peer until it returned.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

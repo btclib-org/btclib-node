@@ -4,9 +4,10 @@
 
 """`P2pManager`, the thread listening for and dialing peer connections.
 
-Runs its own asyncio loop -- `manage_connections` accepts inbound
-sockets, dials outbound ones from `PeerDB`, and prunes an idle or
-handshake-stuck `Connection` -- and hands finished messages back to
+Runs its own asyncio loop -- `server` accepts inbound sockets,
+`_open_connections` dials outbound ones from `PeerDB`, and
+`manage_connections` prunes an idle or handshake-stuck `Connection` --
+and hands finished messages back to
 `Node`'s own thread through `messages` and `handshake_messages`. A
 coroutine enters this loop only through `run_coroutine_threadsafe`;
 `Node`'s own thread calls this class's plain methods, such as `verack`'s
@@ -295,7 +296,7 @@ class P2pManager(threading.Thread):
         self._seednode_given = bool(node.config.seednode)
         self._addr_fetches: deque[tuple[str, int]] = deque()
         # Core's `add_addr_fetch` and `seed_node_timer`, set when
-        # `manage_connections` begins.
+        # `_open_connections` begins.
         self._add_addr_fetch = False
         self._seed_node_timer = 0.0
         # Core's `m_added_node_params` being non-empty, which only
@@ -303,7 +304,7 @@ class P2pManager(threading.Thread):
         # keeps no list (`rpc.callbacks.add_node`), so it does not count
         # as it does in Core.
         self._addnode_given = bool(node.config.addnode)
-        # Core's `start`, reset when `manage_connections` begins.
+        # Core's `start`, reset when `_open_connections` begins.
         self._dial_start = time.time()
         self._next_fixed_seeds_check = 0.0
 
@@ -1030,7 +1031,7 @@ class P2pManager(threading.Thread):
         # any peer of its own. A dial still in flight is in neither table
         # and in neither count: `ThreadOpenConnections` finishes its own
         # `OpenNetworkConnection` before it counts again, as
-        # `manage_connections` awaits this method before its next pass.
+        # `_open_connections` awaits this method before its next pass.
         #
         # Locked, and the snapshot below locks separately rather than
         # sharing this one: `promote_connection` moves a connection
@@ -1126,7 +1127,7 @@ class P2pManager(threading.Thread):
             # `_maybe_dial_more_peers`'s guard lets a table of ipv6
             # and onion addresses through. The draw is what knows,
             # and it answers with nothing: this pass has nothing to
-            # do, and `manage_connections`'s sleep is what keeps that
+            # do, and `_open_connections`'s sleep is what keeps that
             # from being a spin.
             if address is None:
                 break
@@ -1207,14 +1208,30 @@ class P2pManager(threading.Thread):
         return sum(self._named_endpoints.get(key) in held for key in self._added_peers)
 
     async def manage_connections(self) -> None:
-        """Prune, prune some more, maybe dial, sleep -- forever, every 0.1s.
+        """Prune, prune some more, sleep -- forever, every 0.1s.
 
         `_prune_stale_connections` pings or drops an idle peer every
-        pass; `_maybe_prune_active_addresses` runs far less often;
-        `_maybe_dial_more_peers` dials one more only if this node still
-        has room for it. `-connect` and `-addnode` peers are dialled by
-        loops of their own, `_open_connect_peers` and
-        `_open_added_peers`.
+        pass, and `_maybe_prune_active_addresses` runs far less often.
+        Nothing here dials: that is `_open_connections`',
+        `_open_connect_peers`' and `_open_added_peers`', so a dial
+        however slow does not hold up a pass, as Core's inactivity
+        check does not wait on `ThreadOpenConnections`.
+        """
+        while True:
+            now = time.time()
+            self._prune_stale_connections(now)
+            self._drop_expired_addr_fetches(now)
+            self._maybe_prune_active_addresses(now)
+            await asyncio.sleep(0.1)
+
+    async def _open_connections(self) -> None:
+        """Maybe dial, sleep -- forever, every 0.1s.
+
+        `ThreadOpenConnections`' automatic arm (`src/net.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag), a loop that does
+        nothing else: `_maybe_dial_more_peers` processes an addr-fetch
+        and then dials one more peer only if this node still has room
+        for it, each awaited before the next pass.
         """
         self._dial_start = time.time()
         self._seed_node_timer = self._dial_start
@@ -1222,10 +1239,6 @@ class P2pManager(threading.Thread):
         if self.use_addrman_outgoing and not self.add_fixed_seeds:
             self.logger.info("Fixed seeds are disabled")
         while True:
-            now = time.time()
-            self._prune_stale_connections(now)
-            self._drop_expired_addr_fetches(now)
-            self._maybe_prune_active_addresses(now)
             await self._maybe_dial_more_peers()
             await asyncio.sleep(0.1)
 
@@ -1618,9 +1631,9 @@ class P2pManager(threading.Thread):
         loop = self.loop
         # Core's own `-listen=0`: no bind, no accept, outbound dialling
         # untouched -- `_bind`'s own listener socket is the only thing
-        # this skips, `manage_connections` and the two manual loops below
-        # running on this same loop regardless of whether `_bind` below
-        # ever ran.
+        # this skips, `manage_connections` and the three dialling loops
+        # below running on this same loop regardless of whether `_bind`
+        # below ever ran.
         server_sockets: list[socket.socket] = []
         try:
             self.logger.info("Starting P2P manager")
@@ -1655,6 +1668,7 @@ class P2pManager(threading.Thread):
         # `ThreadOpenConnections` (`src/net.cpp`, same sha)
         asyncio.run_coroutine_threadsafe(self._open_added_peers(), loop)
         asyncio.run_coroutine_threadsafe(self._open_connect_peers(), loop)
+        asyncio.run_coroutine_threadsafe(self._open_connections(), loop)
         loop.run_forever()
 
     def stop(self) -> None:

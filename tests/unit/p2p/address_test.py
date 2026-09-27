@@ -434,10 +434,10 @@ def test_a_dial_that_is_given_up_on_closes_the_socket_it_opened(
 def test_a_dial_cancelled_in_flight_closes_the_socket_it_opened(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """#312: cancelling `manage_connections` cancels a dial mid-flight too.
+    """#312: cancelling a dialling loop cancels a dial mid-flight too.
 
-    `P2pManager.stop` cancels `manage_connections`, and a dial it is in
-    the middle of is cancelled with it. `CancelledError` is not an
+    `P2pManager.stop` cancels every task on its loop, and a dial one is
+    in the middle of is cancelled with it. `CancelledError` is not an
     `OSError` and not a `TimeoutError`, so the arm that answers a peer
     which never came up does not see it: the socket opened a few lines
     earlier is reachable from the frame the cancellation unwinds and

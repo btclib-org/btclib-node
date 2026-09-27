@@ -296,7 +296,7 @@ async def dial(address: NetworkAddressV2) -> socket.socket | None:
         client.close()
         return None
     except asyncio.CancelledError:
-        # `manage_connections` cancelled with a dial in flight, which is
+        # a dialling loop cancelled with a dial in flight, which is
         # what `P2pManager.stop`'s own drain does to it. This socket is
         # this call's own until it is handed back, and the caller that
         # never receives it has nothing to close: without this it goes
@@ -590,7 +590,7 @@ class PeerDB:
         # Unlocked on purpose: `len` on a set is one step, not a walk of
         # it, so there is nothing here for another thread's `add`/
         # `discard` to catch mid-stride -- the answer is at worst one
-        # mutation stale, the same imprecision `manage_connections`
+        # mutation stale, the same imprecision `_maybe_dial_more_peers`
         # already reads this property through (a table this answers
         # empty for can gain an entry the instant after, dialable or
         # not, and nothing here promised otherwise).

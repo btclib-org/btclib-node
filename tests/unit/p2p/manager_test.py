@@ -267,19 +267,26 @@ def a_manager() -> Iterator[AManagerFactory]:
 
 
 async def one_pass(manager: P2pManager) -> bool:
-    """Run the housekeeping loop's body exactly once.
+    """Run the housekeeping loop's and the dialling loop's bodies once.
 
-    `ensure_future` queues the task's first step ahead of the timer, so
-    the body runs before the cancel however slow the machine is. Two
-    passes is this twice, rather than a sleep long enough for the loop's
-    own -- which is a wait on the scheduler, and #46's shape.
+    `manage_connections` and then `_open_connections`, as `run` starts
+    them. `ensure_future` queues each task's first step ahead of the
+    timer, so both bodies run before the cancel however slow the machine
+    is. Two passes is this twice, rather than a sleep long enough for
+    the loops' own -- which is a wait on the scheduler, and #46's shape.
+    Answers whether both were still running at the cancel.
     """
-    task = asyncio.ensure_future(manager.manage_connections())
+    tasks = [
+        asyncio.ensure_future(manager.manage_connections()),
+        asyncio.ensure_future(manager._open_connections()),
+    ]
     await asyncio.sleep(0.05)
-    still_running = not task.done()
-    task.cancel()
-    with suppress(asyncio.CancelledError):
-        await task
+    still_running = not any(task.done() for task in tasks)
+    for task in tasks:
+        task.cancel()
+    for task in tasks:
+        with suppress(asyncio.CancelledError):
+            await task
     return still_running
 
 
@@ -606,6 +613,47 @@ def test_a_connection_that_has_closed_is_let_go_of(a_manager: AManagerFactory) -
     manager = a_manager([conn])
     asyncio.run(one_pass(manager))
     assert not manager.connections
+
+
+def test_an_addr_fetch_in_flight_does_not_hold_up_the_pruning(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1366: the dial is awaited on a loop of its own, as Core's is.
+
+    The addr-fetch dial below never returns, and a connection that
+    closes while it is in flight is let go of all the same.
+    """
+    manager = a_manager()
+    dialling: list[str] = []
+
+    async def never_returns(host: str, port: int, *, addr_fetch: bool) -> None:
+        dialling.append(host)
+        manager.connections[1] = a_conn(1, status=P2pConnStatus.Closed)
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(manager, "async_connect_host", never_returns)
+    manager._addr_fetches.append(("seed.example", 18444))
+
+    async def pruned_while_dialling() -> bool:
+        tasks = [
+            asyncio.ensure_future(manager.manage_connections()),
+            asyncio.ensure_future(manager._open_connections()),
+        ]
+        try:
+            for _ in range(100):
+                await asyncio.sleep(0.05)
+                if dialling and not manager.connections:
+                    return True
+            return False
+        finally:
+            for task in tasks:
+                task.cancel()
+            for task in tasks:
+                with suppress(asyncio.CancelledError):
+                    await task
+
+    assert asyncio.run(pruned_while_dialling())
+    assert dialling == ["seed.example"]
 
 
 def test_a_closed_connection_past_the_idle_bound_is_not_pinged(
@@ -2730,7 +2778,11 @@ def test_run_dials_an_added_peer_without_an_explicit_dial(
 def test_run_starts_the_added_loop_before_the_connect_loop(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ISS 1316: `CConnman::Start`'s order, `addcon` and then `opencon`."""
+    """ISS 1316: `CConnman::Start`'s order, `addcon` and then `opencon`.
+
+    `opencon` is two loops here, the `-connect` one and the automatic
+    one (ISS 1366).
+    """
     started: list[str] = []
     manager = a_manager()
 
@@ -2740,15 +2792,19 @@ def test_run_starts_the_added_loop_before_the_connect_loop(
     async def connect() -> None:
         started.append("connect")
 
+    async def automatic() -> None:
+        started.append("automatic")
+
     monkeypatch.setattr(manager, "_open_added_peers", added)
     monkeypatch.setattr(manager, "_open_connect_peers", connect)
+    monkeypatch.setattr(manager, "_open_connections", automatic)
     try:
         assert manager.start_listener()
-        wait_until(lambda: len(started) == 2)
+        wait_until(lambda: len(started) == 3)
     finally:
         manager.stop()
         manager.join(timeout=10)
-    assert started == ["added", "connect"]
+    assert started == ["added", "connect", "automatic"]
 
 
 def test_a_peer_db_that_raises_does_not_stop_the_housekeeping(
