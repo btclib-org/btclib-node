@@ -37,7 +37,7 @@ from btclib_node.p2p.address import ip_and_port, peer_address
 from btclib_node.p2p.banman import Subnet, is_valid_host, lookup_host, lookup_subnet
 from btclib_node.p2p.eviction import Network, is_valid, net_class
 from btclib_node.rpc.connection import RawJSON
-from btclib_node.rpc.errors import RpcError, bool_param, type_error
+from btclib_node.rpc.errors import RpcError, bool_param, json_type_name, type_error
 
 if TYPE_CHECKING:
     from btclib_node import Node
@@ -463,8 +463,11 @@ def get_block_header(
 
     if not verbose:
         # src/rpc/blockchain.cpp:668-673: the same eighty bytes a peer
-        # is sent on the wire, hex-encoded rather than the JSON object
-        return header.serialize().hex()
+        # is sent on the wire, hex-encoded rather than the JSON object.
+        # Unchecked, as the index stores it: a version of zero or below,
+        # which Core takes below BIP34's height, is one btclib's own
+        # check refuses (btclib-org/btclib#2309)
+        return header.serialize(check_validity=False).hex()
 
     # the blocks this node has validated and connected, which is what
     # Core hands blockheaderToJSON: `ActiveChain().Tip()`, at
@@ -493,11 +496,10 @@ def get_block_header(
         # src/rpc/blockchain.cpp:175
         "version": header.version,
         # strprintf("%08x", nVersion), src/rpc/blockchain.cpp:176 --
-        # btclib bounds `version` to `0 < version <= 0x7FFFFFFF`
-        # (block_header.py's own `assert_valid`), so the top bit is
-        # never set and a plain positive format matches what Core's
-        # signed `%x` prints
-        "versionHex": f"{header.version:08x}",
+        # Core's int32_t printed as its 32 bits, so a negative version,
+        # which the index stores below BIP34's height, is `ffffffff` for
+        # -1 rather than Python's signed `-0000001`
+        "versionHex": f"{header.version & 0xFFFFFFFF:08x}",
         # src/rpc/blockchain.cpp:177 -- Core's own name, not btclib's
         # `to_dict`'s `merkle_root`
         "merkleroot": header.merkle_root,
@@ -617,15 +619,18 @@ def submit_block(node: Node, conn: RpcConnection, params: list[Any]) -> str | No
     bitcoin/bitcoin@bb529657) decodes, indexes the header if it is new,
     and hands the block to `ProcessNewBlock`: `None` for one accepted,
     `"duplicate"` for one already held, and a reject reason for one
-    refused -- `BlockValidationResult::BLOCK_MISSING_PREV`'s own
-    `"prev-blk-not-found"` (`validation.cpp:4225`, same sha) is the one
-    reason this tree reproduces literally, being the one this node's own
-    `block_index.add_headers` answers the identical way `p2p.callbacks
-    .block` already reads it (missing rather than invalid). A
-    structurally invalid block is answered with btclib's own exception
-    message instead of one of Core's: `BlockValidationResult` names
-    dozens of distinct single-word reasons across `validation.cpp`, and
-    this tree does not reproduce that vocabulary.
+    refused. Two reasons are Core's literally:
+    `BlockValidationResult::BLOCK_MISSING_PREV`'s own
+    `"prev-blk-not-found"` (`validation.cpp:4225`, same sha), which this
+    node's own `block_index.add_headers` answers the identical way
+    `p2p.callbacks.block` already reads it (missing rather than invalid),
+    and `ContextualCheckBlockHeader`'s `"bad-version(0x%08x)"`, which
+    `add_headers` raises in Core's words (`src/validation.cpp`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Any other invalid block
+    is answered with btclib's own exception message instead of one of
+    Core's: `BlockValidationResult` names dozens of distinct single-word
+    reasons across `validation.cpp`, and this tree does not reproduce
+    that vocabulary.
 
     Stores through the same `block_index`/`block_db` calls
     `p2p.callbacks.block` makes for a block delivered over the wire,
@@ -1558,11 +1563,28 @@ def test_mempool_accept(
         # handler body runs, the same as blockhash and txid elsewhere in
         # this file
         raise type_error(1, "rawtxs", rawtxs, "array")
+    for rawtx in rawtxs:
+        if not isinstance(rawtx, str):
+            # Core reads every `rawtx` through `UniValue::get_str` before
+            # it validates any of them (`src/rpc/mempool.cpp`,
+            # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag), so one
+            # element of the wrong type ends the whole call with that
+            # accessor's own message, unwrapped: an array's elements are
+            # not among what the argument type check before the handler
+            # body reads. btclib-org/btclib-node#1253
+            message = (
+                f"JSON value of type {json_type_name(rawtx)} is not of expected "
+                "type string"
+            )
+            raise RpcError(RPCErrorCode.TYPE_ERROR, message)
     out: list[dict[str, Any]] = []
     for rawtx in rawtxs:
         try:
             tx = Tx.parse(rawtx)
-        except BTClibValueError:
+        except BTClibException:
+            # `BTClibException`, `send_raw_transaction`'s own clause below:
+            # a script shorter than its declared length raises
+            # `BTClibRuntimeError`, not `BTClibValueError`
             out.append({"allowed": False, "reject-reason": "Invalid serialization"})
             continue
 

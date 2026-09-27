@@ -346,6 +346,12 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     # off headers this peer actually sends (below) only ever raises it
     # further. btclib-org/btclib-node#706
     conn.best_known_height = version_msg.start_height
+    # Core's `SetServices` of an outbound peer's own services, ahead of
+    # every refusal below (`src/net_processing.cpp`, at
+    # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): a table row gossip
+    # mislabelled is corrected here, the peer dropped or not
+    if not conn.inbound:
+        node.p2p_manager.peer_db.set_services(conn.address, version_msg.services)
     # Every refusal below drops the peer and discourages nobody. Core's
     # `VERSION` handling answers a self-connect, an obsolete version and
     # missing services with `fDisconnect` alone (`src/net_processing.cpp`,
@@ -920,6 +926,27 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
         node.download_manager.received_txs.append((conn.id, tx.hash))
 
 
+def _unrequested_block_refused(node: Node, block_hash: bytes) -> bool:
+    """Whether a block nobody asked for is left unprocessed, as Core leaves it.
+
+    Core's `AcceptBlock` (`validation.cpp`, at bitcoin/bitcoin@9be056a8a7,
+    the v31.1 tag) returns without storing an unrequested block with less
+    work than the active tip, more than `MIN_BLOCKS_TO_KEEP` above it, or
+    below the minimum chain work. Its other refusal, a block processed
+    before and pruned since, falls under the first: pruning stays
+    `MIN_BLOCKS_TO_KEEP` below the tip, so such a block has less work.
+    """
+    block_index = node.chainstate.block_index
+    active_chain = block_index.active_chain
+    work = block_index.chainwork[block_hash]
+    height = block_index.get_block_info(block_hash).index
+    return (
+        work < block_index.chainwork[active_chain[-1]]
+        or height > len(active_chain) - 1 + MIN_BLOCKS_TO_KEEP
+        or work < node.chain.consensus.minimum_chain_work
+    )
+
+
 def block(node: Node, msg: bytes, conn: Connection) -> None:
     """Store a requested block once its proof of work checks out.
 
@@ -962,6 +989,12 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
     block = BlockMsg.parse(msg, check_validity=False).block
     block_hash = block.header.hash
 
+    # Core's `IsBlockRequested`: asked of any peer, read before this one's
+    # request is removed
+    requested = block_hash in conn.download_queue or any(
+        block_hash in other.download_queue
+        for other in list(node.p2p_manager.connections.values())
+    )
     if block_hash in conn.download_queue:
         conn.download_queue.remove(block_hash)
 
@@ -982,13 +1015,18 @@ def block(node: Node, msg: bytes, conn: Connection) -> None:
     block_info = block_index.get_block_info(block_hash)
 
     if not block_info.downloaded:
+        if not requested and _unrequested_block_refused(node, block_hash):
+            return
         # a block that does not hold up is nobody's: the raise reaches
         # main.handle_p2p, which drops the peer that sent it. Invalidate
         # first and re-raise, so the next peer offering the same block
         # is refused before it is asked to send it: btclib-org/btclib-node#77
         # A `MisbehavingError`: this is Core's `CheckBlock`, whose
         # `BLOCK_CONSENSUS` and `BLOCK_MUTATED` `MaybePunishNodeForBlock`
-        # punishes (btclib-org/btclib-node#1170).
+        # punishes (btclib-org/btclib-node#1170). One refusal here is
+        # btclib's and not Core's: its header check refuses a version of
+        # zero or below as "invalid version", where Core accepts such a
+        # block below BIP34's height (btclib-org/btclib#2309).
         try:
             block.assert_valid(node.chain.pow_limit_bits)
         except BTClibException as e:
@@ -1489,7 +1527,13 @@ def headers(node: Node, msg: bytes, conn: Connection) -> None:
     # Core reads the count alone before it compares, so no entry is
     # needed in the payload for it to call `Misbehaving`
     _refuse_past_bound("headers", _count_past(msg, MAX_HEADERS_RESULTS, 0))
-    headers = Headers.parse(msg).headers
+    # Unchecked, as Core's own `CBlockHeader` read checks nothing: btclib's
+    # `BlockHeader.assert_valid` would refuse a version of zero or below
+    # (btclib-org/btclib#2309) and a time before genesis, which Core
+    # leaves to `ContextualCheckBlockHeader`'s `bad-version` and
+    # `time-too-old`, both `Misbehaving`. The count and the transaction
+    # counts are bounded either way, and `add_headers` checks the work.
+    headers = Headers.parse(msg, check_validity=False).headers
     if not headers:
         # Core's own `ProcessHeadersMessage` returns on the same batch,
         # "Nothing interesting. Stop asking this peers for more headers."

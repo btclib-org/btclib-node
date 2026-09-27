@@ -1372,6 +1372,55 @@ def test_test_mempool_accept_rawtxs_of_the_wrong_json_type_is_named() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("rawtx", "json_type"),
+    [
+        (5, "number"),
+        (1.5, "number"),
+        (None, "null"),
+        ([], "array"),
+        ({}, "object"),
+        (True, "bool"),
+    ],
+)
+def test_test_mempool_accept_a_rawtx_of_the_wrong_json_type_is_named(
+    monkeypatch: pytest.MonkeyPatch, rawtx: object, json_type: str
+) -> None:
+    """A `rawtx` that is not a string ends the call with Core's own message.
+
+    `bitcoind` v31.1 on regtest answers `-3` "JSON value of type number
+    is not of expected type string" to `testmempoolaccept [[5]]`, and
+    the same for the other JSON types, where this answered `-32603
+    Internal Error` (btclib-org/btclib-node#1253). The valid entry ahead
+    of the bad one is not validated: Core reads every element before it
+    validates any.
+    """
+    verified: list[object] = []
+    monkeypatch.setattr(
+        cb, "verify_mempool_acceptance", lambda node, tx: verified.append(tx)
+    )
+    raw = a_tx().serialize(include_witness=True).hex()
+    with pytest.raises(RpcError) as raised:
+        mempool_accept(a_node(), _CONN, [[raw, rawtx]])
+    assert raised.value.code == RPCErrorCode.TYPE_ERROR
+    assert raised.value.message == (
+        f"JSON value of type {json_type} is not of expected type string"
+    )
+    assert verified == []
+
+
+def test_a_rawtx_with_a_truncated_script_is_named_invalid() -> None:
+    """A script shorter than its declared length is an invalid serialization.
+
+    `Tx.parse` raises `BTClibRuntimeError` there rather than
+    `BTClibValueError`, which answered `-32603 Internal Error` instead
+    of this entry's own verdict.
+    """
+    truncated = "02000000" + "01" + "00" * 32 + "00000000" + "05" + "0000"
+    (result,) = mempool_accept(a_node(), _CONN, [[truncated]])
+    assert result == {"allowed": False, "reject-reason": "Invalid serialization"}
+
+
 def test_a_relayed_transaction_is_answered_with_its_txid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3333,3 +3382,35 @@ def test_submit_block_invalidates_a_block_whose_body_mismatches_its_header(
     block_info = node.chainstate.block_index.get_block_info(mismatched.header.hash)
     assert not block_info.downloaded
     assert node.block_db.get_block(mismatched.header.hash) is None
+
+
+# A regtest header at height 1 of version -1, as a bitcoind v31.1.0 run with
+# `-testactivationheight=bip34@100` (and `dersig`, `cltv` at 100) took it
+# through `submitblock` and answered it back through `getblockheader false`.
+_A_VERSION_MINUS_ONE_HEADER = (
+    "ffffffff06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f"
+    "a7c0dbac4920cf8d62f0cb6d2efaa0105c5d6bbd3552da2c805dc60856589631dfefb76a"
+    "ffff7f2001000000"
+)
+
+
+def test_a_stored_version_minus_one_header_is_answered_as_bitcoind_answers() -> None:
+    """ISS 1262: the index stores it below BIP34's height, as Core does.
+
+    bitcoind answered the raw header with these same octets, `version`
+    -1 and `versionHex` "ffffffff", Core's `%08x` of its `int32_t`.
+    """
+    header = BlockHeader.parse(
+        bytes.fromhex(_A_VERSION_MINUS_ONE_HEADER), check_validity=False
+    )
+    node = cast(
+        "Node",
+        SimpleNamespace(
+            chainstate=SimpleNamespace(block_index=a_block_index([header]))
+        ),
+    )
+    raw = get_block_header(node, _CONN, [header.hash.hex(), False])
+    assert raw == _A_VERSION_MINUS_ONE_HEADER
+    verbose = get_block_header(node, _CONN, [header.hash.hex()])
+    assert isinstance(verbose, dict)
+    assert (verbose["version"], verbose["versionHex"]) == (-1, "ffffffff")

@@ -17,6 +17,7 @@ import secrets
 import socket
 import threading
 import time
+from contextlib import suppress
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -140,7 +141,9 @@ from btclib_node.p2p.protocol_version import (
     WTXID_RELAY_VERSION,
 )
 from tests import (
+    build_block,
     discourage_recorder,
+    generate_coinbase,
     generate_random_chain,
     generate_random_header_chain,
     generate_random_transaction,
@@ -605,7 +608,9 @@ def a_handshake_node(
     """Build a node double with just what handshake callbacks read or write.
 
     `is_discouraged` answers for the IPs `discouraged_hosts` names,
-    whatever the port, and the ban list holds the subnets of `banned`.
+    whatever the port, the ban list holds the subnets of `banned`, and
+    the peer table is an empty one in memory unless `peer_db` names
+    another.
     """
     discouraged, record = discourage_recorder()
     discouraged_keys = {host_key(peer_address(host, 0)) for host in discouraged_hosts}
@@ -616,12 +621,13 @@ def a_handshake_node(
         p2p_manager=SimpleNamespace(
             pending_outbound_nonces=own_nonces,
             is_self_connect_nonce=own_nonces.__contains__,
-            peer_db=peer_db,
+            peer_db=(PeerDB(cast("Chain", None), None) if peer_db is None else peer_db),
             promote_connection=promote_connection or (lambda conn_id: None),
             maybe_discourage_and_disconnect=record,
             discouraged=discouraged,
             is_discouraged=lambda address: host_key(address) in discouraged_keys,
             ban_man=a_ban_man(*banned),
+            connections={},
         ),
         chainstate=SimpleNamespace(
             block_index=SimpleNamespace(get_block_locator_hashes=lambda: [b"\x00" * 32])
@@ -695,6 +701,24 @@ def test_a_version_carrying_our_own_nonce_is_this_node_calling_itself() -> None:
     assert peer.stopped == [True]
     assert not peer.sent
     assert not node.p2p_manager.discouraged
+
+
+@pytest.mark.parametrize("inbound", [False, True], ids=["outbound", "inbound"])
+def test_an_outbound_peer_s_own_services_replace_its_row_s(*, inbound: bool) -> None:
+    """ISS 1276: Core's `SetServices` of an outbound `version`, before refusal.
+
+    A self-connection is refused after it, so the row is written all the
+    same; an inbound peer's word is not taken.
+    """
+    peer = a_peer(inbound=inbound)
+    full = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
+    peer_db = PeerDB(cast("Chain", None), None)
+    peer_db.add_addresses([replace(peer.address, services=full)])
+    node = a_handshake_node(pending_outbound_nonces=[7], peer_db=peer_db)
+    version(node, a_version(nonce=7, services=ServiceFlags.NODE_WITNESS), peer)
+    assert peer.stopped == [True]
+    (row,) = peer_db.addresses
+    assert row.services == (full if inbound else ServiceFlags.NODE_WITNESS)
 
 
 @pytest.mark.parametrize("inbound", [True, False], ids=["inbound", "outbound"])
@@ -2141,6 +2165,10 @@ class FakeBlockIndex:
         self.invalidated: list[bytes] = []
         self.accepts_headers = accepts_headers
         self.added_headers: list[BlockHeader] = []
+        # regtest's genesis alone is active, one unit of work
+        genesis = RegTest().genesis.hash
+        self.active_chain = [genesis]
+        self.chainwork = {genesis: 1}
 
     def get_block_info(self, block_hash: bytes) -> Any:
         """Return the fixed info this block hash was constructed with."""
@@ -2165,7 +2193,8 @@ class FakeBlockIndex:
         (header,) = headers
         if not self.accepts_headers:
             return None
-        self.infos[header.hash] = SimpleNamespace(downloaded=False)
+        self.infos[header.hash] = SimpleNamespace(downloaded=False, index=1)
+        self.chainwork[header.hash] = 2
         return header.hash
 
 
@@ -2272,7 +2301,7 @@ def test_a_block_whose_proof_of_work_does_not_hold_up_is_refused() -> None:
         check_validity=False
     )
     with pytest.raises(MisbehavingError):
-        block_callback(node, payload, a_peer())
+        block_callback(node, payload, a_peer(download_queue=[broken.header.hash]))
     assert added == []
     assert index.marked == []
     assert index.invalidated == [broken.header.hash]
@@ -2338,6 +2367,124 @@ def test_an_unsolicited_block_with_an_unknown_parent_is_refused() -> None:
     assert added == []
     assert index.marked == []
     assert orphan.header.hash not in index.infos
+
+
+def an_unrequested_block_node(tmp_path: Path, active: int) -> Any:
+    """Build a node over a real regtest index, `active` blocks tall.
+
+    What it stores is listed in `node.added`; `minimum_chain_work` is zero,
+    regtest's own, until a test replaces it.
+    """
+    chainstate = Chainstate(tmp_path, RegTest(), Logger(debug=True))
+    block_index = chainstate.block_index
+    headers = generate_random_header_chain(active, RegTest().genesis.hash)
+    block_index.add_headers(headers)
+    for header in headers:
+        block_index.add_to_active_chain(header.hash)
+    added: list[Block] = []
+    node = a_data_node(
+        block_index=block_index, block_db=SimpleNamespace(add_block=added.append)
+    )
+    node.chainstate = chainstate
+    node.added = added
+    return node
+
+
+def a_block_at(node: Any, height: int, *, fork: int | None = None) -> Block:
+    """Build a block at `height`, above the tip or off the chain at `fork`.
+
+    Headers from the tip, or the fork point, up to the parent are indexed,
+    as a header sync would leave them.
+    """
+    block_index = node.chainstate.block_index
+    base = len(block_index.active_chain) - 1 if fork is None else fork
+    parent = block_index.active_chain[base]
+    headers = generate_random_header_chain(
+        height - 1 - base, parent, block_index.get_block_info(parent).header.time
+    )
+    block_index.add_headers(headers)
+    tip = headers[-1].hash if headers else parent
+    return build_block(tip, [generate_coinbase(height=height)], height)
+
+
+def deliver(node: Any, block: Block, peer: Any = None) -> None:
+    """Hand `block` to the `block` callback from `peer`, or a fresh one."""
+    payload = BlockMsg(block, include_witness=True, check_validity=False).serialize(
+        check_validity=False
+    )
+    block_callback(node, payload, peer if peer is not None else a_peer())
+
+
+@pytest.mark.parametrize(
+    ("ahead", "stored"), [(MIN_BLOCKS_TO_KEEP, True), (MIN_BLOCKS_TO_KEEP + 1, False)]
+)
+def test_an_unrequested_block_too_far_ahead_is_not_stored(
+    tmp_path: Path,
+    ahead: int,
+    stored: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1247: Core's `fTooFarAhead`, above the tip by more than 288."""
+    node = an_unrequested_block_node(tmp_path, 1)
+    block = a_block_at(node, 1 + ahead)
+    deliver(node, block)
+    assert (node.added == [block]) is stored
+    downloaded = node.chainstate.block_index.get_block_info(
+        block.header.hash
+    ).downloaded
+    assert downloaded is stored
+    node.chainstate.close()
+
+
+@pytest.mark.parametrize(("height", "stored"), [(2, True), (1, False)])
+def test_an_unrequested_block_with_less_work_than_the_tip_is_not_stored(
+    tmp_path: Path,
+    height: int,
+    stored: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1247: Core's `fHasMoreOrSameWork`, the same work being enough."""
+    node = an_unrequested_block_node(tmp_path, 2)
+    block = a_block_at(node, height, fork=0)
+    deliver(node, block)
+    assert (node.added == [block]) is stored
+    node.chainstate.close()
+
+
+@pytest.mark.parametrize(("surplus", "stored"), [(0, True), (1, False)])
+def test_an_unrequested_block_below_the_minimum_chain_work_is_not_stored(
+    tmp_path: Path,
+    surplus: int,
+    stored: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1247: Core's `MinimumChainWork`, the bound itself being enough."""
+    node = an_unrequested_block_node(tmp_path, 1)
+    block = a_block_at(node, 2)
+    node.chainstate.block_index.add_headers([block.header])
+    work = node.chainstate.block_index.chainwork[block.header.hash]
+    node.chain = SimpleNamespace(
+        pow_limit_bits=RegTest().pow_limit_bits,
+        consensus=replace(RegTest().consensus, minimum_chain_work=work + surplus),
+    )
+    deliver(node, block)
+    assert (node.added == [block]) is stored
+    node.chainstate.close()
+
+
+@pytest.mark.parametrize("asked_of", ["this-peer", "another-peer"])
+def test_a_block_asked_of_any_peer_is_stored_however_far_ahead(
+    tmp_path: Path, asked_of: str
+) -> None:
+    """ISS 1247: Core's `IsBlockRequested`, whichever peer it was asked of."""
+    node = an_unrequested_block_node(tmp_path, 1)
+    block = a_block_at(node, MIN_BLOCKS_TO_KEEP + 10)
+    asked = a_peer(download_queue=[block.header.hash])
+    if asked_of == "this-peer":
+        deliver(node, block, asked)
+    else:
+        node.p2p_manager.connections = {asked.id: asked}
+        deliver(node, block)
+        assert asked.download_queue == [block.header.hash]
+    assert node.added == [block]
+    node.chainstate.close()
 
 
 def block_inv(*hashes: bytes) -> bytes:
@@ -4666,3 +4813,34 @@ def test_an_addrv2_count_past_what_the_payload_could_hold_decides_alone(
     assert skipped == []
     assert cb._addrv2_count_past(var_int.serialize(1001) + payload, 1000) == 1001
     assert len(skipped) == 1001
+
+
+@pytest.mark.parametrize("version", [0, -1])
+def test_a_header_version_btclib_refuses_is_misbehaving_bad_version(
+    an_index: BlockIndex, version: int
+) -> None:
+    """ISS 1262: a version of zero or below reaches Core's `bad-version`.
+
+    btclib's own parse would refuse it first as "invalid version", which
+    is no `MisbehavingError`; `headers` reads it unchecked instead.
+    """
+    genesis = RegTest().genesis
+    header = BlockHeader(
+        version=version,
+        previous_block_hash=genesis.hash,
+        # fixed, and one nonce 0 does not solve at either version, so the
+        # search below runs its step every time
+        merkle_root=b"\x07" * 32,
+        time=genesis.time + timedelta(seconds=1),
+        bits=genesis.bits,
+        nonce=0,
+        check_validity=False,
+    )
+    while True:
+        with suppress(BTClibValueError):
+            header.assert_valid_pow(genesis.bits)
+            break
+        header.nonce += 1
+    payload = Headers([header], check_validity=False).serialize(check_validity=False)
+    with pytest.raises(MisbehavingError, match=r"bad-version\(0x"):
+        headers(a_data_node(block_index=an_index), payload, a_peer())
