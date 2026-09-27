@@ -773,6 +773,11 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **Every other mempool refusal answers Core's own reject reason and
   details, in the order Core checks them** (closes #1328); a failing
   script's message inside the parentheses is btclib's (issue #1362).
+### A block under a header already marked invalid is refused, as in Core
+
+- **A body passing `CheckBlock` under a header marked invalid is refused
+  `duplicate-invalid`, on the wire and by `submitblock`, and no longer stored,
+  from an outbound peer as misbehaviour** (closes #1344).
 
 ## v2026.9.24
 
