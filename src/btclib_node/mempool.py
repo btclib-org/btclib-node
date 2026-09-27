@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
     from btclib_node.log import Logger
 
-__all__ = ["Mempool"]
+__all__ = ["Mempool", "format_money"]
 
 # Core's own `CRollingBloomFilter(120'000, 0.000'001)`
 # (`src/node/txdownloadman_impl.h`, at bitcoin/bitcoin@4519933391): "a
@@ -62,7 +62,7 @@ _ROLLING_FEE_HALFLIFE = 60 * 60 * 12
 _COIN = 100_000_000
 
 
-def _format_money(amount: int) -> str:
+def format_money(amount: int) -> str:
     """Core's own `FormatMoney` for an amount never negative here.
 
     Eight decimals, right-trimmed of zeros down to two
@@ -321,7 +321,7 @@ class Mempool:
         # worst one held once trimming is done, eviction takes it right
         # back out and the return value is `False` here exactly as it
         # was for the old outright refusal -- `rpc/callbacks.py`'s own
-        # "Mempool is full" answers that case whether it is reached this
+        # "mempool full", Core's, answers that case whether it is reached this
         # way or the old way. A transaction already held under this
         # txid, same witness or not, is still a no-op that never touches
         # bytesize at all, for a caller that skipped
@@ -415,7 +415,7 @@ class Mempool:
         if fee < original:
             details = (
                 f"rejecting replacement {txid}, less fees than conflicting txs; "
-                f"{_format_money(fee)} < {_format_money(original)}"
+                f"{format_money(fee)} < {format_money(original)}"
             )
             reason = "insufficient fee"
             raise TxRejectedError(reason, details)
@@ -423,7 +423,7 @@ class Mempool:
         if fee - original < relay_fee:
             details = (
                 f"rejecting replacement {txid}, not enough additional fees to "
-                f"relay; {_format_money(fee - original)} < {_format_money(relay_fee)}"
+                f"relay; {format_money(fee - original)} < {format_money(relay_fee)}"
             )
             reason = "insufficient fee"
             raise TxRejectedError(reason, details)

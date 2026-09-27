@@ -964,13 +964,12 @@ def tx(node: Node, msg: bytes, conn: Connection) -> None:
         # output, and Core leaves it out of the cache all the same.
         return
     except BTClibValueError:
-        # Every other refusal `verify_mempool_acceptance` can make --
-        # a relay-policy-only one (`NonStandardTxError`, or one of Core's
-        # own reject reasons, `TxRejectedError`, each a `BTClibValueError`)
-        # exactly as much as a genuine consensus one
+        # Every other refusal `verify_mempool_acceptance` can make, each
+        # a `TxRejectedError` and so a `BTClibValueError` -- a
+        # relay-policy-only one (`NonStandardTxError`, or a fee below
+        # either floor) exactly as much as a genuine consensus one
         # (non-final, a coinbase spent too soon, a bad sequence lock, or
-        # the underlying script failure `interpreter.check_transaction`
-        # re-raises once `_consensus_accepts` has also refused it). Core
+        # a script failure `_consensus_accepts` also refuses). Core
         # punishes neither: "Tx failures never trigger
         # disconnections/bans ... either due to non-consensus relay
         # policies ... or due to new consensus rules introduced in soft
