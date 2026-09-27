@@ -769,6 +769,66 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`NODE_WITNESS` is required only where Core's `ExpectServicesFromConn`
   holds** (closes #1138).
 
+### The configuration's warnings are logged, as `bitcoind` logs them
+
+- **An unknown key, a double negative and `-allowignoredconf`'s warning reach
+  `history.log` alone, and an unrecognised section's reaches it too**
+  (closes #1295), ahead of anything else the node logs.
+
+### An `includeconf` in the chain's own section is read, as `bitcoind` reads it
+
+- **The chain's section is read for `includeconf` before the default one**
+  (closes #1302), the chain resolved first and a conflicting one refused
+  before any include, as `ReadConfigFiles` does.
+
+### An integer option is read as `bitcoind` reads it
+
+- **The digits a value starts with, saturated at the `int64_t` range** (closes
+  #1313, closes #1324), where a value that is not an integer was refused;
+  `-maxconnections` and `-prune` then narrow and wrap as they do in Core.
+
+### Only a peer this node dialled is recorded as answered, as in Core
+
+- **An inbound peer's endpoint no longer enters the answered table, and a
+  dialled one enters it at its own `version`, as Core's `AddrMan::Good`
+  does** (closes #1229, closes #1140).
+
+### `submitblock` refuses a body its stored header does not commit to
+
+- **A block whose hash names one already stored answers `duplicate` only where
+  its body passes `CheckBlock`, and the body's reason otherwise, the stored
+  block left as it was** (closes #1346), as Core's `ProcessNewBlock` orders it.
+
+### A block failing `CheckBlock` costs its peer, asked for or not, as in Core
+
+- **A body failing `CheckBlock` is refused before its header is indexed and
+  before an unrequested block is set aside, so its peer is punished either
+  way** (closes #1363), as Core's `ProcessNewBlock` orders it.
+
+### DNS seeding asks each seed's `x9.` subdomain, and addr-fetches the rest
+
+- **A seed answers only for `NODE_NETWORK | NODE_WITNESS`, at most 32 answers
+  kept**, in place of resolving its bare name (closes #1284). A seed whose
+  subdomain answers nothing is dialled instead, for its own `addr` alone.
+
+### The JSON-RPC listener binds `::1` and `127.0.0.1`, as `bitcoind` does
+
+- **Each loopback is bound and logged in turn, one that fails is warned
+  over and passed** (closes #1269, closes #1281), and only a node that binds
+  neither refuses to start, with Core's message.
+
+### `-rpcallowip` decides which sources the JSON-RPC listener answers
+
+- **A source no `-rpcallowip` subnet or loopback names gets a bare 403,
+  and `-rpcbind` binds beside it** (closes #1268), as in `bitcoind`, a value
+  naming no subnet refusing to start with Core's message.
+
+### `-rpcallowip` reads a value as `setban` reads one
+
+- **One parser, the ban list's, reads both** (closes #1291), so an onion or
+  I2P host is a `-rpcallowip` subnet, as in `bitcoind` (closes #1288), though
+  it matches no JSON-RPC client.
+
 ### A listener that cannot bind is reported as one, not as a slow one
 
 - **`wait_until_listening` raises `ListenerEndedError` as soon as a manager's

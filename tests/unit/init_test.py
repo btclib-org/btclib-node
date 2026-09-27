@@ -47,11 +47,13 @@ from btclib_node.p2p.address import peer_address
 from btclib_node.p2p.connection import MAX_QUEUED_RECV_BYTES
 from btclib_node.rpc.auth import COOKIE_FILE
 from tests import (
+    assert_loopbacks_free,
     cookie_path,
     generate_random_chain,
     get_random_port,
     held_by_another_process,
     lock_from_another_process,
+    taken_loopbacks,
     taken_port_bind_error,
     wait_until,
     wait_until_listening,
@@ -936,15 +938,14 @@ def test_a_node_whose_rpc_port_is_taken_stops_before_its_p2p_side_starts(
     port but its own files: the lock, `blocks/` holding its lock alone,
     and the log (ISS 1279).
     """
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
-        taken.bind(("127.0.0.1", 0))
-        taken.listen()
+    # both loopbacks, which the listener binds by default
+    with taken_loopbacks() as port:
         node = Node(
             config=Config(
                 chain="regtest",
                 data_dir=tmp_path,
                 p2p_port=get_random_port(),
-                rpc_port=taken.getsockname()[1],
+                rpc_port=port,
                 debug=True,
             )
         )
@@ -994,8 +995,35 @@ def test_a_node_that_cannot_write_its_cookie_stops_and_frees_its_rpc_port(
         node.stop()
     assert node.init_errors == [btclib_node.RPC_INIT_ERROR]
     assert not cookie_path(node.data_dir).exists()
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind(("127.0.0.1", port))
+    assert_loopbacks_free(port)
+
+
+def test_a_node_given_an_rpcallowip_naming_no_subnet_says_so_first(
+    tmp_path: Path,
+) -> None:
+    """ISS 1268: `InitHTTPAllowList`'s message, then `InitError`'s.
+
+    Measured on bitcoind v31.1.0 given `-rpcallowip=bogus`: both are in
+    `debug.log`, in that order, and it exits 1.
+    """
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            rpc_port=get_random_port(),
+            rpcallowip=["bogus"],
+            debug=True,
+        )
+    )
+    try:
+        node.start()
+        wait_until(lambda: not node.is_alive())
+    finally:
+        node.stop()
+    first, second = node.init_errors
+    assert first.startswith("Invalid -rpcallowip subnet specification: bogus. ")
+    assert second == btclib_node.RPC_INIT_ERROR
 
 
 @pytest.mark.parametrize(
@@ -1091,8 +1119,7 @@ def test_a_node_whose_p2p_port_is_taken_stops_and_frees_its_rpc_port(
     log_text = (node.data_dir / "history.log").read_text(encoding="utf-8")
     assert bind_error in log_text
     assert btclib_node.P2P_INIT_ERROR in log_text
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind(("127.0.0.1", rpc_port))
+    assert_loopbacks_free(rpc_port)
 
 
 def test_a_p2p_listener_failing_with_no_reason_stops_the_node_all_the_same(
@@ -1494,6 +1521,36 @@ def test_worker_count_falls_back_to_eight_split_if_the_core_count_is_unknown(
     monkeypatch.setattr(os, "cpu_count", lambda: None)
     monkeypatch.setenv("PYTEST_XDIST_WORKER_COUNT", "4")
     assert btclib_node._default_worker_count() == 2
+
+
+def test_a_node_logs_the_configuration_warnings_first(tmp_path: Path) -> None:
+    """ISS 1295: what Core logs while reading its settings opens the log.
+
+    Each as one record, a section warning's lines and all, ahead of
+    anything the node logs of its own. `bitcoind`'s `debug.log` carries
+    the settings' warnings ahead of its version line and the section
+    warning after it, a line history.log does not have (#1309).
+    """
+    sections = (
+        "a.conf:1 Section [x] is not recognized.\nb:2 Section [y] is not recognized.\n"
+    )
+    node = Node(
+        config=Config(
+            chain="regtest",
+            data_dir=tmp_path,
+            allow_p2p=False,
+            allow_rpc=False,
+            log_warnings=["Ignoring unknown configuration value foo", sections],
+        )
+    )
+    try:
+        node.start()
+    finally:
+        node.stop()
+    log_text = (node.data_dir / "history.log").read_text(encoding="utf-8")
+    first, _, rest = log_text.partition("\n")
+    assert first.endswith(" Ignoring unknown configuration value foo")
+    assert rest.index(f" {sections}\n") < rest.index("Starting main loop")
 
 
 def test_a_store_that_cannot_be_opened_ends_start_up_with_the_rest_closed(
