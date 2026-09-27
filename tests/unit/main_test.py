@@ -4,15 +4,21 @@
 
 """`update_chain`/`verify_mempool_acceptance`: connect, reorg, reject."""
 
+import time
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
+from btclib.block import Block
+from btclib.consensus import MAX_BLOCK_WEIGHT
 from btclib.exceptions import BTClibValueError
+from btclib.fee import FeeRate, fee_from_vsize
 from btclib.p2p.inventory import Headers, Inv, Inventory, InventoryType
 from btclib.script import script
 from btclib.script.engine.flags import ScriptFlag
+from btclib.script.witness import Witness
 from btclib.tx.limits import COINBASE_MATURITY
 from btclib.tx.out_point import OutPoint
 from btclib.tx.tx import Tx
@@ -35,6 +41,7 @@ from btclib_node.exceptions import (
     ChainstateInconsistencyError,
     MissingPrevoutError,
     NonStandardTxError,
+    TxRejectedError,
 )
 from btclib_node.interpreter import check_transactions, get_flags
 from btclib_node.main import update_chain, verify_mempool_acceptance
@@ -45,16 +52,20 @@ from tests import (
     generate_random_chain,
     generate_random_header_chain,
     generate_random_transaction,
+    generate_segwit_block,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from btclib.block import Block
-
     from btclib_node.block_db import Coin
     from btclib_node.p2p.connection import Connection
+
+
+# what a mempool candidate below pays where the test is not about its fee:
+# over `Config.min_relay_feerate`'s 100 sat/kvB for any size built here
+FEE = 1_000
 
 
 @pytest.fixture
@@ -614,7 +625,7 @@ def test_a_mempool_spend_locked_to_an_already_reached_height_is_accepted(
     connect(node, chain)
 
     funding = chain[0].transactions[0]
-    final = locked_spend(funding, funding.vout[0].value, lock_time=1, sequence=0)
+    final = locked_spend(funding, funding.vout[0].value - FEE, lock_time=1, sequence=0)
     fee = verify_mempool_acceptance(node, final)
     assert fee >= 0
 
@@ -642,7 +653,7 @@ def test_a_mempool_spend_whose_relative_lock_is_satisfied_is_accepted(
     connect(node, chain)
 
     funding = chain[0].transactions[0]
-    met = relative_locked_spend(funding, funding.vout[0].value, sequence=50)
+    met = relative_locked_spend(funding, funding.vout[0].value - FEE, sequence=50)
     fee = verify_mempool_acceptance(node, met)
     assert fee >= 0
 
@@ -676,7 +687,9 @@ def test_a_mempool_spend_whose_time_based_relative_lock_is_satisfied(
 
     funding = chain[0].transactions[0]
     type_flag = 1 << 22
-    met = relative_locked_spend(funding, funding.vout[0].value, sequence=type_flag | 0)
+    met = relative_locked_spend(
+        funding, funding.vout[0].value - FEE, sequence=type_flag | 0
+    )
     fee = verify_mempool_acceptance(node, met)
     assert fee >= 0
 
@@ -695,11 +708,11 @@ def test_a_mempool_chained_spend_s_zero_relative_lock_is_satisfied(
     connect(node, chain)
 
     funding = chain[0].transactions[0]
-    parent = generate_random_transaction(funding.id, value=funding.vout[0].value)
+    parent = generate_random_transaction(funding.id, value=funding.vout[0].value - FEE)
     verify_mempool_acceptance(node, parent)
     node.mempool.add_tx(parent)
 
-    child = relative_locked_spend(parent, parent.vout[0].value, sequence=0)
+    child = relative_locked_spend(parent, parent.vout[0].value - FEE, sequence=0)
     fee = verify_mempool_acceptance(node, child)
     assert fee >= 0
 
@@ -717,11 +730,11 @@ def test_a_mempool_chained_spend_s_relative_lock_cannot_yet_be_met(
     connect(node, chain)
 
     funding = chain[0].transactions[0]
-    parent = generate_random_transaction(funding.id, value=funding.vout[0].value)
+    parent = generate_random_transaction(funding.id, value=funding.vout[0].value - FEE)
     verify_mempool_acceptance(node, parent)
     node.mempool.add_tx(parent)
 
-    child = relative_locked_spend(parent, parent.vout[0].value, sequence=1)
+    child = relative_locked_spend(parent, parent.vout[0].value - FEE, sequence=1)
     with pytest.raises(BTClibValueError, match="bad-txns-nonfinal"):
         verify_mempool_acceptance(node, child)
 
@@ -746,8 +759,10 @@ def test_add_tx(node: Node) -> None:
     with pytest.raises(MissingPrevoutError):
         verify_mempool_acceptance(node, invalid_tx)
 
-    tx1 = generate_random_transaction(chain[0].transactions[0].id)
-    tx2 = generate_random_transaction(tx1.id)
+    tx1 = generate_random_transaction(
+        chain[0].transactions[0].id, value=chain[0].transactions[0].vout[0].value - FEE
+    )
+    tx2 = generate_random_transaction(tx1.id, value=tx1.vout[0].value - FEE)
 
     verify_mempool_acceptance(node, tx1)
 
@@ -776,14 +791,106 @@ def test_a_mempool_candidate_is_read_against_relay_policy(node: Node) -> None:
     connect(node, chain)
     coinbase = chain[0].transactions[0]
 
-    non_minimal = generate_random_transaction(coinbase.id)
+    non_minimal = generate_random_transaction(
+        coinbase.id, value=coinbase.vout[0].value - FEE
+    )
     non_minimal.vin[0].script_sig = b"\x4c\x01\x01"
     with pytest.raises(NonStandardTxError, match="non-minimal push"):
         verify_mempool_acceptance(node, non_minimal)
 
-    minimal = generate_random_transaction(coinbase.id)
+    minimal = generate_random_transaction(
+        coinbase.id, value=coinbase.vout[0].value - FEE
+    )
     minimal.vin[0].script_sig = script.serialize(["OP_1"])
-    assert verify_mempool_acceptance(node, minimal) == 0
+    assert verify_mempool_acceptance(node, minimal) == FEE
+
+
+def a_funded_spend(node: Node, fee: int) -> Tx:
+    """Connect a mature chain and return a spend of its first coinbase."""
+    chain = generate_random_chain(COINBASE_MATURITY, RegTest().genesis.hash)
+    connect(node, chain)
+    funding = chain[0].transactions[0]
+    return generate_random_transaction(funding.id, value=funding.vout[0].value - fee)
+
+
+def test_a_fee_under_the_relay_floor_is_refused_in_core_s_words(node: Node) -> None:
+    """A fee under `min_relay_feerate` for the vsize is refused, as by Core.
+
+    `bitcoind` v31.1 on regtest answers a zero-fee spend "min relay fee
+    not met, 0 < 11", 11 being its own 110-vbyte size at 100 sat/kvB
+    rounded up; this answers the same shape for its own size. One
+    satoshi under the floor is refused and the floor itself accepted
+    (btclib-org/btclib-node#1245).
+    """
+    probe = a_funded_spend(node, 0)
+    floor = fee_from_vsize(probe.vsize, node.config.min_relay_feerate)
+    assert floor > 0
+    funding_value = probe.vout[0].value
+    for fee in (0, floor - 1):
+        short = generate_random_transaction(
+            probe.vin[0].prev_out.tx_id, value=funding_value - fee
+        )
+        with pytest.raises(TxRejectedError) as refused:
+            verify_mempool_acceptance(node, short)
+        assert refused.value.reason == "min relay fee not met"
+        assert str(refused.value) == f"min relay fee not met, {fee} < {floor}"
+    at_floor = generate_random_transaction(
+        probe.vin[0].prev_out.tx_id, value=funding_value - floor
+    )
+    assert verify_mempool_acceptance(node, at_floor) == floor
+
+
+def test_a_fee_under_the_mempool_s_rolling_minimum_is_refused_first(
+    node: Node,
+) -> None:
+    """The rolling minimum is checked ahead of the relay floor, as by Core.
+
+    `CheckFeeRate` asks the mempool's own minimum first, so a fee under
+    both floors is refused for that one; a fee under it alone, and above
+    the relay floor, is refused too, and the minimum itself accepted.
+    """
+    probe = a_funded_spend(node, 0)
+    node.mempool._rolling_min_fee_rate = 5000.0
+    node.mempool._block_since_last_rolling_fee_bump = False
+    assert node.mempool.get_min_fee_rate() == FeeRate(sats_per_kvbyte=5000)
+    floor = fee_from_vsize(probe.vsize, FeeRate(sats_per_kvbyte=5000))
+    relay_floor = fee_from_vsize(probe.vsize, node.config.min_relay_feerate)
+    assert relay_floor < floor - 1
+    funding_value = probe.vout[0].value
+    for fee in (0, floor - 1):
+        short = generate_random_transaction(
+            probe.vin[0].prev_out.tx_id, value=funding_value - fee
+        )
+        with pytest.raises(TxRejectedError) as refused:
+            verify_mempool_acceptance(node, short)
+        assert str(refused.value) == f"mempool min fee not met, {fee} < {floor}"
+    at_floor = generate_random_transaction(
+        probe.vin[0].prev_out.tx_id, value=funding_value - floor
+    )
+    assert verify_mempool_acceptance(node, at_floor) == floor
+
+
+def test_bypass_limits_skips_the_feerate_floor(node: Node) -> None:
+    """`bypass_limits` accepts a fee-free candidate, Core's own reorg re-add."""
+    assert (
+        verify_mempool_acceptance(node, a_funded_spend(node, 0), bypass_limits=True)
+        == 0
+    )
+
+
+def test_a_spend_of_more_than_its_inputs_is_refused_for_that_not_its_fee(
+    node: Node,
+) -> None:
+    """Outputs over inputs is refused as such, ahead of the feerate floor.
+
+    Core's `CheckTxInputs` runs before `CheckFeeRate`; the negative fee
+    would otherwise read as one under the floor.
+    """
+    with pytest.raises(
+        BTClibValueError, match="Invalid transaction amounts"
+    ) as refused:
+        verify_mempool_acceptance(node, a_funded_spend(node, -1))
+    assert not isinstance(refused.value, TxRejectedError)
 
 
 def test_a_stored_coin_that_wont_parse_looks_missing_to_the_mempool(
@@ -1185,6 +1292,17 @@ def test_a_connected_block_restarts_the_mempool_s_decay_clock(node: Node) -> Non
     assert node.mempool._last_rolling_fee_update > 0.0
 
 
+def test_each_connected_block_brings_the_stalling_timeout_down(node: Node) -> None:
+    """`DownloadManager.block_connected` runs once per block connected.
+
+    Core's `PeerManagerImpl::BlockConnected`. btclib-org/btclib-node#1179
+    """
+    node.download_manager.block_stalling_timeout = 64
+    connect(node, generate_random_chain(2, RegTest().genesis.hash))
+    # 64 * 0.85 is 54, and 54 * 0.85 is 45, in whole seconds
+    assert node.download_manager.block_stalling_timeout == 45
+
+
 def _extend(previous_hash: bytes, start_height: int, count: int) -> list[Block]:
     # generate_random_chain restarts its own height at 0 for any start,
     # which is a timestamp that has to beat the median of *these*
@@ -1312,7 +1430,9 @@ def test_a_block_connected_before_header_sync_ends_leaves_the_mempool(
     chain = generate_random_chain(COINBASE_MATURITY + 1, RegTest().genesis.hash)
     connect(node, chain[:-1])
     mined = chain[-1].transactions[1]
-    node.mempool.add_tx(mined, verify_mempool_acceptance(node, mined))
+    # the block pays its coinbase the whole input, so this spend is fee-free
+    fee = verify_mempool_acceptance(node, mined, bypass_limits=True)
+    node.mempool.add_tx(mined, fee)
 
     connect(node, chain[-1:])
     assert node.chainstate.block_index.active_chain[-1] == chain[-1].header.hash
@@ -1391,7 +1511,8 @@ def test_a_peer_is_sent_the_headers_from_the_first_one_it_lacks(
     chain = generate_random_chain(3, RegTest().genesis.hash, tip_time=datetime.now(UTC))
     node.chainstate.block_index.add_headers([block.header for block in chain])
     sent: list[Any] = []
-    availability = BlockAvailability(**{field: chain[0].header.hash})
+    availability = BlockAvailability()
+    setattr(availability, field, chain[0].header.hash)
     node.p2p_manager.connections[1] = a_peer(sent, availability)
 
     connect(node, chain)
@@ -1877,6 +1998,7 @@ def test_a_store_closed_without_a_flush_redoes_only_what_was_never_flushed(
         chain="regtest", data_dir=tmp_path, allow_p2p=False, allow_rpc=False, debug=True
     )
     first = Node(config)
+    first.load()
     first.status = NodeStatus.HeaderSynced
 
     chain = generate_random_chain(3, RegTest().genesis.hash)
@@ -1906,6 +2028,7 @@ def test_a_store_closed_without_a_flush_redoes_only_what_was_never_flushed(
     first.logger.close()
 
     reopened = Node(config)
+    reopened.load()
     reopened.status = NodeStatus.HeaderSynced
     # the store opens without error, and reflects only the one flush
     # that actually happened: fewer than all three blocks are durable
@@ -2302,3 +2425,224 @@ def test_a_fork_longer_than_the_retained_depth_prunes_correctly_on_disk(
     for block_hash in kept_hashes:
         assert reopened.block_index.get_block_info(block_hash).downloaded is True
     reopened.close()
+
+
+def test_a_block_connected_stamps_the_last_tip_update(node: Node) -> None:
+    """ISS 1100: Core's `BlockConnected` stamps `m_last_tip_update`.
+
+    What `DownloadManager` reads a stale tip off: zero until a block
+    connects, the time it did after.
+    """
+    assert node.download_manager.last_tip_update == 0
+    before = time.time()
+    connect(node, generate_random_chain(1, RegTest().genesis.hash))
+    assert before <= node.download_manager.last_tip_update <= time.time()
+
+
+def a_block_over(transactions: list[Tx], committed: list[Tx] | None = None) -> Block:
+    """Build a block of `transactions` whose header commits to `committed`.
+
+    `committed` defaults to `transactions` themselves, the honest case.
+    """
+    header = build_block(RegTest().genesis.hash, committed or transactions, 0).header
+    return Block(header, transactions, check_validity=False)
+
+
+def a_64_byte_transaction() -> Tx:
+    """Build a transaction serializing to 64 bytes without its witness."""
+    tx = Tx(
+        vin=[TxIn(OutPoint(b"\x01" * 32, 0), b"\x51" * 4, 0xFFFFFFFF)],
+        vout=[TxOut(1, b"")],
+        check_validity=False,
+    )
+    assert len(tx.serialize(include_witness=False, check_validity=False)) == 64
+    return tx
+
+
+@pytest.mark.parametrize("check_witness_root", [True, False])
+def test_a_block_as_mined_is_not_mutated(check_witness_root: bool) -> None:  # noqa: FBT001
+    """ISS 1242: a body its header commits to, no witness, is not mutated."""
+    (block,) = generate_random_chain(1, RegTest().genesis.hash)
+    assert not main.is_block_mutated(block, check_witness_root=check_witness_root)
+
+
+def test_a_body_the_merkle_root_does_not_match_is_mutated() -> None:
+    """ISS 1242: Core's `bad-txnmrklroot`."""
+    (block,) = generate_random_chain(1, RegTest().genesis.hash)
+    forged = a_block_over([generate_coinbase(value=1, height=1)], block.transactions)
+    assert main.is_block_mutated(forged, check_witness_root=True)
+
+
+def test_a_body_repeating_its_last_transaction_is_mutated() -> None:
+    """ISS 1242: CVE-2012-2459, one merkle root over one more transaction."""
+    txs = [
+        generate_coinbase(height=1),
+        *(generate_random_transaction() for _ in range(2)),
+    ]
+    repeated = a_block_over([*txs, txs[-1]], txs)
+    assert repeated.header.merkle_root == a_block_over(txs).header.merkle_root
+    assert main.is_block_mutated(repeated, check_witness_root=True)
+
+
+@pytest.mark.parametrize(
+    ("root", "mutated"),
+    [(bytes(32), False), (b"\x01" * 32, True)],
+    ids=["null-root", "other-root"],
+)
+def test_an_empty_body_is_mutated_unless_the_root_is_null(
+    root: bytes,
+    mutated: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1242: Core's merkle root of no transactions is the null hash."""
+    (block,) = generate_random_chain(1, RegTest().genesis.hash)
+    header = replace(block.header, merkle_root=root)
+    empty = Block(header, [], check_validity=False)
+    assert main.is_block_mutated(empty, check_witness_root=True) is mutated
+
+
+@pytest.mark.parametrize("sixty_four", [True, False])
+def test_a_body_without_a_coinbase_is_mutated_by_a_64_byte_transaction(
+    sixty_four: bool,  # noqa: FBT001
+) -> None:
+    """ISS 1242: a 64-byte transaction could be an inner merkle node."""
+    tx = a_64_byte_transaction() if sixty_four else generate_random_transaction()
+    no_coinbase = a_block_over([tx])
+    assert main.is_block_mutated(no_coinbase, check_witness_root=True) is sixty_four
+
+
+def test_a_witness_the_coinbase_commits_to_is_not_mutated_under_segwit() -> None:
+    """ISS 1242: a commitment matching the witnesses, and a 32-byte nonce."""
+    assert not main.is_block_mutated(generate_segwit_block(), check_witness_root=True)
+
+
+def test_a_witness_before_segwit_is_mutated_whatever_it_commits_to() -> None:
+    """ISS 1242: no commitment is read, so any witness is unexpected."""
+    assert main.is_block_mutated(generate_segwit_block(), check_witness_root=False)
+
+
+def test_a_witness_with_no_commitment_is_mutated() -> None:
+    """ISS 1242: Core's `unexpected-witness`."""
+    spend = generate_random_transaction()
+    spend.vin[0].script_witness = Witness([b"\x01" * 3])
+    block = a_block_over([generate_coinbase(height=1), spend])
+    assert main.is_block_mutated(block, check_witness_root=True)
+
+
+@pytest.mark.parametrize("stack", [[], [bytes(32), b""]], ids=["none", "two"])
+def test_a_witness_nonce_not_of_one_element_is_mutated(stack: list[bytes]) -> None:
+    """ISS 1242: Core's `bad-witness-nonce-size`, on the element count."""
+    block = generate_segwit_block()
+    block.transactions[0].vin[0].script_witness = Witness(stack)
+    assert main.is_block_mutated(block, check_witness_root=True)
+
+
+def test_a_witness_nonce_not_of_32_bytes_is_mutated_though_it_matches() -> None:
+    """ISS 1242: Core's `bad-witness-nonce-size`, its commitment holding."""
+    block = generate_segwit_block(nonce=bytes(31))
+    assert main.is_block_mutated(block, check_witness_root=True)
+
+
+def test_a_witness_the_commitment_does_not_match_is_mutated() -> None:
+    """ISS 1242: Core's `bad-witness-merkle-match`, a witness swapped after."""
+    block = generate_segwit_block()
+    block.transactions[1].vin[0].script_witness = Witness([b"\x02" * 3])
+    assert main.is_block_mutated(block, check_witness_root=True)
+
+
+def a_block_of_weight(weight: int, *extra: Tx) -> Block:
+    """Build a segwit block whose weight is exactly `weight`, near the bound.
+
+    `generate_segwit_block`'s own, `extra` after the spend. The spend's
+    witness takes up the difference: a witness byte weighs one, and the
+    length prefix of an element this long is five bytes either side of
+    the adjustment.
+    """
+    witness = bytes(weight)
+    block = generate_segwit_block(*extra, witness=witness)
+    block = generate_segwit_block(
+        *extra, witness=bytes(len(witness) + weight - block.weight)
+    )
+    assert block.weight == weight
+    return block
+
+
+def test_a_committed_body_over_the_weight_is_marked_failed() -> None:
+    """ISS 1242: Core's `bad-blk-weight`, a `ContextualCheckBlock` rule."""
+    over = a_block_of_weight(MAX_BLOCK_WEIGHT + 1)
+    assert main.is_block_failed(over, check_witness_root=True)
+
+
+def test_a_committed_body_at_the_weight_is_not_marked_failed() -> None:
+    """ISS 1242: the bound is inclusive."""
+    at = a_block_of_weight(MAX_BLOCK_WEIGHT)
+    assert not main.is_block_failed(at, check_witness_root=True)
+
+
+def test_a_body_over_the_weight_on_a_witness_it_does_not_commit_to_is_not_failed() -> (
+    None
+):
+    """ISS 1242: Core asks the commitment first, so the weight is no one's."""
+    over = a_block_of_weight(MAX_BLOCK_WEIGHT + 1)
+    stuffed = over.transactions[1].vin[0].script_witness.stack[0]
+    over.transactions[1].vin[0].script_witness = Witness([b"\x01" * len(stuffed)])
+    assert over.weight > MAX_BLOCK_WEIGHT
+    assert not main.is_block_failed(over, check_witness_root=True)
+
+
+def a_spend_paying(script_pub_key: bytes) -> Tx:
+    """Build a valid transaction whose one output is `script_pub_key`."""
+    tx = generate_random_transaction()
+    tx.vout[0] = TxOut(tx.vout[0].value, script_pub_key)
+    return tx
+
+
+def a_spend_twice_of_one_outpoint() -> Tx:
+    """Build a spend of one outpoint twice, `bad-txns-inputs-duplicate`."""
+    tx = generate_random_transaction()
+    tx.vin = [tx.vin[0], tx.vin[0]]
+    return tx
+
+
+@pytest.mark.parametrize(
+    ("extra", "error"),
+    [
+        # three outputs of 400,000 bytes: 1.2 MB stripped, each transaction
+        # well under the bound on its own
+        (
+            lambda: [a_spend_paying(bytes(400_000)) for _ in range(3)],
+            "invalid stripped size",
+        ),
+        (lambda: [generate_coinbase(height=1)], "more than one coinbase"),
+        (lambda: [a_spend_twice_of_one_outpoint()], "spent twice"),
+        # OP_CHECKSIG, one legacy sigop a byte
+        (lambda: [a_spend_paying(b"\xac" * 20_001)], "invalid sigop cost"),
+    ],
+    ids=["bad-blk-length", "bad-cb-multiple", "tx", "bad-blk-sigops"],
+)
+def test_a_committed_body_over_the_weight_failing_check_block_is_not_failed(
+    extra: Callable[[], list[Tx]], error: str
+) -> None:
+    """ISS 1333: Core's `ProcessNewBlock` never marks a `CheckBlock` failure.
+
+    Each body is over the weight too, which alone would mark it.
+    """
+    over = a_block_of_weight(MAX_BLOCK_WEIGHT + 1_000_000, *extra())
+    assert over.weight > MAX_BLOCK_WEIGHT
+    with pytest.raises(BTClibValueError, match=error):
+        over.assert_valid(RegTest().pow_limit_bits)
+    assert not main.is_block_mutated(over, check_witness_root=True)
+    assert not main.is_block_failed(over, check_witness_root=True)
+
+
+def test_a_body_over_the_weight_with_no_coinbase_is_not_failed() -> None:
+    """ISS 1333: Core's `bad-cb-missing`, the body not mutated.
+
+    Core's `IsBlockMutated` reads no witness of a block without a
+    coinbase, so a witness is what puts this one over the weight.
+    """
+    spend = generate_random_transaction()
+    spend.vin[0].script_witness = Witness([bytes(MAX_BLOCK_WEIGHT)])
+    block = a_block_over([spend])
+    assert block.weight > MAX_BLOCK_WEIGHT
+    assert not main.is_block_mutated(block, check_witness_root=True)
+    assert not main.is_block_failed(block, check_witness_root=True)

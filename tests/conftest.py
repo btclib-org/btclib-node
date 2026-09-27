@@ -655,6 +655,8 @@ def unstarted_node_context(
             prune_target_mib=prune_target_mib,
         )
     )
+    # the stores `run` would open once its RPC listener were up
+    node.load()
     try:
         yield node
     finally:

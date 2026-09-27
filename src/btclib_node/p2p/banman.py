@@ -11,19 +11,24 @@ the v31.1 tag. The list is kept in `banlist.json` in Core's own format
 (`src/addrdb.cpp`, `src/net_types.cpp`), so either node reads the
 other's.
 
-A subnet here is an IPv4 or an IPv6 one: an onion, I2P or CJDNS address,
-which Core bans as a single host, is refused as unparsable
-(btclib-org/btclib-node#1218).
+A subnet is an IPv4 or an IPv6 one, or a single onion or I2P host, as
+`CSubNet` holds them. An address is read as `LookupHost` reads one:
+`SetSpecial`'s onion and I2P names first, then whatever the platform's
+`getaddrinfo` reads as a numeric address. A CJDNS address is an IPv6 one
+here, as it is in Core without `-cjdnsreachable`, which this node does
+not have.
 """
 
+import hashlib
 import json
+import socket
 import threading
 import time
-from dataclasses import dataclass
-from ipaddress import IPv4Address, IPv6Address, ip_address
-from typing import TYPE_CHECKING, Any, override
+from dataclasses import dataclass, field
+from ipaddress import IPv4Address, IPv6Address
+from typing import TYPE_CHECKING, Any, cast, override
 
-from btclib.p2p.addrv2 import can_addrv1, network_address
+from btclib.p2p.addrv2 import BIP155Network, can_addrv1, network_address
 
 from btclib_node.constants import CLIENT_NAME
 from btclib_node.p2p.eviction import _INTERNAL, _TORV2, is_valid
@@ -39,6 +44,8 @@ __all__ = [
     "DUMP_BANS_INTERVAL",
     "BanEntry",
     "BanMan",
+    "Host",
+    "SpecialAddress",
     "Subnet",
     "is_valid_host",
     "lookup_host",
@@ -64,30 +71,154 @@ _WARNING = (
 )
 
 
-def lookup_host(text: str) -> IPv4Address | IPv6Address | None:
-    """Core's `LookupHost` without DNS, for an IP address alone.
+# Core's base32 alphabet (`src/util/strencodings.cpp`), which
+# `DecodeBase32` also reads in upper case
+_BASE32 = "abcdefghijklmnopqrstuvwxyz234567"
+# `CNetAddr::SetTor` and `SetI2P` (`src/netaddress.cpp`,
+# at bitcoin/bitcoin@9be056a8a7, the v31.1 tag)
+_ONION = ".onion"
+_I2P = ".b32.i2p"
+_I2P_CHARS = 52
+_TORV3_VERSION = b"\x03"
+_SPECIAL_SIZE = 32
+_TORV3_TOTAL = _SPECIAL_SIZE + 2 + len(_TORV3_VERSION)
+# Core's `Network` enum order, which `operator<` of two `CNetAddr` reads
+_NETWORK_ORDER = {
+    BIP155Network.IPV4: 1,
+    BIP155Network.IPV6: 2,
+    BIP155Network.TORV3: 3,
+    BIP155Network.I2P: 4,
+}
 
-    Brackets around the address are stripped. An IPv4 address mapped
-    into IPv6 is IPv4, an address under Core's internal prefix is
-    refused, and one under the Tor v2 prefix is the unspecified address,
-    as `CNetAddr::SetLegacyIPv6` reads them. What `getaddrinfo` accepts
-    and `ipaddress` does not, such as `1.2.3` or a scope id, is refused
-    (btclib-org/btclib-node#1220).
+
+def _decode_base32(text: str) -> bytes | None:
+    """Core's `DecodeBase32`: padded to eight, no bits left over."""
+    if len(text) % 8:
+        return None
+    for padding in ("=", "==", "=", "=="):
+        text = text.removesuffix(padding)
+    accumulator = bits = 0
+    decoded = bytearray()
+    for char in text:
+        value = _BASE32.find(char.lower()) if char.isascii() else -1
+        if value < 0:
+            return None
+        accumulator = (accumulator << 5 | value) & 0xFFF
+        bits += 5
+        if bits >= 8:  # noqa: PLR2004
+            bits -= 8
+            decoded.append(accumulator >> bits & 0xFF)
+    if bits >= 5 or accumulator & ((1 << bits) - 1):  # noqa: PLR2004
+        return None
+    return bytes(decoded)
+
+
+def _encode_base32(data: bytes) -> str:
+    """Core's `EncodeBase32` unpadded, in lower case."""
+    accumulator = bits = 0
+    encoded: list[str] = []
+    for byte in data:
+        accumulator = (accumulator << 8 | byte) & 0xFFF
+        bits += 8
+        while bits >= 5:  # noqa: PLR2004
+            bits -= 5
+            encoded.append(_BASE32[accumulator >> bits & 0x1F])
+    if bits:
+        encoded.append(_BASE32[accumulator << (5 - bits) & 0x1F])
+    return "".join(encoded)
+
+
+def _onion_checksum(pubkey: bytes) -> bytes:
+    """Core's `torv3::Checksum`: SHA3-256 of the prefix, key and version."""
+    digest = hashlib.sha3_256(b".onion checksum" + pubkey + _TORV3_VERSION)
+    return digest.digest()[:2]
+
+
+@dataclass(frozen=True)
+class SpecialAddress:
+    """Core's `CNetAddr` of an onion or an I2P host: its network and key."""
+
+    network: BIP155Network
+    packed: bytes
+
+    @classmethod
+    def parse(cls, text: str) -> SpecialAddress | None:
+        """Core's `CNetAddr::SetSpecial`: a v3 onion name or an I2P one."""
+        if text.endswith(_ONION):
+            decoded = _decode_base32(text.removesuffix(_ONION))
+            if decoded is None or len(decoded) != _TORV3_TOTAL:
+                return None
+            pubkey = decoded[:_SPECIAL_SIZE]
+            checksum = decoded[_SPECIAL_SIZE:-1]
+            version = decoded[-1:]
+            if version != _TORV3_VERSION or checksum != _onion_checksum(pubkey):
+                return None
+            return cls(BIP155Network.TORV3, pubkey)
+        if len(text) != _I2P_CHARS + len(_I2P) or text[_I2P_CHARS:].lower() != _I2P:
+            return None
+        decoded = _decode_base32(text[:_I2P_CHARS] + "====")
+        if decoded is None or len(decoded) != _SPECIAL_SIZE:
+            return None
+        return cls(BIP155Network.I2P, decoded)
+
+    @override
+    def __str__(self) -> str:
+        """Core's `CNetAddr::ToStringAddr`, `OnionToString` for an onion."""
+        if self.network == BIP155Network.TORV3:
+            key = self.packed
+            payload = key + _onion_checksum(key) + _TORV3_VERSION
+            return _encode_base32(payload) + _ONION
+        return _encode_base32(self.packed) + _I2P
+
+
+#: An address `lookup_host` reads: an IP one, or an onion or I2P host.
+type Host = IPv4Address | IPv6Address | SpecialAddress
+
+
+def lookup_host(text: str) -> Host | None:
+    """Core's `LookupHost` without DNS, of the first address it answers.
+
+    Brackets around the address are stripped. An onion or I2P name is
+    `SetSpecial`'s. Anything else is what `getaddrinfo` with
+    `AI_NUMERICHOST` reads, as `WrappedGetAddrInfo` asks it, handed the
+    octets as Core hands them: forms such as `1.2.3` and a scope id are
+    the platform's to accept. An IPv6 address keeps its numeric scope.
+    An IPv4 address mapped into IPv6 is IPv4, an address under Core's
+    internal prefix is dropped, and one under the Tor v2 prefix is the
+    unspecified address, as `CNetAddr::SetLegacyIPv6` reads them.
     """
+    if "\0" in text:
+        return None
     if text.startswith("[") and text.endswith("]"):
         text = text[1:-1]
+    return SpecialAddress.parse(text) or _numeric_host(text)
+
+
+def _numeric_host(text: str) -> IPv4Address | IPv6Address | None:
+    """`WrappedGetAddrInfo` of `text`, as `lookup_host` reads it."""
     try:
-        ip = ip_address(text) if "%" not in text else None
-    except ValueError:
-        ip = None
-    if isinstance(ip, IPv6Address):
+        answers = socket.getaddrinfo(
+            text.encode(),
+            None,
+            type=socket.SOCK_STREAM,
+            proto=socket.IPPROTO_TCP,
+            flags=socket.AI_NUMERICHOST,
+        )
+    except OSError, UnicodeError:
+        return None
+    for family, _, _, _, sockaddr in answers:
+        if family == socket.AF_INET:
+            return IPv4Address(sockaddr[0])
+        ip = IPv6Address(str(sockaddr[0]).partition("%")[0])
         if ip.ipv4_mapped is not None:
-            ip = ip.ipv4_mapped
-        elif ip in _INTERNAL:
-            ip = None
-        elif ip in _TORV2:
+            return ip.ipv4_mapped
+        if ip in _INTERNAL:
+            continue
+        scope = cast("tuple[str, int, int, int]", sockaddr)[3]
+        if ip in _TORV2:
             ip = IPv6Address(0)
-    return ip
+        return IPv6Address(f"{ip}%{scope}") if scope else ip
+    return None
 
 
 def _mapped(ip: IPv4Address | IPv6Address) -> IPv6Address:
@@ -97,49 +228,79 @@ def _mapped(ip: IPv4Address | IPv6Address) -> IPv6Address:
     return ip
 
 
-def is_valid_host(ip: IPv4Address | IPv6Address) -> bool:
-    """Core's `CNetAddr::IsValid` of an IP address `lookup_host` gave."""
-    return is_valid(_mapped(ip))
+def is_valid_host(host: Host) -> bool:
+    """Core's `CNetAddr::IsValid` of an address `lookup_host` gave.
+
+    An onion or I2P host is always valid.
+    """
+    return isinstance(host, SpecialAddress) or is_valid(_mapped(host))
+
+
+def _network(host: Host) -> BIP155Network:
+    if isinstance(host, SpecialAddress):
+        return host.network
+    return BIP155Network.IPV4 if host.version == 4 else BIP155Network.IPV6  # noqa: PLR2004
 
 
 @dataclass(frozen=True)
 class Subnet:
-    """Core's `CSubNet` of an IP network: a network and its prefix length.
+    """Core's `CSubNet`: an IP network and its prefix length, or one host.
 
-    `network` is already masked. `sort_key` orders them as Core's
-    `std::map` of them does, IPv4 ahead of IPv6.
+    `network` is already masked, and has no scope: an IPv6 one's scope
+    is `scope`, which Core writes and does not compare, so two subnets
+    differing in scope alone are the one entry. An onion or I2P host has
+    a `prefix` of zero, its netmask being all zeros in Core. `sort_key`
+    orders them as Core's `std::map` of them does.
     """
 
-    network: IPv4Address | IPv6Address
+    network: Host
     prefix: int
+    scope: int = field(default=0, compare=False)
 
     @classmethod
-    def of(cls, ip: IPv4Address | IPv6Address, prefix: int | None = None) -> Subnet:
-        """Return the `prefix`-bit subnet holding `ip`, `ip` alone if none."""
+    def of(cls, host: Host, prefix: int | None = None) -> Subnet:
+        """Return the `prefix`-bit subnet holding `host`, alone if none."""
+        if isinstance(host, SpecialAddress):
+            return cls(host, 0)
         if prefix is None:
-            prefix = ip.max_prefixlen
-        mask = _mask(ip.max_prefixlen, prefix)
-        return cls(type(ip)(int(ip) & mask), prefix)
+            prefix = host.max_prefixlen
+        mask = _mask(host.max_prefixlen, prefix)
+        scope = int(host.scope_id or 0) if isinstance(host, IPv6Address) else 0
+        return cls(type(host)(int(host) & mask), prefix, scope)
 
     def sort_key(self) -> tuple[int, bytes, int]:
-        """Core's `operator<` of two `CSubNet`: kind, octets, then netmask."""
-        return (self.network.version, self.network.packed, self.prefix)
+        """Core's `operator<` of two `CSubNet`: network, octets, netmask."""
+        network = self.network
+        return (_NETWORK_ORDER[_network(network)], network.packed, self.prefix)
 
-    def matches(self, ip: IPv4Address | IPv6Address) -> bool:
-        """Core's `CSubNet::Match` of a valid address."""
-        if ip.version != self.network.version or not is_valid_host(ip):
+    def matches(self, host: Host) -> bool:
+        """Core's `CSubNet::Match` of a valid address.
+
+        An onion or I2P subnet matches its own host alone.
+        """
+        network = self.network
+        if _network(host) != _network(network) or not is_valid_host(host):
             return False
-        return int(ip) & _mask(ip.max_prefixlen, self.prefix) == int(self.network)
+        if isinstance(network, SpecialAddress):
+            return host == network
+        mask = _mask(network.max_prefixlen, self.prefix)
+        return int(cast("IPv4Address | IPv6Address", host)) & mask == int(network)
 
     def matches_peer(self, address: NetworkAddressV2) -> bool:
-        """Answer `matches` of a peer's address, false off the IP networks."""
-        ip = _peer_ip(address)
-        return ip is not None and self.matches(ip)
+        """Answer `matches` of a peer's address."""
+        host = _peer_host(address)
+        return host is not None and self.matches(host)
 
     @override
     def __str__(self) -> str:
-        """Core's `CSubNet::ToString`: the network, a slash and the prefix."""
-        return f"{self.network}/{self.prefix}"
+        """Core's `CSubNet::ToString`: the network, and an IP one's prefix.
+
+        An IPv6 network is followed by its scope, where it has one.
+        """
+        if isinstance(self.network, SpecialAddress):
+            return str(self.network)
+        scope = f"%{self.scope}" if self.scope else ""
+        return f"{self.network}{scope}/{self.prefix}"
 
 
 def _mask(bits: int, prefix: int) -> int:
@@ -160,7 +321,8 @@ def lookup_subnet(text: str) -> Subnet | None:
     Split at the last slash. A suffix of decimal digits up to 255 is a
     prefix length, valid up to the address's own; anything else is read
     as a netmask of the same kind, which has to be contiguous. With no
-    slash the subnet is the one host.
+    slash the subnet is the one host. An onion or I2P host takes no
+    suffix, as `CSubNet` has neither constructor for one.
     """
     slash = text.rfind("/")
     ip = lookup_host(text if slash < 0 else text[:slash])
@@ -168,24 +330,31 @@ def lookup_subnet(text: str) -> Subnet | None:
         return None
     if slash < 0:
         return Subnet.of(ip)
+    if isinstance(ip, SpecialAddress):
+        return None
     suffix = text[slash + 1 :]
     # `ToIntegral<uint8_t>`: ASCII digits alone, and at most 255
     if suffix.isascii() and suffix.isdigit() and int(suffix) <= 0xFF:  # noqa: PLR2004
         prefix = int(suffix)
         return Subnet.of(ip, prefix) if prefix <= ip.max_prefixlen else None
     mask = lookup_host(suffix)
-    if mask is None or mask.version != ip.version:
+    if mask is None or isinstance(mask, SpecialAddress) or mask.version != ip.version:
         return None
     prefix_of_mask = _prefix(mask)
     return None if prefix_of_mask is None else Subnet.of(ip, prefix_of_mask)
 
 
-def _peer_ip(address: NetworkAddressV2) -> IPv4Address | IPv6Address | None:
-    """Return a peer's IP, IPv4 where mapped, `None` for any other network."""
-    if not can_addrv1(address):
-        return None
-    ip = network_address(address).ip
-    return ip.ipv4_mapped or ip
+def _peer_host(address: NetworkAddressV2) -> Host | None:
+    """Return a peer's address as a ban reads it, `None` off these networks.
+
+    An IP one is IPv4 where mapped. A v3 onion or I2P one is its key.
+    """
+    if can_addrv1(address):
+        ip = network_address(address).ip
+        return ip.ipv4_mapped or ip
+    if address.network_id in (BIP155Network.TORV3, BIP155Network.I2P):
+        return SpecialAddress(BIP155Network(address.network_id), address.address)
+    return None
 
 
 @dataclass(frozen=True)
@@ -395,19 +564,19 @@ class BanMan:
             self._dirty = True
         self.dump()
 
-    def is_banned(self, ip: IPv4Address | IPv6Address) -> bool:
+    def is_banned(self, host: Host) -> bool:
         """Core's `IsBanned` of an address: any unexpired ban matching it."""
         now = _now()
         with self._lock:
             return any(
-                now < entry.ban_until and subnet.matches(ip)
+                now < entry.ban_until and subnet.matches(host)
                 for subnet, entry in self._banned.items()
             )
 
     def is_peer_banned(self, address: NetworkAddressV2) -> bool:
-        """`is_banned` of a peer's address, never true off the IP networks."""
-        ip = _peer_ip(address)
-        return ip is not None and self.is_banned(ip)
+        """`is_banned` of a peer's address, never true off these networks."""
+        host = _peer_host(address)
+        return host is not None and self.is_banned(host)
 
     def is_subnet_banned(self, subnet: Subnet) -> bool:
         """Core's `IsBanned` of a subnet: that very subnet, unexpired."""

@@ -627,6 +627,141 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **`wait_until_listening` raises `ListenerEndedError` as soon as a manager's
   thread ends without listening, naming its `bind_error` where it has one**,
   where it waited out its timeout and reported one (closes #1361).
+### A body its header does not commit to leaves the header valid, as in Core
+
+- **A mutated body, Core's `IsBlockMutated`, is refused before its header is
+  read, and a failing block is marked invalid only where Core marks it, over
+  the weight, on the wire and in `submitblock`** (closes #1242, closes #1333).
+
+### The P2P listener's sockets are kept before it says it is listening
+
+- **`_bind` records them ahead of setting `listening`** (closes #1325), so
+  a thread woken by it no longer reads an empty list.
+
+### Every dial records its try, as Core's `Attempt` does
+
+- **A `-connect` or `-addnode` dial counts as a recent try too, for an address
+  a table holds** (closes #1277); as in Core, a restart forgets every try.
+
+### `testmempoolaccept` refuses the call for a `rawtx` that does not decode
+
+- **`-22` for the first one, its message naming the `rawtx`, and `-8` for an
+  array not of 1 to 25** (closes #1329), as `bitcoind` answers both.
+
+### A `[section]` naming no chain is warned about as `bitcoind` warns
+
+- **Stderr names each unrecognised section with its file and line** (closes
+  #1271), in Core's words and before the refusals that follow it.
+
+### A failed RPC start leaves no chainstate and no address table behind
+
+- **The stores open once the RPC listener is up** (closes #1279), so a
+  refused start leaves `.lock`, `blocks/` and the log and no store,
+  `bitcoind` opening its stores only at its steps 6 and 7.
+
+### `REVIEWING.md` lets a filed issue carry its fix
+
+- **An issue filed from a review may say the fix where one is known**,
+  the filing bar standing as it was (issue btclib-org/.github#1378).
+
+### Two outbound peers are block-relay-only, as in Core
+
+- **Past eight full-relay outbound peers, two more are dialled that relay
+  blocks alone** (closes #1095), as `CConnman::ThreadOpenConnections` opens
+  `BLOCK_RELAY`, and a third on its five-minute timer once the tip is recent.
+
+### Feelers test a gossiped address, as in Core
+
+- **Every two minutes on average a short-lived connection is dialled to a
+  gossiped address not in the answered table** (closes #1096), as Core's
+  `FEELER`: asked for addresses, recorded as answered, then dropped.
+
+### Two block-relay-only peers are kept across a restart, as in Core
+
+- **The block-relay-only peers held at shutdown are written to `anchors.dat`
+  and dialled first at the next start** (closes #1097), two at most, in the
+  file format bitcoind v31.1.0 reads and writes.
+
+### An extra outbound peer for a stale tip or an unreached network, as in Core
+
+- **One more full-relay peer is dialled for a stale tip, and one on a
+  network none of the eight is on** (closes #1100), each followed by the
+  eviction of a full-relay peer past the target by `EvictExtraOutboundPeers`.
+
+### `install-bitcoind` is removed, the reusable workflow installing bitcoind
+
+- **`.github/actions/install-bitcoind` goes**, the reusable workflow
+  `integration-bitcoind.yml` calls installing bitcoind from its own script
+  (issue btclib-org/.github#1373).
+
+### `codeql.yml`'s aggregate accepts `analyze` listed unfinished
+
+- **A row of `analyze`'s still listed unfinished passes where
+  `needs.analyze.result` is `success` or `skipped`** (issue
+  btclib-org/.github#1395); any other unfinished row but its own still fails.
+
+### `REPOSITORY.md` reads classic signatures and SHA pinning back
+
+- **Classic `required_signatures` answers `false` and `sha_pinning_required`
+  `true`**, section 11 linked for each (issue btclib-org/.github#1409).
+
+### Dependabot's `pre-commit` ecosystem is named as unused, not as absent
+
+- **`.github/dependabot.yml` and `.pre-commit-config.yaml` say it exists and
+  is not configured here**, pre-commit.ci's weekly autoupdate moving `rev:`
+  instead (issue btclib-org/.github#1391).
+
+### `bitcoin.conf` is read as bytes, as `bitcoind` reads it
+
+- **A byte that is not UTF-8 no longer stops the node** (closes #1290): it is
+  kept, and written back as that byte in stderr, the log and the credentials.
+
+### `REPOSITORY.md` reads the organization's SHA pinning back
+
+- **The organization's `allowed_actions` and `sha_pinning_required` stand
+  beside the repository's**, the latter set at that level (issue
+  btclib-org/.github#1409).
+
+### Each peer is asked for blocks of its own best chain, as in Core
+
+- **A peer is asked only for blocks of its best known chain, within Core's
+  window and in-flight limit, and dropped after Core's timeouts** (closes
+  #1179).
+
+### `setban` takes an onion or I2P host, and each address `getaddrinfo` reads
+
+- **An onion or I2P host is banned as itself** (closes #1218), and an
+  address is what `getaddrinfo` reads, `1.2.3` among them, with an IPv6
+  scope written and no part of the ban's key (closes #1220).
+
+### An old peer is sent Core's nonceless ping and its final alert
+
+- **A peer at protocol version 60000 or below is sent a `ping` with no nonce,
+  and one at 70012 or below the final `alert`, as in Core** (closes #1204,
+  closes #1205).
+
+### `codeql.yml`'s aggregate reads a lagging row again
+
+- **An unfinished `analyze` row is read again before it is accepted, and a
+  `needs.analyze.result` neither `success` nor `skipped` fails the step**
+  (issue btclib-org/.github#1416) (issue btclib-org/.github#1424).
+
+### `integration-bitcoind.yml` names `skip-reason-prefix`
+
+- **Its comments name `skip-reason-prefix`, left empty, in place of
+  `exclude-classname`** (issue btclib-org/.github#1419).
+
+### The mempool refuses a fee under its floor, as Core
+
+- **A fee under the rolling minimum or `min_relay_feerate` for the vsize is
+  refused in Core's words, which both RPCs report** (closes #1245); a reorg's
+  re-added transactions are exempt.
+
+### A block asked of a peer without `NODE_WITNESS` carries no witness flag
+
+- **`DownloadManager` asks such a peer for `MSG_BLOCK` rather than
+  `MSG_WITNESS_BLOCK`, and its walk over the peer's chain ends at the first
+  block where SegWit is active** (closes #1208).
 
 ## v2026.9.24
 
