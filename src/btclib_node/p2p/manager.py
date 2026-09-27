@@ -1186,8 +1186,6 @@ class P2pManager(threading.Thread):
         table of local addresses here to ask
         (btclib-org/btclib-node#1238).
         """
-        # The services are those the address was dialled with, which for
-        # one a DNS seed answered are none (btclib-org/btclib-node#1236).
         while self.anchors:
             anchor = self.anchors.pop()
             if (

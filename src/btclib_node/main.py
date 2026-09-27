@@ -363,7 +363,7 @@ def prune_up_to_height(node: Node, target_height: int) -> None:
     data was pruned would be silently discarded rather than re-stored.
 
     Height 0 included: genesis is in `block_db` like any other block
-    (`Node.__init__`), and Core's own `GetPruneRange`
+    (`Node.load`), and Core's own `GetPruneRange`
     (`src/validation.cpp:6382`, at bitcoin/bitcoin@9be056a8a7, the v31.1
     tag) starts the prunable range at height 0 on a chain not built from
     a snapshot.
@@ -718,7 +718,7 @@ def _validate_block(
 def _record_rejection(node: Node, failed_hash: bytes, exc: BaseException) -> None:
     """Record the block `failed_hash` names as refused, and why.
 
-    `Node.__init__`'s own comment beside `last_rejected_block` says who
+    `Node.load`'s own comment beside `last_rejected_block` says who
     reads it: a rejection test, asserting the rule that refused a block
     rather than only that one did. `_resolve_trial_exception`'s own
     call below is this function's only caller, and reaches it only once

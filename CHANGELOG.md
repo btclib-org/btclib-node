@@ -638,6 +638,27 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A `-connect` or `-addnode` dial counts as a recent try too, for an address
   a table holds** (closes #1277); as in Core, a restart forgets every try.
 
+### `testmempoolaccept` refuses the call for a `rawtx` that does not decode
+
+- **`-22` for the first one, its message naming the `rawtx`, and `-8` for an
+  array not of 1 to 25** (closes #1329), as `bitcoind` answers both.
+
+### A `[section]` naming no chain is warned about as `bitcoind` warns
+
+- **Stderr names each unrecognised section with its file and line** (closes
+  #1271), in Core's words and before the refusals that follow it.
+
+### A failed RPC start leaves no chainstate and no address table behind
+
+- **The stores open once the RPC listener is up** (closes #1279), so a
+  refused start leaves `.lock`, `blocks/` and the log and no store,
+  `bitcoind` opening its stores only at its steps 6 and 7.
+
+### `REVIEWING.md` lets a filed issue carry its fix
+
+- **An issue filed from a review may say the fix where one is known**,
+  the filing bar standing as it was (issue btclib-org/.github#1378).
+
 ### Two outbound peers are block-relay-only, as in Core
 
 - **Past eight full-relay outbound peers, two more are dialled that relay
