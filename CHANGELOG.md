@@ -493,6 +493,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   connected every 60 seconds** (closes #1316), each on a loop of its own,
   where both shared one doubling backoff inside the housekeeping loop.
 
+### `addnode add` and `addnode remove` change the list the loop dials
+
+- **`add` joins the `-addnode` list and `remove` takes an entry out, with
+  Core's errors for a node already added and for one not there**
+  (closes #1350), where `add` dialled once and `remove` always failed.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, override
 
 from btclib.p2p.addrv2 import BIP155Network, can_addrv1, network_address
 
+from btclib_node.config import split_host_port
 from btclib_node.constants import CLIENT_NAME, P2pConnStatus
 from btclib_node.p2p.address import (
     PeerDB,
@@ -184,6 +185,17 @@ def _is_ip(host: str) -> bool:
     return True
 
 
+def _same_ip_endpoint(a: tuple[str, int], b: tuple[str, int]) -> bool:
+    """Answer whether `a` and `b` are one IP address and port, as `CService`s.
+
+    A name is never the same: Core's `LookupNumeric` of one is an
+    invalid `CService`, which `AddNode` compares to nothing.
+    """
+    if not (_is_ip(a[0]) and _is_ip(b[0])):
+        return False
+    return (_legacy_ipv6(a[0]), a[1]) == (_legacy_ipv6(b[0]), b[1])
+
+
 def _host_and_port(host: str, port: int) -> str:
     """Return `ip_and_port`'s text for an IP address, `host:port` for a name."""
     return ip_and_port(host, port) if _is_ip(host) else f"{host}:{port}"
@@ -298,25 +310,28 @@ class P2pManager(threading.Thread):
         # `manage_connections` begins.
         self._add_addr_fetch = False
         self._seed_node_timer = 0.0
-        # Core's `m_added_node_params` being non-empty, which only
-        # `-addnode` fills here: the `addnode` RPC's `add` dials once and
-        # keeps no list (`rpc.callbacks.add_node`), so it does not count
-        # as it does in Core.
-        self._addnode_given = bool(node.config.addnode)
         # Core's `start`, reset when `manage_connections` begins.
         self._dial_start = time.time()
         self._next_fixed_seeds_check = 0.0
 
-        # `-connect` and `-addnode`, as given, a hostname included: what
-        # `_open_connect_peers` and `_open_added_peers` below dial. Built
-        # once, here, for the same "a caller cannot change it
-        # mid-flight" reason as the two fields above.
+        # `-connect`, as given, a hostname included: what
+        # `_open_connect_peers` below dials. Built once, here, for the
+        # same "a caller cannot change it mid-flight" reason as the two
+        # fields above.
         self._connect_peers: tuple[tuple[str, int], ...] = tuple(
             dict.fromkeys(node.config.connect)
         )
-        self._added_peers: tuple[tuple[str, int], ...] = tuple(
-            dict.fromkeys(node.config.addnode)
-        )
+        # Core's `m_added_node_params`, each entry the text given and
+        # the host and port it splits into: every `-addnode`, as
+        # `CConnman::Init` pushes them, and then what `add_added_node`
+        # appends and `remove_added_node` takes out. The `addnode` RPC
+        # reaches those two from its own thread, and
+        # `_added_nodes_lock` is Core's `m_added_nodes_mutex`.
+        self._added_nodes_lock = threading.Lock()
+        self._added_node_params: list[tuple[str, tuple[str, int]]] = [
+            (spec, split_host_port(spec, node.chain.port))
+            for spec in node.config.addnode_args
+        ]
         # The endpoint each host and port given by name last connected
         # on, which Core keeps on the connection as `m_addr_name` and
         # `AlreadyConnectedToHost` compares a name against. An IP address
@@ -324,7 +339,7 @@ class P2pManager(threading.Thread):
         # address's text for a connection not made by name.
         self._named_endpoints: dict[tuple[str, int], bytes] = {
             (host, port): endpoint_key(peer_address(host, port))
-            for host, port in (*self._connect_peers, *self._added_peers)
+            for host, port in (*self._connect_peers, *self._added_peers())
             if _is_ip(host)
         }
 
@@ -905,7 +920,7 @@ class P2pManager(threading.Thread):
         elif (
             not self.use_dns_seed
             and not self._seednode_given
-            and not self._addnode_given
+            and not self._added_peers()
         ):
             self.logger.info(
                 "Adding fixed seeds as -dnsseed=0 (or IPv4/IPv6 connections are "
@@ -1175,18 +1190,17 @@ class P2pManager(threading.Thread):
 
         `ThreadOpenAddedConnections` (`src/net.cpp`, at
         bitcoin/bitcoin@9be056a8a7, the v31.1 tag) over
-        `GetAddedNodeInfo(include_connected=false)`. A grant is free
-        while fewer than `_MAX_ADDNODE_CONNECTIONS` added peers are
-        held, and a dial that connects keeps its grant, as the grant
-        moves into the connection there.
+        `GetAddedNodeInfo(include_connected=false)`, the list read
+        afresh each round. A grant is free while fewer than
+        `_MAX_ADDNODE_CONNECTIONS` added peers are held, and a dial that
+        connects keeps its grant, as the grant moves into the connection
+        there.
         """
-        if not self._added_peers:
-            return
         while True:
             held = self._held_endpoints()
             unconnected = [
                 key
-                for key in self._added_peers
+                for key in self._added_peers()
                 if self._named_endpoints.get(key) not in held
             ]
             tried = False
@@ -1199,9 +1213,49 @@ class P2pManager(threading.Thread):
             await asyncio.sleep(_ADDNODE_RETRY_TRIED if tried else _ADDNODE_RETRY_IDLE)
 
     def _added_held(self) -> int:
-        """Count the `-addnode` peers held, the `semAddnode` grants taken."""
+        """Count the added peers held, the `semAddnode` grants taken."""
         held = self._held_endpoints()
-        return sum(self._named_endpoints.get(key) in held for key in self._added_peers)
+        return len(
+            {self._named_endpoints.get(key) for key in self._added_peers()} & held
+        )
+
+    def _added_peers(self) -> list[tuple[str, int]]:
+        """Return the host and port of each added node, in the order added."""
+        with self._added_nodes_lock:
+            return [pair for _, pair in self._added_node_params]
+
+    def add_added_node(self, spec: str) -> bool:
+        """Add `spec` to the nodes `_open_added_peers` dials, as `AddNode` does.
+
+        Core's `CConnman::AddNode` (`src/net.cpp`, at
+        bitcoin/bitcoin@9be056a8a7, the v31.1 tag) refuses `spec` where
+        an entry is the same text, or where both name the same IP
+        address and port once split, and answers whether it added it.
+        `split_host_port`'s `ValueError` for a malformed port is raised.
+        """
+        pair = split_host_port(spec, self.node.chain.port)
+        with self._added_nodes_lock:
+            for other, other_pair in self._added_node_params:
+                if spec == other or _same_ip_endpoint(pair, other_pair):
+                    return False
+            self._added_node_params.append((spec, pair))
+        if _is_ip(pair[0]):
+            self._named_endpoints.setdefault(pair, endpoint_key(peer_address(*pair)))
+        return True
+
+    def remove_added_node(self, spec: str) -> bool:
+        """Remove the entry that is `spec`'s text, as `RemoveAddedNode` does.
+
+        Core's `CConnman::RemoveAddedNode` (same file) matches the text
+        alone, and answers whether it found an entry. A connection the
+        entry made is left up.
+        """
+        with self._added_nodes_lock:
+            for i, (other, _) in enumerate(self._added_node_params):
+                if spec == other:
+                    del self._added_node_params[i]
+                    return True
+        return False
 
     async def manage_connections(self) -> None:
         """Prune, prune some more, maybe dial, sleep -- forever, every 0.1s.

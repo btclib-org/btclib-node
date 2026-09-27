@@ -946,31 +946,21 @@ def get_network_info(node: Node, conn: RpcConnection, _: list[Any]) -> dict[str,
     }
 
 
-# Core's own three `addnode` commands (`rpc/net.cpp:341-415`, at
-# bitcoin/bitcoin@bb529657); `add`/`remove` mutate `CConnman`'s own
-# persistent added-node list, which this node has no counterpart to --
-# `Config.addnode`, its own equivalent of `-addnode`, is a tuple
-# split once at startup (`config.py`'s `_split_peers`) and dialled
-# by `P2pManager._open_added_peers`, never grown or shrunk at runtime.
-# `connect_nodes`, the one caller this node's own tf2 census names for
-# this method (`test_framework.py:568-594`, same sha), only
-# ever calls `onetry`, which is the one command below with a real
-# effect: it schedules the identical one-shot dial `onetry` gets in
-# Core (`OpenNetworkConnection`, `conn_type=MANUAL`, no persistence).
-# `add` is accepted and scheduled the same way rather than
-# raising, since refusing an otherwise-valid command would be less
-# faithful to Core than dialling once and not persisting; `remove`
-# answers Core's own `RPC_CLIENT_NODE_NOT_ADDED` every time, there being
-# no added-node list here for it to find an entry in.
+# Core's own three `addnode` commands (`src/rpc/net.cpp`, at
+# bitcoin/bitcoin@9be056a8a7, the v31.1 tag): `onetry` dials once
+# (`OpenNetworkConnection`, `conn_type=MANUAL`), while `add` and
+# `remove` change the list `P2pManager._open_added_peers` dials
+# (`CConnman::AddNode` and `RemoveAddedNode`), which starts as
+# `-addnode`, and dial nothing themselves.
 _ADDNODE_COMMANDS = ("add", "remove", "onetry")
 
 
 def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
-    """Answer `addnode`, `onetry` for real and the other two commands honestly.
+    """Answer `addnode`: dial once, or add to or remove from the added nodes.
 
-    The module-level comment above argues the three commands; this
-    function is Core's own argument parsing and its two literal error
-    messages (`rpc/net.cpp:365-377`, at bitcoin/bitcoin@bb529657). The
+    The module-level comment above names the three commands; this
+    function is Core's own argument parsing and its literal error
+    messages (`src/rpc/net.cpp`, at bitcoin/bitcoin@9be056a8a7). The
     empty-`node` refusal is master's own fix
     (`rpc: reject empty node argument in addnode`,
     at bitcoin/bitcoin@90ce21e21d) rather than this tree's own pinned
@@ -1018,20 +1008,36 @@ def add_node(node: Node, conn: RpcConnection, params: list[Any]) -> None:
             RPCErrorCode.INVALID_PARAMETER, "Error: Node address cannot be empty"
         )
 
-    if command == "remove":
-        raise RpcError(
-            RPCErrorCode.CLIENT_NODE_NOT_ADDED,
-            "Error: Node could not be removed. It has not been added previously.",
-        )
+    if command == "onetry":
+        node.p2p_manager.connect_host(*_split_node_arg(node, node_arg))
+    else:
+        _change_added_nodes(node, node_arg, command)
 
+
+def _split_node_arg(node: Node, node_arg: str) -> tuple[str, int]:
+    """Split `addnode`'s `node` into its host and port, or refuse it."""
     try:
-        host, port = split_host_port(node_arg, node.chain.port)
+        return split_host_port(node_arg, node.chain.port)
     except ValueError as error:
         # a malformed port, which `_split_peers` (config.py) refuses
         # in `-addnode`'s own spec the same way
         raise RpcError(RPCErrorCode.INVALID_PARAMETER, str(error)) from error
 
-    node.p2p_manager.connect_host(host, port)
+
+def _change_added_nodes(node: Node, node_arg: str, command: str) -> None:
+    """Answer `add` and `remove`, Core's `AddNode` and `RemoveAddedNode`."""
+    if command == "remove":
+        if not node.p2p_manager.remove_added_node(node_arg):
+            raise RpcError(
+                RPCErrorCode.CLIENT_NODE_NOT_ADDED,
+                "Error: Node could not be removed. It has not been added previously.",
+            )
+        return
+    _split_node_arg(node, node_arg)
+    if not node.p2p_manager.add_added_node(node_arg):
+        raise RpcError(
+            RPCErrorCode.CLIENT_NODE_ALREADY_ADDED, "Error: Node already added"
+        )
 
 
 def _btc_amount(sats: int) -> RawJSON:

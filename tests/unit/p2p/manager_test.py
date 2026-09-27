@@ -153,7 +153,7 @@ class AManagerFactory(Protocol):
         status: NodeStatus = NodeStatus.BlockSynced,
         port: int | None = None,
         connect: Sequence[tuple[str, int]] = (),
-        addnode: Sequence[tuple[str, int]] = (),
+        addnode_args: Sequence[str] = (),
         listen: bool = True,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
         dnsseed: bool | None = None,
@@ -176,7 +176,7 @@ def a_manager() -> Iterator[AManagerFactory]:
         status: NodeStatus = NodeStatus.BlockSynced,
         port: int | None = None,
         connect: Sequence[tuple[str, int]] = (),
-        addnode: Sequence[tuple[str, int]] = (),
+        addnode_args: Sequence[str] = (),
         listen: bool = True,
         max_connections: int = DEFAULT_MAX_PEER_CONNECTIONS,
         dnsseed: bool | None = None,
@@ -217,7 +217,7 @@ def a_manager() -> Iterator[AManagerFactory]:
             config=SimpleNamespace(
                 connect=connect,
                 connect_given=bool(connect),
-                addnode=addnode,
+                addnode_args=tuple(addnode_args),
                 listen=listen,
                 max_connections=max_connections,
                 dnsseed=(
@@ -1213,7 +1213,7 @@ def a_seeding_manager(
     held: Sequence[BIP155Network] = (),
     elapsed: float = 0.0,
     use_dns_seed: bool = True,
-    addnode: Sequence[tuple[str, int]] = (),
+    addnode_args: Sequence[str] = (),
     conns: Sequence[Any] = (),
 ) -> tuple[P2pManager, list[list[NetworkAddressV2]]]:
     """Build a mainnet manager whose peer db holds only the `held` networks.
@@ -1227,7 +1227,7 @@ def a_seeding_manager(
         holds_network=lambda network_id: network_id in held,
         add_addresses=lambda addresses: added.append(list(addresses)),
     )
-    manager = a_manager(conns, peer_db=peer_db, addnode=addnode)
+    manager = a_manager(conns, peer_db=peer_db, addnode_args=addnode_args)
     manager.node.chain = Main()
     manager.use_dns_seed = use_dns_seed
     manager._dial_start = time.time() - elapsed
@@ -1288,19 +1288,38 @@ def test_no_fixed_seed_is_added_where_every_reachable_network_is_held(
 
 
 @pytest.mark.parametrize(
-    ("addnode", "adds"),
+    ("addnode_args", "adds"),
     [
         pytest.param((), True, id="no-addnode"),
-        pytest.param([("1.2.3.4", 8333)], False, id="addnode"),
+        pytest.param(["1.2.3.4"], False, id="addnode"),
     ],
 )
 def test_the_fixed_seeds_are_added_at_once_without_dns_seeding(
-    a_manager: AManagerFactory, addnode: Sequence[tuple[str, int]], *, adds: bool
+    a_manager: AManagerFactory, addnode_args: Sequence[str], *, adds: bool
 ) -> None:
     """ISS 1099: with DNS seeding off and no `-addnode`, Core does not wait."""
-    manager, added = a_seeding_manager(a_manager, use_dns_seed=False, addnode=addnode)
+    manager, added = a_seeding_manager(
+        a_manager, use_dns_seed=False, addnode_args=addnode_args
+    )
     asyncio.run(manager._maybe_dial_more_peers())
     assert bool(added) is adds
+
+
+@pytest.mark.parametrize("command", ["add", "remove"])
+def test_the_fixed_seeds_wait_on_the_added_nodes_as_they_are_now(
+    a_manager: AManagerFactory, command: str
+) -> None:
+    """ISS 1350: Core reads `m_added_node_params`, which the RPC changes."""
+    given = ["1.2.3.4"] if command == "remove" else []
+    manager, added = a_seeding_manager(
+        a_manager, use_dns_seed=False, addnode_args=given
+    )
+    if command == "add":
+        assert manager.add_added_node("1.2.3.4")
+    else:
+        assert manager.remove_added_node("1.2.3.4")
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert bool(added) is (command == "remove")
 
 
 @pytest.mark.parametrize(("live", "adds"), [(8, True), (11, False)])
@@ -2189,7 +2208,7 @@ def test_an_added_name_connected_is_not_dialled_again(
 ) -> None:
     """ISS 1264: `GetAddedNodeInfo` reads a name's endpoint to leave it out."""
     held = peer_address("1.2.3.4", 8333)
-    manager = a_manager([a_conn(1, address=held)], addnode=[("peer.example", 8333)])
+    manager = a_manager([a_conn(1, address=held)], addnode_args=["peer.example:8333"])
     manager._named_endpoints[("peer.example", 8333)] = endpoint_key(held)
     dialled, slept = run_a_manual_loop(
         manager._open_added_peers, manager, monkeypatch, 1
@@ -2557,6 +2576,11 @@ class _LoopStoppedError(Exception):
     """Raised by `run_a_manual_loop`'s sleep to end a loop that never ends."""
 
 
+def specs(peers: Sequence[tuple[str, int]]) -> list[str]:
+    """Return the `-addnode` text of each host and port in `peers`."""
+    return [f"{host}:{port}" for host, port in peers]
+
+
 def run_a_manual_loop(
     loop: Callable[[], Coroutine[Any, Any, None]],
     manager: P2pManager,
@@ -2610,7 +2634,7 @@ def test_the_added_loop_dials_the_peers_not_connected(
     """ISS 1316: `ThreadOpenAddedConnections`, 500 ms apart, then 60 s."""
     held = peer_address("1.2.3.4", 8333)
     peers = [("1.2.3.4", 8333), ("5.6.7.8", 8333), ("peer.example", 8333)]
-    manager = a_manager([a_conn(1, address=held)], addnode=peers)
+    manager = a_manager([a_conn(1, address=held)], addnode_args=specs(peers))
     dialled, slept = run_a_manual_loop(
         manager._open_added_peers, manager, monkeypatch, 6
     )
@@ -2623,7 +2647,7 @@ def test_the_added_loop_waits_two_seconds_with_nothing_to_dial(
 ) -> None:
     """ISS 1316: a round that tried nothing sleeps `2s`, not `60s`."""
     held = peer_address("1.2.3.4", 8333)
-    manager = a_manager([a_conn(1, address=held)], addnode=[("1.2.3.4", 8333)])
+    manager = a_manager([a_conn(1, address=held)], addnode_args=["1.2.3.4:8333"])
     dialled, slept = run_a_manual_loop(
         manager._open_added_peers, manager, monkeypatch, 2
     )
@@ -2637,7 +2661,7 @@ def test_the_added_loop_stops_where_no_addnode_grant_is_free(
     """ISS 1316: `MAX_ADDNODE_CONNECTIONS` added peers held take every grant."""
     peers = [(f"10.0.0.{i}", 8333) for i in range(1, 10)]
     conns = [a_conn(i, address=peer_address(*peer)) for i, peer in enumerate(peers)]
-    manager = a_manager(conns[:8], addnode=peers)
+    manager = a_manager(conns[:8], addnode_args=specs(peers))
     dialled, slept = run_a_manual_loop(
         manager._open_added_peers, manager, monkeypatch, 1
     )
@@ -2653,7 +2677,9 @@ def test_a_manual_dial_that_raises_is_logged_and_the_loop_goes_on(
     logged: list[str] = []
     peers = [("1.2.3.4", 8333)]
     manager = (
-        a_manager(connect=peers) if option == "connect" else a_manager(addnode=peers)
+        a_manager(connect=peers)
+        if option == "connect"
+        else a_manager(addnode_args=specs(peers))
     )
     monkeypatch.setattr(manager.logger, "exception", logged.append)
 
@@ -2679,14 +2705,119 @@ def test_a_manual_dial_that_raises_is_logged_and_the_loop_goes_on(
     assert len(logged) >= 2
 
 
-def test_with_no_manual_peers_neither_loop_dials(
+def test_with_no_connect_peer_the_connect_loop_returns(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """No `-connect` and no `-addnode`: both loops return at once."""
+    """No `-connect`: the `-connect` loop returns at once."""
     manager = a_manager()
     monkeypatch.setattr(manager, "async_connect_host", refuses_to_be_asked)
     asyncio.run(manager._open_connect_peers())
-    asyncio.run(manager._open_added_peers())
+
+
+def test_with_no_added_node_the_added_loop_waits_for_one(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1350: the loop runs with nothing added, as `addnode add` can add."""
+    manager = a_manager()
+    dialled, slept = run_a_manual_loop(
+        manager._open_added_peers, manager, monkeypatch, 2
+    )
+    assert dialled == []
+    assert slept == [2, 2]
+
+
+def test_the_added_loop_reads_the_list_afresh_each_round(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1350: a node added, then removed, between rounds is dialled once."""
+    manager = a_manager()
+    dialled: list[tuple[str, int]] = []
+    slept: list[float] = []
+
+    async def record_dial(host: str, port: int) -> None:
+        dialled.append((host, port))
+
+    async def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        if len(slept) == 1:
+            assert manager.add_added_node("1.2.3.4:8333")
+        elif len(slept) == 3:
+            assert manager.remove_added_node("1.2.3.4:8333")
+        elif len(slept) == 4:
+            raise _LoopStoppedError
+
+    monkeypatch.setattr(manager, "async_connect_host", record_dial)
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    with pytest.raises(_LoopStoppedError):
+        asyncio.run(manager._open_added_peers())
+    assert dialled == [("1.2.3.4", 8333)]
+    assert slept == [2, 0.5, 60, 2]
+
+
+def test_an_added_ip_address_connected_is_not_dialled(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1350: an address added is its own endpoint, as at startup."""
+    held = peer_address("1.2.3.4", 8333)
+    manager = a_manager([a_conn(1, address=held)])
+    assert manager.add_added_node("1.2.3.4:8333")
+    dialled, _ = run_a_manual_loop(manager._open_added_peers, manager, monkeypatch, 1)
+    assert dialled == []
+
+
+def test_a_grant_is_one_connection_however_many_entries_name_it(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ISS 1350: `-addnode` given twice, as `CConnman::Init` keeps it twice.
+
+    Seven peers held take seven grants, not eight, and the eighth is
+    dialled.
+    """
+    peers = [(f"10.0.0.{i}", 8333) for i in range(1, 9)]
+    conns = [a_conn(i, address=peer_address(*peer)) for i, peer in enumerate(peers)]
+    manager = a_manager(conns[:7], addnode_args=[*specs(peers), specs(peers)[0]])
+    dialled, _ = run_a_manual_loop(manager._open_added_peers, manager, monkeypatch, 1)
+    assert dialled == [peers[7]]
+
+
+@pytest.mark.parametrize(
+    ("given", "spec", "added"),
+    [
+        pytest.param("1.2.3.4", "1.2.3.4", False, id="same-text"),
+        pytest.param("peer.example", "peer.example", False, id="same-name"),
+        pytest.param("1.2.3.4", "1.2.3.4:18444", False, id="same-endpoint"),
+        pytest.param("1.2.3.4", "[::ffff:1.2.3.4]", False, id="mapped-ipv4"),
+        pytest.param("1.2.3.4", "1.2.3.4:1", True, id="other-port"),
+        pytest.param("1.2.3.4", "1.2.3.5", True, id="other-address"),
+        pytest.param("peer.example", "peer.example:18444", True, id="name-text"),
+        pytest.param("peer.example", "1.2.3.4", True, id="name-and-address"),
+    ],
+)
+def test_add_added_node_refuses_what_core_s_add_node_refuses(
+    a_manager: AManagerFactory, given: str, spec: str, *, added: bool
+) -> None:
+    """ISS 1350: `CConnman::AddNode`'s same text, or same `CService`."""
+    manager = a_manager(addnode_args=[given])
+    assert manager.add_added_node(spec) is added
+    expected = [given, spec] if added else [given]
+    assert [text for text, _ in manager._added_node_params] == expected
+
+
+def test_add_added_node_raises_on_a_malformed_port(a_manager: AManagerFactory) -> None:
+    """ISS 1350: `split_host_port`'s refusal, which the RPC answers."""
+    manager = a_manager()
+    with pytest.raises(ValueError, match="invalid port"):
+        manager.add_added_node("1.2.3.4:0")
+    assert manager._added_node_params == []
+
+
+def test_remove_added_node_matches_the_text_alone(a_manager: AManagerFactory) -> None:
+    """ISS 1350: `CConnman::RemoveAddedNode`, the same endpoint not enough."""
+    manager = a_manager(addnode_args=["1.2.3.4", "5.6.7.8"])
+    assert not manager.remove_added_node("1.2.3.4:18444")
+    assert manager.remove_added_node("1.2.3.4")
+    assert not manager.remove_added_node("1.2.3.4")
+    assert [text for text, _ in manager._added_node_params] == ["5.6.7.8"]
 
 
 def test_run_dials_a_connect_peer_without_an_explicit_dial(
@@ -2718,7 +2849,7 @@ def test_run_dials_an_added_peer_without_an_explicit_dial(
     """ISS 1316: the `-addnode` loop `run` starts reaches the peer."""
     target_port = get_random_port()
     target = a_running_manager(a_manager, target_port)
-    dialer = a_manager(addnode=[("127.0.0.1", target_port)])
+    dialer = a_manager(addnode_args=[f"127.0.0.1:{target_port}"])
     try:
         wait_until_listening(target)
         dialer.start()

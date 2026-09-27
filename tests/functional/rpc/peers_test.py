@@ -8,7 +8,7 @@ Each test connects two live nodes over p2p and asks one of them, over
 its own RPC socket, what its p2p side reports about the other.
 """
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from btclib_node.constants import P2pConnStatus
 from tests import (
@@ -164,6 +164,44 @@ def test_addnode_onetry_dials_and_connects_the_other_node(tmp_path: Path) -> Non
         wait_until(
             lambda: node2.p2p_manager.connections[0].status == P2pConnStatus.Connected
         )
+
+
+def test_addnode_add_is_dialled_by_the_added_loop(tmp_path: Path) -> None:
+    """ISS 1350: `add` joins the list the loop dials, and `remove` leaves it.
+
+    Core's answers to a second `add` and a second `remove`, codes and
+    text, are asserted beside it.
+    """
+    with (
+        node_context(tmp_path / "node1") as node1,
+        node_context(tmp_path / "node2") as node2,
+    ):
+        wait_until_listening(node1.rpc_manager)
+        wait_until_listening(node2.rpc_manager)
+        wait_until_listening(node1.p2p_manager)
+        wait_until_listening(node2.p2p_manager)
+        client = rpc_client(node2)
+        spec = f"127.0.0.1:{node1.p2p_port}"
+
+        def addnode(command: str) -> Any:
+            _, body = client.call_raw(
+                "addnode", [spec, command], jsonrpc="1.0", request_timeout=2
+            )
+            return body
+
+        assert addnode("add")["result"] is None
+        wait_until(lambda: len(node1.p2p_manager.connections))
+        assert addnode("add")["error"] == {
+            "code": -23,
+            "message": "Error: Node already added",
+        }
+        assert addnode("remove")["result"] is None
+        assert addnode("remove")["error"] == {
+            "code": -24,
+            "message": (
+                "Error: Node could not be removed. It has not been added previously."
+            ),
+        }
 
 
 def test_get_network_info_s_subversion_matches_what_a_peer_sees(

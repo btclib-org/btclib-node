@@ -2652,43 +2652,63 @@ def test_addnode_falls_back_to_the_chain_s_own_default_port() -> None:
     assert dialed == [("127.0.0.1", 18444)]
 
 
-def test_addnode_add_also_dials_once_rather_than_persisting() -> None:
-    """`addnode ... "add"` is accepted, and dialled the same as `onetry`.
+def a_node_with_added_nodes(added: list[str]) -> Node:
+    """Build a node whose manager keeps `added` as Core keeps its added nodes.
 
-    This node keeps no added-node list distinct from `Config.addnode`'s
-    own startup tuple, so `add` does not persist across a later dial the
-    way Core's own `CConnman::AddNode` does -- the module-level comment
-    beside `_ADDNODE_COMMANDS` argues why dialling once and not raising
-    is the more faithful of the two shortfalls available.
+    `add_added_node` and `remove_added_node` answer as
+    `CConnman::AddNode` and `RemoveAddedNode` do on text alone.
     """
-    dialed: list[Any] = []
-    node = cast(
+
+    def add(spec: str) -> bool:
+        if spec in added:
+            return False
+        added.append(spec)
+        return True
+
+    def remove(spec: str) -> bool:
+        if spec not in added:
+            return False
+        added.remove(spec)
+        return True
+
+    return cast(
         "Node",
         SimpleNamespace(
             chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(
-                connect_host=lambda host, port: dialed.append((host, port))
-            ),
+            # no `connect_host`: a dial here is an `AttributeError`
+            p2p_manager=SimpleNamespace(add_added_node=add, remove_added_node=remove),
         ),
     )
-    add_node(node, _CONN, ["127.0.0.1:9999", "add"])
-    assert len(dialed) == 1
 
 
-def test_addnode_remove_answers_not_added_every_time() -> None:
-    """`addnode ... "remove"` is Core's own `RPC_CLIENT_NODE_NOT_ADDED`.
+def test_addnode_add_keeps_the_node_rather_than_dialling_it() -> None:
+    """ISS 1350: `add` is Core's `AddNode`, which dials nothing itself."""
+    added: list[str] = []
+    add_node(a_node_with_added_nodes(added), _CONN, ["127.0.0.1:9999", "add"])
+    assert added == ["127.0.0.1:9999"]
 
-    There is nothing this node ever added by RPC for it to find.
-    """
-    node = cast(
-        "Node",
-        SimpleNamespace(
-            chain=SimpleNamespace(port=18444),
-            p2p_manager=SimpleNamespace(connect_host=lambda _host, _port: None),
-        ),
-    )
+
+def test_addnode_add_twice_is_already_added() -> None:
+    """ISS 1350: Core's `RPC_CLIENT_NODE_ALREADY_ADDED` and its text."""
+    node = a_node_with_added_nodes(["127.0.0.1:9999"])
     with pytest.raises(RpcError) as raised:
-        add_node(node, _CONN, ["127.0.0.1:9999", "remove"])
+        add_node(node, _CONN, ["127.0.0.1:9999", "add"])
+    assert raised.value.code == RPCErrorCode.CLIENT_NODE_ALREADY_ADDED
+    assert raised.value.message == "Error: Node already added"
+
+
+def test_addnode_remove_takes_the_node_out() -> None:
+    """ISS 1350: `remove` is Core's `RemoveAddedNode`."""
+    added = ["127.0.0.1:9999"]
+    add_node(a_node_with_added_nodes(added), _CONN, ["127.0.0.1:9999", "remove"])
+    assert added == []
+
+
+def test_addnode_remove_of_a_node_not_added_is_not_added() -> None:
+    """ISS 1350: Core's `RPC_CLIENT_NODE_NOT_ADDED` and its text."""
+    node = a_node_with_added_nodes(["127.0.0.1:9999"])
+    with pytest.raises(RpcError) as raised:
+        add_node(node, _CONN, ["127.0.0.1", "remove"])
     assert raised.value.code == RPCErrorCode.CLIENT_NODE_NOT_ADDED
     assert raised.value.message == (
         "Error: Node could not be removed. It has not been added previously."
@@ -2752,6 +2772,15 @@ def test_addnode_refuses_a_malformed_port() -> None:
     with pytest.raises(RpcError) as raised:
         add_node(node, _CONN, ["example.com:0", "onetry"])
     assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+
+
+def test_addnode_add_refuses_a_malformed_port() -> None:
+    """ISS 1350: `add` splits `node` as `onetry` does, and keeps nothing."""
+    added: list[str] = []
+    with pytest.raises(RpcError) as raised:
+        add_node(a_node_with_added_nodes(added), _CONN, ["example.com:0", "add"])
+    assert raised.value.code == RPCErrorCode.INVALID_PARAMETER
+    assert added == []
 
 
 def test_addnode_dials_a_hostname_by_name() -> None:
