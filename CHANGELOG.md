@@ -711,6 +711,12 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
 - **A byte that is not UTF-8 no longer stops the node** (closes #1290): it is
   kept, and written back as that byte in stderr, the log and the credentials.
 
+### DNS seeding asks each seed's `x9.` subdomain, and addr-fetches the rest
+
+- **A seed answers only for `NODE_NETWORK | NODE_WITNESS`, at most 32 answers
+  kept**, in place of resolving its bare name (closes #1284). A seed whose
+  subdomain answers nothing is dialled instead, for its own `addr` alone.
+
 ## v2026.9.24
 
 ### `reorg_test.py`'s confirmed spend is standard, and re-enters the mempool

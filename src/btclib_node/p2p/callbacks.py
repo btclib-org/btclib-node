@@ -417,6 +417,16 @@ def version(node: Node, msg: bytes, conn: Connection) -> None:
     conn.has_all_wanted_services = has_all_desirable_services(
         node, version_msg.services
     )
+    # `ExpectServicesFromConn` also holds for `ADDR_FETCH` (`src/net.h`,
+    # same sha), which this gate does not reach: `conn.automatic` is
+    # false for it (`p2p/manager.py`'s `create_connection`), so an
+    # addr-fetch peer short of `NODE_NETWORK` is kept rather than
+    # dropped here -- it is still refused above for missing
+    # `NODE_WITNESS`, and dropped on its own short life by
+    # `_ADDR_FETCH_TIMEOUT` regardless. btclib-org/btclib-node#1138 is
+    # this file's other services gate already needing the same
+    # connection-kind awareness this one is missing for `ADDR_FETCH`
+    # (btclib-org/btclib-node#1284).
     if (
         conn.automatic
         and not conn.feeler
@@ -841,7 +851,11 @@ def _store_gossip(
     skipped if its services carry neither `NODE_NETWORK` nor
     `NODE_NETWORK_LIMITED`, skipped if `IsDiscouraged` answers for it,
     and otherwise counted in `m_addr_processed` before `AddrMan` refuses
-    any of it.
+    any of it. An addr-fetch connection is dropped once this answers
+    with more than one address, "to avoid disconnecting on
+    self-announcements" (same loop, same sha) -- of `addresses` as
+    received, ahead of every filter above, matching Core's own
+    `vAddr.size()` (btclib-org/btclib-node#1284).
     """
     now = time.time()
     if conn.addr_token_bucket < _MAX_ADDR_PROCESSING_TOKEN_BUCKET:
@@ -876,6 +890,9 @@ def _store_gossip(
     conn.stats.addr_processed += len(kept)
     conn.stats.addr_rate_limited += rate_limited
     manager.peer_db.add_addresses(kept)
+    if conn.addr_fetch and len(received) > 1:
+        node.logger.debug("addrfetch connection completed, peer=%s", conn.id)
+        conn.stop()
 
 
 def feefilter(node: Node, msg: bytes, conn: Connection) -> None:

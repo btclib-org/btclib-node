@@ -535,17 +535,28 @@ def test_a_refused_dial_does_not_cost_the_full_timeout() -> None:
     assert time.monotonic() - start < address_module._DIAL_TIMEOUT - 1.0
 
 
+def a_seed_host(name: str) -> str:
+    """Return the `x9.` subdomain `get_addr_from_dns` asks of seed `name`.
+
+    `int(SEEDS_SERVICE_FLAGS)` is 9, `NODE_NETWORK | NODE_WITNESS`.
+    """
+    return f"x{int(SEEDS_SERVICE_FLAGS):x}.{name}"
+
+
 class FakeLoop:
     """A `getaddrinfo` stand-in answering fixed hosts, no real DNS query."""
 
     def __init__(self, answers: dict[str, Exception | list[str]]) -> None:
         """Record what each host name should answer with, or raise."""
         self.answers = answers
+        self.requested: list[str] = []
 
     async def getaddrinfo(
-        self, host: str, port: int
+        self, host: str, port: int, **kwargs: object
     ) -> list[tuple[None, None, None, None, tuple[str, int]]]:
         """Answer `host` from `self.answers`, in `getaddrinfo`'s own shape."""
+        assert kwargs.get("type") == socket.SOCK_STREAM
+        self.requested.append(host)
         answer = self.answers[host]
         if isinstance(answer, Exception):
             raise answer
@@ -569,28 +580,45 @@ def a_seed_answer(ip: str) -> NetworkAddressV2:
     return peer_address(ip, 18444, services=SEEDS_SERVICE_FLAGS)
 
 
-def test_the_seeds_that_answer_fill_the_table_and_the_rest_are_passed_over(
+def test_the_seeds_that_answer_fill_the_table_and_the_rest_are_returned(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A seed lookup that fails is skipped; one that answers fills the table.
+    """A seed's `x9.` that fails is returned; a winner fills the table.
 
-    `down.example` raises `gaierror` and contributes nothing; every
-    address `up.example` answers with lands in `peer_db.addresses`, on
-    the chain's own port, `18444`, and not `8333`.
+    `down.example`'s subdomain raises `gaierror` and contributes nothing
+    to the table, but is named in the returned list, for
+    `P2pManager` to queue as an addr-fetch; every address
+    `up.example`'s subdomain answers with lands in `peer_db.addresses`,
+    on the chain's own port, `18444`, and not `8333`.
     """
     peer_db = a_peer_db(a_chain(["down.example", "up.example"]))
     loop = FakeLoop(
         {
-            "down.example": socket.gaierror("no such host"),
-            "up.example": ["1.2.3.4", "5.6.7.8"],
+            a_seed_host("down.example"): socket.gaierror("no such host"),
+            a_seed_host("up.example"): ["1.2.3.4", "5.6.7.8"],
         }
     )
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
-    asyncio.run(peer_db.get_addr_from_dns())
+    unanswered = asyncio.run(peer_db.get_addr_from_dns())
+    assert unanswered == ["down.example"]
     assert peer_db.addresses == {
         a_seed_answer("1.2.3.4"),
         a_seed_answer("5.6.7.8"),
     }
+    # the bare name is never asked: only the `x9.` subdomain is
+    assert loop.requested == [a_seed_host("down.example"), a_seed_host("up.example")]
+
+
+def test_a_seed_answering_nothing_is_returned_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty answer, not only a `gaierror`, is "answered nothing"."""
+    peer_db = a_peer_db(a_chain(["empty.example"]))
+    loop = FakeLoop({a_seed_host("empty.example"): []})
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
+    unanswered = asyncio.run(peer_db.get_addr_from_dns())
+    assert unanswered == ["empty.example"]
+    assert peer_db.addresses == set()
 
 
 def test_every_seed_that_answers_is_taken_and_a_host_two_of_them_share_is_one(
@@ -609,12 +637,13 @@ def test_every_seed_that_answers_is_taken_and_a_host_two_of_them_share_is_one(
     peer_db = a_peer_db(a_chain(["one.example", "two.example"]))
     loop = FakeLoop(
         {
-            "one.example": ["1.2.3.4", "5.6.7.8"],
-            "two.example": ["5.6.7.8", "9.10.11.12"],
+            a_seed_host("one.example"): ["1.2.3.4", "5.6.7.8"],
+            a_seed_host("two.example"): ["5.6.7.8", "9.10.11.12"],
         }
     )
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
-    asyncio.run(peer_db.get_addr_from_dns())
+    unanswered = asyncio.run(peer_db.get_addr_from_dns())
+    assert unanswered == []
     assert peer_db.addresses == {
         a_seed_answer("1.2.3.4"),
         a_seed_answer("5.6.7.8"),
@@ -622,13 +651,27 @@ def test_every_seed_that_answers_is_taken_and_a_host_two_of_them_share_is_one(
     }
 
 
+def test_a_seed_answering_past_the_cap_is_taken_only_up_to_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At most 32 of a seed's answers are kept, Core's own `nMaxIPs`."""
+    peer_db = a_peer_db(a_chain(["many.example"]))
+    ips = [f"1.2.{i}.4" for i in range(40)]
+    loop = FakeLoop({a_seed_host("many.example"): ips})
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
+    unanswered = asyncio.run(peer_db.get_addr_from_dns())
+    assert unanswered == []
+    assert len(peer_db.addresses) == 32
+
+
 class FakeIpv6Loop:
     """A `getaddrinfo` stand-in answering the real shape a AAAA record gives."""
 
     async def getaddrinfo(
-        self, host: str, port: int
+        self, host: str, port: int, **kwargs: object
     ) -> list[tuple[int, int, int, str, tuple[str, int, int, int]]]:
         """Answer with a sockaddr of four fields, as a real AAAA lookup does."""
+        assert kwargs.get("type") == socket.SOCK_STREAM
         # what a AAAA record resolves to: a sockaddr of four fields
         # rather than two, the flow info and the scope id being the two
         # a peer table has nowhere to put
@@ -649,7 +692,7 @@ def test_a_seed_answering_with_ipv6_gives_up_its_host_and_its_port(
     """
     peer_db = a_peer_db(a_chain(["v6.example"]))
     monkeypatch.setattr(asyncio, "get_running_loop", FakeIpv6Loop)
-    asyncio.run(peer_db.get_addr_from_dns())
+    assert asyncio.run(peer_db.get_addr_from_dns()) == []
     assert peer_db.addresses == {a_seed_answer("2a01:4f8::1")}
 
 
@@ -676,7 +719,7 @@ def test_a_node_that_already_knows_peers_does_not_ask_the_seeds(
     monkeypatch.setattr(
         asyncio, "get_running_loop", lambda: pytest.fail("asked the seeds")
     )
-    asyncio.run(peer_db.get_addr_from_dns())
+    assert asyncio.run(peer_db.get_addr_from_dns()) == []
 
 
 def test_an_address_is_drawn_from_the_ones_that_can_be_dialled() -> None:

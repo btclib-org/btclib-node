@@ -77,6 +77,7 @@ def a_conn(
     last_novel_block_time: int = 0,
     automatic: bool = False,
     feeler: bool = False,
+    addr_fetch: bool = False,
     last_block_announcement: int = 0,
 ) -> Any:
     """Build a fake connection, recording every message handed to `send`.
@@ -110,6 +111,7 @@ def a_conn(
         last_novel_block_time=last_novel_block_time,
         automatic=automatic,
         feeler=feeler,
+        addr_fetch=addr_fetch,
         last_block_announcement=last_block_announcement,
         tx_announce_queue=[],
         next_inv_send_time=0.0,

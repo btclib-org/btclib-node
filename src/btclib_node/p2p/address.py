@@ -95,6 +95,9 @@ def peer_address(
 # bitcoin/bitcoin@9be056a8a7, the v31.1 tag): the services a fixed seed
 # and a DNS seed's answer are recorded with, which the dial loop requires.
 SEEDS_SERVICE_FLAGS = ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_WITNESS
+# `ThreadDNSAddressSeed`'s `nMaxIPs`: how many answers one seed's `x9.`
+# subdomain may add (`src/net.cpp`, same sha).
+_MAX_SEED_ANSWERS = 32
 
 
 def fixed_seed_addresses(seeds: bytes) -> list[NetworkAddressV2]:
@@ -514,24 +517,40 @@ class PeerDB:
         if self.db is not None:
             self.db.close()
 
-    async def get_addr_from_dns(self) -> None:
-        """Resolve every chain DNS seed and feed the answers to `add_addresses`.
+    async def get_addr_from_dns(self) -> list[str]:
+        """Ask each chain DNS seed's `x9.` subdomain; return each unanswered.
+
+        Core's `ThreadDNSAddressSeed` asks `x%x.<seed>` of
+        `requiredServiceBits`, `SeedsServiceFlags()` (`x9.` for
+        `NODE_NETWORK | NODE_WITNESS`), on which a seed answers only with
+        peers it believes offer those services -- `src/net.cpp` and
+        `src/protocol.h`, at bitcoin/bitcoin@9be056a8a7, the v31.1 tag --
+        and keeps at most `nMaxIPs`, 32, of the answers. A seed whose
+        subdomain answers nothing is returned here rather than resolved
+        by its bare name: Core makes an `ADDR_FETCH` connection to that
+        name instead (`AddAddrFetch(seed)`), which `P2pManager` queues
+        from this coroutine's return value.
 
         A no-op unless `ask_dns_nodes` said, at construction time, that
         the durable table came back with nothing dialable.
         """
         if not self.ask_dns_nodes:
-            return
+            return []
         chain = self.chain
         loop = asyncio.get_running_loop()
-        # what a seed answers with, deduplicated: seeds overlap, and one
-        # of them answers with the same host over several records.
-        endpoints: set[tuple[str, int]] = set()
-        for dns_server in chain.addresses:
+        unanswered: list[str] = []
+        for seed in chain.addresses:
+            host = f"x{int(SEEDS_SERVICE_FLAGS):x}.{seed}"
+            # what the subdomain answers with, deduplicated: a name
+            # resolves once per socket type absent a `type` hint, and
+            # `SOCK_STREAM` is what a peer table wants of it.
+            endpoints: set[tuple[str, int]] = set()
             try:
-                answers = await loop.getaddrinfo(dns_server, chain.port)
+                answers = await loop.getaddrinfo(
+                    host, chain.port, type=socket.SOCK_STREAM
+                )
             except socket.gaierror:
-                continue
+                answers = []
             # (family, type, proto, canonname, sockaddr), and the
             # sockaddr is the only part a peer table wants. It opens
             # with the host and the port -- two fields for AF_INET,
@@ -543,19 +562,20 @@ class PeerDB:
             # test could reach.
             for *_, sockaddr in answers:
                 endpoints.add(cast("tuple[str, int]", sockaddr[:2]))
-        # through add_addresses, and not a bare add to the set: a seed
-        # is gossip like a peer's is, and belongs in the durable table
-        # the same way, so a later restart has it without asking again
-        # labelled with Core's `requiredServiceBits`, `SeedsServiceFlags`
-        # (`ThreadDNSAddressSeed`, `src/net.cpp`, same sha). Core asks
-        # the seed's `x9.` subdomain, so the seed answers with peers
-        # offering those services, and falls back to an addr-fetch where
-        # it answers nothing; this resolves the bare name and labels
-        # whatever it answers (btclib-org/btclib-node#1284).
-        self.add_addresses(
-            peer_address(ip, port, services=SEEDS_SERVICE_FLAGS)
-            for ip, port in endpoints
-        )
+                if len(endpoints) >= _MAX_SEED_ANSWERS:
+                    break
+            if not endpoints:
+                unanswered.append(seed)
+                continue
+            # through add_addresses, and not a bare add to the set: a
+            # seed is gossip like a peer's is, and belongs in the
+            # durable table the same way, so a later restart has it
+            # without asking again
+            self.add_addresses(
+                peer_address(ip, port, services=SEEDS_SERVICE_FLAGS)
+                for ip, port in endpoints
+            )
+        return unanswered
 
     @property
     def is_empty(self) -> bool:
