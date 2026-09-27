@@ -176,6 +176,7 @@ def a_peer(
     automatic: bool = False,
     block_relay: bool = False,
     feeler: bool = False,
+    addr_fetch: bool = False,
     versioned: bool = True,
 ) -> Any:
     """Build a `P2pManager.connections` entry `get_peer_info` can read.
@@ -211,6 +212,7 @@ def a_peer(
         automatic=automatic,
         block_relay=block_relay,
         feeler=feeler,
+        addr_fetch=addr_fetch,
         stats=PeerStats(),
         block_availability=BlockAvailability(),
         tx_announce_queue=[],
@@ -554,25 +556,31 @@ def test_a_peer_that_asked_for_no_relay_has_no_tx_relay() -> None:
 
 
 @pytest.mark.parametrize(
-    ("inbound", "automatic", "block_relay", "feeler", "connection_type"),
+    ("inbound", "automatic", "block_relay", "feeler", "addr_fetch", "connection_type"),
     [
-        (True, False, False, False, "inbound"),
-        (False, True, False, False, "outbound-full-relay"),
-        (False, True, True, False, "block-relay-only"),
-        (False, True, False, True, "feeler"),
-        (False, False, False, False, "manual"),
+        (True, False, False, False, False, "inbound"),
+        (False, True, False, False, False, "outbound-full-relay"),
+        (False, True, True, False, False, "block-relay-only"),
+        (False, True, False, True, False, "feeler"),
+        (False, False, False, False, True, "addr-fetch"),
+        (False, False, False, False, False, "manual"),
     ],
 )
-def test_the_connection_type_is_core_s(
+def test_the_connection_type_is_core_s(  # noqa: PLR0917
     inbound: bool,  # noqa: FBT001
     automatic: bool,  # noqa: FBT001
     block_relay: bool,  # noqa: FBT001
     feeler: bool,  # noqa: FBT001
+    addr_fetch: bool,  # noqa: FBT001
     connection_type: str,
 ) -> None:
     """Inbound, drawn by this node as any kind, or named by an operator."""
     peer = a_peer(
-        inbound=inbound, automatic=automatic, block_relay=block_relay, feeler=feeler
+        inbound=inbound,
+        automatic=automatic,
+        block_relay=block_relay,
+        feeler=feeler,
+        addr_fetch=addr_fetch,
     )
     (info,) = get_peer_info(a_node({7: peer}), _CONN, [])
     assert info["connection_type"] == connection_type

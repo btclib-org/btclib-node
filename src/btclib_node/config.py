@@ -131,10 +131,12 @@ def _resolve_peers(
     the one ISS 573 (btclib-org/btclib-node#573) asks these two fields
     to use -- takes a `NetworkAddressV2` built straight off a parsed IP
     (`p2p/address.py`'s `peer_address`), and nothing in this node's
-    synchronous startup path resolves a name into one: the only DNS
-    lookup here is `PeerDB.get_addr_from_dns`'s own coroutine, on
-    `P2pManager`'s asyncio loop, which is not reachable before that
-    manager's thread exists. Widening `peer_address` or plumbing an
+    synchronous startup path resolves a name into one: DNS is asked
+    only through `PeerDB.get_addr_from_dns`'s own coroutine and
+    `P2pManager._process_addr_fetch`'s resolution of an addr-fetch
+    seed (btclib-org/btclib-node#1284), both on `P2pManager`'s asyncio
+    loop, neither reachable before that manager's thread exists.
+    Widening `peer_address` or plumbing an
     async resolve into `Node.run` for two config fields is a larger
     change than this branch's scope; a hostname is refused up front,
     at `Config` construction, rather than dialled wrong or silently
@@ -248,15 +250,22 @@ class Config:
     # what RpcManager binds instead of every interface: an RPC server is
     # this node's control plane, not a peer-to-peer listener, so a
     # caller holding a credential still has to reach it from an
-    # interface this names. Bitcoin Core's own `rpcbind`/`rpcallowip`
-    # default to localhost for the same reason; P2pManager.server binds
-    # every interface unconditionally, and is right to, since a peer
-    # listener is supposed to accept a stranger.
-    rpc_host: str
-    # Core's `-rpcbind` values, checked by `cli` and bound nowhere: Core
-    # binds them only beside `-rpcallowip`, which this node does not
-    # have, and `RpcManager` logs the warning Core logs over them.
+    # interface this names. `None` is Core's own default, `::1` and
+    # `127.0.0.1` both (`HTTPBindAddresses`, `src/httpserver.cpp`,
+    # at bitcoin/bitcoin@9be056a8a7, the v31.1 tag); a host a Python
+    # caller names is bound alone, where `-rpcbind` and `-rpcallowip`
+    # are not both given. P2pManager.server binds every interface
+    # unconditionally, and is right to, since a peer listener is
+    # supposed to accept a stranger.
+    rpc_host: str | None
+    # Core's `-rpcbind` values, checked by `cli`: `RpcManager` binds
+    # them where `rpcallowip` below names something, and warns over them
+    # where it does not, as `HTTPBindAddresses` does.
     rpcbind: tuple[str, ...]
+    # Core's `-rpcallowip` values, which `RpcManager` parses when it
+    # starts, as `InitHTTPServer` parses them, and answers a request
+    # from no source they or loopback name with a 403.
+    rpcallowip: tuple[str, ...]
     # Core's own `-rpcauth`, one entry per value: users the RPC listener
     # accepts beside the cookie and `rpc_password_entry`. Where a value
     # is malformed, the values ahead of it, and `rpc_auth_invalid` set.
@@ -394,8 +403,9 @@ class Config:
         blocks_dir: str | Path | None = None,
         p2p_port: int | None = None,
         rpc_port: int | None = None,
-        rpc_host: str = "127.0.0.1",
+        rpc_host: str | None = None,
         rpcbind: Sequence[str] = (),
+        rpcallowip: Sequence[str] = (),
         allow_p2p: bool = True,
         allow_rpc: bool = True,
         pruned: bool = False,
@@ -481,6 +491,7 @@ class Config:
 
         self.rpc_host = rpc_host
         self.rpcbind = tuple(rpcbind)
+        self.rpcallowip = tuple(rpcallowip)
         # Core reads the RPC options below in `StartHTTPRPC` and its
         # `InitRPCAuthentication` (`src/httprpc.cpp`), which `AppInitMain`
         # runs under `-server` alone (`src/init.cpp`, both at

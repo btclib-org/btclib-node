@@ -805,6 +805,30 @@ each in `btclib-org/.github` (issue btclib-org/.github#1359).
   before an unrequested block is set aside, so its peer is punished either
   way** (closes #1363), as Core's `ProcessNewBlock` orders it.
 
+### DNS seeding asks each seed's `x9.` subdomain, and addr-fetches the rest
+
+- **A seed answers only for `NODE_NETWORK | NODE_WITNESS`, at most 32 answers
+  kept**, in place of resolving its bare name (closes #1284). A seed whose
+  subdomain answers nothing is dialled instead, for its own `addr` alone.
+
+### The JSON-RPC listener binds `::1` and `127.0.0.1`, as `bitcoind` does
+
+- **Each loopback is bound and logged in turn, one that fails is warned
+  over and passed** (closes #1269, closes #1281), and only a node that binds
+  neither refuses to start, with Core's message.
+
+### `-rpcallowip` decides which sources the JSON-RPC listener answers
+
+- **A source no `-rpcallowip` subnet or loopback names gets a bare 403,
+  and `-rpcbind` binds beside it** (closes #1268), as in `bitcoind`, a value
+  naming no subnet refusing to start with Core's message.
+
+### `-rpcallowip` reads a value as `setban` reads one
+
+- **One parser, the ban list's, reads both** (closes #1291), so an onion or
+  I2P host is a `-rpcallowip` subnet, as in `bitcoind` (closes #1288), though
+  it matches no JSON-RPC client.
+
 ### An answered address is kept for Core's 30-day horizon
 
 - **An answered row leaves the table only when `IsTerrible`'s time tests call

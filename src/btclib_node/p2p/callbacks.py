@@ -326,6 +326,21 @@ def maybe_send_getheaders(node: Node, conn: Connection, locator: list[bytes]) ->
 _FINAL_ALERT_VERSION = 70012
 
 
+def _expects_services(conn: Connection) -> bool:
+    """Answer Core's `ExpectServicesFromConn` for `conn`'s own kind.
+
+    False for `INBOUND`, `MANUAL` and `FEELER`; true for
+    `OUTBOUND_FULL_RELAY`, `BLOCK_RELAY`, `ADDR_FETCH` and
+    `PRIVATE_BROADCAST` (`src/net.h:838-848`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag). Of this node's own
+    connections that is `conn.automatic` -- what `_maybe_dial_more_peers`
+    dials, a feeler excepted below, and never a `-connect` or `-addnode`
+    peer (btclib-org/btclib-node#725) -- or `conn.addr_fetch`, this tree
+    having no `PRIVATE_BROADCAST` counterpart.
+    """
+    return (conn.automatic or conn.addr_fetch) and not conn.feeler
+
+
 def _refuses(node: Node, conn: Connection, version_msg: Version) -> bool:
     """Answer whether `version` drops the peer, and discourages nobody.
 
@@ -350,25 +365,19 @@ def _refuses(node: Node, conn: Connection, version_msg: Version) -> bool:
     if version_msg.version < MIN_PEER_PROTO_VERSION:
         return True
     # `NODE_WITNESS` is in every set `GetDesirableServiceFlags` answers,
-    # so Core requires it of every connection the check below covers,
-    # whatever this node's own sync state, and of no other: an inbound
-    # peer, a manual one, or a feeler is kept without it. `DownloadManager`
-    # asks such a peer for `MSG_BLOCK` rather than `MSG_WITNESS_BLOCK`, and
+    # so Core requires it of every connection `_expects_services` covers
+    # -- an automatic outbound peer or an addr-fetch one, whatever this
+    # node's own sync state -- and of no other: an inbound peer, a
+    # manual one, or a feeler is kept without it. `DownloadManager` asks
+    # such a peer for `MSG_BLOCK` rather than `MSG_WITNESS_BLOCK`, and
     # stops its walk over the peer's chain at SegWit's own activation
     # height (btclib-org/btclib-node#1208).
-    if (
-        conn.automatic
-        and not conn.feeler
-        and not version_msg.services & ServiceFlags.NODE_WITNESS
-    ):
+    if _expects_services(conn) and not version_msg.services & ServiceFlags.NODE_WITNESS:
         return True
     # Core disconnects for missing services only where
-    # `ExpectServicesFromConn` (`src/net.h`, at bitcoin/bitcoin@9be056a8a7,
-    # the v31.1 tag) holds, which is `false` for `INBOUND`, `MANUAL` and
-    # `FEELER` connections and `true` for every other outbound kind. Of
-    # this node's connections that is `conn.automatic`, what
-    # `_maybe_dial_more_peers` dials, but a feeler, and not a `-connect`
-    # or `-addnode` peer (btclib-org/btclib-node#725).
+    # `_expects_services` holds -- an automatic outbound connection or an
+    # addr-fetch one, never a feeler, and not a `-connect` or `-addnode`
+    # peer (btclib-org/btclib-node#725, btclib-org/btclib-node#1284).
     #
     # `has_all_desirable_services`' own `desirable` (above) is
     # `GetDesirableServiceFlags`'s shape
@@ -401,9 +410,15 @@ def _refuses(node: Node, conn: Connection, version_msg: Version) -> bool:
     conn.has_all_wanted_services = has_all_desirable_services(
         node, version_msg.services
     )
+    # `ExpectServicesFromConn` also holds for `ADDR_FETCH` (`src/net.h`,
+    # same sha), covered by `_expects_services` along with every
+    # automatic outbound connection: an addr-fetch peer short of
+    # `NODE_NETWORK` is dropped here rather than kept, on top of being
+    # refused above for missing `NODE_WITNESS`, and dropped on its own
+    # short life by `_ADDR_FETCH_TIMEOUT` regardless
+    # (btclib-org/btclib-node#1284, btclib-org/btclib-node#1138).
     return (
-        conn.automatic
-        and not conn.feeler
+        _expects_services(conn)
         and node.status >= NodeStatus.BlockSynced
         and not conn.has_all_wanted_services
     )
@@ -869,7 +884,11 @@ def _store_gossip(
     skipped if its services carry neither `NODE_NETWORK` nor
     `NODE_NETWORK_LIMITED`, skipped if `IsDiscouraged` answers for it,
     and otherwise counted in `m_addr_processed` before `AddrMan` refuses
-    any of it.
+    any of it. An addr-fetch connection is dropped once this answers
+    with more than one address, "to avoid disconnecting on
+    self-announcements" (same loop, same sha) -- of `addresses` as
+    received, ahead of every filter above, matching Core's own
+    `vAddr.size()` (btclib-org/btclib-node#1284).
     """
     now = time.time()
     if conn.addr_token_bucket < _MAX_ADDR_PROCESSING_TOKEN_BUCKET:
@@ -904,6 +923,9 @@ def _store_gossip(
     conn.stats.addr_processed += len(kept)
     conn.stats.addr_rate_limited += rate_limited
     manager.peer_db.add_addresses(kept)
+    if conn.addr_fetch and len(received) > 1:
+        node.logger.debug("addrfetch connection completed, peer=%s", conn.id)
+        conn.stop()
 
 
 def feefilter(node: Node, msg: bytes, conn: Connection) -> None:

@@ -24,6 +24,7 @@ import time
 from collections import Counter, deque
 from concurrent.futures import CancelledError
 from contextlib import suppress
+from ipaddress import IPv6Address, ip_address
 from typing import TYPE_CHECKING, override
 
 from btclib.p2p.address import ServiceFlags
@@ -280,6 +281,12 @@ _EXTRA_NETWORK_PEER_INTERVAL = 5 * 60
 _FEELER_INTERVAL = 2 * 60
 _FEELER_SLEEP_WINDOW = 1.0
 
+# Core's `10 * AVG_ADDRESS_BROADCAST_INTERVAL` (`src/net_processing.cpp`,
+# same sha), 30 seconds being the interval: how long an addr-fetch
+# connection is kept, from `Connection.connected_time`, before
+# `_prune_stale_connections` drops it whether or not it ever answered.
+_ADDR_FETCH_TIMEOUT = 10 * 30
+
 
 class _Outbound(enum.Enum):
     """The automatic connection kinds `ThreadOpenConnections` opens."""
@@ -299,6 +306,20 @@ def _may_have_useful_address_db(address: NetworkAddressV2) -> bool:
         address.services
         & (ServiceFlags.NODE_NETWORK | ServiceFlags.NODE_NETWORK_LIMITED)
     )
+
+
+def _legacy_ipv6(ip: str) -> IPv6Address:
+    """Return the sixteen octets Core's `CNetAddr` reads a resolved `ip` as.
+
+    `eviction.is_valid` reads an address in this shape -- an IPv4 one
+    mapped, as `SetLegacyIPv6` maps it -- and `_process_addr_fetch`
+    (below) is the only caller resolving a bare hostname rather than
+    reading a BIP155 record that already carries one.
+    """
+    parsed = ip_address(ip)
+    if isinstance(parsed, IPv6Address):
+        return parsed
+    return IPv6Address(b"\0" * 10 + b"\xff\xff" + parsed.packed)
 
 
 # How many hosts `P2pManager.discourage` remembers. Core keeps them in
@@ -561,6 +582,13 @@ class P2pManager(threading.Thread):
         # connection's entry on this manager's own thread can never
         # race a lookup for a different one on `Node`'s.
         self.pending_outbound_nonces: set[int] = set()
+        # Core's `m_addr_fetches`: a seed name `get_addr_from_dns` (below,
+        # scheduled from `run`) could not resolve at its `x9.` subdomain,
+        # paired with the chain's port, `AddAddrFetch`'s own strDest.
+        # `_process_addr_fetch` pops and dials this queue the way
+        # `ProcessAddrFetch` does `m_addr_fetches`
+        # (btclib-org/btclib-node#1284).
+        self._addr_fetches: deque[tuple[str, int]] = deque()
         self.last_connection_id = -1
         # The key `keyed_net_group` hashes each peer's netgroup under,
         # Core's `nSeed0`/`nSeed1` for `RANDOMIZER_ID_NETGROUP`: drawn
@@ -662,6 +690,7 @@ class P2pManager(threading.Thread):
         block_relay: bool = False,
         feeler: bool = False,
         prefer_evict: bool = False,
+        addr_fetch: bool = False,
     ) -> None:
         """Build a `Connection` for `client`, hold it pending, and start it.
 
@@ -715,6 +744,7 @@ class P2pManager(threading.Thread):
         conn.block_relay = block_relay
         conn.feeler = feeler
         conn.prefer_evict = prefer_evict
+        conn.addr_fetch = addr_fetch
         conn.keyed_net_group = keyed_net_group(self._net_group_key, address)
         self.pending_connections[self.last_connection_id] = conn
         task = asyncio.run_coroutine_threadsafe(conn.run(), self.loop)
@@ -919,6 +949,17 @@ class P2pManager(threading.Thread):
     def _prune_stale_connections(self, now: float) -> None:
         for conn in self.connections.copy().values():
             if conn.status == P2pConnStatus.Closed:
+                self.remove_connection(conn.id)
+                continue
+            # Checked first and unconditionally, idle or not: Core's own
+            # `SendMessages` (`net_processing.cpp`, at
+            # bitcoin/bitcoin@9be056a8a7, the v31.1 tag) returns on this
+            # same check before ever reaching `MaybeSendPing`, so a
+            # chatty addr-fetch peer is still cut at this bound, from
+            # `m_connected` rather than from its last message
+            # (btclib-org/btclib-node#1284).
+            if conn.addr_fetch and now - conn.connected_time > _ADDR_FETCH_TIMEOUT:
+                self.logger.debug("addrfetch connection timeout, peer=%s", conn.id)
                 self.remove_connection(conn.id)
                 continue
             if now - conn.last_receive > _IDLE_TIMEOUT:
@@ -1134,14 +1175,19 @@ class P2pManager(threading.Thread):
         # One outbound peer per network group, as
         # `CConnman::ThreadOpenConnections` keeps them: the groups of
         # its `MANUAL`, `OUTBOUND_FULL_RELAY` and `BLOCK_RELAY` peers,
-        # which here are every connection neither inbound nor a feeler,
-        # pending ones included. A peer off IPv4 and IPv6 adds no group,
-        # as Core adds none for Tor, I2P or CJDNS (`src/net.cpp`, at
-        # bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+        # which here are every connection neither inbound, a feeler, nor
+        # an addr-fetch, pending ones included -- `IsOutboundOrBlockRelayConn`
+        # answers false for `ADDR_FETCH` too (`src/net.h`, same sha). A
+        # peer off IPv4 and IPv6 adds no group, as Core adds none for Tor,
+        # I2P or CJDNS (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7, the
+        # v31.1 tag).
         outbound_net_groups = {
             net_group(conn.address)
             for conn in connected
-            if not conn.inbound and not conn.feeler and can_addrv1(conn.address)
+            if not conn.inbound
+            and not conn.feeler
+            and not conn.addr_fetch
+            and can_addrv1(conn.address)
         }
         try:
             await self._dial_one_draw(already_connected, outbound_net_groups, kind)
@@ -1363,7 +1409,7 @@ class P2pManager(threading.Thread):
         return Counter(
             get_network(conn.address)
             for conn in connected
-            if not (conn.inbound or conn.block_relay or conn.feeler)
+            if not (conn.inbound or conn.block_relay or conn.feeler or conn.addr_fetch)
         )
 
     def _passed_over(
@@ -1449,6 +1495,111 @@ class P2pManager(threading.Thread):
             except Exception:
                 self.logger.exception("Exception occurred")
 
+    async def _dns_address_seed(self) -> None:
+        """Ask every chain DNS seed, queuing an addr-fetch for each unanswered.
+
+        `run` (below) schedules this once, onto this loop, in place of
+        `peer_db.get_addr_from_dns()` directly: that coroutine returns a
+        seed's bare name for each subdomain that answered nothing, for
+        `AddAddrFetch` to have queued (`src/net.cpp`,
+        at bitcoin/bitcoin@9be056a8a7, the v31.1 tag) -- a queue
+        `PeerDB` itself holds none of (btclib-org/btclib-node#1284).
+        """
+        port = self.node.chain.port
+        for seed in await self.peer_db.get_addr_from_dns():
+            self._addr_fetches.append((seed, port))
+
+    async def _process_addr_fetch(self) -> None:
+        """Dial the addr-fetch queue's first entry, an addr-fetch connection.
+
+        Core's `ProcessAddrFetch` (`src/net.cpp`, at bitcoin/bitcoin@9be056a8a7,
+        the v31.1 tag): the entry leaves the queue whether or not it is
+        dialled, as it does there where no `semOutbound` grant is free --
+        this node has no such grant to take for it, `ADDR_FETCH` taking
+        none in Core either ("no limit for ADDR_FETCH because -seednode
+        has no limit either", `src/net.cpp`, same sha). The name is
+        resolved as `ConnectNode` resolves a `pszDest`
+        (`src/net.cpp:404-424`, same sha): every
+        answer shuffled, then validated and checked against
+        `AlreadyConnectedToAddressPort` in that same, unmodified order,
+        the whole attempt abandoned on the first answer either check
+        refuses -- never on a later one alone, however many earlier
+        answers would have connected -- and only once every answer has
+        cleared both checks does a second pass dial each in turn, the
+        first that connects kept (btclib-org/btclib-node#1284).
+
+        The dial and everything past the resolve is inside its own
+        `try`, for the reason `_maybe_prune_active_addresses` already
+        gives for its own: this coroutine's future is never awaited
+        (`manage_connections`, below), so an unguarded raise here would
+        end this loop's pinging, eviction and dialling for the rest of
+        this node's life rather than only this one addr-fetch pass.
+        """
+        if not self._addr_fetches:
+            return
+        host, port = self._addr_fetches.popleft()
+        try:
+            loop = asyncio.get_running_loop()
+            try:
+                answers = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+            except socket.gaierror:
+                return
+            # `dict.fromkeys`, not a `set`: the resolver's own answer
+            # order is what `std::shuffle` shuffles in `ConnectNode`,
+            # so deduplicating through a hash set here would let a
+            # `str` hash seed decide an order the shuffle below is
+            # supposed to be the only source of.
+            ips = list(dict.fromkeys(str(sockaddr[0]) for *_, sockaddr in answers))
+            secrets.SystemRandom().shuffle(ips)
+            addresses = [peer_address(ip, port) for ip in ips]
+            # read after the lookup, as `ConnectNode` asks
+            # `AlreadyConnectedToAddressPort` of each answer once
+            # resolved, rather than off a snapshot taken before it
+            with self._connections_lock:
+                held = {
+                    endpoint_key(conn.address)
+                    for conn in (
+                        *self.connections.values(),
+                        *self.pending_connections.values(),
+                    )
+                }
+            # First pass, over every answer: `ConnectNode` validates and
+            # checks each resolved candidate before dialling any of
+            # them, aborting the whole attempt on the first one either
+            # check refuses -- a later, dialable candidate is never
+            # reached once an earlier one in this same shuffled order
+            # has failed either check.
+            for ip, address in zip(ips, addresses, strict=True):
+                if not is_valid(_legacy_ipv6(ip)):
+                    self.logger.debug(
+                        "Resolver returned invalid address %s for %s",
+                        ip_and_port(ip, port),
+                        host,
+                    )
+                    return
+                if endpoint_key(address) in held:
+                    self.logger.info(
+                        "Not opening a connection to %s, already connected to %s",
+                        host,
+                        ip_and_port(ip, port),
+                    )
+                    return
+            # Second pass: every candidate cleared both checks, so this
+            # dials each in the same shuffled order until one connects.
+            # Unbounded, and inline in `manage_connections`'s own loop:
+            # this pass's own awaits hold up that loop's pruning and
+            # dialling for as long as they take, where Core's dial is
+            # `ThreadOpenConnections`'s alone (btclib-org/btclib-node#1366).
+            for address in addresses:
+                sock = await dial(address)
+                if sock:
+                    self.create_connection(
+                        sock, address, inbound=False, addr_fetch=True
+                    )
+                    return
+        except Exception:
+            self.logger.exception("Exception occurred")
+
     async def manage_connections(self) -> None:
         """Prune, prune some more, maybe dial, sleep -- forever, every 0.1s.
 
@@ -1457,7 +1608,9 @@ class P2pManager(threading.Thread):
         run far less often;
         `_maybe_dial_more_peers` dials one more only if this node still
         has room for it; `_maybe_redial_specified` is the standing
-        redial issue #651 asked for, for `-connect`/`-addnode` alone.
+        redial issue #651 asked for, for `-connect`/`-addnode` alone;
+        `_process_addr_fetch` is `ProcessAddrFetch`'s own standing call
+        inside `ThreadOpenConnections`'s loop (btclib-org/btclib-node#1284).
         """
         self._dial_start = time.time()
         while True:
@@ -1467,6 +1620,7 @@ class P2pManager(threading.Thread):
             self._maybe_dump_banlist(now)
             await self._maybe_dial_more_peers()
             await self._maybe_redial_specified()
+            await self._process_addr_fetch()
             await asyncio.sleep(0.1)
 
     def _bind_one(self, family: socket.AddressFamily, host: str) -> socket.socket:
@@ -1858,7 +2012,7 @@ class P2pManager(threading.Thread):
             )
         self._addresses_initialized = True
         if self.use_dns_seed:
-            asyncio.run_coroutine_threadsafe(self.peer_db.get_addr_from_dns(), loop)
+            asyncio.run_coroutine_threadsafe(self._dns_address_seed(), loop)
         for server_socket in server_sockets:
             asyncio.run_coroutine_threadsafe(
                 self.server(loop, server_socket), loop

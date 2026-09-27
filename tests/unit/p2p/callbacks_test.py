@@ -570,10 +570,11 @@ def a_peer(**attributes: Any) -> Any:
         # `P2pManager.create_connection` sets for a peer it drew itself
         automatic=False,
         # what `Connection` starts every connection at, and what
-        # `P2pManager.create_connection` sets for a block-relay-only one
-        # or a feeler
+        # `P2pManager.create_connection` sets for a block-relay-only one,
+        # a feeler or an addr-fetch connection
         block_relay=False,
         feeler=False,
+        addr_fetch=False,
         address=peer_address("1.2.3.4", 18444),
         stats=PeerStats(),
         # what `Connection` starts every connection at, and what
@@ -810,6 +811,38 @@ def test_a_peer_drawn_without_the_witness_service_is_let_go() -> None:
     version(node, a_version(services=ServiceFlags.NODE_NETWORK), peer)
     assert peer.stopped == [True]
     assert not node.p2p_manager.discouraged  # ISS 1090
+
+
+def test_an_addr_fetch_peer_without_the_witness_service_is_let_go() -> None:
+    """An addr-fetch peer is `_expects_services` too, `automatic` or not.
+
+    `ExpectServicesFromConn` (`src/net.h:838-848`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag) is `true` for `ADDR_FETCH`,
+    and `P2pManager.create_connection` gives such a peer `automatic=False`
+    (btclib-org/btclib-node#1284) -- so this refusal would miss it
+    entirely without `_expects_services` covering `conn.addr_fetch` too.
+    """
+    node = a_handshake_node()
+    assert node.status < NodeStatus.BlockSynced
+    peer = a_peer(addr_fetch=True)
+    version(node, a_version(services=ServiceFlags.NODE_NETWORK), peer)
+    assert peer.stopped == [True]
+    assert not node.p2p_manager.discouraged  # ISS 1090
+
+
+def test_an_addr_fetch_peer_with_neither_service_is_dropped_once_synced() -> None:
+    """An addr-fetch peer missing every wanted service is refused too.
+
+    The `has_all_desirable_services` half of the same gap: `_refuses`'s
+    second services check reaches an addr-fetch connection exactly as
+    the first one above does.
+    """
+    pruned = ServiceFlags.NODE_WITNESS
+    node = a_handshake_node(status=NodeStatus.BlockSynced)
+    peer = a_peer(addr_fetch=True)
+    version(node, a_version(services=pruned), peer)
+    assert peer.stopped == [True]
+    assert not node.p2p_manager.discouraged
 
 
 @pytest.mark.parametrize("inbound", [True, False], ids=["inbound", "manual"])
@@ -1560,6 +1593,53 @@ def test_the_addresses_a_peer_sends_are_kept() -> None:
         # translated back into one; and without the timestamp the peer
         # quoted, which is PeerDB.add_addresses' doing
         assert peer_db.addresses == {replace(address, timestamp=0) for address in given}
+
+
+def test_an_addr_fetch_peer_is_stopped_once_it_answers_with_more_than_one() -> None:
+    """ISS 1284: "to avoid disconnecting on self-announcements", Core's line.
+
+    Both addresses still land in the table -- Core's own `m_addrman.Add`
+    runs before the disconnect check -- through `addr` and `addrv2` alike.
+    """
+    given = [a_gossiped_address("1.2.3.4"), a_gossiped_address("1.2.3.5")]
+    for callback, message in (
+        (addr, Addr([addr_entry(address) for address in given])),
+        (addrv2, AddrV2(given)),
+    ):
+        peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+        node = a_handshake_node(peer_db=peer_db)
+        peer = a_gossiping_peer(addr_fetch=True)
+        callback(node, message.serialize(), peer)
+        assert peer.stopped
+        assert peer_db.addresses == {replace(address, timestamp=0) for address in given}
+
+
+def test_an_addr_fetch_peer_answering_with_one_address_is_kept() -> None:
+    """The negative half: "self-announcements" are exactly one address."""
+    given = [a_gossiped_address("1.2.3.4")]
+    for callback, message in (
+        (addr, Addr([addr_entry(address) for address in given])),
+        (addrv2, AddrV2(given)),
+    ):
+        peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+        node = a_handshake_node(peer_db=peer_db)
+        peer = a_gossiping_peer(addr_fetch=True)
+        callback(node, message.serialize(), peer)
+        assert not peer.stopped
+
+
+def test_an_ordinary_peer_answering_with_more_than_one_is_not_stopped() -> None:
+    """The other negative half: only an addr-fetch connection drops this way."""
+    given = [a_gossiped_address("1.2.3.4"), a_gossiped_address("1.2.3.5")]
+    for callback, message in (
+        (addr, Addr([addr_entry(address) for address in given])),
+        (addrv2, AddrV2(given)),
+    ):
+        peer_db = PeerDB(cast("Chain", None), cast("Path", None))
+        node = a_handshake_node(peer_db=peer_db)
+        peer = a_gossiping_peer()
+        callback(node, message.serialize(), peer)
+        assert not peer.stopped
 
 
 def test_a_discouraged_host_gossiped_is_not_stored() -> None:

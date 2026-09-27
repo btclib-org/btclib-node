@@ -749,7 +749,7 @@ def _network_name(network: Network) -> str:
 
 
 def _connection_type(p2p_conn: Connection) -> str:
-    """Core's `ConnectionTypeAsString` for the five types this node opens.
+    """Core's `ConnectionTypeAsString` for the six types this node opens.
 
     An outbound connection `P2pManager` did not draw itself is a
     `-connect`, `-addnode` or `addnode` peer, Core's `MANUAL`.
@@ -760,6 +760,8 @@ def _connection_type(p2p_conn: Connection) -> str:
         return "block-relay-only"
     if p2p_conn.feeler:
         return "feeler"
+    if p2p_conn.addr_fetch:
+        return "addr-fetch"
     return "outbound-full-relay" if p2p_conn.automatic else "manual"
 
 

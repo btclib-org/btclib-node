@@ -88,6 +88,7 @@ def a_conn(
     protocol: int = PROTOCOL_VERSION,
     block_relay: bool = False,
     feeler: bool = False,
+    addr_fetch: bool = False,
 ) -> Any:
     """Build a `Connection` double: no socket, its own `sent`/`stopped` logs.
 
@@ -114,6 +115,7 @@ def a_conn(
         version_message=SimpleNamespace(version=protocol),
         block_relay=block_relay,
         feeler=feeler,
+        addr_fetch=addr_fetch,
         sent=[],
         stopped=[],
     )
@@ -709,6 +711,33 @@ def test_a_peer_that_answered_recently_is_left_alone(
     assert list(manager.connections) == [1]
 
 
+def test_an_addr_fetch_connection_is_dropped_once_its_timeout_passes(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1284: `_ADDR_FETCH_TIMEOUT` drops an addr-fetch peer either way.
+
+    Recently heard from, unlike every other connection this timeout
+    would otherwise leave alone: Core's own bound is from
+    `m_connected`, not from the last message.
+    """
+    bound = manager_module._ADDR_FETCH_TIMEOUT
+    conn = a_conn(1, connected_time=int(time.time()) - bound - 1, addr_fetch=True)
+    manager = a_manager([conn])
+    asyncio.run(one_pass(manager))
+    assert not manager.connections
+
+
+def test_an_addr_fetch_connection_survives_short_of_its_timeout(
+    a_manager: AManagerFactory,
+) -> None:
+    """The negative half of the test above: short of the bound, it stays."""
+    bound = manager_module._ADDR_FETCH_TIMEOUT
+    conn = a_conn(1, connected_time=int(time.time()) - bound + 30, addr_fetch=True)
+    manager = a_manager([conn])
+    asyncio.run(one_pass(manager))
+    assert list(manager.connections) == [1]
+
+
 def test_a_pong_landing_between_the_idle_check_and_its_reread_does_not_drop_the_peer(
     a_manager: AManagerFactory,
 ) -> None:
@@ -735,6 +764,7 @@ def test_a_pong_landing_between_the_idle_check_and_its_reread_does_not_drop_the_
         relay_tx = True
         feefilter = 0
         automatic = False
+        addr_fetch = False
         version_message = SimpleNamespace(version=PROTOCOL_VERSION)
 
         @property
@@ -1546,9 +1576,9 @@ def refuses_to_be_asked() -> NoReturn:
     raise RuntimeError("no")
 
 
-async def asks_no_dns_server() -> None:
+async def asks_no_dns_server() -> list[str]:
     """Stand in for a `get_addr_from_dns` that never touches a real server."""
-    return
+    return []
 
 
 def test_connect_turns_off_addrman_outgoing(a_manager: AManagerFactory) -> None:
@@ -1580,7 +1610,7 @@ def test_maybe_dial_more_peers_is_a_noop_under_connect(
     assert not manager.pending_connections
 
 
-async def _record_dns_lookup(calls: list[int]) -> None:
+async def _record_dns_lookup(calls: list[int]) -> list[str]:
     """Stand in for `get_addr_from_dns`, recording that it was awaited.
 
     One shared function rather than a `spy` nested in each of the two
@@ -1590,6 +1620,7 @@ async def _record_dns_lookup(calls: list[int]) -> None:
     while the skip test's own `calls` stays empty.
     """
     calls.append(1)
+    return []
 
 
 def _let_runs_own_coroutines_start(manager: P2pManager) -> None:
@@ -1655,6 +1686,274 @@ def test_run_schedules_the_dns_lookup_without_connect(
     manager.start()
     wait_until_listening(manager)
     wait_until(lambda: calls)
+
+
+def test_dns_address_seed_queues_every_unanswered_seed_on_the_chains_port(
+    a_manager: AManagerFactory,
+) -> None:
+    """ISS 1284: a seed `get_addr_from_dns` could not answer is addr-fetched.
+
+    `_dns_address_seed` is what `run` schedules in place of
+    `get_addr_from_dns` directly: it is this wrapper's own job to take
+    that coroutine's return value and turn it into `_addr_fetches`
+    entries, on the chain's own port -- regtest's `18444` here, and not
+    `8333`.
+    """
+
+    async def answers_nothing_for() -> list[str]:
+        return ["down.example", "quiet.example"]
+
+    peer_db = a_peer_db_stub(get_addr_from_dns=answers_nothing_for)
+    manager = a_manager(peer_db=peer_db)
+    asyncio.run(manager._dns_address_seed())
+    assert list(manager._addr_fetches) == [
+        ("down.example", 18444),
+        ("quiet.example", 18444),
+    ]
+
+
+def test_process_addr_fetch_is_a_noop_on_an_empty_queue(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing to pop, nothing dialled: `dial` itself would fail the test."""
+    monkeypatch.setattr(manager_module, "dial", refuses_to_be_asked)
+    manager = a_manager()
+    asyncio.run(manager._process_addr_fetch())
+    assert not manager.connections
+    assert not manager.pending_connections
+
+
+def test_process_addr_fetch_drops_the_entry_when_the_name_resolves_to_nothing(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `gaierror` leaves the entry consumed and dials nothing."""
+
+    class FailingLoop:
+        async def getaddrinfo(self, host: str, port: int, **kwargs: object) -> NoReturn:
+            err = socket.gaierror("no such host")
+            raise err
+
+    monkeypatch.setattr(asyncio, "get_running_loop", FailingLoop)
+    monkeypatch.setattr(manager_module, "dial", refuses_to_be_asked)
+    manager = a_manager()
+    manager._addr_fetches.append(("seed.example", 18444))
+    asyncio.run(manager._process_addr_fetch())
+    assert not manager._addr_fetches
+    assert not manager.connections
+    assert not manager.pending_connections
+
+
+class _NamedLoop:
+    """A `getaddrinfo` stand-in answering fixed IPs for any host asked."""
+
+    def __init__(self, ips: list[str]) -> None:
+        self.ips = ips
+
+    async def getaddrinfo(
+        self, host: str, port: int, **kwargs: object
+    ) -> list[tuple[None, None, None, None, tuple[str, int]]]:
+        return [(None, None, None, None, (ip, port)) for ip in self.ips]
+
+
+def test_process_addr_fetch_refuses_an_invalid_resolved_address(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`CNetAddr::IsValid` refuses Core's own internal-marker prefix.
+
+    `_legacy_ipv6` reads the resolved answer as `CNetAddr` would; a
+    name resolving under it is dropped outright, as `ConnectNode` drops
+    the whole resolution on its own first invalid candidate.
+    """
+    monkeypatch.setattr(
+        asyncio, "get_running_loop", lambda: _NamedLoop(["fd6b:88c0:8724::1"])
+    )
+    monkeypatch.setattr(manager_module, "dial", refuses_to_be_asked)
+    manager = a_manager()
+    manager._addr_fetches.append(("seed.example", 18444))
+    asyncio.run(manager._process_addr_fetch())
+    assert not manager._addr_fetches
+    assert not manager.connections
+    assert not manager.pending_connections
+
+
+class _NoShuffle:
+    """Stand in for `secrets.SystemRandom`, leaving a list's order alone."""
+
+    def shuffle(self, x: list[object]) -> None:
+        return
+
+
+def test_process_addr_fetch_never_dials_a_valid_candidate_ahead_of_an_invalid_one(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A later answer's invalidity aborts the whole attempt, dial included.
+
+    `ConnectNode` validates and checks every resolved answer, in the
+    order `Lookup` (shuffled) gave it, before dialling any of them, and
+    returns on the first either check refuses -- so a dialable answer
+    ahead of a bad one in that same order is never reached, exactly as
+    one behind it never would be (`src/net.cpp:404-424`, at
+    bitcoin/bitcoin@9be056a8a7, the v31.1 tag).
+    """
+    dialled: list[NetworkAddressV2] = []
+
+    async def records(address: NetworkAddressV2) -> None:
+        dialled.append(address)  # pragma: no cover -- aborted before any dial
+
+    monkeypatch.setattr(secrets, "SystemRandom", _NoShuffle)
+    monkeypatch.setattr(
+        asyncio,
+        "get_running_loop",
+        lambda: _NamedLoop(["1.2.3.4", "fd6b:88c0:8724::1"]),
+    )
+    monkeypatch.setattr(manager_module, "dial", records)
+    manager = a_manager()
+    manager._addr_fetches.append(("seed.example", 18444))
+    asyncio.run(manager._process_addr_fetch())
+    assert not dialled
+    assert not manager._addr_fetches
+    assert not manager.connections
+    assert not manager.pending_connections
+
+
+def test_process_addr_fetch_never_dials_a_valid_candidate_ahead_of_a_held_one(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A later answer already connected aborts the whole attempt too.
+
+    Same abort-before-any-dial rule as the invalid case above, this
+    time on `AlreadyConnectedToAddressPort` rather than `IsValid`.
+    """
+    held = a_conn(1, address=peer_address("5.6.7.8", 18444))
+    dialled: list[NetworkAddressV2] = []
+
+    async def records(address: NetworkAddressV2) -> None:
+        dialled.append(address)  # pragma: no cover -- aborted before any dial
+
+    monkeypatch.setattr(secrets, "SystemRandom", _NoShuffle)
+    monkeypatch.setattr(
+        asyncio, "get_running_loop", lambda: _NamedLoop(["1.2.3.4", "5.6.7.8"])
+    )
+    monkeypatch.setattr(manager_module, "dial", records)
+    manager = a_manager([held])
+    manager._addr_fetches.append(("seed.example", 18444))
+    asyncio.run(manager._process_addr_fetch())
+    assert not dialled
+    assert not manager._addr_fetches
+    assert list(manager.connections) == [1]
+    assert not manager.pending_connections
+
+
+def test_process_addr_fetch_skips_a_candidate_already_connected(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`ConnectNode`'s `AlreadyConnectedToAddressPort`, read after resolving."""
+    held = a_conn(1, address=peer_address("1.2.3.4", 18444))
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["1.2.3.4"]))
+    monkeypatch.setattr(manager_module, "dial", refuses_to_be_asked)
+    manager = a_manager([held])
+    manager._addr_fetches.append(("seed.example", 18444))
+    asyncio.run(manager._process_addr_fetch())
+    assert not manager._addr_fetches
+    assert list(manager.connections) == [1]
+    assert not manager.pending_connections
+
+
+def test_process_addr_fetch_dials_and_marks_the_connection_addr_fetch(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A resolved candidate not already held is dialled and connected."""
+    ours, theirs = socket.socketpair()
+
+    async def connects(address: NetworkAddressV2) -> socket.socket:
+        return ours
+
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["5.6.7.8"]))
+    monkeypatch.setattr(manager_module, "dial", connects)
+    made: list[dict[str, Any]] = []
+    manager = a_manager()
+    monkeypatch.setattr(
+        manager, "create_connection", lambda *args, **kwargs: made.append(kwargs)
+    )
+    manager._addr_fetches.append(("seed.example", 18444))
+    asyncio.run(manager._process_addr_fetch())
+    assert not manager._addr_fetches
+    assert made == [{"inbound": False, "addr_fetch": True}]
+    theirs.close()
+
+
+def test_process_addr_fetch_tries_the_next_candidate_when_the_first_never_connects(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first candidate's own dial answering `None` does not end the pass."""
+    ours, theirs = socket.socketpair()
+    tried: list[str] = []
+
+    async def only_the_second_connects(
+        address: NetworkAddressV2,
+    ) -> socket.socket | None:
+        tried.append(str(address.address))
+        return None if len(tried) == 1 else ours
+
+    monkeypatch.setattr(
+        asyncio, "get_running_loop", lambda: _NamedLoop(["1.1.1.1", "2.2.2.2"])
+    )
+    monkeypatch.setattr(manager_module, "dial", only_the_second_connects)
+    made: list[dict[str, Any]] = []
+    manager = a_manager()
+    monkeypatch.setattr(
+        manager, "create_connection", lambda *args, **kwargs: made.append(kwargs)
+    )
+    manager._addr_fetches.append(("seed.example", 18444))
+    asyncio.run(manager._process_addr_fetch())
+    assert len(tried) == 2
+    assert made == [{"inbound": False, "addr_fetch": True}]
+    theirs.close()
+
+
+def test_process_addr_fetch_gives_up_when_no_candidate_connects(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every resolved candidate answering `None` ends the pass quietly.
+
+    `ConnectNode` tries every shuffled answer and returns once the list
+    is exhausted, connected or not; nothing here names a peer left over
+    to try again, `ADDR_FETCH` having no retry of its own
+    (btclib-org/btclib-node#1284).
+    """
+
+    async def never_connects(address: NetworkAddressV2) -> None:
+        return None
+
+    monkeypatch.setattr(
+        asyncio, "get_running_loop", lambda: _NamedLoop(["1.1.1.1", "2.2.2.2"])
+    )
+    monkeypatch.setattr(manager_module, "dial", never_connects)
+    manager = a_manager()
+    monkeypatch.setattr(manager, "create_connection", refuses_to_be_asked)
+    manager._addr_fetches.append(("seed.example", 18444))
+    asyncio.run(manager._process_addr_fetch())
+    assert not manager._addr_fetches
+    assert not manager.connections
+    assert not manager.pending_connections
+
+
+def test_process_addr_fetch_logs_and_continues_on_a_dial_that_raises(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dial that raises is logged, like every other housekeeping step.
+
+    `manage_connections` never awaits this coroutine's own future, the
+    same reason `_maybe_prune_active_addresses` guards its own call.
+    """
+    logged: list[str] = []
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: _NamedLoop(["1.2.3.4"]))
+    monkeypatch.setattr(manager_module, "dial", refuses_to_be_asked)
+    manager = a_manager()
+    monkeypatch.setattr(manager.logger, "exception", logged.append)
+    manager._addr_fetches.append(("seed.example", 18444))
+    asyncio.run(manager._process_addr_fetch())
+    assert logged
 
 
 def test_zero_max_connections_turns_off_the_dns_lookup(
@@ -3991,6 +4290,28 @@ def test_a_feeler_leaves_its_network_group_to_other_peers(
     assert dialled == [drawn]
 
 
+def test_an_addr_fetch_connection_leaves_its_network_group_to_other_peers(
+    a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`IsOutboundOrBlockRelayConn` answers `false` for `ADDR_FETCH` too.
+
+    Mirrors the feeler test above: an addr-fetch connection in the same
+    network group as the draw does not hold that group against it.
+    """
+    dialled: list[NetworkAddressV2] = []
+
+    async def records(address: NetworkAddressV2) -> None:
+        dialled.append(address)
+
+    monkeypatch.setattr(manager_module, "dial", records)
+    drawn = a_full_node("5.6.7.8", 18444)
+    peer_db = a_peer_db_stub(is_empty=False, random_address=lambda: drawn)
+    fetching = a_conn(1, addr_fetch=True, address=peer_address("5.6.1.1", 18444))
+    manager = a_manager([fetching], peer_db=peer_db)
+    asyncio.run(manager._maybe_dial_more_peers())
+    assert dialled == [drawn]
+
+
 def test_the_feeler_timer_is_drawn_as_the_manager_runs(
     a_manager: AManagerFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4471,8 +4792,10 @@ def test_the_network_counts_are_core_s_manual_and_full_relay_peers(
 ) -> None:
     """`m_network_conn_counts`: `IsManualOrFullOutboundConn`, by `GetNetwork`.
 
-    A pending peer counts; an inbound, block-relay-only or feeler peer
-    does not. A 6to4 address is IPv6 here, where `net_class` says IPv4.
+    A pending peer counts; an inbound, block-relay-only, feeler or
+    addr-fetch peer does not -- `IsManualOrFullOutboundConn` answers
+    `false` for `ADDR_FETCH` too. A 6to4 address is IPv6 here, where
+    `net_class` says IPv4.
     """
     manager = a_manager(
         [
@@ -4481,10 +4804,11 @@ def test_the_network_counts_are_core_s_manual_and_full_relay_peers(
             a_conn(3, inbound=True, address=peer_address("5.3.0.1", 1)),
             a_conn(4, automatic=True, block_relay=True),
             a_conn(5, automatic=True, feeler=True),
+            a_conn(6, addr_fetch=True, address=peer_address("5.6.0.1", 1)),
         ]
     )
-    manager.pending_connections[6] = a_conn(
-        6, automatic=True, address=peer_address("5.6.0.1", 1)
+    manager.pending_connections[7] = a_conn(
+        7, automatic=True, address=peer_address("5.6.0.1", 1)
     )
     assert manager.network_conn_counts() == {Network.IPV4: 2, Network.IPV6: 1}
 
