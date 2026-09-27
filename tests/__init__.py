@@ -691,10 +691,10 @@ def _ended_without_listening(manager: _ListensOnAPort) -> bool:
         return False
     if manager in threading.enumerate():
         return False
-    if manager.listening.is_set():
-        return False
     ever_listened = getattr(manager, "ever_listened", None)
-    return ever_listened is None or not ever_listened.is_set()
+    return not manager.listening.is_set() and (
+        ever_listened is None or not ever_listened.is_set()
+    )
 
 
 # One `-rpcauth` user, for a test building an `RpcManager` or an
